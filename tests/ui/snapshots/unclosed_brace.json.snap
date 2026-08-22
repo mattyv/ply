@@ -1,0 +1,60 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+[
+  {
+    "code": "E0111",
+    "severity": "error",
+    "phase": "parse",
+    "title": "unclosed `{` — expected `}`, found end of file",
+    "primary_span": {
+      "file": "unclosed_brace.ply",
+      "start": [
+        3,
+        1
+      ],
+      "end": [
+        3,
+        1
+      ]
+    },
+    "related": [
+      {
+        "span": {
+          "file": "unclosed_brace.ply",
+          "start": [
+            1,
+            25
+          ],
+          "end": [
+            1,
+            26
+          ]
+        },
+        "note": "`{` opened here"
+      }
+    ],
+    "fixes": [
+      {
+        "title": "close the `{` here",
+        "edits": [
+          {
+            "span": {
+              "file": "unclosed_brace.ply",
+              "start": [
+                3,
+                1
+              ],
+              "end": [
+                3,
+                1
+              ]
+            },
+            "insert": "}"
+          }
+        ]
+      }
+    ],
+    "worklist_ref": null
+  }
+]

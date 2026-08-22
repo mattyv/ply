@@ -1,0 +1,4 @@
+fn total(a: Int, b: Int) -> Int {
+    let sum = a + b
+    sum
+}

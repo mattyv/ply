@@ -1,0 +1,12 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+error[E0123]: borrows exist only as parameters: they cannot appear in fields, return types or `let` bindings (§5.5)
+ --> borrow_in_struct_field.ply:2:12
+  |
+ 2|     inner: &List[Int],
+  |            ^
+help: drop the borrow marker
+ 2|     inner: List[Int],
+
+1 error

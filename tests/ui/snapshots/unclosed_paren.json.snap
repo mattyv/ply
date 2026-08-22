@@ -1,0 +1,60 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+[
+  {
+    "code": "E0111",
+    "severity": "error",
+    "phase": "parse",
+    "title": "unclosed `(` — expected `)`, found `}`",
+    "primary_span": {
+      "file": "unclosed_paren.ply",
+      "start": [
+        3,
+        1
+      ],
+      "end": [
+        3,
+        2
+      ]
+    },
+    "related": [
+      {
+        "span": {
+          "file": "unclosed_paren.ply",
+          "start": [
+            2,
+            8
+          ],
+          "end": [
+            2,
+            9
+          ]
+        },
+        "note": "`(` opened here"
+      }
+    ],
+    "fixes": [
+      {
+        "title": "close the `(` here",
+        "edits": [
+          {
+            "span": {
+              "file": "unclosed_paren.ply",
+              "start": [
+                3,
+                1
+              ],
+              "end": [
+                3,
+                1
+              ]
+            },
+            "insert": ")"
+          }
+        ]
+      }
+    ],
+    "worklist_ref": null
+  }
+]

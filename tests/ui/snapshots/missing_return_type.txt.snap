@@ -1,0 +1,12 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+error[E0112]: every function needs a return type; write `-> ()` for a function that returns nothing
+ --> missing_return_type.ply:1:23
+  |
+ 1| fn greet(name: String) {
+  |                       ^
+help: return `()`
+ 1| fn greet(name: String) -> () {
+
+1 error

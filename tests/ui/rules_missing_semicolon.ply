@@ -1,0 +1,4 @@
+rules Access {
+    rel parent(String, String);
+    ancestor(x, y) :- parent(x, y)
+}

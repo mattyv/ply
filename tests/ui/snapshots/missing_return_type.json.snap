@@ -1,0 +1,44 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+[
+  {
+    "code": "E0112",
+    "severity": "error",
+    "phase": "parse",
+    "title": "every function needs a return type; write `-> ()` for a function that returns nothing",
+    "primary_span": {
+      "file": "missing_return_type.ply",
+      "start": [
+        1,
+        23
+      ],
+      "end": [
+        1,
+        23
+      ]
+    },
+    "fixes": [
+      {
+        "title": "return `()`",
+        "edits": [
+          {
+            "span": {
+              "file": "missing_return_type.ply",
+              "start": [
+                1,
+                23
+              ],
+              "end": [
+                1,
+                23
+              ]
+            },
+            "insert": " -> ()"
+          }
+        ]
+      }
+    ],
+    "worklist_ref": null
+  }
+]

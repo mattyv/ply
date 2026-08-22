@@ -1,0 +1,12 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+error[E0110]: expected `;`, found identifier
+ --> missing_semicolon.ply:2:20
+  |
+ 2|     let sum = a + b
+  |                    ^
+help: add `;`
+ 2|     let sum = a + b;
+
+1 error

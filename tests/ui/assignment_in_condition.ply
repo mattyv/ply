@@ -1,0 +1,7 @@
+fn pick(a: Int) -> Int {
+    if a = 1 {
+        1
+    } else {
+        0
+    }
+}

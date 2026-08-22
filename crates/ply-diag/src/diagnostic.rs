@@ -287,7 +287,7 @@ impl EditJson {
 // ---------------------------------------------------------------------------------------
 
 /// An ordered bag of diagnostics with the "one root cause" bookkeeping (§13).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Diagnostics {
     items: Vec<Diagnostic>,
 }

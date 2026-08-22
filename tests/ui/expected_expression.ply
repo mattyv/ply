@@ -1,0 +1,3 @@
+fn broken(a: Int) -> Int {
+    a +
+}

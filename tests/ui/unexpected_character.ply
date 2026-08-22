@@ -1,0 +1,3 @@
+fn f(a: Int) -> Int {
+    a $ 2
+}

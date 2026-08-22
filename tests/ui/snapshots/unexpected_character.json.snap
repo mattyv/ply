@@ -1,0 +1,24 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+[
+  {
+    "code": "E0102",
+    "severity": "error",
+    "phase": "lex",
+    "title": "unexpected character `$`",
+    "primary_span": {
+      "file": "unexpected_character.ply",
+      "start": [
+        2,
+        7
+      ],
+      "end": [
+        2,
+        8
+      ]
+    },
+    "fixes": [],
+    "worklist_ref": null
+  }
+]

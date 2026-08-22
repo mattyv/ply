@@ -1,0 +1,10 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+error[E0113]: parameter `x` needs a type annotation, e.g. `x: Int`
+ --> missing_param_type.ply:1:11
+  |
+ 1| fn double(x) -> Int {
+  |           ^
+
+1 error

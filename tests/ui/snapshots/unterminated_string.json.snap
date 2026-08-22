@@ -1,0 +1,44 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+[
+  {
+    "code": "E0103",
+    "severity": "error",
+    "phase": "lex",
+    "title": "unterminated string literal",
+    "primary_span": {
+      "file": "unterminated_string.ply",
+      "start": [
+        2,
+        5
+      ],
+      "end": [
+        2,
+        11
+      ]
+    },
+    "fixes": [
+      {
+        "title": "close the string",
+        "edits": [
+          {
+            "span": {
+              "file": "unterminated_string.ply",
+              "start": [
+                2,
+                11
+              ],
+              "end": [
+                2,
+                11
+              ]
+            },
+            "insert": "\""
+          }
+        ]
+      }
+    ],
+    "worklist_ref": null
+  }
+]

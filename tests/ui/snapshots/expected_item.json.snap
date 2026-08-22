@@ -1,0 +1,24 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+[
+  {
+    "code": "E0116",
+    "severity": "error",
+    "phase": "parse",
+    "title": "expected an item (`fn`, `struct`, `enum`, `use`, `rules`, `machine`), found identifier",
+    "primary_span": {
+      "file": "expected_item.ply",
+      "start": [
+        3,
+        1
+      ],
+      "end": [
+        3,
+        4
+      ]
+    },
+    "fixes": [],
+    "worklist_ref": null
+  }
+]

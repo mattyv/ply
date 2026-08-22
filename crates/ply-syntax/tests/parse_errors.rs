@@ -102,6 +102,13 @@ fn expected_expression_is_e0115() {
 }
 
 #[test]
+fn a_lex_error_does_not_also_produce_a_parse_error() {
+    // The invalid token is the root cause; the parse error it induces is noise.
+    assert_eq!(codes("fn f(a: Int) -> Int {\n    a $ 2\n}\n"), vec![Code::E0102]);
+    assert_eq!(codes("fn f() -> String {\n    \"hello\n}\n"), vec![Code::E0103]);
+}
+
+#[test]
 fn one_diagnostic_per_item() {
     // Two independent mistakes in two functions: two diagnostics, not a cascade.
     let src = "fn a() -> Int {\n    let x = 1\n    x\n}\nfn b() -> Int {\n    let y = 2\n    y\n}\n";

@@ -1,0 +1,12 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+error[E0110]: `&&` is not an operator in Ply; the boolean operators are `and`, `or`, `not`
+ --> and_instead_of_ampersands.ply:2:7
+  |
+ 2|     a && b
+  |       ^^
+help: use `and`
+ 2|     a and b
+
+1 error

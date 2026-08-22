@@ -1,0 +1,5 @@
+fn fetch() -> String
+    uses { net.connect }
+{
+    ""
+}

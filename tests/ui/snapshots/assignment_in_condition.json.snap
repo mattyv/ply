@@ -1,0 +1,44 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+[
+  {
+    "code": "E0110",
+    "severity": "error",
+    "phase": "parse",
+    "title": "`=` assigns; use `==` to compare",
+    "primary_span": {
+      "file": "assignment_in_condition.ply",
+      "start": [
+        2,
+        10
+      ],
+      "end": [
+        2,
+        11
+      ]
+    },
+    "fixes": [
+      {
+        "title": "use `==`",
+        "edits": [
+          {
+            "span": {
+              "file": "assignment_in_condition.ply",
+              "start": [
+                2,
+                10
+              ],
+              "end": [
+                2,
+                11
+              ]
+            },
+            "replace": "=="
+          }
+        ]
+      }
+    ],
+    "worklist_ref": null
+  }
+]

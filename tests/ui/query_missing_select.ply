@@ -1,0 +1,3 @@
+fn rows(xs: List[Invoice]) -> List[Invoice] {
+    query { from i in xs where i.days_late > 0 }
+}

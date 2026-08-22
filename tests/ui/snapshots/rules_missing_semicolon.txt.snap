@@ -1,0 +1,12 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+error[E0110]: expected `;`, found `}`
+ --> rules_missing_semicolon.ply:3:35
+  |
+ 3|     ancestor(x, y) :- parent(x, y)
+  |                                   ^
+help: add `;`
+ 3|     ancestor(x, y) :- parent(x, y);
+
+1 error

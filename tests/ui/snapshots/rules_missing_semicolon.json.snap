@@ -1,0 +1,44 @@
+---
+source: crates/ply-driver/tests/ui.rs
+---
+[
+  {
+    "code": "E0110",
+    "severity": "error",
+    "phase": "parse",
+    "title": "expected `;`, found `}`",
+    "primary_span": {
+      "file": "rules_missing_semicolon.ply",
+      "start": [
+        3,
+        35
+      ],
+      "end": [
+        3,
+        35
+      ]
+    },
+    "fixes": [
+      {
+        "title": "add `;`",
+        "edits": [
+          {
+            "span": {
+              "file": "rules_missing_semicolon.ply",
+              "start": [
+                3,
+                35
+              ],
+              "end": [
+                3,
+                35
+              ]
+            },
+            "insert": ";"
+          }
+        ]
+      }
+    ],
+    "worklist_ref": null
+  }
+]

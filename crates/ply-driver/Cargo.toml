@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "ply_driver"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ply"
 path = "src/main.rs"
@@ -14,3 +18,6 @@ ply-diag = { workspace = true }
 ply-syntax = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

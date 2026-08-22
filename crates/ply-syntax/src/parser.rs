@@ -115,11 +115,17 @@ impl<'a> Parser<'a> {
     // -- diagnostics --------------------------------------------------------------------
 
     /// Report a hard error and enter panic mode.
+    ///
+    /// A parse error *at* an invalid token is always downstream of the lexer error that
+    /// produced it, so it is swallowed: one diagnostic per root cause (§13).
     fn emit(&mut self, d: Diagnostic) {
         if self.panic {
             return;
         }
         self.panic = true;
+        if self.at(T::Error) {
+            return;
+        }
         self.diags.push(d);
     }
 
