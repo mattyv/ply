@@ -1,0 +1,13 @@
+[package]
+name = "ply-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ply-diag = { workspace = true }
+logos = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
