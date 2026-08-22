@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c6e9b1dbb600c2c7783fa51a4fa336b5a49b70eb2443b036a83a64ac95f11d2a # shrinks to expr = Expr { kind: Binary { op: Lt, lhs: Expr { kind: Binary { op: Lt, lhs: Expr { kind: Int("0"), span: Span { file: FileId(4294967295), start: 0, end: 0 } }, rhs: Expr { kind: Int("0"), span: Span { file: FileId(4294967295), start: 0, end: 0 } } }, span: Span { file: FileId(4294967295), start: 0, end: 0 } }, rhs: Expr { kind: Int("0"), span: Span { file: FileId(4294967295), start: 0, end: 0 } } }, span: Span { file: FileId(4294967295), start: 0, end: 0 } }
+cc f44a4d439f6f254e58146fb3b4ca9158b7000d280e7aa504762ab09c7eb6205f # shrinks to expr = Expr { kind: If { cond: Expr { kind: StructLit { name: Ident { name: "S", span: Span { file: FileId(4294967295), start: 0, end: 0 } }, fields: [] }, span: Span { file: FileId(4294967295), start: 0, end: 0 } }, then: Block { stmts: [], tail: Some(Expr { kind: Int("0"), span: Span { file: FileId(4294967295), start: 0, end: 0 } }), trailing_comments: [], span: Span { file: FileId(4294967295), start: 0, end: 0 } }, else_: Some(Expr { kind: Block(Block { stmts: [], tail: Some(Expr { kind: Int("0"), span: Span { file: FileId(4294967295), start: 0, end: 0 } }), trailing_comments: [], span: Span { file: FileId(4294967295), start: 0, end: 0 } }), span: Span { file: FileId(4294967295), start: 0, end: 0 } }) }, span: Span { file: FileId(4294967295), start: 0, end: 0 } }

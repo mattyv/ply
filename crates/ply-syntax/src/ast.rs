@@ -44,6 +44,9 @@ pub struct Comments {
     pub trailing: Option<Comment>,
     /// A blank line separated this node from the previous one.
     pub blank_before: bool,
+    /// A blank line separated the leading comments from the node itself — this is what
+    /// keeps a file header attached to the file rather than to the first item.
+    pub blank_after_leading: bool,
 }
 
 impl Comments {

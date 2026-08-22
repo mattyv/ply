@@ -204,7 +204,17 @@ impl<'a> Parser<'a> {
             Some(c) => c.blank_before,
             None => self.cur().newlines_before >= 2,
         };
-        Comments { leading, trailing: None, blank_before }
+        let blank_after_leading = match leading.last() {
+            Some(c) => self.blank_between(c.span.end, self.cur().span.start),
+            None => false,
+        };
+        Comments { leading, trailing: None, blank_before, blank_after_leading }
+    }
+
+    /// Two or more newlines in the source between two offsets.
+    fn blank_between(&self, from: u32, to: u32) -> bool {
+        let src = &self.lexed.source[from as usize..to as usize];
+        src.bytes().filter(|&b| b == b'\n').count() >= 2
     }
 
     /// Claim a comment written after a node on the same line.
