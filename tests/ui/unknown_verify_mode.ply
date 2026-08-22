@@ -1,5 +1,0 @@
-fn f() -> Int
-    verify wobble
-{
-    1
-}

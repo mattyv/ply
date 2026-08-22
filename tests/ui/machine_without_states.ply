@@ -1,3 +1,0 @@
-machine Order {
-    Draft -> Placed;
-}

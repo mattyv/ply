@@ -1,3 +1,0 @@
-fn between(a: Int, b: Int, c: Int) -> Bool {
-    a < b < c
-}

@@ -1,3 +1,0 @@
-struct Holder {
-    inner: &List[Int],
-}

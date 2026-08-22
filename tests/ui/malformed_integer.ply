@@ -1,3 +1,0 @@
-fn big() -> Int {
-    123abc
-}

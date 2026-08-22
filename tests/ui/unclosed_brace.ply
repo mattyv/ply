@@ -1,2 +1,0 @@
-fn total(a: Int) -> Int {
-    a + 1

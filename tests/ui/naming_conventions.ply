@@ -1,7 +1,0 @@
-struct http_request {
-    retryCount: Int,
-}
-
-fn totalFees(maxSize: Int) -> Int {
-    maxSize
-}

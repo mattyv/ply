@@ -1,3 +1,0 @@
-fn double(x) -> Int {
-    x * 2
-}

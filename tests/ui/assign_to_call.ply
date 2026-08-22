@@ -1,3 +1,0 @@
-fn broken() -> () {
-    compute() = 1;
-}
