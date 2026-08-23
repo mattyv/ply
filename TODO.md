@@ -38,10 +38,32 @@
       tree. Also: `Vec` works ONLY if codegen emits `#[kani::unwind(N+1)]`; fixed
       arrays are cheap and become the preferred shape; BTreeSet/BTreeMap are out past
       one element; HashMap needs a codegen hasher swap or it won't compile.
-- [ ] **Consequence to decide**: Ply's own verdict kernel is a recursive tree, so Ply
-      cannot `bounded`-check its own kernel. Either the kernel gets an array-shaped
-      representation for verification, or the self-hosting claim in CLAUDE.md needs
-      qualifying.
+- [x] **Self-hosting resolved**: the enumeration IS bounded-kind evidence (exhaustive
+      within a stated bound, independent oracle, covering more than the Kani harness
+      would have). CLAUDE.md reframed rather than apologised. Reshaping the kernel was
+      rejected on evidence — the stall just moves to the next unbounded field.
+- [ ] Write down the enumeration's REDUCTION ARGUMENT (per-bit uniformity of StatusSet,
+      content-independence of the assumption merge) — without it, "exhaustive" is
+      overclaiming by quotient.
+- [ ] Decide whether the three non-terminating Kani harnesses should stay invocable by
+      default: `cargo kani` on the workspace now costs ~15 min of guaranteed timeouts,
+      and they contradict our own rule about not routing recursive shapes to Kani.
+- [ ] **Pull a thin M3 vertical slice ahead of M1/M2** (fable's sequencing call, and the
+      external review's undone recommendation #2): one hand-written ply.yaml, one
+      contracted fn, generated harness WITH the unwind emission, one real cex, the D7
+      rendered red test, one JSON diagnostic. Seven sessions of engine-free scaffolding
+      before re-contacting the layer that just falsified five spec claims is the
+      reviewed failure mode, rescheduled.
+- [ ] **Reweigh M4 above the bulk of M3**: M3 is 8-10 sessions for an engine covering a
+      sliver of signatures; M4 is 4 sessions covering every signature, and its scariest
+      mechanism is already proven end to end.
+- [ ] **Generalise D13 beyond M0**: each milestone opens by spiking its riskiest
+      external-tool claim, and no spec sentence may say "confirmed"/"verified" without
+      naming the artifact that shows it. §5.4c carried a fabricated confirmation until
+      an adversarial re-check caught it.
+- [ ] Measure whether the unwind annotation rescues ITERATOR-CHAIN bodies (marked NOT RUN
+      in the scale sweep). Until measured, §5.4b's gate still admits functions that hit
+      the exact failure it was rewritten to prevent.
 - [ ] **D7 correction: the generated playback test does not reproduce contract
       violations.** Adversarial re-verification found `cargo kani playback` never
       evaluates contract closures — only the real body runs — so an `ensures` violation

@@ -30,12 +30,25 @@ as one pure module, and its invariants are checked by exhaustive enumeration ove
 verdict tree up to a small bound (991,389 of them, ~2s under `cargo test --release`) —
 which for a bounded domain *is* a proof, and is the gate that must stay green.
 
+That enumeration is not a consolation prize for a failed proof — it is the same *kind* of
+evidence Ply calls `bounded`: exhaustive within a stated bound, checked against an
+independent oracle. It covers strictly more than the Kani harness would have (which was
+scoped to depth 2, ≤2 children). Two honesty conditions attach: the enumeration uses a
+reduced configuration set (one representative status, one fixed assumption string), so the
+argument for why that reduction loses nothing — per-bit uniformity of `StatusSet`,
+content-independence of the assumption merge — must be written alongside the claim, or
+"exhaustive" is overclaiming by quotient.
+
 Kani harnesses for the same four invariants exist and are `#[cfg(kani)]`-gated, but as
 of 2026-08-23 **none of them terminate**: CBMC symbolically unwinds `BTreeMap`'s generic
 clone algorithm on every recursive call because the kernel's real types use
 `BTreeSet`/`Vec`, and no unwind bound, solver, or object-bits setting tried changed that.
 The investigation is documented in the module. Do not report the kernel as
-"Kani-proved" until a harness actually returns a verdict. The standing obligations:
+"Kani-proved" until a harness actually returns a verdict. The scale spike later showed
+why it never will: the kernel is a recursive tree, and recursive shapes are outside
+Kani's measured reach (§5.4b). Reshaping the kernel to suit the verifier is refused on
+evidence as well as principle — the stall simply moves to the next unbounded field, and
+"Ply proposes, never rewrites" applies most strictly where we are our own user. The standing obligations:
 
 - aggregation never reports evidence stronger than the weakest child
 - `conditional` never disappears without its assumptions being discharged

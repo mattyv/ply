@@ -78,6 +78,17 @@ the 2025–26 verification literature drive the design:
    Mutation testing is therefore a first-class check: a contract that fails to kill
    mutants is flagged as weak.
 
+**What v1 optimises for.** `fuzzed(n)·spec-strong` is the workhorse tier: fuzzing reaches
+every signature shape — including the recursive and collection-heavy ones §5.4b excludes
+from `bounded` — and mutation testing is what turns a passing check into measured
+evidence that the spec constrains anything. `bounded(k)` is exhaustive-within-bound
+reinforcement for the shapes it can reach, and it is genuinely better at boundaries
+(measured: proptest at 256 uniform samples missed `>`→`>=` mutants that `bounded` kills by
+construction). But note the asymmetry it cannot escape in v1: mutation's kill signal is
+scoped to `test`/`fuzz` (D12), so **`bounded` can never earn `·spec-strong` — a bounded
+proof of a vacuous contract is a green nothing.** The evidence story is therefore two
+axes, rung and spec-strength, not one ladder.
+
 Ply's job: one schema for claims, one router to engines, one JSON result schema, one
 worklist. The engines already exist and others maintain them. **We build glue and UX,
 never solvers.** A session that finds itself implementing SMT encoding, model checking, or
@@ -474,7 +485,33 @@ An `induct` check (Kani loop contracts, proving loops by invariant instead of un
 is planned, not in v1: Kani's loop-contract support is experimental, and Ply has no
 stable-Rust invariant attribute yet. A function's verdict is the strongest evidence its
 passing checks earned; a failing check is a `violation` regardless of what else passed.
-Default checks: `[bounded(2)]` if the fn has any contract, else none.
+**A timeout is not a violation (MUST).** Kani renders a CBMC timeout and a genuine
+contract failure identically as `VERIFICATION:- FAILED`; telling them apart requires
+reading past that line. An adapter that conflates them reports a counterexample-free
+"violation" for a function that was merely slow — evidence that lies, the one failure
+this project exists to prevent. Every adapter MUST distinguish engine exhaustion
+(`timeout`, a status outside the evidence order per D6) from a falsified claim
+(`violation`), MUST NOT emit a `violation` without a witness, and MUST carry the
+distinguishing engine output into the diagnostic so the judgement is auditable.
+
+**Checkability is a property of the body, not just the signature.** §5.4b's list bounds
+what Ply will *attempt*; it does not promise the attempt finishes. The scale spike's own
+first run is the proof: a `Vec<u8>` bounded to length **1** — a fully supported signature
+— timed out because the body was an iterator chain (`.iter().map().sum()`), whose generic
+dispatch CBMC unwound past 1150 iterations. The fixture was rewritten to a manual indexed
+loop; Ply cannot rewrite a user's body. So a supported signature may still yield
+`timeout`, and that outcome must be cheap, fast, and clearly reported rather than
+prevented by promises.
+
+Per-harness time budget: every engine invocation carries a hard cap (`--engine-timeout`,
+§6). Exceeding it yields `timeout`, never a silent hang and never a `violation`. D14
+caches passing verdicts only, so a timing-out function re-pays its cap on every run —
+which is why the cap must be small by default and the status cheap to re-report.
+
+Default checks: shape-aware. `[bounded(2)]` when the fn has a contract **and** its
+signature passes the §5.4b gate; `[fuzz(256)]` when it has a contract whose shape §5.4b
+excludes; none otherwise. A flat `[bounded(2)]` default would route most contracted
+functions in ordinary Rust into `unsupported` or a multi-minute timeout.
 
 #### 5.4d Trusted claims
 
