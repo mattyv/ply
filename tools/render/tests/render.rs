@@ -874,7 +874,6 @@ mod declared_ceiling {
     use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
     use ply_render::model::{Check, Component, FnClaim, parse_check};
     use ply_render::svg::{RenderOptions, render_svg_with_options};
-    use std::collections::BTreeSet;
 
     /// The strongest check *kind* a fn declares (The-Ply-Spec.md §7.1: `test`
     /// -> tested, `fuzz` -> fuzzed, `bounded` -> bounded, `prove` -> proved;
@@ -905,7 +904,7 @@ mod declared_ceiling {
             .values()
             .map(|fc| VerdictNode {
                 kind: NodeKind::Claimable(fn_ceiling(fc)),
-                statuses: BTreeSet::new(),
+                statuses: ply_kernel::StatusSet::new(),
                 conditional: None,
                 children: Vec::new(),
             })
@@ -913,7 +912,7 @@ mod declared_ceiling {
         children.extend(comp.components.values().map(verdict_node));
         VerdictNode {
             kind: NodeKind::Container,
-            statuses: BTreeSet::new(),
+            statuses: ply_kernel::StatusSet::new(),
             conditional: None,
             children,
         }

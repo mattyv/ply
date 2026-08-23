@@ -43,8 +43,9 @@
 //! fold-through) and a width-3 branch (root with 3 leaf children, exercising
 //! fold-across-siblings), while keeping the corpus at roughly 991K trees --
 //! verified below to run in seconds even in an unoptimized debug build.
-use ply_kernel::{AggregatedNode, Evidence, NodeKind, StatusKind, VerdictNode, aggregate};
-use std::collections::BTreeSet;
+use ply_kernel::{
+    AggregatedNode, Evidence, NodeKind, StatusKind, StatusSet, VerdictNode, aggregate,
+};
 
 const ALL_EVIDENCE: [Evidence; 6] = [
     Evidence::Violation,
@@ -101,7 +102,7 @@ fn all_configs() -> Vec<Config> {
 
 impl Config {
     fn node(&self, children: Vec<VerdictNode>) -> VerdictNode {
-        let mut statuses = BTreeSet::new();
+        let mut statuses = StatusSet::new();
         let conditional = match self.status {
             StatusShape::None => None,
             StatusShape::Conditional => Some(vec![ASSUMED_CONTRACT.to_string()]),
@@ -213,10 +214,10 @@ fn naive_has_conditional(node: &VerdictNode) -> bool {
     node.conditional.is_some() || node.children.iter().any(naive_has_conditional)
 }
 
-fn naive_statuses_union(node: &VerdictNode) -> BTreeSet<StatusKind> {
-    let mut s = node.statuses.clone();
+fn naive_statuses_union(node: &VerdictNode) -> StatusSet {
+    let mut s = node.statuses;
     for c in &node.children {
-        s.extend(naive_statuses_union(c));
+        s.extend(naive_statuses_union(c).iter());
     }
     s
 }

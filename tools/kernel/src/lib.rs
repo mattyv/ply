@@ -26,8 +26,6 @@
 //! conditional/assumptions pairing) that the amendment has since settled --
 //! see the doc comments on [`NodeKind`] and [`VerdictNode::conditional`].
 
-use std::collections::BTreeSet;
-
 /// The-Ply-Spec.md D6 / §7: "The evidence order compares the six kinds" --
 /// `violation < unclaimed < tested < fuzzed < bounded < proved`. Declaration
 /// order below *is* that order, so `#[derive(PartialOrd, Ord)]` gives the
@@ -89,13 +87,114 @@ pub enum StatusKind {
     Inconclusive,
 }
 
+/// Declaration-order table of every [`StatusKind`] variant, used by
+/// [`StatusSet::iter`] to walk set bits back into values and by tests that
+/// want "all six" without hand-maintaining a second list.
+const ALL_STATUS_KINDS: [StatusKind; 6] = [
+    StatusKind::Stale,
+    StatusKind::WeakSpec,
+    StatusKind::Unsupported,
+    StatusKind::EngineMissing,
+    StatusKind::Timeout,
+    StatusKind::Inconclusive,
+];
+
+/// A set of [`StatusKind`] flags, stored as a `u8` bitmask (one bit per
+/// variant; 6 variants fit in 6 of the 8 bits) instead of
+/// `std::collections::BTreeSet<StatusKind>`.
+///
+/// This exists to remove a Kani/CBMC symbolic-execution stall documented in
+/// the `kani_proofs` module doc comment below: `aggregate_raw` clones and
+/// extends a node's `statuses` on every recursive call, and CBMC does not
+/// know a `BTreeSet` only ever holds 0 or 1 element here -- it symbolically
+/// unwinds the *generic* B-tree `clone_subtree`/insert algorithm regardless,
+/// which is what stalled every harness. A bitmask has no such algorithm to
+/// unwind: `insert`/`contains`/`union` are single machine-word bitwise ops,
+/// `Clone` is `Copy` (no allocation, no loop), and there is nothing generic
+/// for CBMC to walk.
+///
+/// Semantically this is still exactly a set of `StatusKind`: no duplicates
+/// (a bit is either set or not), unioned via bitwise OR (order-independent,
+/// same as `BTreeSet::extend`), with a canonical (declaration-order)
+/// iteration order that -- unlike a hash-based set -- can never vary between
+/// two equal instances.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub struct StatusSet(u8);
+
+impl StatusSet {
+    /// The empty set.
+    pub const fn new() -> Self {
+        StatusSet(0)
+    }
+
+    /// Adds `status` to the set. A no-op if it is already present.
+    pub fn insert(&mut self, status: StatusKind) {
+        self.0 |= 1 << (status as u8);
+    }
+
+    /// Whether `status` is a member of this set.
+    pub fn contains(&self, status: StatusKind) -> bool {
+        self.0 & (1 << (status as u8)) != 0
+    }
+
+    /// Whether this set has no members.
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
+    /// The number of distinct `StatusKind`s in this set -- The-Ply-Spec.md §7's
+    /// `open_items` counts "flag instances", i.e. exactly this.
+    pub fn len(&self) -> usize {
+        self.0.count_ones() as usize
+    }
+
+    /// The union of two sets (every status in either).
+    pub fn union(&self, other: &StatusSet) -> StatusSet {
+        StatusSet(self.0 | other.0)
+    }
+
+    /// Iterates the set's members in declaration order (see
+    /// `ALL_STATUS_KINDS`) -- the display order tooltips/diagnostics need.
+    pub fn iter(&self) -> impl Iterator<Item = StatusKind> + '_ {
+        ALL_STATUS_KINDS
+            .iter()
+            .copied()
+            .filter(move |&k| self.contains(k))
+    }
+}
+
+impl Extend<StatusKind> for StatusSet {
+    fn extend<I: IntoIterator<Item = StatusKind>>(&mut self, iter: I) {
+        for status in iter {
+            self.insert(status);
+        }
+    }
+}
+
+impl FromIterator<StatusKind> for StatusSet {
+    fn from_iter<I: IntoIterator<Item = StatusKind>>(iter: I) -> Self {
+        let mut set = StatusSet::new();
+        set.extend(iter);
+        set
+    }
+}
+
+/// Prints like a set literal, e.g. `{Stale, Timeout}`, matching how
+/// `BTreeSet<StatusKind>`'s derived `Debug` used to render this field --
+/// this crate's tests/doc comments format status sets this way.
+impl std::fmt::Debug for StatusSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.iter()).finish()
+    }
+}
+
 /// One node of a verdict tree (The-Ply-Spec.md §7), reduced to exactly what
 /// [`aggregate`] needs: this node's own claim ([`NodeKind`]), its own status
 /// flags, its own conditional assumptions (if any), and its children.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerdictNode {
     pub kind: NodeKind,
-    pub statuses: BTreeSet<StatusKind>,
+    pub statuses: StatusSet,
     /// The-Ply-Spec.md §7 / D5: "`conditional` structurally carries its assumptions:
     /// a conditional status without an assumptions list is unrepresentable
     /// in the kernel, not validated against." `None` = not conditional;
@@ -121,7 +220,7 @@ pub struct AggregatedNode {
     pub evidence: Evidence,
     /// Union of this node's own `statuses` and every descendant's own
     /// `statuses` -- D6/§7: "statuses ... propagate upward as flags."
-    pub statuses: BTreeSet<StatusKind>,
+    pub statuses: StatusSet,
     /// Sorted, deduplicated union of the assumptions carried by every node
     /// in the subtree (self included) whose own [`VerdictNode::conditional`]
     /// is `Some(_)`. `None` exactly when no node in the subtree is
@@ -197,7 +296,7 @@ fn aggregate_raw(node: &VerdictNode) -> (Option<Evidence>, AggregatedNode) {
         NodeKind::Claimable(e) => Some(e),
         NodeKind::Container => None,
     };
-    let mut statuses: BTreeSet<StatusKind> = node.statuses.clone();
+    let mut statuses: StatusSet = node.statuses;
     let mut conditional = node.conditional.clone();
     let mut open_items = node.statuses.len() + if node.conditional.is_some() { 1 } else { 0 };
     let mut children = Vec::with_capacity(node.children.len());
@@ -205,7 +304,7 @@ fn aggregate_raw(node: &VerdictNode) -> (Option<Evidence>, AggregatedNode) {
     for child in &node.children {
         let (child_raw, child_agg) = aggregate_raw(child);
         raw_evidence = combine_claimable(raw_evidence, child_raw);
-        statuses.extend(child_agg.statuses.iter().copied());
+        statuses.extend(child_agg.statuses.iter());
         conditional = merge_conditional(conditional, child_agg.conditional.clone());
         open_items += child_agg.open_items;
         children.push(child_agg);
@@ -232,8 +331,8 @@ fn aggregate_raw(node: &VerdictNode) -> (Option<Evidence>, AggregatedNode) {
 /// Fold a verdict tree into its per-node aggregated results (The-Ply-Spec.md §7,
 /// D6). Pure: no I/O, no randomness, no shared mutable state -- calling it
 /// twice on equal inputs always yields equal outputs (standing obligation
-/// 4). Every collection used for aggregated state (`BTreeSet`, plus a
-/// sorted+deduplicated `Vec` for conditional assumptions) is
+/// 4). Every collection used for aggregated state (`StatusSet`'s bitmask,
+/// plus a sorted+deduplicated `Vec` for conditional assumptions) is
 /// order-independent by construction, specifically to avoid the classic
 /// footgun where a hash-based set's iteration order can differ between two
 /// otherwise-equal instances (Rust's `HashSet`/`HashMap` seed their hasher
@@ -250,7 +349,7 @@ mod tests {
     fn leaf(kind: NodeKind) -> VerdictNode {
         VerdictNode {
             kind,
-            statuses: BTreeSet::new(),
+            statuses: StatusSet::new(),
             conditional: None,
             children: Vec::new(),
         }
@@ -289,7 +388,7 @@ mod tests {
     fn a_container_with_one_claimable_child_reports_the_childs_evidence() {
         let tree = VerdictNode {
             kind: NodeKind::Container,
-            statuses: BTreeSet::new(),
+            statuses: StatusSet::new(),
             conditional: None,
             children: vec![leaf(NodeKind::Claimable(Evidence::Tested))],
         };
@@ -301,7 +400,7 @@ mod tests {
     fn a_violated_child_drags_a_proved_root_down_to_violation() {
         let tree = VerdictNode {
             kind: NodeKind::Container,
-            statuses: BTreeSet::new(),
+            statuses: StatusSet::new(),
             conditional: None,
             children: vec![
                 leaf(NodeKind::Claimable(Evidence::Violation)),
@@ -323,7 +422,7 @@ mod tests {
 
         let tree = VerdictNode {
             kind: NodeKind::Container,
-            statuses: BTreeSet::new(),
+            statuses: StatusSet::new(),
             conditional: None,
             children: vec![conditional_child],
         };
@@ -343,78 +442,109 @@ mod tests {
 /// subprocesses ... never linked as libraries"), so there is nothing here
 /// for plain cargo to fail to compile.
 ///
-/// ## Status: none of these three harnesses currently completes
+/// ## Status: `statuses` fixed the original stall; `conditional` is now the
+/// ## same problem one field over, and none of these three still verifies
 ///
-/// Kani 0.67.0 / CBMC 6.8.0 is installed and runnable (`cargo kani
-/// --harness <name>`), but every harness below fails to reach a verdict
-/// within many minutes -- confirmed independently for all three
-/// (`proof_worst_of_evidence`, `proof_conditional_carries_its_assumptions`,
-/// `proof_aggregate_is_deterministic`), each left running past the 3-6
-/// minute mark with no result, consistent with the original attempt that
-/// ran CBMC for over an hour before being killed. This is not a report of
-/// "not attempted" -- it was attempted, repeatedly, with the evidence below.
+/// **This is the second investigation of this module**, after the first
+/// (below, condensed) found that `VerdictNode::statuses:
+/// BTreeSet<StatusKind>` was the cause: CBMC does not know a shim only ever
+/// puts 0 or 1 element into a `BTreeSet`, so `node.statuses.clone()` /
+/// `.extend()` in `aggregate_raw` made it symbolically unwind the *generic*
+/// B-tree `clone_subtree` algorithm on every recursive call, regardless of
+/// actual content. Fix: `statuses` (on both `VerdictNode` and
+/// `AggregatedNode`) is now [`StatusSet`], a `u8` bitmask -- `Copy`, no
+/// heap, no generic collection algorithm to unwind; `insert`/`contains`/
+/// `union` are single bitwise ops. This is a behavior-preserving
+/// representation change, not a semantic one: `tests/enumeration.rs`'s
+/// 991,389-tree oracle comparison (unmodified in what it asserts) stays
+/// green, all six unit tests stay green, and the enumeration run got
+/// *faster* (~8.8s -> ~5.2s on this machine) purely from dropping the
+/// B-tree allocations.
 ///
-/// Root cause, isolated by bisecting the harness down to single operations
-/// (temporary diagnostic harnesses, since removed): it is **not** the
-/// symbolic surface `SymTree`/`SymLeaf` hands to `kani::any()`. That shim
-/// was already minimal before this investigation -- fixed-size optional
-/// fields (`has_child_a`/`has_child_b`, at most 2 children, no
-/// grandchildren), a single `bool` for "has the `Stale` status" instead of
-/// a symbolic `BTreeSet`, a single `bool` for "is conditional" paired with
-/// one *fixed, literal* assumption string instead of a symbolic `String`.
-/// None of `Vec<VerdictNode>`, `BTreeSet<StatusKind>`, or `Vec<String>` is
-/// ever symbolically *sized* or *content*-varied by the shim.
+/// That fix changed the outcome materially: all three harnesses below now
+/// **terminate** with a definitive CBMC verdict instead of hanging with no
+/// result at all. Measured just now, Kani 0.67.0 / CBMC 6.8.0, `--unwind 3
+/// --harness-timeout 300s` (`-Z unstable-options`), one run per harness:
 ///
-/// The actual cost is downstream, inside the production `aggregate_raw` it
-/// correctly still calls: `node.statuses.clone()` and
-/// `statuses.extend(...)` operate on a real `std::collections::BTreeSet`,
-/// and CBMC does not know (or exploit) that the shim only ever puts 0 or 1
-/// element in it -- it symbolically walks the *generic* B-tree clone
-/// algorithm regardless. A minimal isolation confirmed this precisely:
-/// - a single `Claimable` leaf with an always-empty `statuses` and no
-///   recursion verified in ~1.1s (2942 checks, 0 failures).
-/// - the same single leaf, but built through `SymLeaf::into_node` (which
-///   *may* insert one concrete `StatusKind::Stale`, gated by one symbolic
-///   `bool`), did not complete in over 2 minutes.
-/// - a root `Container` with exactly one `Claimable` child and *no*
-///   statuses/conditional at all (pure recursion, one extra
-///   `aggregate_raw` call, one extra empty-set `.clone()`/`.extend()`) also
-///   did not complete in over 5 minutes.
-/// - `cargo kani`'s own `--unwind 3`/`--unwind 2` trace
-///   (`--output-format old`, unbuffered) shows why: CBMC unwinds
-///   `<BTreeMap<K,V,A> as Clone>::clone::clone_subtree` and its internal
-///   node-array loop (`alloc/collections/btree/map.rs`) up to the given
-///   bound *every time* `aggregate_raw` clones a node's `statuses`, on
-///   every recursive call, regardless of how many elements are actually
-///   present. This is the generic B-tree clone algorithm, not our data.
+/// | harness | verdict | wall time |
+/// |---|---|---|
+/// | `proof_worst_of_evidence` | `VERIFICATION:- FAILED` (CBMC timed out) | 5:03 |
+/// | `proof_conditional_carries_its_assumptions` | `VERIFICATION:- FAILED` (CBMC timed out) | 5:03 |
+/// | `proof_aggregate_is_deterministic` | `VERIFICATION:- FAILED` (CBMC timed out) | 5:03 |
 ///
-/// Tried and ruled out as fixes, all on the minimal one-child reproducer:
-/// `--unwind 2` and `--unwind 3` (no material difference), `--object-bits
-/// 8` vs. the default 16 (no material difference), and the `kissat` solver
-/// in place of the default `cadical` (no material difference -- the stall
-/// is in CBMC's own goto-program symbolic execution / slicing before the
-/// SAT solver is the bottleneck, not in solving itself).
+/// None of the three *verifies* -- each one now runs to exactly the
+/// `--harness-timeout` bound and reports "CBMC timed out", which is a real,
+/// reproducible verdict rather than an indefinite hang, but it is still not
+/// a proof. **The trace shows the bottleneck moved, not disappeared**: with
+/// `statuses` no longer a `BTreeSet`, the CBMC trace for all three now
+/// stalls inside `core::slice::sort::shared::pivot::median3_rec::<String,
+/// ...>` and repeated `memcmp` unwinding on `std::string::String` -- i.e.
+/// `aggregate_raw`'s `if let Some(c) = &mut conditional { c.sort();
+/// c.dedup(); }`, which runs the *generic* `Vec<String>`/`String` sort and
+/// dedup algorithm on every node with a conditional, unconditional of how
+/// much content the shim actually put there. This is the exact same shape
+/// of problem `statuses` had -- a generic-collection algorithm CBMC must
+/// symbolically unwind regardless of the shim's real content -- just on
+/// `VerdictNode::conditional: Option<Vec<String>>` instead of `statuses`.
 ///
-/// This kernel's own types (`VerdictNode::statuses: BTreeSet<StatusKind>`,
-/// `VerdictNode::conditional: Option<Vec<String>>`,
-/// `VerdictNode::children: Vec<VerdictNode>`) are the actual obstacle, and
-/// this file does not touch them -- The-Ply-Spec.md D9 and this crate's own
-/// scope note both rule out reshaping the production model to appease one
-/// engine. The remaining avenue not attempted here, because it changes
-/// what is actually being verified and needs its own careful review, is
-/// Kani function stubbing (`-Z stubbing`, `#[kani::stub(...)]`) to replace
-/// `BTreeSet<StatusKind>`'s clone/extend with a semantically-equivalent
-/// small-set implementation for the duration of the proof only.
+/// This time the fix is not repeated: unlike `StatusKind` (6 fixed
+/// variants, naturally a bitmask), `conditional`'s payload is free-form
+/// assumption text (`"parser::parse fuzzed(256)"`-shaped strings The-Ply-Spec.md D5
+/// requires callers to be able to read back) -- there is no fixed-width
+/// encoding that preserves that without becoming exactly the kind of
+/// content-lossy placeholder CLAUDE.md's "never weaken a harness to make it
+/// pass" (and, more fundamentally, the newbie-bar rule that a status's
+/// explanation must be real text, not a count) rules out. Swapping it for
+/// e.g. an assumption *count* was the "next-cheapest representation"
+/// suggested going in, but was not applied here: it would change what the
+/// production type -- and therefore what a passing proof -- actually means,
+/// not just what the shim exercises, since `aggregate_raw`'s own
+/// `merge_conditional`/`sort`/`dedup` runs against the real field either
+/// way. That is exactly the "design smell to raise, not route around" the
+/// project's own working notes call for.
 ///
 /// What *is* proved today, exhaustively rather than symbolically, is
 /// `tests/enumeration.rs`: all four standing obligations hold over 991,389
-/// concretely-enumerated small trees in ~2s under plain `cargo test`. The
+/// concretely-enumerated small trees in ~5.2s under plain `cargo test`. The
 /// harnesses below are kept -- not deleted, not weakened to something that
 /// would pass trivially -- as an accurate, `#[kani::unwind]`-documented
-/// statement of what a symbolic proof of the real `aggregate` would need
-/// to check; they simply do not terminate against this kernel's types with
-/// this Kani/CBMC version today. Reproduce with, e.g.:
-/// `cargo kani --harness proof_worst_of_evidence --unwind 3`.
+/// statement of what a symbolic proof of the real `aggregate` would need to
+/// check; they simply do not terminate (within the bound above) against
+/// this kernel's `conditional` type with this Kani/CBMC version today.
+/// Reproduce with, e.g.:
+/// `cargo kani -Z unstable-options --harness proof_worst_of_evidence --unwind 3 --harness-timeout 300s`.
+///
+/// What to try next, not attempted here because it needs its own careful
+/// review of what it does to the actual verified property: Kani function
+/// stubbing (`-Z stubbing`, `#[kani::stub(...)]`) to replace
+/// `Vec<String>`/`String`'s sort, dedup, and comparison with a
+/// semantically-equivalent bounded implementation *for the duration of the
+/// proof only*, leaving the production `conditional: Option<Vec<String>>`
+/// field exactly as-is. That is a proof-harness-local change (same spirit
+/// as the existing `SymTree`/`SymLeaf` shim), not a production-type change,
+/// so it does not carry the content-loss problem the count idea above does
+/// -- but it has not been attempted or measured, so no claim is made about
+/// whether it would actually terminate.
+///
+/// ### First investigation (superseded above, kept for the record)
+///
+/// The original stall (all three harnesses run past an hour with **no**
+/// verdict, not even a timeout) was root-caused to `VerdictNode::statuses:
+/// BTreeSet<StatusKind>` by bisecting to single operations: a single
+/// `Claimable` leaf with an always-empty `statuses` and no recursion
+/// verified in ~1.1s (2942 checks, 0 failures); the same leaf built through
+/// `SymLeaf::into_node` (which may insert one concrete `StatusKind::Stale`,
+/// gated by one symbolic `bool`) did not complete in over 2 minutes; a root
+/// `Container` with exactly one `Claimable` child and no statuses/
+/// conditional at all did not complete in over 5 minutes. `--unwind 3`'s
+/// own trace showed why: CBMC unwound `<BTreeMap<K,V,A> as
+/// Clone>::clone::clone_subtree` on every `aggregate_raw` call regardless
+/// of actual set size. `--unwind 2`/`--unwind 3`, `--object-bits 8` vs. the
+/// default 16, and the `kissat` solver in place of `cadical` were all tried
+/// and made no material difference (the stall is in CBMC's own symbolic
+/// execution/slicing, not SAT solving). See the module's git history for
+/// the full original write-up; the `StatusSet` section above is now the
+/// current, accurate status.
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
@@ -442,7 +572,7 @@ mod kani_proofs {
         }
 
         fn into_node(self, children: Vec<VerdictNode>) -> VerdictNode {
-            let mut statuses = BTreeSet::new();
+            let mut statuses = StatusSet::new();
             if self.other_status {
                 statuses.insert(StatusKind::Stale);
             }

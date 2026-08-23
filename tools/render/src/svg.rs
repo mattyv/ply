@@ -14,7 +14,7 @@ use ply_model::{
     Check, Component, Deny, Document, Edge, EdgeKind, FnClaim, parse_check, parse_deny, parse_edge,
 };
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 // ---- layout constants -----------------------------------------------------
 
@@ -461,7 +461,7 @@ fn component_verdict_node(comp: &Component) -> VerdictNode {
         .values()
         .map(|fc| VerdictNode {
             kind: NodeKind::Claimable(fn_declared_ceiling(fc)),
-            statuses: BTreeSet::new(),
+            statuses: ply_kernel::StatusSet::new(),
             conditional: None,
             children: Vec::new(),
         })
@@ -469,7 +469,7 @@ fn component_verdict_node(comp: &Component) -> VerdictNode {
     children.extend(comp.components.values().map(component_verdict_node));
     VerdictNode {
         kind: NodeKind::Container,
-        statuses: BTreeSet::new(),
+        statuses: ply_kernel::StatusSet::new(),
         conditional: None,
         children,
     }

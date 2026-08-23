@@ -45,9 +45,14 @@
 - [ ] Kani harnesses do not terminate (e46e4a9): CBMC unwinds BTreeMap's generic clone
       on every recursive `aggregate_raw` call. Kani's docs confirm heap collections
       blow up the encoding AND that generic std methods cannot be stubbed — so the
-      documented workaround does not apply directly. IN FLIGHT: replacing the
-      BTreeSet of status flags with a bitmask (7 variants never needed a B-tree), with
-      the 991k-tree enumeration as the behaviour-preserving safety net.
+      documented workaround does not apply directly. ATTEMPT 1 (done): statuses are
+      now a `StatusSet` bitmask instead of a BTreeSet — behaviour identical (991k-tree
+      enumeration green, untouched assertions) and 40% faster, and Kani moved from an
+      indefinite hang to a deterministic timeout at 5 min. Still no verdict: CBMC now
+      stalls one field over, sorting/dedup'ing `Option<Vec<String>>` assumptions.
+      Deliberately NOT collapsing assumptions to a count — D5 and the newbie-bar rule
+      need callers to read them verbatim, so that would narrow what a passing proof
+      means. Untried: `-Z stubbing` of the String sort/compare for the harness only.
       **Bigger implication for the project:** Ply routes `bounded` checks to Kani; if
       Kani struggles this much with std collections in a 300-line pure module, the
       supported-signature story (§5.4b) is optimistic. This is exactly the kind of
