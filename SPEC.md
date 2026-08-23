@@ -492,6 +492,16 @@ it stays visually depictable (§7.1) and clearly above the floor. Attempting to 
 the floor itself means building a verification language, the abandoned path this project
 exists to avoid (§1).
 
+The strata make the system's three kinds of *unspecified* distinct. The floor is
+permanently unspecifiable, by design. Below the watermark nothing is owed either: the
+body is not declared, it is verified against the contract above it. An `unresolved!`
+marker (§5.6) is different in kind: specification that is **owed but missing** — a
+tracked, numbered hole in the declarative stratum, expected to close. It sits physically
+in a body, but the missing decision usually belongs above the mark (the answer becomes a
+contract clause, an example, or a branch condition). This is why §5.6 caps such a fn at
+check `test`: with a decision unresolved, the contract cannot be complete, so the
+watermark is not yet a promise worth proving against.
+
 ## 8. Result JSON
 
 Every command emits one envelope:
