@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, claude/ply-lang-spec-04lvrr]
+  pull_request:
+    branches: [main, claude/ply-lang-spec-04lvrr]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --release -- -D warnings
+
+      - name: cargo test --release
+        run: cargo test --release
+
+      - name: ply-check vetting scenarios
+        run: |
+          cargo run -q -p ply-check -- ../vetting/001-spsc-disruptor.ply.yaml
+          cargo run -q -p ply-check -- ../vetting/002-ingest-pipeline.ply.yaml
+
+      - name: rendered-artifact drift check
+        run: |
+          cargo run -q -p ply-render -- ../vetting/001-spsc-disruptor.ply.yaml -o ../vetting/001-spsc-disruptor.svg
+          cargo run -q -p ply-render -- ../vetting/002-ingest-pipeline.ply.yaml -o ../vetting/002-ingest-pipeline.svg
+          git diff --exit-code ../vetting

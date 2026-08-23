@@ -7,7 +7,7 @@
 //! architecture rules (§5.2, §5.3) need real code behind the anchors and
 //! are out of scope.
 
-use ply_model::{parse_check, parse_deny, parse_edge, Check, Component, Document};
+use ply_model::{Check, Component, Document, parse_check, parse_deny, parse_edge};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,12 +85,18 @@ fn walk_component(
     unresolved_ids: &mut Vec<(u64, String)>,
     leaf_index: &mut HashMap<String, Vec<String>>,
 ) {
-    leaf_index.entry(leaf.to_string()).or_default().push(qualified.to_string());
+    leaf_index
+        .entry(leaf.to_string())
+        .or_default()
+        .push(qualified.to_string());
 
     if !is_valid_path_form(&c.anchor) {
         out.push(diag(
             "E0304",
-            format!("unsupported path form {:?} (component {qualified}, anchor)", c.anchor),
+            format!(
+                "unsupported path form {:?} (component {qualified}, anchor)",
+                c.anchor
+            ),
         ));
     }
     let location = format!("component {qualified}");
@@ -115,7 +121,14 @@ fn walk_component(
 
     for (child_name, nested) in &c.components {
         let nested_qualified = format!("{qualified}.{child_name}");
-        walk_component(&nested_qualified, child_name, nested, out, unresolved_ids, leaf_index);
+        walk_component(
+            &nested_qualified,
+            child_name,
+            nested,
+            out,
+            unresolved_ids,
+            leaf_index,
+        );
     }
 }
 
@@ -126,22 +139,26 @@ fn walk_component(
 /// (no layout, no coordinates) rather than depending on `ply-render` for
 /// it — the ambiguity rule is a naming fact about the document, not a
 /// drawing concern.
-fn check_token_ambiguity(token: &str, leaf_index: &HashMap<String, Vec<String>>, out: &mut Vec<Diagnostic>) {
+fn check_token_ambiguity(
+    token: &str,
+    leaf_index: &HashMap<String, Vec<String>>,
+    out: &mut Vec<Diagnostic>,
+) {
     if token == "*" || token.contains('.') {
         return;
     }
-    if let Some(paths) = leaf_index.get(token) {
-        if paths.len() > 1 {
-            let mut candidates = paths.clone();
-            candidates.sort();
-            out.push(diag(
+    if let Some(paths) = leaf_index.get(token)
+        && paths.len() > 1
+    {
+        let mut candidates = paths.clone();
+        candidates.sort();
+        out.push(diag(
                 "E0206",
                 format!(
                     "ambiguous component reference {token:?}: matches {} — use the dotted qualified form (§5.1a rule 6)",
                     candidates.join(", ")
                 ),
             ));
-        }
     }
 }
 
@@ -151,7 +168,14 @@ pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
     let mut leaf_index: HashMap<String, Vec<String>> = HashMap::new();
 
     for (name, c) in &doc.components {
-        walk_component(name, name, c, &mut out, &mut unresolved_ids, &mut leaf_index);
+        walk_component(
+            name,
+            name,
+            c,
+            &mut out,
+            &mut unresolved_ids,
+            &mut leaf_index,
+        );
     }
 
     for e in &doc.edges {

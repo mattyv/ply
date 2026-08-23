@@ -31,7 +31,9 @@ fn clean_render_fixtures_produce_no_diagnostics() {
 fn mutate_without_test_or_fuzz_is_e0504() {
     let diags = diagnostics_for("tests/fixtures/mutate_without_test_or_fuzz.ply.yaml");
     assert!(
-        diags.iter().any(|d| d.code == "E0504" && d.message.contains("fn slot")),
+        diags
+            .iter()
+            .any(|d| d.code == "E0504" && d.message.contains("fn slot")),
         "expected E0504 naming `fn slot`, got: {diags:?}"
     );
 }
@@ -40,7 +42,9 @@ fn mutate_without_test_or_fuzz_is_e0504() {
 fn bad_check_syntax_is_e0203() {
     let diags = diagnostics_for("tests/fixtures/bad_check_syntax.ply.yaml");
     assert!(
-        diags.iter().any(|d| d.code == "E0203" && d.message.contains("bounded(0)")),
+        diags
+            .iter()
+            .any(|d| d.code == "E0203" && d.message.contains("bounded(0)")),
         "expected E0203 naming the out-of-range check string, got: {diags:?}"
     );
 }
@@ -58,7 +62,9 @@ fn bad_edge_syntax_is_e0203() {
 fn bad_path_form_is_e0304() {
     let diags = diagnostics_for("tests/fixtures/bad_path_form.ply.yaml");
     assert!(
-        diags.iter().any(|d| d.code == "E0304" && d.message.contains("Foo<T>")),
+        diags
+            .iter()
+            .any(|d| d.code == "E0304" && d.message.contains("Foo<T>")),
         "expected E0304 naming the generic anchor, got: {diags:?}"
     );
 }
@@ -67,7 +73,9 @@ fn bad_path_form_is_e0304() {
 fn duplicate_unresolved_id_is_e0205() {
     let diags = diagnostics_for("tests/fixtures/duplicate_unresolved_id.ply.yaml");
     assert!(
-        diags.iter().any(|d| d.code == "E0205" && d.message.contains('5')),
+        diags
+            .iter()
+            .any(|d| d.code == "E0205" && d.message.contains('5')),
         "expected E0205 naming id 5, got: {diags:?}"
     );
 }
@@ -79,7 +87,9 @@ fn duplicate_unresolved_id_is_e0205() {
 fn ambiguous_bare_reference_is_e0206() {
     let diags = diagnostics_for("../render/tests/fixtures/ambiguous_ref.ply.yaml");
     assert!(
-        diags.iter().any(|d| d.code == "E0206" && d.message.contains("shared")),
+        diags
+            .iter()
+            .any(|d| d.code == "E0206" && d.message.contains("shared")),
         "expected E0206 naming the ambiguous token, got: {diags:?}"
     );
 }
