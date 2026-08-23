@@ -872,18 +872,26 @@ fn every_drawn_item_resolves_a_tooltip() {
 mod declared_ceiling {
     use super::*;
     use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
-    use ply_render::model::{Check, Component, FnClaim, parse_check};
+    use ply_render::model::{
+        Check, Component, FnClaim, InheritedChecks, component_default_checks, effective_checks,
+        parse_check,
+    };
     use ply_render::svg::{RenderOptions, render_svg_with_options};
 
-    /// The strongest check *kind* a fn declares (The-Ply-Spec.md §7.1: `test`
-    /// -> tested, `fuzz` -> fuzzed, `bounded` -> bounded, `prove` -> proved;
-    /// `mutate` and an unparseable string contribute nothing). Deliberately
-    /// re-derived here from `parse_check`, not imported from the renderer,
-    /// so this is a real second opinion rather than the same code asserting
-    /// against itself.
-    fn fn_ceiling(fc: &FnClaim) -> Evidence {
+    /// The strongest check *kind* one fn's *effective* checks list declares
+    /// (The-Ply-Spec.md §7.1: `test` -> tested, `fuzz` -> fuzzed, `bounded`
+    /// -> bounded, `prove` -> proved; `mutate` and an unparseable string
+    /// contribute nothing). Deliberately re-derived here from `parse_check`,
+    /// not imported from the renderer, so this is a real second opinion
+    /// rather than the same code asserting against itself — the effective
+    /// list itself comes from `ply_model::effective_checks`, the single
+    /// shared resolution of §5.1's component-default inheritance rule that
+    /// both `ply-check` and this renderer must agree with (re-deriving that
+    /// resolution independently here would just be a second copy of the
+    /// same rule to keep in sync).
+    fn fn_ceiling(fc: &FnClaim, inherited: Option<InheritedChecks>) -> Evidence {
         let mut best: Option<Evidence> = None;
-        for c in &fc.checks {
+        for c in effective_checks(fc, inherited) {
             let kind = match parse_check(c) {
                 Ok(Check::Test) => Some(Evidence::Tested),
                 Ok(Check::Fuzz(_)) => Some(Evidence::Fuzzed),
@@ -898,18 +906,27 @@ mod declared_ceiling {
         best.unwrap_or(Evidence::Unclaimed)
     }
 
-    fn verdict_node(comp: &Component) -> VerdictNode {
+    fn verdict_node<'a>(
+        name: &'a str,
+        comp: &'a Component,
+        inherited: Option<InheritedChecks<'a>>,
+    ) -> VerdictNode {
+        let this_default = component_default_checks(name, comp, inherited);
         let mut children: Vec<VerdictNode> = comp
             .fns
             .values()
             .map(|fc| VerdictNode {
-                kind: NodeKind::Claimable(fn_ceiling(fc)),
+                kind: NodeKind::Claimable(fn_ceiling(fc, this_default)),
                 statuses: ply_kernel::StatusSet::new(),
                 conditional: None,
                 children: Vec::new(),
             })
             .collect();
-        children.extend(comp.components.values().map(verdict_node));
+        children.extend(
+            comp.components
+                .iter()
+                .map(|(cname, c)| verdict_node(cname, c, this_default)),
+        );
         VerdictNode {
             kind: NodeKind::Container,
             statuses: ply_kernel::StatusSet::new(),
@@ -921,10 +938,15 @@ mod declared_ceiling {
     /// This component's own ceiling, then each nested component's,
     /// recursively — the same preorder the renderer draws component boxes
     /// in (a box is emitted before its own nested children's boxes).
-    fn expected_ceilings(comp: &Component) -> Vec<Evidence> {
-        let mut out = vec![aggregate(&verdict_node(comp)).evidence];
-        for c in comp.components.values() {
-            out.extend(expected_ceilings(c));
+    fn expected_ceilings<'a>(
+        name: &'a str,
+        comp: &'a Component,
+        inherited: Option<InheritedChecks<'a>>,
+    ) -> Vec<Evidence> {
+        let mut out = vec![aggregate(&verdict_node(name, comp, inherited)).evidence];
+        let this_default = component_default_checks(name, comp, inherited);
+        for (cname, c) in &comp.components {
+            out.extend(expected_ceilings(cname, c, this_default));
         }
         out
     }
@@ -968,14 +990,20 @@ mod declared_ceiling {
             "../../vetting/003-trading-system.ply.yaml",
             "tests/fixtures/full.ply.yaml",
             "tests/fixtures/qualified_refs.ply.yaml",
+            // §5.1 checks inheritance: `pricing` declares a component-level
+            // default that some fns inherit, some override, and one nested
+            // component re-shadows — this is what pins the ceiling fill (and
+            // the depth-1 collapsed fill below) to the real inherited
+            // evidence rather than silently reading `unclaimed`.
+            "tests/fixtures/checks_inheritance.ply.yaml",
         ] {
             let yaml = std::fs::read_to_string(fixture).unwrap();
             let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
             let svg = render_svg(&doc).unwrap_or_else(|e| panic!("{fixture}: {e}"));
 
             let mut expected: Vec<Evidence> = Vec::new();
-            for c in doc.components.values() {
-                expected.extend(expected_ceilings(c));
+            for (name, c) in &doc.components {
+                expected.extend(expected_ceilings(name, c, None));
             }
             let expected_classes: Vec<String> = expected
                 .iter()
@@ -1005,9 +1033,10 @@ mod declared_ceiling {
             .unwrap_or_else(|e| panic!("{fixture} --depth 1: {e}"));
             let expected_depth1: Vec<String> = doc
                 .components
-                .values()
-                .map(|c| {
-                    ply_render::svg::ceiling_class(aggregate(&verdict_node(c)).evidence).to_string()
+                .iter()
+                .map(|(name, c)| {
+                    ply_render::svg::ceiling_class(aggregate(&verdict_node(name, c, None)).evidence)
+                        .to_string()
                 })
                 .collect();
             assert_eq!(
@@ -1030,7 +1059,8 @@ mod declared_ceiling {
     fn trading_system_ceilings_have_the_expected_relative_depth() {
         let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
         let doc = parse_document(&yaml).unwrap();
-        let ceiling_of = |name: &str| aggregate(&verdict_node(&doc.components[name])).evidence;
+        let ceiling_of =
+            |name: &str| aggregate(&verdict_node(name, &doc.components[name], None)).evidence;
         assert_eq!(ceiling_of("ingest"), Evidence::Unclaimed);
         assert_eq!(ceiling_of("strategy"), Evidence::Tested);
         assert_eq!(ceiling_of("risk"), Evidence::Bounded);
@@ -1191,6 +1221,118 @@ mod contract_mark {
             .unwrap();
         assert!(tooltip.contains("requires: order.qty > 0 && order.px > 0"));
         assert!(tooltip.contains("ensures: |r| r.is_err() == (order.qty > limits.max_qty)"));
+    }
+}
+
+/// §5.1 "checks: [bounded(2)] # optional default checks for all fns in
+/// scope": a fn with no `checks` of its own must draw and describe the
+/// *inherited* checks — the glyph row on its chip, and its tooltip — not
+/// render as if it declared nothing. `tests/fixtures/checks_inheritance.
+/// ply.yaml` exercises every shape the spec names: a direct default use, a
+/// fn-level override, a nested component with its own default, and a
+/// nested component without one (skipping to the grandparent's).
+mod checks_inheritance {
+    use super::*;
+
+    fn fn_chip<'a>(doc: &'a roxmltree::Document, name: &str) -> roxmltree::Node<'a, 'a> {
+        doc.descendants()
+            .find(|n| {
+                n.tag_name().name() == "g"
+                    && n.attribute("class") == Some("fn-chip")
+                    && n.attribute("data-fn") == Some(name)
+            })
+            .unwrap_or_else(|| panic!("no fn-chip named {name:?} found"))
+    }
+
+    fn glyph_text(chip: roxmltree::Node) -> String {
+        chip.children()
+            .find(|c| c.attribute("class") == Some("fn-checks"))
+            .and_then(|t| t.text())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn tooltip_text(chip: roxmltree::Node) -> String {
+        chip.children()
+            .find(|c| c.tag_name().name() == "title")
+            .and_then(|t| t.text())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The glyph row (§7.1 "checks list -> glyph row on the fn chip") must
+    /// reflect the *effective* list — own if declared, else inherited —
+    /// for every shape the fixture exercises.
+    #[test]
+    fn glyph_row_shows_the_effective_checks_for_every_inheritance_shape() {
+        let svg = render_fixture("tests/fixtures/checks_inheritance.ply.yaml");
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+
+        // `quote` has no checks of its own -> inherits `pricing`'s bounded(2).
+        assert_eq!(glyph_text(fn_chip(&doc, "quote")), "B2");
+        // `book` declares its own `[test]`, which wins entirely.
+        assert_eq!(glyph_text(fn_chip(&doc, "book")), "T");
+        // `discount` has no checks of its own -> inherits `curves`'s
+        // fuzz(64), not the grandparent `pricing`'s bounded(2) — nearest
+        // ancestor wins.
+        assert_eq!(glyph_text(fn_chip(&doc, "discount")), "F64");
+        // `delta` has no checks of its own, and `greeks` declares no
+        // default of its own either -> skips up to the grandparent
+        // `pricing`'s bounded(2).
+        assert_eq!(glyph_text(fn_chip(&doc, "delta")), "B2");
+    }
+
+    /// The tooltip must make the inheritance visible to a newbie: which
+    /// component the check came from, and what the check itself means —
+    /// exact wording, since CLAUDE.md pins user-facing sentences like code.
+    #[test]
+    fn tooltip_names_the_inherited_component_and_the_check() {
+        let svg = render_fixture("tests/fixtures/checks_inheritance.ply.yaml");
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+
+        let quote_tip = tooltip_text(fn_chip(&doc, "quote"));
+        assert!(
+            quote_tip.contains(
+                "inherited from component `pricing`: bounded(2) — proves the contract for \
+                 every input, unrolling loops at most 2 times"
+            ),
+            "quote's tooltip should name the inherited check and its source: {quote_tip:?}"
+        );
+        // An inherited fn is not "unclaimed" — the fallback line must not
+        // appear once inheritance actually supplies a check.
+        assert!(
+            !quote_tip.contains("no checks declared"),
+            "quote inherits a check, so it must not read as unclaimed: {quote_tip:?}"
+        );
+
+        // Nested: `discount` inherits from its own parent `curves`, not the
+        // grandparent `pricing` — the tooltip must name the nearer one.
+        let discount_tip = tooltip_text(fn_chip(&doc, "discount"));
+        assert!(
+            discount_tip.contains(
+                "inherited from component `curves`: fuzz(64) — runs the function on 64 random \
+                 inputs, checking the contract on each"
+            ),
+            "discount's tooltip should name curves, not pricing: {discount_tip:?}"
+        );
+
+        // Nested, skipping a level: `delta`'s own component `greeks`
+        // declares no default, so it inherits the grandparent `pricing`'s.
+        let delta_tip = tooltip_text(fn_chip(&doc, "delta"));
+        assert!(
+            delta_tip.contains(
+                "inherited from component `pricing`: bounded(2) — proves the contract for \
+                 every input, unrolling loops at most 2 times"
+            ),
+            "delta's tooltip should skip greeks (no default) up to pricing: {delta_tip:?}"
+        );
+
+        // `book` declares its own checks — no inheritance line at all.
+        let book_tip = tooltip_text(fn_chip(&doc, "book"));
+        assert!(
+            !book_tip.contains("inherited from component"),
+            "book declares its own checks and must not claim to inherit anything: {book_tip:?}"
+        );
     }
 }
 

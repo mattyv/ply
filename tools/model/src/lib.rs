@@ -76,6 +76,63 @@ pub struct FnClaim {
     pub unresolved: Vec<UnresolvedEntry>,
 }
 
+/// §5.1 `checks: [bounded(2)] # optional default checks for all fns in
+/// scope`: the default a component declares for any fn in its subtree that
+/// has none of its own. Carries the component's own (unqualified) name
+/// alongside the list purely so a caller can name the source in a
+/// diagnostic or tooltip — [`effective_checks`] itself compares nothing but
+/// the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InheritedChecks<'a> {
+    pub from_component: &'a str,
+    pub checks: &'a [String],
+}
+
+/// §5.1: the checks list that actually governs one fn.
+///
+/// A fn's own non-empty `checks` wins *entirely* — there is no merge with
+/// anything declared above it. In particular, D12's "`mutate` requires a
+/// `test`/`fuzz` entry in the same list" is checked against this effective
+/// list: an inherited `[test]` does not save a fn-level `[mutate]]` that
+/// declares no `test`/`fuzz` of its own, because the fn's own list replaces
+/// the inherited one rather than joining it.
+///
+/// A fn with no `checks` of its own inherits `inherited` — the nearest
+/// ancestor component's own non-empty `checks` (its own component first,
+/// then that component's parent, and so on up, see
+/// [`component_default_checks`]) — or nothing at all if no ancestor ever
+/// declared one, in which case the fn stays unclaimed exactly as it always
+/// has.
+pub fn effective_checks<'a>(
+    fc: &'a FnClaim,
+    inherited: Option<InheritedChecks<'a>>,
+) -> &'a [String] {
+    if !fc.checks.is_empty() {
+        &fc.checks
+    } else {
+        inherited.map_or(&[], |d| d.checks)
+    }
+}
+
+/// The default that `comp`'s own fns — and any descendant component that
+/// declares none of its own — inherit: `comp`'s own `checks`, tagged with
+/// its `name`, if non-empty; otherwise whatever `comp` itself inherited from
+/// further up (which may itself be `None`, all the way to the root).
+pub fn component_default_checks<'a>(
+    name: &'a str,
+    comp: &'a Component,
+    inherited: Option<InheritedChecks<'a>>,
+) -> Option<InheritedChecks<'a>> {
+    if comp.checks.is_empty() {
+        inherited
+    } else {
+        Some(InheritedChecks {
+            from_component: name,
+            checks: &comp.checks,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TrustedClaim {
@@ -410,5 +467,140 @@ mod tests {
         assert_eq!(d.from, "a");
         assert_eq!(d.to, "b");
         assert!(d.except.is_empty());
+    }
+
+    /// §5.1 checks inheritance: a fn with no `checks` of its own inherits
+    /// the nearest ancestor component's non-empty default.
+    #[test]
+    fn fn_with_no_checks_inherits_the_component_default() {
+        let doc = parse_document(
+            r#"
+ply: 1
+components:
+  pricing:
+    anchor: app::pricing
+    checks: [bounded(2)]
+    fns:
+      quote:
+        checks: []
+"#,
+        )
+        .unwrap();
+        let pricing = &doc.components["pricing"];
+        let default = component_default_checks("pricing", pricing, None);
+        let fc = &pricing.fns["quote"];
+        assert_eq!(
+            effective_checks(fc, default),
+            &["bounded(2)".to_string()][..]
+        );
+    }
+
+    /// A fn's own non-empty `checks` wins entirely — no merge with the
+    /// component default.
+    #[test]
+    fn fn_with_own_checks_overrides_the_component_default_entirely() {
+        let doc = parse_document(
+            r#"
+ply: 1
+components:
+  pricing:
+    anchor: app::pricing
+    checks: [bounded(2)]
+    fns:
+      quote:
+        checks: [test]
+"#,
+        )
+        .unwrap();
+        let pricing = &doc.components["pricing"];
+        let default = component_default_checks("pricing", pricing, None);
+        let fc = &pricing.fns["quote"];
+        assert_eq!(effective_checks(fc, default), &["test".to_string()][..]);
+    }
+
+    /// A fn with no checks and no ancestor default anywhere in the chain
+    /// stays unclaimed (empty effective list).
+    #[test]
+    fn fn_with_no_checks_and_no_ancestor_default_stays_unclaimed() {
+        let doc = parse_document(
+            r#"
+ply: 1
+components:
+  pricing:
+    anchor: app::pricing
+    fns:
+      quote:
+        checks: []
+"#,
+        )
+        .unwrap();
+        let pricing = &doc.components["pricing"];
+        let default = component_default_checks("pricing", pricing, None);
+        let fc = &pricing.fns["quote"];
+        assert!(effective_checks(fc, default).is_empty());
+    }
+
+    /// Nesting: a grandchild fn with no checks and no default of its own
+    /// component skips over it to the grandparent's default (nearest
+    /// *non-empty* ancestor, not merely the immediate parent).
+    #[test]
+    fn nested_component_without_its_own_default_inherits_from_grandparent() {
+        let doc = parse_document(
+            r#"
+ply: 1
+components:
+  pricing:
+    anchor: app::pricing
+    checks: [bounded(2)]
+    components:
+      curves:
+        anchor: app::pricing::curves
+        fns:
+          discount:
+            checks: []
+"#,
+        )
+        .unwrap();
+        let pricing = &doc.components["pricing"];
+        let pricing_default = component_default_checks("pricing", pricing, None);
+        let curves = &pricing.components["curves"];
+        let curves_default = component_default_checks("curves", curves, pricing_default);
+        let fc = &curves.fns["discount"];
+        assert_eq!(
+            effective_checks(fc, curves_default),
+            &["bounded(2)".to_string()][..]
+        );
+    }
+
+    /// Nesting: a nested component that declares its own non-empty default
+    /// shadows the grandparent's — nearest ancestor wins, not the topmost.
+    #[test]
+    fn nested_component_with_its_own_default_shadows_the_grandparent() {
+        let doc = parse_document(
+            r#"
+ply: 1
+components:
+  pricing:
+    anchor: app::pricing
+    checks: [bounded(2)]
+    components:
+      curves:
+        anchor: app::pricing::curves
+        checks: [fuzz(64)]
+        fns:
+          discount:
+            checks: []
+"#,
+        )
+        .unwrap();
+        let pricing = &doc.components["pricing"];
+        let pricing_default = component_default_checks("pricing", pricing, None);
+        let curves = &pricing.components["curves"];
+        let curves_default = component_default_checks("curves", curves, pricing_default);
+        let fc = &curves.fns["discount"];
+        assert_eq!(
+            effective_checks(fc, curves_default),
+            &["fuzz(64)".to_string()][..]
+        );
     }
 }

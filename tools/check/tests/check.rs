@@ -1,7 +1,7 @@
 //! `ply-check`'s document-local rules (The-Ply-Spec.md §5.1a, §5.1, §5.6) — the
 //! subset of `cargo ply check` that needs no anchored Rust code.
 
-use ply_check::run_checks;
+use ply_check::{Target, run_checks};
 use ply_model::parse_document;
 
 fn diagnostics_for(path: &str) -> Vec<ply_check::Diagnostic> {
@@ -21,6 +21,10 @@ fn clean_render_fixtures_produce_no_diagnostics() {
         "../../vetting/001-spsc-disruptor.ply.yaml",
         "../render/tests/fixtures/full.ply.yaml",
         "../render/tests/fixtures/qualified_refs.ply.yaml",
+        // §5.1 checks inheritance: every fn here either declares its own
+        // checks or inherits a *valid* ancestor default, so nothing about
+        // resolving the inheritance itself should raise a diagnostic.
+        "../render/tests/fixtures/checks_inheritance.ply.yaml",
     ] {
         let diags = diagnostics_for(path);
         assert!(diags.is_empty(), "{path} should be clean, got: {diags:?}");
@@ -44,6 +48,78 @@ fn mutate_without_test_or_fuzz_is_e0504() {
         "mutate has nothing to catch its planted bugs: add a test or fuzz check beside it — \
          mutation testing works by deliberately breaking the code and checking those checks \
          notice (fn slot)"
+    );
+}
+
+/// §5.1 checks inheritance: a fn with no `checks` of its own inherits an
+/// ancestor component's default (§5.1's "optional default checks for all
+/// fns in scope"). `E0504` must be evaluated against that *effective* list,
+/// not the fn's own (empty) one — otherwise a broken component default
+/// (`checks: [mutate]` with no `test`/`fuzz` beside it) silently reaches
+/// every inheriting fn with no warning at all.
+#[test]
+fn mutate_in_an_inherited_default_is_e0504_on_the_inheriting_fn() {
+    let diags = diagnostics_for("tests/fixtures/mutate_inherited_default_is_broken.ply.yaml");
+    let fn_diag = diags
+        .iter()
+        .find(|d| {
+            d.code == "E0504"
+                && d.target
+                    == Target::Fn {
+                        component_path: "audit".to_string(),
+                        fn_name: "verify".to_string(),
+                    }
+        })
+        .unwrap_or_else(|| panic!("expected an E0504 on fn verify, got: {diags:?}"));
+    assert_eq!(
+        fn_diag.message,
+        "mutate has nothing to catch its planted bugs: add a test or fuzz check beside it — \
+         mutation testing works by deliberately breaking the code and checking those checks \
+         notice (fn verify, checks inherited from component audit)"
+    );
+    // The component's own declared default is independently broken too —
+    // that diagnostic still fires at the component, unchanged by this fix.
+    let component_diag = diags
+        .iter()
+        .find(|d| d.code == "E0504" && d.target == Target::Component("audit".to_string()))
+        .unwrap_or_else(|| panic!("expected an E0504 on component audit, got: {diags:?}"));
+    assert_eq!(
+        component_diag.message,
+        "mutate has nothing to catch its planted bugs: add a test or fuzz check beside it — \
+         mutation testing works by deliberately breaking the code and checking those checks \
+         notice (component audit)"
+    );
+}
+
+/// The override rule cuts the other way too: a fn's own non-empty `checks`
+/// replaces the inherited default entirely, so an inherited `test` does NOT
+/// rescue a fn-level `[mutate]` that declares no `test`/`fuzz` of its own.
+#[test]
+fn fn_level_mutate_is_e0504_even_when_the_component_default_has_test() {
+    let diags = diagnostics_for("tests/fixtures/mutate_own_list_ignores_inherited_test.ply.yaml");
+    let d = diags
+        .iter()
+        .find(|d| d.code == "E0504")
+        .expect("expected an E0504 diagnostic");
+    assert_eq!(
+        d.target,
+        Target::Fn {
+            component_path: "audit".to_string(),
+            fn_name: "verify".to_string(),
+        }
+    );
+    assert_eq!(
+        d.message,
+        "mutate has nothing to catch its planted bugs: add a test or fuzz check beside it — \
+         mutation testing works by deliberately breaking the code and checking those checks \
+         notice (fn verify)"
+    );
+    // The component's own list ([test], no mutate) is clean on its own —
+    // only the fn-level override is broken.
+    assert_eq!(
+        diags.iter().filter(|d| d.code == "E0504").count(),
+        1,
+        "expected exactly one E0504, got: {diags:?}"
     );
 }
 
@@ -261,6 +337,9 @@ fn every_diagnostic_carries_a_known_spec_code() {
         "tests/fixtures/duplicate_unresolved_id.ply.yaml",
         "tests/fixtures/redundant_parent_child_edge.ply.yaml",
         "tests/fixtures/cross_container_descendant_edge.ply.yaml",
+        "tests/fixtures/mutate_inherited_default_is_broken.ply.yaml",
+        "tests/fixtures/mutate_own_list_ignores_inherited_test.ply.yaml",
+        "../render/tests/fixtures/checks_inheritance.ply.yaml",
     ] {
         for d in diagnostics_for(path) {
             assert!(

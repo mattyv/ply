@@ -28,10 +28,13 @@
       spike the spec itself gates everything on (§10 M0, D13) has never run. One
       vertical slice: inline contract → Kani run → parsed counterexample → replayable
       test → JSON diagnostic.
-- [ ] **Real defect: component-level `checks` inheritance is ignored.** §5.1 says
-      component `checks` are defaults for fns in scope; `ply-check` explicitly does not
-      merge them and the ceiling computation reads only `fc.checks`, so a declared
-      ceiling can be wrong today.
+- [x] **Real defect fixed: component-level `checks` inheritance** (merged from
+      worktree): a fn's own list wins entirely; otherwise it inherits the nearest
+      ancestor component's default. Resolution lives once in `ply-model` so the
+      validator and renderer cannot drift. Tooltips now name the source —
+      "inherited from component `pricing`: bounded(2) — …". E0504 evaluates the
+      effective list. All five committed SVGs byte-identical (no vetting document
+      uses component defaults — grep-confirmed, not assumed).
 - [x] Engine-limit diagnostics specced (52222ab) — §8 now requires timeout/unsupported
       to name the cause and populate `fixes`, with the boundary written in: Ply
       proposes, never rewrites. IMPLEMENTATION still owed when the engines are wired.

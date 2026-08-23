@@ -7,7 +7,10 @@
 //! architecture rules (§5.2, §5.3) need real code behind the anchors and
 //! are out of scope.
 
-use ply_model::{Check, Component, Document, Edge, parse_check, parse_deny, parse_edge};
+use ply_model::{
+    Check, Component, Document, Edge, InheritedChecks, component_default_checks, effective_checks,
+    parse_check, parse_deny, parse_edge,
+};
 use std::collections::{HashMap, HashSet};
 
 /// Where a diagnostic attaches for drawing (The-Ply-Spec.md §7.1 "finding" row).
@@ -93,10 +96,15 @@ fn check_syntax(checks: &[String], location: &str, target: &Target, out: &mut Ve
 }
 
 /// §5.1: `mutate` without a `test` or `fuzz` entry in the *same* checks list
-/// is `E0504`. Checked independently wherever a checks list appears
-/// (a component's default checks, or a fn claim's own) — this rule does
-/// not merge inherited and explicit checks, since that merge isn't spelled
-/// out anywhere as part of the document-local grammar.
+/// is `E0504`. Checked wherever a checks list actually governs something:
+/// a component's own declared default (checked in isolation, as its own
+/// list — `walk_component` calls this once per component with `c.checks`),
+/// and separately, for each fn, its *effective* list (`ply_model::
+/// effective_checks` — the fn's own non-empty list if it has one, else the
+/// nearest ancestor component's default). A fn's own list always wins
+/// entirely over anything inherited — `mutate` riding on an *inherited*
+/// `test`/`fuzz` does not satisfy this rule, since there is no merge, only
+/// an override (§5.1's plain reading of "default").
 fn check_mutate_rule(
     checks: &[String],
     location: &str,
@@ -128,13 +136,20 @@ fn check_mutate_rule(
 /// Walks one component (and its nested components), running every
 /// per-component and per-fn rule, and collecting `(unresolved id, location)`
 /// pairs and the leaf-name index used by the §5.1a rule 6 ambiguity check.
-fn walk_component(
+///
+/// `inherited` is the §5.1 checks default this component itself inherited
+/// from further up the tree (`None` above the document root, or wherever no
+/// ancestor ever declared one) — threaded in so a fn with no `checks` of its
+/// own can be validated against its real effective list, not silently
+/// skipped.
+fn walk_component<'a>(
     qualified: &str,
-    leaf: &str,
-    c: &Component,
+    leaf: &'a str,
+    c: &'a Component,
     out: &mut Vec<Diagnostic>,
     unresolved_ids: &mut Vec<(u64, String)>,
     leaf_index: &mut HashMap<String, Vec<String>>,
+    inherited: Option<InheritedChecks<'a>>,
 ) {
     leaf_index
         .entry(leaf.to_string())
@@ -158,6 +173,11 @@ fn walk_component(
     check_syntax(&c.checks, &location, &component_target, out);
     check_mutate_rule(&c.checks, &location, &component_target, out);
 
+    // §5.1: what this component's own fns (and any nested component that
+    // declares no default of its own) inherit — this component's own
+    // `checks` if non-empty, else whatever it itself inherited.
+    let this_default = component_default_checks(leaf, c, inherited);
+
     for (fn_name, fc) in &c.fns {
         let fn_target = Target::Fn {
             component_path: qualified.to_string(),
@@ -175,8 +195,30 @@ fn walk_component(
             ));
         }
         let location = format!("fn {fn_name}");
+        // Syntax validation stays on the fn's own literal strings — an
+        // inherited list was already syntax-checked where it was declared
+        // (as that ancestor's own `component {..}` location above), so
+        // re-validating it here would only duplicate that diagnostic.
         check_syntax(&fc.checks, &location, &fn_target, out);
-        check_mutate_rule(&fc.checks, &location, &fn_target, out);
+
+        // §5.1 D12: `mutate` needs a `test`/`fuzz` in the *effective* list —
+        // the fn's own non-empty list if it has one (which always wins
+        // entirely, never merges with anything above it), else the nearest
+        // ancestor default. A fn with no checks and no ancestor default has
+        // an empty effective list, which trivially can't trip this rule.
+        let effective = effective_checks(fc, this_default);
+        let mutate_location = if fc.checks.is_empty() {
+            match this_default {
+                Some(d) => format!(
+                    "fn {fn_name}, checks inherited from component {}",
+                    d.from_component
+                ),
+                None => location.clone(),
+            }
+        } else {
+            location.clone()
+        };
+        check_mutate_rule(effective, &mutate_location, &fn_target, out);
 
         for u in &fc.unresolved {
             unresolved_ids.push((u.id, location.clone()));
@@ -192,6 +234,7 @@ fn walk_component(
             out,
             unresolved_ids,
             leaf_index,
+            this_default,
         );
     }
 }
@@ -328,6 +371,7 @@ pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
             &mut out,
             &mut unresolved_ids,
             &mut leaf_index,
+            None,
         );
     }
 
