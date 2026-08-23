@@ -1666,7 +1666,7 @@
     {
       "id": "t-spec-d2-attrs",
       "file": "SPEC.md",
-      "line": 120,
+      "line": 123,
       "snippet": "position). `requires`/`ensures` re-emit the item with `cfg_attr(kani, ...)` attributes",
       "anchored": true,
       "node": "attrs",
@@ -1682,7 +1682,7 @@
     {
       "id": "t-spec-d4-arch",
       "file": "SPEC.md",
-      "line": 259,
+      "line": 281,
       "snippet": "**Crate tier (sound, errors).** From `cargo metadata`: the exact crate dependency graph.",
       "anchored": true,
       "node": "arch",
@@ -1698,7 +1698,7 @@
     {
       "id": "t-spec-d5-model",
       "file": "SPEC.md",
-      "line": 350,
+      "line": 374,
       "snippet": "generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict.",
       "anchored": true,
       "node": "model",
@@ -1714,7 +1714,7 @@
     {
       "id": "t-spec-cli-verify",
       "file": "SPEC.md",
-      "line": 388,
+      "line": 412,
       "snippet": "cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts",
       "anchored": true,
       "node": "cli",
@@ -1730,7 +1730,7 @@
     {
       "id": "t-spec-d7-cex",
       "file": "SPEC.md",
-      "line": 454,
+      "line": 526,
       "snippet": "the inputs rendered as stable Rust source (D7), else `W0541`.",
       "anchored": true,
       "node": "cex",
@@ -1746,7 +1746,7 @@
     {
       "id": "t-spec-staleness-plylock",
       "file": "SPEC.md",
-      "line": 252,
+      "line": 274,
       "snippet": "the fingerprint no longer matches, `ply check` reports `W0302 claim may be stale` and the",
       "anchored": true,
       "node": "plylock",
@@ -1762,7 +1762,7 @@
     {
       "id": "t-spec-engines-subprocess",
       "file": "SPEC.md",
-      "line": 103,
+      "line": 106,
       "snippet": "External engines run as subprocesses and are detected at startup. Each is optional: a",
       "anchored": true,
       "node": "engines",
@@ -1778,7 +1778,7 @@
     {
       "id": "t-spec-envelope-shape",
       "file": "SPEC.md",
-      "line": 425,
+      "line": 497,
       "snippet": "`{ \"command\": \"...\", \"ply_version\": \"...\", \"root\": <node tree §7>, \"diagnostics\": [<Diagnostic>...] }`.",
       "anchored": true,
       "node": "envelope",
@@ -1794,7 +1794,7 @@
     {
       "id": "t-spec-d6-node",
       "file": "SPEC.md",
-      "line": 413,
+      "line": 437,
       "snippet": "D6 over the evidence order; `statuses` and `open_items` (unresolved markers, weak specs,",
       "anchored": true,
       "node": "node",
@@ -1810,7 +1810,7 @@
     {
       "id": "t-spec-violation-rule",
       "file": "SPEC.md",
-      "line": 341,
+      "line": 365,
       "snippet": "passing checks earned; a failing check is a `violation` regardless of what else passed.",
       "anchored": true,
       "node": "violation",
