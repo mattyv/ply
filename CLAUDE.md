@@ -26,9 +26,16 @@ say why it changed.
 
 The verdict kernel — the evidence order, worst-of aggregation, and status propagation
 (D6, D5) — is where a rule interaction could make evidence lie. That kernel is written
-as one pure module carrying `#[ply::...]` contracts, and its invariants are checked with
-the same engines Ply routes to (Kani bounded proofs over small verdict trees), not just
-unit tests. The standing obligations:
+as one pure module, and its invariants are checked by exhaustive enumeration over every
+verdict tree up to a small bound (991,389 of them, ~2s under `cargo test --release`) —
+which for a bounded domain *is* a proof, and is the gate that must stay green.
+
+Kani harnesses for the same four invariants exist and are `#[cfg(kani)]`-gated, but as
+of 2026-08-23 **none of them terminate**: CBMC symbolically unwinds `BTreeMap`'s generic
+clone algorithm on every recursive call because the kernel's real types use
+`BTreeSet`/`Vec`, and no unwind bound, solver, or object-bits setting tried changed that.
+The investigation is documented in the module. Do not report the kernel as
+"Kani-proved" until a harness actually returns a verdict. The standing obligations:
 
 - aggregation never reports evidence stronger than the weakest child
 - `conditional` never disappears without its assumptions being discharged

@@ -43,7 +43,14 @@
 - [ ] `trusted` claims are unrestricted prose — no identity, date, commit, scope, or
       expiry. The shield can read as approval.
 - [ ] `conditional` assumptions are free-form strings, untied to the call graph.
-- [ ] Run the kernel's Kani harnesses once Kani is installed (`cargo kani` in
-      tools/kernel).
+- [ ] Kani harnesses do not terminate (investigated 2026-08-23, written up in
+      tools/kernel/src/lib.rs): CBMC unwinds BTreeMap's generic clone on every
+      recursive `aggregate_raw` call. Untried avenue: `-Z stubbing` to stub the
+      collection ops — but that changes what is actually verified, so it needs its
+      own review. Meanwhile the 991k-tree enumeration is the real proof.
+      **Bigger implication for the project:** Ply routes `bounded` checks to Kani; if
+      Kani struggles this much with std collections in a 300-line pure module, the
+      supported-signature story (§5.4b) is optimistic. This is exactly the kind of
+      engine limit M0 exists to find — more evidence for doing M0 next.
 - [ ] Renderer CLI entry point has zero test coverage (main.rs; the library is
       covered).
