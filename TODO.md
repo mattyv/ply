@@ -25,8 +25,12 @@
 
 - [x] **M0 spike done, ADR-0003 accepted** (0974f57). 8/9 mechanisms work; cross-crate
       stubbing works via caller-local re-proof. Fixtures + run.sh under tests/spike/.
-- [ ] **M0 not fully discharged**: cargo-mutants driven by a custom test command running
-      a generated harness is in §10's M0 list and was not exercised.
+- [x] **M0 fully discharged** — the cargo-mutants item is now exercised
+      (tests/spike/mutants/). It found §5.4c asserting a mechanism that does not
+      exist: there is no "custom test command" flag, and the claim "confirmed in the
+      M0 spike" was false. Real mechanism verified and specced; `--gitignore false`
+      must be pinned or the build fails; `W0502` now caveats equivalent mutants
+      (strong spec killed 13/14, the survivor was provably equivalent, not a gap).
 - [ ] **Scale spike before M3 commits to Kani.** M0 used scalars and small structs; our
       own pure kernel is still unprovable on `BTreeSet`/`Vec`. Establish what
       collection-shaped code Kani actually handles, then rewrite §5.4b's

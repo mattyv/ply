@@ -424,9 +424,23 @@ mistakes evidence about one instantiation for evidence about all.
 | mutate | cargo-mutants scoped `--re <fn>`; kill signal = the `test`/`fuzz` checks in the same list (D12) | appends `·spec-strong`, or flags `W0502 weak spec (N surviving mutants)` |
 
 cargo-mutants runs the workspace test suite by default, which would never execute the
-generated fuzz harnesses under `target/ply/fuzz/` — so the adapter passes a custom test
-command that runs exactly the target fn's generated `test`/`fuzz` harnesses. (Mechanism
-confirmed in the M0 spike.) Without this, `·spec-strong` would measure the wrong thing.
+generated fuzz harnesses under `target/ply/fuzz/`. Earlier drafts of this section said the
+adapter passes a "custom test command" and called the mechanism confirmed; **both were
+wrong** — no such flag exists (cargo-mutants 27.1.0: `--test-tool` accepts only
+`cargo`/`nextest`), and the M0 spike had never exercised it. The mechanism, verified end
+to end in `tests/spike/mutants/`, is package targeting plus a name filter:
+
+    cargo mutants -p <mutated-crate> --test-package <harness-crate> --re <fn> -- <test-name-filter>
+
+`--gitignore false` must be passed explicitly: the adapter's harnesses live under
+`target/ply/fuzz/`, which is git-ignored, and enabling gitignore-respecting copies (which
+a crate with a large `target/` would otherwise want) makes the build fail outright.
+Without this arrangement, `·spec-strong` would measure the wrong thing.
+
+`W0502`'s surviving-mutant count is not a pure weak-spec measure: an *equivalent* mutant —
+one whose change cannot alter observable behaviour — survives any spec, however strong.
+The spike found one in a 14-mutant run on a three-line function. The diagnostic must not
+imply every survivor is a specification gap.
 
 There is no transparent runtime enforcement: generated tests call functions explicitly.
 An `induct` check (Kani loop contracts, proving loops by invariant instead of unrolling)
