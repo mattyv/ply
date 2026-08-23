@@ -7,6 +7,250 @@ fn render_fixture(path: &str) -> String {
     render_svg(&doc).expect("fixture should render")
 }
 
+/// Parses this renderer's own `d="M x y L x2 y2"` path format (used by every
+/// straight edge/deny line) back into its two endpoints.
+fn parse_line_path(d: &str) -> ((f64, f64), (f64, f64)) {
+    let nums: Vec<f64> = d
+        .split_whitespace()
+        .filter_map(|t| t.parse::<f64>().ok())
+        .collect();
+    assert_eq!(nums.len(), 4, "expected an M..L.. path with 4 numbers, got {d:?}");
+    ((nums[0], nums[1]), (nums[2], nums[3]))
+}
+
+fn svg_dims(doc: &roxmltree::Document) -> (f64, f64) {
+    let root = doc.root_element();
+    let w: f64 = root.attribute("width").unwrap().parse().unwrap();
+    let h: f64 = root.attribute("height").unwrap().parse().unwrap();
+    (w, h)
+}
+
+/// Absolute bounding rect of a top-level `<g class="component" data-name=X>`:
+/// the sum of every ancestor `translate(x,y)` plus its own `component-box`
+/// rect (always drawn at local origin, per `render_component`).
+fn absolute_component_rect(doc: &roxmltree::Document, name: &str) -> (f64, f64, f64, f64) {
+    let node = doc
+        .descendants()
+        .find(|n| {
+            n.tag_name().name() == "g"
+                && n.attribute("class") == Some("component")
+                && n.attribute("data-name") == Some(name)
+        })
+        .unwrap_or_else(|| panic!("no component named {name:?} found"));
+
+    let mut x = 0.0;
+    let mut y = 0.0;
+    let mut cur = Some(node);
+    while let Some(n) = cur {
+        if let Some(t) = n.attribute("transform")
+            && let Some(inner) = t.strip_prefix("translate(").and_then(|s| s.strip_suffix(")"))
+        {
+            let parts: Vec<f64> = inner.split(',').map(|p| p.trim().parse().unwrap()).collect();
+            x += parts[0];
+            y += parts[1];
+        }
+        cur = n.parent();
+    }
+
+    let rect = node
+        .children()
+        .find(|c| c.tag_name().name() == "rect" && c.attribute("class") == Some("component-box"))
+        .expect("component must have a component-box rect");
+    let w: f64 = rect.attribute("width").unwrap().parse().unwrap();
+    let h: f64 = rect.attribute("height").unwrap().parse().unwrap();
+    (x, y, w, h)
+}
+
+/// Is `(px, py)` on the boundary of the rect `(x, y, w, h)`, within a small
+/// float-rounding tolerance (coordinates are formatted to 1 decimal place)?
+fn on_boundary(px: f64, py: f64, (x, y, w, h): (f64, f64, f64, f64), tol: f64) -> bool {
+    let on_vertical = (px - x).abs() <= tol || (px - (x + w)).abs() <= tol;
+    let on_horizontal = (py - y).abs() <= tol || (py - (y + h)).abs() <= tol;
+    let within_x = px >= x - tol && px <= x + w + tol;
+    let within_y = py >= y - tol && py <= y + h + tol;
+    (on_vertical && within_y) || (on_horizontal && within_x)
+}
+
+/// §7.1 layout invariants, pinned against vetting 002's "Findings from the
+/// render pass": call-edge stubs, labels on arrowheads, deny nodes clipped
+/// off-canvas, and coincident parallel edges. Each was RED against the
+/// pre-layout renderer before the fix (see vetting/002-ingest-pipeline.md).
+mod layout_invariants {
+    use super::*;
+
+    #[test]
+    fn everything_renders_inside_the_canvas() {
+        for fixture in [
+            "../../vetting/002-ingest-pipeline.ply.yaml",
+            "../../vetting/001-spsc-disruptor.ply.yaml",
+            "tests/fixtures/full.ply.yaml",
+            "tests/fixtures/qualified_refs.ply.yaml",
+        ] {
+            let svg = render_fixture(fixture);
+            let doc = roxmltree::Document::parse(&svg).unwrap();
+            let (w, h) = svg_dims(&doc);
+
+            // Text elements have no computed bounding box in the SVG
+            // itself, so approximate one: monospace at a generous per-char
+            // width (8, the widest the renderer uses, for `component-name`)
+            // extended from the anchor per the element's `text-anchor`
+            // (`middle` extends both ways from center; the SVG default,
+            // `start`, extends only rightward). Good enough to catch a
+            // label whose *anchor point* is on-canvas but whose glyphs
+            // still run off the edge (vetting 002 finding 3's truncated
+            // "except decoder").
+            const WORST_CASE_CHAR_W: f64 = 8.0;
+            let style = ply_render::svg::STYLE;
+            let is_middle_anchored = |class: Option<&str>| -> bool {
+                let Some(c) = class else { return false };
+                let needle = format!(".{c}{{");
+                style
+                    .find(&needle)
+                    .and_then(|start| style[start..].find('}').map(|end| &style[start..start + end]))
+                    .is_some_and(|rule| rule.contains("text-anchor:middle"))
+            };
+
+            for node in doc.descendants().filter(|n| n.is_element()) {
+                let tag = node.tag_name().name();
+                let pts: Vec<(f64, f64)> = match tag {
+                    "rect" => {
+                        let x: f64 = node.attribute("x").unwrap_or("0").parse().unwrap();
+                        let y: f64 = node.attribute("y").unwrap_or("0").parse().unwrap();
+                        let rw: f64 = node.attribute("width").unwrap_or("0").parse().unwrap();
+                        let rh: f64 = node.attribute("height").unwrap_or("0").parse().unwrap();
+                        vec![(x, y), (x + rw, y + rh)]
+                    }
+                    "circle" => {
+                        let cx: f64 = node.attribute("cx").unwrap().parse().unwrap();
+                        let cy: f64 = node.attribute("cy").unwrap().parse().unwrap();
+                        let r: f64 = node.attribute("r").unwrap().parse().unwrap();
+                        vec![(cx - r, cy - r), (cx + r, cy + r)]
+                    }
+                    "line" => {
+                        let x1: f64 = node.attribute("x1").unwrap().parse().unwrap();
+                        let y1: f64 = node.attribute("y1").unwrap().parse().unwrap();
+                        let x2: f64 = node.attribute("x2").unwrap().parse().unwrap();
+                        let y2: f64 = node.attribute("y2").unwrap().parse().unwrap();
+                        vec![(x1, y1), (x2, y2)]
+                    }
+                    "path" => {
+                        if node.ancestors().any(|a| a.tag_name().name() == "defs") {
+                            continue; // the arrowhead marker glyph, not real canvas geometry
+                        }
+                        let d = node.attribute("d").unwrap();
+                        let (a, b) = parse_line_path(d);
+                        vec![a, b]
+                    }
+                    "text" => {
+                        let x: f64 = node.attribute("x").unwrap_or("0").parse().unwrap();
+                        let y: f64 = node.attribute("y").unwrap_or("0").parse().unwrap();
+                        let chars = node.text().unwrap_or("").chars().count() as f64;
+                        let full_w = chars * WORST_CASE_CHAR_W;
+                        if is_middle_anchored(node.attribute("class")) {
+                            vec![(x - full_w / 2.0, y), (x + full_w / 2.0, y)]
+                        } else {
+                            vec![(x, y), (x + full_w, y)]
+                        }
+                    }
+                    _ => continue,
+                };
+                for (px, py) in pts {
+                    assert!(
+                        px >= -0.5 && px <= w + 0.5 && py >= -0.5 && py <= h + 0.5,
+                        "{fixture}: <{tag}> point ({px},{py}) outside canvas {w}x{h}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn edge_labels_clear_the_arrowheads() {
+        let svg = render_fixture("../../vetting/002-ingest-pipeline.ply.yaml");
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+
+        let mut checked = 0;
+        for flow in doc.descendants().filter(|n| n.attribute("class") == Some("edge-flow")) {
+            let path = flow
+                .children()
+                .find(|c| c.tag_name().name() == "path")
+                .expect("edge-flow must have a line");
+            let (_, arrow_tip) = parse_line_path(path.attribute("d").unwrap());
+
+            let label = flow
+                .children()
+                .find(|c| c.tag_name().name() == "text" && c.attribute("class") == Some("edge-label"))
+                .expect("edge-flow must have a label");
+            let lx: f64 = label.attribute("x").unwrap().parse().unwrap();
+            let ly: f64 = label.attribute("y").unwrap().parse().unwrap();
+
+            let dist = ((lx - arrow_tip.0).powi(2) + (ly - arrow_tip.1).powi(2)).sqrt();
+            assert!(
+                dist >= 14.0,
+                "flow label at ({lx},{ly}) sits on/near the arrowhead at {arrow_tip:?} (dist {dist})"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "fixture has no flow edges to check");
+    }
+
+    #[test]
+    fn every_declared_edge_is_visibly_drawn() {
+        let svg = render_fixture("../../vetting/002-ingest-pipeline.ply.yaml");
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+
+        // decoder -> ring, decoder -> book, feed -> ring: all top-level, all
+        // named in vetting 002's edges list.
+        let declared_call_pairs = [("feed", "ring"), ("decoder", "ring"), ("decoder", "book")];
+
+        for (from, to) in declared_call_pairs {
+            let from_rect = absolute_component_rect(&doc, from);
+            let to_rect = absolute_component_rect(&doc, to);
+
+            let line = doc
+                .descendants()
+                .filter(|n| n.attribute("class") == Some("edge-call"))
+                .find_map(|g| {
+                    let path = g.children().find(|c| c.tag_name().name() == "path")?;
+                    let (a, b) = parse_line_path(path.attribute("d").unwrap());
+                    let a_near_from = on_boundary(a.0, a.1, from_rect, 1.0);
+                    let b_near_to = on_boundary(b.0, b.1, to_rect, 1.0);
+                    (a_near_from && b_near_to).then_some((a, b))
+                });
+
+            let (a, b) = line.unwrap_or_else(|| {
+                panic!("no call edge found connecting {from}'s and {to}'s box boundaries")
+            });
+            let len = ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+            assert!(len >= 30.0, "{from} -> {to} call edge is only {len} units long: {a:?} -> {b:?}");
+        }
+    }
+
+    #[test]
+    fn parallel_edges_do_not_coincide() {
+        let svg = render_fixture("../../vetting/002-ingest-pipeline.ply.yaml");
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+
+        let mut seen_lines: Vec<((f64, f64), (f64, f64))> = Vec::new();
+        for g in doc.descendants().filter(|n| {
+            matches!(n.attribute("class"), Some("edge-call") | Some("edge-flow"))
+        }) {
+            let path = g.children().find(|c| c.tag_name().name() == "path").unwrap();
+            let line = parse_line_path(path.attribute("d").unwrap());
+            assert!(
+                !seen_lines.contains(&line),
+                "two edges render the exact same line {line:?} — parallel edges must use \
+                 distinct lanes (vetting 002 finding 4)"
+            );
+            seen_lines.push(line);
+        }
+        // decoder<->ring (call + flow, opposite directions) and feed->ring /
+        // decoder->book (call + flow, same direction) are exactly the
+        // vetting-002 cases; make sure this test actually exercised them.
+        assert!(seen_lines.len() >= 6, "expected at least 6 call/flow edges, saw {}", seen_lines.len());
+    }
+}
+
 #[test]
 fn svg_root_element_is_well_formed_enough_to_open() {
     let svg = render_fixture("tests/fixtures/full.ply.yaml");
@@ -270,18 +514,18 @@ fn glyphs_are_explained_by_a_hover_title() {
     // Coverage is asserted by `every_drawn_item_resolves_a_tooltip`; this test
     // checks the wording a reader actually needs.
     let push = titles.iter().find(|t| t.starts_with("Spsc::try_push")).unwrap();
-    assert!(push.contains("bounded(3) — model-checked exhaustively to depth 3"));
-    assert!(push.contains("fuzz(1024) — 1024 randomised property-test cases"));
-    assert!(push.contains("checked at instantiation T=u64"));
-    assert!(push.contains("trusted (not machine-checked): SPSC cross-thread safety"));
+    assert!(push.contains("bounded(3) — proves the contract for every input, unrolling loops at most 3 times"));
+    assert!(push.contains("fuzz(1024) — runs the function on 1024 random inputs, checking the contract on each"));
+    assert!(push.contains("generic — every check ran with T=u64; the evidence covers only that type"));
+    assert!(push.contains("trusted (a human vouches for this; no machine checks it): SPSC cross-thread safety"));
     assert!(push.contains("loom test tests/loom_spsc.rs"));
-    assert!(push.contains("1 example(s)"));
+    assert!(push.contains("1 worked example(s), each compiled into a test"));
 
     // The component tooltip expands its profile — the tag alone shows only a name.
     let ring = titles.iter().find(|t| t.starts_with("component ring")).unwrap();
     assert!(ring.contains("profile hot_path = no_panics, exhaustive_match"));
     assert!(ring.contains("capabilities: unsafe"));
-    assert!(ring.contains("owns (sole mutator of): disruptor::spsc::Spsc"));
+    assert!(ring.contains("owns disruptor::spsc::Spsc — only this component may mutate them"));
 
     // A pure component draws a double border; the tooltip must explain that
     // visual, not just assert the fact (vetting 002: "why does decoder have
@@ -299,6 +543,22 @@ fn glyphs_are_explained_by_a_hover_title() {
         "pure tooltip must explain the double border, got: {decoder}"
     );
     assert!(decoder.contains("no capabilities"));
+
+    // Workspace-level unresolved marker (registry pin, #7 in this fixture):
+    // plain-language wording for a reader who has never seen Ply before.
+    let registry_pin = doc
+        .descendants()
+        .filter(|n| n.tag_name().name() == "title")
+        .filter_map(|n| n.text())
+        .find(|t| t.starts_with("#7"))
+        .unwrap();
+    assert_eq!(
+        registry_pin,
+        "#7 marks an unresolved decision — a question the design still owes an answer: \
+         backpressure policy when the ring is full: drop frame vs spin. It belongs to the \
+         workspace as a whole, not to any function or component yet; Ply tracks it until \
+         someone resolves it (§5.6)."
+    );
 }
 
 /// "Tooltips for all items": the invariant, not a spot-check. Every drawn item

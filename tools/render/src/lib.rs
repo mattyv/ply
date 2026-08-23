@@ -2,4 +2,5 @@
 /// keep working unchanged now that the model lives in its own crate, shared
 /// with `ply-check`.
 pub use ply_model as model;
+mod layout;
 pub mod svg;

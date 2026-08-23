@@ -6,6 +6,7 @@
 //! character widths are a fixed-width monospace estimate) so that the same
 //! input always produces byte-identical output.
 
+use crate::layout;
 use ply_model::{
     parse_check, parse_deny, parse_edge, Check, Component, Deny, Document, Edge, EdgeKind,
     FnClaim,
@@ -31,6 +32,39 @@ const SHIELD_W: f64 = 16.0;
 const FRAME_PAD: f64 = 24.0;
 const FRAME_TITLE_H: f64 = 30.0;
 const MIN_BOX_W: f64 = 150.0;
+
+// ---- top-level component graph layout -------------------------------------
+//
+// §7.1 amendment (vetting 002 render-pass findings): top-level components
+// are no longer a single stacked column. They are laid out in ranked rows
+// (see `layout.rs`), edges between the same pair get parallel lanes, and
+// edge labels are reserved space beside the line rather than centered on
+// it. Concepts pinched from archi-techture's dagre layout, not its code
+// (`layout.rs` doc comment has the detail).
+
+/// Vertical gap between ranks. Wider than archi-techture's 52: our boxes are
+/// taller (multi-line headers, badge rows, fn chips) and a flow-edge label
+/// must fit beside the line without touching either rank.
+const RANKSEP: f64 = 70.0;
+/// Horizontal gap between components sharing a rank. Wider than
+/// archi-techture's 32 for the same reason (our boxes are wider too).
+const NODESEP: f64 = 50.0;
+/// Perpendicular separation between parallel edges connecting the same pair
+/// of components (vetting 002 finding 4: call + flow, or opposite
+/// directions, must not coincide).
+const LANE_GAP: f64 = 16.0;
+/// Fraction along an edge (from 0 = start, 1 = arrowhead) where its label
+/// sits. Off-center so the label never approaches the arrowhead end.
+const LABEL_T: f64 = 0.38;
+/// Extra perpendicular offset that pushes a flow-edge label beside its line
+/// rather than on top of it.
+const LABEL_SIDE_GAP: f64 = 15.0;
+/// Radius of a deny rule's `*` ("any component") pseudo-node.
+const ANY_R: f64 = 14.0;
+/// Clear space kept between an any-node, the line it anchors, and whatever
+/// sits next to it (the frame edge on one side, a real component box or an
+/// `except` label on the other).
+const ANY_GAP: f64 = 16.0;
 
 /// Every `class` this renderer emits must have a rule here. SVG's initial
 /// paint is `fill: black; stroke: none`, so an unstyled shape is a solid black
@@ -98,15 +132,33 @@ fn checks_glyph_row(checks: &[String]) -> String {
 /// no script, no legend clutter on the canvas.
 fn check_prose(c: &str) -> String {
     match parse_check(c) {
-        Ok(Check::Test) => "test — generated example and contract cases".into(),
-        Ok(Check::Fuzz(n)) => format!("fuzz({n}) — {n} randomised property-test cases"),
-        Ok(Check::Bounded(k)) => {
-            format!("bounded({k}) — model-checked exhaustively to depth {k}")
+        Ok(Check::Test) => {
+            "test — runs the declared examples plus generated inputs, checking the contract on each"
+                .into()
         }
-        Ok(Check::Prove) => "prove — unbounded proof".into(),
-        Ok(Check::Mutate) => "mutate — mutants must be killed by the check suite".into(),
+        Ok(Check::Fuzz(n)) => {
+            format!("fuzz({n}) — runs the function on {n} random inputs, checking the contract on each")
+        }
+        Ok(Check::Bounded(k)) => {
+            format!("bounded({k}) — proves the contract for every input, unrolling loops at most {k} times")
+        }
+        Ok(Check::Prove) => "prove — proves the contract for all inputs, with no bound".into(),
+        Ok(Check::Mutate) => {
+            "mutate — plants small deliberate bugs; the test/fuzz checks must catch every one, \
+             or the contract is flagged weak"
+                .into()
+        }
         Err(e) => format!("{c} — unparseable: {e}"),
     }
+}
+
+/// §5.6: the wording explaining a fn-level unresolved marker, used both on
+/// the pin glyph itself and in the fn-chip's aggregated tooltip.
+fn unresolved_fn_pin_prose(id: u64, note: &str) -> String {
+    format!(
+        "#{id} marks an unresolved decision — a question this function still owes an \
+         answer: {note}. Until it is resolved, this function's checks cap at `test` (§5.6)"
+    )
 }
 
 fn title(text: &str) -> String {
@@ -160,6 +212,29 @@ impl Rect {
             hh / dy.abs()
         };
         (cx + dx * scale, cy + dy * scale)
+    }
+}
+
+/// Slides a point already on `rect`'s border by `offset`, staying on
+/// whichever edge (top/bottom vs. left/right) it started on and clamped
+/// short of that edge's corners. Used to give parallel edges (§7.1
+/// amendment, vetting 002 finding 4) a lane separation that holds at the
+/// full requested distance — offsetting `border_toward`'s *target* instead
+/// would work, but its scale shrinks that offset by however much closer
+/// the border is than the target, which for our tall inter-rank gaps meant
+/// a requested 16-unit lane landing only ~6 units apart.
+fn offset_along_border(rect: Rect, point: (f64, f64), offset: (f64, f64)) -> (f64, f64) {
+    const CORNER_CLEARANCE: f64 = 1.0;
+    let on_horizontal_edge =
+        (point.1 - rect.y).abs() < 0.5 || (point.1 - (rect.y + rect.h)).abs() < 0.5;
+    if on_horizontal_edge {
+        let x = (point.0 + offset.0)
+            .clamp(rect.x + CORNER_CLEARANCE, rect.x + rect.w - CORNER_CLEARANCE);
+        (x, point.1)
+    } else {
+        let y = (point.1 + offset.1)
+            .clamp(rect.y + CORNER_CLEARANCE, rect.y + rect.h - CORNER_CLEARANCE);
+        (point.0, y)
     }
 }
 
@@ -219,7 +294,7 @@ fn render_fn_chip(name: &str, fc: &FnClaim) -> FnChip {
         inner.push_str(&format!(
             "<g class=\"fn-shield\">{}<text x=\"{cursor_x:.1}\" y=\"{text_y:.1}\">\u{26C9}</text></g>",
             title(&format!(
-                "trusted claim — attested by a human, never machine-checked\n{claims}"
+                "a human vouches for the claims below; no machine checks them\n{claims}"
             ))
         ));
         cursor_x += SHIELD_W + BADGE_GAP;
@@ -232,10 +307,7 @@ fn render_fn_chip(name: &str, fc: &FnClaim) -> FnChip {
             "<g class=\"unresolved-pin\">{tip}<circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"{PIN_R:.1}\" /><text class=\"pin-label\" x=\"{cx:.1}\" y=\"{text_y:.1}\">{label}</text></g>",
             cy = CHIP_H / 2.0,
             label = esc(&label),
-            tip = title(&format!(
-                "unresolved #{} — a decision still owed; caps this fn at check `test` (§5.6)\n{}",
-                p.id, p.note
-            ))
+            tip = title(&unresolved_fn_pin_prose(p.id, &p.note))
         ));
         cursor_x += text_w(&label, CHIP_CHAR_W) + PIN_R * 2.0 + BADGE_GAP;
     }
@@ -245,22 +317,22 @@ fn render_fn_chip(name: &str, fc: &FnClaim) -> FnChip {
         tip.push(check_prose(c));
     }
     if let Some(n) = &note {
-        tip.push(format!("checked at instantiation {n}"));
+        tip.push(format!("generic — every check ran with {n}; the evidence covers only that type"));
     }
     for t in &fc.trusted {
         tip.push(format!(
-            "trusted (not machine-checked): {} — evidence: {}",
+            "trusted (a human vouches for this; no machine checks it): {} — evidence: {}",
             t.claim, t.evidence
         ));
     }
     if !fc.examples.is_empty() {
-        tip.push(format!("{} example(s)", fc.examples.len()));
+        tip.push(format!("{} worked example(s), each compiled into a test", fc.examples.len()));
     }
     for p in &fc.unresolved {
-        tip.push(format!("unresolved #{}: {}", p.id, p.note));
+        tip.push(unresolved_fn_pin_prose(p.id, &p.note));
     }
     if fc.checks.is_empty() {
-        tip.push("no checks declared — unclaimed".into());
+        tip.push("no checks declared — nothing about this function is verified (unclaimed)".into());
     }
 
     let width = cursor_x + PAD - BADGE_GAP;
@@ -354,7 +426,9 @@ fn render_component(
                 ty = y + BADGE_H - 6.0,
                 label = esc(b),
                 tip = title(&format!(
-                    "capability `{b}` — declared by this component (§5.3). A component may only use capabilities it declares, and a `deny` rule can forbid it."
+                    "this component may use `{b}`. A component may use only the capabilities \
+                     it declares — using an undeclared one is an architecture finding \
+                     (§5.3, A0404)."
                 ))
             ));
             bx += bw + BADGE_GAP;
@@ -396,7 +470,7 @@ fn render_component(
 
     let box_h = y + PAD;
 
-    let mut tip = vec![format!("component {name} — anchored at {}", comp.anchor)];
+    let mut tip = vec![format!("component {name} — maps to Rust module {}", comp.anchor)];
     if comp.pure {
         tip.push(
             "pure — the double border is the seal: this component declares no capabilities \
@@ -407,7 +481,7 @@ fn render_component(
         tip.push(format!("capabilities: {}", comp.uses.join(", ")));
     }
     if !comp.owns.is_empty() {
-        tip.push(format!("owns (sole mutator of): {}", comp.owns.join(", ")));
+        tip.push(format!("owns {} — only this component may mutate them", comp.owns.join(", ")));
     }
     if let Some(p) = &comp.profile {
         tip.push(match profiles.get(p) {
@@ -416,7 +490,11 @@ fn render_component(
         });
     }
     if comp.strict {
-        tip.push("strict — item-tier architecture findings are errors".into());
+        tip.push(
+            "strict — architecture findings inside this component fail the build \
+             (errors, not warnings)"
+                .into(),
+        );
     }
 
     let mut svg = format!(
@@ -455,13 +533,11 @@ fn render_component(
     ComponentBox { width: box_w, height: box_h, svg, positions }
 }
 
-fn any_node_svg(x: f64, y: f64, rule: &str) -> String {
+fn any_node_svg(x: f64, y: f64) -> String {
     format!(
-        "<g class=\"any-node\">{tip}<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"14\" /><text class=\"any-label\" x=\"{x:.1}\" y=\"{:.1}\">*</text></g>",
+        "<g class=\"any-node\">{tip}<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{ANY_R:.1}\" /><text class=\"any-label\" x=\"{x:.1}\" y=\"{:.1}\">*</text></g>",
         y + 4.0,
-        tip = title(&format!(
-            "* = any component — belongs to the rule `{rule}` alone. Wildcards have no shared identity, so two rules that both use `*` are unrelated."
-        ))
+        tip = title("`*` stands for every component")
     )
 }
 
@@ -487,23 +563,44 @@ impl std::error::Error for RenderError {}
 /// qualified path it could mean. Returns `Ok(None)` for a token that matches
 /// nothing at all (the caller treats that edge/deny as a no-op, consistent
 /// with this renderer's philosophy of drawing exactly what resolves and
-/// nothing more).
+/// nothing more). The qualified name comes back alongside the rect so
+/// callers can group edges by the component pair they actually connect
+/// (parallel-lane offsetting) without re-deriving it.
 fn resolve(
     token: &str,
     positions: &IndexMap<String, Rect>,
     leaf_index: &IndexMap<String, Vec<String>>,
-) -> Result<Option<Rect>, RenderError> {
+) -> Result<Option<(String, Rect)>, RenderError> {
     if token.contains('.') {
-        return Ok(positions.get(token).copied());
+        return Ok(positions.get(token).map(|r| (token.to_string(), *r)));
     }
     match leaf_index.get(token) {
         None => Ok(None),
-        Some(paths) if paths.len() == 1 => Ok(positions.get(&paths[0]).copied()),
+        Some(paths) if paths.len() == 1 => {
+            Ok(positions.get(&paths[0]).map(|r| (paths[0].clone(), *r)))
+        }
         Some(paths) => Err(RenderError(format!(
             "ambiguous component reference {token:?}: matches {} — use the dotted qualified form (§5.1a rule 6)",
             paths.join(", ")
         ))),
     }
+}
+
+/// Groups edges/deny rules by the unordered pair of components they connect,
+/// so parallel edges between the same pair (vetting 002 finding 4: call +
+/// flow, or opposite directions) can be assigned distinct lanes.
+fn pair_key(a: &str, b: &str) -> (String, String) {
+    if a <= b {
+        (a.to_string(), b.to_string())
+    } else {
+        (b.to_string(), a.to_string())
+    }
+}
+
+/// `idx`-th of `total` parallel lanes, centered on the centerline (so 2
+/// lanes sit at `-gap/2`/`+gap/2`, 3 at `-gap`/`0`/`+gap`, etc).
+fn lane_offset(idx: usize, total: usize, gap: f64) -> f64 {
+    (idx as f64 - (total as f64 - 1.0) / 2.0) * gap
 }
 
 pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
@@ -513,8 +610,75 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         .map(|(name, c)| (name.clone(), render_component(name, c, &doc.profiles)))
         .collect();
 
-    let content_w = top.iter().map(|(_, c)| c.width).fold(0.0_f64, f64::max);
-    let mut frame_y = FRAME_PAD + FRAME_TITLE_H;
+    // ---- qualified-name resolution, position-independent --------------
+    // `resolve()` only needs a positions map's *keys* (for the dotted-path
+    // branch) and a leaf index built from those same keys (for the bare-name
+    // branch) to settle §5.1a rule 6 ambiguity; the Rect values themselves
+    // are unused until Phase 2 below, so a placeholder positions map lets us
+    // resolve edges once, early, for ranking — and again later against real
+    // coordinates, guaranteed to agree since both are the same lookup over
+    // the same keys.
+    let mut prelim_positions: IndexMap<String, Rect> = IndexMap::new();
+    for (name, cbox) in &top {
+        prelim_positions
+            .entry(name.clone())
+            .or_insert(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+        for (n, _) in &cbox.positions {
+            prelim_positions
+                .entry(format!("{name}.{n}"))
+                .or_insert(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+        }
+    }
+    let prelim_leaf_index = leaf_index_of(&prelim_positions);
+
+    // ---- layered top-level layout (finding 1: stub call edges) ---------
+    // Every edge endpoint maps to the top-level ancestor of the component it
+    // resolves to — a nested component moves with its parent box, so only
+    // top-level placement needs ranking (see layout.rs).
+    let top_names: Vec<String> = top.iter().map(|(n, _)| n.clone()).collect();
+    let mut rank_edges: Vec<(String, String)> = Vec::new();
+    for e in &doc.edges {
+        let Ok(edge) = parse_edge(e) else { continue };
+        let Some((from_q, _)) = resolve(&edge.from, &prelim_positions, &prelim_leaf_index)?
+        else {
+            continue;
+        };
+        let Some((to_q, _)) = resolve(&edge.to, &prelim_positions, &prelim_leaf_index)? else {
+            continue;
+        };
+        let top_of = |q: &str| q.split('.').next().unwrap_or(q).to_string();
+        rank_edges.push((top_of(&from_q), top_of(&to_q)));
+    }
+    let sizes: IndexMap<String, (f64, f64)> =
+        top.iter().map(|(n, c)| (n.clone(), (c.width, c.height))).collect();
+    let layered = layout::layered_layout(&top_names, &rank_edges, &sizes, RANKSEP, NODESEP);
+
+    // ---- deny-driven margins (finding 3: clipped deny nodes) -----------
+    // A `*` pseudo-node needs a reserved band clear of both the frame edge
+    // and the nearest real box, wide enough for itself, a gap on each side,
+    // and its own `except` label — sized from the label's actual text
+    // rather than a guessed constant, so the reservation is always enough.
+    let parsed_denies: Vec<Deny> = doc.deny.iter().filter_map(|d| parse_deny(d).ok()).collect();
+    let mut extra_left = 0.0_f64;
+    let mut extra_right = 0.0_f64;
+    for d in &parsed_denies {
+        let label_w = if d.except.is_empty() {
+            0.0
+        } else {
+            text_w(&format!("except {}", d.except.join(", ")), SUB_CHAR_W)
+        };
+        let needed = ANY_R * 2.0 + ANY_GAP * 2.0 + label_w;
+        if d.from == "*" {
+            extra_left = extra_left.max(needed);
+        }
+        if d.to == "*" {
+            extra_right = extra_right.max(needed);
+        }
+    }
+
+    // ---- absolute placement ---------------------------------------------
+    let content_top = FRAME_PAD + FRAME_TITLE_H;
+    let content_left = FRAME_PAD + extra_left;
     let mut body = String::new();
     // Absolute canvas position of every named component, keyed by its fully
     // qualified dotted path (`parent.child`; a top-level component's own
@@ -523,29 +687,26 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
     // unique across the whole merged tree; `leaf_index` (built below) is
     // what makes that uniqueness check possible.
     let mut positions: IndexMap<String, Rect> = IndexMap::new();
-
-    for (name, cbox) in top {
-        let x = FRAME_PAD;
-        body.push_str(&wrap_translate(&cbox.svg, x, frame_y));
-        positions
-            .entry(name.clone())
-            .or_insert(Rect { x, y: frame_y, w: cbox.width, h: cbox.height });
-        for (n, r) in cbox.positions {
+    for (name, cbox) in &top {
+        let (rel_x, rel_y) = layered.positions[name];
+        let x = content_left + rel_x;
+        let y = content_top + rel_y;
+        body.push_str(&wrap_translate(&cbox.svg, x, y));
+        positions.entry(name.clone()).or_insert(Rect { x, y, w: cbox.width, h: cbox.height });
+        for (n, r) in &cbox.positions {
             positions
                 .entry(format!("{name}.{n}"))
-                .or_insert(Rect { x: x + r.x, y: frame_y + r.y, w: r.w, h: r.h });
+                .or_insert(Rect { x: x + r.x, y: y + r.y, w: r.w, h: r.h });
         }
-        frame_y += cbox.height + GAP;
     }
+    let leaf_index = leaf_index_of(&positions);
 
-    let mut leaf_index: IndexMap<String, Vec<String>> = IndexMap::new();
-    for qualified in positions.keys() {
-        let leaf = qualified.rsplit('.').next().unwrap_or(qualified);
-        leaf_index.entry(leaf.to_string()).or_default().push(qualified.clone());
-    }
-
-    let frame_w = content_w + FRAME_PAD * 2.0;
-    let frame_h = frame_y + FRAME_PAD;
+    let frame_w = content_left + layered.content_w + extra_right + FRAME_PAD;
+    let frame_h = content_top + layered.content_h + FRAME_PAD;
+    // Fixed positions inside the reserved deny margins (always on-canvas
+    // and clear of every real box, by construction of `extra_left`/`extra_right`).
+    let any_x_from = FRAME_PAD + ANY_R + ANY_GAP;
+    let any_x_to = content_left + layered.content_w + ANY_GAP + ANY_R;
 
     // §7.1 unresolved marker, registry case: entries with no code anchor
     // pin to the workspace frame itself rather than to any component.
@@ -560,7 +721,9 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
                 py + 4.0,
                 label = esc(&label),
                 tip = title(&format!(
-                    "unresolved #{} — workspace-level, no code anchor yet (§5.6)\n{}",
+                    "#{} marks an unresolved decision — a question the design still owes an \
+                     answer: {}. It belongs to the workspace as a whole, not to any function or \
+                     component yet; Ply tracks it until someone resolves it (§5.6).",
                     entry.id, entry.note
                 ))
             ));
@@ -568,21 +731,98 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         }
     }
 
-    let mut edges_svg = String::new();
+    // ---- edges, grouped into parallel lanes (findings 2 and 4) ----------
+    struct ResolvedEdge {
+        from_q: String,
+        to_q: String,
+        from_rect: Rect,
+        to_rect: Rect,
+        edge: Edge,
+    }
+    let mut resolved_edges: Vec<ResolvedEdge> = Vec::new();
     for e in &doc.edges {
-        if let Ok(edge) = parse_edge(e) {
-            render_edge(&edge, &positions, &leaf_index, &mut edges_svg)?;
-        }
+        let Ok(edge) = parse_edge(e) else { continue };
+        let Some((from_q, from_rect)) = resolve(&edge.from, &positions, &leaf_index)? else {
+            continue;
+        };
+        let Some((to_q, to_rect)) = resolve(&edge.to, &positions, &leaf_index)? else {
+            continue;
+        };
+        resolved_edges.push(ResolvedEdge { from_q, to_q, from_rect, to_rect, edge });
+    }
+    let mut pair_total: IndexMap<(String, String), usize> = IndexMap::new();
+    for re in &resolved_edges {
+        *pair_total.entry(pair_key(&re.from_q, &re.to_q)).or_insert(0) += 1;
+    }
+    let mut pair_seen: IndexMap<(String, String), usize> = IndexMap::new();
+    let mut edges_svg = String::new();
+    for re in &resolved_edges {
+        let key = pair_key(&re.from_q, &re.to_q);
+        let total = pair_total[&key];
+        let idx_slot = pair_seen.entry(key.clone()).or_insert(0);
+        let idx = *idx_slot;
+        *idx_slot += 1;
+        let lane = lane_offset(idx, total, LANE_GAP);
+
+        // The perpendicular axis is computed from the *canonical* pair
+        // order (`key`), never from this edge's own from/to direction: two
+        // edges pointing opposite ways between the same pair must still
+        // land in distinct, non-cancelling lanes (vetting 002 finding 4's
+        // `decoder -> ring` vs `ring ~> decoder`).
+        let (rect_a, rect_b) =
+            if re.from_q == key.0 { (re.from_rect, re.to_rect) } else { (re.to_rect, re.from_rect) };
+        let (dx, dy) = (rect_b.cx() - rect_a.cx(), rect_b.cy() - rect_a.cy());
+        let len = (dx * dx + dy * dy).sqrt().max(1.0);
+        let (px, py) = (-dy / len, dx / len);
+        let offset = (px * lane, py * lane);
+
+        // The natural (un-offset) border point first, then the lane offset
+        // applied directly to it — not to the target `border_toward` aims
+        // at. Offsetting the target instead would work for a square box,
+        // but `border_toward`'s scale shrinks any target-side offset in
+        // proportion to how much taller the gap to the next rank is than
+        // the box (exactly our case: `ranksep` is wide, so it landed lanes
+        // only ~6 units apart for a requested 16 — indistinguishable at a
+        // glance, the parallel-edges bug in a different guise).
+        let (fx, fy) = offset_along_border(
+            re.from_rect,
+            re.from_rect.border_toward((re.to_rect.cx(), re.to_rect.cy())),
+            offset,
+        );
+        let (tx, ty) = offset_along_border(
+            re.to_rect,
+            re.to_rect.border_toward((re.from_rect.cx(), re.from_rect.cy())),
+            offset,
+        );
+
+        // The label sits `LABEL_T` of the way along the (already offset)
+        // line — never at the midpoint, so it stays clear of the arrowhead
+        // — then pushed out past the line by its own half-width plus a
+        // clearance gap, in the same perpendicular direction its lane
+        // already leans (finding 2: labels must never overlap an
+        // arrowhead, a line end, or a box). Sizing the push from the
+        // label's own text matters: a fixed push clears the line at the
+        // label's *center* but a `text-anchor:middle` label still reaches
+        // back over the line by half its own width otherwise.
+        let label_pos = if let EdgeKind::Flow(ty_label) = &re.edge.kind {
+            let bx = fx + (tx - fx) * LABEL_T;
+            let by = fy + (ty - fy) * LABEL_T;
+            let clear = LABEL_SIDE_GAP + text_w(ty_label, SUB_CHAR_W) / 2.0;
+            let push = if lane < 0.0 { -clear } else { clear };
+            (bx + px * push, by + py * push)
+        } else {
+            (0.0, 0.0) // unused: EdgeKind::Call never renders a label
+        };
+
+        render_edge(&re.edge, (fx, fy), (tx, ty), label_pos, &mut edges_svg);
     }
 
     // Deny rules. §7.1 (amended): `*` has no shared identity, so each rule
     // that names it draws its own pseudo-node — never one shared node that
     // would visually imply unrelated rules are connected.
     let mut deny_svg = String::new();
-    for (i, d) in doc.deny.iter().enumerate() {
-        if let Ok(deny) = parse_deny(d) {
-            render_deny(i, &deny, &positions, &leaf_index, frame_w, &mut deny_svg)?;
-        }
+    for (i, d) in parsed_denies.iter().enumerate() {
+        render_deny(i, d, &positions, &leaf_index, any_x_from, any_x_to, &mut deny_svg)?;
     }
 
     let width = frame_w;
@@ -603,63 +843,72 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
     ))
 }
 
+/// Builds a leaf-name -> qualified-paths index from a positions-shaped map's
+/// keys (§5.1a rule 6): `resolve()`'s bare-name branch needs this to detect
+/// ambiguity.
+fn leaf_index_of(positions: &IndexMap<String, Rect>) -> IndexMap<String, Vec<String>> {
+    let mut leaf_index: IndexMap<String, Vec<String>> = IndexMap::new();
+    for qualified in positions.keys() {
+        let leaf = qualified.rsplit('.').next().unwrap_or(qualified);
+        leaf_index.entry(leaf.to_string()).or_default().push(qualified.clone());
+    }
+    leaf_index
+}
+
 fn render_edge(
     edge: &Edge,
-    positions: &IndexMap<String, Rect>,
-    leaf_index: &IndexMap<String, Vec<String>>,
+    (fx, fy): (f64, f64),
+    (tx, ty): (f64, f64),
+    label_pos: (f64, f64),
     out: &mut String,
-) -> Result<(), RenderError> {
-    let Some(from) = resolve(&edge.from, positions, leaf_index)? else {
-        return Ok(());
-    };
-    let Some(to) = resolve(&edge.to, positions, leaf_index)? else {
-        return Ok(());
-    };
-    let (fx, fy) = from.border_toward((to.cx(), to.cy()));
-    let (tx, ty) = to.border_toward((from.cx(), from.cy()));
+) {
     match &edge.kind {
         EdgeKind::Call => {
             out.push_str(&format!(
                 "<g class=\"edge-call\">{tip}<path class=\"edge-line\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" /></g>",
                 tip = title(&format!(
-                    "{} -> {} — permitted call: {} may call into {}",
-                    edge.from, edge.to, edge.from, edge.to
+                    "{a} -> {b} — {a} may call {b}. An undeclared cross-component call is \
+                     flagged as an architecture finding — a warning by default, an error if \
+                     the calling component is `strict` (§5.3, A0402).",
+                    a = edge.from, b = edge.to
                 ))
             ));
         }
         EdgeKind::Flow(ty_label) => {
-            let mx = (fx + tx) / 2.0;
-            let my = (fy + ty) / 2.0;
+            let (lx, ly) = label_pos;
             out.push_str(&format!(
-                "<g class=\"edge-flow\">{tip}<path class=\"edge-line\" stroke-dasharray=\"6 4\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" /><text class=\"edge-label\" x=\"{mx:.1}\" y=\"{my:.1}\">{}</text></g>",
+                "<g class=\"edge-flow\">{tip}<path class=\"edge-line\" stroke-dasharray=\"6 4\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" /><text class=\"edge-label\" x=\"{lx:.1}\" y=\"{ly:.1}\">{}</text></g>",
                 esc(ty_label),
                 tip = title(&format!(
-                    "{} ~> {} : {ty_label} — declared data flow, carrying {ty_label}",
+                    "{ty_label} data flows from {} to {} — declared for the picture; \
+                     nothing checks flows in v1",
                     edge.from, edge.to
                 ))
             ));
         }
     }
-    Ok(())
 }
 
 /// Renders one deny rule. §7.1 (amended): `*` has no shared identity, so a
 /// rule that names it draws its own pseudo-node, anchored near whichever
 /// side did resolve to a real component (or staggered by rule index, as a
-/// last resort, if neither side resolved).
+/// last resort, if neither side resolved). `any_x_from`/`any_x_to` are fixed
+/// x-positions inside the margins `render_svg` reserved for exactly this
+/// (finding 3: deny nodes clipped off-canvas).
 fn render_deny(
     index: usize,
     deny: &Deny,
     positions: &IndexMap<String, Rect>,
     leaf_index: &IndexMap<String, Vec<String>>,
-    frame_w: f64,
+    any_x_from: f64,
+    any_x_to: f64,
     out: &mut String,
 ) -> Result<(), RenderError> {
     let from_rect = if deny.from == "*" {
         None
     } else {
         match resolve(&deny.from, positions, leaf_index)? {
-            Some(r) => Some(r),
+            Some((_, r)) => Some(r),
             None => return Ok(()), // unresolvable, non-wildcard pattern: draw nothing
         }
     };
@@ -667,18 +916,17 @@ fn render_deny(
         None
     } else {
         match resolve(&deny.to, positions, leaf_index)? {
-            Some(r) => Some(r),
+            Some((_, r)) => Some(r),
             None => return Ok(()),
         }
     };
 
     let fallback_y = FRAME_TITLE_H / 2.0 + 6.0 + index as f64 * 34.0;
-    let rule_text = format!("{} -> {}", deny.from, deny.to);
     let mut any_nodes = String::new();
 
     let from_pt = if deny.from == "*" {
-        let p = to_rect.map(|r| (14.0, r.cy())).unwrap_or((14.0, fallback_y));
-        any_nodes.push_str(&any_node_svg(p.0, p.1, &rule_text));
+        let p = (any_x_from, to_rect.map(|r| r.cy()).unwrap_or(fallback_y));
+        any_nodes.push_str(&any_node_svg(p.0, p.1));
         p
     } else {
         let r = from_rect.expect("non-wildcard, unresolved case already returned above");
@@ -686,10 +934,8 @@ fn render_deny(
     };
 
     let to_pt = if deny.to == "*" {
-        let p = from_rect
-            .map(|r| (frame_w - 14.0, r.cy()))
-            .unwrap_or((frame_w - 14.0, fallback_y));
-        any_nodes.push_str(&any_node_svg(p.0, p.1, &rule_text));
+        let p = (any_x_to, from_rect.map(|r| r.cy()).unwrap_or(fallback_y));
+        any_nodes.push_str(&any_node_svg(p.0, p.1));
         p
     } else {
         let r = to_rect.expect("non-wildcard, unresolved case already returned above");
@@ -715,21 +961,36 @@ fn render_deny(
         "<g class=\"deny-rule\">{tip}<path class=\"deny-line\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" /><line class=\"deny-bar\" x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" />",
         mx - px, my - py, mx + px, my + py,
         tip = title(&{
-            let mut t = format!(
-                "denied: {} -> {} — this call is an architecture violation",
-                deny.from, deny.to
-            );
+            let mut t = match (deny.from.as_str(), deny.to.as_str()) {
+                ("*", "*") => "no component may call any component".to_string(),
+                ("*", to) => format!("no component may call {to}"),
+                (from, "*") => format!("{from} may not call any component"),
+                (from, to) => format!("{from} may not call {to}"),
+            };
             if !deny.except.is_empty() {
-                t.push_str(&format!("\nexcept: {}", deny.except.join(", ")));
+                t.push_str(&format!(" — except {}", deny.except.join(", ")));
             }
+            t.push_str(" — such a call fails the build");
             t
         })
     ));
     if !deny.except.is_empty() {
+        // Beside whichever side is the wildcard node — inside the margin
+        // `render_svg` reserved for it — rather than at the line's
+        // midpoint, which may crowd the real component box on the other
+        // side (finding 3).
+        let label = format!("except {}", deny.except.join(", "));
+        let half_w = text_w(&label, SUB_CHAR_W) / 2.0;
+        let (lx, ly) = if deny.from == "*" {
+            (from_pt.0 + ANY_R + ANY_GAP + half_w, from_pt.1 - 6.0)
+        } else if deny.to == "*" {
+            (to_pt.0 - ANY_R - ANY_GAP - half_w, to_pt.1 - 6.0)
+        } else {
+            (mx, my + 14.0)
+        };
         out.push_str(&format!(
-            "<text class=\"deny-except\" x=\"{mx:.1}\" y=\"{:.1}\">except {}</text>",
-            my + 14.0,
-            esc(&deny.except.join(", "))
+            "<text class=\"deny-except\" x=\"{lx:.1}\" y=\"{ly:.1}\">{}</text>",
+            esc(&label)
         ));
     }
     out.push_str("</g>");
