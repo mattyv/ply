@@ -11,7 +11,8 @@ use indexmap::IndexMap;
 use ply_check::{Diagnostic, Target as FindingTarget, run_checks};
 use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
 use ply_model::{
-    Check, Component, Deny, Document, Edge, EdgeKind, FnClaim, parse_check, parse_deny, parse_edge,
+    Check, Component, Deny, Document, Edge, EdgeKind, FnClaim, Mode, parse_check, parse_deny,
+    parse_edge,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -47,6 +48,17 @@ const STACK_OFFSET: f64 = 5.0;
 // existing `PAD` margin so it adds new geometry (its own few pixels) without
 // shifting anything else already positioned by `cursor_x`.
 const CONTRACT_MARK_W: f64 = 3.0;
+
+// ---- §7.1 "strict" — the corner notch --------------------------------------
+//
+// A solid ink triangle cut into the box's top-right corner: "flagged, zero
+// tolerance". Purely additive geometry, drawn after the box rect so it
+// composes with whatever else that rect's own class carries (ceiling fill,
+// finding-red border, hollow dashed border, collapsed-stack card) without
+// touching any of them. `pure`'s sealed border is inset 4px from every edge
+// (`render_component`'s `pure-seal` rect), so it never reaches the corner
+// either.
+const STRICT_NOTCH: f64 = 14.0;
 
 // ---- findings (§7.1 "finding (tool-computed, not declared)") --------------
 //
@@ -103,6 +115,7 @@ pub const STYLE: &str = "\
 .hollow-box{stroke-dasharray:6 4}\
 .collapsed-stack{stroke:#3b4252;stroke-width:1.5}\
 .pure-seal{fill:none;stroke:#3b4252}\
+.strict-notch{fill:#1f2430}\
 .component-name{fill:#1f2430;font-weight:bold}\
 .component-anchor{fill:#6b7280;font-size:10px}\
 .component-owns{fill:#6b7280;font-size:10px;font-style:italic}\
@@ -117,9 +130,11 @@ pub const STYLE: &str = "\
 .profile-tag rect{fill:#eef2fb;stroke:#5570a8}\
 .profile-tag text{fill:#334b78;font-size:10px}\
 .fn-chip-box{fill:#f6f7f9;stroke:#9aa2b1}\
+.fn-chip-box-synth{fill:#ecdff5;stroke:#9aa2b1}\
 .fn-name{fill:#1f2430}\
 .fn-checks{fill:#2f6f4f;font-size:11px}\
 .fn-check-with{fill:#6b7280;font-size:10px}\
+.fn-examples{fill:#6b7280;font-size:10px}\
 .fn-shield{fill:none;stroke:#9a7a1f;font-size:13px}\
 .unresolved-pin circle,.registry-pin circle{fill:#fff6d8;stroke:#b08900}\
 .pin-label{fill:#7a5c00;font-size:10px;text-anchor:middle}\
@@ -605,6 +620,17 @@ fn all_qualified_paths(doc: &Document) -> Vec<String> {
     out
 }
 
+/// The newbie-bar wording for a `--focus`/`--collapse` token that names no
+/// component at all: states what's wrong (no match) and what to do about it
+/// (check the spelling; nested components need the dotted form).
+fn no_such_component_message(flag: &str, token: &str) -> String {
+    format!(
+        "{flag} {token:?} does not match any component in this document — check the spelling \
+         against the names in ply.yaml (a nested component uses its dotted path, e.g. \
+         parent.child)"
+    )
+}
+
 /// Resolves a `--focus`/`--collapse` CLI argument to an unambiguous fully
 /// qualified component path, applying the same §5.1a rule 6 semantics
 /// `resolve()` uses for edge/deny endpoints: a dotted token must match
@@ -618,11 +644,7 @@ fn resolve_component_ref(flag: &str, token: &str, doc: &Document) -> Result<Stri
             .iter()
             .find(|p| p.as_str() == token)
             .cloned()
-            .ok_or_else(|| {
-                RenderError(format!(
-                    "{flag} {token:?} does not match any component in this document"
-                ))
-            });
+            .ok_or_else(|| RenderError(no_such_component_message(flag, token)));
     }
     let matches: Vec<String> = paths
         .iter()
@@ -630,9 +652,7 @@ fn resolve_component_ref(flag: &str, token: &str, doc: &Document) -> Result<Stri
         .cloned()
         .collect();
     match matches.as_slice() {
-        [] => Err(RenderError(format!(
-            "{flag} {token:?} does not match any component in this document"
-        ))),
+        [] => Err(RenderError(no_such_component_message(flag, token))),
         [only] => Ok(only.clone()),
         many => Err(RenderError(format!(
             "{flag} {token:?} is ambiguous: it could mean {} — write the dotted form (e.g. \
@@ -835,6 +855,17 @@ fn wrap_translate(inner: &str, x: f64, y: f64) -> String {
     format!("<g transform=\"translate({x:.1},{y:.1})\">{inner}</g>")
 }
 
+/// §7.1 `strict`: a solid ink triangle notch cut into `box_w`-wide box's
+/// top-right corner. A `<path>` (not `<polygon>`, so
+/// `every_painted_element_resolves_a_style_rule` actually walks it — that
+/// invariant only inspects `rect|circle|path|text|line`).
+fn strict_notch_svg(box_w: f64) -> String {
+    format!(
+        "<path class=\"strict-notch\" d=\"M {:.1} 0 L {box_w:.1} 0 L {box_w:.1} {STRICT_NOTCH:.1} Z\" />",
+        box_w - STRICT_NOTCH
+    )
+}
+
 /// One fn claim rendered as a chip: its box, name, checks glyph row,
 /// `check_with` note, trusted shield, and unresolved pins — all drawn from
 /// local origin `(0,0)` so the caller can place it with `wrap_translate`.
@@ -883,6 +914,18 @@ fn render_fn_chip(name: &str, fc: &FnClaim, component_path: &str, ctx: &FindingC
             esc(n)
         ));
         cursor_x += text_w(n, CHIP_CHAR_W) + BADGE_GAP;
+    }
+
+    // §7.1 `examples`: a gray `e×N` token next to the `T=...` check_with
+    // note. The tooltip already counts them (below); this is purely the
+    // glyph the spec's gate debt was missing.
+    let examples_label = (!fc.examples.is_empty()).then(|| format!("e\u{d7}{}", fc.examples.len()));
+    if let Some(label) = &examples_label {
+        inner.push_str(&format!(
+            "<text class=\"fn-examples\" x=\"{cursor_x:.1}\" y=\"{text_y:.1}\">{}</text>",
+            esc(label)
+        ));
+        cursor_x += text_w(label, CHIP_CHAR_W) + BADGE_GAP;
     }
 
     if has_shield {
@@ -945,6 +988,17 @@ fn render_fn_chip(name: &str, fc: &FnClaim, component_path: &str, ctx: &FindingC
         }
         tip.push("the checks above test the function against exactly this promise".to_string());
     }
+    if fc.mode == Mode::Synth {
+        // §7.1 `mode: synth`: violet is the single authorship channel,
+        // meaning "machine-written" — named here so the fill isn't left for
+        // the reader to guess at, then explained in the same plain words the
+        // spec pins.
+        tip.push(
+            "light violet fill: machine-written — the body below the watermark is \
+             synthesized from the contract, with the checks holding the line"
+                .to_string(),
+        );
+    }
     if let Some(n) = &note {
         tip.push(format!(
             "generic — every check ran with {n}; the evidence covers only that type"
@@ -970,10 +1024,16 @@ fn render_fn_chip(name: &str, fc: &FnClaim, component_path: &str, ctx: &FindingC
     }
 
     let width = cursor_x + PAD - BADGE_GAP;
-    let box_class = if findings.is_empty() {
-        "fn-chip-box"
-    } else {
+    // §7.1 `mode: synth`: the chip's fill turns light violet, unless a
+    // finding is present — red (forbidden/wrong) always wins over the
+    // authorship channel, matching the channel-discipline priority every
+    // other red-vs-cosmetic combination already follows in this renderer.
+    let box_class = if !findings.is_empty() {
         "fn-chip-box-finding"
+    } else if fc.mode == Mode::Synth {
+        "fn-chip-box-synth"
+    } else {
+        "fn-chip-box"
     };
     let badge_svg = if findings.is_empty() {
         String::new()
@@ -1226,6 +1286,9 @@ fn render_collapsed_component(
         title(&tip.join("\n")),
         ceiling = ceiling_class(ceiling)
     );
+    if comp.strict {
+        svg.push_str(&strict_notch_svg(box_w));
+    }
     svg.push_str(&format!(
         "<text class=\"component-name\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
         PAD + LINE_H - 2.0,
@@ -1536,6 +1599,9 @@ fn render_component(
             box_w - 8.0,
             box_h - 8.0
         ));
+    }
+    if comp.strict {
+        svg.push_str(&strict_notch_svg(box_w));
     }
     svg.push_str(&format!(
         "<text class=\"component-name\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",

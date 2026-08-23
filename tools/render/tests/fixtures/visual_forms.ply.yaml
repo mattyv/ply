@@ -1,0 +1,28 @@
+ply: 1
+# Exercises the three §7.1 forms that were assigned-and-undrawn as of
+# 2026-08-23: `strict` (component notch), `mode: synth` (violet chip fill),
+# and `examples` (gray e×N token). `ledger` combines strict with `pure`
+# (double border) and a declared ceiling, to prove the notch composes with
+# both. `scratch` combines strict with hollow (dashed border), since nothing
+# else in this document does.
+components:
+  ledger:
+    anchor: app::ledger
+    strict: true
+    pure: true
+    fns:
+      Ledger::post:
+        checks: [test]
+        examples:
+          - "post(Entry::credit(10)).balance == 10"
+          - "post(Entry::debit(3)).balance == -3"
+      Ledger::reconcile:
+        checks: [test]
+        mode: synth
+        requires:
+          - "entries is sorted by timestamp"
+        ensures:
+          - "reconcile() never panics"
+  scratch:
+    anchor: app::scratch
+    strict: true
