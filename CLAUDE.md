@@ -69,6 +69,20 @@ hunting) can go cheaper still. The top model is for spec changes, design decisio
 review judgment, and verifying agent output — never for typing out code an agent could
 write from a precise brief.
 
+## TODO.md is the running state, and it is not optional
+
+Anything agreed but not yet done goes in TODO.md the moment it is agreed, and gets
+ticked with its commit hash the moment it lands — in the same session, not later. A
+stale list is worse than none: it makes finished work look pending and pending work
+look forgotten, and the user ends up asking which is which. Keep the honest caveats
+in it too — a KNOWN GAP left open on purpose is a state worth recording, not a
+failure to hide.
+
+The same rule covers the spec, the vetting docs, and `.archi/`: when behaviour changes,
+the artifact describing it changes in the same commit. If a claim in The-Ply-Spec.md
+stops being true — including a claim you added earlier in the session — retract it
+rather than leaving it to be discovered by review.
+
 ## Scope
 
 Build what was asked and nothing adjacent. A legend nobody requested is not a bonus.
