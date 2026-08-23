@@ -27,56 +27,81 @@ fn clean_render_fixtures_produce_no_diagnostics() {
     }
 }
 
+/// Every diagnostic message a user can meet must read as plain language:
+/// what is wrong and why it matters, no bare spec ranges (the code still
+/// prefixes it, via `Diagnostic`'s `Display`, but that's checked in `cli.rs`
+/// against the real binary output). These pin the exact wording so a future
+/// edit can't quietly regress back to jargon.
 #[test]
 fn mutate_without_test_or_fuzz_is_e0504() {
     let diags = diagnostics_for("tests/fixtures/mutate_without_test_or_fuzz.ply.yaml");
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == "E0504" && d.message.contains("fn slot")),
-        "expected E0504 naming `fn slot`, got: {diags:?}"
+    let d = diags
+        .iter()
+        .find(|d| d.code == "E0504")
+        .expect("expected an E0504 diagnostic");
+    assert_eq!(
+        d.message,
+        "mutate has nothing to catch its planted bugs: add a test or fuzz check beside it — \
+         mutation testing works by deliberately breaking the code and checking those checks \
+         notice (fn slot)"
     );
 }
 
 #[test]
 fn bad_check_syntax_is_e0203() {
     let diags = diagnostics_for("tests/fixtures/bad_check_syntax.ply.yaml");
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == "E0203" && d.message.contains("bounded(0)")),
-        "expected E0203 naming the out-of-range check string, got: {diags:?}"
+    let d = diags
+        .iter()
+        .find(|d| d.code == "E0203")
+        .expect("expected an E0203 diagnostic");
+    assert_eq!(
+        d.message,
+        "\"bounded(0)\" is not a valid check: the number is how many times loops are unrolled \
+         during the proof, and it must be between 1 and 64 — a bound of 0 would prove nothing \
+         (fn slot)"
     );
 }
 
 #[test]
 fn bad_edge_syntax_is_e0203() {
     let diags = diagnostics_for("tests/fixtures/bad_edge_syntax.ply.yaml");
-    assert!(
-        diags.iter().any(|d| d.code == "E0203"),
-        "expected E0203 for the malformed edge string, got: {diags:?}"
+    let d = diags
+        .iter()
+        .find(|d| d.code == "E0203")
+        .expect("expected an E0203 diagnostic");
+    assert_eq!(
+        d.message,
+        "\"a b\" is not an edge: expected \"a -> b\" (a may call b) or \"a ~> b : Type\" \
+         (data flows from a to b) (edges)"
     );
 }
 
 #[test]
 fn bad_path_form_is_e0304() {
     let diags = diagnostics_for("tests/fixtures/bad_path_form.ply.yaml");
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == "E0304" && d.message.contains("Foo<T>")),
-        "expected E0304 naming the generic anchor, got: {diags:?}"
+    let d = diags
+        .iter()
+        .find(|d| d.code == "E0304")
+        .expect("expected an E0304 diagnostic");
+    assert_eq!(
+        d.message,
+        "\"app::Foo<T>\" cannot be used as an anchor path: generics, lifetimes, and \
+         trait-qualified paths are not accepted — use a plain module::item path \
+         (component ring, anchor)"
     );
 }
 
 #[test]
 fn duplicate_unresolved_id_is_e0205() {
     let diags = diagnostics_for("tests/fixtures/duplicate_unresolved_id.ply.yaml");
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == "E0205" && d.message.contains('5')),
-        "expected E0205 naming id 5, got: {diags:?}"
+    let d = diags
+        .iter()
+        .find(|d| d.code == "E0205")
+        .expect("expected an E0205 diagnostic");
+    assert_eq!(
+        d.message,
+        "unresolved id 5 is used twice (fn slot and registry): each open decision needs its \
+         own number"
     );
 }
 
@@ -86,11 +111,14 @@ fn duplicate_unresolved_id_is_e0205() {
 #[test]
 fn ambiguous_bare_reference_is_e0206() {
     let diags = diagnostics_for("../render/tests/fixtures/ambiguous_ref.ply.yaml");
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == "E0206" && d.message.contains("shared")),
-        "expected E0206 naming the ambiguous token, got: {diags:?}"
+    let d = diags
+        .iter()
+        .find(|d| d.code == "E0206")
+        .expect("expected an E0206 diagnostic");
+    assert_eq!(
+        d.message,
+        "ambiguous component reference \"shared\": it could mean alpha.shared or beta.shared \
+         — write the dotted form (e.g. alpha.shared) to say which"
     );
 }
 

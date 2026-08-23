@@ -31,9 +31,14 @@ fn violating_fixture_exits_nonzero_and_names_the_code() {
         "violations should exit 1, got: {out:?}"
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("E0504"),
-        "stdout should name E0504, got: {stdout}"
+    // The exact plain-language wording (§ "diagnostics read as plain
+    // language"), not just a substring check for the code — a future edit
+    // that quietly reverts to jargon must fail here.
+    assert_eq!(
+        stdout.trim_end(),
+        "E0504: mutate has nothing to catch its planted bugs: add a test or fuzz check beside \
+         it — mutation testing works by deliberately breaking the code and checking those \
+         checks notice (fn slot)"
     );
     assert!(
         !stdout.contains("<svg"),

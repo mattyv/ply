@@ -150,6 +150,28 @@ fn every_finding_is_visibly_flagged_or_counted_at_the_title() {
     }
 }
 
+/// The finding tooltip embeds `Diagnostic::message` verbatim after the
+/// `FINDING <code>: ` prefix (`finding_tooltip_lines` in `svg.rs`) — so the
+/// plain-language rewrite of `ply-check`'s messages must show up here too,
+/// not just in `ply-check`'s own tests. Pinned against the fault-injection
+/// demo's `decode` fn, whose `bounded(0)` is the out-of-range case.
+#[test]
+fn finding_tooltip_carries_the_plain_language_message() {
+    let yaml = std::fs::read_to_string("../../demos/fault3.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).expect("fixture should parse");
+    let svg = render_svg(&doc).expect("fixture should render");
+    // The `<title>` text is XML-escaped (`esc()` in `svg.rs`), so the
+    // embedded literal quotes come back as `&quot;`.
+    assert!(
+        svg.contains(
+            "FINDING E0203: &quot;bounded(0)&quot; is not a valid check: the number is how \
+             many times loops are unrolled during the proof, and it must be between 1 and 64 \
+             — a bound of 0 would prove nothing (fn decode)"
+        ),
+        "expected the plain-language E0203 message in the rendered tooltip, got: {svg}"
+    );
+}
+
 /// Reruns the fixture set to confirm a finding never leaks into a document
 /// that doesn't have one — the whole design rests on findings being purely
 /// additive so vetting's clean fixtures render byte-identically.

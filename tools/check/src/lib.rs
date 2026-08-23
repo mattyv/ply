@@ -105,7 +105,11 @@ fn check_mutate_rule(
     if has_mutate && !has_test_or_fuzz {
         out.push(diag(
             "E0504",
-            format!("mutate without test/fuzz in checks list ({location})"),
+            format!(
+                "mutate has nothing to catch its planted bugs: add a test or fuzz check \
+                 beside it — mutation testing works by deliberately breaking the code and \
+                 checking those checks notice ({location})"
+            ),
             target.clone(),
         ));
     }
@@ -132,7 +136,9 @@ fn walk_component(
         out.push(diag(
             "E0304",
             format!(
-                "unsupported path form {:?} (component {qualified}, anchor)",
+                "{:?} cannot be used as an anchor path: generics, lifetimes, and \
+                 trait-qualified paths are not accepted — use a plain module::item path \
+                 (component {qualified}, anchor)",
                 c.anchor
             ),
             component_target.clone(),
@@ -150,7 +156,11 @@ fn walk_component(
         if !is_valid_path_form(fn_name) {
             out.push(diag(
                 "E0304",
-                format!("unsupported path form {fn_name:?} (fn {fn_name})"),
+                format!(
+                    "{fn_name:?} cannot be used as a fn path: generics, lifetimes, and \
+                     trait-qualified paths are not accepted — use a plain module::item path \
+                     (fn {fn_name})"
+                ),
                 fn_target.clone(),
             ));
         }
@@ -183,6 +193,17 @@ fn walk_component(
 /// (no layout, no coordinates) rather than depending on `ply-render` for
 /// it — the ambiguity rule is a naming fact about the document, not a
 /// drawing concern.
+/// Plain-language "A or B" / "A, B, or C" list, for naming every candidate
+/// an ambiguous reference could mean without reading like a data dump.
+fn join_or(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [a, b] => format!("{a} or {b}"),
+        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+    }
+}
+
 fn check_token_ambiguity(
     token: &str,
     leaf_index: &HashMap<String, Vec<String>>,
@@ -198,13 +219,15 @@ fn check_token_ambiguity(
         let mut candidates = paths.clone();
         candidates.sort();
         out.push(diag(
-                "E0206",
-                format!(
-                    "ambiguous component reference {token:?}: matches {} — use the dotted qualified form (§5.1a rule 6)",
-                    candidates.join(", ")
-                ),
-                target.clone(),
-            ));
+            "E0206",
+            format!(
+                "ambiguous component reference {token:?}: it could mean {} — write the dotted \
+                 form (e.g. {}) to say which",
+                join_or(&candidates),
+                candidates[0]
+            ),
+            target.clone(),
+        ));
     }
 }
 
@@ -257,7 +280,10 @@ pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
         match first_seen.get(id) {
             Some(prev) => out.push(diag(
                 "E0205",
-                format!("duplicate unresolved id {id} ({prev} and {location})"),
+                format!(
+                    "unresolved id {id} is used twice ({prev} and {location}): each open \
+                     decision needs its own number"
+                ),
                 Target::UnresolvedId(*id),
             )),
             None => {

@@ -449,18 +449,13 @@ fn ambiguous_bare_reference_is_a_hard_error_naming_candidates() {
     let yaml = std::fs::read_to_string("tests/fixtures/ambiguous_ref.ply.yaml").unwrap();
     let doc = parse_document(&yaml).expect("fixture should parse");
     let err = render_svg(&doc).expect_err("ambiguous bare reference must be rejected");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("shared"),
-        "error should name the ambiguous token: {msg}"
-    );
-    assert!(
-        msg.contains("alpha.shared"),
-        "error should list this candidate: {msg}"
-    );
-    assert!(
-        msg.contains("beta.shared"),
-        "error should list this candidate: {msg}"
+    // Exact plain-language wording, not just "it mentions the candidates" —
+    // a newbie reading this on `ply-render`'s stderr gets no benefit from a
+    // bare `matches X, Y` dump or a bare §-cite.
+    assert_eq!(
+        err.to_string(),
+        "ambiguous component reference \"shared\": it could mean alpha.shared or beta.shared \
+         — write the dotted form (e.g. alpha.shared) to say which"
     );
 }
 
@@ -593,14 +588,34 @@ fn glyphs_are_explained_by_a_hover_title() {
     assert!(push.contains("loom test tests/loom_spsc.rs"));
     assert!(push.contains("1 worked example(s), each compiled into a test"));
 
-    // The component tooltip expands its profile — the tag alone shows only a name.
+    // The component tooltip expands its profile — the tag alone shows only a
+    // name. Each rule name is glossed in plain language too: a newbie who
+    // has never seen "no_panics" or "exhaustive_match" gets no benefit from
+    // the bare name alone.
     let ring = titles
         .iter()
         .find(|t| t.starts_with("component ring"))
         .unwrap();
-    assert!(ring.contains("profile hot_path = no_panics, exhaustive_match"));
+    assert!(ring.contains(
+        "profile hot_path — a named bundle of extra rules this component must follow: \
+         no_panics (functions here must never panic (crash on purpose)), exhaustive_match \
+         (every match must handle all cases explicitly)"
+    ));
     assert!(ring.contains("capabilities: unsafe"));
     assert!(ring.contains("owns disruptor::spsc::Spsc — only this component may mutate them"));
+
+    // The profile-tag badge itself (hovered directly, not via the component
+    // box) carries the same glossed wording.
+    let profile_tag = titles
+        .iter()
+        .find(|t| t.starts_with("profile `hot_path`"))
+        .unwrap();
+    assert_eq!(
+        profile_tag,
+        "profile `hot_path` — a named bundle of extra rules this component must follow: \
+         no_panics (functions here must never panic (crash on purpose)), exhaustive_match \
+         (every match must handle all cases explicitly)"
+    );
 
     // A pure component draws a double border; the tooltip must explain that
     // visual, not just assert the fact (vetting 002: "why does decoder have
@@ -636,15 +651,39 @@ fn glyphs_are_explained_by_a_hover_title() {
     );
 }
 
+/// The workspace frame is the first thing a newbie sees — hovering it must
+/// explain the whole picture in plain language, not assume the reader has
+/// already read Ply-Spec.md.
+#[test]
+fn workspace_frame_explains_the_whole_picture() {
+    let svg = render_fixture("../../vetting/001-spsc-disruptor.ply.yaml");
+    let doc = roxmltree::Document::parse(&svg).unwrap();
+    let title = doc
+        .descendants()
+        .find(|n| n.attribute("class") == Some("workspace-frame"))
+        .and_then(|n| n.children().find(|c| c.tag_name().name() == "title"))
+        .and_then(|t| t.text())
+        .expect("workspace-frame should carry a tooltip");
+    assert_eq!(
+        title,
+        "This diagram is drawn from ply.yaml, the file describing this codebase's \
+         architecture and verification claims. Each box is a component; chips are \
+         functions with their declared checks; arrows are permitted calls (solid) and \
+         data flows (dashed); red bars are forbidden calls. Hover anything for its \
+         meaning."
+    );
+}
+
 /// "Tooltips for all items": the invariant, not a spot-check. Every drawn item
-/// — component, fn chip, badge, tag, shield, pin, arrow, deny bar, wildcard
-/// node — must resolve a `<title>` on itself or an ancestor, so nothing in the
-/// picture is unexplainable by hovering it.
+/// — the workspace frame, component, fn chip, badge, tag, shield, pin, arrow,
+/// deny bar, wildcard node — must resolve a `<title>` on itself or an
+/// ancestor, so nothing in the picture is unexplainable by hovering it.
 #[test]
 fn every_drawn_item_resolves_a_tooltip() {
     // Item-bearing groups: a class here means "this is a thing a reader can
     // point at", so it must be explained.
     const ITEM_CLASSES: &[&str] = &[
+        "workspace-frame",
         "component",
         "fn-chip",
         "cap-badge",

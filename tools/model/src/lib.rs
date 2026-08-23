@@ -134,7 +134,10 @@ pub fn parse_check(s: &str) -> Result<Check, String> {
             .parse()
             .map_err(|_| format!("invalid fuzz(N) count in {s:?}"))?;
         if !(1..=1_000_000).contains(&n) {
-            return Err(format!("fuzz(N) out of range 1..=1_000_000: {s:?}"));
+            return Err(format!(
+                "{s:?} is not a valid check: the number is how many random inputs get tried, \
+                 and it must be between 1 and 1,000,000"
+            ));
         }
         return Ok(Check::Fuzz(n));
     }
@@ -144,11 +147,17 @@ pub fn parse_check(s: &str) -> Result<Check, String> {
             .parse()
             .map_err(|_| format!("invalid bounded(K) count in {s:?}"))?;
         if !(1..=64).contains(&k) {
-            return Err(format!("bounded(K) out of range 1..=64: {s:?}"));
+            return Err(format!(
+                "{s:?} is not a valid check: the number is how many times loops are unrolled \
+                 during the proof, and it must be between 1 and 64 — a bound of 0 would prove \
+                 nothing"
+            ));
         }
         return Ok(Check::Bounded(k));
     }
-    Err(format!("unrecognized check string: {s:?}"))
+    Err(format!(
+        "{s:?} is not a check Ply knows: expected test, fuzz(N), bounded(K), prove, or mutate"
+    ))
 }
 
 /// §5 item 2: `A -> B` (call) or `A ~> B : path::Type` (data flow).
@@ -173,10 +182,22 @@ pub fn parse_edge(s: &str) -> Result<Edge, String> {
         let to = parts.next().unwrap_or("").trim();
         let ty = parts
             .next()
-            .ok_or_else(|| format!("expected ': Type' after '~>' in {s:?}"))?
+            .ok_or_else(|| {
+                format!(
+                    "{s:?} is missing its payload type: a data-flow edge is written \
+                     \"a ~> b : Type\""
+                )
+            })?
             .trim();
-        if left.is_empty() || to.is_empty() || ty.is_empty() {
-            return Err(format!("malformed data-flow edge: {s:?}"));
+        if left.is_empty() || to.is_empty() {
+            return Err(format!(
+                "{s:?} is missing the component name on one side of the arrow"
+            ));
+        }
+        if ty.is_empty() {
+            return Err(format!(
+                "{s:?} is missing its payload type: a data-flow edge is written \"a ~> b : Type\""
+            ));
         }
         return Ok(Edge {
             from: left.to_string(),
@@ -187,7 +208,9 @@ pub fn parse_edge(s: &str) -> Result<Edge, String> {
     if let Some(idx) = s.find("->") {
         let (left, right) = (s[..idx].trim(), s[idx + 2..].trim());
         if left.is_empty() || right.is_empty() {
-            return Err(format!("malformed call edge: {s:?}"));
+            return Err(format!(
+                "{s:?} is missing the component name on one side of the arrow"
+            ));
         }
         return Ok(Edge {
             from: left.to_string(),
@@ -195,7 +218,10 @@ pub fn parse_edge(s: &str) -> Result<Edge, String> {
             kind: EdgeKind::Call,
         });
     }
-    Err(format!("edge string has no '->' or '~>': {s:?}"))
+    Err(format!(
+        "{s:?} is not an edge: expected \"a -> b\" (a may call b) or \"a ~> b : Type\" \
+         (data flows from a to b)"
+    ))
 }
 
 /// §5 item 3: `PAT -> PAT [except C1, C2]` where `PAT := IDENT | *`.
@@ -212,13 +238,15 @@ pub fn parse_deny(s: &str) -> Result<Deny, String> {
         Some(idx) => (s[..idx].trim(), s[idx + "except".len()..].trim()),
         None => (s, ""),
     };
-    let idx = main
-        .find("->")
-        .ok_or_else(|| format!("deny string missing '->': {s:?}"))?;
+    let idx = main.find("->").ok_or_else(|| {
+        format!("{s:?} is not a deny rule: expected \"a -> b\" or \"a -> b except c, d\"")
+    })?;
     let from = main[..idx].trim();
     let to = main[idx + 2..].trim();
     if from.is_empty() || to.is_empty() {
-        return Err(format!("malformed deny rule: {s:?}"));
+        return Err(format!(
+            "{s:?} is missing the component name on one side of the arrow"
+        ));
     }
     let except: Vec<String> = if except_part.is_empty() {
         Vec::new()
@@ -256,6 +284,95 @@ mod tests {
         assert!(parse_check("bounded(0)").is_err());
         assert!(parse_check("bounded(65)").is_err());
         assert!(parse_check("nonsense").is_err());
+    }
+
+    /// Every diagnostic a user can meet must read as plain language: say
+    /// what is wrong and why it matters, no bare spec ranges. These pin the
+    /// exact wording (not just "it errored") so a future edit can't quietly
+    /// regress back to jargon.
+    #[test]
+    fn fuzz_out_of_range_message_is_plain() {
+        assert_eq!(
+            parse_check("fuzz(0)").unwrap_err(),
+            "\"fuzz(0)\" is not a valid check: the number is how many random inputs get tried, \
+             and it must be between 1 and 1,000,000"
+        );
+    }
+
+    #[test]
+    fn bounded_out_of_range_message_is_plain() {
+        assert_eq!(
+            parse_check("bounded(0)").unwrap_err(),
+            "\"bounded(0)\" is not a valid check: the number is how many times loops are \
+             unrolled during the proof, and it must be between 1 and 64 — a bound of 0 would \
+             prove nothing"
+        );
+    }
+
+    #[test]
+    fn unknown_check_message_is_plain() {
+        assert_eq!(
+            parse_check("nonsense").unwrap_err(),
+            "\"nonsense\" is not a check Ply knows: expected test, fuzz(N), bounded(K), prove, \
+             or mutate"
+        );
+    }
+
+    #[test]
+    fn edge_without_arrow_message_is_plain() {
+        assert_eq!(
+            parse_edge("pricing parser").unwrap_err(),
+            "\"pricing parser\" is not an edge: expected \"a -> b\" (a may call b) or \
+             \"a ~> b : Type\" (data flows from a to b)"
+        );
+    }
+
+    #[test]
+    fn flow_edge_missing_payload_type_message_is_plain() {
+        assert_eq!(
+            parse_edge("a ~> b").unwrap_err(),
+            "\"a ~> b\" is missing its payload type: a data-flow edge is written \"a ~> b : Type\""
+        );
+    }
+
+    #[test]
+    fn flow_edge_blank_payload_type_message_is_plain() {
+        assert_eq!(
+            parse_edge("a ~> b :").unwrap_err(),
+            "\"a ~> b :\" is missing its payload type: a data-flow edge is written \"a ~> b : Type\""
+        );
+    }
+
+    #[test]
+    fn malformed_call_edge_message_is_plain() {
+        assert_eq!(
+            parse_edge("-> b").unwrap_err(),
+            "\"-> b\" is missing the component name on one side of the arrow"
+        );
+    }
+
+    #[test]
+    fn malformed_flow_edge_message_is_plain() {
+        assert_eq!(
+            parse_edge("~> b : Type").unwrap_err(),
+            "\"~> b : Type\" is missing the component name on one side of the arrow"
+        );
+    }
+
+    #[test]
+    fn deny_without_arrow_message_is_plain() {
+        assert_eq!(
+            parse_deny("a b").unwrap_err(),
+            "\"a b\" is not a deny rule: expected \"a -> b\" or \"a -> b except c, d\""
+        );
+    }
+
+    #[test]
+    fn malformed_deny_message_is_plain() {
+        assert_eq!(
+            parse_deny("-> b").unwrap_err(),
+            "\"-> b\" is missing the component name on one side of the arrow"
+        );
     }
 
     #[test]

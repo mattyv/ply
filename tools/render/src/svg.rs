@@ -132,6 +132,17 @@ pub const FINDING_STYLE: &str = "\
 .finding-count{fill:#c9534f;font-size:11px;font-weight:bold}\
 ";
 
+/// Plain-language "A or B" / "A, B, or C" list, for naming every candidate
+/// an ambiguous reference could mean without reading like a data dump.
+fn join_or(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [a, b] => format!("{a} or {b}"),
+        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+    }
+}
+
 fn text_w(s: &str, char_w: f64) -> f64 {
     (s.chars().count() as f64) * char_w
 }
@@ -347,6 +358,30 @@ fn render_finding_badge(x: f64, y: f64, findings: &[&Diagnostic]) -> String {
         ty = y + FINDING_BADGE_H - 4.0,
         label = esc(&label)
     )
+}
+
+/// Plain-language gloss for a named profile rule (§5.3): the tag alone
+/// (`no_panics`, `exhaustive_match`, ...) means nothing to a reader who
+/// hasn't read the spec. A rule this renderer doesn't recognize is shown
+/// verbatim, with no invented meaning.
+fn profile_rule_gloss(rule: &str) -> String {
+    let meaning = match rule {
+        "no_panics" => Some("functions here must never panic (crash on purpose)"),
+        "exhaustive_match" => Some("every match must handle all cases explicitly"),
+        _ => None,
+    };
+    match meaning {
+        Some(m) => format!("{rule} ({m})"),
+        None => rule.to_string(),
+    }
+}
+
+fn profile_rules_prose(rules: &[String]) -> String {
+    rules
+        .iter()
+        .map(|r| profile_rule_gloss(r))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn check_with_note(check_with: &IndexMap<String, String>) -> Option<String> {
@@ -682,7 +717,11 @@ fn render_component(
                 ty = y + BADGE_H - 6.0,
                 label = esc(p),
                 tip = title(&match profiles.get(p) {
-                    Some(rules) => format!("profile `{p}` = {}", rules.join(", ")),
+                    Some(rules) => format!(
+                        "profile `{p}` — a named bundle of extra rules this component must \
+                         follow: {}",
+                        profile_rules_prose(rules)
+                    ),
                     None => format!("profile `{p}` — not defined in this document"),
                 })
             ));
@@ -746,7 +785,10 @@ fn render_component(
     }
     if let Some(p) = &comp.profile {
         tip.push(match profiles.get(p) {
-            Some(rules) => format!("profile {p} = {}", rules.join(", ")),
+            Some(rules) => format!(
+                "profile {p} — a named bundle of extra rules this component must follow: {}",
+                profile_rules_prose(rules)
+            ),
             None => format!("profile {p} (not defined in this document)"),
         });
     }
@@ -858,8 +900,10 @@ fn resolve(
             Ok(positions.get(&paths[0]).map(|r| (paths[0].clone(), *r)))
         }
         Some(paths) => Err(RenderError(format!(
-            "ambiguous component reference {token:?}: matches {} — use the dotted qualified form (§5.1a rule 6)",
-            paths.join(", ")
+            "ambiguous component reference {token:?}: it could mean {} — write the dotted \
+             form (e.g. {}) to say which",
+            join_or(paths),
+            paths[0]
         ))),
     }
 }
@@ -1216,13 +1260,23 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         std::borrow::Cow::Owned(format!("{STYLE}{FINDING_STYLE}"))
     };
 
+    // §7.1 / newbie bar: the frame is the first thing anyone sees, so its
+    // tooltip explains the whole picture rather than assuming the reader
+    // has already read Ply-Spec.md.
+    let workspace_tip = title(
+        "This diagram is drawn from ply.yaml, the file describing this codebase's \
+         architecture and verification claims. Each box is a component; chips are \
+         functions with their declared checks; arrows are permitted calls (solid) and \
+         data flows (dashed); red bars are forbidden calls. Hover anything for its meaning.",
+    );
+
     Ok(format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.1}\" height=\"{height:.1}\" \
          viewBox=\"0 0 {width:.1} {height:.1}\" font-family=\"monospace\" font-size=\"12\">\
          <style>{style}</style>\
          <defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\">\
          <path d=\"M 0 0 L 10 5 L 0 10 z\" /></marker></defs>\
-         <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\" />\
+         <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\">{workspace_tip}</rect>\
          <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text>\
          {title_extra}\
          {deny_svg}{registry_svg}{body}{edges_svg}\

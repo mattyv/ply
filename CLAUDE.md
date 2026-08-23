@@ -45,6 +45,15 @@ Report outcomes, not code churn. Skip file names, function names, and diff-speak
 asked. Say what changed in behaviour, where to see it, and whether it works. Make routine
 technical calls yourself; only ask questions that can be answered without reading code.
 
+## Every user-facing sentence passes the newbie bar
+
+Tooltips, diagnostics, CLI output: written for someone who has never seen Ply. Name the
+visual if the glyph is unusual, say what it means, say why it matters — in that order.
+A code (E0203) or § reference may follow a plain sentence, never replace one. The test
+for new wording is exact-string, so the words are reviewed like code. If a term needs
+the spec to decode (`bounded`, `unclaimed`, `instantiation`), the sentence carries its
+own gloss.
+
 ## Delegation
 
 Use the cheapest model that can do the job. Implementation goes to sonnet-tier agents

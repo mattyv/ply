@@ -94,7 +94,6 @@ edges:
   - "ingest.ring ~> ingest.decoder : RawFrame"
   - "ingest.decoder ~> ingest.book : Tick"
   - strategy -> ingest.book
-  - strategy -> signals
   - strategy -> oms
   - oms -> risk
   - oms -> gateway

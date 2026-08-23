@@ -92,8 +92,13 @@ reads top-to-bottom. The structure held.
    boxes — at top level there is slack; inside a container there isn't.
 2. **An edge to a nested target cuts through its parent's content.** The
    `strategy -> signals` call edge draws diagonally across the `signals` box
-   itself. Edges targeting a component inside the same parent need routing around
-   siblings, or at minimum boundary-to-boundary clipping inside the container.
+   itself. → Resolved at the root: the edge should never have existed.
+   Containment implies permission — a component calls its own descendants the
+   same way it calls between its own functions, no edge declared (§5.3, new
+   `W0409` redundant-edge lint; validator implementation queued). The edge is
+   deleted and the diagonal with it. Cross-container edges into another
+   component's descendant (`strategy -> ingest.book`) remain legitimate and
+   still need the routing polish.
 3. **Same-rank deny rules overlap.** `* -> risk except oms` and
    `* -> gateway except oms` both anchor their `*` node at the same left-edge
    spot; the two red lines and both `except oms` labels draw on top of each other,

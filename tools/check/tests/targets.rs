@@ -28,6 +28,12 @@ fn bad_check_syntax_targets_the_offending_fn() {
             fn_name: "slot".to_string()
         }
     );
+    assert_eq!(
+        d.message,
+        "\"bounded(0)\" is not a valid check: the number is how many times loops are unrolled \
+         during the proof, and it must be between 1 and 64 — a bound of 0 would prove nothing \
+         (fn slot)"
+    );
 }
 
 #[test]
@@ -38,6 +44,12 @@ fn bad_path_form_targets_the_offending_component() {
         .find(|d| d.code == "E0304")
         .expect("expected an E0304 diagnostic");
     assert_eq!(d.target, Target::Component("ring".to_string()));
+    assert_eq!(
+        d.message,
+        "\"app::Foo<T>\" cannot be used as an anchor path: generics, lifetimes, and \
+         trait-qualified paths are not accepted — use a plain module::item path \
+         (component ring, anchor)"
+    );
 }
 
 #[test]
@@ -54,6 +66,12 @@ fn mutate_without_test_or_fuzz_targets_the_offending_fn() {
             fn_name: "slot".to_string()
         }
     );
+    assert_eq!(
+        d.message,
+        "mutate has nothing to catch its planted bugs: add a test or fuzz check beside it — \
+         mutation testing works by deliberately breaking the code and checking those checks \
+         notice (fn slot)"
+    );
 }
 
 #[test]
@@ -65,6 +83,11 @@ fn bad_edge_syntax_targets_the_edge_by_index() {
         .expect("expected an E0203 diagnostic");
     // The fixture's `edges:` list has exactly one entry, "a b".
     assert_eq!(d.target, Target::EdgeIndex(0));
+    assert_eq!(
+        d.message,
+        "\"a b\" is not an edge: expected \"a -> b\" (a may call b) or \"a ~> b : Type\" \
+         (data flows from a to b) (edges)"
+    );
 }
 
 #[test]
@@ -75,6 +98,11 @@ fn duplicate_unresolved_id_targets_the_shared_id() {
         .find(|d| d.code == "E0205")
         .expect("expected an E0205 diagnostic");
     assert_eq!(d.target, Target::UnresolvedId(5));
+    assert_eq!(
+        d.message,
+        "unresolved id 5 is used twice (fn slot and registry): each open decision needs its \
+         own number"
+    );
 }
 
 /// §5.1a rule 6 ambiguity on a deny endpoint (not exercised by any fixture
@@ -105,4 +133,9 @@ deny:
         .find(|d| d.code == "E0206")
         .expect("expected an E0206 diagnostic");
     assert_eq!(d.target, Target::DenyIndex(0));
+    assert_eq!(
+        d.message,
+        "ambiguous component reference \"shared\": it could mean alpha.shared or beta.shared \
+         — write the dotted form (e.g. alpha.shared) to say which"
+    );
 }
