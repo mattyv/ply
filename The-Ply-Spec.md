@@ -416,16 +416,28 @@ v1 supports functions whose parameters and return type are, recursively:
 
 - **integers, `bool`, `char`, `Option<T>`, `Result<T,E>`** of supported types — cheap
   unconditionally (~0.1s);
-- **fixed-size arrays `[T; N]`** — cheap at every N measured up to 16 with no annotation,
-  because the bound is a compile-time constant. This is v1's **preferred** bounded-
-  collection shape, and generated harnesses should reach for it first;
+- **fixed-size arrays `[T; N]`** — cheap with no annotation, because the bound is a
+  compile-time constant. Our own sweep only measured to 16; the Rust standard library's
+  verification project routinely uses `MAX_SIZE = 32`, `ARRAY_LEN = 40`, and `MAX_LEN =
+  512`, and `kani::vec::exact_vec::<T, 17>()` runs in Kani's CI with no unwind annotation
+  at all. This is v1's **preferred** bounded shape, and generated harnesses should reach
+  for it first — building a fixed array and taking a symbolically-bounded subslice is how
+  the professionals express variable length, rather than a symbolic `Vec`;
 - **`Vec<T>`** — supported **only because Ply's harness codegen emits an explicit
-  `#[kani::unwind(N+1)]` sized to the declared bound**. Without that annotation a `Vec`
-  times out at *every* length measured, including length 1. Promising `Vec` support
-  without stating this requirement would be dishonest;
+  `#[kani::unwind(...)]`**. Without it a `Vec` times out at *every* length measured,
+  including length 1. The bound is **not** `N+1`: it must cover the whole construction
+  loop, and `kani::vec::any_vec::<u8, 8>` needs 22. Codegen must derive the bound from
+  the actual construction, and an under-sized unwind is a silent unsoundness risk, not a
+  slow run;
 - **structs and enums** of the above with Ply-derivable `Arbitrary` (public,
   invariant-free fields);
 - **`&T`/`&[T]`** of the above (built from an owned value in the harness).
+
+Two documented limits narrow what *every* `bounded` verdict means, however clean it looks:
+generated arguments **never alias each other**, so a bug that needs two parameters to
+point at the same thing is invisible; and type invariants are **assumed, never asserted**,
+so a proof may rest on an invariant the code itself breaks. Both belong in the verdict's
+own explanation, not only here.
 
 Measured exclusions, each named rather than left for a user to discover by timing out:
 
@@ -485,9 +497,12 @@ An `induct` check (Kani loop contracts, proving loops by invariant instead of un
 is planned, not in v1: Kani's loop-contract support is experimental, and Ply has no
 stable-Rust invariant attribute yet. A function's verdict is the strongest evidence its
 passing checks earned; a failing check is a `violation` regardless of what else passed.
-**A timeout is not a violation (MUST).** Kani renders a CBMC timeout and a genuine
-contract failure identically as `VERIFICATION:- FAILED`; telling them apart requires
-reading past that line. An adapter that conflates them reports a counterexample-free
+**A timeout is not a violation (MUST).** Kani's summary line renders a CBMC timeout and a
+genuine contract failure identically as `VERIFICATION:- FAILED`. The distinction *is*
+available — `--harness-timeout` reports exhaustion explicitly — so an adapter that
+conflates them is careless, not unlucky. Two traps to avoid outright: never
+`--output-format=old`, which reports a timeout as success, and never `--quiet`, which
+exits 0 on failure (Kani issue #4745). An adapter that conflates them reports a counterexample-free
 "violation" for a function that was merely slow — evidence that lies, the one failure
 this project exists to prevent. Every adapter MUST distinguish engine exhaustion
 (`timeout`, a status outside the evidence order per D6) from a falsified claim
