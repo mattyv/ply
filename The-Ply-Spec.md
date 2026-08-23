@@ -573,6 +573,13 @@ grammar.**
 | hollow component (derived, like findings) | a component that declares nothing inside — no fns, no nested components — draws with a dashed border: a sketch outline, nothing to zoom into yet. Tooltip says so plainly. Derived from absence rather than declared; the natural state of every box in top-down authoring, expected to solidify as claims arrive |
 | finding (tool-computed, not declared) | the offending item drawn in error red with an `E####` badge; its tooltip leads with the diagnostic. A finding with no drawable item attaches a red count to the workspace title. A document with findings still renders — a picture that refuses to draw hides the problem it should be showing (origin: fault-injection demo, where a faulted toolchain drew `bounded(0)` as legitimate evidence) |
 
+A collapsed component is one solid-bordered box (never dashed — hollow means *nothing*
+inside; collapsed means *plenty* inside, folded) showing its name, anchor, a contents
+line (`N components · M fns`), and its worst-descendant ceiling/verdict fill. Three
+things never fold away: capability badges (union of the subtree's — a collapsed box
+containing `net` still shows `net`), the unresolved-pin count, and the finding count.
+`ply-render --depth N` and `--focus <component>` mirror the tree CLI.
+
 Zooming is collapse/expand over the §7 tree and mirrors `tree --depth`/`--focus`. A
 renderer's only input is the §8 envelope — no side channel. The renderer itself stays
 out of scope; this section fixes what any renderer must show. The archi-techture bundle

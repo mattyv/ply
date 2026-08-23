@@ -6,6 +6,11 @@
       channel) and the style-rule invariant test.
 - [ ] `ply-render --legend` — opt-in legend strip below the frame, generated from the
       live style constants (§7.1, specced 2026-08-23).
+- [ ] `ply-render --depth N` / `--focus <component>` — collapse/expand per §7.1:
+      collapsed box = solid border, contents line, worst-descendant fill; capability
+      badges, pin count, and finding count never fold away. Acceptance: 003 at
+      --depth 1 shows ingest as one white box still wearing the subtree's `net` and
+      `unsafe` badges.
 - [ ] `W0409` in ply-check — redundant parent-to-descendant edge lint (§5.3, specced;
       renderer draws nothing for such edges).
 - [ ] Cross-container edge routing — edges into another component's descendant
