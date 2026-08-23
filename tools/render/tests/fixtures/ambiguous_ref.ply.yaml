@@ -1,0 +1,17 @@
+ply: 1
+components:
+  alpha:
+    anchor: app::alpha
+    components:
+      shared:
+        anchor: app::alpha::shared
+  beta:
+    anchor: app::beta
+    components:
+      shared:
+        anchor: app::beta::shared
+  sink:
+    anchor: app::sink
+
+edges:
+  - "shared -> sink"

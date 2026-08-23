@@ -187,7 +187,11 @@ model. Merge order cannot matter: duplicate component names are errors. **The JS
 at `schema/ply.schema.json` is the normative definition of the format**; this section is
 its prose rendering, and any divergence is a bug in this section. The schema is embedded
 in the binary, shipped in the repo, versioned by the top-level `ply: 1` field, and
-golden-tested. `cargo ply skill` embeds it in the generated skill file.
+golden-tested. `cargo ply skill` embeds it in the generated skill file. The embedded
+copy is authoritative: Ply never reads a schema from the target workspace, so editing an
+on-disk copy changes nothing at runtime — the shipped file exists as read-only reference
+and for IDE tooling. The grammar evolves only through Ply releases and the `ply:`
+version field.
 
 Everything is declarative data. The only embedded syntaxes are:
 1. **check strings** — `test | fuzz(N)? | bounded(K)? | prove | mutate`.
@@ -467,6 +471,8 @@ cargo ply tree               # verdict tree, worst-of aggregation, assumption ch
 cargo ply worklist           # unresolved markers + weak specs (W0502) + stale claims (W0302)
 cargo ply audit              # trust surface: profile escapes, assumed contracts, derived fns
 cargo ply accept [id|--all]  # re-record fingerprints in ply.lock (§5.2)
+cargo ply doctor             # engine presence + versions vs pins; prints the exact
+                             # install command for each missing engine, never installs
 cargo ply synth <fn>         # M6
 cargo ply skill              # (re)generate docs/PLY.skill.md from schema + diag registry
 ```

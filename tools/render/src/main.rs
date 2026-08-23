@@ -37,7 +37,13 @@ fn main() -> ExitCode {
         }
     };
 
-    let svg = render_svg(&doc);
+    let svg = match render_svg(&doc) {
+        Ok(svg) => svg,
+        Err(e) => {
+            eprintln!("error: {} could not be rendered: {e}", cli.input.display());
+            return ExitCode::FAILURE;
+        }
+    };
 
     match cli.out {
         Some(path) => {

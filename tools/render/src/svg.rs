@@ -325,7 +325,48 @@ fn any_node_svg(x: f64, y: f64) -> String {
     )
 }
 
-pub fn render_svg(doc: &Document) -> String {
+/// A `ply.yaml` document that failed to render — currently only raised for
+/// an ambiguous bare component reference in an edge or deny string (§5.1a
+/// rule 6; `E0206` in the full tool). This renderer refuses to guess.
+#[derive(Debug)]
+pub struct RenderError(pub String);
+
+impl std::fmt::Display for RenderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for RenderError {}
+
+/// Resolves an edge/deny endpoint token to the component it names (§5.1a
+/// rule 6): a token containing `.` is a fully qualified path (`parent.child`),
+/// matched exactly against `positions`; a bare token (no `.`) resolves only
+/// if its leaf name is unique across the whole merged component tree —
+/// otherwise it is `E0206 ambiguous component reference`, naming every
+/// qualified path it could mean. Returns `Ok(None)` for a token that matches
+/// nothing at all (the caller treats that edge/deny as a no-op, consistent
+/// with this renderer's philosophy of drawing exactly what resolves and
+/// nothing more).
+fn resolve(
+    token: &str,
+    positions: &IndexMap<String, Rect>,
+    leaf_index: &IndexMap<String, Vec<String>>,
+) -> Result<Option<Rect>, RenderError> {
+    if token.contains('.') {
+        return Ok(positions.get(token).copied());
+    }
+    match leaf_index.get(token) {
+        None => Ok(None),
+        Some(paths) if paths.len() == 1 => Ok(positions.get(&paths[0]).copied()),
+        Some(paths) => Err(RenderError(format!(
+            "ambiguous component reference {token:?}: matches {} — use the dotted qualified form (§5.1a rule 6)",
+            paths.join(", ")
+        ))),
+    }
+}
+
+pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
     let top: Vec<(String, ComponentBox)> = doc
         .components
         .iter()
@@ -335,12 +376,12 @@ pub fn render_svg(doc: &Document) -> String {
     let content_w = top.iter().map(|(_, c)| c.width).fold(0.0_f64, f64::max);
     let mut frame_y = FRAME_PAD + FRAME_TITLE_H;
     let mut body = String::new();
-    // Absolute canvas position of every named component (leaf name -> rect),
-    // used to anchor edges and deny rules. Component names are unique across
-    // the whole merged document except for same-named siblings under
-    // different parents (§5.1); the first one encountered wins here — see
-    // the render report for why that ambiguity is a spec-feedback item, not
-    // a bug in this renderer.
+    // Absolute canvas position of every named component, keyed by its fully
+    // qualified dotted path (`parent.child`; a top-level component's own
+    // name, with no prefix, is its own qualified path). §5.1a rule 6: an
+    // edge/deny endpoint may use the bare leaf name only when that name is
+    // unique across the whole merged tree; `leaf_index` (built below) is
+    // what makes that uniqueness check possible.
     let mut positions: IndexMap<String, Rect> = IndexMap::new();
 
     for (name, cbox) in top {
@@ -351,14 +392,20 @@ pub fn render_svg(doc: &Document) -> String {
             .or_insert(Rect { x, y: frame_y, w: cbox.width, h: cbox.height });
         for (n, r) in cbox.positions {
             positions
-                .entry(n)
+                .entry(format!("{name}.{n}"))
                 .or_insert(Rect { x: x + r.x, y: frame_y + r.y, w: r.w, h: r.h });
         }
         frame_y += cbox.height + GAP;
     }
 
+    let mut leaf_index: IndexMap<String, Vec<String>> = IndexMap::new();
+    for qualified in positions.keys() {
+        let leaf = qualified.rsplit('.').next().unwrap_or(qualified);
+        leaf_index.entry(leaf.to_string()).or_default().push(qualified.clone());
+    }
+
     let frame_w = content_w + FRAME_PAD * 2.0;
-    let mut frame_h = frame_y + FRAME_PAD;
+    let frame_h = frame_y + FRAME_PAD;
 
     // §7.1 unresolved marker, registry case: entries with no code anchor
     // pin to the workspace frame itself rather than to any component.
@@ -380,31 +427,24 @@ pub fn render_svg(doc: &Document) -> String {
     let mut edges_svg = String::new();
     for e in &doc.edges {
         if let Ok(edge) = parse_edge(e) {
-            render_edge(&edge, &positions, &mut edges_svg);
+            render_edge(&edge, &positions, &leaf_index, &mut edges_svg)?;
         }
     }
 
-    // Deny rules. §7.1 leaves open how to draw the `*` wildcard pattern;
-    // this renderer's choice is a single shared "any" pseudo-node per
-    // document (a small circle labeled `*`), reused by every deny rule that
-    // names it, rather than one per rule — see the render report.
+    // Deny rules. §7.1 (amended): `*` has no shared identity, so each rule
+    // that names it draws its own pseudo-node — never one shared node that
+    // would visually imply unrelated rules are connected.
     let mut deny_svg = String::new();
-    let any_pos = (FRAME_PAD + 14.0, FRAME_TITLE_H / 2.0 + 6.0);
-    let mut any_used = false;
-    for d in &doc.deny {
+    for (i, d) in doc.deny.iter().enumerate() {
         if let Ok(deny) = parse_deny(d) {
-            any_used |= render_deny(&deny, &positions, any_pos, &mut deny_svg);
+            render_deny(i, &deny, &positions, &leaf_index, frame_w, &mut deny_svg)?;
         }
-    }
-    if any_used {
-        deny_svg.push_str(&any_node_svg(any_pos.0, any_pos.1));
-        frame_h = frame_h.max(any_pos.1 + FRAME_PAD);
     }
 
     let width = frame_w;
     let height = frame_h;
 
-    format!(
+    Ok(format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.1}\" height=\"{height:.1}\" \
          viewBox=\"0 0 {width:.1} {height:.1}\" font-family=\"monospace\" font-size=\"12\">\
          <defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\">\
@@ -415,12 +455,20 @@ pub fn render_svg(doc: &Document) -> String {
          </svg>",
         frame_inner_w = width - 2.0,
         frame_inner_h = height - 2.0,
-    )
+    ))
 }
 
-fn render_edge(edge: &Edge, positions: &IndexMap<String, Rect>, out: &mut String) {
-    let (Some(&from), Some(&to)) = (positions.get(&edge.from), positions.get(&edge.to)) else {
-        return;
+fn render_edge(
+    edge: &Edge,
+    positions: &IndexMap<String, Rect>,
+    leaf_index: &IndexMap<String, Vec<String>>,
+    out: &mut String,
+) -> Result<(), RenderError> {
+    let Some(from) = resolve(&edge.from, positions, leaf_index)? else {
+        return Ok(());
+    };
+    let Some(to) = resolve(&edge.to, positions, leaf_index)? else {
+        return Ok(());
     };
     let (fx, fy) = from.border_toward((to.cx(), to.cy()));
     let (tx, ty) = to.border_toward((from.cx(), from.cy()));
@@ -439,24 +487,64 @@ fn render_edge(edge: &Edge, positions: &IndexMap<String, Rect>, out: &mut String
             ));
         }
     }
+    Ok(())
 }
 
-/// Renders one deny rule; returns true if it referenced the shared `*`
-/// any-node (so the caller draws that pseudo-node once, after the loop).
+/// Renders one deny rule. §7.1 (amended): `*` has no shared identity, so a
+/// rule that names it draws its own pseudo-node, anchored near whichever
+/// side did resolve to a real component (or staggered by rule index, as a
+/// last resort, if neither side resolved).
 fn render_deny(
+    index: usize,
     deny: &Deny,
     positions: &IndexMap<String, Rect>,
-    any_pos: (f64, f64),
+    leaf_index: &IndexMap<String, Vec<String>>,
+    frame_w: f64,
     out: &mut String,
-) -> bool {
-    let from_rect = (deny.from != "*").then(|| positions.get(&deny.from)).flatten().copied();
-    let to_rect = (deny.to != "*").then(|| positions.get(&deny.to)).flatten().copied();
-    let uses_any = deny.from == "*" || deny.to == "*";
+) -> Result<(), RenderError> {
+    let from_rect = if deny.from == "*" {
+        None
+    } else {
+        match resolve(&deny.from, positions, leaf_index)? {
+            Some(r) => Some(r),
+            None => return Ok(()), // unresolvable, non-wildcard pattern: draw nothing
+        }
+    };
+    let to_rect = if deny.to == "*" {
+        None
+    } else {
+        match resolve(&deny.to, positions, leaf_index)? {
+            Some(r) => Some(r),
+            None => return Ok(()),
+        }
+    };
 
-    let from_pt = from_rect.map(|r| (r.cx(), r.cy())).unwrap_or(any_pos);
-    let to_pt = to_rect.map(|r| (r.cx(), r.cy())).unwrap_or(any_pos);
+    let fallback_y = FRAME_TITLE_H / 2.0 + 6.0 + index as f64 * 34.0;
+    let mut any_nodes = String::new();
+
+    let from_pt = if deny.from == "*" {
+        let p = to_rect.map(|r| (14.0, r.cy())).unwrap_or((14.0, fallback_y));
+        any_nodes.push_str(&any_node_svg(p.0, p.1));
+        p
+    } else {
+        let r = from_rect.expect("non-wildcard, unresolved case already returned above");
+        (r.cx(), r.cy())
+    };
+
+    let to_pt = if deny.to == "*" {
+        let p = from_rect
+            .map(|r| (frame_w - 14.0, r.cy()))
+            .unwrap_or((frame_w - 14.0, fallback_y));
+        any_nodes.push_str(&any_node_svg(p.0, p.1));
+        p
+    } else {
+        let r = to_rect.expect("non-wildcard, unresolved case already returned above");
+        (r.cx(), r.cy())
+    };
+
+    out.push_str(&any_nodes);
     if from_pt == to_pt {
-        return uses_any;
+        return Ok(());
     }
 
     let (fx, fy) = from_rect.map_or(from_pt, |r| r.border_toward(to_pt));
@@ -482,5 +570,5 @@ fn render_deny(
     }
     out.push_str("</g>");
 
-    uses_any
+    Ok(())
 }
