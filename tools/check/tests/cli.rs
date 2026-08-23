@@ -13,7 +13,7 @@ fn run(args: &[&str]) -> std::process::Output {
 
 #[test]
 fn clean_fixture_exits_zero_with_no_output() {
-    let out = run(&["../render/tests/fixtures/spsc.ply.yaml"]);
+    let out = run(&["../../vetting/001-spsc-disruptor.ply.yaml"]);
     assert!(out.status.success(), "expected exit 0, got: {out:?}");
     assert!(out.stdout.is_empty(), "clean run should print nothing, got: {out:?}");
 }

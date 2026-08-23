@@ -358,10 +358,18 @@ Boolean Rust expressions over the function's parameters and `result`; literals (
 bool, char, string); calls to `pure`-marked helper fns; `==,!=,<,<=,>,>=`; `&&,||,!`;
 arithmetic; field access; `.len()`; `.is_ok()/.is_err()/.is_some()`; `matches!()`. The
 list is closed: any construct outside it — indexing, other method calls, paths to
-constants, closures other than the `|result| expr` ensures form, `old()` (pre-state
-references, noted as planned) — is rejected with `E0501` naming the construct. No side
-effects (checked syntactically). Identifiers must resolve to parameters or `result`,
-sanity-checked against the anchored signature.
+constants, closures other than the `|result| expr` ensures form — is rejected with
+`E0501` naming the construct. No side effects (checked syntactically). Identifiers must
+resolve to parameters or `result`, sanity-checked against the anchored signature.
+
+`old(expr)` — the value `expr` had on entry — is admitted in `ensures` only, with `expr`
+itself drawn from this subset and `old()` non-nested. It exists because single-state
+postconditions cannot correctly specify anything that mutates (vetting 001: the
+push/pop contracts flagged correct code without it). Engines: Kani maps it to
+`kani::old(expr)`; generated test/fuzz harnesses evaluate `expr` before the call and
+substitute the snapshot. `old()` in `requires` is meaningless and rejected (`E0501`).
+Full two-state/model-based specs (sequence histories, FIFO ordering) remain out of
+scope — `old()` is the single two-state primitive.
 
 A `#[ply::pure]` helper called from any contract is a trust surface, not a free pass. It
 is always checked for capability use — a pure fn that touches any capability is an error
@@ -495,6 +503,23 @@ carries `{ id, kind, anchor, content_hash, verdict, statuses, worst_descendant,
 open_items }`. `verdict` is the node's own claim status; `worst_descendant` implements
 D6 over the evidence order; `statuses` and `open_items` (unresolved markers, weak specs,
 conditional or stale verdicts) propagate upward as counts.
+
+Aggregation rules the verdict kernel (`tools/kernel`) checks exhaustively and the tool
+must preserve:
+
+- **Kinds only.** The evidence order compares the six kinds; the `n`/`k` parameters of
+  `fuzzed(n)`/`bounded(k)` are reported in the verdict, never compared. Two claims of
+  the same kind are the same rung — the ladder's pressure is toward a stronger kind,
+  not a bigger number.
+- **Only claimable items contribute their own evidence.** fns fold their own verdict
+  into `worst_descendant`; containers (workspace, components) fold over children only.
+  A container with no claimable descendants reads `unclaimed`. (The literal uniform
+  fold would make every container read `unclaimed` forever, since containers carry no
+  claims of their own.)
+- **`open_items` counts flag instances, not flagged nodes**: a node carrying two
+  statuses contributes 2. The count is triage pressure and must not lose information.
+- **`conditional` structurally carries its assumptions** (D5): a conditional status
+  without an assumptions list is unrepresentable in the kernel, not validated against.
 
 `tree --json` emits this tree (D10). Human-facing `tree` renders it as an indented
 tree, one line per node, worst first; `--depth N` limits depth and `--focus <id>`
@@ -725,7 +750,8 @@ compiler-scale work, not a thin adapter)
 Out of scope entirely: concurrency verification (loom, weak-memory models, lock-free
 data structures — deliberately excluded, not forgotten; the engines here check
 single-threaded behavior), canvas/GUI, data-flow (`~>`) checking, LSP/editor integration,
-`old()`-style two-state contracts, the `induct` check, cross-crate `stub_verified`,
+model-based two-state specs beyond `old()` (sequence histories, FIFO ordering — `old()`
+itself is in scope, §5.4a), the `induct` check, cross-crate `stub_verified`,
 proof-backed mutation, async fns in verified components, and the internals of crates
 outside the workspace.
 

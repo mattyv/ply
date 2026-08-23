@@ -7,25 +7,28 @@
 //! ## The enumeration bound (stated per the task brief)
 //!
 //! Every tree with **1 to 4 total nodes**, **depth <= 3**, **<= 3 children
-//! per node**, where each node's own (evidence, statuses, assumptions) is
-//! drawn from an 18-option representative config space: 6 [`Evidence`]
-//! levels x {no status, `Conditional`, another status}.
+//! per node**, where each node's own (kind, statuses, conditional) is drawn
+//! from a 21-option representative config space: 7 [`NodeKind`] shapes (6
+//! `Claimable` evidence levels + `Container`) x 3 representative status
+//! shapes (no status, conditional, another status).
 //!
-//! That representative status reduction is deliberate: SPEC.md D6 says
-//! statuses "do not sit in [the evidence] order" and all propagate the same
-//! way (union upward, count upward) *except* `Conditional`, which alone
-//! carries an extra assumptions-list obligation (D5, standing obligation 2).
-//! So one stand-in "another status" (mapped to `Stale`) represents the
-//! other six kinds (`Stale`/`WeakSpec`/`Unsupported`/`EngineMissing`/
-//! `Timeout`/`Inconclusive`), which fold identically under union+count; a
-//! node carrying two flags at once (e.g. `Conditional` *and* `Stale`
-//! together) is deliberately left out of this representative set -- the
-//! union/count fold is checked per flag independently and combining two
-//! flags on one node exercises no logic that combining them across two
-//! *different* nodes (which every multi-node tree in this corpus already
-//! does) doesn't already cover. `Conditional` gets its own dedicated slot
-//! because its propagation rule is genuinely different, not just "another
-//! flag."
+//! The status reduction is deliberate: SPEC.md D6/§7 says statuses "do not
+//! sit in [the evidence] order" and all propagate the same way (union
+//! upward, count upward) *except* `conditional`, which alone carries an
+//! extra assumptions-list obligation (D5, standing obligation 2). So one
+//! stand-in "another status" (mapped to `Stale`) represents the other five
+//! kinds (`Stale`/`WeakSpec`/`Unsupported`/`EngineMissing`/`Timeout`/
+//! `Inconclusive`), which fold identically under union+count; a node
+//! carrying two flags at once is deliberately left out of this
+//! representative set -- the union/count fold is checked per flag
+//! independently, and every multi-node tree in this corpus already
+//! exercises combining two *different* flags across two *different* nodes.
+//!
+//! The `NodeKind` dimension is what SPEC.md §7's amendment added: a
+//! `Container` config carries no evidence of its own by construction, so
+//! this corpus now covers both "claimable node with real evidence" and
+//! "container with none" at every position in every enumerated shape,
+//! including containers with zero, one, or several claimable descendants.
 //!
 //! Capping *total node count* at 4 (rather than letting every one of <=3
 //! children independently be a full <=3-children subtree at every one of 3
@@ -38,9 +41,9 @@
 //! structural extremes that matter for these invariants: a depth-3 chain
 //! (root -> child -> grandchild -> great-grandchild, exercising multi-level
 //! fold-through) and a width-3 branch (root with 3 leaf children, exercising
-//! fold-across-siblings), while keeping the corpus at roughly 537K trees --
+//! fold-across-siblings), while keeping the corpus at roughly 991K trees --
 //! verified below to run in seconds even in an unoptimized debug build.
-use ply_kernel::{aggregate, AggregatedNode, Evidence, StatusKind, VerdictNode};
+use ply_kernel::{aggregate, AggregatedNode, Evidence, NodeKind, StatusKind, VerdictNode};
 use std::collections::BTreeSet;
 
 const ALL_EVIDENCE: [Evidence; 6] = [
@@ -55,9 +58,10 @@ const ALL_EVIDENCE: [Evidence; 6] = [
 const MAX_NODES: usize = 4;
 const MAX_DEPTH: u32 = 3;
 const MAX_CHILDREN: usize = 3;
-/// Every `Conditional` node in this corpus carries this exact assumption
-/// text, so the expected aggregated assumptions list is always either empty
-/// or exactly `[ASSUMED_CONTRACT]` -- a crisp oracle, not just "non-empty".
+/// Every conditional node in this corpus carries this exact assumption
+/// text, so the expected aggregated assumptions list is always either
+/// `None` or exactly `Some([ASSUMED_CONTRACT])` -- a crisp oracle, not just
+/// "non-empty".
 const ASSUMED_CONTRACT: &str = "assumed contract";
 
 #[derive(Clone, Copy)]
@@ -69,16 +73,20 @@ enum StatusShape {
 
 #[derive(Clone, Copy)]
 struct Config {
-    evidence: Evidence,
+    kind: NodeKind,
     status: StatusShape,
 }
 
-/// 6 evidence levels x 3 representative status shapes = 18 configs.
+/// 7 node-kind shapes (6 `Claimable` evidence levels + `Container`) x 3
+/// representative status shapes = 21 configs.
 fn all_configs() -> Vec<Config> {
+    let mut kinds: Vec<NodeKind> = ALL_EVIDENCE.iter().map(|&e| NodeKind::Claimable(e)).collect();
+    kinds.push(NodeKind::Container);
+
     let mut out = Vec::new();
-    for &evidence in &ALL_EVIDENCE {
+    for &kind in &kinds {
         for status in [StatusShape::None, StatusShape::Conditional, StatusShape::Other] {
-            out.push(Config { evidence, status });
+            out.push(Config { kind, status });
         }
     }
     out
@@ -87,18 +95,15 @@ fn all_configs() -> Vec<Config> {
 impl Config {
     fn node(&self, children: Vec<VerdictNode>) -> VerdictNode {
         let mut statuses = BTreeSet::new();
-        let mut assumptions = Vec::new();
-        match self.status {
-            StatusShape::None => {}
-            StatusShape::Conditional => {
-                statuses.insert(StatusKind::Conditional);
-                assumptions.push(ASSUMED_CONTRACT.to_string());
-            }
+        let conditional = match self.status {
+            StatusShape::None => None,
+            StatusShape::Conditional => Some(vec![ASSUMED_CONTRACT.to_string()]),
             StatusShape::Other => {
                 statuses.insert(StatusKind::Stale);
+                None
             }
-        }
-        VerdictNode { evidence: self.evidence, statuses, assumptions, children }
+        };
+        VerdictNode { kind: self.kind, statuses, conditional, children }
     }
 }
 
@@ -173,15 +178,25 @@ fn all_trees(max_nodes: usize, configs: &[Config]) -> Vec<VerdictNode> {
 // --- Independent oracle: computed by a plain walk over `VerdictNode`,
 // never calling `aggregate` itself, so it can't share a bug with it. ---
 
-fn naive_min_evidence(node: &VerdictNode) -> Evidence {
-    node.children
-        .iter()
-        .map(naive_min_evidence)
-        .fold(node.evidence, Evidence::min)
+/// The min over *claimable-only* own-evidence in the subtree, `None` if the
+/// subtree contains no claimable node at all. A `Container` contributes
+/// nothing of its own; it only passes through whatever its children found.
+fn naive_min_claimable_evidence(node: &VerdictNode) -> Option<Evidence> {
+    let own = match node.kind {
+        NodeKind::Claimable(e) => Some(e),
+        NodeKind::Container => None,
+    };
+    node.children.iter().fold(own, |acc, child| {
+        match (acc, naive_min_claimable_evidence(child)) {
+            (None, x) => x,
+            (x, None) => x,
+            (Some(a), Some(b)) => Some(a.min(b)),
+        }
+    })
 }
 
 fn naive_has_conditional(node: &VerdictNode) -> bool {
-    node.statuses.contains(&StatusKind::Conditional) || node.children.iter().any(naive_has_conditional)
+    node.conditional.is_some() || node.children.iter().any(naive_has_conditional)
 }
 
 fn naive_statuses_union(node: &VerdictNode) -> BTreeSet<StatusKind> {
@@ -193,7 +208,8 @@ fn naive_statuses_union(node: &VerdictNode) -> BTreeSet<StatusKind> {
 }
 
 fn naive_open_items(node: &VerdictNode) -> usize {
-    node.statuses.len() + node.children.iter().map(naive_open_items).sum::<usize>()
+    let own = node.statuses.len() + if node.conditional.is_some() { 1 } else { 0 };
+    own + node.children.iter().map(naive_open_items).sum::<usize>()
 }
 
 /// Checks every node of `node`/`agg` (a matched pair from the input tree and
@@ -203,26 +219,21 @@ fn naive_open_items(node: &VerdictNode) -> usize {
 /// several distinct counterexamples at once (mirrors the `unstyled` Vec
 /// pattern in tools/render/tests/render.rs).
 fn check_subtree(node: &VerdictNode, agg: &AggregatedNode, offending: &mut Vec<String>) {
-    let expected_evidence = naive_min_evidence(node);
+    let expected_evidence = naive_min_claimable_evidence(node).unwrap_or(Evidence::Unclaimed);
     if agg.evidence != expected_evidence {
         offending.push(format!(
-            "evidence mismatch: expected worst-of {expected_evidence:?}, got {:?}, for subtree {node:#?}",
+            "evidence mismatch: expected worst-of-claimable {expected_evidence:?}, got {:?}, for subtree {node:#?}",
             agg.evidence
         ));
     }
 
     let expects_conditional = naive_has_conditional(node);
-    if agg.statuses.contains(&StatusKind::Conditional) != expects_conditional {
+    let expected_conditional: Option<Vec<String>> =
+        if expects_conditional { Some(vec![ASSUMED_CONTRACT.to_string()]) } else { None };
+    if agg.conditional != expected_conditional {
         offending.push(format!(
-            "conditional flag mismatch: expected present={expects_conditional}, for subtree {node:#?}"
-        ));
-    }
-    let expected_assumptions: Vec<String> =
-        if expects_conditional { vec![ASSUMED_CONTRACT.to_string()] } else { Vec::new() };
-    if agg.assumptions != expected_assumptions {
-        offending.push(format!(
-            "assumptions mismatch: expected {expected_assumptions:?}, got {:?}, for subtree {node:#?}",
-            agg.assumptions
+            "conditional mismatch: expected {expected_conditional:?}, got {:?}, for subtree {node:#?}",
+            agg.conditional
         ));
     }
 
@@ -249,21 +260,18 @@ fn check_subtree(node: &VerdictNode, agg: &AggregatedNode, offending: &mut Vec<S
 
 /// Standing obligations 1, 2, 3, and 4, checked at every node of every tree
 /// in the corpus (not just the root -- a bug could plausibly show up only at
-/// an interior node): worst-of evidence and violation-reaches-root (1 and
-/// 3), conditional+assumptions propagation (2, via the naive oracle), and
-/// determinism (4, via a second independent `aggregate()` call on the same
-/// tree). One pass, one corpus build -- an earlier version split this into
-/// two `#[test]` functions that each built the ~537K-tree corpus from
-/// scratch, roughly doubling wall-clock time for no added coverage, since
-/// every tree needs the same oracle walk either way.
+/// an interior node): worst-of-claimable evidence with the container's
+/// "reads unclaimed" case (1 and 3), conditional+assumptions propagation (2,
+/// via the naive oracle), and determinism (4, via a second independent
+/// `aggregate()` call on the same tree). One pass, one corpus build.
 #[test]
 fn aggregate_matches_naive_oracle_over_every_small_tree() {
     let configs = all_configs();
     let trees = all_trees(MAX_NODES, &configs);
-    assert!(
-        trees.len() > 400_000,
-        "sanity check on the enumeration bound itself: expected roughly 537K trees, got {}",
-        trees.len()
+    assert_eq!(
+        trees.len(),
+        991_389,
+        "enumeration bound changed shape -- update this crate's doc comments too if intentional"
     );
 
     let mut offending: Vec<String> = Vec::new();

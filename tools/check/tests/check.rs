@@ -18,7 +18,7 @@ const KNOWN_CODES: &[&str] = &["E0203", "E0205", "E0206", "E0304", "E0504"];
 #[test]
 fn clean_render_fixtures_produce_no_diagnostics() {
     for path in [
-        "../render/tests/fixtures/spsc.ply.yaml",
+        "../../vetting/001-spsc-disruptor.ply.yaml",
         "../render/tests/fixtures/full.ply.yaml",
         "../render/tests/fixtures/qualified_refs.ply.yaml",
     ] {
@@ -90,7 +90,7 @@ fn ambiguous_bare_reference_is_e0206() {
 #[test]
 fn every_diagnostic_carries_a_known_spec_code() {
     for path in [
-        "../render/tests/fixtures/spsc.ply.yaml",
+        "../../vetting/001-spsc-disruptor.ply.yaml",
         "../render/tests/fixtures/full.ply.yaml",
         "../render/tests/fixtures/qualified_refs.ply.yaml",
         "../render/tests/fixtures/ambiguous_ref.ply.yaml",

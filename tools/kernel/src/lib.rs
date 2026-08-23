@@ -7,36 +7,38 @@
 //! that carve-out, kept dependency-free so its four standing invariants
 //! (below) can be checked exhaustively and, once Kani is installed, proved.
 //!
-//! ## Scope and conservative readings
+//! ## Scope
 //!
 //! SPEC.md §7 describes a full tree node as
 //! `{ id, kind, anchor, content_hash, verdict, statuses, worst_descendant,
 //! open_items }`. This kernel models only the part that is pure computation
-//! over already-known verdicts: a node's own [`Evidence`] and [`StatusKind`]
-//! set, plus [`aggregate`], which computes `worst_descendant`/`statuses`/
-//! `open_items` from a tree of such nodes. `id`/`kind`/`anchor`/
-//! `content_hash` are identity and provenance concerns that need a real
-//! codebase to anchor to; they are out of scope here and belong to
-//! `ply-model`/`ply-core`.
+//! over already-known verdicts: a node's own claim ([`NodeKind`]), its own
+//! [`StatusKind`] set and conditional assumptions, plus [`aggregate`], which
+//! computes `worst_descendant`/`statuses`/`open_items` from a tree of such
+//! nodes. `id`/`anchor`/`content_hash` are identity and provenance concerns
+//! that need a real codebase to anchor to; they are out of scope here and
+//! belong to `ply-model`/`ply-core`.
 //!
-//! Where SPEC.md is silent on an exact mechanism, the choices below are
-//! documented at the point they're made, each citing the § or D-number that
-//! motivates it.
+//! SPEC.md §7's paragraph "Aggregation rules the verdict kernel
+//! (`tools/kernel`) checks exhaustively" is now the normative source for the
+//! four rules below; earlier revisions of this file carried conservative
+//! readings for two of them (own-evidence-for-containers, and
+//! conditional/assumptions pairing) that the amendment has since settled --
+//! see the doc comments on [`NodeKind`] and [`VerdictNode::conditional`].
 
 use std::collections::BTreeSet;
 
-/// SPEC.md D6: "Verdicts aggregate upward as worst-of over the evidence
-/// order `violation < unclaimed < tested < fuzzed < bounded < proved`."
-/// Declaration order below *is* that order, so `#[derive(PartialOrd, Ord)]`
-/// gives the comparison for free -- "worst" is simply the smaller value.
+/// SPEC.md D6 / §7: "The evidence order compares the six kinds" --
+/// `violation < unclaimed < tested < fuzzed < bounded < proved`. Declaration
+/// order below *is* that order, so `#[derive(PartialOrd, Ord)]` gives the
+/// comparison for free -- "worst" is simply the smaller value.
 ///
-/// Conservative reading (spec silent): §5.4c's `fuzz(n)` and `bounded(k)`
-/// checks carry a numeric parameter (case count / loop bound). D6's order is
-/// defined only over the six *kinds* of evidence, never over two claims of
-/// the same kind with different n/k (e.g. is `fuzzed(1024)` stronger than
-/// `fuzzed(64)`?). The kernel compares kinds only and carries no n/k payload;
-/// a parameter-aware tie-break, if ever wanted, is a model-layer concern
-/// built on top of this order, not a change to it.
+/// Conservative reading (spec silent): §7 also says the `n`/`k` parameters of
+/// `fuzzed(n)`/`bounded(k)` are "reported in the verdict, never compared" --
+/// two claims of the same kind are the same rung regardless of parameter.
+/// The kernel therefore compares kinds only and carries no n/k payload; a
+/// parameter-aware tie-break, if ever wanted, is a model-layer concern built
+/// on top of this order, not a change to it.
 ///
 /// `#[cfg_attr(kani, derive(kani::Arbitrary))]` mirrors SPEC.md D2's own
 /// idiom (attributes that vanish under plain cargo and activate only under
@@ -53,14 +55,32 @@ pub enum Evidence {
     Proved,
 }
 
-/// SPEC.md §0 / D6: "Statuses ... do not sit in that [evidence] order; they
+/// SPEC.md §7: "Only claimable items contribute their own evidence. fns fold
+/// their own verdict into `worst_descendant`; containers (workspace,
+/// components) fold over children only."
+///
+/// This is a node-kind distinction rather than a sentinel `Evidence` value
+/// so a container is unable to carry its own evidence *by construction*: a
+/// `Container` value simply has no `Evidence` payload to set, so there is no
+/// representable state for "a component claims its own verdict" to be
+/// mistakenly read as one -- the compiler rules it out, not a convention.
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    /// A claimable item (a fn claim, in the real model) with its own
+    /// evidence.
+    Claimable(Evidence),
+    /// workspace or component: no claim of its own, ever.
+    Container,
+}
+
+/// SPEC.md §0 / §7: "Statuses ... do not sit in that [evidence] order; they
 /// propagate upward as flags and open-item counts alongside it." This is the
-/// full status vocabulary named in §0's glossary row for `status`.
+/// status vocabulary named in §0's glossary row for `status`, minus
+/// `conditional` -- see [`VerdictNode::conditional`] for why that one moved
+/// out of this set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StatusKind {
-    /// D5: rests on an assumed (not locally proved) contract. Carries an
-    /// assumptions list on the node that sets it -- see [`VerdictNode::assumptions`].
-    Conditional,
     Stale,
     WeakSpec,
     Unsupported,
@@ -70,126 +90,162 @@ pub enum StatusKind {
 }
 
 /// One node of a verdict tree (SPEC.md §7), reduced to exactly what
-/// [`aggregate`] needs: this node's own evidence, its own status flags, the
-/// assumptions backing a `Conditional` status (D5 -- "a conditional verdict
-/// carries an assumptions list"), and its children.
-///
-/// `evidence` and `statuses` are this node's *own* claim, before folding in
-/// any child. A composite node with no direct claim of its own (a component
-/// with no fn claim attached to it directly) is represented the same way a
-/// real one would be: `Evidence::Unclaimed`, empty `statuses`. SPEC.md does
-/// not say composite nodes are exempt from the worst-of fold (D6 states the
-/// rule once, without a composite-node carve-out), so `aggregate` folds
-/// every node's own evidence uniformly, root and leaves alike -- the
-/// literal, uniform reading of "verdicts aggregate upward as worst-of."
+/// [`aggregate`] needs: this node's own claim ([`NodeKind`]), its own status
+/// flags, its own conditional assumptions (if any), and its children.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerdictNode {
-    pub evidence: Evidence,
+    pub kind: NodeKind,
     pub statuses: BTreeSet<StatusKind>,
-    /// D5's assumptions list. Only meaningful when `statuses` contains
-    /// `Conditional`; the kernel does not enforce that pairing on input (a
-    /// node could set `Conditional` with an empty list, or list assumptions
-    /// without the flag) -- it simply reads this field when folding a
-    /// `Conditional` status upward. A stricter model-layer validation could
-    /// reject the mismatched cases; that validation is out of scope for a
-    /// pure aggregation kernel.
-    pub assumptions: Vec<String>,
+    /// SPEC.md §7 / D5: "`conditional` structurally carries its assumptions:
+    /// a conditional status without an assumptions list is unrepresentable
+    /// in the kernel, not validated against." `None` = not conditional;
+    /// `Some(assumptions)` = conditional, with exactly the assumptions it
+    /// rests on riding along in the same value -- there is no way to
+    /// construct "conditional" without also supplying the list, because
+    /// they are the same field rather than a flag plus an independent one
+    /// that could disagree with it.
+    pub conditional: Option<Vec<String>>,
     pub children: Vec<VerdictNode>,
 }
 
 /// The result of [`aggregate`] at one tree position: this node's subtree
 /// (itself plus every descendant) folded into `worst_descendant`, unioned
-/// `statuses`, unioned `assumptions`, and a total `open_items` count.
-/// Mirrors the input tree's shape via `children`.
+/// `statuses`, unioned conditional assumptions, and a total `open_items`
+/// count. Mirrors the input tree's shape via `children`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AggregatedNode {
-    /// SPEC.md §7's `worst_descendant`: the worst-of (D6) over this node's
-    /// own evidence and every descendant's own evidence.
+    /// SPEC.md §7's `worst_descendant`: the worst-of (D6) over every
+    /// *claimable* node's own evidence in the subtree. `Evidence::Unclaimed`
+    /// exactly when the subtree contains no claimable node at all (§7: "A
+    /// container with no claimable descendants reads `unclaimed`").
     pub evidence: Evidence,
     /// Union of this node's own `statuses` and every descendant's own
-    /// `statuses` -- D6: "statuses ... propagate upward as flags."
+    /// `statuses` -- D6/§7: "statuses ... propagate upward as flags."
     pub statuses: BTreeSet<StatusKind>,
-    /// Sorted, deduplicated union of `assumptions` from every node in the
-    /// subtree (self included) whose *own* `statuses` contains `Conditional`
-    /// (D5). This is standing obligation 2: a `Conditional` flag never
-    /// reaches an ancestor without the assumptions that justify it riding
-    /// along with it.
-    pub assumptions: Vec<String>,
-    /// SPEC.md §7's `open_items`, folded as a count. Conservative reading
-    /// (spec silent on the exact arithmetic): §7 lists "unresolved markers,
-    /// weak specs, conditional or stale verdicts" as the kinds of thing that
-    /// count, without saying whether one node with two flags counts once or
-    /// twice. This kernel counts every individual status flag on every node
-    /// in the subtree (so a node carrying both `Conditional` and `Stale`
-    /// contributes 2, and the same `StatusKind` recurring on three nodes
-    /// contributes 3) -- "how many distinct things need attention," the more
-    /// information-preserving reading. Unresolved markers (`ply.yaml`
-    /// registry entries, §5.6) have no representation in this kernel's node
-    /// type -- they anchor to code the kernel never sees -- so they are not
-    /// part of this count; a model layer that also tracks them would add
-    /// its own count to this one.
+    /// Sorted, deduplicated union of the assumptions carried by every node
+    /// in the subtree (self included) whose own [`VerdictNode::conditional`]
+    /// is `Some(_)`. `None` exactly when no node in the subtree is
+    /// conditional -- this is standing obligation 2: a conditional status
+    /// never reaches an ancestor without the assumptions that justify it.
+    pub conditional: Option<Vec<String>>,
+    /// SPEC.md §7's `open_items`, folded as a count: "`open_items` counts
+    /// flag instances, not flagged nodes: a node carrying two statuses
+    /// contributes 2." This kernel counts every `StatusKind` flag plus a
+    /// `conditional` (when present) as one flag instance each, summed over
+    /// every node in the subtree. Unresolved markers (`ply.yaml` registry
+    /// entries, §5.6) have no representation in this kernel's node type --
+    /// they anchor to code the kernel never sees -- so they are not part of
+    /// this count; a model layer that also tracks them would add its own
+    /// count to this one.
     pub open_items: usize,
     pub children: Vec<AggregatedNode>,
+}
+
+fn merge_conditional(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<String>> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(v), None) | (None, Some(v)) => Some(v),
+        (Some(mut v), Some(w)) => {
+            v.extend(w);
+            Some(v)
+        }
+    }
+}
+
+/// Combines two "min over claimable-only evidence so far" accumulators,
+/// where `None` means "no claimable node found yet" rather than any real
+/// evidence value. Not-yet-found must be a true no-op here, never folded in
+/// through `Evidence::min` as if `Unclaimed` were a placeholder identity:
+/// `Unclaimed` is a real, comparable rung (weaker than `Tested` but
+/// stronger than `Violation`), so treating "nothing here" as literal
+/// `Unclaimed` and folding it via `.min()` would let an empty container
+/// wrongly drag down a genuinely stronger claimable sibling or child. (An
+/// earlier version of `aggregate` did exactly this -- see the note on
+/// `aggregate_raw` below.)
+fn combine_claimable(a: Option<Evidence>, b: Option<Evidence>) -> Option<Evidence> {
+    match (a, b) {
+        (None, x) => x,
+        (x, None) => x,
+        (Some(a), Some(b)) => Some(a.min(b)),
+    }
+}
+
+/// The recursive core of [`aggregate`]. Returns the subtree's "min over
+/// claimable-only evidence" as an `Option<Evidence>` (`None` = no claimable
+/// node anywhere in the subtree) *alongside* the public [`AggregatedNode`]
+/// for this position, whose own `evidence` field is that option already
+/// defaulted to `Evidence::Unclaimed` for display (SPEC.md §7: "A container
+/// with no claimable descendants reads `unclaimed`").
+///
+/// The two-value return exists because those are genuinely different
+/// things: a parent folding its children must be able to tell "this child
+/// subtree has no claimable node at all" (skip it -- it contributes
+/// nothing) apart from "this child subtree's real answer happens to be the
+/// value `Unclaimed`" (a genuine claimable leaf that earned no checks --
+/// fold it in like any other evidence value). Both display as `Unclaimed`
+/// on that child's own `AggregatedNode`, but only the raw `Option` lets an
+/// ancestor two levels up combine them correctly. Collapsing to the
+/// defaulted `Evidence` one level too early -- i.e. having `aggregate`
+/// call itself recursively and fold children's already-defaulted
+/// `agg.evidence` via a plain `.min()` -- is precisely the bug
+/// `tests/enumeration.rs` caught: a bare container with one
+/// `Claimable(Tested)` child aggregated to `Unclaimed` instead of `Tested`,
+/// because the container's own placeholder `Unclaimed` won the `.min()`
+/// against the real, stronger child.
+fn aggregate_raw(node: &VerdictNode) -> (Option<Evidence>, AggregatedNode) {
+    let mut raw_evidence = match node.kind {
+        NodeKind::Claimable(e) => Some(e),
+        NodeKind::Container => None,
+    };
+    let mut statuses: BTreeSet<StatusKind> = node.statuses.clone();
+    let mut conditional = node.conditional.clone();
+    let mut open_items = node.statuses.len() + if node.conditional.is_some() { 1 } else { 0 };
+    let mut children = Vec::with_capacity(node.children.len());
+
+    for child in &node.children {
+        let (child_raw, child_agg) = aggregate_raw(child);
+        raw_evidence = combine_claimable(raw_evidence, child_raw);
+        statuses.extend(child_agg.statuses.iter().copied());
+        conditional = merge_conditional(conditional, child_agg.conditional.clone());
+        open_items += child_agg.open_items;
+        children.push(child_agg);
+    }
+
+    if let Some(c) = &mut conditional {
+        c.sort();
+        c.dedup();
+    }
+
+    let evidence = raw_evidence.unwrap_or(Evidence::Unclaimed);
+    (
+        raw_evidence,
+        AggregatedNode { evidence, statuses, conditional, open_items, children },
+    )
 }
 
 /// Fold a verdict tree into its per-node aggregated results (SPEC.md §7,
 /// D6). Pure: no I/O, no randomness, no shared mutable state -- calling it
 /// twice on equal inputs always yields equal outputs (standing obligation
 /// 4). Every collection used for aggregated state (`BTreeSet`, plus a
-/// sorted+deduplicated `Vec` for assumptions) is order-independent by
-/// construction, specifically to avoid the classic footgun where a
-/// hash-based set's iteration order can differ between two otherwise-equal
-/// instances (Rust's `HashSet`/`HashMap` seed their hasher per instance) --
-/// that would make two `AggregatedNode` values compare unequal, or print
-/// differently, for no reason tied to the data itself.
+/// sorted+deduplicated `Vec` for conditional assumptions) is
+/// order-independent by construction, specifically to avoid the classic
+/// footgun where a hash-based set's iteration order can differ between two
+/// otherwise-equal instances (Rust's `HashSet`/`HashMap` seed their hasher
+/// per instance) -- that would make two `AggregatedNode` values compare
+/// unequal, or print differently, for no reason tied to the data itself.
 pub fn aggregate(node: &VerdictNode) -> AggregatedNode {
-    let mut evidence = node.evidence;
-    let mut statuses: BTreeSet<StatusKind> = node.statuses.clone();
-    let mut assumptions: Vec<String> = if node.statuses.contains(&StatusKind::Conditional) {
-        node.assumptions.clone()
-    } else {
-        Vec::new()
-    };
-    let mut open_items = node.statuses.len();
-    let mut children = Vec::with_capacity(node.children.len());
-
-    for child in &node.children {
-        let agg = aggregate(child);
-        // D6 worst-of: `Violation` is declared weakest, so the worst value
-        // in the evidence order is the smaller one -- `.min()` is the fold
-        // that "aggregates upward as worst-of" actually means. (An earlier
-        // version of this line used `.max()`, watched
-        // `aggregate_matches_naive_oracle_over_every_small_tree` in
-        // tests/enumeration.rs fail with a printed counterexample tree
-        // naming exactly this, then was fixed to `.min()`.)
-        evidence = evidence.min(agg.evidence);
-        statuses.extend(agg.statuses.iter().copied());
-        assumptions.extend(agg.assumptions.iter().cloned());
-        open_items += agg.open_items;
-        children.push(agg);
-    }
-
-    assumptions.sort();
-    assumptions.dedup();
-
-    AggregatedNode {
-        evidence,
-        statuses,
-        assumptions,
-        open_items,
-        children,
-    }
+    aggregate_raw(node).1
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn leaf(evidence: Evidence) -> VerdictNode {
+    fn leaf(kind: NodeKind) -> VerdictNode {
         VerdictNode {
-            evidence,
+            kind,
             statuses: BTreeSet::new(),
-            assumptions: Vec::new(),
+            conditional: None,
             children: Vec::new(),
         }
     }
@@ -204,21 +260,47 @@ mod tests {
     }
 
     #[test]
-    fn a_single_leaf_aggregates_to_its_own_evidence() {
-        let agg = aggregate(&leaf(Evidence::Proved));
+    fn a_single_claimable_leaf_aggregates_to_its_own_evidence() {
+        let agg = aggregate(&leaf(NodeKind::Claimable(Evidence::Proved)));
         assert_eq!(agg.evidence, Evidence::Proved);
         assert!(agg.statuses.is_empty());
-        assert!(agg.assumptions.is_empty());
+        assert!(agg.conditional.is_none());
         assert_eq!(agg.open_items, 0);
+    }
+
+    #[test]
+    fn an_empty_container_aggregates_to_unclaimed() {
+        let agg = aggregate(&leaf(NodeKind::Container));
+        assert_eq!(agg.evidence, Evidence::Unclaimed);
+    }
+
+    /// Regression test for the exact bug `tests/enumeration.rs` caught
+    /// during the SPEC.md §7 rework: a container must not seed its own fold
+    /// with a placeholder `Unclaimed` and then `.min()` it against a real,
+    /// stronger claimable child -- that wrongly produces `Unclaimed` here
+    /// instead of `Tested`.
+    #[test]
+    fn a_container_with_one_claimable_child_reports_the_childs_evidence() {
+        let tree = VerdictNode {
+            kind: NodeKind::Container,
+            statuses: BTreeSet::new(),
+            conditional: None,
+            children: vec![leaf(NodeKind::Claimable(Evidence::Tested))],
+        };
+        let agg = aggregate(&tree);
+        assert_eq!(agg.evidence, Evidence::Tested);
     }
 
     #[test]
     fn a_violated_child_drags_a_proved_root_down_to_violation() {
         let tree = VerdictNode {
-            evidence: Evidence::Proved,
+            kind: NodeKind::Container,
             statuses: BTreeSet::new(),
-            assumptions: Vec::new(),
-            children: vec![leaf(Evidence::Violation), leaf(Evidence::Tested)],
+            conditional: None,
+            children: vec![
+                leaf(NodeKind::Claimable(Evidence::Violation)),
+                leaf(NodeKind::Claimable(Evidence::Tested)),
+            ],
         };
         let agg = aggregate(&tree);
         assert_eq!(agg.evidence, Evidence::Violation, "a violation anywhere must reach the root");
@@ -226,19 +308,17 @@ mod tests {
 
     #[test]
     fn conditional_on_a_child_propagates_with_its_assumptions() {
-        let mut conditional_child = leaf(Evidence::Bounded);
-        conditional_child.statuses.insert(StatusKind::Conditional);
-        conditional_child.assumptions = vec!["parser::parse fuzzed(256)".to_string()];
+        let mut conditional_child = leaf(NodeKind::Claimable(Evidence::Bounded));
+        conditional_child.conditional = Some(vec!["parser::parse fuzzed(256)".to_string()]);
 
         let tree = VerdictNode {
-            evidence: Evidence::Proved,
+            kind: NodeKind::Container,
             statuses: BTreeSet::new(),
-            assumptions: Vec::new(),
+            conditional: None,
             children: vec![conditional_child],
         };
         let agg = aggregate(&tree);
-        assert!(agg.statuses.contains(&StatusKind::Conditional));
-        assert_eq!(agg.assumptions, vec!["parser::parse fuzzed(256)".to_string()]);
+        assert_eq!(agg.conditional, Some(vec!["parser::parse fuzzed(256)".to_string()]));
     }
 }
 
@@ -263,28 +343,30 @@ mod kani_proofs {
     /// production `aggregate`, never a re-implementation of it.
     #[derive(kani::Arbitrary, Clone, Copy)]
     struct SymLeaf {
-        evidence: Evidence,
+        kind: NodeKind,
         conditional: bool,
         other_status: bool,
     }
 
     impl SymLeaf {
+        fn own_evidence(&self) -> Option<Evidence> {
+            match self.kind {
+                NodeKind::Claimable(e) => Some(e),
+                NodeKind::Container => None,
+            }
+        }
+
         fn into_node(self, children: Vec<VerdictNode>) -> VerdictNode {
             let mut statuses = BTreeSet::new();
-            let mut assumptions = Vec::new();
-            if self.conditional {
-                statuses.insert(StatusKind::Conditional);
-                assumptions.push("kani-symbolic-assumption".to_string());
-            }
             if self.other_status {
                 statuses.insert(StatusKind::Stale);
             }
-            VerdictNode {
-                evidence: self.evidence,
-                statuses,
-                assumptions,
-                children,
-            }
+            let conditional = if self.conditional {
+                Some(vec!["kani-symbolic-assumption".to_string()])
+            } else {
+                None
+            };
+            VerdictNode { kind: self.kind, statuses, conditional, children }
         }
     }
 
@@ -308,34 +390,52 @@ mod kani_proofs {
             }
             self.root.into_node(children)
         }
+
+        /// The min over claimable-only own-evidence across root + present
+        /// children, `None` if none of them is claimable -- computed
+        /// directly from the symbolic fields, not by calling `aggregate`.
+        fn expected_claimable_min(&self) -> Option<Evidence> {
+            let mut acc = self.root.own_evidence();
+            if self.has_child_a {
+                acc = match (acc, self.child_a.own_evidence()) {
+                    (None, x) => x,
+                    (x, None) => x,
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                };
+            }
+            if self.has_child_b {
+                acc = match (acc, self.child_b.own_evidence()) {
+                    (None, x) => x,
+                    (x, None) => x,
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                };
+            }
+            acc
+        }
     }
 
-    /// Standing obligations 1 and 3: worst-of never reports evidence
-    /// stronger than the weakest own-evidence in the subtree, and in
-    /// particular a `Violation` anywhere reaches the root.
+    /// Standing obligation 1 (as reworded by SPEC.md §7's amendment):
+    /// worst-of never reports evidence stronger than the weakest claimable
+    /// node in the subtree, and reports exactly `Unclaimed` when there is
+    /// none. Standing obligation 3 (violation-reaches-root) is the case of
+    /// this where the weakest claimable node is a `Violation`.
     #[kani::proof]
     fn proof_worst_of_evidence() {
         let t: SymTree = kani::any();
-        let mut expected = t.root.evidence;
-        if t.has_child_a {
-            expected = expected.min(t.child_a.evidence);
-        }
-        if t.has_child_b {
-            expected = expected.min(t.child_b.evidence);
-        }
+        let expected = t.expected_claimable_min().unwrap_or(Evidence::Unclaimed);
 
         let agg = aggregate(&t.build());
         assert_eq!(agg.evidence, expected);
 
-        let any_violation = t.root.evidence == Evidence::Violation
-            || (t.has_child_a && t.child_a.evidence == Evidence::Violation)
-            || (t.has_child_b && t.child_b.evidence == Evidence::Violation);
+        let any_violation = t.root.own_evidence() == Some(Evidence::Violation)
+            || (t.has_child_a && t.child_a.own_evidence() == Some(Evidence::Violation))
+            || (t.has_child_b && t.child_b.own_evidence() == Some(Evidence::Violation));
         if any_violation {
             assert_eq!(agg.evidence, Evidence::Violation);
         }
     }
 
-    /// Standing obligation 2: `Conditional` never disappears without its
+    /// Standing obligation 2: `conditional` never disappears without its
     /// assumptions.
     #[kani::proof]
     fn proof_conditional_carries_its_assumptions() {
@@ -345,9 +445,9 @@ mod kani_proofs {
             || (t.has_child_b && t.child_b.conditional);
 
         let agg = aggregate(&t.build());
-        assert_eq!(agg.statuses.contains(&StatusKind::Conditional), any_conditional);
+        assert_eq!(agg.conditional.is_some(), any_conditional);
         if any_conditional {
-            assert!(!agg.assumptions.is_empty());
+            assert!(!agg.conditional.unwrap().is_empty());
         }
     }
 

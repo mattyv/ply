@@ -196,7 +196,7 @@ fn rendering_is_byte_identical_across_runs() {
 
 #[test]
 fn disruptor_fixture_golden_snapshot() {
-    let svg = render_fixture("tests/fixtures/spsc.ply.yaml");
+    let svg = render_fixture("../../vetting/001-spsc-disruptor.ply.yaml");
     roxmltree::Document::parse(&svg).expect("disruptor svg must be well-formed XML");
     insta::assert_snapshot!(svg);
 }
@@ -222,7 +222,7 @@ fn every_painted_element_resolves_a_style_rule() {
 
     let mut unstyled: Vec<String> = Vec::new();
     for fixture in [
-        "tests/fixtures/spsc.ply.yaml",
+        "../../vetting/001-spsc-disruptor.ply.yaml",
         "tests/fixtures/full.ply.yaml",
         "tests/fixtures/qualified_refs.ply.yaml",
     ] {
@@ -252,14 +252,14 @@ fn every_painted_element_resolves_a_style_rule() {
 
 #[test]
 fn owns_renders_as_a_header_line() {
-    let svg = render_fixture("tests/fixtures/spsc.ply.yaml");
+    let svg = render_fixture("../../vetting/001-spsc-disruptor.ply.yaml");
     assert!(svg.contains("class=\"component-owns\""));
     assert!(svg.contains(">owns disruptor::spsc::Spsc<"));
 }
 
 #[test]
 fn glyphs_are_explained_by_a_hover_title() {
-    let svg = render_fixture("tests/fixtures/spsc.ply.yaml");
+    let svg = render_fixture("../../vetting/001-spsc-disruptor.ply.yaml");
     let doc = roxmltree::Document::parse(&svg).unwrap();
     let titles: Vec<String> = doc
         .descendants()
@@ -308,7 +308,7 @@ fn every_drawn_item_resolves_a_tooltip() {
 
     let mut untitled: Vec<String> = Vec::new();
     for fixture in [
-        "tests/fixtures/spsc.ply.yaml",
+        "../../vetting/001-spsc-disruptor.ply.yaml",
         "tests/fixtures/full.ply.yaml",
         "tests/fixtures/qualified_refs.ply.yaml",
     ] {

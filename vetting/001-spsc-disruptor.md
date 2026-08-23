@@ -25,10 +25,10 @@ impl<T> Spsc<T> {
     #[ply::pure]
     pub fn len(&self) -> usize { ... }   // tail - head, wrapping
 
-    #[ply::ensures(|r| r.is_err() == (self.len() == self.capacity()))]
+    #[ply::ensures(|r| r.is_err() == (old(self.len()) == self.capacity()))]
     pub fn try_push(&self, v: T) -> Result<(), T> { ... }
 
-    #[ply::ensures(|r| r.is_none() == (self.len() == 0))]
+    #[ply::ensures(|r| r.is_none() == (old(self.len()) == 0))]
     pub fn try_pop(&self) -> Option<T> { ... }
 }
 
@@ -94,9 +94,10 @@ profiles:
 
 [![the ring component drawn from this scenario](001-spsc-disruptor.svg)](001-spsc-disruptor.svg)
 
-Produced by `ply-render tools/render/tests/fixtures/spsc.ply.yaml`. That fixture is this
-document's YAML block verbatim — the renderer runs on the scenario itself, not a
-simplification of it.
+Produced by `ply-render vetting/001-spsc-disruptor.ply.yaml`. That file is the
+scenario's canonical YAML (the block above mirrors it); the renderer's and validator's
+test suites both run against it directly, so the tools are exercised on the scenario
+itself, not a simplification of it, and `ply-check` passes it clean.
 
 Every item carries a hover explanation — what `B3` and `F1024` mean, what a capability
 badge licenses, what the shield is attesting. Click through to the SVG to get them:
@@ -146,8 +147,9 @@ Question asked after the render pass: can the declared checks actually run?
    last element. As written, the contracts flag correct code. Third collision with the
    two-state wall, after FIFO ordering — but a much cheaper one to close: Kani has
    `kani::old()` natively, and a fuzz/test harness can evaluate pre-state expressions
-   before the call. → Candidate spec change: admit `old(expr)` as the single two-state
-   primitive.
+   before the call. → Closed 2026-08-23: §5.4a now admits `old(expr)` (ensures-only,
+   non-nested) as the single two-state primitive; the push/pop contracts above are
+   corrected to use it.
 3. **`mutate` on `slot` would report `W0502 weak spec`.** The kill signal is the fn's
    own fuzz harness (D12), whose only oracle is `ensures(r <= mask)` — mutants that
    replace the body with `0` or with `mask` satisfy it on every input and survive.

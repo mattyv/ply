@@ -13,7 +13,7 @@ fn parses_minimal_document() {
 
 #[test]
 fn parses_disruptor_fixture() {
-    let yaml = std::fs::read_to_string("tests/fixtures/spsc.ply.yaml").unwrap();
+    let yaml = std::fs::read_to_string("../../vetting/001-spsc-disruptor.ply.yaml").unwrap();
     let doc = parse_document(&yaml).expect("disruptor fixture should parse");
 
     assert_eq!(doc.ply, 1);
