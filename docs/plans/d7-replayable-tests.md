@@ -228,18 +228,24 @@ u128 model-checking support; two-state specs beyond `old()`.
 
 ## 8. Witness budget — decided 2026-08-23
 
-`--witnesses=N` (default **20**), with `all` and `none` accepted.
+**Witnesses are generated for every falsified executable claim. Default is `all`.**
+`--witnesses=N|none` exists as an explicit opt-out for someone who knowingly wants a fast
+triage pass, and is never the default.
 
-Rationale: witness generation is ~20s of near-fixed overhead per failure (measured on a
-single-`u8` harness, versus 0.05s to detect), so a run with 200 failures would spend over
-an hour recording inputs it already knows. Repair is one-at-a-time in practice — an agent
-fixes a finding, re-runs, and the next batch of witnesses is generated then. Twenty is
-enough to work through without stalling the first run.
+Rationale: §1's second finding is the reason this project exists — feedback without a
+concrete failing input performs little better than none — and §1 states it as a MUST, not
+a preference. A default cap would have silently violated that MUST for every finding past
+the cap, producing exactly the unactionable "something failed somewhere" output Ply is
+built to replace. The witness is not an optional extra on top of the finding; it *is* the
+finding's evidence.
 
-**The cap must never be silent.** Any diagnostic whose witness was skipped for budget
-says so in its own text and names the way to get it — e.g. "witness not generated (budget
-20 reached); re-run with `--witnesses=all` or `--only <fn>` to get the failing input for
-this check." A finding that looks witness-less for a *reason* and one that is witness-less
-because Ply gave up must never be indistinguishable: that is the §8 "a non-result is still
-feedback" rule applied to our own throttling. `W0541`'s `reason` field carries
-`budget_exhausted` for this case, distinct from the render-refusal reasons.
+The cost is real and stays visible rather than being designed around: ~20s of near-fixed
+overhead per failure (measured on a single-`u8` harness, versus 0.05s to detect). That
+makes witness generation the dominant cost of a failing run, so it belongs in the progress
+output ("generating witness 3 of 12…") and it is the first thing to optimise if it ever
+becomes the bottleneck — by making it cheaper, not by skipping it.
+
+When a user *does* opt out with `--witnesses=N|none`, the throttling must announce itself:
+any finding whose witness was skipped says so in its own text and names how to get it
+(`W0541` reason `budget_exhausted`). A finding that is witness-less for a *reason* and one
+that is witness-less because the user capped it must never be indistinguishable.
