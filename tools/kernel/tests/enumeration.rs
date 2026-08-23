@@ -12,7 +12,7 @@
 //! `Claimable` evidence levels + `Container`) x 3 representative status
 //! shapes (no status, conditional, another status).
 //!
-//! The status reduction is deliberate: SPEC.md D6/§7 says statuses "do not
+//! The status reduction is deliberate: Ply-Spec.md D6/§7 says statuses "do not
 //! sit in [the evidence] order" and all propagate the same way (union
 //! upward, count upward) *except* `conditional`, which alone carries an
 //! extra assumptions-list obligation (D5, standing obligation 2). So one
@@ -24,7 +24,7 @@
 //! independently, and every multi-node tree in this corpus already
 //! exercises combining two *different* flags across two *different* nodes.
 //!
-//! The `NodeKind` dimension is what SPEC.md §7's amendment added: a
+//! The `NodeKind` dimension is what Ply-Spec.md §7's amendment added: a
 //! `Container` config carries no evidence of its own by construction, so
 //! this corpus now covers both "claimable node with real evidence" and
 //! "container with none" at every position in every enumerated shape,
@@ -43,7 +43,7 @@
 //! fold-through) and a width-3 branch (root with 3 leaf children, exercising
 //! fold-across-siblings), while keeping the corpus at roughly 991K trees --
 //! verified below to run in seconds even in an unoptimized debug build.
-use ply_kernel::{aggregate, AggregatedNode, Evidence, NodeKind, StatusKind, VerdictNode};
+use ply_kernel::{AggregatedNode, Evidence, NodeKind, StatusKind, VerdictNode, aggregate};
 use std::collections::BTreeSet;
 
 const ALL_EVIDENCE: [Evidence; 6] = [
@@ -80,12 +80,19 @@ struct Config {
 /// 7 node-kind shapes (6 `Claimable` evidence levels + `Container`) x 3
 /// representative status shapes = 21 configs.
 fn all_configs() -> Vec<Config> {
-    let mut kinds: Vec<NodeKind> = ALL_EVIDENCE.iter().map(|&e| NodeKind::Claimable(e)).collect();
+    let mut kinds: Vec<NodeKind> = ALL_EVIDENCE
+        .iter()
+        .map(|&e| NodeKind::Claimable(e))
+        .collect();
     kinds.push(NodeKind::Container);
 
     let mut out = Vec::new();
     for &kind in &kinds {
-        for status in [StatusShape::None, StatusShape::Conditional, StatusShape::Other] {
+        for status in [
+            StatusShape::None,
+            StatusShape::Conditional,
+            StatusShape::Other,
+        ] {
             out.push(Config { kind, status });
         }
     }
@@ -103,7 +110,12 @@ impl Config {
                 None
             }
         };
-        VerdictNode { kind: self.kind, statuses, conditional, children }
+        VerdictNode {
+            kind: self.kind,
+            statuses,
+            conditional,
+            children,
+        }
     }
 }
 
@@ -172,7 +184,9 @@ fn trees_with_exactly(n: usize, depth_budget: u32, configs: &[Config]) -> Vec<Ve
 }
 
 fn all_trees(max_nodes: usize, configs: &[Config]) -> Vec<VerdictNode> {
-    (1..=max_nodes).flat_map(|n| trees_with_exactly(n, MAX_DEPTH, configs)).collect()
+    (1..=max_nodes)
+        .flat_map(|n| trees_with_exactly(n, MAX_DEPTH, configs))
+        .collect()
 }
 
 // --- Independent oracle: computed by a plain walk over `VerdictNode`,
@@ -228,8 +242,11 @@ fn check_subtree(node: &VerdictNode, agg: &AggregatedNode, offending: &mut Vec<S
     }
 
     let expects_conditional = naive_has_conditional(node);
-    let expected_conditional: Option<Vec<String>> =
-        if expects_conditional { Some(vec![ASSUMED_CONTRACT.to_string()]) } else { None };
+    let expected_conditional: Option<Vec<String>> = if expects_conditional {
+        Some(vec![ASSUMED_CONTRACT.to_string()])
+    } else {
+        None
+    };
     if agg.conditional != expected_conditional {
         offending.push(format!(
             "conditional mismatch: expected {expected_conditional:?}, got {:?}, for subtree {node:#?}",

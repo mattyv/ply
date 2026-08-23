@@ -44,7 +44,7 @@ conditional_on_a_child_propagates_with_its_assumptions
    right: Some(["parser::parse fuzzed(256)"])
 ```
 
-This is standing obligation 2 (CLAUDE.md, SPEC.md §7): `conditional` never
+This is standing obligation 2 (CLAUDE.md, Ply-Spec.md §7): `conditional` never
 disappears without its assumptions being discharged.
 
 ## Fault 3 — the validator accepts `bounded(0)` (model)

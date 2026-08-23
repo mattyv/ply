@@ -1,4 +1,4 @@
-//! The `ply.yaml` serde model (SPEC.md §5) plus the three embedded
+//! The `ply.yaml` serde model (Ply-Spec.md §5) plus the three embedded
 //! micro-syntaxes: check strings, edge strings, and deny strings (§5, items 1-3).
 //!
 //! Shared by `ply-render` (SVG drawing) and `ply-check` (document-local
@@ -92,7 +92,7 @@ pub struct UnresolvedEntry {
 
 /// A schema-valid document that failed to parse or validate. Carries the
 /// underlying serde-YAML message (which already names the offending field
-/// and, for `deny_unknown_fields`, suggests nothing further — SPEC.md §5.1a
+/// and, for `deny_unknown_fields`, suggests nothing further — Ply-Spec.md §5.1a
 /// leaves the nearest-known-key suggestion (E0204) to the full `ply check`
 /// implementation; this renderer only needs to refuse cleanly).
 #[derive(Debug)]

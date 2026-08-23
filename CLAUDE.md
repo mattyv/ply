@@ -1,6 +1,6 @@
 # Working on Ply
 
-[SPEC.md](SPEC.md) is the source of truth. Start from it by § reference; amend it rather
+[Ply-Spec.md](Ply-Spec.md) is the source of truth. Start from it by § reference; amend it rather
 than contradicting it. Session rules are §11.
 
 ## Test-driven, always

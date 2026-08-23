@@ -5,7 +5,7 @@ decoder pops and decodes them, an order book applies the ticks. Written to exerc
 everything 001's single component structurally couldn't: the architecture tier
 (edges, flows, deny, capability containment), modular composition (D5), aggregation
 across a real tree, and the first use of `old()` after §5.4a admitted it.
-Run 2026-08-23 against SPEC.md as of that date, with `ply-check` and `ply-render`
+Run 2026-08-23 against Ply-Spec.md as of that date, with `ply-check` and `ply-render`
 live — the first scenario authored with the tools running.
 
 ## The design under test
