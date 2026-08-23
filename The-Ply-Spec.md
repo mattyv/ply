@@ -578,7 +578,10 @@ grammar.**
 
 A collapsed component is one solid-bordered box (never dashed — hollow means *nothing*
 inside; collapsed means *plenty* inside, folded) showing its name, anchor, a contents
-line (`N components · M fns`), and its worst-descendant ceiling/verdict fill. Three
+line (`N components · M fns`), and its worst-descendant ceiling/verdict fill — and it
+draws as a **stack**: one offset card edge behind the box, the "pile of cards" instinct
+for folded content. The three depth-states are preattentive: flat card = fully shown,
+stacked card = content folded behind, dashed = nothing inside at all. Three
 things never fold away: capability badges (union of the subtree's — a collapsed box
 containing `net` still shows `net`), the unresolved-pin count, and the finding count.
 `ply-render --depth N` and `--focus <component>` mirror the tree CLI.

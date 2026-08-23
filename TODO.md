@@ -6,6 +6,10 @@
       at --depth 1 shows ingest as one white box still wearing the subtree's `net` and
       `unsafe` badges. (Starts when the in-flight hollow/gutter agent lands — same
       crate.)
+- [ ] Collapsed boxes draw as a stack (offset card edge behind — §7.1, specced):
+      flat = fully shown, stacked = folded content, dashed = nothing inside. Also:
+      swap 003's committed artifacts (collapsed view becomes 003-trading-system.svg,
+      full depth moves to -full.svg; repoint the default-output regression guard).
 - [ ] **Color SVG config** — make the renderer's palette configurable (the style
       constants: ceiling scale, finding red, ink, amber) instead of hardcoded; must
       keep the §7.1 channel discipline (a config can retune a hue, not repurpose a
