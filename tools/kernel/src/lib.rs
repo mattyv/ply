@@ -166,7 +166,7 @@ fn combine_claimable(a: Option<Evidence>, b: Option<Evidence>) -> Option<Evidenc
     match (a, b) {
         (None, x) => x,
         (x, None) => x,
-        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), Some(b)) => Some(a.max(b)), // FAULT 1: best-of, not worst-of
     }
 }
 
@@ -206,7 +206,7 @@ fn aggregate_raw(node: &VerdictNode) -> (Option<Evidence>, AggregatedNode) {
         let (child_raw, child_agg) = aggregate_raw(child);
         raw_evidence = combine_claimable(raw_evidence, child_raw);
         statuses.extend(child_agg.statuses.iter().copied());
-        conditional = merge_conditional(conditional, child_agg.conditional.clone());
+        // FAULT 2: a child's conditional assumptions are silently dropped
         open_items += child_agg.open_items;
         children.push(child_agg);
     }

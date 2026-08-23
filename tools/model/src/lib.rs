@@ -143,7 +143,7 @@ pub fn parse_check(s: &str) -> Result<Check, String> {
             .trim()
             .parse()
             .map_err(|_| format!("invalid bounded(K) count in {s:?}"))?;
-        if !(1..=64).contains(&k) {
+        if !(0..=64).contains(&k) { // FAULT 3: bounded(0) accepted
             return Err(format!("bounded(K) out of range 1..=64: {s:?}"));
         }
         return Ok(Check::Bounded(k));
