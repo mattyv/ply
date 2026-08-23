@@ -160,6 +160,10 @@ ply/
     adr/                    # one-paragraph ADRs
   .archi/                   # archi-techture diagram bundle: the design's diagrams and
                             # guided tour; the working example of the visual grammar (§7.1)
+  tools/
+    render/                 # static ply.yaml → SVG renderer proving §7.1 total (not the canvas)
+  vetting/                  # design-vetting scenarios: real designs written in ply.yaml
+                            # before the tool exists, with the findings each produced
 ```
 
 Split a module out of ply-core into its own crate only when compile times or a real reuse
@@ -191,7 +195,8 @@ Everything is declarative data. The only embedded syntaxes are:
 2. **edge strings** — `A -> B` declares that component A may call component B (checked).
    `A ~> B : path::Type` declares a data flow (parsed and rendered, NOT checked in v1).
 3. **deny strings** — `PAT -> PAT [except C1, C2]` where `PAT := IDENT | *`.
-4. **Rust expressions** — contract and example strings parsed with `syn::Expr` (§5.4a).
+4. **Rust expressions** — contract strings restricted to the closed subset (§5.4a);
+   example strings are arbitrary Rust expressions (they compile as plain tests).
 
 ### 5.1 Document structure
 
@@ -220,6 +225,9 @@ components:
           - "|result| result.bid <= result.ask"
         examples:                # optional; each a Rust `==` expression string
           - "quote(Instrument { id: 1, tick: 2 }).bid == 4"
+        check_with: { T: u64 }   # optional; concrete types for generic params (§5.4b)
+        trusted:                 # optional; externally-attested claims (§5.4d)
+          - { claim: "cross-thread safety", evidence: "loom test tests/loom_quote.rs" }
         unresolved:              # optional registry links for markers in this fn
           - { id: 147, note: "employee discount undecided" }
 
@@ -331,7 +339,11 @@ for teams that prefer external specs. Because the attributes annotate the real f
 rustc type-checks contract expressions whenever the crate builds under `cfg(kani)`; under
 plain cargo they are inert.
 
-#### 5.4a Spec expression subset (accepted everywhere)
+#### 5.4a Spec expression subset (contracts only)
+
+This subset applies to `requires`/`ensures` — the expressions sent to proof engines.
+`examples` entries are exempt: they are arbitrary Rust `==` expressions, compiled as
+plain `#[test]`s and never translated for an engine.
 
 Boolean Rust expressions over the function's parameters and `result`; literals (integer,
 bool, char, string); calls to `pure`-marked helper fns; `==,!=,<,<=,>,>=`; `&&,||,!`;
@@ -362,6 +374,12 @@ reported fact, never a harness build failure. A user-supplied generator hook (a
 `pure`-marked constructor function named in `ply.yaml`) lifts a type into the supported
 set; its design is validated in the M0 spike.
 
+Generic functions are checkable only through a concrete instantiation: `check_with:
+{ T: u64 }` names one concrete type per type parameter, and every harness for that fn
+instantiates with it. A generic fn without `check_with` is `unsupported` (V0505). One
+instantiation per fn in v1; the verdict names it (e.g. `bounded(3) as T=u64`) so nobody
+mistakes evidence about one instantiation for evidence about all.
+
 #### 5.4c Check → engine mapping
 
 | check | engine | verdict on success |
@@ -383,6 +401,16 @@ is planned, not in v1: Kani's loop-contract support is experimental, and Ply has
 stable-Rust invariant attribute yet. A function's verdict is the strongest evidence its
 passing checks earned; a failing check is a `violation` regardless of what else passed.
 Default checks: `[bounded(2)]` if the fn has any contract, else none.
+
+#### 5.4d Trusted claims
+
+Some load-bearing properties live outside Ply's reach — cross-thread safety proven by a
+loom test, a paper proof, an external audit. A `trusted` entry records such a claim with
+its evidence: `{ claim, evidence }`. Trusted claims change no verdict and run no engine;
+they exist so the tree is honest — without them, a node whose real correctness argument
+is external renders indistinguishably green. They appear in `cargo ply audit` as part of
+the trust surface and carry a distinct visual form (§7.1). An agent must never add or
+edit a `trusted` entry on its own judgment; attestation is a human act.
 
 ### 5.5 Modular composition (D5)
 
@@ -486,11 +514,15 @@ grammar.**
 | worst_descendant | a collapsed box takes its weakest descendant's fill — D6 made visible |
 | assumption chain | thin dotted arrows from a verdict to the contracts it assumed |
 | unresolved marker | numbered pin on the fn or component |
+| trusted claim | hollow shield badge on the node — attested by named evidence, not machine-checked |
 
 Zooming is collapse/expand over the §7 tree and mirrors `tree --depth`/`--focus`. A
 renderer's only input is the §8 envelope — no side channel. The renderer itself stays
 out of scope; this section fixes what any renderer must show. The archi-techture bundle
-in `.archi/` is the working example of the style.
+in `.archi/` is the working example of the style. One deliberate exception: a minimal
+static renderer (`tools/render/`, `ply.yaml` → SVG, no GUI) exists to prove this mapping
+is total — every construct drawable, nothing undrawable admitted. It is a spec-validation
+tool, not the canvas.
 
 ### 7.2 The watermark
 
