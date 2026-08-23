@@ -273,6 +273,11 @@ The schema must encode all of the following; the goldens (§9) pin them.
    range → `E0203`.
 5. **Unresolved ids** are positive integers, unique across the whole merged workspace
    (registry and fn entries together); a duplicate → `E0205`.
+6. **Component references** in edge and deny strings use the component namespace, not
+   Rust paths: a bare name resolves only if it is unique across the whole merged tree;
+   otherwise the dotted qualified form `parent.child` is required. An ambiguous bare
+   reference → `E0206`, listing the candidates. (Discovered in vetting: two parents may
+   legally have same-named children, so `A -> B` alone can be ambiguous.)
 
 ### 5.2 Anchoring & staleness
 
@@ -505,7 +510,7 @@ grammar.**
 | fn claim | leaf chip inside its component's box |
 | `->` edge | solid arrow between boxes |
 | `~>` data flow | dashed arrow labeled with the type |
-| deny | barred red arrow between the matched patterns |
+| deny | barred red arrow between the matched patterns; a `*` pattern draws its own per-rule "any" marker — wildcards have no shared identity, so unrelated rules never appear connected |
 | capabilities / `pure` | badge row on the box; `pure` = a sealed border, no badges |
 | profile | tag on the box |
 | checks list | glyph row on the fn chip |

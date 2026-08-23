@@ -1,0 +1,26 @@
+ply: 1
+components:
+  ring:
+    anchor: disruptor::spsc
+    uses: [unsafe]
+    owns: [disruptor::spsc::Spsc]
+    profile: hot_path
+    fns:
+      slot:
+        checks: [bounded(2), mutate, fuzz(4096)]
+      Spsc::with_capacity:
+        checks: [bounded(2)]
+        check_with: { T: u64 }
+      Spsc::try_push:
+        checks: [bounded(3), fuzz(1024)]
+        check_with: { T: u64 }
+        trusted:
+          - { claim: "SPSC cross-thread safety (happens-before between cursors)",
+              evidence: "loom test tests/loom_spsc.rs" }
+        examples:
+          - "{ let q = Spsc::with_capacity(2); q.try_push(7).is_ok() } == true"
+      Spsc::try_pop:
+        checks: [bounded(3), fuzz(1024)]
+        check_with: { T: u64 }
+profiles:
+  hot_path: [no_panics, exhaustive_match]

@@ -1,0 +1,22 @@
+[package]
+name = "ply-render"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "ply_render"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ply-render"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+clap = { version = "4", features = ["derive"] }
+indexmap = { version = "2", features = ["serde"] }
+
+[dev-dependencies]
+insta = "1"
+roxmltree = "0.20"

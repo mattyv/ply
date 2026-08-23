@@ -1,0 +1,45 @@
+ply: 1
+components:
+  parser:
+    anchor: app::parser
+    uses: [fs, net]
+    profile: hot_path
+    fns:
+      parse:
+        checks: [test, bounded(4)]
+        unresolved:
+          - { id: 147, note: "employee discount undecided" }
+  pricing:
+    anchor: app::pricing
+    pure: true
+    checks: [bounded(2)]
+    components:
+      curves:
+        anchor: app::pricing::curves
+    fns:
+      quote:
+        checks: [bounded(3), fuzz(1024), mutate]
+        check_with: { T: u64 }
+        trusted:
+          - { claim: "cross-thread safety", evidence: "loom test tests/loom_quote.rs" }
+  risk:
+    anchor: app::risk
+  db_raw:
+    anchor: app::db_raw
+    uses: [db]
+  migrations:
+    anchor: app::migrations
+    uses: [db]
+
+edges:
+  - pricing -> parser
+  - "pricing ~> risk : pricing::Quote"
+
+deny:
+  - "* -> db_raw except migrations"
+
+profiles:
+  hot_path: [no_panics, no_trait_objects]
+
+unresolved:
+  - { id: 151, note: "settlement rounding rule TBD" }
