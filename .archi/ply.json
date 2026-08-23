@@ -6,7 +6,6 @@
     "updatedAt": "2026-08-22T15:52:42.000Z",
     "summary": "Initial diagrams from SPEC.md: system architecture, verify pipeline, verdict model"
   },
-  "activeId": "architecture",
   "diagrams": [
     {
       "id": "architecture",
@@ -18,84 +17,935 @@
       },
       "doc": {
         "type": "architecture",
+        "autoLayoutApplied": true,
         "nodes": [
-          { "id": "attrs", "label": "ply-attrs", "files": [], "group": "g-attrs" },
-          { "id": "cfg", "label": "config", "files": [], "group": "g-core" },
-          { "id": "model", "label": "model", "files": [], "group": "g-core" },
-          { "id": "extract", "label": "extract", "files": [], "group": "g-core" },
-          { "id": "arch", "label": "arch", "files": [], "group": "g-core" },
-          { "id": "engines", "label": "engines", "files": [], "group": "g-core" },
-          { "id": "harness", "label": "harness", "files": [], "group": "g-core" },
-          { "id": "diag", "label": "diag", "files": [], "group": "g-core" },
-          { "id": "cli", "label": "ply-cli", "files": [], "group": "g-cli" },
-          { "id": "rustc", "label": "rustc / cargo", "files": [], "group": "g-engines" },
-          { "id": "kani", "label": "Kani (pinned)", "files": [], "group": "g-engines" },
-          { "id": "proptest", "label": "proptest", "files": [], "group": "g-engines" },
-          { "id": "mutants", "label": "cargo-mutants", "files": [], "group": "g-engines" },
-          { "id": "verus", "label": "Verus (optional)", "files": [], "group": "g-engines" },
-          { "id": "miri", "label": "Miri (optional)", "files": [], "group": "g-engines" },
-          { "id": "plyyaml", "label": "ply.yaml + ply.schema.json", "files": [], "group": "g-artifacts" },
-          { "id": "plylock", "label": "ply.lock", "files": [], "group": "g-artifacts" },
-          { "id": "targetply", "label": "target/ply/", "files": [], "group": "g-artifacts" },
-          { "id": "cextests", "label": "tests/ply_cex_*", "files": [], "group": "g-artifacts" },
-          { "id": "envelope", "label": "JSON result envelope", "files": [], "group": "g-artifacts" }
+          {
+            "id": "attrs",
+            "label": "ply-attrs",
+            "files": [],
+            "group": "g-attrs",
+            "x": 221,
+            "y": 42,
+            "step": 8
+          },
+          {
+            "id": "cfg",
+            "label": "config",
+            "files": [],
+            "group": "g-core",
+            "x": 1181,
+            "y": 1053,
+            "step": 3
+          },
+          {
+            "id": "model",
+            "label": "model",
+            "files": [],
+            "group": "g-core",
+            "x": 1082,
+            "y": 1188,
+            "step": 4
+          },
+          {
+            "id": "extract",
+            "label": "extract",
+            "files": [],
+            "group": "g-core",
+            "x": 141.5,
+            "y": 1323,
+            "step": 6
+          },
+          {
+            "id": "arch",
+            "label": "arch",
+            "files": [],
+            "group": "g-core",
+            "x": 141.5,
+            "y": 1484,
+            "step": 7
+          },
+          {
+            "id": "engines",
+            "label": "engines",
+            "files": [],
+            "group": "g-core",
+            "x": 1380.5,
+            "y": 364,
+            "step": 11
+          },
+          {
+            "id": "harness",
+            "label": "harness",
+            "files": [],
+            "group": "g-core",
+            "x": 221,
+            "y": 229,
+            "step": 9
+          },
+          {
+            "id": "diag",
+            "label": "diag",
+            "files": [],
+            "group": "g-core",
+            "x": 518.5,
+            "y": 544,
+            "step": 18
+          },
+          {
+            "id": "cli",
+            "label": "ply-cli",
+            "files": [],
+            "group": "g-cli",
+            "x": 2447.5,
+            "y": 892,
+            "step": 1
+          },
+          {
+            "id": "rustc",
+            "label": "rustc / cargo",
+            "files": [],
+            "group": "g-engines",
+            "x": 2276.5,
+            "y": 544,
+            "step": 12
+          },
+          {
+            "id": "kani",
+            "label": "Kani (pinned)",
+            "files": [],
+            "group": "g-engines",
+            "x": 2478.5,
+            "y": 544,
+            "step": 13
+          },
+          {
+            "id": "proptest",
+            "label": "proptest",
+            "files": [],
+            "group": "g-engines",
+            "x": 2680.5,
+            "y": 544,
+            "step": 14
+          },
+          {
+            "id": "mutants",
+            "label": "cargo-mutants",
+            "files": [],
+            "group": "g-engines",
+            "x": 2882.5,
+            "y": 544,
+            "step": 15
+          },
+          {
+            "id": "verus",
+            "label": "Verus (optional)",
+            "files": [],
+            "group": "g-engines",
+            "x": 3084.5,
+            "y": 544,
+            "step": 16
+          },
+          {
+            "id": "miri",
+            "label": "Miri (optional)",
+            "files": [],
+            "group": "g-engines",
+            "x": 3286.5,
+            "y": 544,
+            "step": 17
+          },
+          {
+            "id": "plyyaml",
+            "label": "ply.yaml + ply.schema.json",
+            "files": [],
+            "group": "g-artifacts",
+            "x": 2867.5,
+            "y": 1188,
+            "step": 2
+          },
+          {
+            "id": "plylock",
+            "label": "ply.lock",
+            "files": [],
+            "group": "g-artifacts",
+            "x": 2902.5,
+            "y": 1323,
+            "step": 5
+          },
+          {
+            "id": "targetply",
+            "label": "target/ply/",
+            "files": [],
+            "group": "g-artifacts",
+            "x": 2689.5,
+            "y": 731,
+            "step": 10
+          },
+          {
+            "id": "cextests",
+            "label": "tests/ply_cex_*",
+            "files": [],
+            "group": "g-artifacts",
+            "x": 2891.5,
+            "y": 731,
+            "step": 19
+          },
+          {
+            "id": "envelope",
+            "label": "JSON result envelope",
+            "files": [],
+            "group": "g-artifacts",
+            "x": 3093.5,
+            "y": 731,
+            "step": 20
+          }
         ],
         "edges": [
-          { "from": "cli", "to": "cfg", "label": "load & merge ply.yaml (§5.1)" },
-          { "from": "cfg", "to": "plyyaml", "label": "validate vs schema (§5)" },
-          { "from": "cfg", "to": "model", "label": "build model (§5.1)" },
-          { "from": "model", "to": "extract", "label": "resolve anchors (§5.2)" },
-          { "from": "model", "to": "plylock", "label": "fingerprint + drift check (D14)" },
-          { "from": "extract", "to": "arch", "label": "crate/item facts (§5.3)" },
-          { "from": "extract", "to": "harness", "label": "item index, contracts, anchors (§4)" },
-          { "from": "attrs", "to": "harness", "label": "cfg_attr(kani,...) harvest/emission (D2)" },
-          { "from": "harness", "to": "targetply", "label": "generated harnesses (§4)" },
-          { "from": "harness", "to": "engines", "label": "plan/run/parse per check (§3)" },
-          { "from": "engines", "to": "rustc", "label": "cargo check --message-format=json" },
-          { "from": "engines", "to": "kani", "label": "cargo kani -Zfunction-contracts (bounded)" },
-          { "from": "engines", "to": "proptest", "label": "target/ply/fuzz/ harness (fuzz)" },
-          { "from": "engines", "to": "mutants", "label": "cargo mutants --re <fn> (mutate)" },
-          { "from": "engines", "to": "verus", "label": "M7, optional (prove)" },
-          { "from": "engines", "to": "miri", "label": "M7, optional" },
-          { "from": "engines", "to": "diag", "label": "parse results → Diagnostic (§8)" },
-          { "from": "diag", "to": "cextests", "label": "render cex as #[test] (D7)" },
-          { "from": "diag", "to": "envelope", "label": "JSON envelope (§8)" },
-          { "from": "envelope", "to": "cli", "label": "returned to caller" }
+          {
+            "from": "cli",
+            "to": "cfg",
+            "label": "load & merge ply.yaml (§5.1)",
+            "vertices": [
+              {
+                "x": 2532.5,
+                "y": 974
+              },
+              {
+                "x": 1266,
+                "y": 1013.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.9703590491555637,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "cfg",
+            "to": "plyyaml",
+            "label": "validate vs schema (§5)",
+            "vertices": [
+              {
+                "x": 1405,
+                "y": 1148.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.05817862245002342,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "cfg",
+            "to": "model",
+            "label": "build model (§5.1)",
+            "vertices": [
+              {
+                "x": 1167,
+                "y": 1148.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.6396574201015901,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "model",
+            "to": "extract",
+            "label": "resolve anchors (§5.2)",
+            "vertices": [
+              {
+                "x": 1044,
+                "y": 1283.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.1004824885839342,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "model",
+            "to": "plylock",
+            "label": "fingerprint + staleness check (D14)",
+            "vertices": [
+              {
+                "x": 1290,
+                "y": 1283.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.048413794409829264,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "extract",
+            "to": "arch",
+            "label": "crate/item facts (§5.3)",
+            "vertices": [
+              {
+                "x": 226.5,
+                "y": 1405
+              },
+              {
+                "x": 226.5,
+                "y": 1444.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.6238095238095238,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "extract",
+            "to": "harness",
+            "label": "item index, contracts, anchors (§4)",
+            "vertices": [
+              {
+                "x": 183,
+                "y": 1283.5
+              },
+              {
+                "x": 183,
+                "y": 1216
+              },
+              {
+                "x": 183,
+                "y": 1148.5
+              },
+              {
+                "x": 183,
+                "y": 1081
+              },
+              {
+                "x": 183,
+                "y": 1013.5
+              },
+              {
+                "x": 183,
+                "y": 974
+              },
+              {
+                "x": 183,
+                "y": 920
+              },
+              {
+                "x": 183,
+                "y": 866
+              },
+              {
+                "x": 183,
+                "y": 826.5
+              },
+              {
+                "x": 183,
+                "y": 759
+              },
+              {
+                "x": 183,
+                "y": 705
+              },
+              {
+                "x": 183,
+                "y": 665.5
+              },
+              {
+                "x": 183,
+                "y": 626
+              },
+              {
+                "x": 183,
+                "y": 572
+              },
+              {
+                "x": 183,
+                "y": 518
+              },
+              {
+                "x": 183,
+                "y": 469
+              },
+              {
+                "x": 183,
+                "y": 392
+              },
+              {
+                "x": 183,
+                "y": 324.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.4631870470850291,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "attrs",
+            "to": "harness",
+            "label": "cfg_attr(kani,...) harvest/emission (D2)",
+            "vertices": [
+              {
+                "x": 306,
+                "y": 124
+              },
+              {
+                "x": 306,
+                "y": 163.5
+              },
+              {
+                "x": 306,
+                "y": 203
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "harness",
+            "to": "targetply",
+            "label": "generated harnesses (§4)",
+            "vertices": [
+              {
+                "x": 306,
+                "y": 324.5
+              },
+              {
+                "x": 306,
+                "y": 392
+              },
+              {
+                "x": 306,
+                "y": 469
+              },
+              {
+                "x": 306,
+                "y": 518
+              },
+              {
+                "x": 306,
+                "y": 572
+              },
+              {
+                "x": 306,
+                "y": 626
+              },
+              {
+                "x": 306,
+                "y": 665.5
+              },
+              {
+                "x": 306,
+                "y": 705
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.0656188984326093,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "harness",
+            "to": "engines",
+            "label": "plan/run/parse per check (§3)",
+            "vertices": [
+              {
+                "x": 1465.5,
+                "y": 324.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.9645999989865489,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "engines",
+            "to": "rustc",
+            "label": "cargo check --message-format=json",
+            "vertices": [
+              {
+                "x": 893.5,
+                "y": 469
+              },
+              {
+                "x": 893.5,
+                "y": 518
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.25535807973010927,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "engines",
+            "to": "kani",
+            "label": "cargo kani -Zfunction-contracts (bounded)",
+            "vertices": [
+              {
+                "x": 1183.5,
+                "y": 469
+              },
+              {
+                "x": 1183.5,
+                "y": 518
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.13181732392229525,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "engines",
+            "to": "proptest",
+            "label": "target/ply/fuzz/ harness (fuzz)",
+            "vertices": [
+              {
+                "x": 1465.5,
+                "y": 469
+              },
+              {
+                "x": 1465.5,
+                "y": 518
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.03728936014773768,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "engines",
+            "to": "mutants",
+            "label": "cargo mutants --re <fn> (mutate)",
+            "vertices": [
+              {
+                "x": 1751.5,
+                "y": 469
+              },
+              {
+                "x": 1751.5,
+                "y": 518
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.14983195117759465,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "engines",
+            "to": "verus",
+            "label": "M7, optional (prove)",
+            "vertices": [
+              {
+                "x": 1993.5,
+                "y": 469
+              },
+              {
+                "x": 1993.5,
+                "y": 518
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.2817698450062812,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "engines",
+            "to": "miri",
+            "label": "M7, optional",
+            "vertices": [
+              {
+                "x": 2155.5,
+                "y": 469
+              },
+              {
+                "x": 2155.5,
+                "y": 518
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.340111527839453,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "engines",
+            "to": "diag",
+            "label": "parse results → Diagnostic (§8)",
+            "vertices": [
+              {
+                "x": 603.5,
+                "y": 469
+              },
+              {
+                "x": 603.5,
+                "y": 518
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.9122903255915624,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "diag",
+            "to": "cextests",
+            "label": "render cex as #[test] (D7)",
+            "vertices": [
+              {
+                "x": 498.5,
+                "y": 626
+              },
+              {
+                "x": 498.5,
+                "y": 665.5
+              },
+              {
+                "x": 498.5,
+                "y": 705
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.038091569636230026,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "diag",
+            "to": "envelope",
+            "label": "JSON envelope (§8)",
+            "vertices": [
+              {
+                "x": 1367.5,
+                "y": 626
+              },
+              {
+                "x": 1367.5,
+                "y": 665.5
+              },
+              {
+                "x": 1367.5,
+                "y": 705
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.28964725337089364,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "envelope",
+            "to": "cli",
+            "label": "returned to caller",
+            "vertices": [
+              {
+                "x": 3189.5,
+                "y": 826.5
+              },
+              {
+                "x": 3189.5,
+                "y": 866
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.0604966405608016,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          }
         ],
         "groups": [
-          { "id": "g-attrs", "label": "ply-attrs (proc-macro crate)" },
-          { "id": "g-core", "label": "ply-core (verification pipeline)" },
-          { "id": "g-cli", "label": "ply-cli (cargo-ply binary)" },
-          { "id": "g-engines", "label": "External engines (subprocesses)" },
-          { "id": "g-artifacts", "label": "Artifacts & generated data" }
+          {
+            "id": "g-attrs",
+            "label": "ply-attrs (proc-macro crate)",
+            "labelPosition": {
+              "x": 6,
+              "y": 6
+            }
+          },
+          {
+            "id": "g-core",
+            "label": "ply-core (verification pipeline)",
+            "labelPosition": {
+              "x": 14,
+              "y": 6
+            }
+          },
+          {
+            "id": "g-cli",
+            "label": "ply-cli (cargo-ply binary)",
+            "labelPosition": {
+              "x": 6,
+              "y": 6
+            }
+          },
+          {
+            "id": "g-engines",
+            "label": "External engines (subprocesses)",
+            "labelPosition": {
+              "x": 14,
+              "y": 6
+            }
+          },
+          {
+            "id": "g-artifacts",
+            "label": "Artifacts & generated data",
+            "labelPosition": {
+              "x": 14,
+              "y": 6
+            }
+          }
         ],
         "comments": {
           "__diagram__": [
-            { "id": "n-diag-1", "text": "Ply is glue + UX over existing checking engines, never a solver (§1). Three crates: ply-attrs (proc macros, §3), ply-core (config/model/extract/arch/engines/harness/diag modules, §4), ply-cli (cargo-ply binary, §4/§6). Engines run as subprocesses, version-detected at startup; a missing engine downgrades affected checks (W0110/engine-missing) but never fails the run (§3). No code exists yet — all nodes are planned and left unanchored.", "ts": 1755877962000 }
+            {
+              "id": "n-diag-1",
+              "text": "Ply is glue + UX over existing checking engines, never a solver (§1). Three crates: ply-attrs (proc macros, §3), ply-core (config/model/extract/arch/engines/harness/diag modules, §4), ply-cli (cargo-ply binary, §4/§6). Engines run as subprocesses, version-detected at startup; a missing engine downgrades affected checks (W0110/engine-missing) but never fails the run (§3). No code exists yet — all nodes are planned and left unanchored.",
+              "ts": 1755877962000
+            }
           ],
           "attrs": [
-            { "id": "n-attrs-1", "text": "Provides #[ply::requires]/#[ply::ensures]/#[ply::pure]/#[ply::allow]/#[ply::derived] and ply::unresolved!(id, note). requires/ensures re-emit the annotated function unchanged plus cfg_attr(kani, kani::requires/ensures) — the real function is instrumented, never a copy (D2, §3).", "ts": 1755877962000 }
+            {
+              "id": "n-attrs-1",
+              "text": "Provides #[ply::requires]/#[ply::ensures]/#[ply::pure]/#[ply::allow]/#[ply::derived] and ply::unresolved!(id, note). requires/ensures re-emit the annotated function unchanged plus cfg_attr(kani, kani::requires/ensures) — the real function is instrumented, never a copy (D2, §3).",
+              "ts": 1755877962000
+            }
+          ],
+          "g-attrs": [
+            {
+              "id": "n-group-attrs-1",
+              "text": "The proc-macro crate. Its only job is turning #[ply::requires]/#[ply::ensures] into cfg_attr(kani, ...) on the real function — plain cargo build is unaffected (D2, §3).",
+              "ts": 1755877962000
+            }
+          ],
+          "g-core": [
+            {
+              "id": "n-group-core-1",
+              "text": "The verification pipeline: config loading, the component/claim model, fact extraction, architecture rules, engine dispatch, harness codegen, and diagnostic assembly (§4). Everything between reading ply.yaml and emitting the JSON envelope lives here.",
+              "ts": 1755877962000
+            }
+          ],
+          "g-cli": [
+            {
+              "id": "n-group-cli-1",
+              "text": "The cargo-ply binary users and agents actually invoke; it wires the ply-core pipeline to subcommands and the --json envelope (§4, §6, §8).",
+              "ts": 1755877962000
+            }
+          ],
+          "g-engines": [
+            {
+              "id": "n-group-engines-1",
+              "text": "The external tools Ply drives as subprocesses and never re-implements — rustc/cargo, Kani, proptest, cargo-mutants, and the optional Verus/Miri (§3). Ply is glue and UX over these, never a solver (§1).",
+              "ts": 1755877962000
+            }
+          ],
+          "g-artifacts": [
+            {
+              "id": "n-group-artifacts-1",
+              "text": "Generated and persisted data the pipeline produces or consumes: the ply.yaml/schema input, the committed ply.lock fingerprints, generated harness code, rendered counterexample tests, and the JSON result envelope.",
+              "ts": 1755877962000
+            }
           ],
           "extract": [
-            { "id": "n-extract-1", "text": "trait Extractor + syn backend: item index, call graph, caps, contract harvest, anchors. syn does no name resolution or macro expansion, so item-tier facts are approximate — every unresolved call site is counted and reported, never silently dropped (D11, W0312, §5.3).", "ts": 1755877962000 }
+            {
+              "id": "n-extract-1",
+              "text": "trait Extractor + syn backend: item index, call graph, caps, contract harvest, anchors. syn does no name resolution or macro expansion, so item-tier facts are approximate — every unresolved call site is counted and reported, never silently dropped (D11, W0312, §5.3).",
+              "ts": 1755877962000
+            }
           ],
           "arch": [
-            { "id": "n-arch-1", "text": "Two tiers (D4): crate-tier from cargo metadata is exact and default-deny (errors A0401/A0405); item-tier from syn is approximate and advisory by default, upgraded to errors under a component's strict: true (A0402–A0407).", "ts": 1755877962000 }
+            {
+              "id": "n-arch-1",
+              "text": "Two tiers (D4): crate-tier from cargo metadata is exact and default-deny (errors A0401/A0405); item-tier from syn is approximate and advisory by default, upgraded to errors under a component's strict: true (A0402–A0407).",
+              "ts": 1755877962000
+            }
           ],
           "harness": [
-            { "id": "n-harness-1", "text": "Codegen: in-crate Kani proof modules (cfg(kani)-gated, sees private items), proptest suites under target/ply/fuzz/, and rendered ply_cex_* tests. Uses plain format-string templates (templates/), not a parser of our own (§4).", "ts": 1755877962000 }
+            {
+              "id": "n-harness-1",
+              "text": "Codegen: in-crate Kani proof modules (cfg(kani)-gated, sees private items), proptest suites under target/ply/fuzz/, and rendered ply_cex_* tests. Uses plain format-string templates (templates/), not a parser of our own (§4).",
+              "ts": 1755877962000
+            }
           ],
           "kani": [
-            { "id": "n-kani-1", "text": "Version pinned in ply.toml and recorded in every evidence fingerprint (D9, D14). stub_verified(g) is only used when g itself passed a Kani contract proof this run in the same crate; any weaker case verifies against an assumed contract and marks the caller conditional (D5, §5.5).", "ts": 1755877962000 }
+            {
+              "id": "n-kani-1",
+              "text": "Version pinned in ply.toml and recorded in every fingerprint (D9, D14). stub_verified(g) is only used when g itself passed a Kani contract proof this run in the same crate; any weaker case verifies against an assumed contract and marks the caller conditional (D5, §5.5).",
+              "ts": 1755877962000
+            }
           ],
           "plylock": [
-            { "id": "n-plylock-1", "text": "Committed. Per claim: item token-stream hash, merged contract text, callee contract hashes, engine name+version+flags, active features, target triple (D14). A verdict is stale when any part changed (W0302); cargo ply accept re-blesses fingerprints and refuses (E0303) nodes whose last run failed (§5.2).", "ts": 1755877962000 }
+            {
+              "id": "n-plylock-1",
+              "text": "Committed. Per claim: item token-stream hash, merged contract text, callee contract hashes, engine name+version+flags, active features, target triple (D14). A verdict is stale when any part changed (W0302); cargo ply accept re-blesses fingerprints and refuses (E0303) nodes whose last run failed (§5.2).",
+              "ts": 1755877962000
+            }
           ],
           "envelope": [
-            { "id": "n-envelope-1", "text": "{ command, ply_version, root: <node tree §7>, diagnostics: [<Diagnostic>] }. Additive changes only after M3; tests/ui goldens are the contract (§8).", "ts": 1755877962000 }
+            {
+              "id": "n-envelope-1",
+              "text": "{ command, ply_version, root: <node tree §7>, diagnostics: [<Diagnostic>] }. Additive changes only after M3; tests/ui goldens are the contract (§8).",
+              "ts": 1755877962000
+            }
           ],
           "diag": [
-            { "id": "n-diag-node-1", "text": "One Diagnostic schema for all engines: code, severity, phase, engine, check, node_id, content_hash, span, counterexample, assumptions, fixes, open_item (§8). Adapters never pass engine stderr/stdout through raw — parsed, or X0901 with raw output attached.", "ts": 1755877962000 }
+            {
+              "id": "n-diag-node-1",
+              "text": "One Diagnostic schema for all engines: code, severity, phase, engine, check, node_id, content_hash, span, counterexample, assumptions, fixes, open_item (§8). Adapters never pass engine stderr/stdout through raw — parsed, or X0901 with raw output attached.",
+              "ts": 1755877962000
+            }
+          ],
+          "cli": [
+            {
+              "id": "547af33ec84e6932",
+              "text": "The `cargo-ply` binary and a newcomer's actual entry point: check | verify | tree | worklist | audit | accept | synth | skill (§4, §6). Every subcommand emits the same JSON envelope under --json (§8), which is the agent-facing surface.",
+              "ts": 1787443917077
+            }
+          ],
+          "plyyaml": [
+            {
+              "id": "a9602e50c8a5b56a",
+              "text": "The declarative source of every claim except inline function contracts: components, checks, capabilities, ownership, profiles, edges, and the unresolved-marker registry (§5, §5.1). The schema at schema/ply.schema.json, not this prose, is the normative definition.",
+              "ts": 1787443917135
+            }
+          ],
+          "cfg": [
+            {
+              "id": "107d2d525aa3f120",
+              "text": "Loads and merges every ply.yaml / *.ply.yaml file in the workspace (lexicographic order, target/ and gitignored paths excluded) and validates the merged document against the normative JSON Schema (§5, §5.1). Malformed input is reported as E0201–E0203 with a JSON-pointer-to-line mapping, never an opaque parse failure.",
+              "ts": 1787443917191
+            }
+          ],
+          "model": [
+            {
+              "id": "f96b4f40bfa5675a",
+              "text": "Holds the parsed components, fn claims, anchors, node IDs, and verdicts (§4). Also owns two behaviours core to a verify run: resolving anchors to real code items (§5.2) and ordering verification callees-before-callers over the call graph (§5.5).",
+              "ts": 1787443917250
+            }
+          ],
+          "targetply": [
+            {
+              "id": "49a13a4eabc4e141",
+              "text": "Everything Ply generates and owns under target/ply/: in-crate Kani proof modules, proptest harness crates, and Verus translations (§4, §6). cargo ply verify deletes generated artifacts whose claims no longer exist.",
+              "ts": 1787443917596
+            }
+          ],
+          "engines": [
+            {
+              "id": "81cfdfb9247f3092",
+              "text": "Defines trait Engine { plan, run, parse } and one adapter per external tool (§3, §4). Each engine is version-detected as a subprocess at startup; a missing engine downgrades only the checks that need it (W0110/engine-missing) and never fails the run (§3).",
+              "ts": 1787443917654
+            }
+          ],
+          "rustc": [
+            {
+              "id": "6e3747615c05d7ba",
+              "text": "Ground truth for the crate-tier architecture facts: cargo metadata gives the exact crate dependency graph (D4), and cargo check --message-format=json is the baseline build/type/borrow check every other engine builds on (§3).",
+              "ts": 1787443917724
+            }
+          ],
+          "proptest": [
+            {
+              "id": "9b2eb53ade5efa91",
+              "text": "Runs the fuzz(n) check: a generated proptest harness under target/ply/fuzz/ exercises the function on n (default 256) generated inputs with shrinking on, using requires as a rejection filter (§5.4c). A failing case becomes the fuzzed(n) verdict's counterexample.",
+              "ts": 1787443917835
+            }
+          ],
+          "mutants": [
+            {
+              "id": "b4d6c1e9c295aef3",
+              "text": "Runs the mutate check: cargo mutants --re <fn> plants small bugs in the function and checks whether the same-list test/fuzz checks kill them (D12). A surviving mutant is reported as a weak spec (W0502), not a pass.",
+              "ts": 1787443917891
+            }
+          ],
+          "verus": [
+            {
+              "id": "8444f342b61cef8e",
+              "text": "Optional prove check (M7): translates the supported spec subset to Verus for an unbounded, no-loop-bound proof (proved verdict), in exchange for a restricted language fragment and more annotation work. Not started without its own ADR justifying the translation cost (§3, milestone M7).",
+              "ts": 1787443917946
+            }
+          ],
+          "miri": [
+            {
+              "id": "404a27addcdfc094",
+              "text": "Optional undefined-behavior check for unsafe Rust (cargo +nightly miri test), landing at M7 alongside Verus. Like every engine, its absence just downgrades the checks that depend on it rather than failing the run (§3).",
+              "ts": 1787443918002
+            }
+          ],
+          "cextests": [
+            {
+              "id": "7caa8f26eb6e6283",
+              "text": "Rendered counterexamples that pass as ordinary cargo test targets, named ply_cex_* (§4, §6, D7). Only emitted when Kani's failing input can be rendered as stable Rust source; otherwise the diagnostic says so (W0541) rather than fabricating one.",
+              "ts": 1787443918115
+            }
           ]
         }
       }
@@ -106,60 +956,297 @@
       "type": "sequence",
       "origin": "llm",
       "generation": {
-        "focus": "What happens on `cargo ply verify`: config load + schema validation → anchor resolution + fingerprint/drift check → fact extraction → callees-first ordering → harness generation → engine run → result parsing → counterexample materialization → Diagnostic assembly → ledger aggregation, per SPEC.md §5.4–5.5 and §7–§8. No code exists yet; participants are planned modules/artifacts left unanchored (files: [])."
+        "focus": "What happens on `cargo ply verify`: config load + schema validation → anchor resolution + fingerprint/staleness check → fact extraction → callees-first ordering → harness generation → engine run → result parsing → counterexample materialization → Diagnostic assembly → verdict tree aggregation, per SPEC.md §5.4–5.5 and §7–§8. No code exists yet; participants are planned modules/artifacts left unanchored (files: [])."
       },
       "doc": {
         "type": "sequence",
         "nodes": [
-          { "id": "user", "label": "Developer / Agent", "files": [] },
-          { "id": "cli", "label": "ply-cli (verify)", "files": [] },
-          { "id": "cfg", "label": "config", "files": [] },
-          { "id": "model", "label": "model", "files": [] },
-          { "id": "extract", "label": "extract", "files": [] },
-          { "id": "lock", "label": "ply.lock", "files": [] },
-          { "id": "harness", "label": "harness", "files": [] },
-          { "id": "targetply", "label": "target/ply/", "files": [] },
-          { "id": "kani", "label": "Kani engine", "files": [] },
-          { "id": "cex", "label": "tests/ply_cex_*", "files": [] },
-          { "id": "diag", "label": "diag", "files": [] },
-          { "id": "ledger", "label": "ledger", "files": [] }
+          {
+            "id": "user",
+            "label": "Developer / Agent",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 1
+          },
+          {
+            "id": "cli",
+            "label": "ply-cli (verify)",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 2
+          },
+          {
+            "id": "cfg",
+            "label": "config",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 3
+          },
+          {
+            "id": "model",
+            "label": "model",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 4
+          },
+          {
+            "id": "extract",
+            "label": "extract",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 6
+          },
+          {
+            "id": "lock",
+            "label": "ply.lock",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 5
+          },
+          {
+            "id": "harness",
+            "label": "harness",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 7
+          },
+          {
+            "id": "targetply",
+            "label": "target/ply/",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 8
+          },
+          {
+            "id": "kani",
+            "label": "Kani engine",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 9
+          },
+          {
+            "id": "cex",
+            "label": "tests/ply_cex_*",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 10
+          },
+          {
+            "id": "diag",
+            "label": "diag",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 11
+          },
+          {
+            "id": "ledger",
+            "label": "verdict tree",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 12
+          }
         ],
         "edges": [
-          { "from": "user", "to": "cli", "label": "cargo ply verify [path|fn] (§6)" },
-          { "from": "cli", "to": "cfg", "label": "load + merge ply.yaml, validate vs schema (§5.1)" },
-          { "from": "cfg", "to": "cli", "label": "validated model, or E0201/E0202/E0203" },
-          { "from": "cli", "to": "model", "label": "resolve anchors (§5.2)" },
-          { "from": "model", "to": "lock", "label": "compare evidence fingerprint (D14)" },
-          { "from": "lock", "to": "model", "label": "fresh, or stale → W0302" },
-          { "from": "model", "to": "extract", "label": "extract crate-tier + item-tier facts (§5.3)" },
-          { "from": "extract", "to": "model", "label": "item index, call graph, caps, anchors" },
-          { "from": "model", "to": "model", "label": "order callees-first over call graph (§5.5)" },
-          { "from": "model", "to": "harness", "label": "generate harness: cfg_attr(kani) contracts, stub_verified if callee proved (D2, D5)" },
-          { "from": "harness", "to": "targetply", "label": "write in-crate proof module / fuzz harness (§4)" },
-          { "from": "harness", "to": "kani", "label": "cargo kani -Zfunction-contracts (§5.4c)" },
-          { "from": "kani", "to": "harness", "label": "verdict + counterexample, if any" },
-          { "from": "harness", "to": "cex", "label": "render cex as #[test] when inputs construct (D7)" },
-          { "from": "harness", "to": "diag", "label": "assemble Diagnostic: code, span, cex, assumptions, fixes (§8)" },
-          { "from": "diag", "to": "ledger", "label": "aggregate worst-of + status propagation (D6, §7)" },
-          { "from": "ledger", "to": "cli", "label": "verdict tree + open items (§7)" },
-          { "from": "cli", "to": "user", "label": "JSON envelope { command, root, diagnostics } (§8)" }
+          {
+            "from": "user",
+            "to": "cli",
+            "label": "cargo ply verify [path|fn] (§6)"
+          },
+          {
+            "from": "cli",
+            "to": "cfg",
+            "label": "load + merge ply.yaml, validate vs schema (§5.1)"
+          },
+          {
+            "from": "cfg",
+            "to": "cli",
+            "label": "validated model, or E0201/E0202/E0203"
+          },
+          {
+            "from": "cli",
+            "to": "model",
+            "label": "resolve anchors (§5.2)"
+          },
+          {
+            "from": "model",
+            "to": "lock",
+            "label": "compare fingerprint (D14)"
+          },
+          {
+            "from": "lock",
+            "to": "model",
+            "label": "fresh, or stale → W0302"
+          },
+          {
+            "from": "model",
+            "to": "extract",
+            "label": "extract crate-tier + item-tier facts (§5.3)"
+          },
+          {
+            "from": "extract",
+            "to": "model",
+            "label": "item index, call graph, caps, anchors"
+          },
+          {
+            "from": "model",
+            "to": "model",
+            "label": "order callees-first over call graph (§5.5)"
+          },
+          {
+            "from": "model",
+            "to": "harness",
+            "label": "generate harness: cfg_attr(kani) contracts, stub_verified if callee proved (D2, D5)"
+          },
+          {
+            "from": "harness",
+            "to": "targetply",
+            "label": "write in-crate proof module / fuzz harness (§4)"
+          },
+          {
+            "from": "harness",
+            "to": "kani",
+            "label": "cargo kani -Zfunction-contracts (§5.4c)"
+          },
+          {
+            "from": "kani",
+            "to": "harness",
+            "label": "verdict + counterexample, if any"
+          },
+          {
+            "from": "harness",
+            "to": "cex",
+            "label": "render cex as #[test] when inputs construct (D7)"
+          },
+          {
+            "from": "harness",
+            "to": "diag",
+            "label": "assemble Diagnostic: code, span, cex, assumptions, fixes (§8)"
+          },
+          {
+            "from": "diag",
+            "to": "ledger",
+            "label": "aggregate worst-of + status propagation (D6, §7)"
+          },
+          {
+            "from": "ledger",
+            "to": "cli",
+            "label": "verdict tree + open items (§7)"
+          },
+          {
+            "from": "cli",
+            "to": "user",
+            "label": "JSON envelope { command, root, diagnostics } (§8)"
+          }
         ],
         "groups": [],
         "comments": {
           "__diagram__": [
-            { "id": "n-vp-diag-1", "text": "Verification is modular: Ply checks every function against its own contract, and checks callers against callees' contracts, never their bodies (§1 finding 3). Verification runs callees-before-callers over the call graph (§5.5). A missing engine downgrades the affected checks (W0110/engine-missing) without failing the run (§3).", "ts": 1755877962000 }
+            {
+              "id": "n-vp-diag-1",
+              "text": "Verification is modular: Ply checks every function against its own contract, and checks callers against callees' contracts, never their bodies (§1 finding 3). Verification runs callees-before-callers over the call graph (§5.5). A missing engine downgrades the affected checks (W0110/engine-missing) without failing the run (§3).",
+              "ts": 1755877962000
+            }
           ],
           "kani": [
-            { "id": "n-vp-kani-1", "text": "stub_verified(g) only when g passed its own Kani contract proof this run in the same crate; otherwise f verifies against g's assumed contract and f's verdict is marked conditional (W0511), listing the assumption (D5, §5.5).", "ts": 1755877962000 }
+            {
+              "id": "n-vp-kani-1",
+              "text": "stub_verified(g) only when g passed its own Kani contract proof this run in the same crate; otherwise f verifies against g's assumed contract and f's verdict is marked conditional (W0511), listing the assumption (D5, §5.5).",
+              "ts": 1755877962000
+            }
           ],
           "lock": [
-            { "id": "n-vp-lock-1", "text": "Fingerprint = item token-stream hash + merged contract text + callee contract hashes + engine name/version/flags + active features + target triple (D14). Mismatch on any part → status stale, diagnostic W0302.", "ts": 1755877962000 }
+            {
+              "id": "n-vp-lock-1",
+              "text": "Fingerprint = item token-stream hash + merged contract text + callee contract hashes + engine name/version/flags + active features + target triple (D14). Mismatch on any part → status stale, diagnostic W0302.",
+              "ts": 1755877962000
+            }
           ],
           "cex": [
-            { "id": "n-vp-cex-1", "text": "Kani playback data is always stored (exact, engine-version-bound). The ordinary #[test] rendering is added only when the inputs can be rendered as stable Rust source; otherwise the diagnostic says so (W0541) — inputs are never fabricated (D7).", "ts": 1755877962000 }
+            {
+              "id": "n-vp-cex-1",
+              "text": "Kani playback data is always stored (exact, engine-version-bound). The ordinary #[test] rendering is added only when the inputs can be rendered as stable Rust source; otherwise the diagnostic says so (W0541) — inputs are never fabricated (D7).",
+              "ts": 1755877962000
+            }
           ],
           "ledger": [
-            { "id": "n-vp-ledger-1", "text": "Worst-of aggregation over evidence order violation < unclaimed < tested < fuzzed < bounded < proved (D6). Statuses (conditional, stale, weak-spec, unsupported, engine-missing, timeout, inconclusive) do not sit in that order — they propagate upward as flags and open-item counts alongside it.", "ts": 1755877962000 }
+            {
+              "id": "n-vp-ledger-1",
+              "text": "Worst-of aggregation over evidence order violation < unclaimed < tested < fuzzed < bounded < proved (D6). Statuses (conditional, stale, weak-spec, unsupported, engine-missing, timeout, inconclusive) do not sit in that order — they propagate upward as flags and open-item counts alongside it.",
+              "ts": 1755877962000
+            },
+            {
+              "id": "3b64ace13adfbbde",
+              "text": "This node's id is kept as 'ledger' for bundle stability (diagram node ids are stable keys); its label and every comment now use the current term, verdict tree (cargo ply tree, §6, §7). The concept and its worst-of aggregation (D6) are unchanged.",
+              "ts": 1787444113847
+            }
+          ],
+          "user": [
+            {
+              "id": "de9993b7f327cc10",
+              "text": "The developer or coding agent that runs cargo ply verify [path|fn] (§6) and receives the JSON envelope back. Ply's diagnostics are written for this reader either way — a human or an agent repairing code from a counterexample (§1 finding 2).",
+              "ts": 1787443918226
+            }
+          ],
+          "cli": [
+            {
+              "id": "b782b90e96fe0d51",
+              "text": "ply-cli's verify entry point. It has no logic of its own here: it drives config load → anchor resolution → extraction → harness generation → engine run → aggregation in order and hands back whatever the verdict tree produces (§5.4–5.5, §7).",
+              "ts": 1787443918283
+            }
+          ],
+          "cfg": [
+            {
+              "id": "1c9b28dce74cf4f5",
+              "text": "Loads and merges every ply.yaml and validates the result against the schema before anything else runs; a bad document fails fast with E0201/E0202/E0203 rather than reaching the engines (§5, §5.1).",
+              "ts": 1787443918341
+            }
+          ],
+          "model": [
+            {
+              "id": "df14a2e7317f8f9e",
+              "text": "Resolves each claim's anchor to a real code item (§5.2) and, once extraction returns facts, orders verification callees-before-callers over the call graph (§5.5) — the step that makes modular composition (D5) possible.",
+              "ts": 1787443918401
+            }
+          ],
+          "extract": [
+            {
+              "id": "9884935b47d2127c",
+              "text": "Produces the item index, call graph, capability approximation, and anchors that model needs to build harnesses and check architecture rules; syn-based, so results are best-effort and every unresolved call site is still counted (D11, §5.3).",
+              "ts": 1787443918522
+            }
+          ],
+          "harness": [
+            {
+              "id": "7211b793f8457426",
+              "text": "Turns a resolved fn claim into runnable checking code: an in-crate Kani proof module, a proptest harness, or both, adding #[kani::stub_verified(g)] only when the callee already has its own passing proof this run (D5, §5.5). Also where the counterexample and Diagnostic get assembled once an engine reports back.",
+              "ts": 1787443918590
+            }
+          ],
+          "targetply": [
+            {
+              "id": "487e49b352d5cd7c",
+              "text": "Where the generated proof modules and fuzz harnesses actually land, under target/ply/, entirely owned and cleaned up by Ply (§4, §6).",
+              "ts": 1787443918650
+            }
+          ],
+          "diag": [
+            {
+              "id": "84d9823849f70fdb",
+              "text": "Assembles the unified Diagnostic — code, span, counterexample, assumptions, fixes — from whatever the engine reported, then hands it to the verdict tree for aggregation (§8). Also the point where a rendered ply_cex_* test gets attached to the diagnostic when possible (D7).",
+              "ts": 1787443918821
+            }
           ]
         }
       }
@@ -175,62 +1262,567 @@
       "doc": {
         "type": "class",
         "nodes": [
-          { "id": "node", "label": "Node", "files": [], "members": ["+ id: node_id", "+ kind: workspace|component|fn", "+ anchor: path", "+ content_hash: blake3", "+ verdict: Verdict", "+ worst_descendant: Verdict", "+ statuses: Status[]", "+ open_items: int"] },
-          { "id": "workspace", "label": "Workspace", "files": [], "members": ["+ command: string", "+ ply_version: string"] },
-          { "id": "component", "label": "Component", "files": [], "members": ["+ strict: bool", "+ uses: cap[]", "+ owns: TypePath[]"] },
-          { "id": "fn", "label": "Fn", "files": [], "members": ["+ checks: Check[]", "+ mode: check|synth"] },
-          { "id": "violation", "label": "violation", "files": [] },
-          { "id": "unclaimed", "label": "unclaimed", "files": [] },
-          { "id": "tested", "label": "tested", "files": [] },
-          { "id": "fuzzed", "label": "fuzzed(n)", "files": [] },
-          { "id": "bounded", "label": "bounded(k)", "files": [] },
-          { "id": "proved", "label": "proved", "files": [] },
-          { "id": "conditional", "label": "conditional", "files": [] },
-          { "id": "stale", "label": "stale", "files": [] },
-          { "id": "weak-spec", "label": "weak-spec", "files": [] },
-          { "id": "unsupported", "label": "unsupported", "files": [] },
-          { "id": "engine-missing", "label": "engine-missing", "files": [] },
-          { "id": "timeout", "label": "timeout", "files": [] },
-          { "id": "inconclusive", "label": "inconclusive", "files": [] }
+          {
+            "id": "node",
+            "label": "Node",
+            "files": [],
+            "members": [
+              "+ id: node_id",
+              "+ kind: workspace|component|fn",
+              "+ anchor: path",
+              "+ content_hash: blake3",
+              "+ verdict: Verdict",
+              "+ worst_descendant: Verdict",
+              "+ statuses: Status[]",
+              "+ open_items: int"
+            ],
+            "x": 0,
+            "y": 0,
+            "step": 1
+          },
+          {
+            "id": "workspace",
+            "label": "Workspace",
+            "files": [],
+            "members": [
+              "+ command: string",
+              "+ ply_version: string"
+            ],
+            "x": 0,
+            "y": 0,
+            "step": 2
+          },
+          {
+            "id": "component",
+            "label": "Component",
+            "files": [],
+            "members": [
+              "+ strict: bool",
+              "+ uses: cap[]",
+              "+ owns: TypePath[]"
+            ],
+            "x": 0,
+            "y": 0,
+            "step": 3
+          },
+          {
+            "id": "fn",
+            "label": "Fn",
+            "files": [],
+            "members": [
+              "+ checks: Check[]",
+              "+ mode: check|synth"
+            ],
+            "x": 0,
+            "y": 0,
+            "step": 4
+          },
+          {
+            "id": "violation",
+            "label": "violation",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 5
+          },
+          {
+            "id": "unclaimed",
+            "label": "unclaimed",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 6
+          },
+          {
+            "id": "tested",
+            "label": "tested",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 7
+          },
+          {
+            "id": "fuzzed",
+            "label": "fuzzed(n)",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 8
+          },
+          {
+            "id": "bounded",
+            "label": "bounded(k)",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 9
+          },
+          {
+            "id": "proved",
+            "label": "proved",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 10
+          },
+          {
+            "id": "conditional",
+            "label": "conditional",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 11
+          },
+          {
+            "id": "stale",
+            "label": "stale",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 12
+          },
+          {
+            "id": "weak-spec",
+            "label": "weak-spec",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 13
+          },
+          {
+            "id": "unsupported",
+            "label": "unsupported",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 14
+          },
+          {
+            "id": "engine-missing",
+            "label": "engine-missing",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 15
+          },
+          {
+            "id": "timeout",
+            "label": "timeout",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 16
+          },
+          {
+            "id": "inconclusive",
+            "label": "inconclusive",
+            "files": [],
+            "x": 0,
+            "y": 0,
+            "step": 17
+          }
         ],
         "edges": [
-          { "from": "workspace", "to": "node", "kind": "generalization" },
-          { "from": "component", "to": "node", "kind": "generalization" },
-          { "from": "fn", "to": "node", "kind": "generalization" },
-          { "from": "workspace", "to": "component", "kind": "composition", "label": "components 1..* (§5.1)" },
-          { "from": "component", "to": "fn", "kind": "composition", "label": "fns 0..* (§5.1)" },
-          { "from": "violation", "to": "unclaimed", "kind": "association", "label": "weaker than (D6)" },
-          { "from": "unclaimed", "to": "tested", "kind": "association", "label": "weaker than (D6)" },
-          { "from": "tested", "to": "fuzzed", "kind": "association", "label": "weaker than (D6)" },
-          { "from": "fuzzed", "to": "bounded", "kind": "association", "label": "weaker than (D6)" },
-          { "from": "bounded", "to": "proved", "kind": "association", "label": "weaker than (D6)" },
-          { "from": "node", "to": "violation", "kind": "dependency", "label": "verdict / worst_descendant range (D6)" },
-          { "from": "node", "to": "conditional", "kind": "dependency", "label": "assumed contract (D5, W0511)" },
-          { "from": "node", "to": "stale", "kind": "dependency", "label": "fingerprint drift (D14, W0302)" },
-          { "from": "node", "to": "weak-spec", "kind": "dependency", "label": "surviving mutants (D12, W0502)" },
-          { "from": "node", "to": "unsupported", "kind": "dependency", "label": "uncheckable signature (§5.4b, V0505)" },
-          { "from": "node", "to": "engine-missing", "kind": "dependency", "label": "engine absent (§3, W0110)" },
-          { "from": "node", "to": "timeout", "kind": "dependency", "label": "--engine-timeout exceeded" },
-          { "from": "node", "to": "inconclusive", "kind": "dependency", "label": "orthogonal status" }
+          {
+            "from": "workspace",
+            "to": "node",
+            "kind": "generalization"
+          },
+          {
+            "from": "component",
+            "to": "node",
+            "kind": "generalization"
+          },
+          {
+            "from": "fn",
+            "to": "node",
+            "kind": "generalization"
+          },
+          {
+            "from": "workspace",
+            "to": "component",
+            "kind": "composition",
+            "label": "components 1..* (§5.1)"
+          },
+          {
+            "from": "component",
+            "to": "fn",
+            "kind": "composition",
+            "label": "fns 0..* (§5.1)"
+          },
+          {
+            "from": "violation",
+            "to": "unclaimed",
+            "kind": "association",
+            "label": "weaker than (D6)"
+          },
+          {
+            "from": "unclaimed",
+            "to": "tested",
+            "kind": "association",
+            "label": "weaker than (D6)"
+          },
+          {
+            "from": "tested",
+            "to": "fuzzed",
+            "kind": "association",
+            "label": "weaker than (D6)"
+          },
+          {
+            "from": "fuzzed",
+            "to": "bounded",
+            "kind": "association",
+            "label": "weaker than (D6)"
+          },
+          {
+            "from": "bounded",
+            "to": "proved",
+            "kind": "association",
+            "label": "weaker than (D6)"
+          },
+          {
+            "from": "node",
+            "to": "violation",
+            "kind": "dependency",
+            "label": "verdict / worst_descendant range (D6)"
+          },
+          {
+            "from": "node",
+            "to": "conditional",
+            "kind": "dependency",
+            "label": "assumed contract (D5, W0511)"
+          },
+          {
+            "from": "node",
+            "to": "stale",
+            "kind": "dependency",
+            "label": "fingerprint staleness (D14, W0302)"
+          },
+          {
+            "from": "node",
+            "to": "weak-spec",
+            "kind": "dependency",
+            "label": "surviving mutants (D12, W0502)"
+          },
+          {
+            "from": "node",
+            "to": "unsupported",
+            "kind": "dependency",
+            "label": "uncheckable signature (§5.4b, V0505)"
+          },
+          {
+            "from": "node",
+            "to": "engine-missing",
+            "kind": "dependency",
+            "label": "engine absent (§3, W0110)"
+          },
+          {
+            "from": "node",
+            "to": "timeout",
+            "kind": "dependency",
+            "label": "--engine-timeout exceeded"
+          },
+          {
+            "from": "node",
+            "to": "inconclusive",
+            "kind": "dependency",
+            "label": "orthogonal status"
+          }
         ],
         "groups": [],
         "comments": {
           "__diagram__": [
-            { "id": "n-vm-diag-1", "text": "The model is a tree: workspace → components → nested components → fns (§7). Every node carries { id, kind, anchor, content_hash, verdict, statuses, worst_descendant, open_items }. Verdicts aggregate upward as worst-of over the evidence order (D6); statuses do not sit in that order — they propagate upward as flags and open-item counts alongside it (D6).", "ts": 1755877962000 }
+            {
+              "id": "n-vm-diag-1",
+              "text": "The model is a tree: workspace → components → nested components → fns (§7). Every node carries { id, kind, anchor, content_hash, verdict, statuses, worst_descendant, open_items }. Verdicts aggregate upward as worst-of over the evidence order (D6); statuses do not sit in that order — they propagate upward as flags and open-item counts alongside it (D6).",
+              "ts": 1755877962000
+            }
           ],
           "component": [
-            { "id": "n-vm-comp-1", "text": "Components may nest (components: [...] with the same shape, §5.1) — omitted above as a self-loop for readability; a Component may contain further Components in addition to Fns.", "ts": 1755877962000 }
+            {
+              "id": "n-vm-comp-1",
+              "text": "Components may nest (components: [...] with the same shape, §5.1) — omitted above as a self-loop for readability; a Component may contain further Components in addition to Fns.",
+              "ts": 1755877962000
+            }
           ],
           "node": [
-            { "id": "n-vm-node-1", "text": "node_id is the component path + item path only; content_hash (blake3) is a sibling field, never part of the id, so IDs survive edits (D10).", "ts": 1755877962000 }
+            {
+              "id": "n-vm-node-1",
+              "text": "node_id is the component path + item path only; content_hash (blake3) is a sibling field, never part of the id, so IDs survive edits (D10).",
+              "ts": 1755877962000
+            }
           ],
           "proved": [
-            { "id": "n-vm-proved-1", "text": "Strongest evidence a function's passing checks can earn (§5.4c). A single failing check yields violation regardless of what else passed.", "ts": 1755877962000 }
+            {
+              "id": "n-vm-proved-1",
+              "text": "Strongest evidence a function's passing checks can earn (§5.4c). A single failing check yields violation regardless of what else passed.",
+              "ts": 1755877962000
+            }
+          ],
+          "workspace": [
+            {
+              "id": "1a7ff70eec35443e",
+              "text": "The root of the node tree: one per verify/tree run, carrying the command name and Ply version (§7). Everything else — components, nested components, fns — hangs underneath it.",
+              "ts": 1787443918990
+            }
+          ],
+          "fn": [
+            {
+              "id": "680379766ee5f384",
+              "text": "A leaf node: one function claim, its declared checks list (e.g. bounded(3), fuzz(256), mutate, §5.1/D12), and whether it runs in check or synth mode (§5.7). A fn's own verdict is the strongest evidence its passing checks earned — one failing check makes it a violation regardless (§5.4c).",
+              "ts": 1787443919102
+            }
+          ],
+          "violation": [
+            {
+              "id": "991ea861ed462af6",
+              "text": "The weakest point on the evidence order: at least one check failed. A single failing check yields violation for the whole fn no matter what else passed (§5.4c, D6).",
+              "ts": 1787443919159
+            }
+          ],
+          "unclaimed": [
+            {
+              "id": "cead118bde017a30",
+              "text": "A node with no checks declared at all — weaker than any actual evidence, but not a failure (D6). This is the default state for a fn nobody has annotated yet.",
+              "ts": 1787443919217
+            }
+          ],
+          "tested": [
+            {
+              "id": "71084e02ece19c35",
+              "text": "Verdict earned by the test check: example expressions from ply.yaml plus generated direct contract cases, run as concrete inputs through the real function (§5.4c).",
+              "ts": 1787443919276
+            }
+          ],
+          "fuzzed": [
+            {
+              "id": "877987538b439401",
+              "text": "Verdict earned by the fuzz(n) check: n proptest-generated inputs (default 256) with shrinking on; fuzzed(n) records how many cases actually ran (§5.4c).",
+              "ts": 1787443919335
+            }
+          ],
+          "bounded": [
+            {
+              "id": "959c37d66be07287",
+              "text": "Verdict earned by the bounded(k) check: a Kani contract proof exhaustive up to loop bound k (default 2) — every execution within the bound is checked, nothing is claimed beyond it (§0 'bounded model checking', §5.4c).",
+              "ts": 1787443919391
+            }
+          ],
+          "conditional": [
+            {
+              "id": "d9538b0d8e46f198",
+              "text": "Attached when a fn's verification stubbed a callee whose own contract was merely assumed rather than proved this run — same crate but weaker evidence, cross-crate, or a call-graph cycle (D5, W0511). The verdict tree keeps the full assumption chain, not just the flag (§5.5).",
+              "ts": 1787443919505
+            }
+          ],
+          "stale": [
+            {
+              "id": "5488a633d76a053e",
+              "text": "Attached when the recorded fingerprint no longer matches — item body, contract text, callee contracts, engine version, features, or target triple changed since the last accepted run (D14, W0302). cargo ply accept re-blesses it, but refuses (E0303) any node whose last run failed.",
+              "ts": 1787443919563
+            }
+          ],
+          "weak-spec": [
+            {
+              "id": "c065c97b8d2a59c1",
+              "text": "Attached when the mutate check finds surviving mutants: the spec verified but didn't actually constrain the mutated behavior (W0502, D12). The concrete defense against 'machine-written specs go vacuous' (§1 finding 4).",
+              "ts": 1787443919621
+            }
+          ],
+          "unsupported": [
+            {
+              "id": "f973dd09f644436a",
+              "text": "Attached when an engine can't construct the fn's inputs at all — trait objects, generics, smart pointers, or a private-field type without a generator (§5.4b, V0505). Reported as a fact, never a harness build failure.",
+              "ts": 1787443919678
+            }
+          ],
+          "engine-missing": [
+            {
+              "id": "b0b525bb877d3154",
+              "text": "Attached when the engine a check needs isn't installed; the check is downgraded rather than the whole run failing (§3, W0110).",
+              "ts": 1787443919734
+            }
+          ],
+          "timeout": [
+            {
+              "id": "f95943f43bfe591b",
+              "text": "Attached when a check exceeds --engine-timeout (default 60s per fn, §6). Explicitly not treated as weaker evidence on the D6 order — it's a different kind of fact from a proof that ran to completion.",
+              "ts": 1787443919807
+            }
+          ],
+          "inconclusive": [
+            {
+              "id": "a3d2e088aaa1e114",
+              "text": "An orthogonal status for a check that ran but couldn't reach a definite pass/fail — kept separate from the evidence order (D6) so it's never confused with an actual weaker verdict.",
+              "ts": 1787443919864
+            }
           ]
         }
       }
     }
   ],
-  "designs": [],
-  "codeThreads": []
+  "activeId": "architecture",
+  "codeThreads": [
+    {
+      "id": "t-spec-d2-attrs",
+      "file": "SPEC.md",
+      "line": 120,
+      "snippet": "position). `requires`/`ensures` re-emit the item with `cfg_attr(kani, ...)` attributes",
+      "anchored": true,
+      "node": "attrs",
+      "diagramType": "architecture",
+      "comments": [
+        {
+          "id": "ct-1",
+          "text": "D2 — this is where the emitted attribute actually lands: cfg_attr(kani, ...) on the real function, never a generated copy.",
+          "ts": 1755877962000
+        }
+      ]
+    },
+    {
+      "id": "t-spec-d4-arch",
+      "file": "SPEC.md",
+      "line": 259,
+      "snippet": "**Crate tier (sound, errors).** From `cargo metadata`: the exact crate dependency graph.",
+      "anchored": true,
+      "node": "arch",
+      "diagramType": "architecture",
+      "comments": [
+        {
+          "id": "ct-2",
+          "text": "D4 crate tier — sound and default-deny, because cargo metadata's dependency graph is exact.",
+          "ts": 1755877962000
+        }
+      ]
+    },
+    {
+      "id": "t-spec-d5-model",
+      "file": "SPEC.md",
+      "line": 350,
+      "snippet": "generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict.",
+      "anchored": true,
+      "node": "model",
+      "diagramType": "sequence",
+      "comments": [
+        {
+          "id": "ct-3",
+          "text": "D5 — the one condition under which model may let harness stub a callee instead of assuming its contract: g proved itself, same crate, this run.",
+          "ts": 1755877962000
+        }
+      ]
+    },
+    {
+      "id": "t-spec-cli-verify",
+      "file": "SPEC.md",
+      "line": 388,
+      "snippet": "cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts",
+      "anchored": true,
+      "node": "cli",
+      "diagramType": "sequence",
+      "comments": [
+        {
+          "id": "ct-4",
+          "text": "§6 — the exact command this whole sequence diagram traces, and its one-line summary of the callees-first order (§5.5).",
+          "ts": 1755877962000
+        }
+      ]
+    },
+    {
+      "id": "t-spec-d7-cex",
+      "file": "SPEC.md",
+      "line": 454,
+      "snippet": "the inputs rendered as stable Rust source (D7), else `W0541`.",
+      "anchored": true,
+      "node": "cex",
+      "diagramType": "sequence",
+      "comments": [
+        {
+          "id": "ct-5",
+          "text": "D7 — cargo_test is only attached when the inputs render as stable Rust; otherwise the diagnostic says so instead of fabricating one.",
+          "ts": 1755877962000
+        }
+      ]
+    },
+    {
+      "id": "t-spec-staleness-plylock",
+      "file": "SPEC.md",
+      "line": 252,
+      "snippet": "the fingerprint no longer matches, `ply check` reports `W0302 claim may be stale` and the",
+      "anchored": true,
+      "node": "plylock",
+      "diagramType": "architecture",
+      "comments": [
+        {
+          "id": "ct-6",
+          "text": "§5.2/D14 — the exact trigger for W0302 and status stale: any part of the recorded fingerprint no longer matching.",
+          "ts": 1755877962000
+        }
+      ]
+    },
+    {
+      "id": "t-spec-engines-subprocess",
+      "file": "SPEC.md",
+      "line": 103,
+      "snippet": "External engines run as subprocesses and are detected at startup. Each is optional: a",
+      "anchored": true,
+      "node": "engines",
+      "diagramType": "architecture",
+      "comments": [
+        {
+          "id": "ct-7",
+          "text": "§3 — every engine this module dispatches to is a version-detected, individually optional subprocess.",
+          "ts": 1755877962000
+        }
+      ]
+    },
+    {
+      "id": "t-spec-envelope-shape",
+      "file": "SPEC.md",
+      "line": 425,
+      "snippet": "`{ \"command\": \"...\", \"ply_version\": \"...\", \"root\": <node tree §7>, \"diagnostics\": [<Diagnostic>...] }`.",
+      "anchored": true,
+      "node": "envelope",
+      "diagramType": "architecture",
+      "comments": [
+        {
+          "id": "ct-8",
+          "text": "§8 — the literal envelope shape this node is; additive-only after M3, with tests/ui goldens as the contract.",
+          "ts": 1755877962000
+        }
+      ]
+    },
+    {
+      "id": "t-spec-d6-node",
+      "file": "SPEC.md",
+      "line": 413,
+      "snippet": "D6 over the evidence order; `statuses` and `open_items` (unresolved markers, weak specs,",
+      "anchored": true,
+      "node": "node",
+      "diagramType": "class",
+      "comments": [
+        {
+          "id": "ct-9",
+          "text": "§7 — the sentence that assigns worst_descendant and statuses/open_items their exact meaning on every Node.",
+          "ts": 1755877962000
+        }
+      ]
+    },
+    {
+      "id": "t-spec-violation-rule",
+      "file": "SPEC.md",
+      "line": 341,
+      "snippet": "passing checks earned; a failing check is a `violation` regardless of what else passed.",
+      "anchored": true,
+      "node": "violation",
+      "diagramType": "class",
+      "comments": [
+        {
+          "id": "ct-10",
+          "text": "§5.4c — the rule violation exists to enforce: one failing check overrides every passing one.",
+          "ts": 1755877962000
+        }
+      ]
+    }
+  ],
+  "designs": []
 }

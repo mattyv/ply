@@ -37,9 +37,9 @@ Terms this spec uses without further explanation. Ply-specific terms are marked 
 | component | (Ply) A named architectural unit, declared in `ply.yaml` and anchored to a crate or module. |
 | capability (cap) | (Ply) A coarse effect a component is allowed: `net fs db time rand proc unsafe`. |
 | anchor | (Ply) The real code item (crate, module, or function) a claim attaches to. |
-| drift | (Ply) The anchored code or its verification inputs changed after the claim was last verified. |
-| evidence fingerprint | (Ply) The recorded hash of everything a verdict depended on: item body, contract text, callee contracts, engine name + version + flags, features, target. |
-| ledger | (Ply) The aggregated verdict tree for the whole workspace. |
+| fingerprint | (Ply) The recorded hash of everything a verdict depended on: item body, contract text, callee contracts, engine name + version + flags, features, target. A claim whose fingerprint no longer matches is *stale*. |
+| verdict tree | (Ply) The aggregated per-node verdicts for the whole workspace, rendered by `cargo ply tree`. |
+| Dafny | A Microsoft Research language with verification built in: code and spec are written together, and the compiler proves the spec (via the Z3 solver) as part of building. Cited here only as evidence (§1); Ply deliberately avoids the new-language approach. |
 | stubbing | Replacing a callee's body with its contract during verification (Kani: `stub_verified`). |
 | golden test | A test that compares output byte-for-byte against a reviewed reference file. We use the `insta` crate. |
 | fixture | A small sample cargo project that tests use as a check target. |
@@ -90,7 +90,7 @@ proof search has gone off-spec — stop.
 | D11 | Extraction may be incomplete but never silently so: every call site the extractor cannot resolve is counted and reported (W0312 plus a per-component coverage metric in `check` output). | Visibility is what makes the advisory tier (D4) and any future `strict` opt-in meaningful. |
 | D12 | A function declares a **checks list**, e.g. `checks: [bounded(3), fuzz(256), mutate]`. `mutate` requires a `test` or `fuzz` entry in the same list (else `E0504`) and uses only those as its mutant-kill signal, scoped per function with cargo-mutants' `--re`. | One base check could not express "bounded plus a fuzz-backed mutation tier". Running Kani once per mutant costs minutes per mutant per function; proof-backed mutation needs an opt-in budget, which is out of scope. |
 | D13 | **Spike before build** (milestone M0): every engine-facing detail in this spec is provisional until a hands-on spike, with the pinned Kani version, records in ADR-0003 what actually works — attribute emission, in-crate harness modules, `stub_verified`, playback, input construction. The spec is then amended to match reality. | The engine surface is the highest-risk part of the design; paper decisions there are guesses. |
-| D14 | `ply.lock` records, per claim, an **evidence fingerprint**: item token-stream hash, merged contract text, callee contract hashes, engine name + version + flags, active features, target triple. A verdict is `stale` when any part changed. `cargo ply accept` re-blesses fingerprints and refuses (`E0303`) nodes whose last run failed. | An old success must not bless changed assumptions or a different toolchain; and without an accept verb, staleness warnings accumulate until they mean nothing. |
+| D14 | `ply.lock` records, per claim, a **fingerprint**: item token-stream hash, merged contract text, callee contract hashes, engine name + version + flags, active features, target triple. A verdict is `stale` when any part changed. `cargo ply accept` re-blesses fingerprints and refuses (`E0303`) nodes whose last run failed. | An old success must not bless changed assumptions or a different toolchain; and without an accept verb, staleness warnings accumulate until they mean nothing. |
 
 ## 3. Toolchain
 
@@ -144,7 +144,7 @@ ply/
                             #   harness/  codegen: kani proof modules, proptest suites,
                             #             cex tests
                             #   diag/     Diagnostic types, JSON envelope, human renderer
-    ply-cli/                # cargo-ply binary: check|verify|ledger|worklist|audit|
+    ply-cli/                # cargo-ply binary: check|verify|tree|worklist|audit|
                             # accept|synth|skill
   templates/                # harness code templates (plain format strings)
   tests/
@@ -202,7 +202,6 @@ components:
     owns: [pricing::Book]        # optional; only this component may mutate these types
     profile: hot_path            # optional; must name a declared profile
     checks: [bounded(2)]         # optional default checks for all fns in scope
-    detail: contracts            # optional render hint: name | ports | contracts
     components:                  # optional nested components, same shape
       curves:
         anchor: pricing::curves
@@ -243,14 +242,14 @@ qualified by their parent, so only siblings can collide). A string that passes t
 regex but fails the real micro-syntax parser → `E0203`, stating the expected form.
 `mutate` without a `test` or `fuzz` entry in the same checks list → `E0504`.
 
-### 5.2 Anchoring & drift
+### 5.2 Anchoring & staleness
 
 Every component anchors to a real crate or module; every fn claim anchors to a real
 function. `ply check` resolves anchors via the extractor. An unresolvable anchor →
 `E0301` with nearest-name suggestions (edit distance over the item index). **A renamed
 function must break CI, not silently orphan its claims.**
 
-Each claim's evidence fingerprint (D14) lives in `ply.lock` (committed). When any part of
+Each claim's fingerprint (D14) lives in `ply.lock` (committed). When any part of
 the fingerprint no longer matches, `ply check` reports `W0302 claim may be stale` and the
 node carries status `stale`. `cargo ply accept [node_id ...|--all]` re-records
 fingerprints once a human (or an agent, after verifying) confirms the claims still hold;
@@ -354,7 +353,7 @@ contracted fn `g`:
   cycle → verify `f` assuming `g`'s contract, and mark `f`'s verdict `conditional`
   (`W0511`), listing each assumed contract.
 
-The ledger shows each verdict's assumption chain; `conditional` propagates upward as a
+The verdict tree shows each verdict's assumption chain; `conditional` propagates upward as a
 status (D6). Cross-crate `stub_verified` (Kani's wrapper/double-stub workaround) is out
 of scope for v1.
 
@@ -377,7 +376,7 @@ A fn containing `unresolved!` is capped at check `test`, flagged `W0521`.
 3. Write the body; run the check pipeline for this fn only; on failure, feed the
    Diagnostic JSON back; loop at most N times (default 5).
 4. On success, mark the fn `#[ply::derived(spec_hash = "...")]` and record it in the
-   ledger. When a derived body is later hand-edited (hash drift), `ply check` warns
+   verdict tree. When a derived body is later hand-edited (its hash no longer matches), `ply check` warns
    `W0531` and the fn silently becomes `mode: check`.
 
 No streaming, no IDE integration, no multi-fn synthesis in v1.
@@ -386,12 +385,12 @@ No streaming, no IDE integration, no multi-fn synthesis in v1.
 ## 6. CLI
 
 ```
-cargo ply check              # schema + anchors + drift + architecture. Fast, no engines.
+cargo ply check              # schema + anchors + staleness + architecture. Fast, no engines.
 cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts
-cargo ply ledger             # verdict tree, worst-of aggregation, assumption chains
+cargo ply tree               # verdict tree, worst-of aggregation, assumption chains
 cargo ply worklist           # unresolved markers + weak specs (W0502) + stale claims (W0302)
 cargo ply audit              # trust surface: profile escapes, assumed contracts, derived fns
-cargo ply accept [id|--all]  # re-record evidence fingerprints in ply.lock (§5.2)
+cargo ply accept [id|--all]  # re-record fingerprints in ply.lock (§5.2)
 cargo ply synth <fn>         # M6
 cargo ply skill              # (re)generate docs/PLY.skill.md from schema + diag registry
 ```
@@ -415,7 +414,7 @@ open_items }`. `verdict` is the node's own claim status; `worst_descendant` impl
 D6 over the evidence order; `statuses` and `open_items` (unresolved markers, weak specs,
 conditional or stale verdicts) propagate upward as counts.
 
-`ledger --json` emits this tree (D10). Human-facing `ledger` renders it as an indented
+`tree --json` emits this tree (D10). Human-facing `tree` renders it as an indented
 tree, one line per node, worst first; `--depth N` limits depth and `--focus <id>`
 descends into a subtree. This is the human review surface: at depth 1 you see which
 subsystem is weakest, then zoom. A future canvas UI renders the same JSON; nothing in
@@ -456,7 +455,7 @@ One Diagnostic schema for all engines:
 the inputs rendered as stable Rust source (D7), else `W0541`.
 
 Diagnostic codes live in one exhaustive enum: `E02xx` config/schema, `E03xx/W03xx`
-anchoring/drift/resolution, `A04xx/W03xx` architecture, `E05xx/V05xx/W05xx` contracts and
+anchoring/staleness/resolution, `A04xx/W03xx` architecture, `E05xx/V05xx/W05xx` contracts and
 verification, prefixes `K/P/M/R` reserved for engine-specific codes, `W01xx` environment,
 `X09xx` internal errors. Adapters never pass engine stderr/stdout through raw: they parse
 it, or fail with `X0901` attaching the raw output for debugging.
@@ -499,7 +498,7 @@ it, or fail with `X0901` attaching the raw output for debugging.
 - `schema/ply.schema.json`; serde model; validation with pointer→line mapping;
   multi-file merge; micro-syntax parsers; E02xx suite (goldens). ADR-0002 written.
 - syn-based item index; anchor resolution with suggestions (E0301); fingerprint
-  recording and drift (W0302, D14 — engine fields filled as engines land); `accept`;
+  recording and staleness (W0302, D14 — engine fields filled as engines land); `accept`;
   `check` and `worklist` (markers only); `--json` envelope everywhere.
 - Accept: a fixture with 2 crates, nested components, one broken anchor, and one stale
   claim (then blessed via `accept`) — golden output exact; invalid-yaml fixture set
@@ -542,12 +541,12 @@ it, or fail with `X0901` attaching the raw output for debugging.
   flagged weak; a strong-spec fixture earning `·spec-strong`; a mutate-without-tier
   fixture producing E0504.
 
-**M5 — ledger, aggregation, skill, polish** (~3 sessions)
+**M5 — verdict tree, aggregation, skill, polish** (~3 sessions)
 - Verdict tree with worst-of, status propagation, and open items; `--depth`/`--focus`;
   `audit` completed (escapes + assumptions + derived); `skill` generation embedding the
   schema; `--only-changed`.
 - Accept: a nested fixture where one weak leaf drags down the root verdict and a
-  `conditional` mid-tree node propagates as a status; ledger JSON golden; skill file
+  `conditional` mid-tree node propagates as a status; tree JSON golden; skill file
   golden.
 
 **M6 — synth (experimental)** (~3 sessions)
