@@ -37,6 +37,10 @@
       replays and the generated test PASSES. Playback preserves the witness *input*
       exactly, but the rendered plain `#[test]` is the only artifact that can be a red
       reproduction, and that is most Ply counterexamples. §8/D7 wording needs a pass.
+      It is a documented Kani limitation, not a defect, and the fix is ours: Ply's
+      generated test must assert the postcondition explicitly so the failure is
+      panic-shaped and therefore replayable. Kani reportedly warns when it declines to
+      generate a test; no warning appeared in our run, so don't depend on it.
 - [ ] **Callee-before-caller ordering needs kernel-grade treatment.** ADR-0003 proved
       Kani gives no backstop: a caller verifies while assuming an unproved callee. The
       scheduler that orders callees first is now soundness-critical and should be a pure

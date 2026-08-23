@@ -87,6 +87,20 @@ the ensures closure* (`x + 1` overflows u8 at 255), so the generated
 test **passes**. Verified both ways: moving the overflow into the body (`x + 1` instead
 of `saturating_add`) makes the very same generated test fail with the overflow panic.
 
+This is a **documented limitation, not a defect**: Kani generates playback tests only
+for failures that would trigger a runtime error, and captures only `kani::any()`
+initialisations — contract instrumentation (havoc, `old()` snapshots, stubbed callees)
+is not in the recorded value stream, so a concrete replay can legitimately diverge from
+the verification trace. Noted for accuracy: the docs say Kani warns when it declines to
+generate a test for such a check; no such warning appeared in our run (checked
+explicitly), so Ply cannot rely on the warning to detect this case.
+
+**The mitigation Ply must implement**, straight from Kani's own guidance: turn the
+postcondition into an explicit `assert!` in the generated artifact, so the failure
+becomes panic-shaped and therefore replayable. Ply generates its harnesses anyway, so
+this is squarely within its control — and it is the difference between D7's promised
+red test and a green one.
+
 So playback reproduces body-level panics/UB, not contract-check failures. The witness
 *input* is preserved exactly (D7's storage claim holds), but the generated test is not a
 red reproduction of an `ensures` violation and cannot serve as one — which is most Ply
