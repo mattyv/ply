@@ -570,6 +570,9 @@ grammar.**
 | trusted claim | hollow shield badge on the node — attested by named evidence, not machine-checked |
 | contract clauses (`requires`/`ensures`) | a contract mark on the fn chip — a solid ink bar the full height of the chip's left edge (a gutter mark: "this row carries something binding"); the tooltip lists each clause verbatim. This draws the §7.2 watermark per function: marked = a promise stands at the mark; bare = signature only. (The renderer sees only YAML-declared clauses; inline attributes join when `cargo ply` emits the §8 envelope.) |
 | declared ceiling | component fill, low-saturation, on the verdict ordinal scale: the strongest verdict the component's declared checks *could* earn — per fn the strongest check kind (`test`→tested … `prove`→proved; `mutate` strengthens, never lifts; no checks = unclaimed, unfilled), folded worst-of by the kernel's container rule. A ceiling is a promise, not proof: it never uses the full-saturation fill reserved for earned verdicts, and its tooltip says none of it has run |
+| `strict` | a solid ink triangle notch in the box's top-right corner — the "flagged, zero tolerance" instinct; tooltip already explains errors-not-warnings |
+| `mode: synth` | the fn chip's fill turns light violet — violet is hereby the authorship channel, its single meaning "machine-written": the body below the watermark is synthesized from the contract, with the checks holding the line. Tooltip says exactly that |
+| `examples` | a gray `e×N` token in the chip's annotation area (next to the `T=...` note); the tooltip already counts and the `test` check runs them |
 | hollow component (derived, like findings) | a component that declares nothing inside — no fns, no nested components — draws with a dashed border: a sketch outline, nothing to zoom into yet. Tooltip says so plainly. Derived from absence rather than declared; the natural state of every box in top-down authoring, expected to solidify as claims arrive |
 | finding (tool-computed, not declared) | the offending item drawn in error red with an `E####` badge; its tooltip leads with the diagnostic. A finding with no drawable item attaches a red count to the workspace title. A document with findings still renders — a picture that refuses to draw hides the problem it should be showing (origin: fault-injection demo, where a faulted toolchain drew `bounded(0)` as legitimate evidence) |
 
@@ -606,12 +609,10 @@ the picture must work on instinct alone. `ply-render --legend` opts into a compa
 legend strip appended below the frame (for docs, onboarding, print), generated from the
 same style constants the renderer draws with, so legend and drawing cannot drift apart.
 
-Gate debt: three constructs already in the grammar still have no assigned visual form —
-`strict`, `mode: synth`, and `examples`. They predate the gate; each needs a form or
-removal before the grammar is called total. The renderer draws nothing for them today,
-so the omission is visible rather than silently papered over. (Closed since first
-recorded: `profiles` expansion lives in the tag's tooltip; contract clauses have the
-contract mark above.)
+Gate debt: **none as of 2026-08-23** — every construct in the grammar has an assigned
+visual form (the last three, `strict`/`mode: synth`/`examples`, got theirs above).
+Renderer implementation status is tracked in TODO.md; an assigned-but-unimplemented
+form is scheduled work, not gate debt.
 
 ### 7.2 The watermark
 

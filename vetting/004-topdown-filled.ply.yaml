@@ -1,0 +1,38 @@
+ply: 1
+components:
+  gateway:
+    anchor: settle::gateway
+    uses: [net]
+  matcher:
+    anchor: settle::matcher
+  ledger:
+    anchor: settle::ledger
+    strict: true
+    owns: [settle::ledger::Ledger]
+    fns:
+      Ledger::post:
+        checks: [bounded(3), fuzz(1024), mutate]
+        requires:
+          - "entry.debit == entry.credit"
+        ensures:
+          - "|_| self.balance_total() == old(self.balance_total())"
+          - "|_| self.entries() == old(self.entries()) + 1"
+      Ledger::balance_total:
+        checks: [bounded(2)]
+      Ledger::entries:
+        checks: [bounded(2)]
+  reporting:
+    anchor: settle::reporting
+    uses: [fs]
+edges:
+  - gateway -> matcher
+  - matcher -> ledger
+  - reporting -> ledger
+  - "gateway ~> matcher : Instruction"
+  - "matcher ~> ledger : Entry"
+  - "ledger ~> reporting : Statement"
+deny:
+  - "* -> ledger except matcher, reporting"
+  - "ledger -> gateway"
+unresolved:
+  - { id: 10, note: "settlement finality: T+0 immediate or batched end-of-day" }
