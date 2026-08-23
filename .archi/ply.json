@@ -2,18 +2,595 @@
   "version": 1,
   "bundleId": "56737745-a03f-4e47-9208-9b86d9a69907",
   "revision": {
-    "number": 1,
-    "updatedAt": "2026-08-22T15:52:42.000Z",
-    "summary": "Initial diagrams from SPEC.md: system architecture, verify pipeline, verdict model"
+    "number": 2,
+    "updatedAt": "2026-08-23T01:20:07.000Z",
+    "summary": "Add overview diagram (top-level entry point) with guided tour"
   },
   "diagrams": [
+    {
+      "id": "overview",
+      "name": "Overview",
+      "type": "overview",
+      "origin": "llm",
+      "generation": {
+        "focus": "Whole-project map at maximum altitude: the declared-claims \u2192 cargo ply \u2192 checking engines \u2192 verdicts/counterexamples \u2192 agent-repair loop (SPEC.md \u00a71), the three watermark strata (\u00a77.2), and how the repo's current artifacts (SPEC.md, .archi/, tools/render, vetting/, the M0 spike) feed back into the spec. No pipeline code exists yet; only tools/render and the docs are real files."
+      },
+      "doc": {
+        "type": "overview",
+        "autoLayoutApplied": true,
+        "nodes": [
+          {
+            "id": "claims",
+            "label": "Declared claims",
+            "files": [],
+            "group": "g-loop",
+            "step": 1,
+            "x": 372,
+            "y": 357
+          },
+          {
+            "id": "cargoply",
+            "label": "cargo ply",
+            "files": [],
+            "group": "g-loop",
+            "step": 2,
+            "x": 114,
+            "y": 544
+          },
+          {
+            "id": "engines",
+            "label": "Checking engines",
+            "files": [],
+            "group": "g-loop",
+            "step": 3,
+            "x": 114,
+            "y": 679
+          },
+          {
+            "id": "verdicts",
+            "label": "Verdicts & counterexamples",
+            "files": [],
+            "group": "g-loop",
+            "step": 4,
+            "x": 79,
+            "y": 833
+          },
+          {
+            "id": "agent",
+            "label": "Agent repairs code",
+            "files": [],
+            "group": "g-loop",
+            "step": 5,
+            "x": 240,
+            "y": 1013
+          },
+          {
+            "id": "declarative",
+            "label": "Declarative stratum",
+            "files": [],
+            "group": "g-watermark",
+            "step": 6,
+            "x": 1405,
+            "y": 544
+          },
+          {
+            "id": "watermark",
+            "label": "The watermark",
+            "files": [],
+            "group": "g-watermark",
+            "step": 7,
+            "x": 1412,
+            "y": 679
+          },
+          {
+            "id": "floor",
+            "label": "The floor",
+            "files": [],
+            "group": "g-watermark",
+            "step": 8,
+            "x": 1412,
+            "y": 833
+          },
+          {
+            "id": "spec",
+            "label": "SPEC.md",
+            "files": [
+              "SPEC.md"
+            ],
+            "group": "g-artifacts",
+            "step": 9,
+            "x": 1040,
+            "y": 196
+          },
+          {
+            "id": "archi",
+            "label": ".archi/ bundle + tour",
+            "files": [
+              ".archi/ply.json",
+              "docs/ply-tour.html"
+            ],
+            "group": "g-artifacts",
+            "step": 10,
+            "x": 1180,
+            "y": 357
+          },
+          {
+            "id": "render",
+            "label": "tools/render",
+            "files": [
+              "tools/render/src/main.rs",
+              "tools/render/src/model.rs",
+              "tools/render/src/svg.rs"
+            ],
+            "group": "g-artifacts",
+            "step": 11,
+            "x": 1412,
+            "y": 357
+          },
+          {
+            "id": "vetting",
+            "label": "vetting/ scenarios",
+            "files": [
+              "vetting/001-spsc-disruptor.md"
+            ],
+            "group": "g-artifacts",
+            "step": 12,
+            "x": 876,
+            "y": 42
+          },
+          {
+            "id": "m0",
+            "label": "M0 feasibility spike",
+            "files": [],
+            "group": "g-artifacts",
+            "step": 13,
+            "x": 1264.5,
+            "y": 42
+          }
+        ],
+        "edges": [
+          {
+            "from": "claims",
+            "to": "cargoply",
+            "label": "cargo ply verify (\u00a76)",
+            "vertices": [
+              {
+                "x": 199,
+                "y": 439
+              },
+              {
+                "x": 199,
+                "y": 478.5
+              },
+              {
+                "x": 199,
+                "y": 518
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.7675233532091874,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "cargoply",
+            "to": "engines",
+            "label": "routes checks to engines (\u00a73)",
+            "vertices": [
+              {
+                "x": 199,
+                "y": 639.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "engines",
+            "to": "verdicts",
+            "label": "results \u2192 verdicts + counterexamples (\u00a78)",
+            "vertices": [
+              {
+                "x": 199,
+                "y": 784
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "verdicts",
+            "to": "agent",
+            "label": "counterexample feeds repair (\u00a71 finding 2)",
+            "vertices": [
+              {
+                "x": 199,
+                "y": 915
+              },
+              {
+                "x": 199,
+                "y": 964
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.4396173418407729,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "agent",
+            "to": "claims",
+            "label": "repairs code / tightens claims (\u00a71)",
+            "vertices": [
+              {
+                "x": 457,
+                "y": 964
+              },
+              {
+                "x": 457,
+                "y": 915
+              },
+              {
+                "x": 457,
+                "y": 861
+              },
+              {
+                "x": 457,
+                "y": 784
+              },
+              {
+                "x": 457,
+                "y": 707
+              },
+              {
+                "x": 457,
+                "y": 639.5
+              },
+              {
+                "x": 457,
+                "y": 572
+              },
+              {
+                "x": 457,
+                "y": 518
+              },
+              {
+                "x": 457,
+                "y": 478.5
+              },
+              {
+                "x": 457,
+                "y": 439
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5453159996925223,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "claims",
+            "to": "declarative",
+            "label": "is the declarative stratum (\u00a77.2)",
+            "vertices": [
+              {
+                "x": 616,
+                "y": 439
+              },
+              {
+                "x": 616,
+                "y": 478.5
+              },
+              {
+                "x": 616,
+                "y": 518
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.12664029649474656,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "declarative",
+            "to": "watermark",
+            "label": "declaration stops here (\u00a77.2)",
+            "vertices": [
+              {
+                "x": 1497,
+                "y": 639.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "watermark",
+            "to": "floor",
+            "label": "verified below, never specified (\u00a77.2)",
+            "vertices": [
+              {
+                "x": 1497,
+                "y": 784
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "spec",
+            "to": "claims",
+            "label": "normative schema for every claim (\u00a75)",
+            "vertices": [
+              {
+                "x": 970,
+                "y": 291.5
+              },
+              {
+                "x": 970,
+                "y": 331
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.17393115957365823,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "spec",
+            "to": "archi",
+            "label": "diagrammed and toured in .archi/",
+            "vertices": [
+              {
+                "x": 1280,
+                "y": 291.5
+              },
+              {
+                "x": 1280,
+                "y": 331
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.6016574680165662,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "render",
+            "to": "declarative",
+            "label": "proves the visual grammar total (\u00a77.1)",
+            "vertices": [
+              {
+                "x": 1497,
+                "y": 439
+              },
+              {
+                "x": 1497,
+                "y": 478.5
+              },
+              {
+                "x": 1497,
+                "y": 518
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "vetting",
+            "to": "spec",
+            "label": "design scenarios \u2192 spec amendments",
+            "vertices": [
+              {
+                "x": 964,
+                "y": 147
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.3014103464037866,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          {
+            "from": "m0",
+            "to": "spec",
+            "label": "ADR-0003 findings \u2192 spec amendments (\u00a710)",
+            "vertices": [
+              {
+                "x": 1360.5,
+                "y": 147
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.23632634425111854,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          }
+        ],
+        "groups": [
+          {
+            "id": "g-loop",
+            "label": "Core verification loop (\u00a71)",
+            "labelPosition": {
+              "x": 12,
+              "y": 7
+            }
+          },
+          {
+            "id": "g-watermark",
+            "label": "The watermark strata (\u00a77.2)",
+            "labelPosition": {
+              "x": 6,
+              "y": 6
+            }
+          },
+          {
+            "id": "g-artifacts",
+            "label": "Repo artifacts & feedback (current state)",
+            "labelPosition": {
+              "x": 14,
+              "y": 6
+            }
+          }
+        ],
+        "comments": {
+          "__diagram__": [
+            {
+              "id": "n-ov-diag-1",
+              "text": "The whole-project map at maximum altitude. The core loop (\u00a71) is what Ply exists to close: declared claims routed through cargo ply to checking engines, back as verdicts and counterexamples an agent repairs code against. The watermark (\u00a77.2) bounds what that declarative layer can ever say \u2014 declarative stratum, then the watermark itself, then the unspecifiable floor. The artifacts group shows the project's actual current state: SPEC.md is the normative design; .archi/ diagrams and tours it; tools/render proves the \u00a77.1 visual grammar is total; vetting/ scenarios and the M0 spike (\u00a710) both feed findings back into spec amendments. No pipeline code exists yet \u2014 only tools/render and the docs are real files.",
+              "ts": 1787500000000
+            }
+          ],
+          "claims": [
+            {
+              "id": "n-ov-claims-1",
+              "text": "The declarative source of every claim: ply.yaml (components, edges, capabilities, checks) plus inline #[ply::requires]/#[ply::ensures] attributes on functions (\u00a75, \u00a75.1). This is the only stratum Ply ever writes to \u2014 everything below the watermark is verified, never declared (\u00a77.2).",
+              "ts": 1787500000001
+            }
+          ],
+          "cargoply": [
+            {
+              "id": "n-ov-cargoply-1",
+              "text": "The cargo-ply binary: check | verify | tree | worklist | audit | accept | synth | skill, each emitting the same JSON envelope under --json (\u00a74, \u00a76, \u00a78). It has no logic of its own here \u2014 it drives config load, anchor resolution, extraction, and engine dispatch in order.",
+              "ts": 1787500000002
+            }
+          ],
+          "engines": [
+            {
+              "id": "n-ov-engines-1",
+              "text": "External checking tools driven as subprocesses and never re-implemented: rustc/cargo, Kani, proptest, cargo-mutants, and the optional Verus/Miri (\u00a73). Ply is glue and UX over these engines, never a solver (\u00a71).",
+              "ts": 1787500000003
+            }
+          ],
+          "verdicts": [
+            {
+              "id": "n-ov-verdicts-1",
+              "text": "The evidence a function's passing checks earned \u2014 tested, fuzzed(n), bounded(k), proved \u2014 aggregated worst-of up the node tree (D6, \u00a77). Every falsified executable claim carries a concrete counterexample, the single finding that moves agent repair success from ~0% to ~80% (\u00a71 finding 2).",
+              "ts": 1787500000004
+            }
+          ],
+          "agent": [
+            {
+              "id": "n-ov-agent-1",
+              "text": "The coding agent or developer that reads a counterexample and repairs the code or tightens the claim, closing the generate\u2192check\u2192repair loop this project is built around (\u00a71 findings 1\u20132).",
+              "ts": 1787500000005
+            }
+          ],
+          "declarative": [
+            {
+              "id": "n-ov-declarative-1",
+              "text": "Stratum 1: everything ply.yaml and the attributes express \u2014 components, edges, capabilities, contracts, checks. Fully drawable per the \u00a77.1 visual grammar, and fully checkable (\u00a77.2).",
+              "ts": 1787500000006
+            }
+          ],
+          "watermark": [
+            {
+              "id": "n-ov-watermark-1",
+              "text": "Stratum 2, the mark itself: a function's signature plus its contract, where declaration stops. Movable only downward \u2014 mode: synth lets the model write the body down from the mark, with the check pipeline holding the line (D8, \u00a75.7, \u00a77.2).",
+              "ts": 1787500000007
+            }
+          ],
+          "floor": [
+            {
+              "id": "n-ov-floor-1",
+              "text": "Stratum 3: the imperative interior of Rust \u2014 algorithms, loop bodies, data-structure manipulation \u2014 that no grammar will ever express. Ply verifies below the watermark; it never specifies the floor itself (\u00a77.2).",
+              "ts": 1787500000008
+            }
+          ],
+          "spec": [
+            {
+              "id": "n-ov-spec-1",
+              "text": "The normative design the implementing agent reads before writing any code: terminology, toolchain, ply.yaml format, CLI, zoom model, result JSON, and the accretive milestone plan (\u00a70, \u00a710).",
+              "ts": 1787500000009
+            }
+          ],
+          "archi": [
+            {
+              "id": "n-ov-archi-1",
+              "text": "The .archi/ bundle: named diagrams (architecture, verify-pipeline, verdict-model, and this overview) plus a guided tour of comments and reading-order steps, exportable as the standalone docs/ply-tour.html walkthrough.",
+              "ts": 1787500000010
+            }
+          ],
+          "render": [
+            {
+              "id": "n-ov-render-1",
+              "text": "A minimal ply.yaml \u2192 SVG renderer with no GUI, existing solely to prove the \u00a77.1 visual grammar is total \u2014 every construct drawable, nothing undrawable admitted. A spec-validation tool, not the future canvas (\u00a77.1).",
+              "ts": 1787500000011
+            }
+          ],
+          "vetting": [
+            {
+              "id": "n-ov-vetting-1",
+              "text": "Design scenarios that stress the grammar before the tool exists. vetting/001-spsc-disruptor.md found three grammar gaps \u2014 no way to record externally-verified properties, generics breaking checkability, an over-broad example rule \u2014 and each fed back into a spec amendment (trusted claims, check_with, the \u00a75.4a scope fix).",
+              "ts": 1787500000012
+            }
+          ],
+          "m0": [
+            {
+              "id": "n-ov-m0-1",
+              "text": "The feasibility spike (\u00a710): a throwaway fixture crate exercising contracted functions, a stubbed callee, cargo-mutants, and a real counterexample with playback replay, before anything else starts. Its ADR-0003 records what works, fails, or needs a flag, and lists every spec amendment that follows.",
+              "ts": 1787500000013
+            }
+          ]
+        }
+      }
+    },
     {
       "id": "architecture",
       "name": "Architecture",
       "type": "architecture",
       "origin": "llm",
       "generation": {
-        "focus": "System components and dependency/data-flow edges for Ply per SPEC.md §3 (Toolchain) and §4 (Repository layout): the three crates, the external engines as subprocess dependencies, and the key artifacts. No code exists yet; nodes are planned and left unanchored (files: [])."
+        "focus": "System components and dependency/data-flow edges for Ply per SPEC.md \u00a73 (Toolchain) and \u00a74 (Repository layout): the three crates, the external engines as subprocess dependencies, and the key artifacts. No code exists yet; nodes are planned and left unanchored (files: [])."
       },
       "doc": {
         "type": "architecture",
@@ -33,7 +610,7 @@
             "label": "config",
             "files": [],
             "group": "g-core",
-            "x": 1181,
+            "x": 1173,
             "y": 1053,
             "step": 3
           },
@@ -42,7 +619,7 @@
             "label": "model",
             "files": [],
             "group": "g-core",
-            "x": 1082,
+            "x": 1074,
             "y": 1188,
             "step": 4
           },
@@ -204,19 +781,19 @@
           {
             "from": "cli",
             "to": "cfg",
-            "label": "load & merge ply.yaml (§5.1)",
+            "label": "load & merge ply.yaml (\u00a75.1)",
             "vertices": [
               {
                 "x": 2532.5,
                 "y": 974
               },
               {
-                "x": 1266,
+                "x": 1258,
                 "y": 1013.5
               }
             ],
             "labelPosition": {
-              "distance": 0.9703590491555637,
+              "distance": 0.9705358438531928,
               "offset": {
                 "x": 0,
                 "y": 0
@@ -226,15 +803,15 @@
           {
             "from": "cfg",
             "to": "plyyaml",
-            "label": "validate vs schema (§5)",
+            "label": "validate vs schema (\u00a75)",
             "vertices": [
               {
-                "x": 1405,
+                "x": 1413,
                 "y": 1148.5
               }
             ],
             "labelPosition": {
-              "distance": 0.05817862245002342,
+              "distance": 0.06363096658031182,
               "offset": {
                 "x": 0,
                 "y": 0
@@ -244,10 +821,10 @@
           {
             "from": "cfg",
             "to": "model",
-            "label": "build model (§5.1)",
+            "label": "build model (\u00a75.1)",
             "vertices": [
               {
-                "x": 1167,
+                "x": 1159,
                 "y": 1148.5
               }
             ],
@@ -262,15 +839,15 @@
           {
             "from": "model",
             "to": "extract",
-            "label": "resolve anchors (§5.2)",
+            "label": "resolve anchors (\u00a75.2)",
             "vertices": [
               {
-                "x": 1044,
+                "x": 1028,
                 "y": 1283.5
               }
             ],
             "labelPosition": {
-              "distance": 0.1004824885839342,
+              "distance": 0.10709079854080154,
               "offset": {
                 "x": 0,
                 "y": 0
@@ -288,7 +865,7 @@
               }
             ],
             "labelPosition": {
-              "distance": 0.048413794409829264,
+              "distance": 0.05072754125935341,
               "offset": {
                 "x": 0,
                 "y": 0
@@ -298,7 +875,7 @@
           {
             "from": "extract",
             "to": "arch",
-            "label": "crate/item facts (§5.3)",
+            "label": "crate/item facts (\u00a75.3)",
             "vertices": [
               {
                 "x": 226.5,
@@ -320,7 +897,7 @@
           {
             "from": "extract",
             "to": "harness",
-            "label": "item index, contracts, anchors (§4)",
+            "label": "item index, contracts, anchors (\u00a74)",
             "vertices": [
               {
                 "x": 183,
@@ -432,7 +1009,7 @@
           {
             "from": "harness",
             "to": "targetply",
-            "label": "generated harnesses (§4)",
+            "label": "generated harnesses (\u00a74)",
             "vertices": [
               {
                 "x": 306,
@@ -478,7 +1055,7 @@
           {
             "from": "harness",
             "to": "engines",
-            "label": "plan/run/parse per check (§3)",
+            "label": "plan/run/parse per check (\u00a73)",
             "vertices": [
               {
                 "x": 1465.5,
@@ -628,7 +1205,7 @@
           {
             "from": "engines",
             "to": "diag",
-            "label": "parse results → Diagnostic (§8)",
+            "label": "parse results \u2192 Diagnostic (\u00a78)",
             "vertices": [
               {
                 "x": 603.5,
@@ -676,7 +1253,7 @@
           {
             "from": "diag",
             "to": "envelope",
-            "label": "JSON envelope (§8)",
+            "label": "JSON envelope (\u00a78)",
             "vertices": [
               {
                 "x": 1367.5,
@@ -768,42 +1345,42 @@
           "__diagram__": [
             {
               "id": "n-diag-1",
-              "text": "Ply is glue + UX over existing checking engines, never a solver (§1). Three crates: ply-attrs (proc macros, §3), ply-core (config/model/extract/arch/engines/harness/diag modules, §4), ply-cli (cargo-ply binary, §4/§6). Engines run as subprocesses, version-detected at startup; a missing engine downgrades affected checks (W0110/engine-missing) but never fails the run (§3). No code exists yet — all nodes are planned and left unanchored.",
+              "text": "Ply is glue + UX over existing checking engines, never a solver (\u00a71). Three crates: ply-attrs (proc macros, \u00a73), ply-core (config/model/extract/arch/engines/harness/diag modules, \u00a74), ply-cli (cargo-ply binary, \u00a74/\u00a76). Engines run as subprocesses, version-detected at startup; a missing engine downgrades affected checks (W0110/engine-missing) but never fails the run (\u00a73). No code exists yet \u2014 all nodes are planned and left unanchored.",
               "ts": 1755877962000
             }
           ],
           "attrs": [
             {
               "id": "n-attrs-1",
-              "text": "Provides #[ply::requires]/#[ply::ensures]/#[ply::pure]/#[ply::allow]/#[ply::derived] and ply::unresolved!(id, note). requires/ensures re-emit the annotated function unchanged plus cfg_attr(kani, kani::requires/ensures) — the real function is instrumented, never a copy (D2, §3).",
+              "text": "Provides #[ply::requires]/#[ply::ensures]/#[ply::pure]/#[ply::allow]/#[ply::derived] and ply::unresolved!(id, note). requires/ensures re-emit the annotated function unchanged plus cfg_attr(kani, kani::requires/ensures) \u2014 the real function is instrumented, never a copy (D2, \u00a73).",
               "ts": 1755877962000
             }
           ],
           "g-attrs": [
             {
               "id": "n-group-attrs-1",
-              "text": "The proc-macro crate. Its only job is turning #[ply::requires]/#[ply::ensures] into cfg_attr(kani, ...) on the real function — plain cargo build is unaffected (D2, §3).",
+              "text": "The proc-macro crate. Its only job is turning #[ply::requires]/#[ply::ensures] into cfg_attr(kani, ...) on the real function \u2014 plain cargo build is unaffected (D2, \u00a73).",
               "ts": 1755877962000
             }
           ],
           "g-core": [
             {
               "id": "n-group-core-1",
-              "text": "The verification pipeline: config loading, the component/claim model, fact extraction, architecture rules, engine dispatch, harness codegen, and diagnostic assembly (§4). Everything between reading ply.yaml and emitting the JSON envelope lives here.",
+              "text": "The verification pipeline: config loading, the component/claim model, fact extraction, architecture rules, engine dispatch, harness codegen, and diagnostic assembly (\u00a74). Everything between reading ply.yaml and emitting the JSON envelope lives here.",
               "ts": 1755877962000
             }
           ],
           "g-cli": [
             {
               "id": "n-group-cli-1",
-              "text": "The cargo-ply binary users and agents actually invoke; it wires the ply-core pipeline to subcommands and the --json envelope (§4, §6, §8).",
+              "text": "The cargo-ply binary users and agents actually invoke; it wires the ply-core pipeline to subcommands and the --json envelope (\u00a74, \u00a76, \u00a78).",
               "ts": 1755877962000
             }
           ],
           "g-engines": [
             {
               "id": "n-group-engines-1",
-              "text": "The external tools Ply drives as subprocesses and never re-implements — rustc/cargo, Kani, proptest, cargo-mutants, and the optional Verus/Miri (§3). Ply is glue and UX over these, never a solver (§1).",
+              "text": "The external tools Ply drives as subprocesses and never re-implements \u2014 rustc/cargo, Kani, proptest, cargo-mutants, and the optional Verus/Miri (\u00a73). Ply is glue and UX over these, never a solver (\u00a71).",
               "ts": 1755877962000
             }
           ],
@@ -817,105 +1394,105 @@
           "extract": [
             {
               "id": "n-extract-1",
-              "text": "trait Extractor + syn backend: item index, call graph, caps, contract harvest, anchors. syn does no name resolution or macro expansion, so item-tier facts are approximate — every unresolved call site is counted and reported, never silently dropped (D11, W0312, §5.3).",
+              "text": "trait Extractor + syn backend: item index, call graph, caps, contract harvest, anchors. syn does no name resolution or macro expansion, so item-tier facts are approximate \u2014 every unresolved call site is counted and reported, never silently dropped (D11, W0312, \u00a75.3).",
               "ts": 1755877962000
             }
           ],
           "arch": [
             {
               "id": "n-arch-1",
-              "text": "Two tiers (D4): crate-tier from cargo metadata is exact and default-deny (errors A0401/A0405); item-tier from syn is approximate and advisory by default, upgraded to errors under a component's strict: true (A0402–A0407).",
+              "text": "Two tiers (D4): crate-tier from cargo metadata is exact and default-deny (errors A0401/A0405); item-tier from syn is approximate and advisory by default, upgraded to errors under a component's strict: true (A0402\u2013A0407).",
               "ts": 1755877962000
             }
           ],
           "harness": [
             {
               "id": "n-harness-1",
-              "text": "Codegen: in-crate Kani proof modules (cfg(kani)-gated, sees private items), proptest suites under target/ply/fuzz/, and rendered ply_cex_* tests. Uses plain format-string templates (templates/), not a parser of our own (§4).",
+              "text": "Codegen: in-crate Kani proof modules (cfg(kani)-gated, sees private items), proptest suites under target/ply/fuzz/, and rendered ply_cex_* tests. Uses plain format-string templates (templates/), not a parser of our own (\u00a74).",
               "ts": 1755877962000
             }
           ],
           "kani": [
             {
               "id": "n-kani-1",
-              "text": "Version pinned in ply.toml and recorded in every fingerprint (D9, D14). stub_verified(g) is only used when g itself passed a Kani contract proof this run in the same crate; any weaker case verifies against an assumed contract and marks the caller conditional (D5, §5.5).",
+              "text": "Version pinned in ply.toml and recorded in every fingerprint (D9, D14). stub_verified(g) is only used when g itself passed a Kani contract proof this run in the same crate; any weaker case verifies against an assumed contract and marks the caller conditional (D5, \u00a75.5).",
               "ts": 1755877962000
             }
           ],
           "plylock": [
             {
               "id": "n-plylock-1",
-              "text": "Committed. Per claim: item token-stream hash, merged contract text, callee contract hashes, engine name+version+flags, active features, target triple (D14). A verdict is stale when any part changed (W0302); cargo ply accept re-blesses fingerprints and refuses (E0303) nodes whose last run failed (§5.2).",
+              "text": "Committed. Per claim: item token-stream hash, merged contract text, callee contract hashes, engine name+version+flags, active features, target triple (D14). A verdict is stale when any part changed (W0302); cargo ply accept re-blesses fingerprints and refuses (E0303) nodes whose last run failed (\u00a75.2).",
               "ts": 1755877962000
             }
           ],
           "envelope": [
             {
               "id": "n-envelope-1",
-              "text": "{ command, ply_version, root: <node tree §7>, diagnostics: [<Diagnostic>] }. Additive changes only after M3; tests/ui goldens are the contract (§8).",
+              "text": "{ command, ply_version, root: <node tree \u00a77>, diagnostics: [<Diagnostic>] }. Additive changes only after M3; tests/ui goldens are the contract (\u00a78).",
               "ts": 1755877962000
             }
           ],
           "diag": [
             {
               "id": "n-diag-node-1",
-              "text": "One Diagnostic schema for all engines: code, severity, phase, engine, check, node_id, content_hash, span, counterexample, assumptions, fixes, open_item (§8). Adapters never pass engine stderr/stdout through raw — parsed, or X0901 with raw output attached.",
+              "text": "One Diagnostic schema for all engines: code, severity, phase, engine, check, node_id, content_hash, span, counterexample, assumptions, fixes, open_item (\u00a78). Adapters never pass engine stderr/stdout through raw \u2014 parsed, or X0901 with raw output attached.",
               "ts": 1755877962000
             }
           ],
           "cli": [
             {
               "id": "547af33ec84e6932",
-              "text": "The `cargo-ply` binary and a newcomer's actual entry point: check | verify | tree | worklist | audit | accept | synth | skill (§4, §6). Every subcommand emits the same JSON envelope under --json (§8), which is the agent-facing surface.",
+              "text": "The `cargo-ply` binary and a newcomer's actual entry point: check | verify | tree | worklist | audit | accept | synth | skill (\u00a74, \u00a76). Every subcommand emits the same JSON envelope under --json (\u00a78), which is the agent-facing surface.",
               "ts": 1787443917077
             }
           ],
           "plyyaml": [
             {
               "id": "a9602e50c8a5b56a",
-              "text": "The declarative source of every claim except inline function contracts: components, checks, capabilities, ownership, profiles, edges, and the unresolved-marker registry (§5, §5.1). The schema at schema/ply.schema.json, not this prose, is the normative definition.",
+              "text": "The declarative source of every claim except inline function contracts: components, checks, capabilities, ownership, profiles, edges, and the unresolved-marker registry (\u00a75, \u00a75.1). The schema at schema/ply.schema.json, not this prose, is the normative definition.",
               "ts": 1787443917135
             }
           ],
           "cfg": [
             {
               "id": "107d2d525aa3f120",
-              "text": "Loads and merges every ply.yaml / *.ply.yaml file in the workspace (lexicographic order, target/ and gitignored paths excluded) and validates the merged document against the normative JSON Schema (§5, §5.1). Malformed input is reported as E0201–E0203 with a JSON-pointer-to-line mapping, never an opaque parse failure.",
+              "text": "Loads and merges every ply.yaml / *.ply.yaml file in the workspace (lexicographic order, target/ and gitignored paths excluded) and validates the merged document against the normative JSON Schema (\u00a75, \u00a75.1). Malformed input is reported as E0201\u2013E0203 with a JSON-pointer-to-line mapping, never an opaque parse failure.",
               "ts": 1787443917191
             }
           ],
           "model": [
             {
               "id": "f96b4f40bfa5675a",
-              "text": "Holds the parsed components, fn claims, anchors, node IDs, and verdicts (§4). Also owns two behaviours core to a verify run: resolving anchors to real code items (§5.2) and ordering verification callees-before-callers over the call graph (§5.5).",
+              "text": "Holds the parsed components, fn claims, anchors, node IDs, and verdicts (\u00a74). Also owns two behaviours core to a verify run: resolving anchors to real code items (\u00a75.2) and ordering verification callees-before-callers over the call graph (\u00a75.5).",
               "ts": 1787443917250
             }
           ],
           "targetply": [
             {
               "id": "49a13a4eabc4e141",
-              "text": "Everything Ply generates and owns under target/ply/: in-crate Kani proof modules, proptest harness crates, and Verus translations (§4, §6). cargo ply verify deletes generated artifacts whose claims no longer exist.",
+              "text": "Everything Ply generates and owns under target/ply/: in-crate Kani proof modules, proptest harness crates, and Verus translations (\u00a74, \u00a76). cargo ply verify deletes generated artifacts whose claims no longer exist.",
               "ts": 1787443917596
             }
           ],
           "engines": [
             {
               "id": "81cfdfb9247f3092",
-              "text": "Defines trait Engine { plan, run, parse } and one adapter per external tool (§3, §4). Each engine is version-detected as a subprocess at startup; a missing engine downgrades only the checks that need it (W0110/engine-missing) and never fails the run (§3).",
+              "text": "Defines trait Engine { plan, run, parse } and one adapter per external tool (\u00a73, \u00a74). Each engine is version-detected as a subprocess at startup; a missing engine downgrades only the checks that need it (W0110/engine-missing) and never fails the run (\u00a73).",
               "ts": 1787443917654
             }
           ],
           "rustc": [
             {
               "id": "6e3747615c05d7ba",
-              "text": "Ground truth for the crate-tier architecture facts: cargo metadata gives the exact crate dependency graph (D4), and cargo check --message-format=json is the baseline build/type/borrow check every other engine builds on (§3).",
+              "text": "Ground truth for the crate-tier architecture facts: cargo metadata gives the exact crate dependency graph (D4), and cargo check --message-format=json is the baseline build/type/borrow check every other engine builds on (\u00a73).",
               "ts": 1787443917724
             }
           ],
           "proptest": [
             {
               "id": "9b2eb53ade5efa91",
-              "text": "Runs the fuzz(n) check: a generated proptest harness under target/ply/fuzz/ exercises the function on n (default 256) generated inputs with shrinking on, using requires as a rejection filter (§5.4c). A failing case becomes the fuzzed(n) verdict's counterexample.",
+              "text": "Runs the fuzz(n) check: a generated proptest harness under target/ply/fuzz/ exercises the function on n (default 256) generated inputs with shrinking on, using requires as a rejection filter (\u00a75.4c). A failing case becomes the fuzzed(n) verdict's counterexample.",
               "ts": 1787443917835
             }
           ],
@@ -929,21 +1506,21 @@
           "verus": [
             {
               "id": "8444f342b61cef8e",
-              "text": "Optional prove check (M7): translates the supported spec subset to Verus for an unbounded, no-loop-bound proof (proved verdict), in exchange for a restricted language fragment and more annotation work. Not started without its own ADR justifying the translation cost (§3, milestone M7).",
+              "text": "Optional prove check (M7): translates the supported spec subset to Verus for an unbounded, no-loop-bound proof (proved verdict), in exchange for a restricted language fragment and more annotation work. Not started without its own ADR justifying the translation cost (\u00a73, milestone M7).",
               "ts": 1787443917946
             }
           ],
           "miri": [
             {
               "id": "404a27addcdfc094",
-              "text": "Optional undefined-behavior check for unsafe Rust (cargo +nightly miri test), landing at M7 alongside Verus. Like every engine, its absence just downgrades the checks that depend on it rather than failing the run (§3).",
+              "text": "Optional undefined-behavior check for unsafe Rust (cargo +nightly miri test), landing at M7 alongside Verus. Like every engine, its absence just downgrades the checks that depend on it rather than failing the run (\u00a73).",
               "ts": 1787443918002
             }
           ],
           "cextests": [
             {
               "id": "7caa8f26eb6e6283",
-              "text": "Rendered counterexamples that pass as ordinary cargo test targets, named ply_cex_* (§4, §6, D7). Only emitted when Kani's failing input can be rendered as stable Rust source; otherwise the diagnostic says so (W0541) rather than fabricating one.",
+              "text": "Rendered counterexamples that pass as ordinary cargo test targets, named ply_cex_* (\u00a74, \u00a76, D7). Only emitted when Kani's failing input can be rendered as stable Rust source; otherwise the diagnostic says so (W0541) rather than fabricating one.",
               "ts": 1787443918115
             }
           ]
@@ -956,7 +1533,7 @@
       "type": "sequence",
       "origin": "llm",
       "generation": {
-        "focus": "What happens on `cargo ply verify`: config load + schema validation → anchor resolution + fingerprint/staleness check → fact extraction → callees-first ordering → harness generation → engine run → result parsing → counterexample materialization → Diagnostic assembly → verdict tree aggregation, per SPEC.md §5.4–5.5 and §7–§8. No code exists yet; participants are planned modules/artifacts left unanchored (files: [])."
+        "focus": "What happens on `cargo ply verify`: config load + schema validation \u2192 anchor resolution + fingerprint/staleness check \u2192 fact extraction \u2192 callees-first ordering \u2192 harness generation \u2192 engine run \u2192 result parsing \u2192 counterexample materialization \u2192 Diagnostic assembly \u2192 verdict tree aggregation, per SPEC.md \u00a75.4\u20135.5 and \u00a77\u2013\u00a78. No code exists yet; participants are planned modules/artifacts left unanchored (files: [])."
       },
       "doc": {
         "type": "sequence",
@@ -1062,12 +1639,12 @@
           {
             "from": "user",
             "to": "cli",
-            "label": "cargo ply verify [path|fn] (§6)"
+            "label": "cargo ply verify [path|fn] (\u00a76)"
           },
           {
             "from": "cli",
             "to": "cfg",
-            "label": "load + merge ply.yaml, validate vs schema (§5.1)"
+            "label": "load + merge ply.yaml, validate vs schema (\u00a75.1)"
           },
           {
             "from": "cfg",
@@ -1077,7 +1654,7 @@
           {
             "from": "cli",
             "to": "model",
-            "label": "resolve anchors (§5.2)"
+            "label": "resolve anchors (\u00a75.2)"
           },
           {
             "from": "model",
@@ -1087,12 +1664,12 @@
           {
             "from": "lock",
             "to": "model",
-            "label": "fresh, or stale → W0302"
+            "label": "fresh, or stale \u2192 W0302"
           },
           {
             "from": "model",
             "to": "extract",
-            "label": "extract crate-tier + item-tier facts (§5.3)"
+            "label": "extract crate-tier + item-tier facts (\u00a75.3)"
           },
           {
             "from": "extract",
@@ -1102,7 +1679,7 @@
           {
             "from": "model",
             "to": "model",
-            "label": "order callees-first over call graph (§5.5)"
+            "label": "order callees-first over call graph (\u00a75.5)"
           },
           {
             "from": "model",
@@ -1112,12 +1689,12 @@
           {
             "from": "harness",
             "to": "targetply",
-            "label": "write in-crate proof module / fuzz harness (§4)"
+            "label": "write in-crate proof module / fuzz harness (\u00a74)"
           },
           {
             "from": "harness",
             "to": "kani",
-            "label": "cargo kani -Zfunction-contracts (§5.4c)"
+            "label": "cargo kani -Zfunction-contracts (\u00a75.4c)"
           },
           {
             "from": "kani",
@@ -1132,22 +1709,22 @@
           {
             "from": "harness",
             "to": "diag",
-            "label": "assemble Diagnostic: code, span, cex, assumptions, fixes (§8)"
+            "label": "assemble Diagnostic: code, span, cex, assumptions, fixes (\u00a78)"
           },
           {
             "from": "diag",
             "to": "ledger",
-            "label": "aggregate worst-of + status propagation (D6, §7)"
+            "label": "aggregate worst-of + status propagation (D6, \u00a77)"
           },
           {
             "from": "ledger",
             "to": "cli",
-            "label": "verdict tree + open items (§7)"
+            "label": "verdict tree + open items (\u00a77)"
           },
           {
             "from": "cli",
             "to": "user",
-            "label": "JSON envelope { command, root, diagnostics } (§8)"
+            "label": "JSON envelope { command, root, diagnostics } (\u00a78)"
           }
         ],
         "groups": [],
@@ -1155,96 +1732,96 @@
           "__diagram__": [
             {
               "id": "n-vp-diag-1",
-              "text": "Verification is modular: Ply checks every function against its own contract, and checks callers against callees' contracts, never their bodies (§1 finding 3). Verification runs callees-before-callers over the call graph (§5.5). A missing engine downgrades the affected checks (W0110/engine-missing) without failing the run (§3).",
+              "text": "Verification is modular: Ply checks every function against its own contract, and checks callers against callees' contracts, never their bodies (\u00a71 finding 3). Verification runs callees-before-callers over the call graph (\u00a75.5). A missing engine downgrades the affected checks (W0110/engine-missing) without failing the run (\u00a73).",
               "ts": 1755877962000
             }
           ],
           "kani": [
             {
               "id": "n-vp-kani-1",
-              "text": "stub_verified(g) only when g passed its own Kani contract proof this run in the same crate; otherwise f verifies against g's assumed contract and f's verdict is marked conditional (W0511), listing the assumption (D5, §5.5).",
+              "text": "stub_verified(g) only when g passed its own Kani contract proof this run in the same crate; otherwise f verifies against g's assumed contract and f's verdict is marked conditional (W0511), listing the assumption (D5, \u00a75.5).",
               "ts": 1755877962000
             }
           ],
           "lock": [
             {
               "id": "n-vp-lock-1",
-              "text": "Fingerprint = item token-stream hash + merged contract text + callee contract hashes + engine name/version/flags + active features + target triple (D14). Mismatch on any part → status stale, diagnostic W0302.",
+              "text": "Fingerprint = item token-stream hash + merged contract text + callee contract hashes + engine name/version/flags + active features + target triple (D14). Mismatch on any part \u2192 status stale, diagnostic W0302.",
               "ts": 1755877962000
             }
           ],
           "cex": [
             {
               "id": "n-vp-cex-1",
-              "text": "Kani playback data is always stored (exact, engine-version-bound). The ordinary #[test] rendering is added only when the inputs can be rendered as stable Rust source; otherwise the diagnostic says so (W0541) — inputs are never fabricated (D7).",
+              "text": "Kani playback data is always stored (exact, engine-version-bound). The ordinary #[test] rendering is added only when the inputs can be rendered as stable Rust source; otherwise the diagnostic says so (W0541) \u2014 inputs are never fabricated (D7).",
               "ts": 1755877962000
             }
           ],
           "ledger": [
             {
               "id": "n-vp-ledger-1",
-              "text": "Worst-of aggregation over evidence order violation < unclaimed < tested < fuzzed < bounded < proved (D6). Statuses (conditional, stale, weak-spec, unsupported, engine-missing, timeout, inconclusive) do not sit in that order — they propagate upward as flags and open-item counts alongside it.",
+              "text": "Worst-of aggregation over evidence order violation < unclaimed < tested < fuzzed < bounded < proved (D6). Statuses (conditional, stale, weak-spec, unsupported, engine-missing, timeout, inconclusive) do not sit in that order \u2014 they propagate upward as flags and open-item counts alongside it.",
               "ts": 1755877962000
             },
             {
               "id": "3b64ace13adfbbde",
-              "text": "This node's id is kept as 'ledger' for bundle stability (diagram node ids are stable keys); its label and every comment now use the current term, verdict tree (cargo ply tree, §6, §7). The concept and its worst-of aggregation (D6) are unchanged.",
+              "text": "This node's id is kept as 'ledger' for bundle stability (diagram node ids are stable keys); its label and every comment now use the current term, verdict tree (cargo ply tree, \u00a76, \u00a77). The concept and its worst-of aggregation (D6) are unchanged.",
               "ts": 1787444113847
             }
           ],
           "user": [
             {
               "id": "de9993b7f327cc10",
-              "text": "The developer or coding agent that runs cargo ply verify [path|fn] (§6) and receives the JSON envelope back. Ply's diagnostics are written for this reader either way — a human or an agent repairing code from a counterexample (§1 finding 2).",
+              "text": "The developer or coding agent that runs cargo ply verify [path|fn] (\u00a76) and receives the JSON envelope back. Ply's diagnostics are written for this reader either way \u2014 a human or an agent repairing code from a counterexample (\u00a71 finding 2).",
               "ts": 1787443918226
             }
           ],
           "cli": [
             {
               "id": "b782b90e96fe0d51",
-              "text": "ply-cli's verify entry point. It has no logic of its own here: it drives config load → anchor resolution → extraction → harness generation → engine run → aggregation in order and hands back whatever the verdict tree produces (§5.4–5.5, §7).",
+              "text": "ply-cli's verify entry point. It has no logic of its own here: it drives config load \u2192 anchor resolution \u2192 extraction \u2192 harness generation \u2192 engine run \u2192 aggregation in order and hands back whatever the verdict tree produces (\u00a75.4\u20135.5, \u00a77).",
               "ts": 1787443918283
             }
           ],
           "cfg": [
             {
               "id": "1c9b28dce74cf4f5",
-              "text": "Loads and merges every ply.yaml and validates the result against the schema before anything else runs; a bad document fails fast with E0201/E0202/E0203 rather than reaching the engines (§5, §5.1).",
+              "text": "Loads and merges every ply.yaml and validates the result against the schema before anything else runs; a bad document fails fast with E0201/E0202/E0203 rather than reaching the engines (\u00a75, \u00a75.1).",
               "ts": 1787443918341
             }
           ],
           "model": [
             {
               "id": "df14a2e7317f8f9e",
-              "text": "Resolves each claim's anchor to a real code item (§5.2) and, once extraction returns facts, orders verification callees-before-callers over the call graph (§5.5) — the step that makes modular composition (D5) possible.",
+              "text": "Resolves each claim's anchor to a real code item (\u00a75.2) and, once extraction returns facts, orders verification callees-before-callers over the call graph (\u00a75.5) \u2014 the step that makes modular composition (D5) possible.",
               "ts": 1787443918401
             }
           ],
           "extract": [
             {
               "id": "9884935b47d2127c",
-              "text": "Produces the item index, call graph, capability approximation, and anchors that model needs to build harnesses and check architecture rules; syn-based, so results are best-effort and every unresolved call site is still counted (D11, §5.3).",
+              "text": "Produces the item index, call graph, capability approximation, and anchors that model needs to build harnesses and check architecture rules; syn-based, so results are best-effort and every unresolved call site is still counted (D11, \u00a75.3).",
               "ts": 1787443918522
             }
           ],
           "harness": [
             {
               "id": "7211b793f8457426",
-              "text": "Turns a resolved fn claim into runnable checking code: an in-crate Kani proof module, a proptest harness, or both, adding #[kani::stub_verified(g)] only when the callee already has its own passing proof this run (D5, §5.5). Also where the counterexample and Diagnostic get assembled once an engine reports back.",
+              "text": "Turns a resolved fn claim into runnable checking code: an in-crate Kani proof module, a proptest harness, or both, adding #[kani::stub_verified(g)] only when the callee already has its own passing proof this run (D5, \u00a75.5). Also where the counterexample and Diagnostic get assembled once an engine reports back.",
               "ts": 1787443918590
             }
           ],
           "targetply": [
             {
               "id": "487e49b352d5cd7c",
-              "text": "Where the generated proof modules and fuzz harnesses actually land, under target/ply/, entirely owned and cleaned up by Ply (§4, §6).",
+              "text": "Where the generated proof modules and fuzz harnesses actually land, under target/ply/, entirely owned and cleaned up by Ply (\u00a74, \u00a76).",
               "ts": 1787443918650
             }
           ],
           "diag": [
             {
               "id": "84d9823849f70fdb",
-              "text": "Assembles the unified Diagnostic — code, span, counterexample, assumptions, fixes — from whatever the engine reported, then hands it to the verdict tree for aggregation (§8). Also the point where a rendered ply_cex_* test gets attached to the diagnostic when possible (D7).",
+              "text": "Assembles the unified Diagnostic \u2014 code, span, counterexample, assumptions, fixes \u2014 from whatever the engine reported, then hands it to the verdict tree for aggregation (\u00a78). Also the point where a rendered ply_cex_* test gets attached to the diagnostic when possible (D7).",
               "ts": 1787443918821
             }
           ]
@@ -1257,7 +1834,7 @@
       "type": "class",
       "origin": "llm",
       "generation": {
-        "focus": "The node tree workspace→components→fns (§7), the evidence order violation < unclaimed < tested < fuzzed < bounded < proved (D6), and the orthogonal statuses conditional/stale/weak-spec/unsupported/engine-missing/timeout/inconclusive (D6, §7). No code exists yet; modeled as a conceptual class diagram, left unanchored (files: [])."
+        "focus": "The node tree workspace\u2192components\u2192fns (\u00a77), the evidence order violation < unclaimed < tested < fuzzed < bounded < proved (D6), and the orthogonal statuses conditional/stale/weak-spec/unsupported/engine-missing/timeout/inconclusive (D6, \u00a77). No code exists yet; modeled as a conceptual class diagram, left unanchored (files: [])."
       },
       "doc": {
         "type": "class",
@@ -1442,13 +2019,13 @@
             "from": "workspace",
             "to": "component",
             "kind": "composition",
-            "label": "components 1..* (§5.1)"
+            "label": "components 1..* (\u00a75.1)"
           },
           {
             "from": "component",
             "to": "fn",
             "kind": "composition",
-            "label": "fns 0..* (§5.1)"
+            "label": "fns 0..* (\u00a75.1)"
           },
           {
             "from": "violation",
@@ -1508,13 +2085,13 @@
             "from": "node",
             "to": "unsupported",
             "kind": "dependency",
-            "label": "uncheckable signature (§5.4b, V0505)"
+            "label": "uncheckable signature (\u00a75.4b, V0505)"
           },
           {
             "from": "node",
             "to": "engine-missing",
             "kind": "dependency",
-            "label": "engine absent (§3, W0110)"
+            "label": "engine absent (\u00a73, W0110)"
           },
           {
             "from": "node",
@@ -1534,14 +2111,14 @@
           "__diagram__": [
             {
               "id": "n-vm-diag-1",
-              "text": "The model is a tree: workspace → components → nested components → fns (§7). Every node carries { id, kind, anchor, content_hash, verdict, statuses, worst_descendant, open_items }. Verdicts aggregate upward as worst-of over the evidence order (D6); statuses do not sit in that order — they propagate upward as flags and open-item counts alongside it (D6).",
+              "text": "The model is a tree: workspace \u2192 components \u2192 nested components \u2192 fns (\u00a77). Every node carries { id, kind, anchor, content_hash, verdict, statuses, worst_descendant, open_items }. Verdicts aggregate upward as worst-of over the evidence order (D6); statuses do not sit in that order \u2014 they propagate upward as flags and open-item counts alongside it (D6).",
               "ts": 1755877962000
             }
           ],
           "component": [
             {
               "id": "n-vm-comp-1",
-              "text": "Components may nest (components: [...] with the same shape, §5.1) — omitted above as a self-loop for readability; a Component may contain further Components in addition to Fns.",
+              "text": "Components may nest (components: [...] with the same shape, \u00a75.1) \u2014 omitted above as a self-loop for readability; a Component may contain further Components in addition to Fns.",
               "ts": 1755877962000
             }
           ],
@@ -1555,105 +2132,105 @@
           "proved": [
             {
               "id": "n-vm-proved-1",
-              "text": "Strongest evidence a function's passing checks can earn (§5.4c). A single failing check yields violation regardless of what else passed.",
+              "text": "Strongest evidence a function's passing checks can earn (\u00a75.4c). A single failing check yields violation regardless of what else passed.",
               "ts": 1755877962000
             }
           ],
           "workspace": [
             {
               "id": "1a7ff70eec35443e",
-              "text": "The root of the node tree: one per verify/tree run, carrying the command name and Ply version (§7). Everything else — components, nested components, fns — hangs underneath it.",
+              "text": "The root of the node tree: one per verify/tree run, carrying the command name and Ply version (\u00a77). Everything else \u2014 components, nested components, fns \u2014 hangs underneath it.",
               "ts": 1787443918990
             }
           ],
           "fn": [
             {
               "id": "680379766ee5f384",
-              "text": "A leaf node: one function claim, its declared checks list (e.g. bounded(3), fuzz(256), mutate, §5.1/D12), and whether it runs in check or synth mode (§5.7). A fn's own verdict is the strongest evidence its passing checks earned — one failing check makes it a violation regardless (§5.4c).",
+              "text": "A leaf node: one function claim, its declared checks list (e.g. bounded(3), fuzz(256), mutate, \u00a75.1/D12), and whether it runs in check or synth mode (\u00a75.7). A fn's own verdict is the strongest evidence its passing checks earned \u2014 one failing check makes it a violation regardless (\u00a75.4c).",
               "ts": 1787443919102
             }
           ],
           "violation": [
             {
               "id": "991ea861ed462af6",
-              "text": "The weakest point on the evidence order: at least one check failed. A single failing check yields violation for the whole fn no matter what else passed (§5.4c, D6).",
+              "text": "The weakest point on the evidence order: at least one check failed. A single failing check yields violation for the whole fn no matter what else passed (\u00a75.4c, D6).",
               "ts": 1787443919159
             }
           ],
           "unclaimed": [
             {
               "id": "cead118bde017a30",
-              "text": "A node with no checks declared at all — weaker than any actual evidence, but not a failure (D6). This is the default state for a fn nobody has annotated yet.",
+              "text": "A node with no checks declared at all \u2014 weaker than any actual evidence, but not a failure (D6). This is the default state for a fn nobody has annotated yet.",
               "ts": 1787443919217
             }
           ],
           "tested": [
             {
               "id": "71084e02ece19c35",
-              "text": "Verdict earned by the test check: example expressions from ply.yaml plus generated direct contract cases, run as concrete inputs through the real function (§5.4c).",
+              "text": "Verdict earned by the test check: example expressions from ply.yaml plus generated direct contract cases, run as concrete inputs through the real function (\u00a75.4c).",
               "ts": 1787443919276
             }
           ],
           "fuzzed": [
             {
               "id": "877987538b439401",
-              "text": "Verdict earned by the fuzz(n) check: n proptest-generated inputs (default 256) with shrinking on; fuzzed(n) records how many cases actually ran (§5.4c).",
+              "text": "Verdict earned by the fuzz(n) check: n proptest-generated inputs (default 256) with shrinking on; fuzzed(n) records how many cases actually ran (\u00a75.4c).",
               "ts": 1787443919335
             }
           ],
           "bounded": [
             {
               "id": "959c37d66be07287",
-              "text": "Verdict earned by the bounded(k) check: a Kani contract proof exhaustive up to loop bound k (default 2) — every execution within the bound is checked, nothing is claimed beyond it (§0 'bounded model checking', §5.4c).",
+              "text": "Verdict earned by the bounded(k) check: a Kani contract proof exhaustive up to loop bound k (default 2) \u2014 every execution within the bound is checked, nothing is claimed beyond it (\u00a70 'bounded model checking', \u00a75.4c).",
               "ts": 1787443919391
             }
           ],
           "conditional": [
             {
               "id": "d9538b0d8e46f198",
-              "text": "Attached when a fn's verification stubbed a callee whose own contract was merely assumed rather than proved this run — same crate but weaker evidence, cross-crate, or a call-graph cycle (D5, W0511). The verdict tree keeps the full assumption chain, not just the flag (§5.5).",
+              "text": "Attached when a fn's verification stubbed a callee whose own contract was merely assumed rather than proved this run \u2014 same crate but weaker evidence, cross-crate, or a call-graph cycle (D5, W0511). The verdict tree keeps the full assumption chain, not just the flag (\u00a75.5).",
               "ts": 1787443919505
             }
           ],
           "stale": [
             {
               "id": "5488a633d76a053e",
-              "text": "Attached when the recorded fingerprint no longer matches — item body, contract text, callee contracts, engine version, features, or target triple changed since the last accepted run (D14, W0302). cargo ply accept re-blesses it, but refuses (E0303) any node whose last run failed.",
+              "text": "Attached when the recorded fingerprint no longer matches \u2014 item body, contract text, callee contracts, engine version, features, or target triple changed since the last accepted run (D14, W0302). cargo ply accept re-blesses it, but refuses (E0303) any node whose last run failed.",
               "ts": 1787443919563
             }
           ],
           "weak-spec": [
             {
               "id": "c065c97b8d2a59c1",
-              "text": "Attached when the mutate check finds surviving mutants: the spec verified but didn't actually constrain the mutated behavior (W0502, D12). The concrete defense against 'machine-written specs go vacuous' (§1 finding 4).",
+              "text": "Attached when the mutate check finds surviving mutants: the spec verified but didn't actually constrain the mutated behavior (W0502, D12). The concrete defense against 'machine-written specs go vacuous' (\u00a71 finding 4).",
               "ts": 1787443919621
             }
           ],
           "unsupported": [
             {
               "id": "f973dd09f644436a",
-              "text": "Attached when an engine can't construct the fn's inputs at all — trait objects, generics, smart pointers, or a private-field type without a generator (§5.4b, V0505). Reported as a fact, never a harness build failure.",
+              "text": "Attached when an engine can't construct the fn's inputs at all \u2014 trait objects, generics, smart pointers, or a private-field type without a generator (\u00a75.4b, V0505). Reported as a fact, never a harness build failure.",
               "ts": 1787443919678
             }
           ],
           "engine-missing": [
             {
               "id": "b0b525bb877d3154",
-              "text": "Attached when the engine a check needs isn't installed; the check is downgraded rather than the whole run failing (§3, W0110).",
+              "text": "Attached when the engine a check needs isn't installed; the check is downgraded rather than the whole run failing (\u00a73, W0110).",
               "ts": 1787443919734
             }
           ],
           "timeout": [
             {
               "id": "f95943f43bfe591b",
-              "text": "Attached when a check exceeds --engine-timeout (default 60s per fn, §6). Explicitly not treated as weaker evidence on the D6 order — it's a different kind of fact from a proof that ran to completion.",
+              "text": "Attached when a check exceeds --engine-timeout (default 60s per fn, \u00a76). Explicitly not treated as weaker evidence on the D6 order \u2014 it's a different kind of fact from a proof that ran to completion.",
               "ts": 1787443919807
             }
           ],
           "inconclusive": [
             {
               "id": "a3d2e088aaa1e114",
-              "text": "An orthogonal status for a check that ran but couldn't reach a definite pass/fail — kept separate from the evidence order (D6) so it's never confused with an actual weaker verdict.",
+              "text": "An orthogonal status for a check that ran but couldn't reach a definite pass/fail \u2014 kept separate from the evidence order (D6) so it's never confused with an actual weaker verdict.",
               "ts": 1787443919864
             }
           ]
@@ -1661,7 +2238,7 @@
       }
     }
   ],
-  "activeId": "architecture",
+  "activeId": "overview",
   "codeThreads": [
     {
       "id": "t-spec-d2-attrs",
@@ -1674,7 +2251,7 @@
       "comments": [
         {
           "id": "ct-1",
-          "text": "D2 — this is where the emitted attribute actually lands: cfg_attr(kani, ...) on the real function, never a generated copy.",
+          "text": "D2 \u2014 this is where the emitted attribute actually lands: cfg_attr(kani, ...) on the real function, never a generated copy.",
           "ts": 1755877962000
         }
       ]
@@ -1690,7 +2267,7 @@
       "comments": [
         {
           "id": "ct-2",
-          "text": "D4 crate tier — sound and default-deny, because cargo metadata's dependency graph is exact.",
+          "text": "D4 crate tier \u2014 sound and default-deny, because cargo metadata's dependency graph is exact.",
           "ts": 1755877962000
         }
       ]
@@ -1706,7 +2283,7 @@
       "comments": [
         {
           "id": "ct-3",
-          "text": "D5 — the one condition under which model may let harness stub a callee instead of assuming its contract: g proved itself, same crate, this run.",
+          "text": "D5 \u2014 the one condition under which model may let harness stub a callee instead of assuming its contract: g proved itself, same crate, this run.",
           "ts": 1755877962000
         }
       ]
@@ -1722,7 +2299,7 @@
       "comments": [
         {
           "id": "ct-4",
-          "text": "§6 — the exact command this whole sequence diagram traces, and its one-line summary of the callees-first order (§5.5).",
+          "text": "\u00a76 \u2014 the exact command this whole sequence diagram traces, and its one-line summary of the callees-first order (\u00a75.5).",
           "ts": 1755877962000
         }
       ]
@@ -1738,7 +2315,7 @@
       "comments": [
         {
           "id": "ct-5",
-          "text": "D7 — cargo_test is only attached when the inputs render as stable Rust; otherwise the diagnostic says so instead of fabricating one.",
+          "text": "D7 \u2014 cargo_test is only attached when the inputs render as stable Rust; otherwise the diagnostic says so instead of fabricating one.",
           "ts": 1755877962000
         }
       ]
@@ -1754,7 +2331,7 @@
       "comments": [
         {
           "id": "ct-6",
-          "text": "§5.2/D14 — the exact trigger for W0302 and status stale: any part of the recorded fingerprint no longer matching.",
+          "text": "\u00a75.2/D14 \u2014 the exact trigger for W0302 and status stale: any part of the recorded fingerprint no longer matching.",
           "ts": 1755877962000
         }
       ]
@@ -1770,7 +2347,7 @@
       "comments": [
         {
           "id": "ct-7",
-          "text": "§3 — every engine this module dispatches to is a version-detected, individually optional subprocess.",
+          "text": "\u00a73 \u2014 every engine this module dispatches to is a version-detected, individually optional subprocess.",
           "ts": 1755877962000
         }
       ]
@@ -1779,14 +2356,14 @@
       "id": "t-spec-envelope-shape",
       "file": "SPEC.md",
       "line": 532,
-      "snippet": "`{ \"command\": \"...\", \"ply_version\": \"...\", \"root\": <node tree §7>, \"diagnostics\": [<Diagnostic>...] }`.",
+      "snippet": "`{ \"command\": \"...\", \"ply_version\": \"...\", \"root\": <node tree \u00a77>, \"diagnostics\": [<Diagnostic>...] }`.",
       "anchored": true,
       "node": "envelope",
       "diagramType": "architecture",
       "comments": [
         {
           "id": "ct-8",
-          "text": "§8 — the literal envelope shape this node is; additive-only after M3, with tests/ui goldens as the contract.",
+          "text": "\u00a78 \u2014 the literal envelope shape this node is; additive-only after M3, with tests/ui goldens as the contract.",
           "ts": 1755877962000
         }
       ]
@@ -1802,7 +2379,7 @@
       "comments": [
         {
           "id": "ct-9",
-          "text": "§7 — the sentence that assigns worst_descendant and statuses/open_items their exact meaning on every Node.",
+          "text": "\u00a77 \u2014 the sentence that assigns worst_descendant and statuses/open_items their exact meaning on every Node.",
           "ts": 1755877962000
         }
       ]
@@ -1818,7 +2395,7 @@
       "comments": [
         {
           "id": "ct-10",
-          "text": "§5.4c — the rule violation exists to enforce: one failing check overrides every passing one.",
+          "text": "\u00a75.4c \u2014 the rule violation exists to enforce: one failing check overrides every passing one.",
           "ts": 1755877962000
         }
       ]
