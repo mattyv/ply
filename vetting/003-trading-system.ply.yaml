@@ -1,0 +1,114 @@
+ply: 1
+components:
+  ingest:
+    anchor: ingest
+    components:
+      feed:
+        anchor: ingest::feed
+        uses: [net]
+        fns:
+          Feed::pump:
+            checks: []
+      ring:
+        anchor: disruptor::spsc
+        uses: [unsafe]
+        owns: [disruptor::spsc::Spsc]
+        profile: hot_path
+        fns:
+          Spsc::try_push:
+            checks: [bounded(3)]
+            check_with: { T: ingest::feed::RawFrame }
+          Spsc::try_pop:
+            checks: [bounded(3)]
+            check_with: { T: ingest::feed::RawFrame }
+      decoder:
+        anchor: ingest::decode
+        pure: true
+        profile: hot_path
+        fns:
+          decode:
+            checks: [bounded(2), fuzz(4096), mutate]
+            examples:
+              - "decode(&RawFrame::of(&[2, 1, 0, 100, 0, 42])).is_ok() == true"
+      book:
+        anchor: ingest::book
+        strict: true
+        owns: [ingest::book::OrderBook]
+        profile: hot_path
+        fns:
+          OrderBook::apply:
+            checks: [bounded(2), fuzz(256), mutate]
+          OrderBook::updates:
+            checks: [bounded(2)]
+          OrderBook::last_px:
+            checks: [bounded(2)]
+  strategy:
+    anchor: strat
+    components:
+      signals:
+        anchor: strat::signals
+        pure: true
+        fns:
+          momentum:
+            checks: [bounded(2), fuzz(2048)]
+    fns:
+      Strategy::on_update:
+        checks: [test]
+  risk:
+    anchor: risk
+    strict: true
+    owns: [risk::Limits]
+    fns:
+      check_order:
+        checks: [bounded(3), fuzz(4096), mutate]
+  oms:
+    anchor: oms
+    owns: [oms::OrderStore]
+    fns:
+      Oms::submit:
+        checks: [bounded(2), fuzz(256)]
+        unresolved:
+          - { id: 9, note: "order id after venue reject: fresh id or reuse" }
+      Oms::on_fill:
+        checks: [bounded(2)]
+  gateway:
+    anchor: gw
+    uses: [net]
+    fns:
+      Gateway::send:
+        checks: []
+        trusted:
+          - { claim: "venue protocol conformance",
+              evidence: "exchange certification suite, 2026-Q2 run" }
+  pnl:
+    anchor: pnl
+    owns: [pnl::Positions]
+    fns:
+      Positions::apply_fill:
+        checks: [bounded(2), fuzz(512)]
+edges:
+  - ingest.feed -> ingest.ring
+  - ingest.decoder -> ingest.ring
+  - ingest.decoder -> ingest.book
+  - "ingest.feed ~> ingest.ring : RawFrame"
+  - "ingest.ring ~> ingest.decoder : RawFrame"
+  - "ingest.decoder ~> ingest.book : Tick"
+  - strategy -> ingest.book
+  - strategy -> signals
+  - strategy -> oms
+  - oms -> risk
+  - oms -> gateway
+  - oms -> pnl
+  - "ingest.book ~> strategy : BookUpdate"
+  - "strategy ~> oms : OrderIntent"
+  - "oms ~> gateway : Order"
+  - "gateway ~> oms : Fill"
+  - "oms ~> pnl : Fill"
+deny:
+  - "* -> gateway except oms"
+  - "* -> risk except oms"
+  - "* -> ingest.book except ingest.decoder, strategy"
+profiles:
+  hot_path: [no_panics, exhaustive_match]
+unresolved:
+  - { id: 8, note: "venue failover: mirror orders to a backup gateway or halt" }

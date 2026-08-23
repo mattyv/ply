@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, claude/ply-lang-spec-04lvrr]
+    branches: [main]
   pull_request:
-    branches: [main, claude/ply-lang-spec-04lvrr]
+    branches: [main]
 
 jobs:
   ci:
