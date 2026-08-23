@@ -1,0 +1,7 @@
+ply: 1
+components:
+  ring:
+    anchor: disruptor::spsc
+    fns:
+      slot:
+        checks: [bounded(0)]

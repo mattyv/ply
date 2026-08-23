@@ -1,9 +1,10 @@
 //! The `ply.yaml` serde model (SPEC.md §5) plus the three embedded
 //! micro-syntaxes: check strings, edge strings, and deny strings (§5, items 1-3).
 //!
-//! This is deliberately a read-only subset: only the declarative constructs
-//! needed to draw the §7.1 visual grammar. There is no verify data yet, so
-//! verdicts, statuses, and fingerprints are out of scope for this crate.
+//! Shared by `ply-render` (SVG drawing) and `ply-check` (document-local
+//! validation). This is deliberately a read-only subset: only the
+//! declarative constructs, not verify data — verdicts, statuses, and
+//! fingerprints need anchored code and are out of scope for this crate.
 
 use indexmap::IndexMap;
 use serde::Deserialize;

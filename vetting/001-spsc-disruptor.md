@@ -126,10 +126,40 @@ embedded as an image above, the browser treats it as a flat picture and hover is
    `every_drawn_item_resolves_a_tooltip` walks the output and fails on any item without
    one, so new constructs can't skip it.
 
+### Findings from the feasibility pass (2026-08-23)
+
+Question asked after the render pass: can the declared checks actually run?
+
+1. **`fuzz(1024)` on `try_push`/`try_pop` cannot run.** The harness must construct the
+   receiver, and `Spsc` is private fields, `UnsafeCell`/`MaybeUninit`/atomics, and a
+   power-of-two invariant — outside the supported-signature set, so the honest verdict
+   is `unsupported` (V0505), not `fuzzed(1024)`. The generator hook lifts construction
+   but only via one constructor, which yields *empty* queues — the full-queue branch of
+   the contract would never be exercised. Meaningful fuzzing of a stateful receiver
+   needs call-sequence generation, which the grammar does not have. The scenario's
+   checks list was over-claiming; the "What held" section above overstated the
+   sequential skeleton.
+2. **The push/pop contracts silently assume `old()`.**
+   `ensures(|r| r.is_err() == (self.len() == self.capacity()))` reads `self.len()`
+   *after* the call, and `old()` is outside the §5.4 expression subset. A correct push
+   that fills the queue evaluates `false == true`; `try_pop` has the mirror bug on the
+   last element. As written, the contracts flag correct code. Third collision with the
+   two-state wall, after FIFO ordering — but a much cheaper one to close: Kani has
+   `kani::old()` natively, and a fuzz/test harness can evaluate pre-state expressions
+   before the call. → Candidate spec change: admit `old(expr)` as the single two-state
+   primitive.
+3. **`mutate` on `slot` would report `W0502 weak spec`.** The kill signal is the fn's
+   own fuzz harness (D12), whose only oracle is `ensures(r <= mask)` — mutants that
+   replace the body with `0` or with `mask` satisfy it on every input and survive.
+   That is weak-spec detection working as designed, not a tool hole; but the scenario
+   declared a check it cannot pass without a tighter contract or examples.
+
 ## Confirmed walls (deliberate, unchanged)
 
 - FIFO ordering ("pop returns values in push order") needs two-state contracts or a
-  model-based spec — the parked middle stratum (§7.2 honesty note). First candidate
-  when the watermark moves.
+  model-based spec — the parked middle stratum (§7.2 honesty note).
+- Fuzzing methods on a stateful receiver needs call-sequence generation (arbitrary
+  *reachable* states, not just constructible ones). Out of scope for v1; the honest
+  verdict is `unsupported`.
 - Cross-thread correctness itself stays out of scope (loom et al.); Ply's contribution
   is making the boundary visible (`trusted`), not crossing it.

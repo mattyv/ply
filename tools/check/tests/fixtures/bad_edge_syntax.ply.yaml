@@ -1,0 +1,9 @@
+ply: 1
+components:
+  a:
+    anchor: app::a
+  b:
+    anchor: app::b
+
+edges:
+  - "a b"

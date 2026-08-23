@@ -1,0 +1,15 @@
+[package]
+name = "ply-check"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "ply_check"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ply-check"
+path = "src/main.rs"
+
+[dependencies]
+ply-model = { path = "../model" }

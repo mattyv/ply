@@ -1,0 +1,15 @@
+[package]
+name = "ply-kernel"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "ply_kernel"
+path = "src/lib.rs"
+
+[lints.rust]
+# `kani` is a real cfg only under the `cargo kani` toolchain substitution
+# (D9: engines run as subprocesses, never linked as libraries -- `kani` is
+# not a Cargo dependency). Declaring it here silences `unexpected_cfgs`
+# under plain cargo without adding any dependency.
+unexpected_cfgs = { level = "allow", check-cfg = ["cfg(kani)"] }

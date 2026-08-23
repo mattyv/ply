@@ -22,6 +22,23 @@ later cannot quietly skip the rule.
 Goldens are reviewed, never blind-accepted. When a snapshot changes, look at the diff and
 say why it changed.
 
+## Ply proves its own kernel
+
+The verdict kernel — the evidence order, worst-of aggregation, and status propagation
+(D6, D5) — is where a rule interaction could make evidence lie. That kernel is written
+as one pure module carrying `#[ply::...]` contracts, and its invariants are checked with
+the same engines Ply routes to (Kani bounded proofs over small verdict trees), not just
+unit tests. The standing obligations:
+
+- aggregation never reports evidence stronger than the weakest child
+- `conditional` never disappears without its assumptions being discharged
+- a `violation` anywhere always reaches the root
+- no rule sequence assigns one node two different verdicts
+
+New aggregation or status rules don't merge until they hold under these. If a rule can't
+be expressed in the kernel's pure module, that is a design smell to raise, not route
+around.
+
 ## Talk like the `/vibe-coding` skill
 
 Report outcomes, not code churn. Skip file names, function names, and diff-speak unless

@@ -1,0 +1,11 @@
+ply: 1
+components:
+  ring:
+    anchor: disruptor::spsc
+    fns:
+      slot:
+        unresolved:
+          - { id: 5, note: "duplicate of the registry entry below" }
+
+unresolved:
+  - { id: 5, note: "settlement rounding rule TBD" }

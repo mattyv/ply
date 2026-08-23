@@ -6,7 +6,7 @@
 //! character widths are a fixed-width monospace estimate) so that the same
 //! input always produces byte-identical output.
 
-use crate::model::{
+use ply_model::{
     parse_check, parse_deny, parse_edge, Check, Component, Deny, Document, Edge, EdgeKind,
     FnClaim,
 };
