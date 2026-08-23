@@ -39,6 +39,8 @@ Terms this spec uses without further explanation. Ply-specific terms are marked 
 | anchor | (Ply) The real code item (crate, module, or function) a claim attaches to. |
 | fingerprint | (Ply) The recorded hash of everything a verdict depended on: item body, contract text, callee contracts, engine name + version + flags, features, target. A claim whose fingerprint no longer matches is *stale*. |
 | verdict tree | (Ply) The aggregated per-node verdicts for the whole workspace, rendered by `cargo ply tree`. |
+| visual grammar | (Ply) The fixed one-to-one mapping between grammar constructs and visual forms (§7.1). A grammar feature that cannot be drawn is not admitted. |
+| watermark | (Ply) The per-function line where declaration stops and code begins: signature plus contract (§7.2). Below it, Ply verifies but never specifies; the un-specifiable imperative interior is the *floor*. |
 | Dafny | A Microsoft Research language with verification built in: code and spec are written together, and the compiler proves the spec (via the Z3 solver) as part of building. Cited here only as evidence (§1); Ply deliberately avoids the new-language approach. |
 | stubbing | Replacing a callee's body with its contract during verification (Kani: `stub_verified`). |
 | golden test | A test that compares output byte-for-byte against a reviewed reference file. We use the `insta` crate. |
@@ -441,6 +443,54 @@ tree, one line per node, worst first; `--depth N` limits depth and `--focus <id>
 descends into a subtree. This is the human review surface: at depth 1 you see which
 subsystem is weakest, then zoom. A future canvas UI renders the same JSON; nothing in
 this repo should special-case it beyond keeping the schema stable and treelike.
+
+### 7.1 The visual grammar
+
+The grammar is designed to be drawn. Every construct in `ply.yaml` has exactly one
+visual form, and the mapping is total in both directions: a diagram of the model shows
+nothing that was not declared, and everything declared can be shown. This bijection is a
+design gate: **a proposed grammar feature with no clear visual form does not enter the
+grammar.**
+
+| Construct | Visual form |
+|---|---|
+| component (nesting) | box; nested boxes for nested components; anchor as subtitle |
+| fn claim | leaf chip inside its component's box |
+| `->` edge | solid arrow between boxes |
+| `~>` data flow | dashed arrow labeled with the type |
+| deny | barred red arrow between the matched patterns |
+| capabilities / `pure` | badge row on the box; `pure` = a sealed border, no badges |
+| profile | tag on the box |
+| checks list | glyph row on the fn chip |
+| verdict | node fill on the ordinal scale: `violation` red → `proved` deepest green; `unclaimed` unfilled |
+| statuses | corner markers on the node (conditional, stale, weak-spec, …) |
+| worst_descendant | a collapsed box takes its weakest descendant's fill — D6 made visible |
+| assumption chain | thin dotted arrows from a verdict to the contracts it assumed |
+| unresolved marker | numbered pin on the fn or component |
+
+Zooming is collapse/expand over the §7 tree and mirrors `tree --depth`/`--focus`. A
+renderer's only input is the §8 envelope — no side channel. The renderer itself stays
+out of scope; this section fixes what any renderer must show. The archi-techture bundle
+in `.archi/` is the working example of the style.
+
+### 7.2 The watermark
+
+The system has three strata:
+
+1. **Declarative** — everything `ply.yaml` and the attributes express: components,
+   edges, capabilities, contracts, checks. Fully drawable (§7.1), fully checkable.
+2. **The watermark** — where declaration stops: a function's signature plus its
+   contract. Below the mark lies the body. The mark is per-function, and movable in one
+   direction only: `mode: synth` lets the model write the body *down from* the mark,
+   with the check pipeline holding the line (D8, §5.7).
+3. **The floor** — the imperative interior of Rust that no grammar will ever express:
+   algorithms, loop bodies, data-structure manipulation. Ply *verifies* below the
+   watermark; it never *specifies* there.
+
+A grammar extension may push the watermark lower — express more declaratively — only if
+it stays visually depictable (§7.1) and clearly above the floor. Attempting to specify
+the floor itself means building a verification language, the abandoned path this project
+exists to avoid (§1).
 
 ## 8. Result JSON
 
