@@ -14,7 +14,11 @@ fn parse_line_path(d: &str) -> ((f64, f64), (f64, f64)) {
         .split_whitespace()
         .filter_map(|t| t.parse::<f64>().ok())
         .collect();
-    assert_eq!(nums.len(), 4, "expected an M..L.. path with 4 numbers, got {d:?}");
+    assert_eq!(
+        nums.len(),
+        4,
+        "expected an M..L.. path with 4 numbers, got {d:?}"
+    );
     ((nums[0], nums[1]), (nums[2], nums[3]))
 }
 
@@ -43,9 +47,14 @@ fn absolute_component_rect(doc: &roxmltree::Document, name: &str) -> (f64, f64, 
     let mut cur = Some(node);
     while let Some(n) = cur {
         if let Some(t) = n.attribute("transform")
-            && let Some(inner) = t.strip_prefix("translate(").and_then(|s| s.strip_suffix(")"))
+            && let Some(inner) = t
+                .strip_prefix("translate(")
+                .and_then(|s| s.strip_suffix(")"))
         {
-            let parts: Vec<f64> = inner.split(',').map(|p| p.trim().parse().unwrap()).collect();
+            let parts: Vec<f64> = inner
+                .split(',')
+                .map(|p| p.trim().parse().unwrap())
+                .collect();
             x += parts[0];
             y += parts[1];
         }
@@ -106,7 +115,11 @@ mod layout_invariants {
                 let needle = format!(".{c}{{");
                 style
                     .find(&needle)
-                    .and_then(|start| style[start..].find('}').map(|end| &style[start..start + end]))
+                    .and_then(|start| {
+                        style[start..]
+                            .find('}')
+                            .map(|end| &style[start..start + end])
+                    })
                     .is_some_and(|rule| rule.contains("text-anchor:middle"))
             };
 
@@ -170,7 +183,10 @@ mod layout_invariants {
         let doc = roxmltree::Document::parse(&svg).unwrap();
 
         let mut checked = 0;
-        for flow in doc.descendants().filter(|n| n.attribute("class") == Some("edge-flow")) {
+        for flow in doc
+            .descendants()
+            .filter(|n| n.attribute("class") == Some("edge-flow"))
+        {
             let path = flow
                 .children()
                 .find(|c| c.tag_name().name() == "path")
@@ -179,7 +195,9 @@ mod layout_invariants {
 
             let label = flow
                 .children()
-                .find(|c| c.tag_name().name() == "text" && c.attribute("class") == Some("edge-label"))
+                .find(|c| {
+                    c.tag_name().name() == "text" && c.attribute("class") == Some("edge-label")
+                })
                 .expect("edge-flow must have a label");
             let lx: f64 = label.attribute("x").unwrap().parse().unwrap();
             let ly: f64 = label.attribute("y").unwrap().parse().unwrap();
@@ -222,7 +240,10 @@ mod layout_invariants {
                 panic!("no call edge found connecting {from}'s and {to}'s box boundaries")
             });
             let len = ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
-            assert!(len >= 30.0, "{from} -> {to} call edge is only {len} units long: {a:?} -> {b:?}");
+            assert!(
+                len >= 30.0,
+                "{from} -> {to} call edge is only {len} units long: {a:?} -> {b:?}"
+            );
         }
     }
 
@@ -232,10 +253,14 @@ mod layout_invariants {
         let doc = roxmltree::Document::parse(&svg).unwrap();
 
         let mut seen_lines: Vec<((f64, f64), (f64, f64))> = Vec::new();
-        for g in doc.descendants().filter(|n| {
-            matches!(n.attribute("class"), Some("edge-call") | Some("edge-flow"))
-        }) {
-            let path = g.children().find(|c| c.tag_name().name() == "path").unwrap();
+        for g in doc
+            .descendants()
+            .filter(|n| matches!(n.attribute("class"), Some("edge-call") | Some("edge-flow")))
+        {
+            let path = g
+                .children()
+                .find(|c| c.tag_name().name() == "path")
+                .unwrap();
             let line = parse_line_path(path.attribute("d").unwrap());
             assert!(
                 !seen_lines.contains(&line),
@@ -247,7 +272,11 @@ mod layout_invariants {
         // decoder<->ring (call + flow, opposite directions) and feed->ring /
         // decoder->book (call + flow, same direction) are exactly the
         // vetting-002 cases; make sure this test actually exercised them.
-        assert!(seen_lines.len() >= 6, "expected at least 6 call/flow edges, saw {}", seen_lines.len());
+        assert!(
+            seen_lines.len() >= 6,
+            "expected at least 6 call/flow edges, saw {}",
+            seen_lines.len()
+        );
     }
 }
 
@@ -258,7 +287,10 @@ fn svg_root_element_is_well_formed_enough_to_open() {
     assert!(svg.trim_end().ends_with("</svg>"));
     assert_eq!(svg.matches("<svg").count(), 1);
     // every opened group is closed
-    assert_eq!(svg.matches("<g ").count() + svg.matches("<g>").count(), svg.matches("</g>").count());
+    assert_eq!(
+        svg.matches("<g ").count() + svg.matches("<g>").count(),
+        svg.matches("</g>").count()
+    );
 
     let doc = roxmltree::Document::parse(&svg).expect("output must be well-formed XML");
     assert_eq!(doc.root_element().tag_name().name(), "svg");
@@ -418,9 +450,18 @@ fn ambiguous_bare_reference_is_a_hard_error_naming_candidates() {
     let doc = parse_document(&yaml).expect("fixture should parse");
     let err = render_svg(&doc).expect_err("ambiguous bare reference must be rejected");
     let msg = err.to_string();
-    assert!(msg.contains("shared"), "error should name the ambiguous token: {msg}");
-    assert!(msg.contains("alpha.shared"), "error should list this candidate: {msg}");
-    assert!(msg.contains("beta.shared"), "error should list this candidate: {msg}");
+    assert!(
+        msg.contains("shared"),
+        "error should name the ambiguous token: {msg}"
+    );
+    assert!(
+        msg.contains("alpha.shared"),
+        "error should list this candidate: {msg}"
+    );
+    assert!(
+        msg.contains("beta.shared"),
+        "error should list this candidate: {msg}"
+    );
 }
 
 #[test]
@@ -456,7 +497,15 @@ fn disruptor_fixture_golden_snapshot() {
 /// element or its ancestors resolves a rule.
 #[test]
 fn every_painted_element_resolves_a_style_rule() {
-    let style = ply_render::svg::STYLE;
+    // §7.1 finding classes live in a separate constant (`FINDING_STYLE`,
+    // only appended to a document's actual `<style>` when it has a
+    // finding — see its doc comment), so checking selector resolution
+    // needs both, regardless of which a given fixture below happens to use.
+    let style = format!(
+        "{}{}",
+        ply_render::svg::STYLE,
+        ply_render::svg::FINDING_STYLE
+    );
     let matches_selector = |class: &str, tag: &str| {
         style.contains(&format!(".{class}{{"))
             || style.contains(&format!(".{class},"))
@@ -469,6 +518,12 @@ fn every_painted_element_resolves_a_style_rule() {
         "../../vetting/001-spsc-disruptor.ply.yaml",
         "tests/fixtures/full.ply.yaml",
         "tests/fixtures/qualified_refs.ply.yaml",
+        // §7.1 finding coverage: these fixtures each carry a real finding
+        // that must resolve through `FINDING_STYLE`, not just parse clean.
+        "../check/tests/fixtures/bad_check_syntax.ply.yaml",
+        "../check/tests/fixtures/bad_path_form.ply.yaml",
+        "../check/tests/fixtures/duplicate_unresolved_id.ply.yaml",
+        "../../demos/fault3.ply.yaml",
     ] {
         let svg = render_fixture(fixture);
         assert!(svg.contains("<style>"), "{fixture}: no stylesheet emitted");
@@ -487,11 +542,17 @@ fn every_painted_element_resolves_a_style_rule() {
                 .filter_map(|a| a.attribute("class"))
                 .any(|c| matches_selector(c, tag));
             if !resolved {
-                unstyled.push(format!("{fixture}: <{tag}> class={:?}", node.attribute("class")));
+                unstyled.push(format!(
+                    "{fixture}: <{tag}> class={:?}",
+                    node.attribute("class")
+                ));
             }
         }
     }
-    assert!(unstyled.is_empty(), "painted elements with no style rule: {unstyled:?}");
+    assert!(
+        unstyled.is_empty(),
+        "painted elements with no style rule: {unstyled:?}"
+    );
 }
 
 #[test]
@@ -513,16 +574,30 @@ fn glyphs_are_explained_by_a_hover_title() {
 
     // Coverage is asserted by `every_drawn_item_resolves_a_tooltip`; this test
     // checks the wording a reader actually needs.
-    let push = titles.iter().find(|t| t.starts_with("Spsc::try_push")).unwrap();
-    assert!(push.contains("bounded(3) — proves the contract for every input, unrolling loops at most 3 times"));
-    assert!(push.contains("fuzz(1024) — runs the function on 1024 random inputs, checking the contract on each"));
-    assert!(push.contains("generic — every check ran with T=u64; the evidence covers only that type"));
-    assert!(push.contains("trusted (a human vouches for this; no machine checks it): SPSC cross-thread safety"));
+    let push = titles
+        .iter()
+        .find(|t| t.starts_with("Spsc::try_push"))
+        .unwrap();
+    assert!(push.contains(
+        "bounded(3) — proves the contract for every input, unrolling loops at most 3 times"
+    ));
+    assert!(push.contains(
+        "fuzz(1024) — runs the function on 1024 random inputs, checking the contract on each"
+    ));
+    assert!(
+        push.contains("generic — every check ran with T=u64; the evidence covers only that type")
+    );
+    assert!(push.contains(
+        "trusted (a human vouches for this; no machine checks it): SPSC cross-thread safety"
+    ));
     assert!(push.contains("loom test tests/loom_spsc.rs"));
     assert!(push.contains("1 worked example(s), each compiled into a test"));
 
     // The component tooltip expands its profile — the tag alone shows only a name.
-    let ring = titles.iter().find(|t| t.starts_with("component ring")).unwrap();
+    let ring = titles
+        .iter()
+        .find(|t| t.starts_with("component ring"))
+        .unwrap();
     assert!(ring.contains("profile hot_path = no_panics, exhaustive_match"));
     assert!(ring.contains("capabilities: unsafe"));
     assert!(ring.contains("owns disruptor::spsc::Spsc — only this component may mutate them"));
@@ -593,7 +668,9 @@ fn every_drawn_item_resolves_a_tooltip() {
         let doc = roxmltree::Document::parse(&svg).unwrap();
         let mut seen: Vec<&str> = Vec::new();
         for node in doc.descendants().filter(|n| n.is_element()) {
-            let Some(class) = node.attribute("class") else { continue };
+            let Some(class) = node.attribute("class") else {
+                continue;
+            };
             if !ITEM_CLASSES.contains(&class) {
                 continue;
             }
@@ -609,5 +686,8 @@ fn every_drawn_item_resolves_a_tooltip() {
     }
     untitled.sort();
     untitled.dedup();
-    assert!(untitled.is_empty(), "drawn items with no tooltip: {untitled:?}");
+    assert!(
+        untitled.is_empty(),
+        "drawn items with no tooltip: {untitled:?}"
+    );
 }

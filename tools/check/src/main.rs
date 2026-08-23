@@ -1,9 +1,9 @@
 use std::process::ExitCode;
 
 /// `ply-check <path>`: parse a `ply.yaml` document and validate it against
-/// SPEC.md's statically-checkable document-local rules (§5.1a, §5.1, §5.6).
+/// Ply-Spec.md's statically-checkable document-local rules (§5.1a, §5.1, §5.6).
 /// Never renders anything. Exit codes mirror the `cargo ply check` contract
-/// in SPEC.md §6: 0 clean, 1 violations, 2 tool error.
+/// in Ply-Spec.md §6: 0 clean, 1 violations, 2 tool error.
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let Some(path) = args.next() else {

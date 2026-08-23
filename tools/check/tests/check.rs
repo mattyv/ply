@@ -1,4 +1,4 @@
-//! `ply-check`'s document-local rules (SPEC.md §5.1a, §5.1, §5.6) — the
+//! `ply-check`'s document-local rules (Ply-Spec.md §5.1a, §5.1, §5.6) — the
 //! subset of `cargo ply check` that needs no anchored Rust code.
 
 use ply_check::run_checks;

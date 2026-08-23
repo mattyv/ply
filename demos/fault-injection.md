@@ -66,13 +66,16 @@ is what the *faulted* toolchain made of it: **`B0`** in the same confident green
 as every honest claim. The picture cannot distinguish a vacuous claim from a
 proved one.
 
-That is the standing gap this demo makes visible: diagrams draw *declarations*,
-and no visual layer exists yet for *findings or verdicts*. Two consequences,
-both queued:
+That gap is now half closed. The renderer runs the document-local rules itself
+(§7.1 "finding" row) and draws every finding in error red:
+[`fault3-flagged.svg`](fault3-flagged.svg) is the same faulty document through
+the fixed toolchain — the `decode` chip is red-bordered with a red `E0203`
+badge, and its tooltip leads with
+`FINDING E0203: bounded(K) out of range 1..=64: "bounded(0)" (fn decode)`.
+An invalid document can no longer render respectable, and
+`every_finding_is_visibly_flagged_or_counted_at_the_title` walks every bad
+fixture to keep it that way.
 
-- the renderer should run the document-local rules and flag offending items in
-  the drawing (red-marked chip, diagnostic code in the tooltip), so an invalid
-  document cannot render respectable;
-- when `cargo ply` exists, verdict state (violation / unclaimed / conditional)
-  needs a §7.1 visual form — the kernel already computes the truthful number,
-  and the diagram is where a viewer should meet it.
+Still open: when `cargo ply` exists, verdict state (violation / unclaimed /
+conditional) needs its §7.1 visual form — the kernel already computes the
+truthful number, and the diagram is where a viewer should meet it.

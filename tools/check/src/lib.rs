@@ -1,19 +1,46 @@
-//! Document-local `ply.yaml` validation (SPEC.md §5.1a, §5.1, §5.6) — the
+//! Document-local `ply.yaml` validation (Ply-Spec.md §5.1a, §5.1, §5.6) — the
 //! subset of `cargo ply check` (§6) that needs no anchored Rust code:
 //! unknown fields, schema shape, and required fields are already rejected
 //! by `ply_model::parse_document`'s strict serde parse (nothing to
 //! duplicate here). This crate only flags constructs that parse cleanly but
-//! still violate SPEC.md. Anchor resolution, staleness, and the
+//! still violate Ply-Spec.md. Anchor resolution, staleness, and the
 //! architecture rules (§5.2, §5.3) need real code behind the anchors and
 //! are out of scope.
 
 use ply_model::{Check, Component, Document, parse_check, parse_deny, parse_edge};
 use std::collections::HashMap;
 
+/// Where a diagnostic attaches for drawing (Ply-Spec.md §7.1 "finding" row).
+/// `ply-render` consumes this to know what to mark red; `ply-check`'s own
+/// stdout/exit-code contract never prints it (see `Diagnostic`'s `Display`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// A fn claim, named by its component's fully qualified dotted path
+    /// (top-level component name, or `parent.child` for nested ones) plus
+    /// its own fn key.
+    Fn {
+        component_path: String,
+        fn_name: String,
+    },
+    /// A component (its box), named by the same qualified path.
+    Component(String),
+    /// An entry in `doc.edges`, by position.
+    EdgeIndex(usize),
+    /// An entry in `doc.deny`, by position.
+    DenyIndex(usize),
+    /// An unresolved marker, by its declared id — may attach to more than
+    /// one drawn pin if that id is a duplicate (that's the finding).
+    UnresolvedId(u64),
+    /// No single item in the document is the offender; the renderer falls
+    /// back to a count next to the workspace title.
+    Document,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub code: &'static str,
     pub message: String,
+    pub target: Target,
 }
 
 impl std::fmt::Display for Diagnostic {
@@ -22,8 +49,12 @@ impl std::fmt::Display for Diagnostic {
     }
 }
 
-fn diag(code: &'static str, message: String) -> Diagnostic {
-    Diagnostic { code, message }
+fn diag(code: &'static str, message: String, target: Target) -> Diagnostic {
+    Diagnostic {
+        code,
+        message,
+        target,
+    }
 }
 
 /// §5.1a rule 3: anchors and fn keys are plain segment paths —
@@ -43,10 +74,10 @@ fn is_valid_path_form(s: &str) -> bool {
 /// `test | fuzz(N)? | bounded(K)? | prove | mutate` micro-syntax, numeric
 /// bounds included. A string serde accepted as a plain `String` but that
 /// fails this parser is `E0203`.
-fn check_syntax(checks: &[String], location: &str, out: &mut Vec<Diagnostic>) {
+fn check_syntax(checks: &[String], location: &str, target: &Target, out: &mut Vec<Diagnostic>) {
     for c in checks {
         if let Err(e) = parse_check(c) {
-            out.push(diag("E0203", format!("{e} ({location})")));
+            out.push(diag("E0203", format!("{e} ({location})"), target.clone()));
         }
     }
 }
@@ -56,7 +87,12 @@ fn check_syntax(checks: &[String], location: &str, out: &mut Vec<Diagnostic>) {
 /// (a component's default checks, or a fn claim's own) — this rule does
 /// not merge inherited and explicit checks, since that merge isn't spelled
 /// out anywhere as part of the document-local grammar.
-fn check_mutate_rule(checks: &[String], location: &str, out: &mut Vec<Diagnostic>) {
+fn check_mutate_rule(
+    checks: &[String],
+    location: &str,
+    target: &Target,
+    out: &mut Vec<Diagnostic>,
+) {
     let mut has_mutate = false;
     let mut has_test_or_fuzz = false;
     for c in checks {
@@ -70,6 +106,7 @@ fn check_mutate_rule(checks: &[String], location: &str, out: &mut Vec<Diagnostic
         out.push(diag(
             "E0504",
             format!("mutate without test/fuzz in checks list ({location})"),
+            target.clone(),
         ));
     }
 }
@@ -90,6 +127,7 @@ fn walk_component(
         .or_default()
         .push(qualified.to_string());
 
+    let component_target = Target::Component(qualified.to_string());
     if !is_valid_path_form(&c.anchor) {
         out.push(diag(
             "E0304",
@@ -97,22 +135,28 @@ fn walk_component(
                 "unsupported path form {:?} (component {qualified}, anchor)",
                 c.anchor
             ),
+            component_target.clone(),
         ));
     }
     let location = format!("component {qualified}");
-    check_syntax(&c.checks, &location, out);
-    check_mutate_rule(&c.checks, &location, out);
+    check_syntax(&c.checks, &location, &component_target, out);
+    check_mutate_rule(&c.checks, &location, &component_target, out);
 
     for (fn_name, fc) in &c.fns {
+        let fn_target = Target::Fn {
+            component_path: qualified.to_string(),
+            fn_name: fn_name.clone(),
+        };
         if !is_valid_path_form(fn_name) {
             out.push(diag(
                 "E0304",
                 format!("unsupported path form {fn_name:?} (fn {fn_name})"),
+                fn_target.clone(),
             ));
         }
         let location = format!("fn {fn_name}");
-        check_syntax(&fc.checks, &location, out);
-        check_mutate_rule(&fc.checks, &location, out);
+        check_syntax(&fc.checks, &location, &fn_target, out);
+        check_mutate_rule(&fc.checks, &location, &fn_target, out);
 
         for u in &fc.unresolved {
             unresolved_ids.push((u.id, location.clone()));
@@ -142,6 +186,7 @@ fn walk_component(
 fn check_token_ambiguity(
     token: &str,
     leaf_index: &HashMap<String, Vec<String>>,
+    target: &Target,
     out: &mut Vec<Diagnostic>,
 ) {
     if token == "*" || token.contains('.') {
@@ -158,6 +203,7 @@ fn check_token_ambiguity(
                     "ambiguous component reference {token:?}: matches {} — use the dotted qualified form (§5.1a rule 6)",
                     candidates.join(", ")
                 ),
+                target.clone(),
             ));
     }
 }
@@ -178,22 +224,24 @@ pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
         );
     }
 
-    for e in &doc.edges {
+    for (i, e) in doc.edges.iter().enumerate() {
+        let target = Target::EdgeIndex(i);
         match parse_edge(e) {
             Ok(edge) => {
-                check_token_ambiguity(&edge.from, &leaf_index, &mut out);
-                check_token_ambiguity(&edge.to, &leaf_index, &mut out);
+                check_token_ambiguity(&edge.from, &leaf_index, &target, &mut out);
+                check_token_ambiguity(&edge.to, &leaf_index, &target, &mut out);
             }
-            Err(err) => out.push(diag("E0203", format!("{err} (edges)"))),
+            Err(err) => out.push(diag("E0203", format!("{err} (edges)"), target)),
         }
     }
-    for d in &doc.deny {
+    for (i, d) in doc.deny.iter().enumerate() {
+        let target = Target::DenyIndex(i);
         match parse_deny(d) {
             Ok(deny) => {
-                check_token_ambiguity(&deny.from, &leaf_index, &mut out);
-                check_token_ambiguity(&deny.to, &leaf_index, &mut out);
+                check_token_ambiguity(&deny.from, &leaf_index, &target, &mut out);
+                check_token_ambiguity(&deny.to, &leaf_index, &target, &mut out);
             }
-            Err(err) => out.push(diag("E0203", format!("{err} (deny)"))),
+            Err(err) => out.push(diag("E0203", format!("{err} (deny)"), target)),
         }
     }
 
@@ -210,6 +258,7 @@ pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
             Some(prev) => out.push(diag(
                 "E0205",
                 format!("duplicate unresolved id {id} ({prev} and {location})"),
+                Target::UnresolvedId(*id),
             )),
             None => {
                 first_seen.insert(*id, location.clone());

@@ -1,5 +1,5 @@
 //! Exercises the actual `ply-check` binary (not just the library), since
-//! the exit-code contract (SPEC.md §6: 0 clean, 1 violations, 2 tool error)
+//! the exit-code contract (Ply-Spec.md §6: 0 clean, 1 violations, 2 tool error)
 //! and "never emits SVG" live in `main.rs`, not in `run_checks`.
 
 use std::process::Command;

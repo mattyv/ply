@@ -259,6 +259,7 @@ dependencies = [
  "clap",
  "indexmap",
  "insta",
+ "ply-check",
  "ply-model",
  "roxmltree",
 ]

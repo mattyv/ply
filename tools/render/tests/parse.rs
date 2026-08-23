@@ -1,4 +1,4 @@
-use ply_render::model::{parse_document, Check};
+use ply_render::model::{Check, parse_document};
 
 #[test]
 fn parses_minimal_document() {
@@ -26,17 +26,30 @@ fn parses_disruptor_fixture() {
     let slot = ring.fns.get("slot").expect("slot fn");
     assert_eq!(
         slot.checks,
-        vec!["bounded(2)".to_string(), "mutate".to_string(), "fuzz(4096)".to_string()]
+        vec![
+            "bounded(2)".to_string(),
+            "mutate".to_string(),
+            "fuzz(4096)".to_string()
+        ]
     );
 
     let try_push = ring.fns.get("Spsc::try_push").expect("Spsc::try_push fn");
-    assert_eq!(try_push.check_with.get("T").map(String::as_str), Some("u64"));
+    assert_eq!(
+        try_push.check_with.get("T").map(String::as_str),
+        Some("u64")
+    );
     assert_eq!(try_push.trusted.len(), 1);
-    assert_eq!(try_push.trusted[0].claim, "SPSC cross-thread safety (happens-before between cursors)");
+    assert_eq!(
+        try_push.trusted[0].claim,
+        "SPSC cross-thread safety (happens-before between cursors)"
+    );
     assert_eq!(try_push.examples.len(), 1);
 
     let profile = doc.profiles.get("hot_path").expect("hot_path profile");
-    assert_eq!(profile, &vec!["no_panics".to_string(), "exhaustive_match".to_string()]);
+    assert_eq!(
+        profile,
+        &vec!["no_panics".to_string(), "exhaustive_match".to_string()]
+    );
 
     // sanity: every check string in the fixture parses under the micro-syntax
     for fn_claim in ring.fns.values() {
@@ -60,7 +73,8 @@ components:
 "#;
     let err = parse_document(yaml).expect_err("unknown field must be rejected");
     assert!(
-        err.to_string().to_lowercase().contains("unknown field") || err.to_string().contains("totally_unknown_field"),
+        err.to_string().to_lowercase().contains("unknown field")
+            || err.to_string().contains("totally_unknown_field"),
         "error should mention the unknown field, got: {err}"
     );
 }

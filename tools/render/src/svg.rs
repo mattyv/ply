@@ -7,11 +7,13 @@
 //! input always produces byte-identical output.
 
 use crate::layout;
-use ply_model::{
-    parse_check, parse_deny, parse_edge, Check, Component, Deny, Document, Edge, EdgeKind,
-    FnClaim,
-};
 use indexmap::IndexMap;
+use ply_check::{Diagnostic, Target as FindingTarget, run_checks};
+use ply_model::{
+    Check, Component, Deny, Document, Edge, EdgeKind, FnClaim, parse_check, parse_deny, parse_edge,
+};
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 // ---- layout constants -----------------------------------------------------
 
@@ -32,6 +34,17 @@ const SHIELD_W: f64 = 16.0;
 const FRAME_PAD: f64 = 24.0;
 const FRAME_TITLE_H: f64 = 30.0;
 const MIN_BOX_W: f64 = 150.0;
+
+// ---- findings (§7.1 "finding (tool-computed, not declared)") --------------
+//
+// `ply-check`'s document-local diagnostics, drawn on top of whatever the
+// declared grammar already put on the canvas. A finding never changes the
+// layout or markup of an item that has none of its own (see
+// `FindingCtx::mark_and_collect`), so a clean document renders byte-for-byte
+// as it always has.
+const FINDING_BADGE_H: f64 = 14.0;
+const FINDING_BADGE_CHAR_W: f64 = 6.5;
+const FINDING_BADGE_PAD: f64 = 4.0;
 
 // ---- top-level component graph layout -------------------------------------
 //
@@ -99,6 +112,26 @@ pub const STYLE: &str = "\
 #arrow path{fill:#3b4252}\
 ";
 
+/// Rules for the §7.1 "finding" classes, kept separate from `STYLE` and
+/// appended to the embedded `<style>` only on a document that actually has
+/// at least one finding (`render_svg`'s `style` local). A clean document —
+/// every vetting fixture, the golden snapshot — must render byte-identical
+/// to before this feature existed; folding these rules permanently into
+/// `STYLE` would grow *every* document's stylesheet text regardless of
+/// whether it uses any of these classes, which is exactly the kind of leak
+/// CLAUDE.md's golden-review rule exists to catch.
+pub const FINDING_STYLE: &str = "\
+.fn-chip-box-finding{fill:#fdecec;stroke:#c9534f;stroke-width:2.5}\
+.component-box-finding{fill:#fff;stroke:#c9534f;stroke-width:3}\
+.edge-line-finding{fill:none;stroke:#c9534f;stroke-width:3}\
+.deny-line-finding{fill:none;stroke:#c9534f;stroke-width:3}\
+.unresolved-pin-finding circle,.registry-pin-finding circle{fill:#fdecec;stroke:#c9534f;stroke-width:2.5}\
+.pin-label-finding{fill:#8f2f2c;font-size:10px;text-anchor:middle}\
+.finding-badge rect{fill:#c9534f;stroke:#8f2f2c}\
+.finding-badge text{fill:#fff;font-size:9px;font-weight:bold;text-anchor:middle}\
+.finding-count{fill:#c9534f;font-size:11px;font-weight:bold}\
+";
+
 fn text_w(s: &str, char_w: f64) -> f64 {
     (s.chars().count() as f64) * char_w
 }
@@ -137,10 +170,14 @@ fn check_prose(c: &str) -> String {
                 .into()
         }
         Ok(Check::Fuzz(n)) => {
-            format!("fuzz({n}) — runs the function on {n} random inputs, checking the contract on each")
+            format!(
+                "fuzz({n}) — runs the function on {n} random inputs, checking the contract on each"
+            )
         }
         Ok(Check::Bounded(k)) => {
-            format!("bounded({k}) — proves the contract for every input, unrolling loops at most {k} times")
+            format!(
+                "bounded({k}) — proves the contract for every input, unrolling loops at most {k} times"
+            )
         }
         Ok(Check::Prove) => "prove — proves the contract for all inputs, with no bound".into(),
         Ok(Check::Mutate) => {
@@ -163,6 +200,153 @@ fn unresolved_fn_pin_prose(id: u64, note: &str) -> String {
 
 fn title(text: &str) -> String {
     format!("<title>{}</title>", esc(text))
+}
+
+/// Every distinct location a `ply-check` diagnostic can attach to, indexed
+/// for O(1) lookup while walking the same document a second time to draw
+/// it. Keyed by findings-vector index rather than by reference, so a single
+/// `RefCell<Vec<bool>>` can track which diagnostics got attached to a real
+/// drawn item without fighting the borrow checker across the recursive
+/// render functions below.
+#[derive(Default)]
+struct FindingsIndex {
+    by_fn: HashMap<(String, String), Vec<usize>>,
+    by_component: HashMap<String, Vec<usize>>,
+    by_edge: HashMap<usize, Vec<usize>>,
+    by_deny: HashMap<usize, Vec<usize>>,
+    by_unresolved: HashMap<u64, Vec<usize>>,
+}
+
+fn build_findings_index(findings: &[Diagnostic]) -> FindingsIndex {
+    let mut idx = FindingsIndex::default();
+    for (i, d) in findings.iter().enumerate() {
+        match &d.target {
+            FindingTarget::Fn {
+                component_path,
+                fn_name,
+            } => idx
+                .by_fn
+                .entry((component_path.clone(), fn_name.clone()))
+                .or_default()
+                .push(i),
+            FindingTarget::Component(path) => {
+                idx.by_component.entry(path.clone()).or_default().push(i)
+            }
+            FindingTarget::EdgeIndex(e) => idx.by_edge.entry(*e).or_default().push(i),
+            FindingTarget::DenyIndex(d) => idx.by_deny.entry(*d).or_default().push(i),
+            FindingTarget::UnresolvedId(id) => idx.by_unresolved.entry(*id).or_default().push(i),
+            // §7.1: no drawable item — stays out of every index, so it can
+            // never be marked attached and always lands in the workspace-
+            // title fallback count (`unattached_count`).
+            FindingTarget::Document => {}
+        }
+    }
+    idx
+}
+
+/// Threaded through every render function that might draw an item a finding
+/// attaches to. `attached` starts all-`false`; each successful lookup marks
+/// its diagnostics attached (idempotently — a duplicate `UnresolvedId` may
+/// be looked up twice, once per pin, and that must not double-count).
+/// Whatever is still `false` once rendering finishes had no drawable item
+/// and becomes the workspace-title fallback count.
+struct FindingCtx<'a> {
+    findings: &'a [Diagnostic],
+    index: FindingsIndex,
+    attached: RefCell<Vec<bool>>,
+}
+
+impl<'a> FindingCtx<'a> {
+    fn new(findings: &'a [Diagnostic]) -> Self {
+        let index = build_findings_index(findings);
+        let attached = RefCell::new(vec![false; findings.len()]);
+        FindingCtx {
+            findings,
+            index,
+            attached,
+        }
+    }
+
+    fn mark_and_collect(&self, idxs: Option<&Vec<usize>>) -> Vec<&'a Diagnostic> {
+        let Some(idxs) = idxs else {
+            return Vec::new();
+        };
+        let mut attached = self.attached.borrow_mut();
+        for &i in idxs {
+            attached[i] = true;
+        }
+        idxs.iter().map(|&i| &self.findings[i]).collect()
+    }
+
+    fn fn_findings(&self, component_path: &str, fn_name: &str) -> Vec<&'a Diagnostic> {
+        let key = (component_path.to_string(), fn_name.to_string());
+        self.mark_and_collect(self.index.by_fn.get(&key))
+    }
+    fn component_findings(&self, component_path: &str) -> Vec<&'a Diagnostic> {
+        self.mark_and_collect(self.index.by_component.get(component_path))
+    }
+    fn edge_findings(&self, edge_index: usize) -> Vec<&'a Diagnostic> {
+        self.mark_and_collect(self.index.by_edge.get(&edge_index))
+    }
+    fn deny_findings(&self, deny_index: usize) -> Vec<&'a Diagnostic> {
+        self.mark_and_collect(self.index.by_deny.get(&deny_index))
+    }
+    fn unresolved_findings(&self, id: u64) -> Vec<&'a Diagnostic> {
+        self.mark_and_collect(self.index.by_unresolved.get(&id))
+    }
+
+    /// Diagnostics that never matched a drawn item — the workspace-title
+    /// fallback (§7.1: "a finding with no drawable item attaches a red
+    /// count next to the workspace title").
+    fn unattached_count(&self) -> usize {
+        self.attached.borrow().iter().filter(|a| !**a).count()
+    }
+}
+
+/// §7.1: "its tooltip leads with the finding: `FINDING E0203: <message>`".
+/// One line per diagnostic, in the order `ply-check` reported them.
+fn finding_tooltip_lines(findings: &[&Diagnostic]) -> Vec<String> {
+    findings
+        .iter()
+        .map(|d| format!("FINDING {}: {}", d.code, d.message))
+        .collect()
+}
+
+/// §7.1: "a small red badge with the diagnostic code". One code if there's
+/// only one finding; `CODE+N` for the rest, rather than a badge that grows
+/// without bound.
+fn finding_badge_label(findings: &[&Diagnostic]) -> String {
+    match findings {
+        [] => String::new(),
+        [only] => only.code.to_string(),
+        [first, rest @ ..] => format!("{}+{}", first.code, rest.len()),
+    }
+}
+
+fn finding_badge_width(findings: &[&Diagnostic]) -> f64 {
+    if findings.is_empty() {
+        0.0
+    } else {
+        FINDING_BADGE_PAD * 2.0 + text_w(&finding_badge_label(findings), FINDING_BADGE_CHAR_W)
+    }
+}
+
+/// Draws the badge at local origin `(x, y)`, top-left corner. Never wraps
+/// its own `<title>` — it always sits inside an item's `<g>` that already
+/// carries the finding-led tooltip (`finding_tooltip_lines`), so hovering
+/// the badge itself still resolves one.
+fn render_finding_badge(x: f64, y: f64, findings: &[&Diagnostic]) -> String {
+    if findings.is_empty() {
+        return String::new();
+    }
+    let label = finding_badge_label(findings);
+    let w = finding_badge_width(findings);
+    format!(
+        "<g class=\"finding-badge\"><rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{FINDING_BADGE_H:.1}\" rx=\"2\" /><text x=\"{tx:.1}\" y=\"{ty:.1}\">{label}</text></g>",
+        tx = x + w / 2.0,
+        ty = y + FINDING_BADGE_H - 4.0,
+        label = esc(&label)
+    )
 }
 
 fn check_with_note(check_with: &IndexMap<String, String>) -> Option<String> {
@@ -228,12 +412,16 @@ fn offset_along_border(rect: Rect, point: (f64, f64), offset: (f64, f64)) -> (f6
     let on_horizontal_edge =
         (point.1 - rect.y).abs() < 0.5 || (point.1 - (rect.y + rect.h)).abs() < 0.5;
     if on_horizontal_edge {
-        let x = (point.0 + offset.0)
-            .clamp(rect.x + CORNER_CLEARANCE, rect.x + rect.w - CORNER_CLEARANCE);
+        let x = (point.0 + offset.0).clamp(
+            rect.x + CORNER_CLEARANCE,
+            rect.x + rect.w - CORNER_CLEARANCE,
+        );
         (x, point.1)
     } else {
-        let y = (point.1 + offset.1)
-            .clamp(rect.y + CORNER_CLEARANCE, rect.y + rect.h - CORNER_CLEARANCE);
+        let y = (point.1 + offset.1).clamp(
+            rect.y + CORNER_CLEARANCE,
+            rect.y + rect.h - CORNER_CLEARANCE,
+        );
         (point.0, y)
     }
 }
@@ -253,10 +441,11 @@ struct FnChip {
     svg: String,
 }
 
-fn render_fn_chip(name: &str, fc: &FnClaim) -> FnChip {
+fn render_fn_chip(name: &str, fc: &FnClaim, component_path: &str, ctx: &FindingCtx) -> FnChip {
     let glyphs = checks_glyph_row(&fc.checks);
     let note = check_with_note(&fc.check_with);
     let has_shield = !fc.trusted.is_empty();
+    let findings = ctx.fn_findings(component_path, name);
 
     let mut cursor_x = PAD;
     let mut inner = String::new();
@@ -303,21 +492,37 @@ fn render_fn_chip(name: &str, fc: &FnClaim) -> FnChip {
     for p in &fc.unresolved {
         let label = format!("#{}", p.id);
         let cx = cursor_x + PIN_R;
+        let pin_findings = ctx.unresolved_findings(p.id);
+        let (pin_class, label_class) = if pin_findings.is_empty() {
+            ("unresolved-pin", "pin-label")
+        } else {
+            ("unresolved-pin-finding", "pin-label-finding")
+        };
+        let mut pin_tip = finding_tooltip_lines(&pin_findings);
+        pin_tip.push(unresolved_fn_pin_prose(p.id, &p.note));
         inner.push_str(&format!(
-            "<g class=\"unresolved-pin\">{tip}<circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"{PIN_R:.1}\" /><text class=\"pin-label\" x=\"{cx:.1}\" y=\"{text_y:.1}\">{label}</text></g>",
+            "<g class=\"{pin_class}\">{tip}<circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"{PIN_R:.1}\" /><text class=\"{label_class}\" x=\"{cx:.1}\" y=\"{text_y:.1}\">{label}</text></g>",
             cy = CHIP_H / 2.0,
             label = esc(&label),
-            tip = title(&unresolved_fn_pin_prose(p.id, &p.note))
+            tip = title(&pin_tip.join("\n"))
         ));
         cursor_x += text_w(&label, CHIP_CHAR_W) + PIN_R * 2.0 + BADGE_GAP;
     }
 
-    let mut tip = vec![name.to_string()];
+    let badge_w = finding_badge_width(&findings);
+    if !findings.is_empty() {
+        cursor_x += badge_w + BADGE_GAP;
+    }
+
+    let mut tip = finding_tooltip_lines(&findings);
+    tip.push(name.to_string());
     for c in &fc.checks {
         tip.push(check_prose(c));
     }
     if let Some(n) = &note {
-        tip.push(format!("generic — every check ran with {n}; the evidence covers only that type"));
+        tip.push(format!(
+            "generic — every check ran with {n}; the evidence covers only that type"
+        ));
     }
     for t in &fc.trusted {
         tip.push(format!(
@@ -326,7 +531,10 @@ fn render_fn_chip(name: &str, fc: &FnClaim) -> FnChip {
         ));
     }
     if !fc.examples.is_empty() {
-        tip.push(format!("{} worked example(s), each compiled into a test", fc.examples.len()));
+        tip.push(format!(
+            "{} worked example(s), each compiled into a test",
+            fc.examples.len()
+        ));
     }
     for p in &fc.unresolved {
         tip.push(unresolved_fn_pin_prose(p.id, &p.note));
@@ -336,13 +544,31 @@ fn render_fn_chip(name: &str, fc: &FnClaim) -> FnChip {
     }
 
     let width = cursor_x + PAD - BADGE_GAP;
+    let box_class = if findings.is_empty() {
+        "fn-chip-box"
+    } else {
+        "fn-chip-box-finding"
+    };
+    let badge_svg = if findings.is_empty() {
+        String::new()
+    } else {
+        render_finding_badge(
+            width - PAD - badge_w,
+            (CHIP_H - FINDING_BADGE_H) / 2.0,
+            &findings,
+        )
+    };
     let svg = format!(
-        "<g class=\"fn-chip\" data-fn=\"{}\">{}<rect class=\"fn-chip-box\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{CHIP_H:.1}\" rx=\"4\" />{inner}</g>",
+        "<g class=\"fn-chip\" data-fn=\"{}\">{}<rect class=\"{box_class}\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{CHIP_H:.1}\" rx=\"4\" />{inner}{badge_svg}</g>",
         esc(name),
         title(&tip.join("\n"))
     );
 
-    FnChip { width, height: CHIP_H, svg }
+    FnChip {
+        width,
+        height: CHIP_H,
+        svg,
+    }
 }
 
 /// One component rendered as a box (§7.1: nesting -> nested boxes), drawn
@@ -358,10 +584,19 @@ struct ComponentBox {
 
 fn render_component(
     name: &str,
+    qualified: &str,
     comp: &Component,
     profiles: &IndexMap<String, Vec<String>>,
+    ctx: &FindingCtx,
 ) -> ComponentBox {
-    let name_w = text_w(name, NAME_CHAR_W);
+    let findings = ctx.component_findings(qualified);
+    let finding_badge_w = finding_badge_width(&findings);
+    let name_w = text_w(name, NAME_CHAR_W)
+        + if findings.is_empty() {
+            0.0
+        } else {
+            BADGE_GAP + finding_badge_w
+        };
     let anchor_w = text_w(&comp.anchor, SUB_CHAR_W);
     // §7.1: `owns` is a third header line, `owns T, U` — the types this
     // component is the sole mutator of.
@@ -389,13 +624,19 @@ fn render_component(
     let children: Vec<(String, ComponentBox)> = comp
         .components
         .iter()
-        .map(|(cname, c)| (cname.clone(), render_component(cname, c, profiles)))
+        .map(|(cname, c)| {
+            let child_qualified = format!("{qualified}.{cname}");
+            (
+                cname.clone(),
+                render_component(cname, &child_qualified, c, profiles, ctx),
+            )
+        })
         .collect();
 
     let chips: Vec<(String, FnChip)> = comp
         .fns
         .iter()
-        .map(|(fname, fc)| (fname.clone(), render_fn_chip(fname, fc)))
+        .map(|(fname, fc)| (fname.clone(), render_fn_chip(fname, fc, qualified, ctx)))
         .collect();
 
     let content_w = [
@@ -453,10 +694,23 @@ fn render_component(
         body.push_str(&wrap_translate(&cbox.svg, PAD, y));
         positions.push((
             cname.clone(),
-            Rect { x: PAD, y, w: cbox.width, h: cbox.height },
+            Rect {
+                x: PAD,
+                y,
+                w: cbox.width,
+                h: cbox.height,
+            },
         ));
         for (n, r) in cbox.positions {
-            positions.push((n, Rect { x: PAD + r.x, y: y + r.y, w: r.w, h: r.h }));
+            positions.push((
+                n,
+                Rect {
+                    x: PAD + r.x,
+                    y: y + r.y,
+                    w: r.w,
+                    h: r.h,
+                },
+            ));
         }
         y += cbox.height + GAP;
     }
@@ -470,7 +724,11 @@ fn render_component(
 
     let box_h = y + PAD;
 
-    let mut tip = vec![format!("component {name} — maps to Rust module {}", comp.anchor)];
+    let mut tip = finding_tooltip_lines(&findings);
+    tip.push(format!(
+        "component {name} — maps to Rust module {}",
+        comp.anchor
+    ));
     if comp.pure {
         tip.push(
             "pure — the double border is the seal: this component declares no capabilities \
@@ -481,7 +739,10 @@ fn render_component(
         tip.push(format!("capabilities: {}", comp.uses.join(", ")));
     }
     if !comp.owns.is_empty() {
-        tip.push(format!("owns {} — only this component may mutate them", comp.owns.join(", ")));
+        tip.push(format!(
+            "owns {} — only this component may mutate them",
+            comp.owns.join(", ")
+        ));
     }
     if let Some(p) = &comp.profile {
         tip.push(match profiles.get(p) {
@@ -497,8 +758,13 @@ fn render_component(
         );
     }
 
+    let component_box_class = if findings.is_empty() {
+        "component-box"
+    } else {
+        "component-box-finding"
+    };
     let mut svg = format!(
-        "<g class=\"component\" data-name=\"{}\">{}<rect class=\"component-box\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
+        "<g class=\"component\" data-name=\"{}\">{}<rect class=\"{component_box_class}\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
         esc(name),
         title(&tip.join("\n"))
     );
@@ -515,6 +781,13 @@ fn render_component(
         PAD + LINE_H - 2.0,
         esc(name)
     ));
+    if !findings.is_empty() {
+        svg.push_str(&render_finding_badge(
+            box_w - PAD - finding_badge_w,
+            PAD - 2.0,
+            &findings,
+        ));
+    }
     svg.push_str(&format!(
         "<text class=\"component-anchor\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
         PAD + LINE_H * 2.0 - 4.0,
@@ -530,7 +803,12 @@ fn render_component(
     svg.push_str(&body);
     svg.push_str("</g>");
 
-    ComponentBox { width: box_w, height: box_h, svg, positions }
+    ComponentBox {
+        width: box_w,
+        height: box_h,
+        svg,
+        positions,
+    }
 }
 
 fn any_node_svg(x: f64, y: f64) -> String {
@@ -604,10 +882,24 @@ fn lane_offset(idx: usize, total: usize, gap: f64) -> f64 {
 }
 
 pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
+    // §7.1 "finding (tool-computed, not declared)": run `ply-check`'s
+    // document-local rules up front, then thread `ctx` through every render
+    // function below so it can mark red whatever a finding attaches to and
+    // tally whatever it doesn't (`ctx.unattached_count()`, consulted once
+    // rendering finishes). A clean document (`findings` empty) makes every
+    // lookup below return nothing, so nothing about its output changes.
+    let findings = run_checks(doc);
+    let ctx = FindingCtx::new(&findings);
+
     let top: Vec<(String, ComponentBox)> = doc
         .components
         .iter()
-        .map(|(name, c)| (name.clone(), render_component(name, c, &doc.profiles)))
+        .map(|(name, c)| {
+            (
+                name.clone(),
+                render_component(name, name, c, &doc.profiles, &ctx),
+            )
+        })
         .collect();
 
     // ---- qualified-name resolution, position-independent --------------
@@ -620,13 +912,21 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
     // the same keys.
     let mut prelim_positions: IndexMap<String, Rect> = IndexMap::new();
     for (name, cbox) in &top {
-        prelim_positions
-            .entry(name.clone())
-            .or_insert(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+        prelim_positions.entry(name.clone()).or_insert(Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        });
         for (n, _) in &cbox.positions {
             prelim_positions
                 .entry(format!("{name}.{n}"))
-                .or_insert(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+                .or_insert(Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 0.0,
+                    h: 0.0,
+                });
         }
     }
     let prelim_leaf_index = leaf_index_of(&prelim_positions);
@@ -639,8 +939,7 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
     let mut rank_edges: Vec<(String, String)> = Vec::new();
     for e in &doc.edges {
         let Ok(edge) = parse_edge(e) else { continue };
-        let Some((from_q, _)) = resolve(&edge.from, &prelim_positions, &prelim_leaf_index)?
-        else {
+        let Some((from_q, _)) = resolve(&edge.from, &prelim_positions, &prelim_leaf_index)? else {
             continue;
         };
         let Some((to_q, _)) = resolve(&edge.to, &prelim_positions, &prelim_leaf_index)? else {
@@ -649,8 +948,10 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         let top_of = |q: &str| q.split('.').next().unwrap_or(q).to_string();
         rank_edges.push((top_of(&from_q), top_of(&to_q)));
     }
-    let sizes: IndexMap<String, (f64, f64)> =
-        top.iter().map(|(n, c)| (n.clone(), (c.width, c.height))).collect();
+    let sizes: IndexMap<String, (f64, f64)> = top
+        .iter()
+        .map(|(n, c)| (n.clone(), (c.width, c.height)))
+        .collect();
     let layered = layout::layered_layout(&top_names, &rank_edges, &sizes, RANKSEP, NODESEP);
 
     // ---- deny-driven margins (finding 3: clipped deny nodes) -----------
@@ -658,10 +959,20 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
     // and the nearest real box, wide enough for itself, a gap on each side,
     // and its own `except` label — sized from the label's actual text
     // rather than a guessed constant, so the reservation is always enough.
-    let parsed_denies: Vec<Deny> = doc.deny.iter().filter_map(|d| parse_deny(d).ok()).collect();
+    // Kept alongside each deny's position in `doc.deny` (not the position in
+    // this filtered vec) so a finding on an unparseable deny string — which
+    // never makes it into this vec at all — still resolves to the right
+    // `DenyIndex`, and so a parseable-but-flagged one attaches to the deny
+    // it actually is rather than whichever survived the filter next to it.
+    let parsed_denies: Vec<(usize, Deny)> = doc
+        .deny
+        .iter()
+        .enumerate()
+        .filter_map(|(i, d)| parse_deny(d).ok().map(|pd| (i, pd)))
+        .collect();
     let mut extra_left = 0.0_f64;
     let mut extra_right = 0.0_f64;
-    for d in &parsed_denies {
+    for (_, d) in &parsed_denies {
         let label_w = if d.except.is_empty() {
             0.0
         } else {
@@ -692,11 +1003,19 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         let x = content_left + rel_x;
         let y = content_top + rel_y;
         body.push_str(&wrap_translate(&cbox.svg, x, y));
-        positions.entry(name.clone()).or_insert(Rect { x, y, w: cbox.width, h: cbox.height });
+        positions.entry(name.clone()).or_insert(Rect {
+            x,
+            y,
+            w: cbox.width,
+            h: cbox.height,
+        });
         for (n, r) in &cbox.positions {
-            positions
-                .entry(format!("{name}.{n}"))
-                .or_insert(Rect { x: x + r.x, y: y + r.y, w: r.w, h: r.h });
+            positions.entry(format!("{name}.{n}")).or_insert(Rect {
+                x: x + r.x,
+                y: y + r.y,
+                w: r.w,
+                h: r.h,
+            });
         }
     }
     let leaf_index = leaf_index_of(&positions);
@@ -716,16 +1035,24 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         let py = FRAME_TITLE_H / 2.0 + 6.0;
         for entry in &doc.unresolved {
             let label = format!("#{}", entry.id);
+            let pin_findings = ctx.unresolved_findings(entry.id);
+            let (pin_class, label_class) = if pin_findings.is_empty() {
+                ("registry-pin", "pin-label")
+            } else {
+                ("registry-pin-finding", "pin-label-finding")
+            };
+            let mut pin_tip = finding_tooltip_lines(&pin_findings);
+            pin_tip.push(format!(
+                "#{} marks an unresolved decision — a question the design still owes an \
+                 answer: {}. It belongs to the workspace as a whole, not to any function or \
+                 component yet; Ply tracks it until someone resolves it (§5.6).",
+                entry.id, entry.note
+            ));
             registry_svg.push_str(&format!(
-                "<g class=\"registry-pin\">{tip}<circle cx=\"{px:.1}\" cy=\"{py:.1}\" r=\"{PIN_R:.1}\" /><text class=\"pin-label\" x=\"{px:.1}\" y=\"{:.1}\">{label}</text></g>",
+                "<g class=\"{pin_class}\">{tip}<circle cx=\"{px:.1}\" cy=\"{py:.1}\" r=\"{PIN_R:.1}\" /><text class=\"{label_class}\" x=\"{px:.1}\" y=\"{:.1}\">{label}</text></g>",
                 py + 4.0,
                 label = esc(&label),
-                tip = title(&format!(
-                    "#{} marks an unresolved decision — a question the design still owes an \
-                     answer: {}. It belongs to the workspace as a whole, not to any function or \
-                     component yet; Ply tracks it until someone resolves it (§5.6).",
-                    entry.id, entry.note
-                ))
+                tip = title(&pin_tip.join("\n"))
             ));
             px -= PIN_R * 2.0 + 6.0 + text_w(&label, 6.0);
         }
@@ -738,9 +1065,12 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         from_rect: Rect,
         to_rect: Rect,
         edge: Edge,
+        // Position in `doc.edges`, not in this filtered vec — what a
+        // finding's `EdgeIndex` target actually names.
+        edge_index: usize,
     }
     let mut resolved_edges: Vec<ResolvedEdge> = Vec::new();
-    for e in &doc.edges {
+    for (edge_index, e) in doc.edges.iter().enumerate() {
         let Ok(edge) = parse_edge(e) else { continue };
         let Some((from_q, from_rect)) = resolve(&edge.from, &positions, &leaf_index)? else {
             continue;
@@ -748,11 +1078,20 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         let Some((to_q, to_rect)) = resolve(&edge.to, &positions, &leaf_index)? else {
             continue;
         };
-        resolved_edges.push(ResolvedEdge { from_q, to_q, from_rect, to_rect, edge });
+        resolved_edges.push(ResolvedEdge {
+            from_q,
+            to_q,
+            from_rect,
+            to_rect,
+            edge,
+            edge_index,
+        });
     }
     let mut pair_total: IndexMap<(String, String), usize> = IndexMap::new();
     for re in &resolved_edges {
-        *pair_total.entry(pair_key(&re.from_q, &re.to_q)).or_insert(0) += 1;
+        *pair_total
+            .entry(pair_key(&re.from_q, &re.to_q))
+            .or_insert(0) += 1;
     }
     let mut pair_seen: IndexMap<(String, String), usize> = IndexMap::new();
     let mut edges_svg = String::new();
@@ -769,8 +1108,11 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         // edges pointing opposite ways between the same pair must still
         // land in distinct, non-cancelling lanes (vetting 002 finding 4's
         // `decoder -> ring` vs `ring ~> decoder`).
-        let (rect_a, rect_b) =
-            if re.from_q == key.0 { (re.from_rect, re.to_rect) } else { (re.to_rect, re.from_rect) };
+        let (rect_a, rect_b) = if re.from_q == key.0 {
+            (re.from_rect, re.to_rect)
+        } else {
+            (re.to_rect, re.from_rect)
+        };
         let (dx, dy) = (rect_b.cx() - rect_a.cx(), rect_b.cy() - rect_a.cy());
         let len = (dx * dx + dy * dy).sqrt().max(1.0);
         let (px, py) = (-dy / len, dx / len);
@@ -786,12 +1128,14 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         // glance, the parallel-edges bug in a different guise).
         let (fx, fy) = offset_along_border(
             re.from_rect,
-            re.from_rect.border_toward((re.to_rect.cx(), re.to_rect.cy())),
+            re.from_rect
+                .border_toward((re.to_rect.cx(), re.to_rect.cy())),
             offset,
         );
         let (tx, ty) = offset_along_border(
             re.to_rect,
-            re.to_rect.border_toward((re.from_rect.cx(), re.from_rect.cy())),
+            re.to_rect
+                .border_toward((re.from_rect.cx(), re.from_rect.cy())),
             offset,
         );
 
@@ -814,28 +1158,73 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
             (0.0, 0.0) // unused: EdgeKind::Call never renders a label
         };
 
-        render_edge(&re.edge, (fx, fy), (tx, ty), label_pos, &mut edges_svg);
+        let findings = ctx.edge_findings(re.edge_index);
+        render_edge(
+            &re.edge,
+            (fx, fy),
+            (tx, ty),
+            label_pos,
+            &findings,
+            &mut edges_svg,
+        );
     }
 
     // Deny rules. §7.1 (amended): `*` has no shared identity, so each rule
     // that names it draws its own pseudo-node — never one shared node that
     // would visually imply unrelated rules are connected.
     let mut deny_svg = String::new();
-    for (i, d) in parsed_denies.iter().enumerate() {
-        render_deny(i, d, &positions, &leaf_index, any_x_from, any_x_to, &mut deny_svg)?;
+    let deny_layout = DenyLayout {
+        positions: &positions,
+        leaf_index: &leaf_index,
+        any_x_from,
+        any_x_to,
+    };
+    for (i, (orig_index, d)) in parsed_denies.iter().enumerate() {
+        render_deny(i, *orig_index, d, &deny_layout, &ctx, &mut deny_svg)?;
     }
 
-    let width = frame_w;
+    // §7.1: "a finding with no drawable item attaches a red count next to
+    // the workspace title." Checked last, once every render call above has
+    // had its chance to mark a diagnostic attached — a clean document
+    // (`findings` empty) always has `unattached_count() == 0`, so this is a
+    // no-op and the title is untouched.
+    let unattached = ctx.unattached_count();
+    let (title_extra, title_min_w) = if unattached > 0 {
+        let count_text = format!(
+            "{unattached} finding{} — run ply-check",
+            if unattached == 1 { "" } else { "s" }
+        );
+        let title_x = FRAME_PAD + text_w("ply.yaml", CHIP_CHAR_W) + BADGE_GAP;
+        let text = format!(
+            "<text class=\"finding-count\" x=\"{title_x:.1}\" y=\"20\">{}</text>",
+            esc(&count_text)
+        );
+        (text, title_x + text_w(&count_text, CHIP_CHAR_W) + FRAME_PAD)
+    } else {
+        (String::new(), 0.0)
+    };
+
+    let width = frame_w.max(title_min_w);
     let height = frame_h;
+
+    // A clean document (no findings at all) gets exactly `STYLE`, unchanged
+    // — see `FINDING_STYLE`'s doc comment for why this is conditional
+    // rather than always-appended.
+    let style: std::borrow::Cow<str> = if findings.is_empty() {
+        std::borrow::Cow::Borrowed(STYLE)
+    } else {
+        std::borrow::Cow::Owned(format!("{STYLE}{FINDING_STYLE}"))
+    };
 
     Ok(format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.1}\" height=\"{height:.1}\" \
          viewBox=\"0 0 {width:.1} {height:.1}\" font-family=\"monospace\" font-size=\"12\">\
-         <style>{STYLE}</style>\
+         <style>{style}</style>\
          <defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\">\
          <path d=\"M 0 0 L 10 5 L 0 10 z\" /></marker></defs>\
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\" />\
          <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text>\
+         {title_extra}\
          {deny_svg}{registry_svg}{body}{edges_svg}\
          </svg>",
         frame_inner_w = width - 2.0,
@@ -850,7 +1239,10 @@ fn leaf_index_of(positions: &IndexMap<String, Rect>) -> IndexMap<String, Vec<Str
     let mut leaf_index: IndexMap<String, Vec<String>> = IndexMap::new();
     for qualified in positions.keys() {
         let leaf = qualified.rsplit('.').next().unwrap_or(qualified);
-        leaf_index.entry(leaf.to_string()).or_default().push(qualified.clone());
+        leaf_index
+            .entry(leaf.to_string())
+            .or_default()
+            .push(qualified.clone());
     }
     leaf_index
 }
@@ -860,50 +1252,84 @@ fn render_edge(
     (fx, fy): (f64, f64),
     (tx, ty): (f64, f64),
     label_pos: (f64, f64),
+    findings: &[&Diagnostic],
     out: &mut String,
 ) {
+    let line_class = if findings.is_empty() {
+        "edge-line"
+    } else {
+        "edge-line-finding"
+    };
+    let badge_svg = if findings.is_empty() {
+        String::new()
+    } else {
+        let mx = (fx + tx) / 2.0;
+        let my = (fy + ty) / 2.0;
+        render_finding_badge(mx + 6.0, my - FINDING_BADGE_H - 2.0, findings)
+    };
     match &edge.kind {
         EdgeKind::Call => {
+            let mut tip = finding_tooltip_lines(findings);
+            tip.push(format!(
+                "{a} -> {b} — {a} may call {b}. An undeclared cross-component call is \
+                 flagged as an architecture finding — a warning by default, an error if \
+                 the calling component is `strict` (§5.3, A0402).",
+                a = edge.from,
+                b = edge.to
+            ));
             out.push_str(&format!(
-                "<g class=\"edge-call\">{tip}<path class=\"edge-line\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" /></g>",
-                tip = title(&format!(
-                    "{a} -> {b} — {a} may call {b}. An undeclared cross-component call is \
-                     flagged as an architecture finding — a warning by default, an error if \
-                     the calling component is `strict` (§5.3, A0402).",
-                    a = edge.from, b = edge.to
-                ))
+                "<g class=\"edge-call\">{tip}<path class=\"{line_class}\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" />{badge_svg}</g>",
+                tip = title(&tip.join("\n"))
             ));
         }
         EdgeKind::Flow(ty_label) => {
             let (lx, ly) = label_pos;
+            let mut tip = finding_tooltip_lines(findings);
+            tip.push(format!(
+                "{ty_label} data flows from {} to {} — declared for the picture; \
+                 nothing checks flows in v1",
+                edge.from, edge.to
+            ));
             out.push_str(&format!(
-                "<g class=\"edge-flow\">{tip}<path class=\"edge-line\" stroke-dasharray=\"6 4\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" /><text class=\"edge-label\" x=\"{lx:.1}\" y=\"{ly:.1}\">{}</text></g>",
+                "<g class=\"edge-flow\">{tip_html}<path class=\"{line_class}\" stroke-dasharray=\"6 4\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" /><text class=\"edge-label\" x=\"{lx:.1}\" y=\"{ly:.1}\">{}</text>{badge_svg}</g>",
                 esc(ty_label),
-                tip = title(&format!(
-                    "{ty_label} data flows from {} to {} — declared for the picture; \
-                     nothing checks flows in v1",
-                    edge.from, edge.to
-                ))
+                tip_html = title(&tip.join("\n"))
             ));
         }
     }
 }
 
+/// The parts of `render_svg`'s layout `render_deny` only reads, bundled so
+/// adding the finding plumbing didn't push it over clippy's argument-count
+/// lint. `any_x_from`/`any_x_to` are fixed x-positions inside the margins
+/// `render_svg` reserved for exactly this (finding 3: deny nodes clipped
+/// off-canvas).
+#[derive(Clone, Copy)]
+struct DenyLayout<'a> {
+    positions: &'a IndexMap<String, Rect>,
+    leaf_index: &'a IndexMap<String, Vec<String>>,
+    any_x_from: f64,
+    any_x_to: f64,
+}
+
 /// Renders one deny rule. §7.1 (amended): `*` has no shared identity, so a
 /// rule that names it draws its own pseudo-node, anchored near whichever
 /// side did resolve to a real component (or staggered by rule index, as a
-/// last resort, if neither side resolved). `any_x_from`/`any_x_to` are fixed
-/// x-positions inside the margins `render_svg` reserved for exactly this
-/// (finding 3: deny nodes clipped off-canvas).
+/// last resort, if neither side resolved).
 fn render_deny(
     index: usize,
+    orig_index: usize,
     deny: &Deny,
-    positions: &IndexMap<String, Rect>,
-    leaf_index: &IndexMap<String, Vec<String>>,
-    any_x_from: f64,
-    any_x_to: f64,
+    layout: &DenyLayout,
+    ctx: &FindingCtx,
     out: &mut String,
 ) -> Result<(), RenderError> {
+    let DenyLayout {
+        positions,
+        leaf_index,
+        any_x_from,
+        any_x_to,
+    } = *layout;
     let from_rect = if deny.from == "*" {
         None
     } else {
@@ -957,22 +1383,36 @@ fn render_deny(
     let len = (dx * dx + dy * dy).sqrt().max(1.0);
     let (px, py) = (-dy / len * 8.0, dx / len * 8.0);
 
+    // Looked up here, past every early return above, so a finding on a
+    // deny rule that never resolves to a drawn line (matching nothing, or
+    // collapsing to a single point) is never marked attached — it falls
+    // through to the workspace-title fallback instead.
+    let findings = ctx.deny_findings(orig_index);
+    let line_class = if findings.is_empty() {
+        "deny-line"
+    } else {
+        "deny-line-finding"
+    };
+    let mut tip = finding_tooltip_lines(&findings);
+    tip.push({
+        let mut t = match (deny.from.as_str(), deny.to.as_str()) {
+            ("*", "*") => "no component may call any component".to_string(),
+            ("*", to) => format!("no component may call {to}"),
+            (from, "*") => format!("{from} may not call any component"),
+            (from, to) => format!("{from} may not call {to}"),
+        };
+        if !deny.except.is_empty() {
+            t.push_str(&format!(" — except {}", deny.except.join(", ")));
+        }
+        t.push_str(" — such a call fails the build");
+        t
+    });
+    let badge_svg = render_finding_badge(mx + 6.0, my - FINDING_BADGE_H - 10.0, &findings);
+
     out.push_str(&format!(
-        "<g class=\"deny-rule\">{tip}<path class=\"deny-line\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" /><line class=\"deny-bar\" x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" />",
+        "<g class=\"deny-rule\">{tip_html}<path class=\"{line_class}\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" /><line class=\"deny-bar\" x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" />{badge_svg}",
         mx - px, my - py, mx + px, my + py,
-        tip = title(&{
-            let mut t = match (deny.from.as_str(), deny.to.as_str()) {
-                ("*", "*") => "no component may call any component".to_string(),
-                ("*", to) => format!("no component may call {to}"),
-                (from, "*") => format!("{from} may not call any component"),
-                (from, to) => format!("{from} may not call {to}"),
-            };
-            if !deny.except.is_empty() {
-                t.push_str(&format!(" — except {}", deny.except.join(", ")));
-            }
-            t.push_str(" — such a call fails the build");
-            t
-        })
+        tip_html = title(&tip.join("\n"))
     ));
     if !deny.except.is_empty() {
         // Beside whichever side is the wildcard node — inside the margin

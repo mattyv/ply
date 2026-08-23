@@ -96,8 +96,11 @@ pub fn assign_ranks(names: &[String], edges: &[(String, String)]) -> IndexMap<St
 
     let mut rank: IndexMap<&str, usize> = names.iter().map(|n| (n.as_str(), 0)).collect();
     let mut remaining = indeg.clone();
-    let mut queue: VecDeque<&str> =
-        names.iter().filter(|n| indeg[n.as_str()] == 0).map(|n| n.as_str()).collect();
+    let mut queue: VecDeque<&str> = names
+        .iter()
+        .filter(|n| indeg[n.as_str()] == 0)
+        .map(|n| n.as_str())
+        .collect();
 
     while let Some(u) = queue.pop_front() {
         let ru = rank[u];
@@ -115,7 +118,10 @@ pub fn assign_ranks(names: &[String], edges: &[(String, String)]) -> IndexMap<St
         }
     }
 
-    names.iter().map(|n| (n.clone(), rank[n.as_str()])).collect()
+    names
+        .iter()
+        .map(|n| (n.clone(), rank[n.as_str()]))
+        .collect()
 }
 
 /// One row of the layout: its nodes (in declaration order) and its
@@ -167,7 +173,12 @@ pub fn layered_layout(
         }
         let width = (x - nodesep).max(0.0);
         content_w = content_w.max(width);
-        computed_rows.push(Row { names: row.iter().map(|s| (*s).clone()).collect(), xs, width, height });
+        computed_rows.push(Row {
+            names: row.iter().map(|s| (*s).clone()).collect(),
+            xs,
+            width,
+            height,
+        });
     }
 
     let mut positions: IndexMap<String, (f64, f64)> = IndexMap::new();
@@ -184,7 +195,11 @@ pub fn layered_layout(
     }
     let content_h = (y - ranksep).max(0.0);
 
-    LayeredLayout { positions, content_w, content_h }
+    LayeredLayout {
+        positions,
+        content_w,
+        content_h,
+    }
 }
 
 #[cfg(test)]
@@ -195,7 +210,9 @@ mod tests {
         ns.iter().map(|s| s.to_string()).collect()
     }
     fn edges(es: &[(&str, &str)]) -> Vec<(String, String)> {
-        es.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+        es.iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
     }
 
     #[test]
@@ -250,8 +267,13 @@ mod tests {
         let mut sizes = IndexMap::new();
         sizes.insert("a".to_string(), (100.0, 50.0));
         sizes.insert("b".to_string(), (80.0, 40.0));
-        let layout =
-            layered_layout(&names(&["a", "b"]), &edges(&[("a", "b")]), &sizes, 60.0, 30.0);
+        let layout = layered_layout(
+            &names(&["a", "b"]),
+            &edges(&[("a", "b")]),
+            &sizes,
+            60.0,
+            30.0,
+        );
         let (ax, ay) = layout.positions["a"];
         let (bx, by) = layout.positions["b"];
         assert_eq!(ay, 0.0);
