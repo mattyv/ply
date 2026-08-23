@@ -200,3 +200,59 @@ fn disruptor_fixture_golden_snapshot() {
     roxmltree::Document::parse(&svg).expect("disruptor svg must be well-formed XML");
     insta::assert_snapshot!(svg);
 }
+
+/// The bug this catches: the renderer emitted well-formed, correctly-classed
+/// SVG with no stylesheet at all. SVG's initial paint is `fill: black`, so the
+/// whole diagram rasterised as one solid black rectangle while every
+/// structural assertion above still passed.
+///
+/// The invariant is per painted element, not per class: `<g>` wrappers paint
+/// nothing, and some shapes are styled through an ancestor's descendant
+/// selector (`.cap-badge rect`), so a shape passes if any class on its own
+/// element or its ancestors resolves a rule.
+#[test]
+fn every_painted_element_resolves_a_style_rule() {
+    let style = ply_render::svg::STYLE;
+    let matches_selector = |class: &str, tag: &str| {
+        style.contains(&format!(".{class}{{"))
+            || style.contains(&format!(".{class},"))
+            || style.contains(&format!(".{class} {tag}{{"))
+            || style.contains(&format!(".{class} {tag},"))
+    };
+
+    let mut unstyled: Vec<String> = Vec::new();
+    for fixture in [
+        "tests/fixtures/spsc.ply.yaml",
+        "tests/fixtures/full.ply.yaml",
+        "tests/fixtures/qualified_refs.ply.yaml",
+    ] {
+        let svg = render_fixture(fixture);
+        assert!(svg.contains("<style>"), "{fixture}: no stylesheet emitted");
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        for node in doc.descendants().filter(|n| n.is_element()) {
+            let tag = node.tag_name().name();
+            if !matches!(tag, "rect" | "circle" | "path" | "text" | "line") {
+                continue;
+            }
+            // The arrowhead lives in <defs> and is styled through its marker id.
+            if node.ancestors().any(|a| a.tag_name().name() == "defs") {
+                continue;
+            }
+            let resolved = node
+                .ancestors()
+                .filter_map(|a| a.attribute("class"))
+                .any(|c| matches_selector(c, tag));
+            if !resolved {
+                unstyled.push(format!("{fixture}: <{tag}> class={:?}", node.attribute("class")));
+            }
+        }
+    }
+    assert!(unstyled.is_empty(), "painted elements with no style rule: {unstyled:?}");
+}
+
+#[test]
+fn owns_renders_as_a_header_line() {
+    let svg = render_fixture("tests/fixtures/spsc.ply.yaml");
+    assert!(svg.contains("class=\"component-owns\""));
+    assert!(svg.contains(">owns disruptor::spsc::Spsc<"));
+}

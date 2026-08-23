@@ -90,6 +90,32 @@ profiles:
    illegal under a literal reading of §5.4a "accepted everywhere". → §5.4a now applies
    to contracts only; examples are arbitrary Rust `==` expressions.
 
+## Rendered
+
+![the ring component drawn from this scenario](001-spsc-disruptor.svg)
+
+Produced by `ply-render tools/render/tests/fixtures/spsc.ply.yaml`. That fixture is this
+document's YAML block verbatim — the renderer runs on the scenario itself, not a
+simplification of it.
+
+### Findings from the render pass (2026-08-23)
+
+1. **The renderer emitted a solid black square.** Structure and classes were right; there
+   was no stylesheet at all, and SVG's initial paint is `fill: black`, so every box drew
+   over the one behind it. All 30 structural tests passed throughout — none of them looked
+   at whether the output was visible. → Added the `STYLE` block and
+   `every_painted_element_resolves_a_style_rule`, which walks the rendered XML and fails
+   if any painted element resolves no rule through its own class or an ancestor's.
+2. **`owns` was a live bijection violation.** Parsed, semantically load-bearing, drawn
+   nowhere — the §7.1 gate should have refused it. → Now a header line (`owns T, U`), and
+   a row in the §7.1 table.
+3. **Five more constructs have no visual form**: `strict`, `mode: synth`, contract clauses,
+   `examples`, `profiles` expansion. Recorded as gate debt in §7.1 rather than quietly
+   dropped. `mode: synth` is the notable one — §7.2 makes it the mechanism that moves the
+   watermark, and it is invisible.
+4. Character-width estimate was under the real monospace advance, so long fn names
+   collided with their checks glyphs. Widened.
+
 ## Confirmed walls (deliberate, unchanged)
 
 - FIFO ordering ("pop returns values in push order") needs two-state contracts or a

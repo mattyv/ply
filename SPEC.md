@@ -517,6 +517,7 @@ grammar.**
 | `->` edge | solid arrow between boxes |
 | `~>` data flow | dashed arrow labeled with the type |
 | deny | barred red arrow between the matched patterns; a `*` pattern draws its own per-rule "any" marker — wildcards have no shared identity, so unrelated rules never appear connected |
+| `owns` | header line under the anchor, `owns T, U` — the types this component is sole mutator of |
 | capabilities / `pure` | badge row on the box; `pure` = a sealed border, no badges |
 | profile | tag on the box |
 | checks list | glyph row on the fn chip |
@@ -534,6 +535,12 @@ in `.archi/` is the working example of the style. One deliberate exception: a mi
 static renderer (`tools/render/`, `ply.yaml` → SVG, no GUI) exists to prove this mapping
 is total — every construct drawable, nothing undrawable admitted. It is a spec-validation
 tool, not the canvas.
+
+Gate debt: five constructs already in the grammar have no assigned visual form yet —
+`strict`, `mode: synth`, contract clauses (`requires`/`ensures`), `examples`, and the
+expansion of a `profiles` entry behind its tag. They predate the gate; each needs a form
+or removal before the grammar is called total. The renderer draws nothing for them today,
+so the omission is visible rather than silently papered over.
 
 ### 7.2 The watermark
 

@@ -18,7 +18,7 @@ const PAD: f64 = 10.0;
 const GAP: f64 = 12.0;
 const NAME_CHAR_W: f64 = 8.0;
 const SUB_CHAR_W: f64 = 6.2;
-const CHIP_CHAR_W: f64 = 7.0;
+const CHIP_CHAR_W: f64 = 7.4;
 const LINE_H: f64 = 16.0;
 const HEADER_H: f64 = LINE_H * 2.0 + 6.0;
 const BADGE_H: f64 = 20.0;
@@ -31,6 +31,39 @@ const SHIELD_W: f64 = 16.0;
 const FRAME_PAD: f64 = 24.0;
 const FRAME_TITLE_H: f64 = 30.0;
 const MIN_BOX_W: f64 = 150.0;
+
+/// Every `class` this renderer emits must have a rule here. SVG's initial
+/// paint is `fill: black; stroke: none`, so an unstyled shape is a solid black
+/// box — a missing rule is invisible output, not a cosmetic slip.
+/// `tests/render.rs::every_painted_element_resolves_a_style_rule` enforces it.
+pub const STYLE: &str = "\
+.workspace-frame{fill:#fbfbfd;stroke:#c8ccd4}\
+.workspace-title{fill:#6b7280}\
+.component-box{fill:#fff;stroke:#3b4252;stroke-width:1.5}\
+.pure-seal{fill:none;stroke:#3b4252}\
+.component-name{fill:#1f2430;font-weight:bold}\
+.component-anchor{fill:#6b7280;font-size:10px}\
+.component-owns{fill:#6b7280;font-size:10px;font-style:italic}\
+.cap-badge rect{fill:#fdecec;stroke:#c9534f}\
+.cap-badge text{fill:#8f2f2c;font-size:10px}\
+.profile-tag rect{fill:#eef2fb;stroke:#5570a8}\
+.profile-tag text{fill:#334b78;font-size:10px}\
+.fn-chip-box{fill:#f6f7f9;stroke:#9aa2b1}\
+.fn-name{fill:#1f2430}\
+.fn-checks{fill:#2f6f4f;font-size:11px}\
+.fn-check-with{fill:#6b7280;font-size:10px}\
+.fn-shield{fill:none;stroke:#9a7a1f;font-size:13px}\
+.unresolved-pin circle,.registry-pin circle{fill:#fff6d8;stroke:#b08900}\
+.pin-label{fill:#7a5c00;font-size:10px;text-anchor:middle}\
+.edge-line{fill:none;stroke:#3b4252;stroke-width:1.5}\
+.edge-label{fill:#3b4252;font-size:10px;text-anchor:middle}\
+.deny-line{fill:none;stroke:#c9534f;stroke-width:1.5}\
+.deny-bar{stroke:#c9534f;stroke-width:3}\
+.deny-except{fill:#8f2f2c;font-size:10px;text-anchor:middle}\
+.any-node circle{fill:#eceef2;stroke:#9aa2b1}\
+.any-label{fill:#4b5563;text-anchor:middle}\
+#arrow path{fill:#3b4252}\
+";
 
 fn text_w(s: &str, char_w: f64) -> f64 {
     (s.chars().count() as f64) * char_w
@@ -198,6 +231,11 @@ struct ComponentBox {
 fn render_component(name: &str, comp: &Component) -> ComponentBox {
     let name_w = text_w(name, NAME_CHAR_W);
     let anchor_w = text_w(&comp.anchor, SUB_CHAR_W);
+    // §7.1: `owns` is a third header line, `owns T, U` — the types this
+    // component is the sole mutator of.
+    let owns_line = (!comp.owns.is_empty()).then(|| format!("owns {}", comp.owns.join(", ")));
+    let owns_w = owns_line.as_deref().map_or(0.0, |s| text_w(s, SUB_CHAR_W));
+    let header_h = HEADER_H + if owns_line.is_some() { LINE_H } else { 0.0 };
 
     // §7.1: `pure` is a sealed border with no capability badges.
     let badges: &[String] = if comp.pure { &[] } else { &comp.uses };
@@ -231,6 +269,7 @@ fn render_component(name: &str, comp: &Component) -> ComponentBox {
     let content_w = [
         name_w,
         anchor_w,
+        owns_w,
         badges_row_w + profile_w,
         MIN_BOX_W - PAD * 2.0,
     ]
@@ -241,7 +280,7 @@ fn render_component(name: &str, comp: &Component) -> ComponentBox {
 
     let box_w = content_w + PAD * 2.0;
 
-    let mut y = PAD + HEADER_H;
+    let mut y = PAD + header_h;
     let mut body = String::new();
     let mut positions: Vec<(String, Rect)> = Vec::new();
 
@@ -312,6 +351,13 @@ fn render_component(name: &str, comp: &Component) -> ComponentBox {
         PAD + LINE_H * 2.0 - 4.0,
         esc(&comp.anchor)
     ));
+    if let Some(line) = &owns_line {
+        svg.push_str(&format!(
+            "<text class=\"component-owns\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
+            PAD + LINE_H * 3.0 - 6.0,
+            esc(line)
+        ));
+    }
     svg.push_str(&body);
     svg.push_str("</g>");
 
@@ -447,6 +493,7 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
     Ok(format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.1}\" height=\"{height:.1}\" \
          viewBox=\"0 0 {width:.1} {height:.1}\" font-family=\"monospace\" font-size=\"12\">\
+         <style>{STYLE}</style>\
          <defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\">\
          <path d=\"M 0 0 L 10 5 L 0 10 z\" /></marker></defs>\
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\" />\
