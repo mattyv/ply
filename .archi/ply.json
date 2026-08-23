@@ -1537,101 +1537,102 @@
       },
       "doc": {
         "type": "sequence",
+        "autoLayoutApplied": true,
         "nodes": [
           {
             "id": "user",
             "label": "Developer / Agent",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 160,
+            "y": 20,
             "step": 1
           },
           {
             "id": "cli",
             "label": "ply-cli (verify)",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 420,
+            "y": 20,
             "step": 2
           },
           {
             "id": "cfg",
             "label": "config",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 680,
+            "y": 20,
             "step": 3
           },
           {
             "id": "model",
             "label": "model",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 940,
+            "y": 20,
             "step": 4
           },
           {
             "id": "extract",
             "label": "extract",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1200,
+            "y": 20,
             "step": 6
           },
           {
             "id": "lock",
             "label": "ply.lock",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1460,
+            "y": 20,
             "step": 5
           },
           {
             "id": "harness",
             "label": "harness",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1720,
+            "y": 20,
             "step": 7
           },
           {
             "id": "targetply",
             "label": "target/ply/",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1980,
+            "y": 20,
             "step": 8
           },
           {
             "id": "kani",
             "label": "Kani engine",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 2240,
+            "y": 20,
             "step": 9
           },
           {
             "id": "cex",
             "label": "tests/ply_cex_*",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 2500,
+            "y": 20,
             "step": 10
           },
           {
             "id": "diag",
             "label": "diag",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 2760,
+            "y": 20,
             "step": 11
           },
           {
             "id": "ledger",
             "label": "verdict tree",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 3020,
+            "y": 20,
             "step": 12
           }
         ],
@@ -1838,6 +1839,7 @@
       },
       "doc": {
         "type": "class",
+        "autoLayoutApplied": true,
         "nodes": [
           {
             "id": "node",
@@ -1853,7 +1855,7 @@
               "+ statuses: Status[]",
               "+ open_items: int"
             ],
-            "x": 0,
+            "x": 979,
             "y": 0,
             "step": 1
           },
@@ -1866,7 +1868,7 @@
               "+ ply_version: string"
             ],
             "x": 0,
-            "y": 0,
+            "y": 276,
             "step": 2
           },
           {
@@ -1878,8 +1880,8 @@
               "+ uses: cap[]",
               "+ owns: TypePath[]"
             ],
-            "x": 0,
-            "y": 0,
+            "x": 780,
+            "y": 378,
             "step": 3
           },
           {
@@ -1890,112 +1892,112 @@
               "+ checks: Check[]",
               "+ mode: check|synth"
             ],
-            "x": 0,
-            "y": 0,
+            "x": 840,
+            "y": 498,
             "step": 4
           },
           {
             "id": "violation",
             "label": "violation",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1800,
+            "y": 210,
             "step": 5
           },
           {
             "id": "unclaimed",
             "label": "unclaimed",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1800,
+            "y": 294,
             "step": 6
           },
           {
             "id": "tested",
             "label": "tested",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1800,
+            "y": 405,
             "step": 7
           },
           {
             "id": "fuzzed",
             "label": "fuzzed(n)",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1800,
+            "y": 516,
             "step": 8
           },
           {
             "id": "bounded",
             "label": "bounded(k)",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1800,
+            "y": 600,
             "step": 9
           },
           {
             "id": "proved",
             "label": "proved",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1800,
+            "y": 666,
             "step": 10
           },
           {
             "id": "conditional",
             "label": "conditional",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 120,
+            "y": 210,
             "step": 11
           },
           {
             "id": "stale",
             "label": "stale",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 340,
+            "y": 210,
             "step": 12
           },
           {
             "id": "weak-spec",
             "label": "weak-spec",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 560,
+            "y": 210,
             "step": 13
           },
           {
             "id": "unsupported",
             "label": "unsupported",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 780,
+            "y": 210,
             "step": 14
           },
           {
             "id": "engine-missing",
             "label": "engine-missing",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1000,
+            "y": 210,
             "step": 15
           },
           {
             "id": "timeout",
             "label": "timeout",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1220,
+            "y": 210,
             "step": 16
           },
           {
             "id": "inconclusive",
             "label": "inconclusive",
             "files": [],
-            "x": 0,
-            "y": 0,
+            "x": 1440,
+            "y": 210,
             "step": 17
           }
         ],
@@ -2003,107 +2005,344 @@
           {
             "from": "workspace",
             "to": "node",
-            "kind": "generalization"
+            "kind": "generalization",
+            "vertices": [
+              {
+                "x": 1118,
+                "y": 127.5
+              },
+              {
+                "x": 1118,
+                "y": 211
+              },
+              {
+                "x": 1118,
+                "y": 294.5
+              },
+              {
+                "x": 1118,
+                "y": 370
+              },
+              {
+                "x": 1118,
+                "y": 432
+              }
+            ]
           },
           {
             "from": "component",
             "to": "node",
-            "kind": "generalization"
+            "kind": "generalization",
+            "vertices": [
+              {
+                "x": 1186,
+                "y": 294.5
+              },
+              {
+                "x": 1186,
+                "y": 370
+              },
+              {
+                "x": 1186,
+                "y": 432
+              }
+            ]
           },
           {
             "from": "fn",
             "to": "node",
-            "kind": "generalization"
+            "kind": "generalization",
+            "vertices": [
+              {
+                "x": 1302,
+                "y": 432
+              }
+            ]
           },
           {
             "from": "workspace",
             "to": "component",
             "kind": "composition",
-            "label": "components 1..* (§5.1)"
+            "label": "components 1..* (§5.1)",
+            "vertices": [
+              {
+                "x": 1244,
+                "y": 127.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5577200387459249,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "component",
             "to": "fn",
             "kind": "composition",
-            "label": "fns 0..* (§5.1)"
+            "label": "fns 0..* (§5.1)",
+            "vertices": [
+              {
+                "x": 1302,
+                "y": 294.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.549056568967243,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "violation",
             "to": "unclaimed",
             "kind": "association",
-            "label": "weaker than (D6)"
+            "label": "weaker than (D6)",
+            "vertices": [
+              {
+                "x": 171,
+                "y": 774.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "unclaimed",
             "to": "tested",
             "kind": "association",
-            "label": "weaker than (D6)"
+            "label": "weaker than (D6)",
+            "vertices": [
+              {
+                "x": 171,
+                "y": 883.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "tested",
             "to": "fuzzed",
             "kind": "association",
-            "label": "weaker than (D6)"
+            "label": "weaker than (D6)",
+            "vertices": [
+              {
+                "x": 171,
+                "y": 992.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "fuzzed",
             "to": "bounded",
             "kind": "association",
-            "label": "weaker than (D6)"
+            "label": "weaker than (D6)",
+            "vertices": [
+              {
+                "x": 171,
+                "y": 1101.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "bounded",
             "to": "proved",
             "kind": "association",
-            "label": "weaker than (D6)"
+            "label": "weaker than (D6)",
+            "vertices": [
+              {
+                "x": 171,
+                "y": 1210.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "node",
             "to": "violation",
             "kind": "dependency",
-            "label": "verdict / worst_descendant range (D6)"
+            "label": "verdict / worst_descendant range (D6)",
+            "vertices": [
+              {
+                "x": 171,
+                "y": 665.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.9584283680467822,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "node",
             "to": "conditional",
             "kind": "dependency",
-            "label": "assumed contract (D5, W0511)"
+            "label": "assumed contract (D5, W0511)",
+            "vertices": [
+              {
+                "x": 465,
+                "y": 665.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.9400046240585229,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "node",
             "to": "stale",
             "kind": "dependency",
-            "label": "fingerprint staleness (D14, W0302)"
+            "label": "fingerprint staleness (D14, W0302)",
+            "vertices": [
+              {
+                "x": 747,
+                "y": 665.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.8961160855390138,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "node",
             "to": "weak-spec",
             "kind": "dependency",
-            "label": "surviving mutants (D12, W0502)"
+            "label": "surviving mutants (D12, W0502)",
+            "vertices": [
+              {
+                "x": 1037,
+                "y": 665.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.6104450214795054,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "node",
             "to": "unsupported",
             "kind": "dependency",
-            "label": "uncheckable signature (§5.4b, V0505)"
+            "label": "uncheckable signature (§5.4b, V0505)",
+            "vertices": [
+              {
+                "x": 1335,
+                "y": 665.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.6104450214795054,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "node",
             "to": "engine-missing",
             "kind": "dependency",
-            "label": "engine absent (§3, W0110)"
+            "label": "engine absent (§3, W0110)",
+            "vertices": [
+              {
+                "x": 1613,
+                "y": 665.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.892794618309471,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "node",
             "to": "timeout",
             "kind": "dependency",
-            "label": "--engine-timeout exceeded"
+            "label": "--engine-timeout exceeded",
+            "vertices": [
+              {
+                "x": 1847,
+                "y": 665.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.9340586861728042,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "node",
             "to": "inconclusive",
             "kind": "dependency",
-            "label": "orthogonal status"
+            "label": "orthogonal status",
+            "vertices": [
+              {
+                "x": 2059,
+                "y": 665.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.9511795431986221,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           }
         ],
         "groups": [],
@@ -2238,7 +2477,7 @@
       }
     }
   ],
-  "activeId": "overview",
+  "activeId": "verdict-model",
   "codeThreads": [
     {
       "id": "t-spec-d2-attrs",
@@ -2259,7 +2498,7 @@
     {
       "id": "t-spec-d4-arch",
       "file": "SPEC.md",
-      "line": 296,
+      "line": 300,
       "snippet": "**Crate tier (sound, errors).** From `cargo metadata`: the exact crate dependency graph.",
       "anchored": true,
       "node": "arch",
@@ -2275,7 +2514,7 @@
     {
       "id": "t-spec-d5-model",
       "file": "SPEC.md",
-      "line": 425,
+      "line": 429,
       "snippet": "generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict.",
       "anchored": true,
       "node": "model",
@@ -2291,7 +2530,7 @@
     {
       "id": "t-spec-cli-verify",
       "file": "SPEC.md",
-      "line": 463,
+      "line": 467,
       "snippet": "cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts",
       "anchored": true,
       "node": "cli",
@@ -2307,7 +2546,7 @@
     {
       "id": "t-spec-d7-cex",
       "file": "SPEC.md",
-      "line": 598,
+      "line": 604,
       "snippet": "the inputs rendered as stable Rust source (D7), else `W0541`.",
       "anchored": true,
       "node": "cex",
@@ -2323,7 +2562,7 @@
     {
       "id": "t-spec-staleness-plylock",
       "file": "SPEC.md",
-      "line": 289,
+      "line": 293,
       "snippet": "the fingerprint no longer matches, `ply check` reports `W0302 claim may be stale` and the",
       "anchored": true,
       "node": "plylock",
@@ -2355,7 +2594,7 @@
     {
       "id": "t-spec-envelope-shape",
       "file": "SPEC.md",
-      "line": 569,
+      "line": 575,
       "snippet": "`{ \"command\": \"...\", \"ply_version\": \"...\", \"root\": <node tree §7>, \"diagnostics\": [<Diagnostic>...] }`.",
       "anchored": true,
       "node": "envelope",
@@ -2371,7 +2610,7 @@
     {
       "id": "t-spec-d6-node",
       "file": "SPEC.md",
-      "line": 489,
+      "line": 495,
       "snippet": "D6 over the evidence order; `statuses` and `open_items` (unresolved markers, weak specs,",
       "anchored": true,
       "node": "node",
@@ -2387,7 +2626,7 @@
     {
       "id": "t-spec-violation-rule",
       "file": "SPEC.md",
-      "line": 406,
+      "line": 410,
       "snippet": "passing checks earned; a failing check is a `violation` regardless of what else passed.",
       "anchored": true,
       "node": "violation",

@@ -94,6 +94,25 @@ fn checks_glyph_row(checks: &[String]) -> String {
         .join(" ")
 }
 
+/// The glyph row spelled out for the hover tooltip. `<title>` is native SVG:
+/// no script, no legend clutter on the canvas.
+fn check_prose(c: &str) -> String {
+    match parse_check(c) {
+        Ok(Check::Test) => "test — generated example and contract cases".into(),
+        Ok(Check::Fuzz(n)) => format!("fuzz({n}) — {n} randomised property-test cases"),
+        Ok(Check::Bounded(k)) => {
+            format!("bounded({k}) — model-checked exhaustively to depth {k}")
+        }
+        Ok(Check::Prove) => "prove — unbounded proof".into(),
+        Ok(Check::Mutate) => "mutate — mutants must be killed by the check suite".into(),
+        Err(e) => format!("{c} — unparseable: {e}"),
+    }
+}
+
+fn title(text: &str) -> String {
+    format!("<title>{}</title>", esc(text))
+}
+
 fn check_with_note(check_with: &IndexMap<String, String>) -> Option<String> {
     if check_with.is_empty() {
         return None;
@@ -191,8 +210,17 @@ fn render_fn_chip(name: &str, fc: &FnClaim) -> FnChip {
     }
 
     if has_shield {
+        let claims = fc
+            .trusted
+            .iter()
+            .map(|t| format!("{} — evidence: {}", t.claim, t.evidence))
+            .collect::<Vec<_>>()
+            .join("\n");
         inner.push_str(&format!(
-            "<text class=\"fn-shield\" x=\"{cursor_x:.1}\" y=\"{text_y:.1}\">\u{26C9}</text>",
+            "<g class=\"fn-shield\">{}<text x=\"{cursor_x:.1}\" y=\"{text_y:.1}\">\u{26C9}</text></g>",
+            title(&format!(
+                "trusted claim — attested by a human, never machine-checked\n{claims}"
+            ))
         ));
         cursor_x += SHIELD_W + BADGE_GAP;
     }
@@ -201,17 +229,45 @@ fn render_fn_chip(name: &str, fc: &FnClaim) -> FnChip {
         let label = format!("#{}", p.id);
         let cx = cursor_x + PIN_R;
         inner.push_str(&format!(
-            "<g class=\"unresolved-pin\"><circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"{PIN_R:.1}\" /><text class=\"pin-label\" x=\"{cx:.1}\" y=\"{text_y:.1}\">{label}</text></g>",
+            "<g class=\"unresolved-pin\">{tip}<circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"{PIN_R:.1}\" /><text class=\"pin-label\" x=\"{cx:.1}\" y=\"{text_y:.1}\">{label}</text></g>",
             cy = CHIP_H / 2.0,
-            label = esc(&label)
+            label = esc(&label),
+            tip = title(&format!(
+                "unresolved #{} — a decision still owed; caps this fn at check `test` (§5.6)\n{}",
+                p.id, p.note
+            ))
         ));
         cursor_x += text_w(&label, CHIP_CHAR_W) + PIN_R * 2.0 + BADGE_GAP;
     }
 
+    let mut tip = vec![name.to_string()];
+    for c in &fc.checks {
+        tip.push(check_prose(c));
+    }
+    if let Some(n) = &note {
+        tip.push(format!("checked at instantiation {n}"));
+    }
+    for t in &fc.trusted {
+        tip.push(format!(
+            "trusted (not machine-checked): {} — evidence: {}",
+            t.claim, t.evidence
+        ));
+    }
+    if !fc.examples.is_empty() {
+        tip.push(format!("{} example(s)", fc.examples.len()));
+    }
+    for p in &fc.unresolved {
+        tip.push(format!("unresolved #{}: {}", p.id, p.note));
+    }
+    if fc.checks.is_empty() {
+        tip.push("no checks declared — unclaimed".into());
+    }
+
     let width = cursor_x + PAD - BADGE_GAP;
     let svg = format!(
-        "<g class=\"fn-chip\" data-fn=\"{}\"><rect class=\"fn-chip-box\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{CHIP_H:.1}\" rx=\"4\" />{inner}</g>",
-        esc(name)
+        "<g class=\"fn-chip\" data-fn=\"{}\">{}<rect class=\"fn-chip-box\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{CHIP_H:.1}\" rx=\"4\" />{inner}</g>",
+        esc(name),
+        title(&tip.join("\n"))
     );
 
     FnChip { width, height: CHIP_H, svg }
@@ -228,7 +284,11 @@ struct ComponentBox {
     positions: Vec<(String, Rect)>,
 }
 
-fn render_component(name: &str, comp: &Component) -> ComponentBox {
+fn render_component(
+    name: &str,
+    comp: &Component,
+    profiles: &IndexMap<String, Vec<String>>,
+) -> ComponentBox {
     let name_w = text_w(name, NAME_CHAR_W);
     let anchor_w = text_w(&comp.anchor, SUB_CHAR_W);
     // §7.1: `owns` is a third header line, `owns T, U` — the types this
@@ -257,7 +317,7 @@ fn render_component(name: &str, comp: &Component) -> ComponentBox {
     let children: Vec<(String, ComponentBox)> = comp
         .components
         .iter()
-        .map(|(cname, c)| (cname.clone(), render_component(cname, c)))
+        .map(|(cname, c)| (cname.clone(), render_component(cname, c, profiles)))
         .collect();
 
     let chips: Vec<(String, FnChip)> = comp
@@ -289,20 +349,27 @@ fn render_component(name: &str, comp: &Component) -> ComponentBox {
         for b in badges {
             let bw = text_w(b, BADGE_CHAR_W) + BADGE_PAD * 2.0;
             body.push_str(&format!(
-                "<g class=\"cap-badge\"><rect x=\"{bx:.1}\" y=\"{y:.1}\" width=\"{bw:.1}\" height=\"{BADGE_H:.1}\" rx=\"3\" /><text x=\"{tx:.1}\" y=\"{ty:.1}\">{label}</text></g>",
+                "<g class=\"cap-badge\">{tip}<rect x=\"{bx:.1}\" y=\"{y:.1}\" width=\"{bw:.1}\" height=\"{BADGE_H:.1}\" rx=\"3\" /><text x=\"{tx:.1}\" y=\"{ty:.1}\">{label}</text></g>",
                 tx = bx + BADGE_PAD,
                 ty = y + BADGE_H - 6.0,
-                label = esc(b)
+                label = esc(b),
+                tip = title(&format!(
+                    "capability `{b}` — declared by this component (§5.3). A component may only use capabilities it declares, and a `deny` rule can forbid it."
+                ))
             ));
             bx += bw + BADGE_GAP;
         }
         if let Some(p) = &comp.profile {
             let pw = text_w(p, BADGE_CHAR_W) + BADGE_PAD * 2.0;
             body.push_str(&format!(
-                "<g class=\"profile-tag\"><rect x=\"{bx:.1}\" y=\"{y:.1}\" width=\"{pw:.1}\" height=\"{BADGE_H:.1}\" rx=\"3\" /><text x=\"{tx:.1}\" y=\"{ty:.1}\">{label}</text></g>",
+                "<g class=\"profile-tag\">{tip}<rect x=\"{bx:.1}\" y=\"{y:.1}\" width=\"{pw:.1}\" height=\"{BADGE_H:.1}\" rx=\"3\" /><text x=\"{tx:.1}\" y=\"{ty:.1}\">{label}</text></g>",
                 tx = bx + BADGE_PAD,
                 ty = y + BADGE_H - 6.0,
-                label = esc(p)
+                label = esc(p),
+                tip = title(&match profiles.get(p) {
+                    Some(rules) => format!("profile `{p}` = {}", rules.join(", ")),
+                    None => format!("profile `{p}` — not defined in this document"),
+                })
             ));
         }
         y += badge_row_h;
@@ -329,9 +396,29 @@ fn render_component(name: &str, comp: &Component) -> ComponentBox {
 
     let box_h = y + PAD;
 
+    let mut tip = vec![format!("component {name} — anchored at {}", comp.anchor)];
+    if comp.pure {
+        tip.push("pure — no capabilities, sealed".into());
+    } else if !comp.uses.is_empty() {
+        tip.push(format!("capabilities: {}", comp.uses.join(", ")));
+    }
+    if !comp.owns.is_empty() {
+        tip.push(format!("owns (sole mutator of): {}", comp.owns.join(", ")));
+    }
+    if let Some(p) = &comp.profile {
+        tip.push(match profiles.get(p) {
+            Some(rules) => format!("profile {p} = {}", rules.join(", ")),
+            None => format!("profile {p} (not defined in this document)"),
+        });
+    }
+    if comp.strict {
+        tip.push("strict — item-tier architecture findings are errors".into());
+    }
+
     let mut svg = format!(
-        "<g class=\"component\" data-name=\"{}\"><rect class=\"component-box\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
-        esc(name)
+        "<g class=\"component\" data-name=\"{}\">{}<rect class=\"component-box\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
+        esc(name),
+        title(&tip.join("\n"))
     );
     if comp.pure {
         // §7.1: `pure` renders as a sealed (double) border, badge-free.
@@ -364,10 +451,13 @@ fn render_component(name: &str, comp: &Component) -> ComponentBox {
     ComponentBox { width: box_w, height: box_h, svg, positions }
 }
 
-fn any_node_svg(x: f64, y: f64) -> String {
+fn any_node_svg(x: f64, y: f64, rule: &str) -> String {
     format!(
-        "<g class=\"any-node\"><circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"14\" /><text class=\"any-label\" x=\"{x:.1}\" y=\"{:.1}\">*</text></g>",
-        y + 4.0
+        "<g class=\"any-node\">{tip}<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"14\" /><text class=\"any-label\" x=\"{x:.1}\" y=\"{:.1}\">*</text></g>",
+        y + 4.0,
+        tip = title(&format!(
+            "* = any component — belongs to the rule `{rule}` alone. Wildcards have no shared identity, so two rules that both use `*` are unrelated."
+        ))
     )
 }
 
@@ -416,7 +506,7 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
     let top: Vec<(String, ComponentBox)> = doc
         .components
         .iter()
-        .map(|(name, c)| (name.clone(), render_component(name, c)))
+        .map(|(name, c)| (name.clone(), render_component(name, c, &doc.profiles)))
         .collect();
 
     let content_w = top.iter().map(|(_, c)| c.width).fold(0.0_f64, f64::max);
@@ -462,9 +552,13 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         for entry in &doc.unresolved {
             let label = format!("#{}", entry.id);
             registry_svg.push_str(&format!(
-                "<g class=\"registry-pin\"><circle cx=\"{px:.1}\" cy=\"{py:.1}\" r=\"{PIN_R:.1}\" /><text class=\"pin-label\" x=\"{px:.1}\" y=\"{:.1}\">{label}</text></g>",
+                "<g class=\"registry-pin\">{tip}<circle cx=\"{px:.1}\" cy=\"{py:.1}\" r=\"{PIN_R:.1}\" /><text class=\"pin-label\" x=\"{px:.1}\" y=\"{:.1}\">{label}</text></g>",
                 py + 4.0,
-                label = esc(&label)
+                label = esc(&label),
+                tip = title(&format!(
+                    "unresolved #{} — workspace-level, no code anchor yet (§5.6)\n{}",
+                    entry.id, entry.note
+                ))
             ));
             px -= PIN_R * 2.0 + 6.0 + text_w(&label, 6.0);
         }
@@ -522,15 +616,23 @@ fn render_edge(
     match &edge.kind {
         EdgeKind::Call => {
             out.push_str(&format!(
-                "<g class=\"edge-call\"><path class=\"edge-line\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" /></g>",
+                "<g class=\"edge-call\">{tip}<path class=\"edge-line\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" /></g>",
+                tip = title(&format!(
+                    "{} -> {} — permitted call: {} may call into {}",
+                    edge.from, edge.to, edge.from, edge.to
+                ))
             ));
         }
         EdgeKind::Flow(ty_label) => {
             let mx = (fx + tx) / 2.0;
             let my = (fy + ty) / 2.0;
             out.push_str(&format!(
-                "<g class=\"edge-flow\"><path class=\"edge-line\" stroke-dasharray=\"6 4\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" /><text class=\"edge-label\" x=\"{mx:.1}\" y=\"{my:.1}\">{}</text></g>",
-                esc(ty_label)
+                "<g class=\"edge-flow\">{tip}<path class=\"edge-line\" stroke-dasharray=\"6 4\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" /><text class=\"edge-label\" x=\"{mx:.1}\" y=\"{my:.1}\">{}</text></g>",
+                esc(ty_label),
+                tip = title(&format!(
+                    "{} ~> {} : {ty_label} — declared data flow, carrying {ty_label}",
+                    edge.from, edge.to
+                ))
             ));
         }
     }
@@ -567,11 +669,12 @@ fn render_deny(
     };
 
     let fallback_y = FRAME_TITLE_H / 2.0 + 6.0 + index as f64 * 34.0;
+    let rule_text = format!("{} -> {}", deny.from, deny.to);
     let mut any_nodes = String::new();
 
     let from_pt = if deny.from == "*" {
         let p = to_rect.map(|r| (14.0, r.cy())).unwrap_or((14.0, fallback_y));
-        any_nodes.push_str(&any_node_svg(p.0, p.1));
+        any_nodes.push_str(&any_node_svg(p.0, p.1, &rule_text));
         p
     } else {
         let r = from_rect.expect("non-wildcard, unresolved case already returned above");
@@ -582,7 +685,7 @@ fn render_deny(
         let p = from_rect
             .map(|r| (frame_w - 14.0, r.cy()))
             .unwrap_or((frame_w - 14.0, fallback_y));
-        any_nodes.push_str(&any_node_svg(p.0, p.1));
+        any_nodes.push_str(&any_node_svg(p.0, p.1, &rule_text));
         p
     } else {
         let r = to_rect.expect("non-wildcard, unresolved case already returned above");
@@ -605,8 +708,18 @@ fn render_deny(
     let (px, py) = (-dy / len * 8.0, dx / len * 8.0);
 
     out.push_str(&format!(
-        "<g class=\"deny-rule\"><path class=\"deny-line\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" /><line class=\"deny-bar\" x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" />",
-        mx - px, my - py, mx + px, my + py
+        "<g class=\"deny-rule\">{tip}<path class=\"deny-line\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" /><line class=\"deny-bar\" x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" />",
+        mx - px, my - py, mx + px, my + py,
+        tip = title(&{
+            let mut t = format!(
+                "denied: {} -> {} — this call is an architecture violation",
+                deny.from, deny.to
+            );
+            if !deny.except.is_empty() {
+                t.push_str(&format!("\nexcept: {}", deny.except.join(", ")));
+            }
+            t
+        })
     ));
     if !deny.except.is_empty() {
         out.push_str(&format!(

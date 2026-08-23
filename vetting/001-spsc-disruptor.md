@@ -92,11 +92,15 @@ profiles:
 
 ## Rendered
 
-![the ring component drawn from this scenario](001-spsc-disruptor.svg)
+[![the ring component drawn from this scenario](001-spsc-disruptor.svg)](001-spsc-disruptor.svg)
 
 Produced by `ply-render tools/render/tests/fixtures/spsc.ply.yaml`. That fixture is this
 document's YAML block verbatim — the renderer runs on the scenario itself, not a
 simplification of it.
+
+Every item carries a hover explanation — what `B3` and `F1024` mean, what a capability
+badge licenses, what the shield is attesting. Click through to the SVG to get them:
+embedded as an image above, the browser treats it as a flat picture and hover is dead.
 
 ### Findings from the render pass (2026-08-23)
 
@@ -115,6 +119,12 @@ simplification of it.
    watermark, and it is invisible.
 4. Character-width estimate was under the real monospace advance, so long fn names
    collided with their checks glyphs. Widened.
+5. **The glyph row was unreadable without the source.** `B3 F1024` is only obvious to
+   whoever wrote the abbreviation table. → Every drawn item now carries a native SVG
+   `<title>`: checks spelled out in full, capability and profile meanings, the trusted
+   claim and its evidence, what an unresolved pin owes, what a `*` wildcard scopes to.
+   `every_drawn_item_resolves_a_tooltip` walks the output and fails on any item without
+   one, so new constructs can't skip it.
 
 ## Confirmed walls (deliberate, unchanged)
 

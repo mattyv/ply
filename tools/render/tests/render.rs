@@ -256,3 +256,81 @@ fn owns_renders_as_a_header_line() {
     assert!(svg.contains("class=\"component-owns\""));
     assert!(svg.contains(">owns disruptor::spsc::Spsc<"));
 }
+
+#[test]
+fn glyphs_are_explained_by_a_hover_title() {
+    let svg = render_fixture("tests/fixtures/spsc.ply.yaml");
+    let doc = roxmltree::Document::parse(&svg).unwrap();
+    let titles: Vec<String> = doc
+        .descendants()
+        .filter(|n| n.tag_name().name() == "title")
+        .map(|n| n.text().unwrap_or("").to_string())
+        .collect();
+
+    // Coverage is asserted by `every_drawn_item_resolves_a_tooltip`; this test
+    // checks the wording a reader actually needs.
+    let push = titles.iter().find(|t| t.starts_with("Spsc::try_push")).unwrap();
+    assert!(push.contains("bounded(3) — model-checked exhaustively to depth 3"));
+    assert!(push.contains("fuzz(1024) — 1024 randomised property-test cases"));
+    assert!(push.contains("checked at instantiation T=u64"));
+    assert!(push.contains("trusted (not machine-checked): SPSC cross-thread safety"));
+    assert!(push.contains("loom test tests/loom_spsc.rs"));
+    assert!(push.contains("1 example(s)"));
+
+    // The component tooltip expands its profile — the tag alone shows only a name.
+    let ring = titles.iter().find(|t| t.starts_with("component ring")).unwrap();
+    assert!(ring.contains("profile hot_path = no_panics, exhaustive_match"));
+    assert!(ring.contains("capabilities: unsafe"));
+    assert!(ring.contains("owns (sole mutator of): disruptor::spsc::Spsc"));
+}
+
+/// "Tooltips for all items": the invariant, not a spot-check. Every drawn item
+/// — component, fn chip, badge, tag, shield, pin, arrow, deny bar, wildcard
+/// node — must resolve a `<title>` on itself or an ancestor, so nothing in the
+/// picture is unexplainable by hovering it.
+#[test]
+fn every_drawn_item_resolves_a_tooltip() {
+    // Item-bearing groups: a class here means "this is a thing a reader can
+    // point at", so it must be explained.
+    const ITEM_CLASSES: &[&str] = &[
+        "component",
+        "fn-chip",
+        "cap-badge",
+        "profile-tag",
+        "fn-shield",
+        "unresolved-pin",
+        "registry-pin",
+        "edge-call",
+        "edge-flow",
+        "deny-rule",
+        "any-node",
+    ];
+
+    let mut untitled: Vec<String> = Vec::new();
+    for fixture in [
+        "tests/fixtures/spsc.ply.yaml",
+        "tests/fixtures/full.ply.yaml",
+        "tests/fixtures/qualified_refs.ply.yaml",
+    ] {
+        let svg = render_fixture(fixture);
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        let mut seen: Vec<&str> = Vec::new();
+        for node in doc.descendants().filter(|n| n.is_element()) {
+            let Some(class) = node.attribute("class") else { continue };
+            if !ITEM_CLASSES.contains(&class) {
+                continue;
+            }
+            seen.push(class);
+            let titled = node
+                .ancestors()
+                .any(|a| a.children().any(|c| c.tag_name().name() == "title"));
+            if !titled {
+                untitled.push(format!("{fixture}: .{class}"));
+            }
+        }
+        assert!(!seen.is_empty(), "{fixture}: no item classes found at all");
+    }
+    untitled.sort();
+    untitled.dedup();
+    assert!(untitled.is_empty(), "drawn items with no tooltip: {untitled:?}");
+}
