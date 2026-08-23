@@ -59,10 +59,12 @@ bad_check_syntax_is_e0203
 
 ### What the diagram does with fault 3 — and why that's a finding
 
-The checkpoint branch also carries `demos/fault3.ply.yaml` (vetting 002 with
-`decode`'s check set to `bounded(0)`) and its render, `demos/fault3.svg`: the
-faulted toolchain draws **`B0`** in the same confident green as every honest
-claim. The picture cannot distinguish a vacuous claim from a proved one.
+[`fault3.ply.yaml`](fault3.ply.yaml) is vetting 002 with `decode`'s check set to
+`bounded(0)`.
+[`fault3-as-drawn-by-faulted-toolchain.svg`](fault3-as-drawn-by-faulted-toolchain.svg)
+is what the *faulted* toolchain made of it: **`B0`** in the same confident green
+as every honest claim. The picture cannot distinguish a vacuous claim from a
+proved one.
 
 That is the standing gap this demo makes visible: diagrams draw *declarations*,
 and no visual layer exists yet for *findings or verdicts*. Two consequences,

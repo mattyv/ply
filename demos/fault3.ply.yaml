@@ -1,0 +1,55 @@
+ply: 1
+components:
+  feed:
+    anchor: ingest::feed
+    uses: [net]
+    fns:
+      Feed::pump:
+        checks: []
+  ring:
+    anchor: disruptor::spsc
+    uses: [unsafe]
+    owns: [disruptor::spsc::Spsc]
+    profile: hot_path
+    fns:
+      Spsc::try_push:
+        checks: [bounded(3)]
+        check_with: { T: ingest::feed::RawFrame }
+      Spsc::try_pop:
+        checks: [bounded(3)]
+        check_with: { T: ingest::feed::RawFrame }
+  decoder:
+    anchor: ingest::decode
+    pure: true
+    profile: hot_path
+    fns:
+      decode:
+        checks: [bounded(0), fuzz(4096), mutate]
+        examples:
+          - "decode(&RawFrame::of(&[2, 1, 0, 100, 0, 42])).is_ok() == true"
+  book:
+    anchor: ingest::book
+    strict: true
+    owns: [ingest::book::OrderBook]
+    profile: hot_path
+    fns:
+      OrderBook::apply:
+        checks: [bounded(2), fuzz(256), mutate]
+      OrderBook::updates:
+        checks: [bounded(2)]
+      OrderBook::last_px:
+        checks: [bounded(2)]
+edges:
+  - feed -> ring
+  - decoder -> ring
+  - decoder -> book
+  - "feed ~> ring : RawFrame"
+  - "ring ~> decoder : RawFrame"
+  - "decoder ~> book : Tick"
+deny:
+  - "* -> book except decoder"
+  - "* -> feed"
+profiles:
+  hot_path: [no_panics, exhaustive_match]
+unresolved:
+  - { id: 7, note: "backpressure policy when the ring is full: drop frame vs spin" }

@@ -559,6 +559,7 @@ grammar.**
 | assumption chain | thin dotted arrows from a verdict to the contracts it assumed |
 | unresolved marker | numbered pin on the fn or component |
 | trusted claim | hollow shield badge on the node — attested by named evidence, not machine-checked |
+| finding (tool-computed, not declared) | the offending item drawn in error red with an `E####` badge; its tooltip leads with the diagnostic. A finding with no drawable item attaches a red count to the workspace title. A document with findings still renders — a picture that refuses to draw hides the problem it should be showing (origin: fault-injection demo, where a faulted toolchain drew `bounded(0)` as legitimate evidence) |
 
 Zooming is collapse/expand over the §7 tree and mirrors `tree --depth`/`--focus`. A
 renderer's only input is the §8 envelope — no side channel. The renderer itself stays
