@@ -23,11 +23,18 @@
 
 ## From the external review (codex, 2026-08-23) — see docs/review-2026-08-23.md
 
-- [ ] **M0 spike + ADR-0003 first.** The review's central charge: the project sequence
-      is backwards — substantial renderer/kernel work exists while the feasibility
-      spike the spec itself gates everything on (§10 M0, D13) has never run. One
-      vertical slice: inline contract → Kani run → parsed counterexample → replayable
-      test → JSON diagnostic.
+- [x] **M0 spike done, ADR-0003 accepted** (0974f57). 8/9 mechanisms work; cross-crate
+      stubbing works via caller-local re-proof. Fixtures + run.sh under tests/spike/.
+- [ ] **M0 not fully discharged**: cargo-mutants driven by a custom test command running
+      a generated harness is in §10's M0 list and was not exercised.
+- [ ] **Scale spike before M3 commits to Kani.** M0 used scalars and small structs; our
+      own pure kernel is still unprovable on `BTreeSet`/`Vec`. Establish what
+      collection-shaped code Kani actually handles, then rewrite §5.4b's
+      supported-signature story around that evidence instead of optimism.
+- [ ] **Callee-before-caller ordering needs kernel-grade treatment.** ADR-0003 proved
+      Kani gives no backstop: a caller verifies while assuming an unproved callee. The
+      scheduler that orders callees first is now soundness-critical and should be a pure
+      module with its own invariant tests, like the verdict kernel.
 - [x] **Real defect fixed: component-level `checks` inheritance** (merged from
       worktree): a fn's own list wins entirely; otherwise it inherits the nearest
       ancestor component's default. Resolution lives once in `ply-model` so the
