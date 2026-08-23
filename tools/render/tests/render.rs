@@ -7,19 +7,68 @@ fn render_fixture(path: &str) -> String {
     render_svg(&doc).expect("fixture should render")
 }
 
-/// Parses this renderer's own `d="M x y L x2 y2"` path format (used by every
-/// straight edge/deny line) back into its two endpoints.
-fn parse_line_path(d: &str) -> ((f64, f64), (f64, f64)) {
+/// Every point of this renderer's own `d="M x y L x2 y2 (L x3 y3)*"` path
+/// format. Routed edges and deny lines are polylines (they elbow around
+/// boxes), so a two-point assumption would be wrong.
+fn parse_path_points(d: &str) -> Vec<(f64, f64)> {
     let nums: Vec<f64> = d
         .split_whitespace()
         .filter_map(|t| t.parse::<f64>().ok())
         .collect();
-    assert_eq!(
-        nums.len(),
-        4,
-        "expected an M..L.. path with 4 numbers, got {d:?}"
+    assert!(
+        nums.len() >= 4 && nums.len() % 2 == 0,
+        "expected an M..L.. path with an even count of at least 4 numbers, got {d:?}"
     );
-    ((nums[0], nums[1]), (nums[2], nums[3]))
+    nums.chunks(2).map(|c| (c[0], c[1])).collect()
+}
+
+/// First and last point of a path — its two ends, whatever it does between.
+fn parse_line_path(d: &str) -> ((f64, f64), (f64, f64)) {
+    let pts = parse_path_points(d);
+    (pts[0], pts[pts.len() - 1])
+}
+
+/// Do two line segments properly cross (or touch)? Standard orientation test.
+fn segments_cross(a: ((f64, f64), (f64, f64)), b: ((f64, f64), (f64, f64))) -> bool {
+    fn orient(p: (f64, f64), q: (f64, f64), r: (f64, f64)) -> f64 {
+        (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+    }
+    fn on_seg(p: (f64, f64), q: (f64, f64), r: (f64, f64)) -> bool {
+        q.0 <= p.0.max(r.0) + 0.5
+            && q.0 >= p.0.min(r.0) - 0.5
+            && q.1 <= p.1.max(r.1) + 0.5
+            && q.1 >= p.1.min(r.1) - 0.5
+    }
+    let (p1, q1) = a;
+    let (p2, q2) = b;
+    let (d1, d2, d3, d4) = (
+        orient(p1, q1, p2),
+        orient(p1, q1, q2),
+        orient(p2, q2, p1),
+        orient(p2, q2, q1),
+    );
+    if ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0)) {
+        return true;
+    }
+    (d1.abs() < 1e-9 && on_seg(p1, p2, q1))
+        || (d2.abs() < 1e-9 && on_seg(p1, q2, q1))
+        || (d3.abs() < 1e-9 && on_seg(p2, p1, q2))
+        || (d4.abs() < 1e-9 && on_seg(p2, q1, q2))
+}
+
+/// Does a segment enter a rect? (Endpoint inside, or crossing an edge.)
+fn segment_hits_rect(seg: ((f64, f64), (f64, f64)), (x, y, w, h): (f64, f64, f64, f64)) -> bool {
+    let inside = |p: (f64, f64)| p.0 >= x && p.0 <= x + w && p.1 >= y && p.1 <= y + h;
+    if inside(seg.0) || inside(seg.1) {
+        return true;
+    }
+    let corners = [
+        ((x, y), (x + w, y)),
+        ((x + w, y), (x + w, y + h)),
+        ((x + w, y + h), (x, y + h)),
+        ((x, y + h), (x, y)),
+    ];
+    corners.iter().any(|e| segments_cross(seg, *e))
 }
 
 fn svg_dims(doc: &roxmltree::Document) -> (f64, f64) {
@@ -161,8 +210,7 @@ mod layout_invariants {
                             continue; // the arrowhead marker glyph, not real canvas geometry
                         }
                         let d = node.attribute("d").unwrap();
-                        let (a, b) = parse_line_path(d);
-                        vec![a, b]
+                        parse_path_points(d)
                     }
                     "text" => {
                         let x: f64 = node.attribute("x").unwrap_or("0").parse().unwrap();
@@ -1528,6 +1576,499 @@ mod collapse {
         assert!(
             untitled.is_empty(),
             "drawn items with no tooltip at --depth 1: {untitled:?}"
+        );
+    }
+}
+
+/// §7.1 "collision-freedom inside containers" (vetting 003's render-pass
+/// findings 1, 3, 4): every symptom reported there — intra-container edge
+/// labels sitting on neighboring boxes, same-rank deny rules overlapping
+/// each other, a deny bar striking its own `except` label — is really the
+/// same missing property: nothing drawn should intersect a box it isn't
+/// inside. This walks the real rendered output (every fixture, default and
+/// `--depth 1`) and fails on the first offender, so a construct added later
+/// that skips this property is caught here rather than needing a bespoke
+/// spot-check of its own.
+mod no_overlap {
+    use super::*;
+    use ply_render::svg::{RenderOptions, render_svg_with_options};
+
+    type Rectf = (f64, f64, f64, f64); // (x, y, w, h)
+
+    /// Sums every ancestor `translate(x,y)` above `node` — the same
+    /// accumulation `absolute_component_rect` does for box rects. Needed for
+    /// any element read by its raw `x`/`y` attributes (text) that may be
+    /// nested several component/chip `<g transform>`s deep, where those
+    /// attributes are local to the innermost group, not absolute canvas
+    /// coordinates.
+    fn absolute_offset(node: roxmltree::Node) -> (f64, f64) {
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut cur = node.parent();
+        while let Some(n) = cur {
+            if let Some(t) = n.attribute("transform")
+                && let Some(inner) = t
+                    .strip_prefix("translate(")
+                    .and_then(|s| s.strip_suffix(")"))
+            {
+                let parts: Vec<f64> = inner
+                    .split(',')
+                    .map(|p| p.trim().parse().unwrap())
+                    .collect();
+                x += parts[0];
+                y += parts[1];
+            }
+            cur = n.parent();
+        }
+        (x, y)
+    }
+
+    /// Anchor-aware text bounding box, the same worst-case monospace
+    /// estimate `everything_renders_inside_the_canvas` uses, widened into a
+    /// real rect with a generous glyph height guessed around the baseline
+    /// (big enough for any font-size this renderer uses, 9-13px), and
+    /// converted to absolute canvas coordinates via `absolute_offset` —
+    /// most text (component names, fn chips, badges) is nested several
+    /// `<g transform>`s deep, so its raw `x`/`y` attributes alone are not
+    /// its real position.
+    /// Returns the label's bounding box plus its raw anchor point (the
+    /// exact `x`/`y` the SVG places it at, absolute-adjusted) — the anchor
+    /// is what `check_point_item` uses to decide whether the label
+    /// legitimately belongs inside a given box (see that function's doc
+    /// comment): a label whose own anchor sits deep inside a box belongs
+    /// there; one whose anchor sits outside a box it merely bleeds *into*
+    /// (via this worst-case width estimate) does not.
+    fn text_bbox(node: roxmltree::Node, style: &str) -> (Rectf, (f64, f64)) {
+        const WORST_CASE_CHAR_W: f64 = 8.0;
+        let (ox, oy) = absolute_offset(node);
+        let x: f64 = node.attribute("x").unwrap_or("0").parse::<f64>().unwrap() + ox;
+        let y: f64 = node.attribute("y").unwrap_or("0").parse::<f64>().unwrap() + oy;
+        let chars = node.text().unwrap_or("").chars().count() as f64;
+        let full_w = chars * WORST_CASE_CHAR_W;
+        let is_middle = node.attribute("class").is_some_and(|c| {
+            let needle = format!(".{c}{{");
+            style
+                .find(&needle)
+                .and_then(|start| style[start..].find('}').map(|end| &style[start..start + end]))
+                .is_some_and(|rule| rule.contains("text-anchor:middle"))
+        });
+        let (x0, x1) = if is_middle {
+            (x - full_w / 2.0, x + full_w / 2.0)
+        } else {
+            (x, x + full_w)
+        };
+        ((x0, y - 11.0, (x1 - x0).max(0.1), 14.0), (x, y))
+    }
+
+    /// Parses this renderer's `d="M x y L x y L x y ..."` path format (a
+    /// straight 2-point line, or — for a deny line routed around an
+    /// obstruction — a longer polyline) into its ordered points.
+    fn parse_path_points(d: &str) -> Vec<(f64, f64)> {
+        let nums: Vec<f64> = d
+            .split_whitespace()
+            .filter_map(|t| t.parse::<f64>().ok())
+            .collect();
+        nums.chunks(2).map(|c| (c[0], c[1])).collect()
+    }
+
+    /// Is `p` inside (or on the boundary of, within `eps`) rect `r`? Used to
+    /// decide whether a box is one a line's endpoint is legitimately
+    /// attached to (or nested inside — a nested component's own box rect
+    /// sits geometrically inside every ancestor container's rect too, by
+    /// construction, so this single check permits both without needing to
+    /// know the containment chain explicitly).
+    fn box_contains_point(r: Rectf, p: (f64, f64), eps: f64) -> bool {
+        p.0 >= r.0 - eps && p.0 <= r.0 + r.2 + eps && p.1 >= r.1 - eps && p.1 <= r.1 + r.3 + eps
+    }
+
+    /// Bounding box of every point in a (possibly multi-point, routed)
+    /// line, padded by `pad` on every side.
+    fn line_bbox(points: &[(f64, f64)], pad: f64) -> Rectf {
+        let x0 = points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min) - pad;
+        let y0 = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min) - pad;
+        let x1 = points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max) + pad;
+        let y1 = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max) + pad;
+        (x0, y0, (x1 - x0).max(0.1), (y1 - y0).max(0.1))
+    }
+
+    fn rects_overlap(a: Rectf, b: Rectf, eps: f64) -> bool {
+        a.0 + eps < b.0 + b.2 && a.0 + a.2 > b.0 + eps && a.1 + eps < b.1 + b.3 && a.1 + a.3 > b.1 + eps
+    }
+
+    /// Standard slab (Liang-Barsky-style) segment-vs-rect clip, run against
+    /// `rect` shrunk inward by `shrink` on every side. A line whose only
+    /// contact with `rect` is a point exactly on its true boundary — the
+    /// normal case for an edge/deny endpoint legitimately touching the box
+    /// it terminates on — lands just *outside* the shrunk rect, so this
+    /// reports no intersection for that case; a line that actually cuts
+    /// across the box's interior is still caught.
+    fn segment_crosses_interior(p0: (f64, f64), p1: (f64, f64), rect: Rectf, shrink: f64) -> bool {
+        let (x, y, w, h) = rect;
+        let (xmin, xmax) = (x + shrink, x + w - shrink);
+        let (ymin, ymax) = (y + shrink, y + h - shrink);
+        if xmin >= xmax || ymin >= ymax {
+            return false; // box too small to have a meaningful interior
+        }
+        let mut t_enter = 0.0_f64;
+        let mut t_exit = 1.0_f64;
+        for &(p, d, lo, hi) in &[
+            (p0.0, p1.0 - p0.0, xmin, xmax),
+            (p0.1, p1.1 - p0.1, ymin, ymax),
+        ] {
+            if d.abs() < 1e-9 {
+                if p < lo || p > hi {
+                    return false;
+                }
+            } else {
+                let (ta, tb) = ((lo - p) / d, (hi - p) / d);
+                let (ta, tb) = if ta < tb { (ta, tb) } else { (tb, ta) };
+                t_enter = t_enter.max(ta);
+                t_exit = t_exit.min(tb);
+                if t_enter > t_exit {
+                    return false;
+                }
+            }
+        }
+        t_enter < t_exit - 1e-9
+    }
+
+    /// Every `<g class="component">`'s own g-node (for ancestor/containment
+    /// checks below) paired with its absolute on-canvas rect.
+    fn all_component_boxes<'a>(
+        doc: &'a roxmltree::Document<'a>,
+    ) -> Vec<(roxmltree::Node<'a, 'a>, Rectf)> {
+        let mut out = Vec::new();
+        for g in doc
+            .descendants()
+            .filter(|n| n.tag_name().name() == "g" && n.attribute("class") == Some("component"))
+        {
+            let mut x = 0.0;
+            let mut y = 0.0;
+            let mut cur = Some(g);
+            while let Some(n) = cur {
+                if let Some(t) = n.attribute("transform")
+                    && let Some(inner) = t
+                        .strip_prefix("translate(")
+                        .and_then(|s| s.strip_suffix(")"))
+                {
+                    let parts: Vec<f64> = inner
+                        .split(',')
+                        .map(|p| p.trim().parse().unwrap())
+                        .collect();
+                    x += parts[0];
+                    y += parts[1];
+                }
+                cur = n.parent();
+            }
+            let Some(rect) = g.children().find(|c| {
+                c.tag_name().name() == "rect"
+                    && c.attribute("class").is_some_and(|cl| {
+                        cl.split_whitespace()
+                            .any(|t| t == "component-box" || t == "component-box-finding")
+                    })
+            }) else {
+                continue;
+            };
+            let w: f64 = rect.attribute("width").unwrap().parse().unwrap();
+            let h: f64 = rect.attribute("height").unwrap().parse().unwrap();
+            out.push((g, (x, y, w, h)));
+        }
+        out
+    }
+
+    /// A text label or a wildcard node: excluded from a box's crossing
+    /// check when that box's rect contains the element's own anchor point
+    /// (the text's `x`/`y`, or the wildcard node's center) — the same
+    /// "contains the real attachment point" test `check_line_item` uses
+    /// for lines, and for the same reason: a component-name/fn-chip/badge
+    /// label is nested (and hence anchored) inside its own component's box
+    /// and every ancestor container's box by construction, and — since
+    /// vetting 003 finding 1's fix — a flow-edge label between two of a
+    /// container's own children is legitimately anchored inside that
+    /// container's box too, even though neither is DOM-nested inside it. A
+    /// genuinely misplaced label's anchor sits *outside* every box it only
+    /// bleeds into via this worst-case width estimate, so this still
+    /// catches it.
+    fn check_point_item(
+        anchor: (f64, f64),
+        bbox: Rectf,
+        boxes: &[(roxmltree::Node, Rectf)],
+        fixture: &str,
+        label: &str,
+        what: &str,
+        violations: &mut Vec<String>,
+    ) {
+        for (g, box_rect) in boxes {
+            if box_contains_point(*box_rect, anchor, 1.0) {
+                continue;
+            }
+            if rects_overlap(bbox, *box_rect, 0.5) {
+                violations.push(format!(
+                    "{fixture} ({label}): {what} {bbox:?} intersects {:?}'s box {box_rect:?}",
+                    g.attribute("data-name")
+                ));
+            }
+        }
+    }
+
+    /// A line (edge/deny path, deny bar): excluded from a box's crossing
+    /// check when that box contains (not just touches — a nested
+    /// component's own rect sits fully inside every ancestor container's
+    /// rect too, by construction) either of the line's two real endpoints.
+    /// Lines are drawn at document-root level, never DOM-nested inside a
+    /// component `<g>`, so ancestry can't do this job the way it does for
+    /// interior text — only geometry can. Every intermediate segment of a
+    /// multi-point (routed) path is still checked against the interior of
+    /// every box this exclusion doesn't cover.
+    fn check_line_item(
+        points: &[(f64, f64)],
+        boxes: &[(roxmltree::Node, Rectf)],
+        fixture: &str,
+        label: &str,
+        what: &str,
+        violations: &mut Vec<String>,
+    ) {
+        let (p_first, p_last) = (points[0], points[points.len() - 1]);
+        for (g, box_rect) in boxes {
+            if box_contains_point(*box_rect, p_first, 1.0) || box_contains_point(*box_rect, p_last, 1.0)
+            {
+                continue;
+            }
+            for seg in points.windows(2) {
+                if segment_crosses_interior(seg[0], seg[1], *box_rect, 2.0) {
+                    violations.push(format!(
+                        "{fixture} ({label}): {what} {points:?} crosses {:?}'s box {box_rect:?}",
+                        g.attribute("data-name")
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+
+    fn check_fixture(fixture: &str, label: &str, svg: &str, style: &str, violations: &mut Vec<String>) {
+        let xml = roxmltree::Document::parse(svg).unwrap();
+        let boxes = all_component_boxes(&xml);
+
+        for node in xml.descendants().filter(|n| n.is_element()) {
+            if node.ancestors().any(|a| a.tag_name().name() == "defs") {
+                continue; // the arrowhead marker glyph, not real canvas geometry
+            }
+            match (node.tag_name().name(), node.attribute("class")) {
+                ("text", _) => {
+                    let (bbox, anchor) = text_bbox(node, style);
+                    check_point_item(anchor, bbox, &boxes, fixture, label, "text label", violations);
+                }
+                (_, Some("any-node")) => {
+                    let circle = node.children().find(|c| c.tag_name().name() == "circle");
+                    if let Some(circle) = circle {
+                        let cx: f64 = circle.attribute("cx").unwrap().parse().unwrap();
+                        let cy: f64 = circle.attribute("cy").unwrap().parse().unwrap();
+                        let r: f64 = circle.attribute("r").unwrap().parse().unwrap();
+                        check_point_item(
+                            (cx, cy),
+                            (cx - r, cy - r, r * 2.0, r * 2.0),
+                            &boxes,
+                            fixture,
+                            label,
+                            "wildcard node",
+                            violations,
+                        );
+                    }
+                }
+                ("line", Some("deny-bar")) => {
+                    let x1: f64 = node.attribute("x1").unwrap().parse().unwrap();
+                    let y1: f64 = node.attribute("y1").unwrap().parse().unwrap();
+                    let x2: f64 = node.attribute("x2").unwrap().parse().unwrap();
+                    let y2: f64 = node.attribute("y2").unwrap().parse().unwrap();
+                    check_line_item(
+                        &[(x1, y1), (x2, y2)],
+                        &boxes,
+                        fixture,
+                        label,
+                        "deny bar",
+                        violations,
+                    );
+                }
+                ("path", Some(class))
+                    if matches!(
+                        class,
+                        "edge-line" | "edge-line-finding" | "deny-line" | "deny-line-finding"
+                    ) =>
+                {
+                    let points = parse_path_points(node.attribute("d").unwrap());
+                    check_line_item(&points, &boxes, fixture, label, "edge/deny line", violations);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn no_drawn_element_intersects_a_box_it_is_not_inside() {
+        let style = format!("{}{}", ply_render::svg::STYLE, ply_render::svg::FINDING_STYLE);
+        let mut violations: Vec<String> = Vec::new();
+        for fixture in [
+            "../../vetting/001-spsc-disruptor.ply.yaml",
+            "../../vetting/002-ingest-pipeline.ply.yaml",
+            "../../vetting/003-trading-system.ply.yaml",
+            "tests/fixtures/full.ply.yaml",
+            "tests/fixtures/hollow.ply.yaml",
+            "tests/fixtures/qualified_refs.ply.yaml",
+            // ambiguous_ref.ply.yaml is designed to be a render *error*
+            // (§5.1a rule 6), so it has no output to check — same
+            // exclusion `declared_ceiling` makes, for the same reason.
+        ] {
+            let yaml = std::fs::read_to_string(fixture).unwrap();
+            let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+
+            let default_svg = render_svg(&doc).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            check_fixture(fixture, "default", &default_svg, &style, &mut violations);
+
+            let depth1_svg = render_svg_with_options(
+                &doc,
+                &RenderOptions {
+                    depth: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("{fixture} --depth 1: {e}"));
+            check_fixture(fixture, "--depth 1", &depth1_svg, &style, &mut violations);
+        }
+        assert!(
+            violations.is_empty(),
+            "drawn elements intersecting boxes they are not inside:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    /// Vetting 003 finding 3: deny rules must not draw their
+    /// lines/bars/labels/wildcard-nodes on top of *each other's* — checked
+    /// as a pairwise bounding-box comparison across every pair of
+    /// different deny rules' geometry (a rule's own bar crossing its own
+    /// line is by design, so only cross-rule pairs count).
+    #[test]
+    fn deny_geometry_never_overlaps_another_deny_rules_geometry() {
+        let mut violations: Vec<String> = Vec::new();
+        // Only fixtures that actually declare more than zero deny rules;
+        // 001-spsc-disruptor, hollow, and qualified_refs declare none.
+        for fixture in [
+            "../../vetting/002-ingest-pipeline.ply.yaml",
+            "../../vetting/003-trading-system.ply.yaml",
+            "tests/fixtures/full.ply.yaml",
+        ] {
+            let svg = render_fixture(fixture);
+            let xml = roxmltree::Document::parse(&svg).unwrap();
+            let style = format!("{}{}", ply_render::svg::STYLE, ply_render::svg::FINDING_STYLE);
+
+            // Groups in document order: 0-2 sibling `any-node` <g>s
+            // immediately followed by the one `deny-rule` <g> they belong
+            // to — exactly how `render_deny` emits them, one deny rule at
+            // a time. Anything else at the root is irrelevant here.
+            #[allow(clippy::type_complexity)]
+            let mut groups: Vec<(Vec<Rectf>, Vec<((f64, f64), (f64, f64))>)> = Vec::new();
+            let mut pending: Vec<Rectf> = Vec::new();
+            for child in xml.root_element().children().filter(|n| n.is_element()) {
+                match child.attribute("class") {
+                    Some("any-node") => {
+                        let circle = child
+                            .children()
+                            .find(|c| c.tag_name().name() == "circle")
+                            .unwrap();
+                        let cx: f64 = circle.attribute("cx").unwrap().parse().unwrap();
+                        let cy: f64 = circle.attribute("cy").unwrap().parse().unwrap();
+                        let r: f64 = circle.attribute("r").unwrap().parse().unwrap();
+                        pending.push((cx - r, cy - r, r * 2.0, r * 2.0));
+                    }
+                    Some("deny-rule") => {
+                        let mut items = std::mem::take(&mut pending);
+                        let mut segs: Vec<((f64, f64), (f64, f64))> = Vec::new();
+                        for c in child.children() {
+                            match (c.tag_name().name(), c.attribute("class")) {
+                                ("path", Some("deny-line" | "deny-line-finding")) => {
+                                    // One bbox per straight segment, not one
+                                    // spanning the whole (possibly routed,
+                                    // multi-point) path — a detour that
+                                    // steps around an unrelated box legally
+                                    // sweeps through a lot of open canvas
+                                    // that a whole-path bbox would count as
+                                    // this rule's "geometry" even where
+                                    // nothing is actually drawn.
+                                    let points = parse_path_points(c.attribute("d").unwrap());
+                                    for seg in points.windows(2) {
+                                        segs.push((seg[0], seg[1]));
+                                    }
+                                }
+                                ("line", Some("deny-bar")) => {
+                                    let x1: f64 = c.attribute("x1").unwrap().parse().unwrap();
+                                    let y1: f64 = c.attribute("y1").unwrap().parse().unwrap();
+                                    let x2: f64 = c.attribute("x2").unwrap().parse().unwrap();
+                                    let y2: f64 = c.attribute("y2").unwrap().parse().unwrap();
+                                    items.push(line_bbox(&[(x1, y1), (x2, y2)], 2.0));
+                                }
+                                ("text", Some("deny-except")) => {
+                                    items.push(text_bbox(c, &style).0);
+                                }
+                                _ => {}
+                            }
+                        }
+                        groups.push((items, segs));
+                    }
+                    _ => {}
+                }
+            }
+            assert!(!groups.is_empty(), "{fixture}: no deny rules found to check");
+
+            for i in 0..groups.len() {
+                for j in (i + 1)..groups.len() {
+                    for a in &groups[i].0 {
+                        for b in &groups[j].0 {
+                            if rects_overlap(*a, *b, 0.5) {
+                                violations.push(format!(
+                                    "{fixture}: deny rule #{i}'s geometry {a:?} overlaps deny \
+                                     rule #{j}'s geometry {b:?}"
+                                ));
+                            }
+                        }
+                    }
+                    // Lines are compared by whether they actually cross, not
+                    // by bounding box: a diagonal segment's bbox is mostly
+                    // empty canvas, and two lines with overlapping bboxes
+                    // that never meet are perfectly readable.
+                    for a in &groups[i].1 {
+                        for b in &groups[j].1 {
+                            if segments_cross(*a, *b) {
+                                violations.push(format!(
+                                    "{fixture}: deny rule #{i}'s line {a:?} crosses deny \
+                                     rule #{j}'s line {b:?}"
+                                ));
+                            }
+                        }
+                    }
+                    // A line running *through* another rule's label or node
+                    // is a real collision, bbox is right for that.
+                    for (segs, boxes) in [(&groups[i].1, &groups[j].0), (&groups[j].1, &groups[i].0)]
+                    {
+                        for seg in segs {
+                            for b in boxes {
+                                if rects_overlap(line_bbox(&[seg.0, seg.1], 2.0), *b, 0.5)
+                                    && segment_hits_rect(*seg, *b)
+                                {
+                                    violations.push(format!(
+                                        "{fixture}: a deny line {seg:?} runs through another \
+                                         deny rule's item {b:?}"
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "deny rules draw overlapping geometry:\n{}",
+            violations.join("\n")
         );
     }
 }

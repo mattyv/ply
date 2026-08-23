@@ -1070,12 +1070,13 @@ fn render_component_dispatch(
     ctx: &FindingCtx,
     level: usize,
     collapse: &CollapseCtx,
+    edges: &[String],
 ) -> ComponentBox {
     let is_hollow = comp.fns.is_empty() && comp.components.is_empty();
     if !is_hollow && collapse.should_collapse(qualified, level) {
         render_collapsed_component(name, qualified, comp, profiles, ctx)
     } else {
-        render_component(name, qualified, comp, profiles, ctx, level, collapse)
+        render_component(name, qualified, comp, profiles, ctx, level, collapse, edges)
     }
 }
 
@@ -1244,6 +1245,33 @@ fn render_collapsed_component(
     }
 }
 
+/// Edges between two of `comp`'s own *direct* children, written (per the
+/// grammar's scoping rule — vetting 003's "Scoping gap" observation) in
+/// full dotted form at the document's top level (`qualified.child_a ->
+/// qualified.child_b`). Anything else — a grandchild reference, a
+/// cross-container edge, an edge naming this component itself — is not
+/// this component's concern.
+fn internal_child_edges(qualified: &str, comp: &Component, edges: &[String]) -> Vec<(String, String)> {
+    let prefix = format!("{qualified}.");
+    let mut out = Vec::new();
+    for e in edges {
+        let Ok(edge) = parse_edge(e) else { continue };
+        let (Some(from_leaf), Some(to_leaf)) = (
+            edge.from.strip_prefix(&prefix),
+            edge.to.strip_prefix(&prefix),
+        ) else {
+            continue;
+        };
+        if from_leaf.contains('.') || to_leaf.contains('.') {
+            continue; // a grandchild, not a direct child of `comp`
+        }
+        if comp.components.contains_key(from_leaf) && comp.components.contains_key(to_leaf) {
+            out.push((from_leaf.to_string(), to_leaf.to_string()));
+        }
+    }
+    out
+}
+
 fn render_component(
     name: &str,
     qualified: &str,
@@ -1252,6 +1280,7 @@ fn render_component(
     ctx: &FindingCtx,
     level: usize,
     collapse: &CollapseCtx,
+    edges: &[String],
 ) -> ComponentBox {
     let findings = ctx.component_findings(qualified);
     // §7.1 "declared ceiling": the strongest verdict this component's own
@@ -1304,6 +1333,7 @@ fn render_component(
                     ctx,
                     level + 1,
                     collapse,
+                    edges,
                 ),
             )
         })
@@ -1315,6 +1345,24 @@ fn render_component(
         .map(|(fname, fc)| (fname.clone(), render_fn_chip(fname, fc, qualified, ctx)))
         .collect();
 
+    // §7.1 amendment (vetting 003 finding 1): when this component's own
+    // children call/flow to each other, lay them out the same ranked way
+    // the top-level graph is (see `layout.rs`) — same generous `RANKSEP`
+    // gap, so a flow-edge label between two stacked children has the same
+    // slack top-level labels already get, instead of colliding with
+    // whichever child sits `GAP` (12px) below. A container with no
+    // internal edges between its children keeps the original plain
+    // vertical stack — nothing changes for the (overwhelming) common case.
+    let internal_edges = internal_child_edges(qualified, comp, edges);
+    let child_layout = (children.len() >= 2 && !internal_edges.is_empty()).then(|| {
+        let names: Vec<String> = children.iter().map(|(n, _)| n.clone()).collect();
+        let sizes: IndexMap<String, (f64, f64)> = children
+            .iter()
+            .map(|(n, c)| (n.clone(), (c.width, c.height)))
+            .collect();
+        layout::layered_layout(&names, &internal_edges, &sizes, RANKSEP, NODESEP)
+    });
+
     let content_w = [
         name_w,
         anchor_w,
@@ -1324,7 +1372,10 @@ fn render_component(
     ]
     .into_iter()
     .fold(0.0_f64, f64::max)
-    .max(children.iter().map(|(_, c)| c.width).fold(0.0, f64::max))
+    .max(match &child_layout {
+        Some(l) => l.content_w,
+        None => children.iter().map(|(_, c)| c.width).fold(0.0, f64::max),
+    })
     .max(chips.iter().map(|(_, c)| c.width).fold(0.0, f64::max));
 
     let box_w = content_w + PAD * 2.0;
@@ -1370,29 +1421,61 @@ fn render_component(
         y += badge_row_h;
     }
 
-    for (cname, cbox) in children {
-        body.push_str(&wrap_translate(&cbox.svg, PAD, y));
-        positions.push((
-            cname.clone(),
-            Rect {
-                x: PAD,
-                y,
-                w: cbox.width,
-                h: cbox.height,
-            },
-        ));
-        for (n, r) in cbox.positions {
-            positions.push((
-                n,
-                Rect {
-                    x: PAD + r.x,
-                    y: y + r.y,
-                    w: r.w,
-                    h: r.h,
-                },
-            ));
+    match &child_layout {
+        Some(layered) => {
+            for (cname, cbox) in &children {
+                let (rel_x, rel_y) = layered.positions[cname];
+                let (cx, cy) = (PAD + rel_x, y + rel_y);
+                body.push_str(&wrap_translate(&cbox.svg, cx, cy));
+                positions.push((
+                    cname.clone(),
+                    Rect {
+                        x: cx,
+                        y: cy,
+                        w: cbox.width,
+                        h: cbox.height,
+                    },
+                ));
+                for (n, r) in &cbox.positions {
+                    positions.push((
+                        n.clone(),
+                        Rect {
+                            x: cx + r.x,
+                            y: cy + r.y,
+                            w: r.w,
+                            h: r.h,
+                        },
+                    ));
+                }
+            }
+            y += layered.content_h + GAP;
         }
-        y += cbox.height + GAP;
+        None => {
+            for (cname, cbox) in children {
+                body.push_str(&wrap_translate(&cbox.svg, PAD, y));
+                positions.push((
+                    cname.clone(),
+                    Rect {
+                        x: PAD,
+                        y,
+                        w: cbox.width,
+                        h: cbox.height,
+                    },
+                ));
+                for (n, r) in cbox.positions {
+                    positions.push((
+                        n,
+                        Rect {
+                            x: PAD + r.x,
+                            y: y + r.y,
+                            w: r.w,
+                            h: r.h,
+                        },
+                    ));
+                }
+                y += cbox.height + GAP;
+            }
+        }
     }
 
     // fn claims are not edge/deny endpoints, so unlike nested components,
@@ -1549,6 +1632,19 @@ fn lane_offset(idx: usize, total: usize, gap: f64) -> f64 {
     (idx as f64 - (total as f64 - 1.0) / 2.0) * gap
 }
 
+/// Worst-case (middle-anchored, `NAME_CHAR_W`-wide) bounding box for a
+/// flow-edge label centered at `pos`, checked against every real component
+/// box for overlap — used to pick whichever side of the line a label's
+/// perpendicular push actually lands clear on.
+fn label_clashes_with_any_box(pos: (f64, f64), text: &str, positions: &IndexMap<String, Rect>) -> bool {
+    let half_w = text_w(text, NAME_CHAR_W) / 2.0;
+    let (lx0, lx1) = (pos.0 - half_w, pos.0 + half_w);
+    let (ly0, ly1) = (pos.1 - 11.0, pos.1 + 3.0);
+    positions
+        .values()
+        .any(|r| lx0 < r.x + r.w && lx1 > r.x && ly0 < r.y + r.h && ly1 > r.y)
+}
+
 /// The stable entry point every existing caller uses: fully expanded,
 /// unchanged since before The-Ply-Spec.md §7.1's collapse/expand feature
 /// existed. A thin wrapper over [`render_svg_with_options`] with the default
@@ -1599,7 +1695,7 @@ pub fn render_svg_with_options(
         .map(|(name, c)| {
             (
                 name.clone(),
-                render_component_dispatch(name, name, c, &doc.profiles, &ctx, 1, &collapse),
+                render_component_dispatch(name, name, c, &doc.profiles, &ctx, 1, &collapse, &doc.edges),
             )
         })
         .collect();
@@ -1675,10 +1771,17 @@ pub fn render_svg_with_options(
     let mut extra_left = 0.0_f64;
     let mut extra_right = 0.0_f64;
     for (_, d) in &parsed_denies {
+        // Reserved with the *worst-case* character width (`NAME_CHAR_W`,
+        // the widest this renderer uses), not the narrower width the label
+        // is actually drawn at (`SUB_CHAR_W`) — the same over-provisioning
+        // `everything_renders_inside_the_canvas` already assumes when
+        // checking the canvas boundary. Reserving exactly the drawn width
+        // left zero clearance between the label and the first real box
+        // (vetting 003 finding 4's "same clearance family").
         let label_w = if d.except.is_empty() {
             0.0
         } else {
-            text_w(&format!("except {}", d.except.join(", ")), SUB_CHAR_W)
+            text_w(&format!("except {}", d.except.join(", ")), NAME_CHAR_W)
         };
         let needed = ANY_R * 2.0 + ANY_GAP * 2.0 + label_w;
         if d.from == "*" {
@@ -1912,9 +2015,31 @@ pub fn render_svg_with_options(
         let label_pos = if let EdgeKind::Flow(ty_label) = &re.edge.kind {
             let bx = fx + (tx - fx) * LABEL_T;
             let by = fy + (ty - fy) * LABEL_T;
-            let clear = LABEL_SIDE_GAP + text_w(ty_label, SUB_CHAR_W) / 2.0;
-            let push = if lane < 0.0 { -clear } else { clear };
-            (bx + px * push, by + py * push)
+            // Reserved with the worst-case character width (`NAME_CHAR_W`),
+            // not the narrower width the label is actually drawn at
+            // (`SUB_CHAR_W`) — same reasoning as the deny-except margin fix
+            // above: a push sized from the exact drawn width leaves zero
+            // real clearance.
+            let clear = LABEL_SIDE_GAP + text_w(ty_label, NAME_CHAR_W) / 2.0;
+            let sign = if lane < 0.0 { -1.0 } else { 1.0 };
+            let at = |mult: f64, s: f64| (bx + px * clear * mult * s, by + py * clear * mult * s);
+            // The perpendicular push that clears the *line* can still land
+            // the label on top of an unrelated box that happens to sit on
+            // that side (vetting 003's "same clearance family" as finding
+            // 1 — this time between two top-level ranks rather than inside
+            // a container, and between a short line and a short collapsed
+            // box rather than a tall one). Escalate: try the natural side
+            // first, then the mirrored side, at growing multiples of the
+            // base clearance, and take the first that lands clear of
+            // every real box; if none do within the budget, keep the
+            // original (lane-consistent, unscaled) placement rather than
+            // drifting arbitrarily far.
+            [1.0, 1.5, 2.0, 2.5, 3.0]
+                .into_iter()
+                .flat_map(|mult| [(mult, sign), (mult, -sign)])
+                .map(|(mult, s)| at(mult, s))
+                .find(|&pos| !label_clashes_with_any_box(pos, ty_label, &positions))
+                .unwrap_or_else(|| at(1.0, sign))
         } else {
             (0.0, 0.0) // unused: EdgeKind::Call never renders a label
         };
@@ -1940,8 +2065,45 @@ pub fn render_svg_with_options(
         any_x_from,
         any_x_to,
     };
-    for (i, (orig_index, d)) in parsed_denies.iter().enumerate() {
-        render_deny(i, *orig_index, d, &deny_layout, &ctx, &mut deny_svg)?;
+    // Every wildcard any-node placed so far, one list per margin column
+    // (finding 3: two rules anchoring `*` in the same column must not land
+    // at the same, or too close a, y — `place_clear` pushes a conflicting
+    // one down until it clears every prior node in its own column).
+    let mut any_y_from: Vec<f64> = Vec::new();
+    let mut any_y_to: Vec<f64> = Vec::new();
+    // §7.1 channel discipline: two deny lines that cross are unreadable.
+    // A wildcard node's height is assigned in the order of the target it
+    // points at (monotone), so the fan of deny lines never self-intersects
+    // — then stacked apart where targets are too close together.
+    let deny_order: Vec<usize> = {
+        let mut keyed: Vec<(usize, f64)> = parsed_denies
+            .iter()
+            .enumerate()
+            .map(|(i, (_, d))| {
+                let other = if d.from == "*" { &d.to } else { &d.from };
+                let y = resolve(other, deny_layout.positions, deny_layout.leaf_index)
+                    .ok()
+                    .flatten()
+                    .map(|(_, r)| r.cy())
+                    .unwrap_or(f64::MAX);
+                (i, y)
+            })
+            .collect();
+        keyed.sort_by(|a, b| a.1.total_cmp(&b.1));
+        keyed.into_iter().map(|(i, _)| i).collect()
+    };
+    for i in deny_order {
+        let (orig_index, d) = &parsed_denies[i];
+        render_deny(
+            i,
+            *orig_index,
+            d,
+            &deny_layout,
+            &ctx,
+            &mut any_y_from,
+            &mut any_y_to,
+            &mut deny_svg,
+        )?;
     }
 
     // §7.1: "a finding with no drawable item attaches a red count next to
@@ -2087,6 +2249,127 @@ struct DenyLayout<'a> {
     any_x_to: f64,
 }
 
+/// How far apart two wildcard any-nodes anchored in the *same* margin
+/// column must be kept — vetting 003 finding 3: two unrelated deny rules
+/// both naming `*` on the same side landed on the same spot otherwise.
+/// Wide enough that the nodes (radius `ANY_R`) plus a real gap never touch.
+const DENY_LANE_GAP: f64 = ANY_R * 2.0 + ANY_GAP;
+
+/// Pushes `natural` down (repeatedly, by `min_gap`) until it is at least
+/// `min_gap` away from every y already in `occupied`, then records it there
+/// — a simple, deterministic (declaration-order) way to stack same-column
+/// wildcard nodes with clear vertical gaps instead of letting them land on
+/// top of each other.
+fn place_clear(natural: f64, occupied: &mut Vec<f64>, min_gap: f64) -> f64 {
+    let mut y = natural;
+    // Jump just past whichever already-placed y is closest to conflicting,
+    // rather than a fixed `min_gap` stride — striding past one conflict can
+    // still land inside another that was less than `min_gap` beyond it
+    // (two rules `min_gap - 1` apart would otherwise need two strides to
+    // clear the first), so keep resolving conflicts until none remain.
+    loop {
+        match occupied.iter().find(|&&o| (o - y).abs() < min_gap) {
+            Some(&o) => y = o + min_gap,
+            None => break,
+        }
+    }
+    occupied.push(y);
+    y
+}
+
+/// A straight line unless it would cut through a top-level box neither of
+/// its ends is attached to (vetting 003 finding 3: `* -> gateway` sits in
+/// the same row as `risk`, so a direct line from the far margin to
+/// `gateway` would pass straight through `risk`'s box). When it would, the
+/// path steps around every such box instead: over to just outside its
+/// combined x-span, up (or down, whichever is the shorter detour) clear of
+/// its combined y-span, across, then straight on to `to` — still a
+/// straight run before and after the detour, since nothing else occupies
+/// that space (every box in the original line's path is already folded
+/// into the one detour).
+fn route_deny_line(
+    from: (f64, f64),
+    to: (f64, f64),
+    exclude: &[Rect],
+    top_level_positions: &IndexMap<String, Rect>,
+) -> Vec<(f64, f64)> {
+    const CLEARANCE: f64 = 12.0;
+    let (x0, x1) = (from.0.min(to.0), from.0.max(to.0));
+    let (y0, y1) = (from.1.min(to.1), from.1.max(to.1));
+    let mut obstructions: Vec<Rect> = top_level_positions
+        .values()
+        .copied()
+        .filter(|r| {
+            !exclude.contains(r)
+                && r.x < x1 - 1.0
+                && r.x + r.w > x0 + 1.0
+                && r.y < y1 + 1.0
+                && r.y + r.h > y0 - 1.0
+        })
+        .collect();
+    if obstructions.is_empty() {
+        return vec![from, to];
+    }
+    obstructions.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap());
+    let span_x0 = obstructions
+        .iter()
+        .map(|r| r.x)
+        .fold(f64::INFINITY, f64::min)
+        - CLEARANCE;
+    let span_x1 = obstructions
+        .iter()
+        .map(|r| r.x + r.w)
+        .fold(f64::NEG_INFINITY, f64::max)
+        + CLEARANCE;
+    let top = obstructions
+        .iter()
+        .map(|r| r.y)
+        .fold(f64::INFINITY, f64::min)
+        - CLEARANCE;
+    let bottom = obstructions
+        .iter()
+        .map(|r| r.y + r.h)
+        .fold(f64::NEG_INFINITY, f64::max)
+        + CLEARANCE;
+    let mid_y = (from.1 + to.1) / 2.0;
+    let rail_y = if (mid_y - top).abs() <= (bottom - mid_y).abs() {
+        top
+    } else {
+        bottom
+    };
+    let (enter_x, exit_x) = if from.0 <= to.0 {
+        (span_x0, span_x1)
+    } else {
+        (span_x1, span_x0)
+    };
+    // Rise to the rail at `from`'s own y first, rather than cutting
+    // diagonally there directly — `from` is usually a wildcard any-node
+    // sharing its whole margin column with every *other* wildcard deny's
+    // any-node/line/label (each at a different y via `place_clear`), and a
+    // diagonal straight to the rail sweeps across that entire column,
+    // right through neighbors a plain box-obstruction check never sees. A
+    // horizontal run at the original y, stopping at `enter_x` (already
+    // clear of every real box — the whole reason `enter_x` exists), avoids
+    // that column before rising.
+    vec![from, (enter_x, from.1), (enter_x, rail_y), (exit_x, rail_y), to]
+}
+
+/// The longest straight segment of a (possibly routed) path — where the
+/// deny bar's "denied" tick is drawn, so it always lands on open canvas
+/// rather than risking a short, obstruction-hugging segment right at
+/// either end. For an unrouted 2-point line this is just that line, so the
+/// bar's position is unchanged from before routing existed.
+fn longest_segment(points: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
+    points
+        .windows(2)
+        .map(|w| (w[0], w[1]))
+        .max_by(|a, b| {
+            let len = |p: (f64, f64), q: (f64, f64)| (q.0 - p.0).hypot(q.1 - p.1);
+            len(a.0, a.1).partial_cmp(&len(b.0, b.1)).unwrap()
+        })
+        .expect("a path always has at least one segment")
+}
+
 /// Renders one deny rule. §7.1 (amended): `*` has no shared identity, so a
 /// rule that names it draws its own pseudo-node, anchored near whichever
 /// side did resolve to a real component (or staggered by rule index, as a
@@ -2097,6 +2380,8 @@ fn render_deny(
     deny: &Deny,
     layout: &DenyLayout,
     ctx: &FindingCtx,
+    any_y_from: &mut Vec<f64>,
+    any_y_to: &mut Vec<f64>,
     out: &mut String,
 ) -> Result<(), RenderError> {
     let DenyLayout {
@@ -2126,7 +2411,9 @@ fn render_deny(
     let mut any_nodes = String::new();
 
     let from_pt = if deny.from == "*" {
-        let p = (any_x_from, to_rect.map(|r| r.cy()).unwrap_or(fallback_y));
+        let natural = to_rect.map(|r| r.cy()).unwrap_or(fallback_y);
+        let y = place_clear(natural, any_y_from, DENY_LANE_GAP);
+        let p = (any_x_from, y);
         any_nodes.push_str(&any_node_svg(p.0, p.1));
         p
     } else {
@@ -2135,7 +2422,9 @@ fn render_deny(
     };
 
     let to_pt = if deny.to == "*" {
-        let p = (any_x_to, from_rect.map(|r| r.cy()).unwrap_or(fallback_y));
+        let natural = from_rect.map(|r| r.cy()).unwrap_or(fallback_y);
+        let y = place_clear(natural, any_y_to, DENY_LANE_GAP);
+        let p = (any_x_to, y);
         any_nodes.push_str(&any_node_svg(p.0, p.1));
         p
     } else {
@@ -2151,10 +2440,28 @@ fn render_deny(
     let (fx, fy) = from_rect.map_or(from_pt, |r| r.border_toward(to_pt));
     let (tx, ty) = to_rect.map_or(to_pt, |r| r.border_toward(from_pt));
 
-    let mx = (fx + tx) / 2.0;
-    let my = (fy + ty) / 2.0;
-    // Perpendicular bar across the line midpoint: the "denied" mark.
-    let (dx, dy) = (tx - fx, ty - fy);
+    // Only a wildcard-vs-real-component deny (exactly one resolved rect)
+    // can have an unrelated top-level box sitting between the far-margin
+    // any-node and its target — the only shape finding 3 needs routing
+    // for. A concrete-to-concrete deny keeps its original direct line.
+    let exclude: Vec<Rect> = [from_rect, to_rect].into_iter().flatten().collect();
+    let top_level_positions: IndexMap<String, Rect> = positions
+        .iter()
+        .filter(|(k, _)| !k.contains('.'))
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+    let route = if deny.from == "*" || deny.to == "*" {
+        route_deny_line((fx, fy), (tx, ty), &exclude, &top_level_positions)
+    } else {
+        vec![(fx, fy), (tx, ty)]
+    };
+
+    let (bar_a, bar_b) = longest_segment(&route);
+    let mx = (bar_a.0 + bar_b.0) / 2.0;
+    let my = (bar_a.1 + bar_b.1) / 2.0;
+    // Perpendicular bar across the longest segment's midpoint: the
+    // "denied" mark.
+    let (dx, dy) = (bar_b.0 - bar_a.0, bar_b.1 - bar_a.1);
     let len = (dx * dx + dy * dy).sqrt().max(1.0);
     let (px, py) = (-dy / len * 8.0, dx / len * 8.0);
 
@@ -2184,8 +2491,20 @@ fn render_deny(
     });
     let badge_svg = render_finding_badge(mx + 6.0, my - FINDING_BADGE_H - 10.0, &findings);
 
+    let path_d = route
+        .iter()
+        .enumerate()
+        .map(|(i, (x, y))| {
+            if i == 0 {
+                format!("M {x:.1} {y:.1}")
+            } else {
+                format!("L {x:.1} {y:.1}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     out.push_str(&format!(
-        "<g class=\"deny-rule\">{tip_html}<path class=\"{line_class}\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" /><line class=\"deny-bar\" x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" />{badge_svg}",
+        "<g class=\"deny-rule\">{tip_html}<path class=\"{line_class}\" d=\"{path_d}\" /><line class=\"deny-bar\" x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" />{badge_svg}",
         mx - px, my - py, mx + px, my + py,
         tip_html = title(&tip.join("\n"))
     ));
@@ -2196,10 +2515,22 @@ fn render_deny(
         // side (finding 3).
         let label = format!("except {}", deny.except.join(", "));
         let half_w = text_w(&label, SUB_CHAR_W) / 2.0;
+        // Clear of both the any-node circle (radius `ANY_R`) and the
+        // perpendicular deny-bar tick (which sits astride the line at
+        // roughly the same height as a wildcard endpoint whenever the line
+        // is near-horizontal — vetting 003 finding 4) rather than the
+        // previous fixed 6px, which put the label inside both.
+        const EXCEPT_LABEL_CLEARANCE: f64 = ANY_R + 10.0;
         let (lx, ly) = if deny.from == "*" {
-            (from_pt.0 + ANY_R + ANY_GAP + half_w, from_pt.1 - 6.0)
+            (
+                from_pt.0 + ANY_R + ANY_GAP + half_w,
+                from_pt.1 - EXCEPT_LABEL_CLEARANCE,
+            )
         } else if deny.to == "*" {
-            (to_pt.0 - ANY_R - ANY_GAP - half_w, to_pt.1 - 6.0)
+            (
+                to_pt.0 - ANY_R - ANY_GAP - half_w,
+                to_pt.1 - EXCEPT_LABEL_CLEARANCE,
+            )
         } else {
             (mx, my + 14.0)
         };
