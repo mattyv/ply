@@ -568,8 +568,9 @@ grammar.**
 | assumption chain | thin dotted arrows from a verdict to the contracts it assumed |
 | unresolved marker | numbered pin on the fn or component |
 | trusted claim | hollow shield badge on the node — attested by named evidence, not machine-checked |
-| contract clauses (`requires`/`ensures`) | a contract mark on the fn chip — a small solid square at the chip's left edge; the tooltip lists each clause verbatim. This draws the §7.2 watermark per function: marked = a promise stands at the mark; bare = signature only. (The renderer sees only YAML-declared clauses; inline attributes join when `cargo ply` emits the §8 envelope.) |
+| contract clauses (`requires`/`ensures`) | a contract mark on the fn chip — a solid ink bar the full height of the chip's left edge (a gutter mark: "this row carries something binding"); the tooltip lists each clause verbatim. This draws the §7.2 watermark per function: marked = a promise stands at the mark; bare = signature only. (The renderer sees only YAML-declared clauses; inline attributes join when `cargo ply` emits the §8 envelope.) |
 | declared ceiling | component fill, low-saturation, on the verdict ordinal scale: the strongest verdict the component's declared checks *could* earn — per fn the strongest check kind (`test`→tested … `prove`→proved; `mutate` strengthens, never lifts; no checks = unclaimed, unfilled), folded worst-of by the kernel's container rule. A ceiling is a promise, not proof: it never uses the full-saturation fill reserved for earned verdicts, and its tooltip says none of it has run |
+| hollow component (derived, like findings) | a component that declares nothing inside — no fns, no nested components — draws with a dashed border: a sketch outline, nothing to zoom into yet. Tooltip says so plainly. Derived from absence rather than declared; the natural state of every box in top-down authoring, expected to solidify as claims arrive |
 | finding (tool-computed, not declared) | the offending item drawn in error red with an `E####` badge; its tooltip leads with the diagnostic. A finding with no drawable item attaches a red count to the workspace title. A document with findings still renders — a picture that refuses to draw hides the problem it should be showing (origin: fault-injection demo, where a faulted toolchain drew `bounded(0)` as legitimate evidence) |
 
 Zooming is collapse/expand over the §7 tree and mirrors `tree --depth`/`--focus`. A
@@ -579,6 +580,22 @@ in `.archi/` is the working example of the style. One deliberate exception: a mi
 static renderer (`tools/render/`, `ply.yaml` → SVG, no GUI) exists to prove this mapping
 is total — every construct drawable, nothing undrawable admitted. It is a spec-validation
 tool, not the canvas.
+
+**Channel discipline (the instinct rule).** The diagram must be readable at a glance by
+someone who has learned nothing: every visual channel carries exactly one meaning, and
+each meaning borrows an instinct the viewer already has. Hue: red = forbidden or wrong;
+green = evidence; amber = a human's attention (owed, or vouched); ink = structure.
+Saturation: pastel = promised, saturated = earned. Border: dashed = hollow sketch,
+solid = specified, double = sealed pure. Edge dash: solid = may call, dashed = data
+flows, red-barred = must not. Small marks: solid square = a contract stands; numbered
+amber pin = decision owed; hollow shield = human-attested. A new visual form must draw
+from these channels consistently or claim an unused channel and name its single meaning
+here — reusing a channel for a second meaning is refused the way an undrawable
+construct is. The acceptance check is the **squint test**: blurred, the picture must
+still say where the system is weak (pale), wrong (red), unfinished (dashed), and
+waiting on a human (amber). A form whose meaning dies under squint is decoration, not
+grammar. Words live in tooltips and the frame tooltip; the canvas itself carries no
+legend.
 
 Gate debt: three constructs already in the grammar still have no assigned visual form —
 `strict`, `mode: synth`, and `examples`. They predate the gate; each needs a form or
