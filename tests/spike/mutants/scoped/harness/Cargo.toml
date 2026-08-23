@@ -1,0 +1,11 @@
+[package]
+name = "ply-spike-mutants-harness"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ply-spike-mutants-lib = { path = "../lib" }
+
+[dev-dependencies]
+proptest = "1"

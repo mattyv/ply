@@ -1,0 +1,16 @@
+[workspace]
+# Empty table: marks this crate as its own workspace root, same convention as
+# tests/spike/fixture/Cargo.toml, so it never joins tools/Cargo.toml's
+# workspace or any other ancestor workspace. Throwaway scaffolding for the
+# cargo-mutants spike (§10 M0, §5.4c), not part of the tools/ green suite.
+
+[package]
+name = "ply-spike-mutants-colocated"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"
