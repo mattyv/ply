@@ -1,0 +1,19 @@
+ply: 1
+components:
+  alpha:
+    anchor: app::alpha
+  beta:
+    anchor: app::beta
+  gamma:
+    anchor: app::gamma
+  delta:
+    anchor: app::delta
+
+deny:
+  - "* -> gamma"
+  - "* -> alpha"
+  - "* -> beta"
+  - "delta -> *"
+  - "alpha -> *"
+  - "* -> nowhere"
+  - "ghost -> *"

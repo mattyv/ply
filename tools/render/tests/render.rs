@@ -16,7 +16,7 @@ fn parse_path_points(d: &str) -> Vec<(f64, f64)> {
         .filter_map(|t| t.parse::<f64>().ok())
         .collect();
     assert!(
-        nums.len() >= 4 && nums.len() % 2 == 0,
+        nums.len() >= 4 && nums.len().is_multiple_of(2),
         "expected an M..L.. path with an even count of at least 4 numbers, got {d:?}"
     );
     nums.chunks(2).map(|c| (c[0], c[1])).collect()
@@ -145,17 +145,49 @@ fn on_boundary(px: f64, py: f64, (x, y, w, h): (f64, f64, f64, f64), tol: f64) -
 /// pre-layout renderer before the fix (see vetting/002-ingest-pipeline.md).
 mod layout_invariants {
     use super::*;
+    use ply_render::svg::{RenderOptions, render_svg_with_options};
 
     #[test]
     fn everything_renders_inside_the_canvas() {
-        for fixture in [
-            "../../vetting/002-ingest-pipeline.ply.yaml",
+        // Every fixture that renders, in its default form AND collapsed to
+        // depth 1 — the collapsed form draws the stack cue (a card edge
+        // offset +5,+5 behind the box), which is exactly the kind of
+        // overhang this invariant exists to catch at the canvas edge.
+        let fixtures = [
             "../../vetting/001-spsc-disruptor.ply.yaml",
+            "../../vetting/002-ingest-pipeline.ply.yaml",
+            "../../vetting/003-trading-system.ply.yaml",
             "tests/fixtures/full.ply.yaml",
+            "tests/fixtures/hollow.ply.yaml",
             "tests/fixtures/qualified_refs.ply.yaml",
-        ] {
-            let svg = render_fixture(fixture);
-            let doc = roxmltree::Document::parse(&svg).unwrap();
+            "tests/fixtures/deny_stress.ply.yaml",
+        ];
+        let variants: Vec<(String, String)> = fixtures
+            .iter()
+            .flat_map(|fixture| {
+                let yaml = std::fs::read_to_string(fixture).unwrap();
+                let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+                [
+                    (
+                        format!("{fixture} (default)"),
+                        render_svg(&doc).unwrap_or_else(|e| panic!("{fixture}: {e}")),
+                    ),
+                    (
+                        format!("{fixture} (--depth 1)"),
+                        render_svg_with_options(
+                            &doc,
+                            &RenderOptions {
+                                depth: Some(1),
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap_or_else(|e| panic!("{fixture} --depth 1: {e}")),
+                    ),
+                ]
+            })
+            .collect();
+        for (fixture, svg) in &variants {
+            let doc = roxmltree::Document::parse(svg).unwrap();
             let (w, h) = svg_dims(&doc);
 
             // Text elements have no computed bounding box in the SVG
@@ -184,6 +216,30 @@ mod layout_invariants {
 
             for node in doc.descendants().filter(|n| n.is_element()) {
                 let tag = node.tag_name().name();
+                // Coordinates in the SVG are local to their group: every
+                // ancestor `translate(x,y)` shifts them. Without summing
+                // those, anything nested inside a component <g> is checked
+                // at its local origin and the invariant is blind to it.
+                let (ox, oy) = {
+                    let (mut ox, mut oy) = (0.0f64, 0.0f64);
+                    let mut cur = node.parent();
+                    while let Some(n) = cur {
+                        if let Some(t) = n.attribute("transform")
+                            && let Some(inner) = t
+                                .strip_prefix("translate(")
+                                .and_then(|s| s.strip_suffix(")"))
+                        {
+                            let parts: Vec<f64> = inner
+                                .split(',')
+                                .map(|p| p.trim().parse().unwrap())
+                                .collect();
+                            ox += parts[0];
+                            oy += parts[1];
+                        }
+                        cur = n.parent();
+                    }
+                    (ox, oy)
+                };
                 let pts: Vec<(f64, f64)> = match tag {
                     "rect" => {
                         let x: f64 = node.attribute("x").unwrap_or("0").parse().unwrap();
@@ -226,6 +282,7 @@ mod layout_invariants {
                     _ => continue,
                 };
                 for (px, py) in pts {
+                    let (px, py) = (px + ox, py + oy);
                     assert!(
                         px >= -0.5 && px <= w + 0.5 && py >= -0.5 && py <= h + 0.5,
                         "{fixture}: <{tag}> point ({px},{py}) outside canvas {w}x{h}"
@@ -816,6 +873,7 @@ mod declared_ceiling {
     use super::*;
     use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
     use ply_render::model::{Check, Component, FnClaim, parse_check};
+    use ply_render::svg::{RenderOptions, render_svg_with_options};
     use std::collections::BTreeSet;
 
     /// The strongest check *kind* a fn declares (The-Ply-Spec.md §7.1: `test`
@@ -930,6 +988,34 @@ mod declared_ceiling {
                 expected_classes, rendered,
                 "{fixture}: rendered ceiling-* classes (in document order) don't match the \
                  kernel-recomputed ceilings"
+            );
+
+            // Collapsed to depth 1, only the top-level boxes remain — and
+            // each must wear the ceiling the kernel computes for its FULL
+            // subtree (a collapsed box folds its contents, not its
+            // verdict). `rendered_ceiling_classes` reads one class per
+            // drawn component box, so the expectation is simply the
+            // top-level components' subtree ceilings, in document order.
+            let depth1_svg = render_svg_with_options(
+                &doc,
+                &RenderOptions {
+                    depth: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("{fixture} --depth 1: {e}"));
+            let expected_depth1: Vec<String> = doc
+                .components
+                .values()
+                .map(|c| {
+                    ply_render::svg::ceiling_class(aggregate(&verdict_node(c)).evidence).to_string()
+                })
+                .collect();
+            assert_eq!(
+                expected_depth1,
+                rendered_ceiling_classes(&depth1_svg),
+                "{fixture} --depth 1: collapsed boxes' fills don't match the kernel's \
+                 subtree ceilings"
             );
         }
     }
@@ -1912,12 +1998,10 @@ mod no_overlap {
                         violations,
                     );
                 }
-                ("path", Some(class))
-                    if matches!(
-                        class,
-                        "edge-line" | "edge-line-finding" | "deny-line" | "deny-line-finding"
-                    ) =>
-                {
+                (
+                    "path",
+                    Some("edge-line" | "edge-line-finding" | "deny-line" | "deny-line-finding"),
+                ) => {
                     let points = parse_path_points(node.attribute("d").unwrap());
                     check_line_item(
                         &points,
@@ -1972,6 +2056,121 @@ mod no_overlap {
             violations.is_empty(),
             "drawn elements intersecting boxes they are not inside:\n{}",
             violations.join("\n")
+        );
+    }
+
+    /// Stress for the wildcard-node stacking and ordering rules: several
+    /// `*` denies whose resolved endpoints share one row (equal centre-y,
+    /// the case the "monotone in target y" ordering cannot separate), both
+    /// margin columns in use at once, and denies naming components that do
+    /// not exist (which must draw nothing rather than panic or scribble).
+    /// Asserts: every wildcard node inside the canvas (RED before the
+    /// canvas learned to grow under a tall node stack), nodes pairwise
+    /// clear of each other, and no two same-column rules' lines crossing.
+    ///
+    /// KNOWN GAP (found by this fixture, deliberately not asserted yet):
+    /// a left-column rule's line can still cross a *right*-column rule's
+    /// routed detour — `* -> beta` vs `alpha -> *` here — because the two
+    /// margin columns assign their node heights independently and a detour
+    /// picks its side with no knowledge of the other column's lines. §7.1
+    /// channel discipline only promises each fan is crossing-free today.
+    /// One wildcard node's drawn circle: (cx, cy, r).
+    type Circle = (f64, f64, f64);
+    /// One straight piece of a deny line's (possibly routed) path.
+    type Seg = ((f64, f64), (f64, f64));
+
+    #[test]
+    fn stacked_wildcard_denies_never_cross_each_other() {
+        let svg = render_fixture("tests/fixtures/deny_stress.ply.yaml");
+        let xml = roxmltree::Document::parse(&svg).unwrap();
+        let (w, h) = svg_dims(&xml);
+
+        // Rules in document order, each with its wildcard node(s) and its
+        // line segments — `render_deny` emits 1-2 sibling `any-node` <g>s
+        // immediately before their `deny-rule` <g>.
+        let mut rules: Vec<(Vec<Circle>, Vec<Seg>)> = Vec::new();
+        let mut pending: Vec<Circle> = Vec::new();
+        for child in xml.root_element().children().filter(|n| n.is_element()) {
+            match child.attribute("class") {
+                Some("any-node") => {
+                    let c = child
+                        .children()
+                        .find(|c| c.tag_name().name() == "circle")
+                        .unwrap();
+                    pending.push((
+                        c.attribute("cx").unwrap().parse().unwrap(),
+                        c.attribute("cy").unwrap().parse().unwrap(),
+                        c.attribute("r").unwrap().parse().unwrap(),
+                    ));
+                }
+                Some("deny-rule") => {
+                    let segs = child
+                        .children()
+                        .filter(|c| {
+                            matches!(
+                                c.attribute("class"),
+                                Some("deny-line" | "deny-line-finding")
+                            )
+                        })
+                        .flat_map(|c| {
+                            let pts = parse_path_points(c.attribute("d").unwrap());
+                            pts.windows(2).map(|s| (s[0], s[1])).collect::<Vec<_>>()
+                        })
+                        .collect();
+                    rules.push((std::mem::take(&mut pending), segs));
+                }
+                _ => {}
+            }
+        }
+        // 5 drawable wildcard rules — the two naming unknown components
+        // (`* -> nowhere`, `ghost -> *`) draw nothing: no node, no line.
+        assert_eq!(rules.len(), 5, "one deny-rule group per drawable rule");
+
+        let nodes: Vec<Circle> = rules.iter().flat_map(|(n, _)| n.iter().copied()).collect();
+        assert_eq!(nodes.len(), 5, "one any-node per drawable wildcard rule");
+        for (cx, cy, r) in &nodes {
+            assert!(
+                cx - r >= 0.0 && cx + r <= w && cy - r >= 0.0 && cy + r <= h,
+                "any-node at ({cx},{cy}) r={r} clips the {w}x{h} canvas"
+            );
+        }
+        for i in 0..nodes.len() {
+            for j in (i + 1)..nodes.len() {
+                let (ax, ay, ar) = nodes[i];
+                let (bx, by, br) = nodes[j];
+                let d2 = (ax - bx).powi(2) + (ay - by).powi(2);
+                assert!(
+                    d2.sqrt() >= ar + br,
+                    "any-nodes at ({ax},{ay}) and ({bx},{by}) overlap"
+                );
+            }
+        }
+
+        // Same-column fan discipline: rules whose wildcard node sits in the
+        // same margin column must never cross each other's lines.
+        let column =
+            |rule: &(Vec<Circle>, Vec<Seg>)| rule.0.first().map(|(cx, _, _)| *cx < w / 2.0);
+        let mut crossings = Vec::new();
+        for i in 0..rules.len() {
+            for j in (i + 1)..rules.len() {
+                if column(&rules[i]) != column(&rules[j]) {
+                    continue; // cross-column: the KNOWN GAP above
+                }
+                for a in &rules[i].1 {
+                    for b in &rules[j].1 {
+                        if segments_cross(*a, *b) {
+                            crossings.push(format!(
+                                "deny rule #{i} segment {a:?} crosses rule #{j} segment {b:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            crossings.is_empty(),
+            "same-column deny lines cross each other:\n{}",
+            crossings.join("\n")
         );
     }
 

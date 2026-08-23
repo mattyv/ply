@@ -1061,6 +1061,16 @@ struct ComponentBox {
     positions: Vec<(String, Rect)>,
 }
 
+/// Everything the recursive component walk threads unchanged through every
+/// level: capability profiles, the findings lookup, the collapse decisions,
+/// and the document's edge list (consulted for a box's internal layout).
+struct WalkCtx<'a> {
+    profiles: &'a IndexMap<String, Vec<String>>,
+    findings: &'a FindingCtx<'a>,
+    collapse: &'a CollapseCtx<'a>,
+    edges: &'a [String],
+}
+
 /// Picks between the two component renderers for one box: collapsed
 /// (§7.1's "one solid-bordered box ... folded") if `collapse` says so and
 /// there is actually something to fold, expanded (`render_component`)
@@ -1072,17 +1082,14 @@ fn render_component_dispatch(
     name: &str,
     qualified: &str,
     comp: &Component,
-    profiles: &IndexMap<String, Vec<String>>,
-    ctx: &FindingCtx,
+    walk: &WalkCtx,
     level: usize,
-    collapse: &CollapseCtx,
-    edges: &[String],
 ) -> ComponentBox {
     let is_hollow = comp.fns.is_empty() && comp.components.is_empty();
-    if !is_hollow && collapse.should_collapse(qualified, level) {
-        render_collapsed_component(name, qualified, comp, profiles, ctx)
+    if !is_hollow && walk.collapse.should_collapse(qualified, level) {
+        render_collapsed_component(name, qualified, comp, walk.profiles, walk.findings)
     } else {
-        render_component(name, qualified, comp, profiles, ctx, level, collapse, edges)
+        render_component(name, qualified, comp, walk, level)
     }
 }
 
@@ -1258,7 +1265,11 @@ fn render_collapsed_component(
 /// qualified.child_b`). Anything else — a grandchild reference, a
 /// cross-container edge, an edge naming this component itself — is not
 /// this component's concern.
-fn internal_child_edges(qualified: &str, comp: &Component, edges: &[String]) -> Vec<(String, String)> {
+fn internal_child_edges(
+    qualified: &str,
+    comp: &Component,
+    edges: &[String],
+) -> Vec<(String, String)> {
     let prefix = format!("{qualified}.");
     let mut out = Vec::new();
     for e in edges {
@@ -1283,12 +1294,15 @@ fn render_component(
     name: &str,
     qualified: &str,
     comp: &Component,
-    profiles: &IndexMap<String, Vec<String>>,
-    ctx: &FindingCtx,
+    walk: &WalkCtx,
     level: usize,
-    collapse: &CollapseCtx,
-    edges: &[String],
 ) -> ComponentBox {
+    let WalkCtx {
+        profiles,
+        findings: ctx,
+        edges,
+        ..
+    } = *walk;
     let findings = ctx.component_findings(qualified);
     // §7.1 "declared ceiling": the strongest verdict this component's own
     // declared checks could earn, folded worst-of over every fn in its
@@ -1332,16 +1346,7 @@ fn render_component(
             let child_qualified = format!("{qualified}.{cname}");
             (
                 cname.clone(),
-                render_component_dispatch(
-                    cname,
-                    &child_qualified,
-                    c,
-                    profiles,
-                    ctx,
-                    level + 1,
-                    collapse,
-                    edges,
-                ),
+                render_component_dispatch(cname, &child_qualified, c, walk, level + 1),
             )
         })
         .collect();
@@ -1643,7 +1648,11 @@ fn lane_offset(idx: usize, total: usize, gap: f64) -> f64 {
 /// flow-edge label centered at `pos`, checked against every real component
 /// box for overlap — used to pick whichever side of the line a label's
 /// perpendicular push actually lands clear on.
-fn label_clashes_with_any_box(pos: (f64, f64), text: &str, positions: &IndexMap<String, Rect>) -> bool {
+fn label_clashes_with_any_box(
+    pos: (f64, f64),
+    text: &str,
+    positions: &IndexMap<String, Rect>,
+) -> bool {
     let half_w = text_w(text, NAME_CHAR_W) / 2.0;
     let (lx0, lx1) = (pos.0 - half_w, pos.0 + half_w);
     let (ly0, ly1) = (pos.1 - 11.0, pos.1 + 3.0);
@@ -1702,7 +1711,18 @@ pub fn render_svg_with_options(
         .map(|(name, c)| {
             (
                 name.clone(),
-                render_component_dispatch(name, name, c, &doc.profiles, &ctx, 1, &collapse, &doc.edges),
+                render_component_dispatch(
+                    name,
+                    name,
+                    c,
+                    &WalkCtx {
+                        profiles: &doc.profiles,
+                        findings: &ctx,
+                        collapse: &collapse,
+                        edges: &doc.edges,
+                    },
+                    1,
+                ),
             )
         })
         .collect();
@@ -2076,8 +2096,7 @@ pub fn render_svg_with_options(
     // (finding 3: two rules anchoring `*` in the same column must not land
     // at the same, or too close a, y — `place_clear` pushes a conflicting
     // one down until it clears every prior node in its own column).
-    let mut any_y_from: Vec<f64> = Vec::new();
-    let mut any_y_to: Vec<f64> = Vec::new();
+    let mut any_columns = AnyColumns::default();
     // §7.1 channel discipline: two deny lines that cross are unreadable.
     // A wildcard node's height is assigned in the order of the target it
     // points at (monotone), so the fan of deny lines never self-intersects
@@ -2107,8 +2126,7 @@ pub fn render_svg_with_options(
             d,
             &deny_layout,
             &ctx,
-            &mut any_y_from,
-            &mut any_y_to,
+            &mut any_columns,
             &mut deny_svg,
         )?;
     }
@@ -2135,7 +2153,18 @@ pub fn render_svg_with_options(
     };
 
     let width = frame_w.max(title_min_w);
-    let height = frame_h;
+    // A tall stack of wildcard any-nodes (several `*` rules anchoring in
+    // one margin column, `place_clear` pushing each below the last) can
+    // run past the box layout's bottom edge; the canvas and frame grow so
+    // no node ever draws off-canvas.
+    let deny_bottom = any_columns
+        .from
+        .iter()
+        .chain(any_columns.to.iter())
+        .fold(f64::MIN, |a, &y| a.max(y))
+        + ANY_R
+        + FRAME_PAD;
+    let height = frame_h.max(deny_bottom);
 
     // A clean document (no findings at all) gets exactly `STYLE`, unchanged
     // — see `FINDING_STYLE`'s doc comment for why this is conditional
@@ -2262,6 +2291,16 @@ struct DenyLayout<'a> {
 /// Wide enough that the nodes (radius `ANY_R`) plus a real gap never touch.
 const DENY_LANE_GAP: f64 = ANY_R * 2.0 + ANY_GAP;
 
+/// The y positions already claimed by wildcard any-nodes, one list per
+/// margin column (left = deny `from`, right = deny `to`), threaded through
+/// every `render_deny` call so `place_clear` can stack a new node clear of
+/// the ones already drawn in its column.
+#[derive(Default)]
+struct AnyColumns {
+    from: Vec<f64>,
+    to: Vec<f64>,
+}
+
 /// Pushes `natural` down (repeatedly, by `min_gap`) until it is at least
 /// `min_gap` away from every y already in `occupied`, then records it there
 /// — a simple, deterministic (declaration-order) way to stack same-column
@@ -2274,11 +2313,8 @@ fn place_clear(natural: f64, occupied: &mut Vec<f64>, min_gap: f64) -> f64 {
     // still land inside another that was less than `min_gap` beyond it
     // (two rules `min_gap - 1` apart would otherwise need two strides to
     // clear the first), so keep resolving conflicts until none remain.
-    loop {
-        match occupied.iter().find(|&&o| (o - y).abs() < min_gap) {
-            Some(&o) => y = o + min_gap,
-            None => break,
-        }
+    while let Some(&o) = occupied.iter().find(|&&o| (o - y).abs() < min_gap) {
+        y = o + min_gap;
     }
     occupied.push(y);
     y
@@ -2358,7 +2394,13 @@ fn route_deny_line(
     // horizontal run at the original y, stopping at `enter_x` (already
     // clear of every real box — the whole reason `enter_x` exists), avoids
     // that column before rising.
-    vec![from, (enter_x, from.1), (enter_x, rail_y), (exit_x, rail_y), to]
+    vec![
+        from,
+        (enter_x, from.1),
+        (enter_x, rail_y),
+        (exit_x, rail_y),
+        to,
+    ]
 }
 
 /// The longest straight segment of a (possibly routed) path — where the
@@ -2387,8 +2429,7 @@ fn render_deny(
     deny: &Deny,
     layout: &DenyLayout,
     ctx: &FindingCtx,
-    any_y_from: &mut Vec<f64>,
-    any_y_to: &mut Vec<f64>,
+    columns: &mut AnyColumns,
     out: &mut String,
 ) -> Result<(), RenderError> {
     let DenyLayout {
@@ -2419,7 +2460,7 @@ fn render_deny(
 
     let from_pt = if deny.from == "*" {
         let natural = to_rect.map(|r| r.cy()).unwrap_or(fallback_y);
-        let y = place_clear(natural, any_y_from, DENY_LANE_GAP);
+        let y = place_clear(natural, &mut columns.from, DENY_LANE_GAP);
         let p = (any_x_from, y);
         any_nodes.push_str(&any_node_svg(p.0, p.1));
         p
@@ -2430,7 +2471,7 @@ fn render_deny(
 
     let to_pt = if deny.to == "*" {
         let natural = from_rect.map(|r| r.cy()).unwrap_or(fallback_y);
-        let y = place_clear(natural, any_y_to, DENY_LANE_GAP);
+        let y = place_clear(natural, &mut columns.to, DENY_LANE_GAP);
         let p = (any_x_to, y);
         any_nodes.push_str(&any_node_svg(p.0, p.1));
         p
