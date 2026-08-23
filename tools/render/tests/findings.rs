@@ -1,4 +1,4 @@
-//! Ply-Spec.md §7.1 "finding (tool-computed, not declared)" row: a document
+//! The-Ply-Spec.md §7.1 "finding (tool-computed, not declared)" row: a document
 //! that parses cleanly but fails `ply-check`'s document-local rules must
 //! not render as if nothing were wrong (demos/fault-injection.md, fault 3:
 //! `decode`'s check loosened to `bounded(0)` drew as confident green `B0`).

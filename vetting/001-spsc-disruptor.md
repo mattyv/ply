@@ -2,7 +2,7 @@
 
 Scenario: express a single-producer/single-consumer ring buffer (LMAX-disruptor style)
 in Ply, before the tool exists, and record where the grammar holds and where it breaks.
-Run 2026-08-23 against Ply-Spec.md as of that date.
+Run 2026-08-23 against The-Ply-Spec.md as of that date.
 
 ## The design under test
 

@@ -12,7 +12,7 @@
 //! `Claimable` evidence levels + `Container`) x 3 representative status
 //! shapes (no status, conditional, another status).
 //!
-//! The status reduction is deliberate: Ply-Spec.md D6/§7 says statuses "do not
+//! The status reduction is deliberate: The-Ply-Spec.md D6/§7 says statuses "do not
 //! sit in [the evidence] order" and all propagate the same way (union
 //! upward, count upward) *except* `conditional`, which alone carries an
 //! extra assumptions-list obligation (D5, standing obligation 2). So one
@@ -24,7 +24,7 @@
 //! independently, and every multi-node tree in this corpus already
 //! exercises combining two *different* flags across two *different* nodes.
 //!
-//! The `NodeKind` dimension is what Ply-Spec.md §7's amendment added: a
+//! The `NodeKind` dimension is what The-Ply-Spec.md §7's amendment added: a
 //! `Container` config carries no evidence of its own by construction, so
 //! this corpus now covers both "claimable node with real evidence" and
 //! "container with none" at every position in every enumerated shape,

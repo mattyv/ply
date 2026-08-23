@@ -6,7 +6,7 @@ use ply_render::model::parse_document;
 use ply_render::svg::render_svg;
 
 /// Minimal static renderer: `ply.yaml` -> SVG. Proves the §7.1 visual
-/// grammar is total. Not a GUI, not the future canvas — see Ply-Spec.md §7.1.
+/// grammar is total. Not a GUI, not the future canvas — see The-Ply-Spec.md §7.1.
 #[derive(Parser)]
 #[command(name = "ply-render")]
 struct Cli {

@@ -1262,7 +1262,7 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
 
     // §7.1 / newbie bar: the frame is the first thing anyone sees, so its
     // tooltip explains the whole picture rather than assuming the reader
-    // has already read Ply-Spec.md.
+    // has already read The-Ply-Spec.md.
     let workspace_tip = title(
         "This diagram is drawn from ply.yaml, the file describing this codebase's \
          architecture and verification claims. Each box is a component; chips are \

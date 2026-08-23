@@ -61,6 +61,10 @@ components:
     fns:
       check_order:
         checks: [bounded(3), fuzz(4096), mutate]
+        requires:
+          - "order.qty > 0 && order.px > 0"
+        ensures:
+          - "|r| r.is_err() == (order.qty > limits.max_qty)"
   oms:
     anchor: oms
     owns: [oms::OrderStore]

@@ -653,7 +653,7 @@ fn glyphs_are_explained_by_a_hover_title() {
 
 /// The workspace frame is the first thing a newbie sees — hovering it must
 /// explain the whole picture in plain language, not assume the reader has
-/// already read Ply-Spec.md.
+/// already read The-Ply-Spec.md.
 #[test]
 fn workspace_frame_explains_the_whole_picture() {
     let svg = render_fixture("../../vetting/001-spsc-disruptor.ply.yaml");

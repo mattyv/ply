@@ -1,16 +1,16 @@
-//! Document-local `ply.yaml` validation (Ply-Spec.md §5.1a, §5.1, §5.6) — the
+//! Document-local `ply.yaml` validation (The-Ply-Spec.md §5.1a, §5.1, §5.6) — the
 //! subset of `cargo ply check` (§6) that needs no anchored Rust code:
 //! unknown fields, schema shape, and required fields are already rejected
 //! by `ply_model::parse_document`'s strict serde parse (nothing to
 //! duplicate here). This crate only flags constructs that parse cleanly but
-//! still violate Ply-Spec.md. Anchor resolution, staleness, and the
+//! still violate The-Ply-Spec.md. Anchor resolution, staleness, and the
 //! architecture rules (§5.2, §5.3) need real code behind the anchors and
 //! are out of scope.
 
 use ply_model::{Check, Component, Document, parse_check, parse_deny, parse_edge};
 use std::collections::HashMap;
 
-/// Where a diagnostic attaches for drawing (Ply-Spec.md §7.1 "finding" row).
+/// Where a diagnostic attaches for drawing (The-Ply-Spec.md §7.1 "finding" row).
 /// `ply-render` consumes this to know what to mark red; `ply-check`'s own
 /// stdout/exit-code contract never prints it (see `Diagnostic`'s `Display`).
 #[derive(Debug, Clone, PartialEq, Eq)]

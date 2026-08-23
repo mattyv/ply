@@ -1,5 +1,5 @@
 //! The pure verdict kernel of the future `cargo ply`: evidence levels,
-//! statuses, and the worst-of aggregation rule (Ply-Spec.md §7, D5, D6). No I/O,
+//! statuses, and the worst-of aggregation rule (The-Ply-Spec.md §7, D5, D6). No I/O,
 //! no external crates, no code that anchors to real source -- that belongs
 //! to `ply-model`/`ply-core` later. `ply-model`'s own doc comment already
 //! calls this split out explicitly ("verdicts, statuses, and fingerprints
@@ -9,7 +9,7 @@
 //!
 //! ## Scope
 //!
-//! Ply-Spec.md §7 describes a full tree node as
+//! The-Ply-Spec.md §7 describes a full tree node as
 //! `{ id, kind, anchor, content_hash, verdict, statuses, worst_descendant,
 //! open_items }`. This kernel models only the part that is pure computation
 //! over already-known verdicts: a node's own claim ([`NodeKind`]), its own
@@ -19,7 +19,7 @@
 //! that need a real codebase to anchor to; they are out of scope here and
 //! belong to `ply-model`/`ply-core`.
 //!
-//! Ply-Spec.md §7's paragraph "Aggregation rules the verdict kernel
+//! The-Ply-Spec.md §7's paragraph "Aggregation rules the verdict kernel
 //! (`tools/kernel`) checks exhaustively" is now the normative source for the
 //! four rules below; earlier revisions of this file carried conservative
 //! readings for two of them (own-evidence-for-containers, and
@@ -28,7 +28,7 @@
 
 use std::collections::BTreeSet;
 
-/// Ply-Spec.md D6 / §7: "The evidence order compares the six kinds" --
+/// The-Ply-Spec.md D6 / §7: "The evidence order compares the six kinds" --
 /// `violation < unclaimed < tested < fuzzed < bounded < proved`. Declaration
 /// order below *is* that order, so `#[derive(PartialOrd, Ord)]` gives the
 /// comparison for free -- "worst" is simply the smaller value.
@@ -40,7 +40,7 @@ use std::collections::BTreeSet;
 /// parameter-aware tie-break, if ever wanted, is a model-layer concern built
 /// on top of this order, not a change to it.
 ///
-/// `#[cfg_attr(kani, derive(kani::Arbitrary))]` mirrors Ply-Spec.md D2's own
+/// `#[cfg_attr(kani, derive(kani::Arbitrary))]` mirrors The-Ply-Spec.md D2's own
 /// idiom (attributes that vanish under plain cargo and activate only under
 /// `cargo kani`) so the Kani harnesses below can draw real `Evidence` values
 /// via `kani::any()` instead of a hand-rolled index-to-variant mapping.
@@ -55,7 +55,7 @@ pub enum Evidence {
     Proved,
 }
 
-/// Ply-Spec.md §7: "Only claimable items contribute their own evidence. fns fold
+/// The-Ply-Spec.md §7: "Only claimable items contribute their own evidence. fns fold
 /// their own verdict into `worst_descendant`; containers (workspace,
 /// components) fold over children only."
 ///
@@ -74,7 +74,7 @@ pub enum NodeKind {
     Container,
 }
 
-/// Ply-Spec.md §0 / §7: "Statuses ... do not sit in that [evidence] order; they
+/// The-Ply-Spec.md §0 / §7: "Statuses ... do not sit in that [evidence] order; they
 /// propagate upward as flags and open-item counts alongside it." This is the
 /// status vocabulary named in §0's glossary row for `status`, minus
 /// `conditional` -- see [`VerdictNode::conditional`] for why that one moved
@@ -89,14 +89,14 @@ pub enum StatusKind {
     Inconclusive,
 }
 
-/// One node of a verdict tree (Ply-Spec.md §7), reduced to exactly what
+/// One node of a verdict tree (The-Ply-Spec.md §7), reduced to exactly what
 /// [`aggregate`] needs: this node's own claim ([`NodeKind`]), its own status
 /// flags, its own conditional assumptions (if any), and its children.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerdictNode {
     pub kind: NodeKind,
     pub statuses: BTreeSet<StatusKind>,
-    /// Ply-Spec.md §7 / D5: "`conditional` structurally carries its assumptions:
+    /// The-Ply-Spec.md §7 / D5: "`conditional` structurally carries its assumptions:
     /// a conditional status without an assumptions list is unrepresentable
     /// in the kernel, not validated against." `None` = not conditional;
     /// `Some(assumptions)` = conditional, with exactly the assumptions it
@@ -114,7 +114,7 @@ pub struct VerdictNode {
 /// count. Mirrors the input tree's shape via `children`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AggregatedNode {
-    /// Ply-Spec.md §7's `worst_descendant`: the worst-of (D6) over every
+    /// The-Ply-Spec.md §7's `worst_descendant`: the worst-of (D6) over every
     /// *claimable* node's own evidence in the subtree. `Evidence::Unclaimed`
     /// exactly when the subtree contains no claimable node at all (§7: "A
     /// container with no claimable descendants reads `unclaimed`").
@@ -128,7 +128,7 @@ pub struct AggregatedNode {
     /// conditional -- this is standing obligation 2: a conditional status
     /// never reaches an ancestor without the assumptions that justify it.
     pub conditional: Option<Vec<String>>,
-    /// Ply-Spec.md §7's `open_items`, folded as a count: "`open_items` counts
+    /// The-Ply-Spec.md §7's `open_items`, folded as a count: "`open_items` counts
     /// flag instances, not flagged nodes: a node carrying two statuses
     /// contributes 2." This kernel counts every `StatusKind` flag plus a
     /// `conditional` (when present) as one flag instance each, summed over
@@ -174,7 +174,7 @@ fn combine_claimable(a: Option<Evidence>, b: Option<Evidence>) -> Option<Evidenc
 /// claimable-only evidence" as an `Option<Evidence>` (`None` = no claimable
 /// node anywhere in the subtree) *alongside* the public [`AggregatedNode`]
 /// for this position, whose own `evidence` field is that option already
-/// defaulted to `Evidence::Unclaimed` for display (Ply-Spec.md §7: "A container
+/// defaulted to `Evidence::Unclaimed` for display (The-Ply-Spec.md §7: "A container
 /// with no claimable descendants reads `unclaimed`").
 ///
 /// The two-value return exists because those are genuinely different
@@ -229,7 +229,7 @@ fn aggregate_raw(node: &VerdictNode) -> (Option<Evidence>, AggregatedNode) {
     )
 }
 
-/// Fold a verdict tree into its per-node aggregated results (Ply-Spec.md §7,
+/// Fold a verdict tree into its per-node aggregated results (The-Ply-Spec.md §7,
 /// D6). Pure: no I/O, no randomness, no shared mutable state -- calling it
 /// twice on equal inputs always yields equal outputs (standing obligation
 /// 4). Every collection used for aggregated state (`BTreeSet`, plus a
@@ -281,7 +281,7 @@ mod tests {
     }
 
     /// Regression test for the exact bug `tests/enumeration.rs` caught
-    /// during the Ply-Spec.md §7 rework: a container must not seed its own fold
+    /// during the The-Ply-Spec.md §7 rework: a container must not seed its own fold
     /// with a placeholder `Unclaimed` and then `.min()` it against a real,
     /// stronger claimable child -- that wrongly produces `Unclaimed` here
     /// instead of `Tested`.
@@ -339,7 +339,7 @@ mod tests {
 /// `kani::any()`-generated symbolic trees. Entirely `#[cfg(kani)]`-gated:
 /// under plain `cargo build`/`cargo test` this module does not exist at all
 /// (the `kani` crate is not a Cargo dependency -- `cargo kani` supplies it as
-/// a compiler-provided pseudo-crate, per Ply-Spec.md D9's "engines run as
+/// a compiler-provided pseudo-crate, per The-Ply-Spec.md D9's "engines run as
 /// subprocesses ... never linked as libraries"), so there is nothing here
 /// for plain cargo to fail to compile. Run with `cargo kani` once Kani is
 /// installed (not attempted in this session).
@@ -432,7 +432,7 @@ mod kani_proofs {
         }
     }
 
-    /// Standing obligation 1 (as reworded by Ply-Spec.md §7's amendment):
+    /// Standing obligation 1 (as reworded by The-Ply-Spec.md §7's amendment):
     /// worst-of never reports evidence stronger than the weakest claimable
     /// node in the subtree, and reports exactly `Unclaimed` when there is
     /// none. Standing obligation 3 (violation-reaches-root) is the case of

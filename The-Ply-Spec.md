@@ -322,6 +322,15 @@ extractor, behind `trait Extractor` (ADR-0001):
   plus a user-extensible `capmap.toml` mapping crate paths to caps.
 - `mutates(item, TYPEPATH)` — mutation of a named type.
 
+Containment implies permission: a component may always call into its own descendants
+(and they into it), the same way it calls between its own functions — no edge is
+declared for calls within one nesting line. An explicit edge whose endpoints are a
+component and its own descendant is redundant → `W0409` (document-local; `ply check`
+reports it, and the renderer draws nothing for it — vetting 003's parent-to-child edge
+drew as a diagonal slash through the parent's own content, which is what a drawing of
+"I may call myself" deserves). Edges are for crossings between nesting lines, including
+into another component's descendant (`strategy -> ingest.book`).
+
 Item-tier rules (each `W`-severity by default, `A`-severity error under `strict`):
 1. A call crosses two declared components with no `->` edge → `A0402`.
 2. A `pure` component touches any capability → `A0403` (names the cap, spans the item).
@@ -559,6 +568,8 @@ grammar.**
 | assumption chain | thin dotted arrows from a verdict to the contracts it assumed |
 | unresolved marker | numbered pin on the fn or component |
 | trusted claim | hollow shield badge on the node — attested by named evidence, not machine-checked |
+| contract clauses (`requires`/`ensures`) | a contract mark on the fn chip — a small solid square at the chip's left edge; the tooltip lists each clause verbatim. This draws the §7.2 watermark per function: marked = a promise stands at the mark; bare = signature only. (The renderer sees only YAML-declared clauses; inline attributes join when `cargo ply` emits the §8 envelope.) |
+| declared ceiling | component fill, low-saturation, on the verdict ordinal scale: the strongest verdict the component's declared checks *could* earn — per fn the strongest check kind (`test`→tested … `prove`→proved; `mutate` strengthens, never lifts; no checks = unclaimed, unfilled), folded worst-of by the kernel's container rule. A ceiling is a promise, not proof: it never uses the full-saturation fill reserved for earned verdicts, and its tooltip says none of it has run |
 | finding (tool-computed, not declared) | the offending item drawn in error red with an `E####` badge; its tooltip leads with the diagnostic. A finding with no drawable item attaches a red count to the workspace title. A document with findings still renders — a picture that refuses to draw hides the problem it should be showing (origin: fault-injection demo, where a faulted toolchain drew `bounded(0)` as legitimate evidence) |
 
 Zooming is collapse/expand over the §7 tree and mirrors `tree --depth`/`--focus`. A
@@ -569,11 +580,12 @@ static renderer (`tools/render/`, `ply.yaml` → SVG, no GUI) exists to prove th
 is total — every construct drawable, nothing undrawable admitted. It is a spec-validation
 tool, not the canvas.
 
-Gate debt: five constructs already in the grammar have no assigned visual form yet —
-`strict`, `mode: synth`, contract clauses (`requires`/`ensures`), `examples`, and the
-expansion of a `profiles` entry behind its tag. They predate the gate; each needs a form
-or removal before the grammar is called total. The renderer draws nothing for them today,
-so the omission is visible rather than silently papered over.
+Gate debt: three constructs already in the grammar still have no assigned visual form —
+`strict`, `mode: synth`, and `examples`. They predate the gate; each needs a form or
+removal before the grammar is called total. The renderer draws nothing for them today,
+so the omission is visible rather than silently papered over. (Closed since first
+recorded: `profiles` expansion lives in the tag's tooltip; contract clauses have the
+contract mark above.)
 
 ### 7.2 The watermark
 
