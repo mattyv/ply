@@ -61,9 +61,19 @@ fn absolute_component_rect(doc: &roxmltree::Document, name: &str) -> (f64, f64, 
         cur = n.parent();
     }
 
+    // The component-box rect now also carries a `ceiling-*` class alongside
+    // `component-box`/`component-box-finding` (§7.1 "declared ceiling"), so
+    // this can no longer be an exact-string match against the whole `class`
+    // attribute — check membership in the space-separated token list instead.
     let rect = node
         .children()
-        .find(|c| c.tag_name().name() == "rect" && c.attribute("class") == Some("component-box"))
+        .find(|c| {
+            c.tag_name().name() == "rect"
+                && c.attribute("class").is_some_and(|cl| {
+                    cl.split_whitespace()
+                        .any(|t| t == "component-box" || t == "component-box-finding")
+                })
+        })
         .expect("component must have a component-box rect");
     let w: f64 = rect.attribute("width").unwrap().parse().unwrap();
     let h: f64 = rect.attribute("height").unwrap().parse().unwrap();
@@ -299,7 +309,15 @@ fn svg_root_element_is_well_formed_enough_to_open() {
 #[test]
 fn component_renders_as_box_with_name_and_anchor_subtitle() {
     let svg = render_fixture("tests/fixtures/full.ply.yaml");
-    assert!(svg.contains("class=\"component-box\""));
+    // The component-box rect also carries a `ceiling-*` class (§7.1 "declared
+    // ceiling"), so this checks token membership rather than an exact
+    // `class="component-box"` substring.
+    let doc = roxmltree::Document::parse(&svg).unwrap();
+    assert!(doc.descendants().any(|n| {
+        n.tag_name().name() == "rect"
+            && n.attribute("class")
+                .is_some_and(|c| c.split_whitespace().any(|t| t == "component-box"))
+    }));
     assert!(svg.contains(">parser<"));
     assert!(svg.contains(">app::parser<"));
 }
@@ -532,9 +550,14 @@ fn every_painted_element_resolves_a_style_rule() {
             if node.ancestors().any(|a| a.tag_name().name() == "defs") {
                 continue;
             }
+            // A class attribute may now carry more than one space-separated
+            // token (the component-box rect stacks `component-box` with a
+            // `ceiling-*` class, §7.1 "declared ceiling") — check each token
+            // on its own rather than the whole attribute string at once.
             let resolved = node
                 .ancestors()
                 .filter_map(|a| a.attribute("class"))
+                .flat_map(|c| c.split_whitespace())
                 .any(|c| matches_selector(c, tag));
             if !resolved {
                 unstyled.push(format!(
@@ -729,4 +752,308 @@ fn every_drawn_item_resolves_a_tooltip() {
         untitled.is_empty(),
         "drawn items with no tooltip: {untitled:?}"
     );
+}
+
+/// §7.1 "declared ceiling": walks every fixture below, recomputes each
+/// component's ceiling with an oracle built independently in this test (real
+/// `ply_kernel::aggregate`, not the renderer's own tree-building code), and
+/// checks the rendered SVG's component-box fill class against it. This is
+/// the invariant, not a spot-check: a construct added later that the
+/// renderer forgets to feed into its own ceiling computation fails here on
+/// its own fixture, without a bespoke assertion for it.
+mod declared_ceiling {
+    use super::*;
+    use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
+    use ply_render::model::{Check, Component, FnClaim, parse_check};
+    use std::collections::BTreeSet;
+
+    /// The strongest check *kind* a fn declares (The-Ply-Spec.md §7.1: `test`
+    /// -> tested, `fuzz` -> fuzzed, `bounded` -> bounded, `prove` -> proved;
+    /// `mutate` and an unparseable string contribute nothing). Deliberately
+    /// re-derived here from `parse_check`, not imported from the renderer,
+    /// so this is a real second opinion rather than the same code asserting
+    /// against itself.
+    fn fn_ceiling(fc: &FnClaim) -> Evidence {
+        let mut best: Option<Evidence> = None;
+        for c in &fc.checks {
+            let kind = match parse_check(c) {
+                Ok(Check::Test) => Some(Evidence::Tested),
+                Ok(Check::Fuzz(_)) => Some(Evidence::Fuzzed),
+                Ok(Check::Bounded(_)) => Some(Evidence::Bounded),
+                Ok(Check::Prove) => Some(Evidence::Proved),
+                Ok(Check::Mutate) | Err(_) => None,
+            };
+            if let Some(k) = kind {
+                best = Some(best.map_or(k, |b: Evidence| if k > b { k } else { b }));
+            }
+        }
+        best.unwrap_or(Evidence::Unclaimed)
+    }
+
+    fn verdict_node(comp: &Component) -> VerdictNode {
+        let mut children: Vec<VerdictNode> = comp
+            .fns
+            .values()
+            .map(|fc| VerdictNode {
+                kind: NodeKind::Claimable(fn_ceiling(fc)),
+                statuses: BTreeSet::new(),
+                conditional: None,
+                children: Vec::new(),
+            })
+            .collect();
+        children.extend(comp.components.values().map(verdict_node));
+        VerdictNode {
+            kind: NodeKind::Container,
+            statuses: BTreeSet::new(),
+            conditional: None,
+            children,
+        }
+    }
+
+    /// This component's own ceiling, then each nested component's,
+    /// recursively — the same preorder the renderer draws component boxes
+    /// in (a box is emitted before its own nested children's boxes).
+    fn expected_ceilings(comp: &Component) -> Vec<Evidence> {
+        let mut out = vec![aggregate(&verdict_node(comp)).evidence];
+        for c in comp.components.values() {
+            out.extend(expected_ceilings(c));
+        }
+        out
+    }
+
+    /// The `ceiling-*` class actually painted on each component-box rect, in
+    /// the SVG's document order (which is the same preorder as
+    /// `expected_ceilings` — see that fn's doc comment).
+    fn rendered_ceiling_classes(svg: &str) -> Vec<String> {
+        let doc = roxmltree::Document::parse(svg).unwrap();
+        doc.descendants()
+            .filter(|n| n.tag_name().name() == "g" && n.attribute("class") == Some("component"))
+            .map(|g| {
+                let rect = g
+                    .children()
+                    .find(|c| {
+                        c.tag_name().name() == "rect"
+                            && c.attribute("class").is_some_and(|cl| {
+                                cl.split_whitespace()
+                                    .any(|t| t == "component-box" || t == "component-box-finding")
+                            })
+                    })
+                    .expect("every component must draw a component-box rect");
+                rect.attribute("class")
+                    .unwrap()
+                    .split_whitespace()
+                    .find(|t| t.starts_with("ceiling-"))
+                    .unwrap_or_else(|| panic!("component-box rect has no ceiling-* class: {:?}", g))
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_component_fill_matches_the_kernel_ceiling() {
+        // The three vetting scenarios plus the render crate's own fixtures
+        // that render successfully (`ambiguous_ref.ply.yaml` is designed to
+        // be a render *error*, so it has no fill to check).
+        for fixture in [
+            "../../vetting/001-spsc-disruptor.ply.yaml",
+            "../../vetting/002-ingest-pipeline.ply.yaml",
+            "../../vetting/003-trading-system.ply.yaml",
+            "tests/fixtures/full.ply.yaml",
+            "tests/fixtures/qualified_refs.ply.yaml",
+        ] {
+            let yaml = std::fs::read_to_string(fixture).unwrap();
+            let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let svg = render_svg(&doc).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+
+            let mut expected: Vec<Evidence> = Vec::new();
+            for c in doc.components.values() {
+                expected.extend(expected_ceilings(c));
+            }
+            let expected_classes: Vec<String> = expected
+                .iter()
+                .map(|e| ply_render::svg::ceiling_class(*e).to_string())
+                .collect();
+            let rendered = rendered_ceiling_classes(&svg);
+
+            assert_eq!(
+                expected_classes, rendered,
+                "{fixture}: rendered ceiling-* classes (in document order) don't match the \
+                 kernel-recomputed ceilings"
+            );
+        }
+    }
+
+    /// Names the levels vetting 003 must show, so a future refactor that
+    /// keeps the invariant test above green by accident (e.g. everything
+    /// collapsing to the same ceiling) still gets caught: risk's declared
+    /// ceiling is `bounded` (from `check_order`'s bounded/fuzz/mutate list)
+    /// and must read strictly stronger than strategy's `tested` (dragged
+    /// down by `Strategy::on_update`'s plain `test`), and `ingest` must read
+    /// `unclaimed` because `Feed::pump` declares no checks at all.
+    #[test]
+    fn trading_system_ceilings_have_the_expected_relative_depth() {
+        let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let ceiling_of = |name: &str| aggregate(&verdict_node(&doc.components[name])).evidence;
+        assert_eq!(ceiling_of("ingest"), Evidence::Unclaimed);
+        assert_eq!(ceiling_of("strategy"), Evidence::Tested);
+        assert_eq!(ceiling_of("risk"), Evidence::Bounded);
+        assert!(ceiling_of("risk") > ceiling_of("strategy"));
+    }
+}
+
+/// §7.1 "contract clauses": any fn claim with a non-empty `requires` or
+/// `ensures` must draw the contract mark and list its clauses verbatim in
+/// its tooltip. The invariant, not a spot-check on `check_order` alone —
+/// though `check_order` (vetting 003, risk component) is exactly the
+/// fixture that first exercises it (its `requires`/`ensures` were added
+/// alongside this feature).
+mod contract_mark {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    struct ExpectedFn {
+        requires: Vec<String>,
+        ensures: Vec<String>,
+    }
+
+    /// Fn claims in the same order the renderer draws their chips: a
+    /// component's *nested* components' fns first (recursively), then its
+    /// own — see `render_component`'s body-building loop (children before
+    /// chips).
+    fn walk_fn_claims(comp: &ply_render::model::Component, out: &mut Vec<ExpectedFn>) {
+        for c in comp.components.values() {
+            walk_fn_claims(c, out);
+        }
+        for fc in comp.fns.values() {
+            out.push(ExpectedFn {
+                requires: fc.requires.clone(),
+                ensures: fc.ensures.clone(),
+            });
+        }
+    }
+
+    fn rendered_fn_chip_marks_and_tooltips(svg: &str) -> Vec<(bool, String)> {
+        let doc = roxmltree::Document::parse(svg).unwrap();
+        doc.descendants()
+            .filter(|n| n.tag_name().name() == "g" && n.attribute("class") == Some("fn-chip"))
+            .map(|g| {
+                let has_mark = g
+                    .children()
+                    .any(|c| c.attribute("class") == Some("contract-mark"));
+                let tooltip = g
+                    .children()
+                    .find(|c| c.tag_name().name() == "title")
+                    .and_then(|t| t.text())
+                    .unwrap_or_default()
+                    .to_string();
+                (has_mark, tooltip)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_contract_carrying_chip_shows_the_mark_and_clauses() {
+        let mut any_contract_seen = false;
+        for fixture in [
+            "../../vetting/001-spsc-disruptor.ply.yaml",
+            "../../vetting/002-ingest-pipeline.ply.yaml",
+            "../../vetting/003-trading-system.ply.yaml",
+            "tests/fixtures/full.ply.yaml",
+            "tests/fixtures/qualified_refs.ply.yaml",
+        ] {
+            let yaml = std::fs::read_to_string(fixture).unwrap();
+            let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let svg = render_svg(&doc).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+
+            let mut expected: Vec<ExpectedFn> = Vec::new();
+            for c in doc.components.values() {
+                walk_fn_claims(c, &mut expected);
+            }
+            let rendered = rendered_fn_chip_marks_and_tooltips(&svg);
+            assert_eq!(
+                expected.len(),
+                rendered.len(),
+                "{fixture}: fn claim count doesn't match rendered fn-chip count"
+            );
+
+            for (exp, (has_mark, tooltip)) in expected.iter().zip(rendered.iter()) {
+                let has_contract = !exp.requires.is_empty() || !exp.ensures.is_empty();
+                assert_eq!(
+                    *has_mark, has_contract,
+                    "{fixture}: contract-mark presence ({has_mark}) doesn't match whether the \
+                     fn declares requires/ensures ({has_contract}); tooltip: {tooltip:?}"
+                );
+                if has_contract {
+                    any_contract_seen = true;
+                    assert!(
+                        tooltip.contains("contract at the watermark:"),
+                        "{fixture}: contract-carrying chip's tooltip is missing the header: \
+                         {tooltip:?}"
+                    );
+                    for r in &exp.requires {
+                        let line = format!("requires: {r}");
+                        assert!(
+                            tooltip.contains(&line),
+                            "{fixture}: tooltip is missing {line:?}, got: {tooltip:?}"
+                        );
+                    }
+                    for e in &exp.ensures {
+                        let line = format!("ensures: {e}");
+                        assert!(
+                            tooltip.contains(&line),
+                            "{fixture}: tooltip is missing {line:?}, got: {tooltip:?}"
+                        );
+                    }
+                    assert!(
+                        tooltip.contains(
+                            "the checks above test the function against exactly this promise"
+                        ),
+                        "{fixture}: tooltip is missing the closing line, got: {tooltip:?}"
+                    );
+                } else {
+                    assert!(
+                        !tooltip.contains("contract at the watermark:"),
+                        "{fixture}: a chip with no requires/ensures must not gain contract \
+                         wording, got: {tooltip:?}"
+                    );
+                }
+            }
+        }
+        assert!(
+            any_contract_seen,
+            "no fixture exercised a contract-carrying fn — this test would pass vacuously"
+        );
+    }
+
+    /// Vetting 003's `risk.check_order` is the fixture this feature was
+    /// written for — named explicitly so a regression there is never lost
+    /// in the generic sweep above.
+    #[test]
+    fn check_order_shows_the_contract_mark() {
+        let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let svg = render_svg(&doc).unwrap();
+        let doc_xml = roxmltree::Document::parse(&svg).unwrap();
+        let chip = doc_xml
+            .descendants()
+            .find(|n| {
+                n.tag_name().name() == "g"
+                    && n.attribute("class") == Some("fn-chip")
+                    && n.attribute("data-fn") == Some("check_order")
+            })
+            .expect("check_order chip must exist");
+        assert!(
+            chip.children()
+                .any(|c| c.attribute("class") == Some("contract-mark")),
+            "check_order must draw the contract mark"
+        );
+        let tooltip = chip
+            .children()
+            .find(|c| c.tag_name().name() == "title")
+            .and_then(|t| t.text())
+            .unwrap();
+        assert!(tooltip.contains("requires: order.qty > 0 && order.px > 0"));
+        assert!(tooltip.contains("ensures: |r| r.is_err() == (order.qty > limits.max_qty)"));
+    }
 }

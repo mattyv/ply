@@ -9,11 +9,12 @@
 use crate::layout;
 use indexmap::IndexMap;
 use ply_check::{Diagnostic, Target as FindingTarget, run_checks};
+use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
 use ply_model::{
     Check, Component, Deny, Document, Edge, EdgeKind, FnClaim, parse_check, parse_deny, parse_edge,
 };
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 // ---- layout constants -----------------------------------------------------
 
@@ -34,6 +35,14 @@ const SHIELD_W: f64 = 16.0;
 const FRAME_PAD: f64 = 24.0;
 const FRAME_TITLE_H: f64 = 30.0;
 const MIN_BOX_W: f64 = 150.0;
+
+// ---- §7.1 "contract clauses" — the contract mark ---------------------------
+//
+// A small solid square at the fn chip's left edge, drawn inside the chip's
+// existing `PAD` margin so it adds new geometry (its own few pixels) without
+// shifting anything else already positioned by `cursor_x`.
+const CONTRACT_MARK_SIZE: f64 = 6.0;
+const CONTRACT_MARK_X: f64 = 2.0;
 
 // ---- findings (§7.1 "finding (tool-computed, not declared)") --------------
 //
@@ -86,11 +95,17 @@ const ANY_GAP: f64 = 16.0;
 pub const STYLE: &str = "\
 .workspace-frame{fill:#fbfbfd;stroke:#c8ccd4}\
 .workspace-title{fill:#6b7280}\
-.component-box{fill:#fff;stroke:#3b4252;stroke-width:1.5}\
+.component-box{stroke:#3b4252;stroke-width:1.5}\
 .pure-seal{fill:none;stroke:#3b4252}\
 .component-name{fill:#1f2430;font-weight:bold}\
 .component-anchor{fill:#6b7280;font-size:10px}\
 .component-owns{fill:#6b7280;font-size:10px;font-style:italic}\
+.ceiling-unclaimed{fill:#fff}\
+.ceiling-tested{fill:#eaf6ec}\
+.ceiling-fuzzed{fill:#cdeed3}\
+.ceiling-bounded{fill:#a3e0b3}\
+.ceiling-proved{fill:#78d194}\
+.contract-mark{fill:#1f2430}\
 .cap-badge rect{fill:#fdecec;stroke:#c9534f}\
 .cap-badge text{fill:#8f2f2c;font-size:10px}\
 .profile-tag rect{fill:#eef2fb;stroke:#5570a8}\
@@ -122,7 +137,7 @@ pub const STYLE: &str = "\
 /// CLAUDE.md's golden-review rule exists to catch.
 pub const FINDING_STYLE: &str = "\
 .fn-chip-box-finding{fill:#fdecec;stroke:#c9534f;stroke-width:2.5}\
-.component-box-finding{fill:#fff;stroke:#c9534f;stroke-width:3}\
+.component-box-finding{stroke:#c9534f;stroke-width:3}\
 .edge-line-finding{fill:none;stroke:#c9534f;stroke-width:3}\
 .deny-line-finding{fill:none;stroke:#c9534f;stroke-width:3}\
 .unresolved-pin-finding circle,.registry-pin-finding circle{fill:#fdecec;stroke:#c9534f;stroke-width:2.5}\
@@ -397,6 +412,115 @@ fn check_with_note(check_with: &IndexMap<String, String>) -> Option<String> {
     )
 }
 
+// ---- §7.1 "declared ceiling" -----------------------------------------------
+//
+// A promise, not proof: the strongest verdict a component's *declared*
+// checks could earn if they all passed, computed the same way a real
+// verdict tree would be (worst-of over fns, folded by the kernel's own
+// container rule) but from declared check *kinds* rather than run results.
+
+/// The strongest check kind one fn declares (The-Ply-Spec.md §7.1: `test` ->
+/// tested, `fuzz(n)` -> fuzzed, `bounded(k)` -> bounded, `prove` -> proved).
+/// `mutate` strengthens nothing on its own (it only ever rides alongside a
+/// `test`/`fuzz` entry, D12) and an unparseable string names no real kind, so
+/// both are skipped rather than treated as evidence. No checks at all (or
+/// only skipped ones) -> `Unclaimed`.
+fn fn_declared_ceiling(fc: &FnClaim) -> Evidence {
+    let mut best: Option<Evidence> = None;
+    for c in &fc.checks {
+        let kind = match parse_check(c) {
+            Ok(Check::Test) => Some(Evidence::Tested),
+            Ok(Check::Fuzz(_)) => Some(Evidence::Fuzzed),
+            Ok(Check::Bounded(_)) => Some(Evidence::Bounded),
+            Ok(Check::Prove) => Some(Evidence::Proved),
+            Ok(Check::Mutate) | Err(_) => None,
+        };
+        if let Some(k) = kind {
+            best = Some(best.map_or(k, |b: Evidence| b.max(k)));
+        }
+    }
+    best.unwrap_or(Evidence::Unclaimed)
+}
+
+/// Builds this component's subtree as real `ply_kernel::VerdictNode`s: its
+/// own fns as `Claimable` leaves (never `Violation` — a declared ceiling is
+/// never earned evidence, so that rung is unreachable here), its nested
+/// components recursively as `Container`s. Handed to the kernel's own
+/// `aggregate` — never re-folded by hand — so the worst-of rule this draws
+/// is the exact one The-Ply-Spec.md §7 pins and `tools/kernel` checks
+/// exhaustively.
+fn component_verdict_node(comp: &Component) -> VerdictNode {
+    let mut children: Vec<VerdictNode> = comp
+        .fns
+        .values()
+        .map(|fc| VerdictNode {
+            kind: NodeKind::Claimable(fn_declared_ceiling(fc)),
+            statuses: BTreeSet::new(),
+            conditional: None,
+            children: Vec::new(),
+        })
+        .collect();
+    children.extend(comp.components.values().map(component_verdict_node));
+    VerdictNode {
+        kind: NodeKind::Container,
+        statuses: BTreeSet::new(),
+        conditional: None,
+        children,
+    }
+}
+
+fn component_ceiling(comp: &Component) -> Evidence {
+    aggregate(&component_verdict_node(comp)).evidence
+}
+
+/// The CSS class that fills a component box for a given ceiling. `Violation`
+/// has no declared-ceiling meaning (see `fn_declared_ceiling`'s doc comment)
+/// and falls back to `unclaimed` defensively rather than being unreachable.
+pub fn ceiling_class(e: Evidence) -> &'static str {
+    match e {
+        Evidence::Violation | Evidence::Unclaimed => "ceiling-unclaimed",
+        Evidence::Tested => "ceiling-tested",
+        Evidence::Fuzzed => "ceiling-fuzzed",
+        Evidence::Bounded => "ceiling-bounded",
+        Evidence::Proved => "ceiling-proved",
+    }
+}
+
+/// Plain-language gloss for a non-`unclaimed` ceiling level, worded to read
+/// naturally after "declares checks up to ".
+fn ceiling_level_prose(e: Evidence) -> &'static str {
+    match e {
+        Evidence::Tested => {
+            "tested — checked once against the declared examples and generated inputs"
+        }
+        Evidence::Fuzzed => "fuzzed — checked against many random inputs",
+        Evidence::Bounded => "bounded — proved for every input up to a loop bound",
+        Evidence::Proved => "proved — proved for every input, with no bound",
+        Evidence::Violation | Evidence::Unclaimed => {
+            unreachable!("callers branch on unclaimed before reaching this")
+        }
+    }
+}
+
+/// The component tooltip's declared-ceiling line (§7.1: "its tooltip says
+/// none of it has run"). `unclaimed` gets its own plain sentence rather than
+/// the "declares checks up to unclaimed" template, which would read as a
+/// contradiction (there is nothing to declare "up to").
+fn ceiling_tooltip_line(e: Evidence) -> String {
+    match e {
+        Evidence::Violation | Evidence::Unclaimed => {
+            "no checks are declared anywhere in this component — nothing here is verified yet \
+             (unclaimed)"
+                .to_string()
+        }
+        other => format!(
+            "declares checks up to {} — the strongest verdict this could earn; none of it has \
+             been run yet",
+            ceiling_level_prose(other)
+        ),
+    }
+}
+
 // ---- geometry --------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -480,11 +604,22 @@ fn render_fn_chip(name: &str, fc: &FnClaim, component_path: &str, ctx: &FindingC
     let glyphs = checks_glyph_row(&fc.checks);
     let note = check_with_note(&fc.check_with);
     let has_shield = !fc.trusted.is_empty();
+    let has_contract = !fc.requires.is_empty() || !fc.ensures.is_empty();
     let findings = ctx.fn_findings(component_path, name);
 
     let mut cursor_x = PAD;
     let mut inner = String::new();
     let text_y = CHIP_H / 2.0 + 4.0;
+
+    // §7.1 "contract clauses": a small solid square at the chip's left
+    // edge, drawn inside the existing `PAD` margin so nothing else already
+    // laid out from `cursor_x` moves — only these few new pixels appear.
+    if has_contract {
+        inner.push_str(&format!(
+            "<rect class=\"contract-mark\" x=\"{CONTRACT_MARK_X:.1}\" y=\"{:.1}\" width=\"{CONTRACT_MARK_SIZE:.1}\" height=\"{CONTRACT_MARK_SIZE:.1}\" />",
+            (CHIP_H - CONTRACT_MARK_SIZE) / 2.0
+        ));
+    }
 
     inner.push_str(&format!(
         "<text class=\"fn-name\" x=\"{cursor_x:.1}\" y=\"{text_y:.1}\">{}</text>",
@@ -553,6 +688,20 @@ fn render_fn_chip(name: &str, fc: &FnClaim, component_path: &str, ctx: &FindingC
     tip.push(name.to_string());
     for c in &fc.checks {
         tip.push(check_prose(c));
+    }
+    if has_contract {
+        // §7.1 "contract clauses" / §7.2 the watermark: this is the mark
+        // itself made legible — the promise standing at the watermark line,
+        // spelled out verbatim rather than left for the reader to infer
+        // from the mark's presence alone.
+        tip.push("contract at the watermark:".to_string());
+        for r in &fc.requires {
+            tip.push(format!("requires: {r}"));
+        }
+        for e in &fc.ensures {
+            tip.push(format!("ensures: {e}"));
+        }
+        tip.push("the checks above test the function against exactly this promise".to_string());
     }
     if let Some(n) = &note {
         tip.push(format!(
@@ -625,6 +774,10 @@ fn render_component(
     ctx: &FindingCtx,
 ) -> ComponentBox {
     let findings = ctx.component_findings(qualified);
+    // §7.1 "declared ceiling": the strongest verdict this component's own
+    // declared checks could earn, folded worst-of over every fn in its
+    // subtree by the real kernel `aggregate` (see `component_ceiling`).
+    let ceiling = component_ceiling(comp);
     let finding_badge_w = finding_badge_width(&findings);
     let name_w = text_w(name, NAME_CHAR_W)
         + if findings.is_empty() {
@@ -799,12 +952,17 @@ fn render_component(
                 .into(),
         );
     }
+    tip.push(ceiling_tooltip_line(ceiling));
 
-    let component_box_class = if findings.is_empty() {
-        "component-box"
-    } else {
-        "component-box-finding"
-    };
+    let component_box_class = format!(
+        "{} {}",
+        if findings.is_empty() {
+            "component-box"
+        } else {
+            "component-box-finding"
+        },
+        ceiling_class(ceiling)
+    );
     let mut svg = format!(
         "<g class=\"component\" data-name=\"{}\">{}<rect class=\"{component_box_class}\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
         esc(name),

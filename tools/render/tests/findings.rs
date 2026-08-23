@@ -77,9 +77,17 @@ fn every_finding_is_visibly_flagged_or_counted_at_the_title() {
             let Some(class) = node.attribute("class") else {
                 continue;
             };
-            if !FINDING_CLASSES.contains(&class) {
+            // The component-box-finding rect now also carries a `ceiling-*`
+            // class alongside it (§7.1 "declared ceiling"), so a finding
+            // class can no longer be an exact match against the whole
+            // `class` attribute — check membership in its space-separated
+            // tokens instead.
+            let Some(class) = class
+                .split_whitespace()
+                .find(|c| FINDING_CLASSES.contains(c))
+            else {
                 continue;
-            }
+            };
             let title_text = node
                 .ancestors()
                 .find_map(|a| a.children().find(|c| c.tag_name().name() == "title"))

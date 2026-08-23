@@ -114,9 +114,12 @@ a property no current invariant expresses. Next renderer pass should add one
 
 ### Standing observations
 
-- The container aggregation question is now live: `ingest` has no verdict to
-  display because verdicts don't exist yet — when they do, the kernel's
-  container rule says its box shows the worst of its ten claimable fns.
+- Container aggregation is now on the canvas: every box carries its **declared
+  ceiling** (§7.1) — a pastel fill computed by the kernel's real `aggregate()`
+  over the checks lists. `ingest` reads unclaimed-white because `Feed::pump`
+  declares nothing and worst-of is merciless; `strategy` reads barely-tinted
+  (`tested`); `risk` reads deepest. Earned verdicts, when `cargo ply` exists,
+  take the full-saturation version of the same scale.
 - Hand-copying 002 into `ingest` took a full rewrite of every internal edge to
   dotted form — 002 finding 2 (no reuse mechanism) at full size, as predicted.
 - There is no component-scoped `edges:` list; all seventeen edges live at the

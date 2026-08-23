@@ -260,6 +260,7 @@ dependencies = [
  "indexmap",
  "insta",
  "ply-check",
+ "ply-kernel",
  "ply-model",
  "roxmltree",
 ]
