@@ -689,6 +689,22 @@ One Diagnostic schema for all engines:
 `kani_playback` is present whenever Kani produced playback data; `cargo_test` only when
 the inputs rendered as stable Rust source (D7), else `W0541`.
 
+**A non-result is still feedback.** `timeout`, `unsupported`, and `engine-missing` carry
+no counterexample, but the consumer is usually an agent mid-repair, and §1's second
+finding applies to them too: feedback without a handle performs little better than none.
+So every such diagnostic MUST name the cause in the same concrete terms a fix would need
+— the offending construct, why this engine chokes on it, and what would change the
+outcome — and SHOULD populate `fixes` with the options. Worked example, the one that
+motivated this rule: a function that clones a `BTreeSet` in a loop makes Kani's encoding
+intractable at any bound (observed on Ply's own kernel, 2026-08-23). The honest
+diagnostic names the type and the encoding, then offers: lower the bound, drop to
+`fuzz(n)`, or restructure the hot path to a fixed-size array.
+
+The boundary is absolute: **Ply proposes, never rewrites.** A `fixes` entry is a
+suggestion the caller may apply and a human may review as a diff. Ply must never reshape
+a user's data structures to suit an engine — a proof about a program the user does not
+run is worth less than no proof, and the agent, not the tool, owns that trade.
+
 Diagnostic codes live in one exhaustive enum: `E02xx` config/schema, `E03xx/W03xx`
 anchoring/staleness, `A04xx/W04xx` architecture and resolution, `E05xx/V05xx/W05xx` contracts and
 verification, prefixes `K/P/M/R` reserved for engine-specific codes, `W01xx` environment,
