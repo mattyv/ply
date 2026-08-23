@@ -36,6 +36,14 @@
       component `checks` are defaults for fns in scope; `ply-check` explicitly does not
       merge them and the ceiling computation reads only `fc.checks`, so a declared
       ceiling can be wrong today.
+- [ ] **Engine-limit diagnostics (from the Kani investigation).** When Kani times out
+      because the target manipulates a std collection, Ply must say so in plain words
+      rather than reporting a bare timeout — name the cause and suggest a smaller
+      bound or an array-shaped path. NOTE the boundary: Ply may never reshape the
+      user's data structures to suit the verifier (we did that to our own kernel;
+      doing it to user code would verify a program they don't run). Stubbing stays
+      restricted to D5's sound case — a callee stubbed by a contract it actually
+      proved; anything weaker is `conditional` with the assumption listed.
 - [ ] `schema/ply.schema.json` is called normative in §5/D3 and does not exist —
       build it or cut the claim.
 - [ ] Separate declared ceilings from earned verdicts in the type system (both are
