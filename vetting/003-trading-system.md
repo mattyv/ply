@@ -97,6 +97,9 @@ reads top-to-bottom. The structure held.
    `RawFrame`/`Tick` labels sit on the ring and decoder box borders. The label
    clearance logic reserves space against the *edge line*, not against neighboring
    boxes — at top level there is slack; inside a container there isn't.
+   → Fixed 2026-08-23, with the invariant this section asked for:
+   `no_drawn_element_intersects_a_box_it_is_not_inside` walks every label, line
+   segment, bar, and node across every fixture at full depth and at `--depth 1`.
 2. **An edge to a nested target cuts through its parent's content.** The
    `strategy -> signals` call edge draws diagonally across the `signals` box
    itself. → Resolved at the root: the edge should never have existed.
@@ -110,9 +113,12 @@ reads top-to-bottom. The structure held.
    `* -> gateway except oms` both anchor their `*` node at the same left-edge
    spot; the two red lines and both `except oms` labels draw on top of each other,
    one struck through. Deny geometry needs the same lane separation call/flow
-   edges got in 002.
+   edges got in 002. → Fixed 2026-08-23: wildcard nodes stack, and their heights
+   are assigned in the order of the targets they point at, so the fan of deny
+   lines cannot self-intersect. Pinned by
+   `deny_geometry_never_overlaps_another_deny_rules_geometry`.
 4. **The deny bar can strike its own `except` text** (`...decoder, strategy` on
-   the book rule). Same clearance family as finding 1.
+   the book rule). Same clearance family as finding 1. → Fixed with finding 1.
 
 None of these are structural: every element is present, explained, and on-canvas —
 the 002-era invariants all pass. The gap is *collision-freedom inside containers*,
