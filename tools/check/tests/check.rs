@@ -10,7 +10,7 @@ fn diagnostics_for(path: &str) -> Vec<ply_check::Diagnostic> {
     run_checks(&doc)
 }
 
-const KNOWN_CODES: &[&str] = &["E0203", "E0205", "E0206", "E0304", "E0504"];
+const KNOWN_CODES: &[&str] = &["E0203", "E0205", "E0206", "E0304", "E0504", "W0409"];
 
 /// The `ply-render` fixtures render cleanly, which already proves they parse
 /// and resolve; this asserts they are *also* free of every document-local
@@ -122,6 +122,128 @@ fn ambiguous_bare_reference_is_e0206() {
     );
 }
 
+/// §5.3 "containment implies permission": an explicit edge between a
+/// component and its own descendant (either direction, at any depth) is
+/// redundant — the descendant could already be reached without a declared
+/// edge, the same way it calls between its own functions.
+#[test]
+fn parent_to_child_edge_is_w0409() {
+    let diags = diagnostics_for("tests/fixtures/redundant_parent_child_edge.ply.yaml");
+    let d = diags
+        .iter()
+        .find(|d| d.code == "W0409")
+        .expect("expected a W0409 diagnostic");
+    assert_eq!(
+        d.message,
+        "\"edge outer -> outer.inner\" is redundant: outer.inner is inside outer, and a \
+         component may always call within its own nesting line — no edge needed"
+    );
+}
+
+/// Same rule, reached through a bare (unqualified) leaf reference rather
+/// than the dotted form — resolved the same way §5.1a rule 6 (E0206)
+/// resolves bare references, since `inner` is unique across the tree here.
+#[test]
+fn parent_to_child_edge_via_bare_leaf_is_w0409() {
+    let yaml = r#"
+ply: 1
+components:
+  outer:
+    anchor: app::outer
+    components:
+      inner:
+        anchor: app::outer::inner
+edges:
+  - "outer -> inner"
+"#;
+    let doc = parse_document(yaml).expect("doc should parse");
+    let diags = run_checks(&doc);
+    let d = diags
+        .iter()
+        .find(|d| d.code == "W0409")
+        .expect("expected a W0409 diagnostic");
+    assert_eq!(
+        d.message,
+        "\"edge outer -> inner\" is redundant: outer.inner is inside outer, and a component \
+         may always call within its own nesting line — no edge needed"
+    );
+}
+
+/// The redundancy is symmetric: a descendant explicitly calling back into
+/// its own ancestor is just as redundant as the other direction.
+#[test]
+fn child_to_parent_edge_is_w0409() {
+    let yaml = r#"
+ply: 1
+components:
+  outer:
+    anchor: app::outer
+    components:
+      inner:
+        anchor: app::outer::inner
+edges:
+  - "outer.inner -> outer"
+"#;
+    let doc = parse_document(yaml).expect("doc should parse");
+    let diags = run_checks(&doc);
+    let d = diags
+        .iter()
+        .find(|d| d.code == "W0409")
+        .expect("expected a W0409 diagnostic");
+    assert_eq!(
+        d.message,
+        "\"edge outer.inner -> outer\" is redundant: outer.inner is inside outer, and a \
+         component may always call within its own nesting line — no edge needed"
+    );
+}
+
+/// A data-flow edge within one nesting line is equally redundant — §5.3
+/// states the rule in terms of "an explicit edge", not "an explicit call
+/// edge", and closes with "Edges are for crossings between nesting lines"
+/// (again unqualified by kind).
+#[test]
+fn parent_to_child_flow_edge_is_w0409() {
+    let yaml = r#"
+ply: 1
+components:
+  outer:
+    anchor: app::outer
+    components:
+      inner:
+        anchor: app::outer::inner
+edges:
+  - "outer ~> outer.inner : app::Payload"
+"#;
+    let doc = parse_document(yaml).expect("doc should parse");
+    let diags = run_checks(&doc);
+    let d = diags
+        .iter()
+        .find(|d| d.code == "W0409")
+        .expect("expected a W0409 diagnostic");
+    assert_eq!(
+        d.message,
+        "\"edge outer ~> outer.inner : app::Payload\" is redundant: outer.inner is inside \
+         outer, and a component may always call within its own nesting line — no edge needed"
+    );
+}
+
+/// Negative case (named directly in The-Ply-Spec.md §5.3's own example): an
+/// edge that crosses *into* another component's descendant — not its own —
+/// is exactly what edges are for, and must not be flagged.
+#[test]
+fn cross_container_descendant_edge_is_not_w0409() {
+    let diags = diagnostics_for("tests/fixtures/cross_container_descendant_edge.ply.yaml");
+    assert!(
+        !diags.iter().any(|d| d.code == "W0409"),
+        "strategy -> ingest.book crosses into another component's descendant and should not \
+         be flagged, got: {diags:?}"
+    );
+    assert!(
+        diags.is_empty(),
+        "fixture should otherwise be clean, got: {diags:?}"
+    );
+}
+
 /// Invariant: `run_checks` never emits a code outside the set this file
 /// documents test coverage for — a typo'd or forgotten code fails loudly
 /// here instead of shipping silently.
@@ -137,6 +259,8 @@ fn every_diagnostic_carries_a_known_spec_code() {
         "tests/fixtures/bad_edge_syntax.ply.yaml",
         "tests/fixtures/bad_path_form.ply.yaml",
         "tests/fixtures/duplicate_unresolved_id.ply.yaml",
+        "tests/fixtures/redundant_parent_child_edge.ply.yaml",
+        "tests/fixtures/cross_container_descendant_edge.ply.yaml",
     ] {
         for d in diagnostics_for(path) {
             assert!(

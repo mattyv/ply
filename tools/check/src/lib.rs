@@ -7,8 +7,8 @@
 //! architecture rules (§5.2, §5.3) need real code behind the anchors and
 //! are out of scope.
 
-use ply_model::{Check, Component, Document, parse_check, parse_deny, parse_edge};
-use std::collections::HashMap;
+use ply_model::{Check, Component, Document, Edge, parse_check, parse_deny, parse_edge};
+use std::collections::{HashMap, HashSet};
 
 /// Where a diagnostic attaches for drawing (The-Ply-Spec.md §7.1 "finding" row).
 /// `ply-render` consumes this to know what to mark red; `ply-check`'s own
@@ -46,6 +46,16 @@ pub struct Diagnostic {
 impl std::fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl Diagnostic {
+    /// Severity, derived from the code prefix (The-Ply-Spec.md §5.3: item-tier
+    /// rules are `W`-severity by default). A `W`-code is advisory — `ply
+    /// check` reports it, but it must not by itself fail the run; every other
+    /// code this crate emits is a document-local error.
+    pub fn is_advisory(&self) -> bool {
+        self.code.starts_with('W')
     }
 }
 
@@ -231,6 +241,80 @@ fn check_token_ambiguity(
     }
 }
 
+/// §5.3 "containment implies permission": resolves an edge endpoint token
+/// to the one qualified component path it must mean, or `None` if it
+/// doesn't resolve to exactly one (a wildcard, an ambiguous bare leaf
+/// already flagged by `E0206`, or a dotted path that names no real
+/// component). Uses the same resolution as §5.1a rule 6: a bare name
+/// resolves only if its leaf is unique across the tree; a dotted token is
+/// taken as the fully qualified path it already looks like.
+fn resolve_component_ref(
+    token: &str,
+    leaf_index: &HashMap<String, Vec<String>>,
+    all_qualified: &HashSet<String>,
+) -> Option<String> {
+    if token == "*" {
+        return None;
+    }
+    if token.contains('.') {
+        return all_qualified.contains(token).then(|| token.to_string());
+    }
+    match leaf_index.get(token) {
+        Some(paths) if paths.len() == 1 => Some(paths[0].clone()),
+        _ => None,
+    }
+}
+
+/// True if `other` is `ancestor` itself plus at least one more dotted
+/// segment — i.e. `ancestor` is a strict prefix of `other` ending on a `.`
+/// boundary, matching how nested qualified paths are built in
+/// `walk_component`.
+fn is_strict_ancestor(ancestor: &str, other: &str) -> bool {
+    other.len() > ancestor.len()
+        && other.starts_with(ancestor)
+        && other.as_bytes()[ancestor.len()] == b'.'
+}
+
+/// §5.3: an edge whose two endpoints lie on one nesting line — a component
+/// and its own descendant, either direction, at any depth — is redundant:
+/// containment already grants the permission the edge would declare.
+/// Applies to both edge kinds (`->` and `~>`); the spec paragraph states the
+/// rule in terms of "an explicit edge" and closes with "Edges are for
+/// crossings between nesting lines", neither qualified to calls only.
+fn check_containment_redundancy(
+    edge_str: &str,
+    edge: &Edge,
+    leaf_index: &HashMap<String, Vec<String>>,
+    all_qualified: &HashSet<String>,
+    target: &Target,
+    out: &mut Vec<Diagnostic>,
+) {
+    let Some(from) = resolve_component_ref(&edge.from, leaf_index, all_qualified) else {
+        return;
+    };
+    let Some(to) = resolve_component_ref(&edge.to, leaf_index, all_qualified) else {
+        return;
+    };
+
+    let (outer, inner) = if is_strict_ancestor(&from, &to) {
+        (from, to)
+    } else if is_strict_ancestor(&to, &from) {
+        (to, from)
+    } else {
+        return;
+    };
+
+    out.push(diag(
+        "W0409",
+        format!(
+            "\"edge {}\" is redundant: {inner} is inside {outer}, and a component may always \
+             call within its own nesting line — no edge needed",
+            edge_str.trim(),
+        ),
+        target.clone(),
+    ));
+}
+
 pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mut unresolved_ids: Vec<(u64, String)> = Vec::new();
@@ -247,12 +331,25 @@ pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
         );
     }
 
+    // Every qualified path any component actually has, used to resolve a
+    // dotted edge endpoint literally (§5.1a rule 6's dotted form) without
+    // re-deriving it from layout.
+    let all_qualified: HashSet<String> = leaf_index.values().flatten().cloned().collect();
+
     for (i, e) in doc.edges.iter().enumerate() {
         let target = Target::EdgeIndex(i);
         match parse_edge(e) {
             Ok(edge) => {
                 check_token_ambiguity(&edge.from, &leaf_index, &target, &mut out);
                 check_token_ambiguity(&edge.to, &leaf_index, &target, &mut out);
+                check_containment_redundancy(
+                    e,
+                    &edge,
+                    &leaf_index,
+                    &all_qualified,
+                    &target,
+                    &mut out,
+                );
             }
             Err(err) => out.push(diag("E0203", format!("{err} (edges)"), target)),
         }

@@ -46,6 +46,25 @@ fn violating_fixture_exits_nonzero_and_names_the_code() {
     );
 }
 
+/// The-Ply-Spec.md §5.3: `W`-severity findings are reported but must not by
+/// themselves fail the run — only `E`-severity violations do. A document
+/// whose only finding is the `W0409` containment-redundancy warning still
+/// prints it, but exits 0.
+#[test]
+fn warning_only_fixture_exits_zero_but_prints_the_warning() {
+    let out = run(&["tests/fixtures/redundant_parent_child_edge.ply.yaml"]);
+    assert!(
+        out.status.success(),
+        "a W-code-only run should exit 0, got: {out:?}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.trim_end(),
+        "W0409: \"edge outer -> outer.inner\" is redundant: outer.inner is inside outer, and a \
+         component may always call within its own nesting line — no edge needed"
+    );
+}
+
 #[test]
 fn missing_file_is_a_tool_error() {
     let out = run(&["tests/fixtures/does_not_exist.ply.yaml"]);

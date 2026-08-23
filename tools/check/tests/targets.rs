@@ -105,6 +105,20 @@ fn duplicate_unresolved_id_targets_the_shared_id() {
     );
 }
 
+/// §5.3 containment redundancy targets the edge itself, by position — not
+/// either component it names, matching how the ambiguity check below
+/// targets the referencing edge/deny entry rather than the referent.
+#[test]
+fn redundant_parent_child_edge_targets_the_edge_by_index() {
+    let diags = diagnostics_for("tests/fixtures/redundant_parent_child_edge.ply.yaml");
+    let d = diags
+        .iter()
+        .find(|d| d.code == "W0409")
+        .expect("expected a W0409 diagnostic");
+    // The fixture's `edges:` list has exactly one entry.
+    assert_eq!(d.target, Target::EdgeIndex(0));
+}
+
 /// §5.1a rule 6 ambiguity on a deny endpoint (not exercised by any fixture
 /// in this crate) must still resolve to `DenyIndex`, not `Fn`/`Component` —
 /// the offending item is the deny rule string, not either component it names.

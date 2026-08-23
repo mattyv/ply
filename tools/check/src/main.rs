@@ -32,7 +32,10 @@ fn main() -> ExitCode {
         println!("{d}");
     }
 
-    if diagnostics.is_empty() {
+    // §5.3: `W`-severity findings are reported but don't fail the run on
+    // their own — only an `E`-severity (or other non-advisory) diagnostic
+    // does. An empty list is vacuously "all advisory".
+    if diagnostics.iter().all(ply_check::Diagnostic::is_advisory) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

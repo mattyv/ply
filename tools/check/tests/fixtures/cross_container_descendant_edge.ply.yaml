@@ -1,0 +1,11 @@
+ply: 1
+components:
+  strategy:
+    anchor: app::strategy
+  ingest:
+    anchor: app::ingest
+    components:
+      book:
+        anchor: app::ingest::book
+edges:
+  - "strategy -> ingest.book"

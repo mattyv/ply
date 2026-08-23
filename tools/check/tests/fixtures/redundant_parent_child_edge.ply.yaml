@@ -1,0 +1,9 @@
+ply: 1
+components:
+  outer:
+    anchor: app::outer
+    components:
+      inner:
+        anchor: app::outer::inner
+edges:
+  - "outer -> outer.inner"
