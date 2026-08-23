@@ -45,6 +45,14 @@ Report outcomes, not code churn. Skip file names, function names, and diff-speak
 asked. Say what changed in behaviour, where to see it, and whether it works. Make routine
 technical calls yourself; only ask questions that can be answered without reading code.
 
+## Delegation
+
+Use the cheapest model that can do the job. Implementation goes to sonnet-tier agents
+once the design is settled; mechanical sweeps (renames, fixture generation, source
+hunting) can go cheaper still. The top model is for spec changes, design decisions,
+review judgment, and verifying agent output — never for typing out code an agent could
+write from a precise brief.
+
 ## Scope
 
 Build what was asked and nothing adjacent. A legend nobody requested is not a bonus.
