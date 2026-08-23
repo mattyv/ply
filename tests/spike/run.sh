@@ -59,7 +59,11 @@ echo "   (expected to FAIL -- that's the point of this item)"
 cargo kani "${KANI_FLAGS[@]}" --exact --harness item6_proofs::check_saturating_bump --concrete-playback print || true
 
 echo
-echo "== Item 6 (playback replay): cargo kani playback reproduces the same cex =="
+echo "== Item 6 (playback replay): cargo kani playback re-runs the harness on the cex input =="
+echo "   (NOTE: this test PASSES. Under cargo kani playback the contract closures"
+echo "   are never evaluated -- only the real body runs -- so an ensures-violation"
+echo "   witness reproduces nothing. Verified both ways: moving the overflow into"
+echo "   the body makes this same test FAIL. See FINDINGS.md, playback vacuity.)"
 cargo kani "${KANI_FLAGS[@]}" --exact --harness item6_proofs::check_saturating_bump --concrete-playback inplace || true
 cargo kani playback -Z concrete-playback -Z function-contracts -Z unstable-options --lib \
   -- --exact item6_proofs::kani_concrete_playback_check_saturating_bump_5881385579587027251

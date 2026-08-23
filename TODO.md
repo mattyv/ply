@@ -31,6 +31,12 @@
       own pure kernel is still unprovable on `BTreeSet`/`Vec`. Establish what
       collection-shaped code Kani actually handles, then rewrite §5.4b's
       supported-signature story around that evidence instead of optimism.
+- [ ] **D7 correction: the generated playback test does not reproduce contract
+      violations.** Adversarial re-verification found `cargo kani playback` never
+      evaluates contract closures — only the real body runs — so an `ensures` violation
+      replays and the generated test PASSES. Playback preserves the witness *input*
+      exactly, but the rendered plain `#[test]` is the only artifact that can be a red
+      reproduction, and that is most Ply counterexamples. §8/D7 wording needs a pass.
 - [ ] **Callee-before-caller ordering needs kernel-grade treatment.** ADR-0003 proved
       Kani gives no backstop: a caller verifies while assuming an unproved callee. The
       scheduler that orders callees first is now soundness-critical and should be a pure

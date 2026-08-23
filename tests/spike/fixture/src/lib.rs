@@ -211,8 +211,10 @@ mod item5_proofs {
 // ---------------------------------------------------------------------
 // Item 6: a real contract violation. `saturating_bump`'s ensures claims
 // exact +1 growth, but the function actually saturates at u8::MAX -- the
-// ensures is genuinely false for x == 255 (and, on closer look, also for
-// large-but-not-max x once requires stops constraining it -- see the cex).
+// ensures is genuinely false for x == 255, and only there (for every
+// x < 255, saturating_add(1) == x + 1 exactly). The violation manifests
+// as an overflow panic *inside the ensures closure* (`x + 1` as u8),
+// not as a failed comparison -- see item 7's commentary.
 // ---------------------------------------------------------------------
 
 #[cfg_attr(kani, kani::ensures(|result| *result == x + 1))]
