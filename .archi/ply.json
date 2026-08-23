@@ -1682,7 +1682,7 @@
     {
       "id": "t-spec-d4-arch",
       "file": "SPEC.md",
-      "line": 281,
+      "line": 283,
       "snippet": "**Crate tier (sound, errors).** From `cargo metadata`: the exact crate dependency graph.",
       "anchored": true,
       "node": "arch",
@@ -1698,7 +1698,7 @@
     {
       "id": "t-spec-d5-model",
       "file": "SPEC.md",
-      "line": 374,
+      "line": 392,
       "snippet": "generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict.",
       "anchored": true,
       "node": "model",
@@ -1714,7 +1714,7 @@
     {
       "id": "t-spec-cli-verify",
       "file": "SPEC.md",
-      "line": 412,
+      "line": 430,
       "snippet": "cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts",
       "anchored": true,
       "node": "cli",
@@ -1730,7 +1730,7 @@
     {
       "id": "t-spec-d7-cex",
       "file": "SPEC.md",
-      "line": 526,
+      "line": 561,
       "snippet": "the inputs rendered as stable Rust source (D7), else `W0541`.",
       "anchored": true,
       "node": "cex",
@@ -1746,7 +1746,7 @@
     {
       "id": "t-spec-staleness-plylock",
       "file": "SPEC.md",
-      "line": 274,
+      "line": 276,
       "snippet": "the fingerprint no longer matches, `ply check` reports `W0302 claim may be stale` and the",
       "anchored": true,
       "node": "plylock",
@@ -1778,7 +1778,7 @@
     {
       "id": "t-spec-envelope-shape",
       "file": "SPEC.md",
-      "line": 497,
+      "line": 532,
       "snippet": "`{ \"command\": \"...\", \"ply_version\": \"...\", \"root\": <node tree §7>, \"diagnostics\": [<Diagnostic>...] }`.",
       "anchored": true,
       "node": "envelope",
@@ -1794,7 +1794,7 @@
     {
       "id": "t-spec-d6-node",
       "file": "SPEC.md",
-      "line": 437,
+      "line": 456,
       "snippet": "D6 over the evidence order; `statuses` and `open_items` (unresolved markers, weak specs,",
       "anchored": true,
       "node": "node",
@@ -1810,7 +1810,7 @@
     {
       "id": "t-spec-violation-rule",
       "file": "SPEC.md",
-      "line": 365,
+      "line": 383,
       "snippet": "passing checks earned; a failing check is a `violation` regardless of what else passed.",
       "anchored": true,
       "node": "violation",
