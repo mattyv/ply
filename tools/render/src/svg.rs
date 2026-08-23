@@ -1425,7 +1425,11 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         "This diagram is drawn from ply.yaml, the file describing this codebase's \
          architecture and verification claims. Each box is a component; chips are \
          functions with their declared checks; arrows are permitted calls (solid) and \
-         data flows (dashed); red bars are forbidden calls. Hover anything for its meaning.",
+         data flows (dashed); red bars are forbidden calls. A box's green depth is the \
+         strength of the checks it declares — white means something inside declares \
+         none, deeper green means stronger checks, and the weakest function sets the \
+         whole box's shade. It is a promise scale, not results: none of it has run \
+         yet. Hover anything for its meaning.",
     );
 
     Ok(format!(
