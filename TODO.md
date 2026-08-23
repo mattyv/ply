@@ -1,27 +1,23 @@
 # TODO
 
-- [ ] **NEXT** `ply-render --depth N` / `--focus <component>` — collapse/expand per
-      §7.1: collapsed box = solid border, contents line, worst-descendant fill;
-      capability badges, pin count, and finding count never fold away. Acceptance: 003
-      at --depth 1 shows ingest as one white box still wearing the subtree's `net` and
-      `unsafe` badges. (Starts when the in-flight hollow/gutter agent lands — same
-      crate.)
-- [ ] Collapsed boxes draw as a stack (offset card edge behind — §7.1, specced):
-      flat = fully shown, stacked = folded content, dashed = nothing inside. Also:
-      swap 003's committed artifacts (collapsed view becomes 003-trading-system.svg,
-      full depth moves to -full.svg; repoint the default-output regression guard).
+- [x] `ply-render --depth N` / `--focus` / `--collapse <component>` (8d8910f) —
+      collapsed box shows contents line, rolled-up capability badges, pin and finding
+      counts; edges reattach; default output byte-identical without flags.
+- [x] Collapsed boxes draw as a stack (dc1ad4b, repaired in 26cdeb6); 003's canonical
+      artifact is now the collapsed system view, full depth moved to -full.svg.
 - [ ] **Color SVG config** — make the renderer's palette configurable (the style
       constants: ceiling scale, finding red, ink, amber) instead of hardcoded; must
       keep the §7.1 channel discipline (a config can retune a hue, not repurpose a
       channel) and the style-rule invariant test.
 - [ ] `ply-render --legend` — opt-in legend strip below the frame, generated from the
       live style constants (§7.1, specced 2026-08-23).
-- [ ] `W0409` in ply-check — redundant parent-to-descendant edge lint (§5.3, specced;
-      renderer draws nothing for such edges).
-- [ ] Cross-container edge routing — edges into another component's descendant
-      (`strategy -> ingest.book`) routed cleanly; 003 render findings 1, 3, 4
-      (intra-container label collisions, same-rank deny overlap, bar striking except
-      text) plus a collision-freedom invariant test.
+- [x] `W0409` redundant parent-to-descendant edge lint (7d4c6fc) — both directions,
+      both edge kinds; brought a W-warns/E-fails severity model with it.
+- [x] Edge and deny routing + collision-freedom invariant (b3da43c, 2b07bd0) — 003
+      render findings 1, 3, 4 closed. KNOWN GAP left open deliberately: deny lines in
+      *different* margin columns can still cross (repro:
+      tools/render/tests/fixtures/deny_stress.ply.yaml). Needs a routing policy
+      decision (§7.1), not a guess.
 - [ ] Gate debt (§7.1): DRAW the three assigned-but-undrawn forms — `strict` corner
       notch, `mode: synth` violet chip, `examples` e×N token.
 
@@ -36,14 +32,9 @@
       component `checks` are defaults for fns in scope; `ply-check` explicitly does not
       merge them and the ceiling computation reads only `fc.checks`, so a declared
       ceiling can be wrong today.
-- [ ] **Engine-limit diagnostics (from the Kani investigation).** When Kani times out
-      because the target manipulates a std collection, Ply must say so in plain words
-      rather than reporting a bare timeout — name the cause and suggest a smaller
-      bound or an array-shaped path. NOTE the boundary: Ply may never reshape the
-      user's data structures to suit the verifier (we did that to our own kernel;
-      doing it to user code would verify a program they don't run). Stubbing stays
-      restricted to D5's sound case — a callee stubbed by a contract it actually
-      proved; anything weaker is `conditional` with the assumption listed.
+- [x] Engine-limit diagnostics specced (52222ab) — §8 now requires timeout/unsupported
+      to name the cause and populate `fixes`, with the boundary written in: Ply
+      proposes, never rewrites. IMPLEMENTATION still owed when the engines are wired.
 - [ ] `schema/ply.schema.json` is called normative in §5/D3 and does not exist —
       build it or cut the claim.
 - [ ] Separate declared ceilings from earned verdicts in the type system (both are
@@ -51,11 +42,12 @@
 - [ ] `trusted` claims are unrestricted prose — no identity, date, commit, scope, or
       expiry. The shield can read as approval.
 - [ ] `conditional` assumptions are free-form strings, untied to the call graph.
-- [ ] Kani harnesses do not terminate (investigated 2026-08-23, written up in
-      tools/kernel/src/lib.rs): CBMC unwinds BTreeMap's generic clone on every
-      recursive `aggregate_raw` call. Untried avenue: `-Z stubbing` to stub the
-      collection ops — but that changes what is actually verified, so it needs its
-      own review. Meanwhile the 991k-tree enumeration is the real proof.
+- [ ] Kani harnesses do not terminate (e46e4a9): CBMC unwinds BTreeMap's generic clone
+      on every recursive `aggregate_raw` call. Kani's docs confirm heap collections
+      blow up the encoding AND that generic std methods cannot be stubbed — so the
+      documented workaround does not apply directly. IN FLIGHT: replacing the
+      BTreeSet of status flags with a bitmask (7 variants never needed a B-tree), with
+      the 991k-tree enumeration as the behaviour-preserving safety net.
       **Bigger implication for the project:** Ply routes `bounded` checks to Kani; if
       Kani struggles this much with std collections in a 300-line pure module, the
       supported-signature story (§5.4b) is optimistic. This is exactly the kind of
