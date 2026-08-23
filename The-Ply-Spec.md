@@ -612,10 +612,13 @@ the picture must work on instinct alone. `ply-render --legend` opts into a compa
 legend strip appended below the frame (for docs, onboarding, print), generated from the
 same style constants the renderer draws with, so legend and drawing cannot drift apart.
 
-Gate debt: **none as of 2026-08-23** — every construct in the grammar has an assigned
-visual form (the last three, `strict`/`mode: synth`/`examples`, got theirs above).
-Renderer implementation status is tracked in TODO.md; an assigned-but-unimplemented
-form is scheduled work, not gate debt.
+Gate debt, as of 2026-08-23: every construct now has an **assigned** visual form, but
+three are **assigned and undrawn** — `strict`, `mode: synth`, and `examples`. The gate
+asks whether a construct *can* be drawn, and these can; but a reader of a real diagram
+still cannot see them, so the bijection §7.1 claims is not yet true of the renderer.
+Counting them as closed because a table row exists would be exactly the kind of
+paper-satisfaction this section exists to prevent. They stay listed here until drawn
+(tracked in TODO.md).
 
 ### 7.2 The watermark
 
