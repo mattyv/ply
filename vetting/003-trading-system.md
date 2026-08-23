@@ -77,6 +77,13 @@ Exactly the specced behavior: both candidates named, the fix stated. Rule 6 held
 
 ### Rendered
 
+The system view — 002 compressed to a single box (`ply-render --collapse ingest`),
+its capability badges and counts rolled up, edges reattached:
+
+[![the trading system with ingest collapsed](003-trading-system-ingest-collapsed.svg)](003-trading-system-ingest-collapsed.svg)
+
+The full-depth view (`ply-render`, no flags):
+
 [![the trading system drawn from this scenario](003-trading-system.svg)](003-trading-system.svg)
 
 Produced by `ply-render vetting/003-trading-system.ply.yaml`. First nested render

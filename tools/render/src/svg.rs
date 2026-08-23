@@ -473,6 +473,244 @@ fn component_ceiling(comp: &Component) -> Evidence {
     aggregate(&component_verdict_node(comp)).evidence
 }
 
+// ---- §7.1 collapse / expand (`--depth N`, `--focus`, `--collapse`) --------
+
+/// `ply-render`'s CLI options for collapsing (The-Ply-Spec.md §7.1, mirroring
+/// `tree --depth`/`--focus`). The default (every field empty/`None`) must
+/// render exactly as this renderer always has — every existing caller of
+/// [`render_svg`] gets this by construction, since it is the option value
+/// `render_svg` passes through.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RenderOptions {
+    /// Components nested `depth` or more levels deep (top-level = level 1)
+    /// collapse into one box, folding everything beneath them. `None` means
+    /// unlimited — nothing ever collapses.
+    pub depth: Option<usize>,
+    /// A dotted or bare component name (§5.1a rule 6 ambiguity rules apply
+    /// to the bare form). Its whole subtree renders fully expanded
+    /// regardless of `depth`; every component outside its ancestor chain
+    /// collapses at the point it diverges from that chain.
+    pub focus: Option<String>,
+    /// Dotted or bare component names (§5.1a rule 6 applies to each) that
+    /// collapse regardless of `depth`/`focus`. The inverse selection bias to
+    /// `focus`: everything *not* named here renders exactly as the default
+    /// (fully expanded) would.
+    pub collapse: Vec<String>,
+}
+
+/// Where a component (named by its qualified path) sits relative to the
+/// `--focus` target's own qualified path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathRelation {
+    /// This is the focus target itself.
+    Focus,
+    /// This is an ancestor of the focus target — on the path a reader must
+    /// walk down to reach it, so it stays expanded (its own box drawn
+    /// normally) even though most of its children collapse.
+    Ancestor,
+    /// This is inside the focus target's own subtree.
+    Descendant,
+    /// Neither: outside the focus path entirely.
+    Unrelated,
+}
+
+/// Dot-boundary-aware prefix comparison — `"ingest"` is an ancestor of
+/// `"ingest.book"`, but `"ingest_other"` is not (a plain `starts_with` would
+/// wrongly say otherwise).
+fn path_relation(qualified: &str, focus: &str) -> PathRelation {
+    if qualified == focus {
+        return PathRelation::Focus;
+    }
+    if let Some(rest) = focus.strip_prefix(qualified)
+        && rest.starts_with('.')
+    {
+        return PathRelation::Ancestor;
+    }
+    if let Some(rest) = qualified.strip_prefix(focus)
+        && rest.starts_with('.')
+    {
+        return PathRelation::Descendant;
+    }
+    PathRelation::Unrelated
+}
+
+/// Resolved once per render from [`RenderOptions`], then consulted at every
+/// component boundary during the recursive walk.
+struct CollapseCtx<'a> {
+    depth: Option<usize>,
+    /// The `--focus` argument, already resolved to its unambiguous fully
+    /// qualified path (§5.1a rule 6) — never the raw, possibly-bare CLI
+    /// token.
+    focus: Option<&'a str>,
+    /// The `--collapse` arguments, each already resolved the same way.
+    /// Checked first and unconditionally: naming a component here always
+    /// folds it, regardless of `depth`/`focus`.
+    explicit: &'a [String],
+}
+
+impl<'a> CollapseCtx<'a> {
+    /// §7.1: "depth 1 = only top-level boxes, their interiors folded" — a
+    /// component at nesting level `level` (top-level = 1) collapses once
+    /// `level >= depth`; levels below that stay expanded, showing their own
+    /// children (which may in turn collapse one level further down). With
+    /// `--focus`, the rule inverts: everything on the focus target's own
+    /// ancestor/self/descendant chain always expands, and anything that
+    /// diverges from that chain collapses immediately, regardless of level —
+    /// "collapses to depth 1" read as "depth 1 relative to itself": the
+    /// divergent branch's own top is exactly as far as a viewer is meant to
+    /// see without asking for it by name. `--collapse` overrides both: an
+    /// explicitly named component always folds, and names nothing else, so
+    /// used alone (no `--depth`/`--focus`) it folds exactly what it names
+    /// and leaves everything else exactly as the fully-expanded default.
+    fn should_collapse(&self, qualified: &str, level: usize) -> bool {
+        if self.explicit.iter().any(|p| p == qualified) {
+            return true;
+        }
+        if let Some(focus) = self.focus {
+            !matches!(
+                path_relation(qualified, focus),
+                PathRelation::Focus | PathRelation::Ancestor | PathRelation::Descendant
+            )
+        } else if let Some(depth) = self.depth {
+            level >= depth
+        } else {
+            false
+        }
+    }
+}
+
+/// Every component's fully qualified dotted path in `doc`, depth-first,
+/// declaration order — independent of rendering/collapsing, used to resolve
+/// `--focus` and to redirect a collapsed-away edge endpoint to whichever
+/// ancestor box is actually drawn.
+fn all_qualified_paths(doc: &Document) -> Vec<String> {
+    fn walk(qualified: &str, comp: &Component, out: &mut Vec<String>) {
+        for (cname, child) in &comp.components {
+            let q = format!("{qualified}.{cname}");
+            out.push(q.clone());
+            walk(&q, child, out);
+        }
+    }
+    let mut out = Vec::new();
+    for (name, comp) in &doc.components {
+        out.push(name.clone());
+        walk(name, comp, &mut out);
+    }
+    out
+}
+
+/// Resolves a `--focus`/`--collapse` CLI argument to an unambiguous fully
+/// qualified component path, applying the same §5.1a rule 6 semantics
+/// `resolve()` uses for edge/deny endpoints: a dotted token must match
+/// exactly; a bare token must name a unique leaf across the whole document.
+/// `flag` (e.g. `"--focus"`) names the offending flag in any error, so two
+/// different flags sharing this resolver still read as themselves.
+fn resolve_component_ref(flag: &str, token: &str, doc: &Document) -> Result<String, RenderError> {
+    let paths = all_qualified_paths(doc);
+    if token.contains('.') {
+        return paths
+            .iter()
+            .find(|p| p.as_str() == token)
+            .cloned()
+            .ok_or_else(|| {
+                RenderError(format!(
+                    "{flag} {token:?} does not match any component in this document"
+                ))
+            });
+    }
+    let matches: Vec<String> = paths
+        .iter()
+        .filter(|p| p.rsplit('.').next() == Some(token))
+        .cloned()
+        .collect();
+    match matches.as_slice() {
+        [] => Err(RenderError(format!(
+            "{flag} {token:?} does not match any component in this document"
+        ))),
+        [only] => Ok(only.clone()),
+        many => Err(RenderError(format!(
+            "{flag} {token:?} is ambiguous: it could mean {} — write the dotted form (e.g. \
+             {}) to say which",
+            join_or(many),
+            many[0]
+        ))),
+    }
+}
+
+/// Recursive `(components, fns)` counts over everything *beneath* `comp`
+/// (not counting `comp` itself as a component) — §7.1's collapsed-box
+/// contents line, `N components · M fns`.
+fn count_subtree(comp: &Component) -> (usize, usize) {
+    let mut components = comp.components.len();
+    let mut fns = comp.fns.len();
+    for child in comp.components.values() {
+        let (c, f) = count_subtree(child);
+        components += c;
+        fns += f;
+    }
+    (components, fns)
+}
+
+/// Union of every capability `comp`'s subtree (including `comp` itself)
+/// declares, deduplicated and in first-appearance order — §7.1: "a collapsed
+/// box containing `net` still shows `net`." A `pure` node's own `uses`
+/// contributes nothing, matching the same masking `render_component` already
+/// applies to an expanded box's badge row.
+fn union_badges_subtree(comp: &Component) -> Vec<String> {
+    fn walk(c: &Component, out: &mut Vec<String>) {
+        if !c.pure {
+            for u in &c.uses {
+                if !out.contains(u) {
+                    out.push(u.clone());
+                }
+            }
+        }
+        for child in c.components.values() {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(comp, &mut out);
+    out
+}
+
+/// Every fn-level unresolved marker (§5.6) anywhere in `comp`'s subtree, as
+/// `(id, note)` pairs — folded into one pin glyph on a collapsed box.
+fn collect_unresolved_subtree(comp: &Component) -> Vec<(u64, String)> {
+    let mut out = Vec::new();
+    for fc in comp.fns.values() {
+        for u in &fc.unresolved {
+            out.push((u.id, u.note.clone()));
+        }
+    }
+    for child in comp.components.values() {
+        out.extend(collect_unresolved_subtree(child));
+    }
+    out
+}
+
+/// Every `ply-check` finding attached to `comp` itself or any fn/component
+/// in its subtree, marking each attached (via `ctx`) so a folded finding
+/// never falls through to the workspace-title fallback count.
+fn collect_findings_subtree<'a>(
+    qualified: &str,
+    comp: &Component,
+    ctx: &FindingCtx<'a>,
+) -> Vec<&'a Diagnostic> {
+    let mut out = ctx.component_findings(qualified);
+    for fname in comp.fns.keys() {
+        out.extend(ctx.fn_findings(qualified, fname));
+    }
+    for (cname, child) in &comp.components {
+        out.extend(collect_findings_subtree(
+            &format!("{qualified}.{cname}"),
+            child,
+            ctx,
+        ));
+    }
+    out
+}
+
 /// The CSS class that fills a component box for a given ceiling. `Violation`
 /// has no declared-ceiling meaning (see `fn_declared_ceiling`'s doc comment)
 /// and falls back to `unclaimed` defensively rather than being unreachable.
@@ -753,6 +991,59 @@ fn render_fn_chip(name: &str, fc: &FnClaim, component_path: &str, ctx: &FindingC
     }
 }
 
+/// The component tooltip lines that depend only on this node's own declared
+/// fields — findings, the anchor line, pure/capabilities, owns, profile,
+/// strict — shared verbatim by both an expanded box (`render_component`) and
+/// a collapsed one (`render_collapsed_component`, §7.1: "the normal
+/// component tooltip lines PLUS a plain [collapse] line ... and the ceiling
+/// line"). Callers append their own ceiling line (and, for an expanded box
+/// only, the hollow line) afterward — this deliberately stops short of both,
+/// since a collapsed box inserts its own extra line between them.
+fn component_tip_lines(
+    name: &str,
+    comp: &Component,
+    profiles: &IndexMap<String, Vec<String>>,
+    findings: &[&Diagnostic],
+) -> Vec<String> {
+    let mut tip = finding_tooltip_lines(findings);
+    tip.push(format!(
+        "component {name} — maps to Rust module {}",
+        comp.anchor
+    ));
+    if comp.pure {
+        tip.push(
+            "pure — the double border is the seal: this component declares no capabilities \
+             and may not use any; capability use inside it is an error (A0408)"
+                .into(),
+        );
+    } else if !comp.uses.is_empty() {
+        tip.push(format!("capabilities: {}", comp.uses.join(", ")));
+    }
+    if !comp.owns.is_empty() {
+        tip.push(format!(
+            "owns {} — only this component may mutate them",
+            comp.owns.join(", ")
+        ));
+    }
+    if let Some(p) = &comp.profile {
+        tip.push(match profiles.get(p) {
+            Some(rules) => format!(
+                "profile {p} — a named bundle of extra rules this component must follow: {}",
+                profile_rules_prose(rules)
+            ),
+            None => format!("profile {p} (not defined in this document)"),
+        });
+    }
+    if comp.strict {
+        tip.push(
+            "strict — architecture findings inside this component fail the build \
+             (errors, not warnings)"
+                .into(),
+        );
+    }
+    tip
+}
+
 /// One component rendered as a box (§7.1: nesting -> nested boxes), drawn
 /// from local origin `(0,0)`.
 struct ComponentBox {
@@ -764,12 +1055,203 @@ struct ComponentBox {
     positions: Vec<(String, Rect)>,
 }
 
+/// Picks between the two component renderers for one box: collapsed
+/// (§7.1's "one solid-bordered box ... folded") if `collapse` says so and
+/// there is actually something to fold, expanded (`render_component`)
+/// otherwise. A hollow component (no fns, no nested components) never
+/// collapses — "hollow means nothing inside; collapsed means plenty inside,
+/// folded" are mutually exclusive states, and hollow wins when the subtree
+/// really is empty.
+fn render_component_dispatch(
+    name: &str,
+    qualified: &str,
+    comp: &Component,
+    profiles: &IndexMap<String, Vec<String>>,
+    ctx: &FindingCtx,
+    level: usize,
+    collapse: &CollapseCtx,
+) -> ComponentBox {
+    let is_hollow = comp.fns.is_empty() && comp.components.is_empty();
+    if !is_hollow && collapse.should_collapse(qualified, level) {
+        render_collapsed_component(name, qualified, comp, profiles, ctx)
+    } else {
+        render_component(name, qualified, comp, profiles, ctx, level, collapse)
+    }
+}
+
+/// A collapsed component (The-Ply-Spec.md §7.1): one solid-bordered box
+/// showing name, anchor, a `N components · M fns` contents line, and the
+/// same worst-descendant ceiling fill an expanded box would earn (computed
+/// over the *full* subtree, via `component_ceiling`, exactly as an expanded
+/// box's fill already is). Three things never fold away: the subtree's
+/// unioned capability badges, one pin glyph carrying the subtree's total
+/// unresolved-marker count, and — via `collect_findings_subtree` — the
+/// subtree's finding count. No fn chips, no nested boxes: everything below
+/// this box is folded into those counts.
+fn render_collapsed_component(
+    name: &str,
+    qualified: &str,
+    comp: &Component,
+    profiles: &IndexMap<String, Vec<String>>,
+    ctx: &FindingCtx,
+) -> ComponentBox {
+    let findings = collect_findings_subtree(qualified, comp, ctx);
+    let ceiling = component_ceiling(comp);
+    let (n_components, n_fns) = count_subtree(comp);
+    let contents_line = format!(
+        "{n_components} component{} \u{b7} {n_fns} fn{}",
+        if n_components == 1 { "" } else { "s" },
+        if n_fns == 1 { "" } else { "s" },
+    );
+    let badges = union_badges_subtree(comp);
+    let unresolved = collect_unresolved_subtree(comp);
+
+    let finding_badge_w = finding_badge_width(&findings);
+    let name_w = text_w(name, NAME_CHAR_W)
+        + if findings.is_empty() {
+            0.0
+        } else {
+            BADGE_GAP + finding_badge_w
+        };
+    let anchor_w = text_w(&comp.anchor, SUB_CHAR_W);
+    let contents_w = text_w(&contents_line, SUB_CHAR_W);
+    // Three header lines: name, anchor, contents — one more than the
+    // baseline two-line header (`render_component`'s `owns_line` grows its
+    // own header the same way, for the same reason).
+    let header_h = HEADER_H + LINE_H;
+
+    let badges_row_w: f64 = badges
+        .iter()
+        .map(|b| text_w(b, BADGE_CHAR_W) + BADGE_PAD * 2.0 + BADGE_GAP)
+        .sum();
+    let pin_label = unresolved.len().to_string();
+    let pin_w = if unresolved.is_empty() {
+        0.0
+    } else {
+        PIN_R * 2.0 + text_w(&pin_label, CHIP_CHAR_W) + BADGE_GAP
+    };
+    let footer_row_w = badges_row_w + pin_w;
+    let footer_row_h = if footer_row_w > 0.0 {
+        BADGE_H.max(PIN_R * 2.0) + GAP
+    } else {
+        0.0
+    };
+
+    let content_w = [
+        name_w,
+        anchor_w,
+        contents_w,
+        footer_row_w,
+        MIN_BOX_W - PAD * 2.0,
+    ]
+    .into_iter()
+    .fold(0.0_f64, f64::max);
+    let box_w = content_w + PAD * 2.0;
+    let box_h = PAD + header_h + footer_row_h + PAD;
+
+    let mut body = String::new();
+    let y = PAD + header_h;
+    if footer_row_w > 0.0 {
+        let mut bx = PAD;
+        for b in &badges {
+            let bw = text_w(b, BADGE_CHAR_W) + BADGE_PAD * 2.0;
+            body.push_str(&format!(
+                "<g class=\"cap-badge\">{tip}<rect x=\"{bx:.1}\" y=\"{y:.1}\" width=\"{bw:.1}\" height=\"{BADGE_H:.1}\" rx=\"3\" /><text x=\"{tx:.1}\" y=\"{ty:.1}\">{label}</text></g>",
+                tx = bx + BADGE_PAD,
+                ty = y + BADGE_H - 6.0,
+                label = esc(b),
+                tip = title(&format!(
+                    "this component may use `{b}` somewhere in its folded subtree. A \
+                     component may use only the capabilities it declares — using an \
+                     undeclared one is an architecture finding (§5.3, A0404)."
+                ))
+            ));
+            bx += bw + BADGE_GAP;
+        }
+        if !unresolved.is_empty() {
+            let cx = bx + PIN_R;
+            let cy = y + BADGE_H / 2.0;
+            let mut pin_tip = vec![format!(
+                "{} unresolved decision{} folded inside this collapsed component:",
+                unresolved.len(),
+                if unresolved.len() == 1 { "" } else { "s" }
+            )];
+            for (id, note) in &unresolved {
+                pin_tip.push(format!("#{id} — {note}"));
+            }
+            body.push_str(&format!(
+                "<g class=\"unresolved-pin\">{tip}<circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"{PIN_R:.1}\" /><text class=\"pin-label\" x=\"{cx:.1}\" y=\"{ty:.1}\">{label}</text></g>",
+                ty = cy + 4.0,
+                label = esc(&pin_label),
+                tip = title(&pin_tip.join("\n"))
+            ));
+        }
+    }
+
+    let mut tip = component_tip_lines(name, comp, profiles, &findings);
+    tip.push(format!(
+        "collapsed — {n_components} component{} and {n_fns} function{} folded inside; render \
+         with --depth or --focus <name> to expand",
+        if n_components == 1 { "" } else { "s" },
+        if n_fns == 1 { "" } else { "s" },
+    ));
+    tip.push(ceiling_tooltip_line(ceiling));
+
+    let component_box_class = format!(
+        "{} {}",
+        if findings.is_empty() {
+            "component-box"
+        } else {
+            "component-box-finding"
+        },
+        ceiling_class(ceiling)
+    );
+    let mut svg = format!(
+        "<g class=\"component\" data-name=\"{}\">{}<rect class=\"{component_box_class}\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
+        esc(name),
+        title(&tip.join("\n"))
+    );
+    svg.push_str(&format!(
+        "<text class=\"component-name\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
+        PAD + LINE_H - 2.0,
+        esc(name)
+    ));
+    if !findings.is_empty() {
+        svg.push_str(&render_finding_badge(
+            box_w - PAD - finding_badge_w,
+            PAD - 2.0,
+            &findings,
+        ));
+    }
+    svg.push_str(&format!(
+        "<text class=\"component-anchor\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
+        PAD + LINE_H * 2.0 - 4.0,
+        esc(&comp.anchor)
+    ));
+    svg.push_str(&format!(
+        "<text class=\"component-anchor\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
+        PAD + LINE_H * 3.0 - 6.0,
+        esc(&contents_line)
+    ));
+    svg.push_str(&body);
+    svg.push_str("</g>");
+
+    ComponentBox {
+        width: box_w,
+        height: box_h,
+        svg,
+        positions: Vec::new(),
+    }
+}
+
 fn render_component(
     name: &str,
     qualified: &str,
     comp: &Component,
     profiles: &IndexMap<String, Vec<String>>,
     ctx: &FindingCtx,
+    level: usize,
+    collapse: &CollapseCtx,
 ) -> ComponentBox {
     let findings = ctx.component_findings(qualified);
     // §7.1 "declared ceiling": the strongest verdict this component's own
@@ -814,7 +1296,15 @@ fn render_component(
             let child_qualified = format!("{qualified}.{cname}");
             (
                 cname.clone(),
-                render_component(cname, &child_qualified, c, profiles, ctx),
+                render_component_dispatch(
+                    cname,
+                    &child_qualified,
+                    c,
+                    profiles,
+                    ctx,
+                    level + 1,
+                    collapse,
+                ),
             )
         })
         .collect();
@@ -914,42 +1404,7 @@ fn render_component(
 
     let box_h = y + PAD;
 
-    let mut tip = finding_tooltip_lines(&findings);
-    tip.push(format!(
-        "component {name} — maps to Rust module {}",
-        comp.anchor
-    ));
-    if comp.pure {
-        tip.push(
-            "pure — the double border is the seal: this component declares no capabilities \
-             and may not use any; capability use inside it is an error (A0408)"
-                .into(),
-        );
-    } else if !comp.uses.is_empty() {
-        tip.push(format!("capabilities: {}", comp.uses.join(", ")));
-    }
-    if !comp.owns.is_empty() {
-        tip.push(format!(
-            "owns {} — only this component may mutate them",
-            comp.owns.join(", ")
-        ));
-    }
-    if let Some(p) = &comp.profile {
-        tip.push(match profiles.get(p) {
-            Some(rules) => format!(
-                "profile {p} — a named bundle of extra rules this component must follow: {}",
-                profile_rules_prose(rules)
-            ),
-            None => format!("profile {p} (not defined in this document)"),
-        });
-    }
-    if comp.strict {
-        tip.push(
-            "strict — architecture findings inside this component fail the build \
-             (errors, not warnings)"
-                .into(),
-        );
-    }
+    let mut tip = component_tip_lines(name, comp, profiles, &findings);
     tip.push(ceiling_tooltip_line(ceiling));
 
     // §7.1 "hollow component": derived from absence — nothing declared
@@ -1094,7 +1549,21 @@ fn lane_offset(idx: usize, total: usize, gap: f64) -> f64 {
     (idx as f64 - (total as f64 - 1.0) / 2.0) * gap
 }
 
+/// The stable entry point every existing caller uses: fully expanded,
+/// unchanged since before The-Ply-Spec.md §7.1's collapse/expand feature
+/// existed. A thin wrapper over [`render_svg_with_options`] with the default
+/// options (`depth: None, focus: None`), which that function treats as
+/// "never collapse anything" — so this is byte-for-byte what it always was.
 pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
+    render_svg_with_options(doc, &RenderOptions::default())
+}
+
+/// `render_svg`, plus The-Ply-Spec.md §7.1's `--depth`/`--focus`/`--collapse`
+/// collapsing.
+pub fn render_svg_with_options(
+    doc: &Document,
+    options: &RenderOptions,
+) -> Result<String, RenderError> {
     // §7.1 "finding (tool-computed, not declared)": run `ply-check`'s
     // document-local rules up front, then thread `ctx` through every render
     // function below so it can mark red whatever a finding attaches to and
@@ -1104,13 +1573,33 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
     let findings = run_checks(doc);
     let ctx = FindingCtx::new(&findings);
 
+    // §7.1 collapse/expand: resolved once, consulted at every component
+    // boundary below. `collapsing_active` is false exactly when `options` is
+    // the default — every branch gated on it is therefore dead code on the
+    // default path, which is what keeps `render_svg` byte-for-byte unchanged.
+    let focus_qualified: Option<String> = match &options.focus {
+        Some(f) => Some(resolve_component_ref("--focus", f, doc)?),
+        None => None,
+    };
+    let mut explicit_collapse: Vec<String> = Vec::new();
+    for token in &options.collapse {
+        explicit_collapse.push(resolve_component_ref("--collapse", token, doc)?);
+    }
+    let collapse = CollapseCtx {
+        depth: options.depth,
+        focus: focus_qualified.as_deref(),
+        explicit: &explicit_collapse,
+    };
+    let collapsing_active =
+        options.depth.is_some() || options.focus.is_some() || !options.collapse.is_empty();
+
     let top: Vec<(String, ComponentBox)> = doc
         .components
         .iter()
         .map(|(name, c)| {
             (
                 name.clone(),
-                render_component(name, name, c, &doc.profiles, &ctx),
+                render_component_dispatch(name, name, c, &doc.profiles, &ctx, 1, &collapse),
             )
         })
         .collect();
@@ -1231,6 +1720,34 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
             });
         }
     }
+
+    // §7.1: "an edge whose endpoint is inside a collapsed component
+    // reattaches to the collapsed box itself." A qualified path with no
+    // entry above (folded away because an ancestor collapsed) redirects to
+    // the nearest ancestor that *does* have one — its box is what actually
+    // gets drawn. `effective` remembers that redirect target so edge
+    // resolution below can tell "two different endpoints" from "two
+    // endpoints that now land on the same box" (needed for the dedup and
+    // self-loop rules a few lines down); `positions` gets the same rect
+    // under the folded-away key too, so `resolve()` itself needs no change.
+    let mut effective: HashMap<String, String> = HashMap::new();
+    if collapsing_active {
+        for p in all_qualified_paths(doc) {
+            if positions.contains_key(&p) {
+                effective.insert(p.clone(), p);
+                continue;
+            }
+            let mut cur = p.as_str();
+            while let Some(idx) = cur.rfind('.') {
+                cur = &cur[..idx];
+                if let Some(&rect) = positions.get(cur) {
+                    positions.insert(p.clone(), rect);
+                    effective.insert(p.clone(), cur.to_string());
+                    break;
+                }
+            }
+        }
+    }
     let leaf_index = leaf_index_of(&positions);
 
     let frame_w = content_left + layered.content_w + extra_right + FRAME_PAD;
@@ -1291,6 +1808,19 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
         let Some((to_q, to_rect)) = resolve(&edge.to, &positions, &leaf_index)? else {
             continue;
         };
+        // §7.1 reattachment: redirect each endpoint to the box that's
+        // actually drawn (itself, unless it folded into a collapsed
+        // ancestor). A no-op when nothing is collapsing (`effective` is
+        // empty), so this never touches the default rendering path.
+        let from_q = effective.get(&from_q).cloned().unwrap_or(from_q);
+        let to_q = effective.get(&to_q).cloned().unwrap_or(to_q);
+        // Both ends now land on the same box: the edge is entirely internal
+        // to a collapsed component, and the grammar has no visual form for
+        // "a box calls itself" — drop it rather than draw a degenerate
+        // zero-length arrow.
+        if collapsing_active && from_q == to_q {
+            continue;
+        }
         resolved_edges.push(ResolvedEdge {
             from_q,
             to_q,
@@ -1298,6 +1828,24 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
             to_rect,
             edge,
             edge_index,
+        });
+    }
+    // §7.1: "two reattached edges that become duplicates (same from/to/kind)
+    // draw once." Only reachable once collapsing is active — declaring two
+    // edges into different descendants of the same collapsed component,
+    // which redirect to an identical (from, to, kind) triple. Kept in
+    // declaration order; `EdgeKind` doesn't derive `Hash`, so a `Vec` scan
+    // stands in for a set (edge counts here are always small).
+    if collapsing_active {
+        let mut seen: Vec<(String, String, EdgeKind)> = Vec::new();
+        resolved_edges.retain(|re| {
+            let key = (re.from_q.clone(), re.to_q.clone(), re.edge.kind.clone());
+            if seen.contains(&key) {
+                false
+            } else {
+                seen.push(key);
+                true
+            }
         });
     }
     let mut pair_total: IndexMap<(String, String), usize> = IndexMap::new();

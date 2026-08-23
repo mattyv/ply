@@ -1159,3 +1159,375 @@ mod hollow_and_gutter {
         }
     }
 }
+
+/// §7.1 collapse/expand: `ply-render --depth N` / `--focus <component>`.
+mod collapse {
+    use super::*;
+    use ply_render::svg::{RenderOptions, render_svg_with_options};
+
+    fn component_node<'a>(
+        doc: &'a roxmltree::Document<'a>,
+        name: &str,
+    ) -> Option<roxmltree::Node<'a, 'a>> {
+        doc.descendants().find(|n| {
+            n.tag_name().name() == "g"
+                && n.attribute("class") == Some("component")
+                && n.attribute("data-name") == Some(name)
+        })
+    }
+
+    /// The regression guard: with neither flag, output must stay exactly
+    /// what it always was. The committed vetting SVGs already are that
+    /// "always was" (verified byte-identical to the current renderer before
+    /// this feature existed) — read here, never written.
+    #[test]
+    fn default_output_is_unchanged_without_flags() {
+        for (yaml_path, svg_path) in [
+            (
+                "../../vetting/001-spsc-disruptor.ply.yaml",
+                "../../vetting/001-spsc-disruptor.svg",
+            ),
+            (
+                "../../vetting/002-ingest-pipeline.ply.yaml",
+                "../../vetting/002-ingest-pipeline.svg",
+            ),
+            (
+                "../../vetting/003-trading-system.ply.yaml",
+                "../../vetting/003-trading-system.svg",
+            ),
+        ] {
+            let svg = render_fixture(yaml_path);
+            let expected = std::fs::read_to_string(svg_path).unwrap();
+            assert_eq!(
+                svg, expected,
+                "{yaml_path}: default (no flags) output must stay byte-identical to the \
+                 committed vetting SVG"
+            );
+        }
+    }
+
+    /// §7.1: "A collapsed component is one solid-bordered box ... showing
+    /// its name, anchor, a contents line (`N components · M fns`), and its
+    /// worst-descendant ceiling/verdict fill. Three things never fold away:
+    /// capability badges ..., the unresolved-pin count, and the finding
+    /// count." Checked against vetting 003's `ingest` at `--depth 1`.
+    #[test]
+    fn collapsed_box_shows_counts_caps_pins_and_subtree_ceiling() {
+        let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let svg = render_svg_with_options(
+            &doc,
+            &RenderOptions {
+                depth: Some(1),
+                focus: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let xml = roxmltree::Document::parse(&svg).unwrap();
+
+        // ingest is one box: none of its nested components draw their own.
+        for leaf in ["feed", "ring", "decoder", "book"] {
+            assert!(
+                component_node(&xml, leaf).is_none(),
+                "{leaf} must not be drawn as its own box at --depth 1"
+            );
+        }
+
+        let ingest = component_node(&xml, "ingest").expect("ingest box must exist");
+        let box_rect = ingest
+            .children()
+            .find(|c| {
+                c.attribute("class")
+                    .is_some_and(|cl| cl.split_whitespace().any(|t| t == "component-box"))
+            })
+            .expect("ingest must have a component-box rect");
+        let classes: Vec<&str> = box_rect
+            .attribute("class")
+            .unwrap()
+            .split_whitespace()
+            .collect();
+        assert!(
+            classes.contains(&"ceiling-unclaimed"),
+            "ingest's worst descendant (Feed::pump, no checks) must drag its ceiling to \
+             unclaimed, got {classes:?}"
+        );
+
+        let contents = ingest
+            .children()
+            .filter(|c| c.tag_name().name() == "text")
+            .filter_map(|t| t.text())
+            .find(|t| t.contains("component") && t.contains("fn"))
+            .expect("ingest must draw a contents line");
+        assert_eq!(
+            contents, "4 components · 7 fns",
+            "ingest's recursive counts (feed+ring+decoder+book, and their fns) are wrong"
+        );
+
+        let badge_labels: Vec<&str> = ingest
+            .descendants()
+            .filter(|n| n.attribute("class") == Some("cap-badge"))
+            .filter_map(|g| g.children().find(|c| c.tag_name().name() == "text"))
+            .filter_map(|t| t.text())
+            .collect();
+        assert!(
+            badge_labels.contains(&"net"),
+            "ingest's collapsed badges must include feed's `net` (union of the subtree), got \
+             {badge_labels:?}"
+        );
+        assert!(
+            badge_labels.contains(&"unsafe"),
+            "ingest's collapsed badges must include ring's `unsafe` (union of the subtree), got \
+             {badge_labels:?}"
+        );
+
+        // the workspace registry pin (#8) is unaffected by any component
+        // collapsing — it belongs to the workspace, not to a component.
+        let registry_pin = xml
+            .descendants()
+            .filter(|n| n.tag_name().name() == "title")
+            .filter_map(|n| n.text())
+            .find(|t| t.starts_with("#8"));
+        assert!(
+            registry_pin.is_some(),
+            "the #8 registry pin must still render at --depth 1"
+        );
+    }
+
+    /// §7.1: "an edge whose endpoint is inside a collapsed component
+    /// reattaches to the collapsed box itself." Checked against vetting
+    /// 003's `strategy -> ingest.book` at `--depth 1`.
+    #[test]
+    fn edges_reattach_to_collapsed_ancestors() {
+        let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let svg = render_svg_with_options(
+            &doc,
+            &RenderOptions {
+                depth: Some(1),
+                focus: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let xml = roxmltree::Document::parse(&svg).unwrap();
+
+        let strategy_rect = absolute_component_rect(&xml, "strategy");
+        let ingest_rect = absolute_component_rect(&xml, "ingest");
+
+        let mut found = false;
+        for node in xml
+            .descendants()
+            .filter(|n| n.attribute("class") == Some("edge-call"))
+        {
+            let path = node
+                .children()
+                .find(|c| c.tag_name().name() == "path")
+                .expect("edge-call must draw a path");
+            let (from, to) = parse_line_path(path.attribute("d").unwrap());
+            if on_boundary(from.0, from.1, strategy_rect, 1.0)
+                && on_boundary(to.0, to.1, ingest_rect, 1.0)
+            {
+                found = true;
+            }
+        }
+        assert!(
+            found,
+            "no edge-call runs from strategy's box boundary to ingest's box boundary — the \
+             strategy -> ingest.book edge must reattach to the collapsed ingest box"
+        );
+    }
+
+    /// §7.1: `--collapse <component>` (repeatable, dotted paths allowed)
+    /// folds exactly the named component(s); everything else renders fully
+    /// expanded — the opposite selection bias to `--depth`/`--focus`.
+    #[test]
+    fn collapse_flag_folds_only_the_named_component() {
+        let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let svg = render_svg_with_options(
+            &doc,
+            &RenderOptions {
+                depth: None,
+                focus: None,
+                collapse: vec!["ingest".to_string()],
+            },
+        )
+        .unwrap();
+        let xml = roxmltree::Document::parse(&svg).unwrap();
+
+        // ingest folds...
+        for leaf in ["feed", "ring", "decoder", "book"] {
+            assert!(
+                component_node(&xml, leaf).is_none(),
+                "{leaf} must fold away under --collapse ingest"
+            );
+        }
+        let ingest = component_node(&xml, "ingest").expect("ingest box must exist");
+        let contents = ingest
+            .children()
+            .filter(|c| c.tag_name().name() == "text")
+            .filter_map(|t| t.text())
+            .find(|t| t.contains("component") && t.contains("fn"))
+            .expect("ingest must draw a contents line");
+        // feed(1) + ring(2) + decoder(1) + book(3) fns, 4 nested components.
+        assert_eq!(contents, "4 components · 7 fns");
+        let badge_labels: Vec<&str> = ingest
+            .descendants()
+            .filter(|n| n.attribute("class") == Some("cap-badge"))
+            .filter_map(|g| g.children().find(|c| c.tag_name().name() == "text"))
+            .filter_map(|t| t.text())
+            .collect();
+        assert!(badge_labels.contains(&"net"));
+        assert!(badge_labels.contains(&"unsafe"));
+
+        // ...but everything else stays fully expanded, exactly as default.
+        for name in ["strategy", "signals", "risk", "oms", "gateway", "pnl"] {
+            assert!(
+                component_node(&xml, name).is_some(),
+                "{name} must still render its own box at --collapse ingest"
+            );
+        }
+        let momentum_chip = xml.descendants().find(|n| {
+            n.tag_name().name() == "g"
+                && n.attribute("class") == Some("fn-chip")
+                && n.attribute("data-fn") == Some("momentum")
+        });
+        assert!(
+            momentum_chip.is_some(),
+            "strategy.signals::momentum must still draw its fn chip — strategy is not collapsed"
+        );
+    }
+
+    /// §7.1: "`--focus <component>` ... the focused component renders fully
+    /// expanded, everything else collapses to depth 1."
+    #[test]
+    fn focus_expands_its_target_and_collapses_the_rest() {
+        let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let svg = render_svg_with_options(
+            &doc,
+            &RenderOptions {
+                depth: None,
+                focus: Some("ingest".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let xml = roxmltree::Document::parse(&svg).unwrap();
+
+        // the focus target's whole subtree is fully expanded.
+        for leaf in ["feed", "ring", "decoder", "book"] {
+            assert!(
+                component_node(&xml, leaf).is_some(),
+                "{leaf} must still be drawn at its own box when its ancestor is the --focus \
+                 target"
+            );
+        }
+
+        // everything else collapses.
+        assert!(
+            component_node(&xml, "signals").is_none(),
+            "signals must collapse away — it is outside the --focus target"
+        );
+    }
+
+    /// §7.1 invariant coverage at depth: the two whole-document invariants
+    /// (every painted element resolves a style rule; every drawn item
+    /// resolves a tooltip) must still hold once collapsing is in play — a
+    /// construct that only shows up in the collapsed form must not slip
+    /// through unstyled or untitled.
+    #[test]
+    fn invariants_hold_at_depth_1() {
+        let style = format!(
+            "{}{}",
+            ply_render::svg::STYLE,
+            ply_render::svg::FINDING_STYLE
+        );
+        let matches_selector = |class: &str, tag: &str| {
+            style.contains(&format!(".{class}{{"))
+                || style.contains(&format!(".{class},"))
+                || style.contains(&format!(".{class} {tag}{{"))
+                || style.contains(&format!(".{class} {tag},"))
+        };
+        const ITEM_CLASSES: &[&str] = &[
+            "workspace-frame",
+            "component",
+            "fn-chip",
+            "cap-badge",
+            "profile-tag",
+            "fn-shield",
+            "unresolved-pin",
+            "registry-pin",
+            "edge-call",
+            "edge-flow",
+            "deny-rule",
+            "any-node",
+        ];
+
+        let mut unstyled: Vec<String> = Vec::new();
+        let mut untitled: Vec<String> = Vec::new();
+        for fixture in [
+            "../../vetting/001-spsc-disruptor.ply.yaml",
+            "../../vetting/002-ingest-pipeline.ply.yaml",
+            "../../vetting/003-trading-system.ply.yaml",
+            "tests/fixtures/full.ply.yaml",
+            "tests/fixtures/qualified_refs.ply.yaml",
+        ] {
+            let yaml = std::fs::read_to_string(fixture).unwrap();
+            let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let svg = render_svg_with_options(
+                &doc,
+                &RenderOptions {
+                    depth: Some(1),
+                    focus: None,
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let xml = roxmltree::Document::parse(&svg).unwrap();
+
+            for node in xml.descendants().filter(|n| n.is_element()) {
+                let tag = node.tag_name().name();
+                if matches!(tag, "rect" | "circle" | "path" | "text" | "line") {
+                    if node.ancestors().any(|a| a.tag_name().name() == "defs") {
+                        continue;
+                    }
+                    let resolved = node
+                        .ancestors()
+                        .filter_map(|a| a.attribute("class"))
+                        .flat_map(|c| c.split_whitespace())
+                        .any(|c| matches_selector(c, tag));
+                    if !resolved {
+                        unstyled.push(format!(
+                            "{fixture}: <{tag}> class={:?}",
+                            node.attribute("class")
+                        ));
+                    }
+                }
+                let Some(class) = node.attribute("class") else {
+                    continue;
+                };
+                if !ITEM_CLASSES.contains(&class) {
+                    continue;
+                }
+                let titled = node
+                    .ancestors()
+                    .any(|a| a.children().any(|c| c.tag_name().name() == "title"));
+                if !titled {
+                    untitled.push(format!("{fixture}: .{class}"));
+                }
+            }
+        }
+        assert!(
+            unstyled.is_empty(),
+            "painted elements with no style rule at --depth 1: {unstyled:?}"
+        );
+        untitled.sort();
+        untitled.dedup();
+        assert!(
+            untitled.is_empty(),
+            "drawn items with no tooltip at --depth 1: {untitled:?}"
+        );
+    }
+}

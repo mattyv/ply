@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use ply_render::model::parse_document;
-use ply_render::svg::render_svg;
+use ply_render::svg::{RenderOptions, render_svg_with_options};
 
 /// Minimal static renderer: `ply.yaml` -> SVG. Proves the §7.1 visual
 /// grammar is total. Not a GUI, not the future canvas — see The-Ply-Spec.md §7.1.
@@ -16,6 +16,25 @@ struct Cli {
     /// Output path for the SVG. Defaults to stdout.
     #[arg(short = 'o', long = "out")]
     out: Option<PathBuf>,
+
+    /// Collapse components nested N or more levels deep (top-level = 1) into
+    /// one box each, folding their contents. §7.1: depth 1 shows only
+    /// top-level boxes, their interiors folded. Omit for the default:
+    /// fully expanded, unchanged.
+    #[arg(long = "depth")]
+    depth: Option<usize>,
+
+    /// Render this component (dotted path allowed, e.g. `ingest.book`)
+    /// fully expanded; every other component collapses at the point it
+    /// diverges from the path down to it. §7.1 mirrors `tree --focus`.
+    #[arg(long = "focus")]
+    focus: Option<String>,
+
+    /// Collapse this component (dotted path allowed; repeat the flag for
+    /// more than one). Everything not named here renders exactly as the
+    /// fully-expanded default would — the inverse selection to `--focus`.
+    #[arg(long = "collapse")]
+    collapse: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -40,7 +59,12 @@ fn main() -> ExitCode {
         }
     };
 
-    let svg = match render_svg(&doc) {
+    let options = RenderOptions {
+        depth: cli.depth,
+        focus: cli.focus,
+        collapse: cli.collapse,
+    };
+    let svg = match render_svg_with_options(&doc, &options) {
         Ok(svg) => svg,
         Err(e) => {
             eprintln!("error: {} could not be rendered: {e}", cli.input.display());
