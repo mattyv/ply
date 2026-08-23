@@ -45,6 +45,7 @@ Terms this spec uses without further explanation. Ply-specific terms are marked 
 | fixture | A small sample cargo project that tests use as a check target. |
 | ADR | Architecture decision record: a one-paragraph note in `docs/adr/` stating a decision and its reason. |
 | syn | The Rust library that parses Rust source into a syntax tree. It performs no name resolution, type inference, or macro expansion — a limit this design respects. |
+| serde | Rust's standard serialization framework: `#[derive(Serialize, Deserialize)]` on a struct generates conversion to and from any data format with a serde backend. A serde-YAML implementation is the backend that plugs YAML in — it is how Ply reads `ply.yaml` into typed structs with no hand-written parser (D3). The canonical `serde_yaml` crate is archived; ADR-0002 picks a maintained fork. |
 
 ## 1. Mission & evidence base
 
