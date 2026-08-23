@@ -55,10 +55,18 @@
       used it must announce the skip (W0541 reason `budget_exhausted`). The ~20s
       near-fixed cost is accepted, shown in progress output, and optimised by making
       it cheaper — never by skipping it.
-- [ ] **Callee-before-caller ordering needs kernel-grade treatment.** ADR-0003 proved
-      Kani gives no backstop: a caller verifies while assuming an unproved callee. The
-      scheduler that orders callees first is now soundness-critical and should be a pure
-      module with its own invariant tests, like the verdict kernel.
+- [x] **Callee-before-caller ordering got kernel-grade treatment** — new `ply-schedule`
+      crate: SCC-condensation planning (cycles land in one batch, never deadlock) and a
+      `may_stub` decision that returns Allowed ONLY when the callee's proof actually
+      passed this run. Invariants enumerated exhaustively: all 65,536 four-node digraphs
+      for planning, 4,096 graph+config combinations for the stub decision, both against
+      oracles written from D5's text rather than from the production code. Mutation-
+      checked by letting `NotRun` license a stub — the exact unsound shortcut Kani
+      itself takes — and confirming it goes red.
+- [ ] **D5 ambiguity surfaced by the scheduler**: cross-crate proof results are really
+      scoped per (calling-crate, callee), since each consumer re-proves locally, but
+      `ProofResults` models one global status per fn. Exact for same-crate; a
+      simplification cross-crate. Decide before M3 whether the distinction matters.
 - [x] **Real defect fixed: component-level `checks` inheritance** (merged from
       worktree): a fn's own list wins entirely; otherwise it inherits the nearest
       ancestor component's default. Resolution lives once in `ply-model` so the
