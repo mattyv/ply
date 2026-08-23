@@ -26,7 +26,7 @@
             "id": "h-1",
             "statement": "Heap-allocating std collections (BTreeSet/Vec/String) are the specific blocker: CBMC symbolically unwinds their generic allocation/clone/sort algorithms, and code avoiding them verifies fine",
             "prior": 0.2975,
-            "posterior": 0.8921489147084095,
+            "posterior": 0.8587168355295806,
             "status": "active",
             "predictedEvidence": [
               "scalar and small-struct targets verify in ~0.1s",
@@ -40,7 +40,7 @@
             "id": "h-2",
             "statement": "Our harnesses are written wrong (unbounded symbolic length, missing kani::any_vec, missing unwind bounds), so this is a fixture defect not a Kani limit",
             "prior": 0.17,
-            "posterior": 0.021940177355427467,
+            "posterior": 0.036996870464993295,
             "status": "active",
             "predictedEvidence": [
               "a Vec bounded to length 1 still times out, which is absurd for a genuine capability limit",
@@ -53,7 +53,7 @@
             "id": "h-3",
             "statement": "Recursion in the target is the real cost driver, independent of collections: CBMC cannot bound recursive descent through a tree structure",
             "prior": 0.1275,
-            "posterior": 0.018584620818715043,
+            "posterior": 0.04612276517969162,
             "status": "active",
             "predictedEvidence": [
               "a single leaf verifies but one level of recursion does not",
@@ -66,7 +66,7 @@
             "id": "h-4",
             "statement": "Bounded model checking simply does not scale to ordinary Rust at all: any target beyond toy scalars is intractable regardless of shape, and routing bounded to Kani is unviable as designed",
             "prior": 0.1275,
-            "posterior": 0.014228850314328701,
+            "posterior": 0.00030926176549684795,
             "status": "active",
             "predictedEvidence": [
               "fixed-size arrays time out too, not just Vec",
@@ -79,7 +79,7 @@
             "id": "h-5",
             "statement": "It is a configuration and flag problem: the right unwind bounds, solver choice, or stubbing makes these targets tractable and we have not found the recipe",
             "prior": 0.1275,
-            "posterior": 0.003097436803119175,
+            "posterior": 0.007854267060237409,
             "status": "active",
             "predictedEvidence": [
               "a solver swap or object-bits change flips a timeout to verified",
@@ -149,6 +149,66 @@
             },
             "clusterId": "c-5",
             "clusterMethod": "new"
+          },
+          {
+            "id": "obs-6",
+            "text": "Disambiguated: the Vec length-1 timeout was a CBMC unwinding timeout, not a contract failure \u2014 a generic iterator loop unwound past 1150 iterations on a Vec bounded to 1",
+            "timestamp": 1787494479257,
+            "provenance": {
+              "sourceType": "firsthand",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-6",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-7",
+            "text": "Intervention: adding an explicit #[kani::unwind(N)] sized to the declared bound COMPLETELY fixes Vec, cheaply, at every size tried. The deciding factor was a symbolic loop bound that Kani's default unwind inference does not handle",
+            "timestamp": 1787494479293,
+            "provenance": {
+              "sourceType": "intervention",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-7",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-8",
+            "text": "Fixed-size arrays [T;N] verify cheaply at every N up to 16 with NO unwind annotation needed, because the bound is a compile-time constant",
+            "timestamp": 1787494479328,
+            "provenance": {
+              "sourceType": "firsthand",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-8",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-9",
+            "text": "BTreeSet has a second independent cost beyond loop bounds \u2014 its own generic insert algorithm, expensive past one element \u2014 which the unwind fix does not touch",
+            "timestamp": 1787494479363,
+            "provenance": {
+              "sourceType": "firsthand",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-9",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-10",
+            "text": "Intervention: the kernel's actual shape (recursion through a Vec<Self> field, 3 nodes, one level) times out at 60s AND at 180s even WITH the unwind fix; symbolic execution alone took 104s and produced 64,147 verification conditions",
+            "timestamp": 1787494479398,
+            "provenance": {
+              "sourceType": "intervention",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-10",
+            "clusterMethod": "new"
           }
         ],
         "posteriorHistory": [
@@ -163,43 +223,55 @@
               "h-5": 0.003097436803119175
             },
             "trigger": "manual"
+          },
+          {
+            "timestamp": 1787494517859,
+            "posteriors": {
+              "other": 0.05,
+              "h-1": 0.8587168355295806,
+              "h-2": 0.036996870464993295,
+              "h-3": 0.04612276517969162,
+              "h-4": 0.00030926176549684795,
+              "h-5": 0.007854267060237409
+            },
+            "trigger": "manual"
           }
         ],
         "lastScoring": {
-          "timestamp": 1787492712816,
+          "timestamp": 1787494517859,
           "matrix": [
             {
               "clusterId": "c-1",
               "likelihoods": [
                 {
                   "hypothesisId": "h-1",
-                  "likelihood": 0.95,
-                  "rationale": "exactly what collections-are-the-blocker predicts: non-collection code is fast"
+                  "likelihood": 0.9,
+                  "rationale": "non-collection code fast, as predicted"
                 },
                 {
                   "hypothesisId": "h-2",
                   "likelihood": 0.6,
-                  "rationale": "consistent, but a fixture defect would not explain why scalars are fine"
+                  "rationale": "consistent"
                 },
                 {
                   "hypothesisId": "h-3",
-                  "likelihood": 0.8,
-                  "rationale": "scalars are non-recursive, so speed is expected either way"
+                  "likelihood": 0.85,
+                  "rationale": "scalars are non-recursive so speed expected"
                 },
                 {
                   "hypothesisId": "h-4",
                   "likelihood": 0.15,
-                  "rationale": "strongly against: toy scalars verifying is the boundary this hypothesis draws, but it predicts nothing works beyond them"
+                  "rationale": "against: toy scalars work"
                 },
                 {
                   "hypothesisId": "h-5",
                   "likelihood": 0.5,
-                  "rationale": "neutral: config problems would not stop scalars either"
+                  "rationale": "neutral"
                 },
                 {
                   "hypothesisId": "other",
                   "likelihood": 0.5,
-                  "rationale": "uninformative for an unknown cause"
+                  "rationale": "uninformative"
                 }
               ]
             },
@@ -208,33 +280,33 @@
               "likelihoods": [
                 {
                   "hypothesisId": "h-1",
-                  "likelihood": 0.9,
-                  "rationale": "the trace naming BTreeMap clone_subtree is direct evidence for collections"
+                  "likelihood": 0.8,
+                  "rationale": "trace names BTreeMap internals"
                 },
                 {
                   "hypothesisId": "h-2",
-                  "likelihood": 0.25,
-                  "rationale": "the kernel harness shim was already minimal; a fixture defect is a poor fit"
+                  "likelihood": 0.3,
+                  "rationale": "shim was minimal"
                 },
                 {
                   "hypothesisId": "h-3",
-                  "likelihood": 0.5,
-                  "rationale": "the kernel is recursive too, so partially consistent"
+                  "likelihood": 0.85,
+                  "rationale": "the kernel is exactly the recursive shape"
                 },
                 {
                   "hypothesisId": "h-4",
                   "likelihood": 0.5,
-                  "rationale": "consistent with a general scale wall"
+                  "rationale": "consistent"
                 },
                 {
                   "hypothesisId": "h-5",
                   "likelihood": 0.4,
-                  "rationale": "weakly consistent"
+                  "rationale": "weak"
                 },
                 {
                   "hypothesisId": "other",
                   "likelihood": 0.4,
-                  "rationale": "neutral-ish"
+                  "rationale": "weak"
                 }
               ]
             },
@@ -243,28 +315,28 @@
               "likelihoods": [
                 {
                   "hypothesisId": "h-1",
-                  "likelihood": 0.9,
-                  "rationale": "removing one collection moved the wall to the next collection: the signature prediction of this hypothesis"
+                  "likelihood": 0.85,
+                  "rationale": "wall moved to the next collection"
                 },
                 {
                   "hypothesisId": "h-2",
-                  "likelihood": 0.2,
-                  "rationale": "a fixture defect would not shift predictably from BTreeSet to String sort"
+                  "likelihood": 0.25,
+                  "rationale": "poor fit"
                 },
                 {
                   "hypothesisId": "h-3",
-                  "likelihood": 0.3,
-                  "rationale": "recursion was unchanged by the intervention, yet behaviour changed"
+                  "likelihood": 0.55,
+                  "rationale": "recursion unchanged yet behaviour changed"
                 },
                 {
                   "hypothesisId": "h-4",
                   "likelihood": 0.35,
-                  "rationale": "partial improvement argues against a hard universal wall"
+                  "rationale": "partial improvement argues against a hard wall"
                 },
                 {
                   "hypothesisId": "h-5",
                   "likelihood": 0.3,
-                  "rationale": "the intervention was representational, not configurational"
+                  "rationale": "representational not configurational"
                 },
                 {
                   "hypothesisId": "other",
@@ -278,8 +350,8 @@
               "likelihoods": [
                 {
                   "hypothesisId": "h-1",
-                  "likelihood": 0.7,
-                  "rationale": "consistent: config cannot fix an encoding-size problem"
+                  "likelihood": 0.6,
+                  "rationale": "consistent"
                 },
                 {
                   "hypothesisId": "h-2",
@@ -288,18 +360,18 @@
                 },
                 {
                   "hypothesisId": "h-3",
+                  "likelihood": 0.7,
+                  "rationale": "consistent: flags do not fix recursion"
+                },
+                {
+                  "hypothesisId": "h-4",
                   "likelihood": 0.6,
                   "rationale": "consistent"
                 },
                 {
-                  "hypothesisId": "h-4",
-                  "likelihood": 0.7,
-                  "rationale": "consistent with a hard wall"
-                },
-                {
                   "hypothesisId": "h-5",
-                  "likelihood": 0.08,
-                  "rationale": "decisive against: this is the direct experimental test of the config hypothesis and it failed"
+                  "likelihood": 0.25,
+                  "rationale": "against, but softened: unwind DID later fix simpler cases, so config was not wholly irrelevant"
                 },
                 {
                   "hypothesisId": "other",
@@ -313,23 +385,128 @@
               "likelihoods": [
                 {
                   "hypothesisId": "h-1",
-                  "likelihood": 0.55,
-                  "rationale": "a length-1 Vec still carries the full symbolic Vec machinery, so consistent but surprisingly extreme"
+                  "likelihood": 0.5,
+                  "rationale": "consistent but extreme"
                 },
                 {
                   "hypothesisId": "h-2",
                   "likelihood": 0.85,
-                  "rationale": "a bound of ONE timing out is the classic signature of an unbounded symbolic length in the harness"
+                  "rationale": "classic unbounded-symbolic-length fingerprint"
                 },
                 {
                   "hypothesisId": "h-3",
                   "likelihood": 0.2,
-                  "rationale": "no recursion in a flat Vec sum"
+                  "rationale": "no recursion in a flat sum"
                 },
                 {
                   "hypothesisId": "h-4",
                   "likelihood": 0.6,
-                  "rationale": "consistent with a general wall"
+                  "rationale": "consistent"
+                },
+                {
+                  "hypothesisId": "h-5",
+                  "likelihood": 0.6,
+                  "rationale": "consistent with a missing recipe"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.4,
+                  "rationale": "weak"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-6",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.35,
+                  "rationale": "a loop-bound timeout is not the collection-encoding story"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.9,
+                  "rationale": "directly confirms the harness lacked a needed bound"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.2,
+                  "rationale": "no recursion involved"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.3,
+                  "rationale": "against a universal wall"
+                },
+                {
+                  "hypothesisId": "h-5",
+                  "likelihood": 0.8,
+                  "rationale": "a missing flag/annotation is exactly this hypothesis"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.4,
+                  "rationale": "weak"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-7",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.25,
+                  "rationale": "decisive against pure collection-encoding: Vec becomes cheap once bounded"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.95,
+                  "rationale": "the intervention that fixes it proves the harness was the defect for this case"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.3,
+                  "rationale": "silent on recursion"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.1,
+                  "rationale": "decisive against: Vec verifies cheaply"
+                },
+                {
+                  "hypothesisId": "h-5",
+                  "likelihood": 0.9,
+                  "rationale": "an annotation recipe is exactly what this predicted"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.3,
+                  "rationale": "weak"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-8",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.7,
+                  "rationale": "arrays cheap where Vec needed help: partly supports shape mattering"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.7,
+                  "rationale": "consistent: constant bounds need no annotation"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.4,
+                  "rationale": "neutral"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.05,
+                  "rationale": "decisive against a universal scale wall"
                 },
                 {
                   "hypothesisId": "h-5",
@@ -338,20 +515,90 @@
                 },
                 {
                   "hypothesisId": "other",
+                  "likelihood": 0.3,
+                  "rationale": "weak"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-9",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.9,
+                  "rationale": "an independent collection-internal cost is precisely this hypothesis"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.2,
+                  "rationale": "not a harness defect: the fix does not touch it"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.3,
+                  "rationale": "not recursion"
+                },
+                {
+                  "hypothesisId": "h-4",
                   "likelihood": 0.4,
+                  "rationale": "weakly consistent"
+                },
+                {
+                  "hypothesisId": "h-5",
+                  "likelihood": 0.2,
+                  "rationale": "against: no flag fixes it"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.35,
+                  "rationale": "weak"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-10",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.3,
+                  "rationale": "against: the Vec here is bounded and the unwind fix applied, yet it still fails"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.1,
+                  "rationale": "decisive against: the harness now has the right bound and it still times out"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.95,
+                  "rationale": "the signature prediction: recursion is the wall, unfixable by the technique that fixes flat cases"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.45,
+                  "rationale": "partially consistent, but arrays and Vec working argue against universality"
+                },
+                {
+                  "hypothesisId": "h-5",
+                  "likelihood": 0.1,
+                  "rationale": "decisive against: the recipe exists and does not help here"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.3,
                   "rationale": "weak"
                 }
               ]
             }
           ],
-          "entropy": 0.2722852429374014
+          "entropy": 0.326505652224258
         },
         "lastSurfacedTopId": "h-1",
         "calibration": [],
         "hSeq": 5,
-        "obsSeq": 5,
-        "clusterSeq": 5,
-        "lastObservationAt": 1787492687174
+        "obsSeq": 10,
+        "clusterSeq": 10,
+        "lastObservationAt": 1787494479398
       }
     }
   }

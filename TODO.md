@@ -31,10 +31,17 @@
       M0 spike" was false. Real mechanism verified and specced; `--gitignore false`
       must be pinned or the build fails; `W0502` now caveats equivalent mutants
       (strong spec killed 13/14, the survivor was provably equivalent, not a gap).
-- [ ] **Scale spike before M3 commits to Kani.** M0 used scalars and small structs; our
-      own pure kernel is still unprovable on `BTreeSet`/`Vec`. Establish what
-      collection-shaped code Kani actually handles, then rewrite §5.4b's
-      supported-signature story around that evidence instead of optimism.
+- [x] **Scale spike done; §5.4b rewritten around evidence** (tests/spike/scale/).
+      Headline: recursive/self-referential types are NOT supported in v1 — a 3-node
+      tree makes 64,147 verification conditions and doesn't finish in 180s, even with
+      the unwind fix that makes flat `Vec` cheap. That is the shape of our own verdict
+      tree. Also: `Vec` works ONLY if codegen emits `#[kani::unwind(N+1)]`; fixed
+      arrays are cheap and become the preferred shape; BTreeSet/BTreeMap are out past
+      one element; HashMap needs a codegen hasher swap or it won't compile.
+- [ ] **Consequence to decide**: Ply's own verdict kernel is a recursive tree, so Ply
+      cannot `bounded`-check its own kernel. Either the kernel gets an array-shaped
+      representation for verification, or the self-hosting claim in CLAUDE.md needs
+      qualifying.
 - [ ] **D7 correction: the generated playback test does not reproduce contract
       violations.** Adversarial re-verification found `cargo kani playback` never
       evaluates contract closures — only the real body runs — so an `ensures` violation

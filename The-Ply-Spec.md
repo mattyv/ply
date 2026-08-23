@@ -396,11 +396,38 @@ unverified helper that panics or lies poisons every contract built on it.
 
 #### 5.4b Supported signatures
 
-An engine can only check a function whose inputs it can construct. v1 supports functions
-whose parameters and return type are, recursively: integers, `bool`, `char`, structs and
-enums of supported types with Ply-derivable `Arbitrary` (public, invariant-free fields),
-`Option`/`Result`/`Vec` of supported types, and `&T`/`&[T]` of the above (built from an
-owned value in the harness). Everything else — trait objects, generics, smart pointers,
+An engine can only check a function whose inputs it can construct — and, as the scale
+spike established (`tests/spike/scale/SCALE-FINDINGS.md`, 2026-08-23), constructibility is
+not sufficient: a type Kani can *build* may still be one it cannot *finish*. The list below
+is evidence-backed, measured, not inferred.
+
+v1 supports functions whose parameters and return type are, recursively:
+
+- **integers, `bool`, `char`, `Option<T>`, `Result<T,E>`** of supported types — cheap
+  unconditionally (~0.1s);
+- **fixed-size arrays `[T; N]`** — cheap at every N measured up to 16 with no annotation,
+  because the bound is a compile-time constant. This is v1's **preferred** bounded-
+  collection shape, and generated harnesses should reach for it first;
+- **`Vec<T>`** — supported **only because Ply's harness codegen emits an explicit
+  `#[kani::unwind(N+1)]` sized to the declared bound**. Without that annotation a `Vec`
+  times out at *every* length measured, including length 1. Promising `Vec` support
+  without stating this requirement would be dishonest;
+- **structs and enums** of the above with Ply-derivable `Arbitrary` (public,
+  invariant-free fields);
+- **`&T`/`&[T]`** of the above (built from an owned value in the harness).
+
+Measured exclusions, each named rather than left for a user to discover by timing out:
+
+- **`BTreeSet`/`BTreeMap` beyond a single element** — `insert`'s own generic algorithm is
+  intractable at two elements even with the unwind fix applied.
+- **`HashMap`/`HashSet` with the default hasher** — a compile error, not a timeout
+  (`RandomState` has no `Arbitrary`). Ply's codegen must substitute a deterministic hasher
+  itself; a user cannot be expected to know this.
+- **Recursive or self-referential types** (`Vec<Self>`, `Box<Self>` — any tree or linked
+  structure) — not supported in v1, even at one level of real recursion, even with the
+  unwind fix. A 3-node tree produced 64,147 verification conditions and did not finish in
+  180s. This is the exact shape of Ply's own verdict tree, which is why it is the spike's
+  headline finding rather than a footnote. Everything else — trait objects, generics, smart pointers,
 non-exhaustive or private-field types without a user-supplied generator — yields status
 `unsupported` with diagnostic `V0505` naming the offending type. Unsupported is a
 reported fact, never a harness build failure. A user-supplied generator hook (a
