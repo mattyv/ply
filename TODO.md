@@ -41,6 +41,15 @@
       generated test must assert the postcondition explicitly so the failure is
       panic-shaped and therefore replayable. Kani reportedly warns when it declines to
       generate a test; no warning appeared in our run, so don't depend on it.
+      → PLAN WRITTEN: docs/plans/d7-replayable-tests.md (worked example compiled and
+      run red-for-the-right-reason). Decisions to review before implementing: the
+      generated test lives in an in-crate `cfg(test)` module (private items are
+      unreachable from `tests/`); contract expressions render through one shared
+      overflow-safe assertion renderer, widening to i128 so the assertion states the
+      broken promise instead of re-triggering the overflow; refusals reuse W0541 with
+      a reason field; and `counterexample.kani_playback` is renamed `kani_witness` so
+      the schema stops implying it reproduces anything. OPEN: the witness budget
+      policy (--witnesses=all|N|none).
 - [ ] **Callee-before-caller ordering needs kernel-grade treatment.** ADR-0003 proved
       Kani gives no backstop: a caller verifies while assuming an unproved callee. The
       scheduler that orders callees first is now soundness-critical and should be a pure
