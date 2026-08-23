@@ -594,8 +594,10 @@ here — reusing a channel for a second meaning is refused the way an undrawable
 construct is. The acceptance check is the **squint test**: blurred, the picture must
 still say where the system is weak (pale), wrong (red), unfinished (dashed), and
 waiting on a human (amber). A form whose meaning dies under squint is decoration, not
-grammar. Words live in tooltips and the frame tooltip; the canvas itself carries no
-legend.
+grammar. Words live in tooltips and the frame tooltip; the canvas carries no legend by default —
+the picture must work on instinct alone. `ply-render --legend` opts into a compact
+legend strip appended below the frame (for docs, onboarding, print), generated from the
+same style constants the renderer draws with, so legend and drawing cannot drift apart.
 
 Gate debt: three constructs already in the grammar still have no assigned visual form —
 `strict`, `mode: synth`, and `examples`. They predate the gate; each needs a form or
