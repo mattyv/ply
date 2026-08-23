@@ -282,6 +282,23 @@ fn glyphs_are_explained_by_a_hover_title() {
     assert!(ring.contains("profile hot_path = no_panics, exhaustive_match"));
     assert!(ring.contains("capabilities: unsafe"));
     assert!(ring.contains("owns (sole mutator of): disruptor::spsc::Spsc"));
+
+    // A pure component draws a double border; the tooltip must explain that
+    // visual, not just assert the fact (vetting 002: "why does decoder have
+    // a double line?").
+    let svg = render_fixture("../../vetting/002-ingest-pipeline.ply.yaml");
+    let doc = roxmltree::Document::parse(&svg).unwrap();
+    let decoder = doc
+        .descendants()
+        .filter(|n| n.tag_name().name() == "title")
+        .filter_map(|n| n.text())
+        .find(|t| t.starts_with("component decoder"))
+        .unwrap();
+    assert!(
+        decoder.contains("double border"),
+        "pure tooltip must explain the double border, got: {decoder}"
+    );
+    assert!(decoder.contains("no capabilities"));
 }
 
 /// "Tooltips for all items": the invariant, not a spot-check. Every drawn item

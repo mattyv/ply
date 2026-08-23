@@ -398,7 +398,11 @@ fn render_component(
 
     let mut tip = vec![format!("component {name} — anchored at {}", comp.anchor)];
     if comp.pure {
-        tip.push("pure — no capabilities, sealed".into());
+        tip.push(
+            "pure — the double border is the seal: this component declares no capabilities \
+             and may not use any; capability use inside it is an error (A0408)"
+                .into(),
+        );
     } else if !comp.uses.is_empty() {
         tip.push(format!("capabilities: {}", comp.uses.join(", ")));
     }
