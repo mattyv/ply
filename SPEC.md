@@ -55,18 +55,25 @@ Coding agents write plausible code; checkers make it correct. Four empirical fin
 the 2025–26 verification literature drive the design:
 
 1. **The generate→check→repair loop works and is improving fast.** Dafny auto-verification
-   went from 68% to 97% in one year; Verus/Rust sits at 44% and climbing.
-2. **Feedback quality is the dominant variable.** Structured feedback that includes a
-   counterexample moves agent success rates from ~0% to ~80% on identical models. Every
-   falsified executable claim Ply reports therefore MUST carry a concrete failing input
-   and, where possible, a replayable test. (Architecture violations, timeouts, tool
-   errors, and surviving mutants have no input witness; they carry spans and evidence of
-   their own kind.)
-3. **Local success does not compose.** Models that verify single functions at 95%+
-   collapse below 5% on multi-function programs that require cross-boundary reasoning.
-   Verification is therefore modular by construction: Ply checks every function against
-   its own contract, and checks callers against their callees' *contracts*, never their
-   bodies.
+   went from 68% to 96% in one year ([DafnyBench](https://arxiv.org/abs/2406.08467) →
+   [vericoding benchmark](https://arxiv.org/abs/2509.22908)); Verus/Rust sits at 44% and
+   climbing (same source; [AutoVerus](https://arxiv.org/abs/2409.13082) reports ~90% on
+   its own bench vs 45% for direct prompting).
+2. **Feedback quality is the dominant variable.** With the model held fixed,
+   counterexample-guided repair lifts success from 12% to 97% in controlled ablations
+   ([CEGR](https://arxiv.org/pdf/2605.13817)); structured repair values roughly triple
+   agent-loop success on identical models ([Ray & Goyal](https://arxiv.org/html/2607.14167v1)).
+   Feedback without a witness performs little better than none. Every falsified
+   executable claim Ply reports therefore MUST carry a concrete failing input and, where
+   possible, a replayable test. (Architecture violations, timeouts, tool errors, and
+   surviving mutants have no input witness; they carry spans and evidence of their own
+   kind.)
+3. **Local success does not compose.** Models whose single-function verification
+   approaches 96% collapse below 4% on multi-function programs requiring cross-boundary
+   reasoning ([DafnyCOMP](https://arxiv.org/abs/2509.23061): 3.69% at Pass@8 with >99%
+   syntax correctness — the failure is semantic, not syntactic). Verification is
+   therefore modular by construction: Ply checks every function against its own
+   contract, and checks callers against their callees' *contracts*, never their bodies.
 4. **Machine-written specs go vacuous.** A spec can verify while claiming nothing.
    Mutation testing is therefore a first-class check: a contract that fails to kill
    mutants is flagged as weak.
