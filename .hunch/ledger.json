@@ -1,0 +1,358 @@
+{
+  "schemaVersion": 1,
+  "createdAt": 1787492636508,
+  "situations": {
+    "seq": 1,
+    "items": {
+      "sit-1": {
+        "id": "sit-1",
+        "entityRef": null,
+        "question": "Why can't Kani verify Ply's targets, and does routing bounded checks to Kani survive contact with real code?",
+        "status": "open",
+        "createdAt": 1787492636508,
+        "resolvedAt": null,
+        "resolution": null,
+        "hypotheses": [
+          {
+            "id": "other",
+            "statement": "The true explanation is not in the current candidate set",
+            "prior": 0.15,
+            "posterior": 0.05,
+            "status": "active",
+            "predictedEvidence": [],
+            "generation": 0
+          },
+          {
+            "id": "h-1",
+            "statement": "Heap-allocating std collections (BTreeSet/Vec/String) are the specific blocker: CBMC symbolically unwinds their generic allocation/clone/sort algorithms, and code avoiding them verifies fine",
+            "prior": 0.2975,
+            "posterior": 0.8921489147084095,
+            "status": "active",
+            "predictedEvidence": [
+              "scalar and small-struct targets verify in ~0.1s",
+              "replacing BTreeSet with a bitmask changes the failure mode",
+              "fixed-size arrays verify where Vec of the same length does not",
+              "the stall trace names collection internals like clone_subtree or median3_rec"
+            ],
+            "generation": 0
+          },
+          {
+            "id": "h-2",
+            "statement": "Our harnesses are written wrong (unbounded symbolic length, missing kani::any_vec, missing unwind bounds), so this is a fixture defect not a Kani limit",
+            "prior": 0.17,
+            "posterior": 0.021940177355427467,
+            "status": "active",
+            "predictedEvidence": [
+              "a Vec bounded to length 1 still times out, which is absurd for a genuine capability limit",
+              "using Kanis dedicated bounded-collection helpers fixes it",
+              "the same shape verifies when constructed differently"
+            ],
+            "generation": 0
+          },
+          {
+            "id": "h-3",
+            "statement": "Recursion in the target is the real cost driver, independent of collections: CBMC cannot bound recursive descent through a tree structure",
+            "prior": 0.1275,
+            "posterior": 0.018584620818715043,
+            "status": "active",
+            "predictedEvidence": [
+              "a single leaf verifies but one level of recursion does not",
+              "depth 1 vs 2 vs 3 shows a sharp cliff",
+              "non-recursive collection code verifies fine"
+            ],
+            "generation": 0
+          },
+          {
+            "id": "h-4",
+            "statement": "Bounded model checking simply does not scale to ordinary Rust at all: any target beyond toy scalars is intractable regardless of shape, and routing bounded to Kani is unviable as designed",
+            "prior": 0.1275,
+            "posterior": 0.014228850314328701,
+            "status": "active",
+            "predictedEvidence": [
+              "fixed-size arrays time out too, not just Vec",
+              "Option/Result of scalars are already slow",
+              "no configuration (unwind, solver, object-bits) helps anywhere"
+            ],
+            "generation": 0
+          },
+          {
+            "id": "h-5",
+            "statement": "It is a configuration and flag problem: the right unwind bounds, solver choice, or stubbing makes these targets tractable and we have not found the recipe",
+            "prior": 0.1275,
+            "posterior": 0.003097436803119175,
+            "status": "active",
+            "predictedEvidence": [
+              "a solver swap or object-bits change flips a timeout to verified",
+              "Kani docs name a supported recipe we have not applied",
+              "-Z stubbing of collection ops makes the kernel provable"
+            ],
+            "generation": 0
+          }
+        ],
+        "observations": [
+          {
+            "id": "obs-1",
+            "text": "M0 spike: scalar and small-struct contract proofs verify in 0.05-0.11s each (private fn, method with old(), struct with public fields)",
+            "timestamp": 1787492687019,
+            "provenance": {
+              "sourceType": "firsthand",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-1",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-2",
+            "text": "Ply's own verdict kernel (pure, 300 lines, BTreeSet+Vec+Option<Vec<String>> fields) never returns a verdict; CBMC trace names BTreeMap clone_subtree unwinding",
+            "timestamp": 1787492687058,
+            "provenance": {
+              "sourceType": "firsthand",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-2",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-3",
+            "text": "Intervention: replaced the kernel's BTreeSet status field with a u8 bitmask. Failure mode changed from indefinite hang to deterministic timeout at 5min; trace moved to String sort/median3_rec in the assumptions Vec",
+            "timestamp": 1787492687097,
+            "provenance": {
+              "sourceType": "intervention",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-3",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-4",
+            "text": "Intervention: tried unwind bounds 2 and 3, --object-bits 8, and the kissat solver on the kernel harnesses. None changed the outcome materially",
+            "timestamp": 1787492687136,
+            "provenance": {
+              "sourceType": "intervention",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-4",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-5",
+            "text": "Scale sweep first result: Vec<u8> bounded to length <= 1 with a sum contract did not verify within 120s",
+            "timestamp": 1787492687174,
+            "provenance": {
+              "sourceType": "firsthand",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-5",
+            "clusterMethod": "new"
+          }
+        ],
+        "posteriorHistory": [
+          {
+            "timestamp": 1787492712816,
+            "posteriors": {
+              "other": 0.05,
+              "h-1": 0.8921489147084095,
+              "h-2": 0.021940177355427467,
+              "h-3": 0.018584620818715043,
+              "h-4": 0.014228850314328701,
+              "h-5": 0.003097436803119175
+            },
+            "trigger": "manual"
+          }
+        ],
+        "lastScoring": {
+          "timestamp": 1787492712816,
+          "matrix": [
+            {
+              "clusterId": "c-1",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.95,
+                  "rationale": "exactly what collections-are-the-blocker predicts: non-collection code is fast"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.6,
+                  "rationale": "consistent, but a fixture defect would not explain why scalars are fine"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.8,
+                  "rationale": "scalars are non-recursive, so speed is expected either way"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.15,
+                  "rationale": "strongly against: toy scalars verifying is the boundary this hypothesis draws, but it predicts nothing works beyond them"
+                },
+                {
+                  "hypothesisId": "h-5",
+                  "likelihood": 0.5,
+                  "rationale": "neutral: config problems would not stop scalars either"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.5,
+                  "rationale": "uninformative for an unknown cause"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-2",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.9,
+                  "rationale": "the trace naming BTreeMap clone_subtree is direct evidence for collections"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.25,
+                  "rationale": "the kernel harness shim was already minimal; a fixture defect is a poor fit"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.5,
+                  "rationale": "the kernel is recursive too, so partially consistent"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.5,
+                  "rationale": "consistent with a general scale wall"
+                },
+                {
+                  "hypothesisId": "h-5",
+                  "likelihood": 0.4,
+                  "rationale": "weakly consistent"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.4,
+                  "rationale": "neutral-ish"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-3",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.9,
+                  "rationale": "removing one collection moved the wall to the next collection: the signature prediction of this hypothesis"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.2,
+                  "rationale": "a fixture defect would not shift predictably from BTreeSet to String sort"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.3,
+                  "rationale": "recursion was unchanged by the intervention, yet behaviour changed"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.35,
+                  "rationale": "partial improvement argues against a hard universal wall"
+                },
+                {
+                  "hypothesisId": "h-5",
+                  "likelihood": 0.3,
+                  "rationale": "the intervention was representational, not configurational"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.35,
+                  "rationale": "weak"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-4",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.7,
+                  "rationale": "consistent: config cannot fix an encoding-size problem"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.5,
+                  "rationale": "neutral"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.6,
+                  "rationale": "consistent"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.7,
+                  "rationale": "consistent with a hard wall"
+                },
+                {
+                  "hypothesisId": "h-5",
+                  "likelihood": 0.08,
+                  "rationale": "decisive against: this is the direct experimental test of the config hypothesis and it failed"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.4,
+                  "rationale": "weak"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-5",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.55,
+                  "rationale": "a length-1 Vec still carries the full symbolic Vec machinery, so consistent but surprisingly extreme"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.85,
+                  "rationale": "a bound of ONE timing out is the classic signature of an unbounded symbolic length in the harness"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.2,
+                  "rationale": "no recursion in a flat Vec sum"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.6,
+                  "rationale": "consistent with a general wall"
+                },
+                {
+                  "hypothesisId": "h-5",
+                  "likelihood": 0.5,
+                  "rationale": "neutral"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.4,
+                  "rationale": "weak"
+                }
+              ]
+            }
+          ],
+          "entropy": 0.2722852429374014
+        },
+        "lastSurfacedTopId": "h-1",
+        "calibration": [],
+        "hSeq": 5,
+        "obsSeq": 5,
+        "clusterSeq": 5,
+        "lastObservationAt": 1787492687174
+      }
+    }
+  }
+}
