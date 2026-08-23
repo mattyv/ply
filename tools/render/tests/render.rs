@@ -1241,7 +1241,7 @@ mod collapse {
             ),
             (
                 "../../vetting/003-trading-system.ply.yaml",
-                "../../vetting/003-trading-system.svg",
+                "../../vetting/003-trading-system-full.svg",
             ),
         ] {
             let svg = render_fixture(yaml_path);
@@ -1649,7 +1649,11 @@ mod no_overlap {
             let needle = format!(".{c}{{");
             style
                 .find(&needle)
-                .and_then(|start| style[start..].find('}').map(|end| &style[start..start + end]))
+                .and_then(|start| {
+                    style[start..]
+                        .find('}')
+                        .map(|end| &style[start..start + end])
+                })
                 .is_some_and(|rule| rule.contains("text-anchor:middle"))
         });
         let (x0, x1) = if is_middle {
@@ -1692,7 +1696,10 @@ mod no_overlap {
     }
 
     fn rects_overlap(a: Rectf, b: Rectf, eps: f64) -> bool {
-        a.0 + eps < b.0 + b.2 && a.0 + a.2 > b.0 + eps && a.1 + eps < b.1 + b.3 && a.1 + a.3 > b.1 + eps
+        a.0 + eps < b.0 + b.2
+            && a.0 + a.2 > b.0 + eps
+            && a.1 + eps < b.1 + b.3
+            && a.1 + a.3 > b.1 + eps
     }
 
     /// Standard slab (Liang-Barsky-style) segment-vs-rect clip, run against
@@ -1830,7 +1837,8 @@ mod no_overlap {
     ) {
         let (p_first, p_last) = (points[0], points[points.len() - 1]);
         for (g, box_rect) in boxes {
-            if box_contains_point(*box_rect, p_first, 1.0) || box_contains_point(*box_rect, p_last, 1.0)
+            if box_contains_point(*box_rect, p_first, 1.0)
+                || box_contains_point(*box_rect, p_last, 1.0)
             {
                 continue;
             }
@@ -1846,7 +1854,13 @@ mod no_overlap {
         }
     }
 
-    fn check_fixture(fixture: &str, label: &str, svg: &str, style: &str, violations: &mut Vec<String>) {
+    fn check_fixture(
+        fixture: &str,
+        label: &str,
+        svg: &str,
+        style: &str,
+        violations: &mut Vec<String>,
+    ) {
         let xml = roxmltree::Document::parse(svg).unwrap();
         let boxes = all_component_boxes(&xml);
 
@@ -1857,7 +1871,15 @@ mod no_overlap {
             match (node.tag_name().name(), node.attribute("class")) {
                 ("text", _) => {
                     let (bbox, anchor) = text_bbox(node, style);
-                    check_point_item(anchor, bbox, &boxes, fixture, label, "text label", violations);
+                    check_point_item(
+                        anchor,
+                        bbox,
+                        &boxes,
+                        fixture,
+                        label,
+                        "text label",
+                        violations,
+                    );
                 }
                 (_, Some("any-node")) => {
                     let circle = node.children().find(|c| c.tag_name().name() == "circle");
@@ -1897,7 +1919,14 @@ mod no_overlap {
                     ) =>
                 {
                     let points = parse_path_points(node.attribute("d").unwrap());
-                    check_line_item(&points, &boxes, fixture, label, "edge/deny line", violations);
+                    check_line_item(
+                        &points,
+                        &boxes,
+                        fixture,
+                        label,
+                        "edge/deny line",
+                        violations,
+                    );
                 }
                 _ => {}
             }
@@ -1906,7 +1935,11 @@ mod no_overlap {
 
     #[test]
     fn no_drawn_element_intersects_a_box_it_is_not_inside() {
-        let style = format!("{}{}", ply_render::svg::STYLE, ply_render::svg::FINDING_STYLE);
+        let style = format!(
+            "{}{}",
+            ply_render::svg::STYLE,
+            ply_render::svg::FINDING_STYLE
+        );
         let mut violations: Vec<String> = Vec::new();
         for fixture in [
             "../../vetting/001-spsc-disruptor.ply.yaml",
@@ -1959,7 +1992,11 @@ mod no_overlap {
         ] {
             let svg = render_fixture(fixture);
             let xml = roxmltree::Document::parse(&svg).unwrap();
-            let style = format!("{}{}", ply_render::svg::STYLE, ply_render::svg::FINDING_STYLE);
+            let style = format!(
+                "{}{}",
+                ply_render::svg::STYLE,
+                ply_render::svg::FINDING_STYLE
+            );
 
             // Groups in document order: 0-2 sibling `any-node` <g>s
             // immediately followed by the one `deny-rule` <g> they belong
@@ -2017,7 +2054,10 @@ mod no_overlap {
                     _ => {}
                 }
             }
-            assert!(!groups.is_empty(), "{fixture}: no deny rules found to check");
+            assert!(
+                !groups.is_empty(),
+                "{fixture}: no deny rules found to check"
+            );
 
             for i in 0..groups.len() {
                 for j in (i + 1)..groups.len() {
@@ -2047,7 +2087,8 @@ mod no_overlap {
                     }
                     // A line running *through* another rule's label or node
                     // is a real collision, bbox is right for that.
-                    for (segs, boxes) in [(&groups[i].1, &groups[j].0), (&groups[j].1, &groups[i].0)]
+                    for (segs, boxes) in
+                        [(&groups[i].1, &groups[j].0), (&groups[j].1, &groups[i].0)]
                     {
                         for seg in segs {
                             for b in boxes {

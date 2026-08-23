@@ -35,6 +35,11 @@ const SHIELD_W: f64 = 16.0;
 const FRAME_PAD: f64 = 24.0;
 const FRAME_TITLE_H: f64 = 30.0;
 const MIN_BOX_W: f64 = 150.0;
+/// §7.1: a collapsed box draws as a stack — one card edge offset behind it,
+/// the "pile of cards" instinct for folded content. The 5px overhang lives in
+/// the layout gaps (NODESEP 50, RANKSEP 70, FRAME_PAD 24), so the reported box
+/// size stays the main box and edge attachment is unaffected.
+const STACK_OFFSET: f64 = 5.0;
 
 // ---- §7.1 "contract clauses" — the contract mark ---------------------------
 //
@@ -96,6 +101,7 @@ pub const STYLE: &str = "\
 .workspace-title{fill:#6b7280}\
 .component-box{stroke:#3b4252;stroke-width:1.5}\
 .hollow-box{stroke-dasharray:6 4}\
+.collapsed-stack{stroke:#3b4252;stroke-width:1.5}\
 .pure-seal{fill:none;stroke:#3b4252}\
 .component-name{fill:#1f2430;font-weight:bold}\
 .component-anchor{fill:#6b7280;font-size:10px}\
@@ -1208,9 +1214,10 @@ fn render_collapsed_component(
         ceiling_class(ceiling)
     );
     let mut svg = format!(
-        "<g class=\"component\" data-name=\"{}\">{}<rect class=\"{component_box_class}\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
+        "<g class=\"component\" data-name=\"{}\">{}<rect class=\"collapsed-stack {ceiling}\" x=\"{STACK_OFFSET:.1}\" y=\"{STACK_OFFSET:.1}\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" /><rect class=\"{component_box_class}\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
         esc(name),
-        title(&tip.join("\n"))
+        title(&tip.join("\n")),
+        ceiling = ceiling_class(ceiling)
     );
     svg.push_str(&format!(
         "<text class=\"component-name\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
@@ -2100,8 +2107,8 @@ pub fn render_svg_with_options(
             d,
             &deny_layout,
             &ctx,
-            &mut any_y_from,
-            &mut any_y_to,
+            &mut any_from,
+            &mut any_to,
             &mut deny_svg,
         )?;
     }

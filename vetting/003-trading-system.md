@@ -77,14 +77,15 @@ Exactly the specced behavior: both candidates named, the fix stated. Rule 6 held
 
 ### Rendered
 
-The system view — 002 compressed to a single box (`ply-render --collapse ingest`),
-its capability badges and counts rolled up, edges reattached:
+The system view, and the scenario's canonical diagram — 002 compressed to a single
+box (`ply-render --collapse ingest`), its capability badges and counts rolled up,
+edges reattached:
 
-[![the trading system with ingest collapsed](003-trading-system-ingest-collapsed.svg)](003-trading-system-ingest-collapsed.svg)
+[![the trading system with ingest collapsed](003-trading-system.svg)](003-trading-system.svg)
 
-The full-depth view (`ply-render`, no flags):
+Drill down for the full depth (`ply-render`, no flags):
 
-[![the trading system drawn from this scenario](003-trading-system.svg)](003-trading-system.svg)
+[![every component of the trading system expanded](003-trading-system-full.svg)](003-trading-system-full.svg)
 
 Produced by `ply-render vetting/003-trading-system.ply.yaml`. First nested render
 ever: `ingest` draws its four children with their internal edges inside the parent
