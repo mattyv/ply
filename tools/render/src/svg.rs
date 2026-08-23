@@ -2107,8 +2107,8 @@ pub fn render_svg_with_options(
             d,
             &deny_layout,
             &ctx,
-            &mut any_from,
-            &mut any_to,
+            &mut any_y_from,
+            &mut any_y_to,
             &mut deny_svg,
         )?;
     }
