@@ -1,0 +1,15 @@
+[workspace]
+# Empty table: marks this crate as its own workspace root so it can never be
+# swept into tools/Cargo.toml's workspace (which lists members explicitly and
+# wouldn't pick this up anyway) or into any other ancestor workspace. This
+# fixture is throwaway spike scaffolding for ADR-0003, not part of the 129
+# green tests under tools/.
+
+[package]
+name = "ply-spike-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ply-spike-fixture-callee = { path = "../fixture_callee" }

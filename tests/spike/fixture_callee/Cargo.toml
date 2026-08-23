@@ -1,0 +1,11 @@
+[package]
+name = "ply-spike-fixture-callee"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ply_spike_fixture_callee"
+path = "src/lib.rs"
+
+[dependencies]
