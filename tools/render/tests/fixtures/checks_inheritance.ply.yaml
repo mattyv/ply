@@ -1,0 +1,22 @@
+ply: 1
+components:
+  pricing:
+    anchor: app::pricing
+    checks: [bounded(2)]
+    fns:
+      quote:
+        checks: []
+      book:
+        checks: [test]
+    components:
+      curves:
+        anchor: app::pricing::curves
+        checks: [fuzz(64)]
+        fns:
+          discount:
+            checks: []
+      greeks:
+        anchor: app::pricing::greeks
+        fns:
+          delta:
+            checks: []

@@ -1,0 +1,8 @@
+ply: 1
+components:
+  audit:
+    anchor: app::audit
+    checks: [test]
+    fns:
+      verify:
+        checks: [mutate]

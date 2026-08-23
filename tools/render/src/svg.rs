@@ -11,7 +11,8 @@ use indexmap::IndexMap;
 use ply_check::{Diagnostic, Target as FindingTarget, run_checks};
 use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
 use ply_model::{
-    Check, Component, Deny, Document, Edge, EdgeKind, FnClaim, parse_check, parse_deny, parse_edge,
+    Check, Component, Deny, Document, Edge, EdgeKind, FnClaim, InheritedChecks,
+    component_default_checks, effective_checks, parse_check, parse_deny, parse_edge,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -425,15 +426,16 @@ fn check_with_note(check_with: &IndexMap<String, String>) -> Option<String> {
 // verdict tree would be (worst-of over fns, folded by the kernel's own
 // container rule) but from declared check *kinds* rather than run results.
 
-/// The strongest check kind one fn declares (The-Ply-Spec.md §7.1: `test` ->
-/// tested, `fuzz(n)` -> fuzzed, `bounded(k)` -> bounded, `prove` -> proved).
-/// `mutate` strengthens nothing on its own (it only ever rides alongside a
-/// `test`/`fuzz` entry, D12) and an unparseable string names no real kind, so
-/// both are skipped rather than treated as evidence. No checks at all (or
-/// only skipped ones) -> `Unclaimed`.
-fn fn_declared_ceiling(fc: &FnClaim) -> Evidence {
+/// The strongest check kind one fn's *effective* checks declare
+/// (The-Ply-Spec.md §7.1: `test` -> tested, `fuzz(n)` -> fuzzed, `bounded(k)`
+/// -> bounded, `prove` -> proved). `mutate` strengthens nothing on its own
+/// (it only ever rides alongside a `test`/`fuzz` entry, D12) and an
+/// unparseable string names no real kind, so both are skipped rather than
+/// treated as evidence. No checks at all (own or inherited), or only skipped
+/// ones, -> `Unclaimed`.
+fn fn_declared_ceiling(checks: &[String]) -> Evidence {
     let mut best: Option<Evidence> = None;
-    for c in &fc.checks {
+    for c in checks {
         let kind = match parse_check(c) {
             Ok(Check::Test) => Some(Evidence::Tested),
             Ok(Check::Fuzz(_)) => Some(Evidence::Fuzzed),
@@ -455,18 +457,33 @@ fn fn_declared_ceiling(fc: &FnClaim) -> Evidence {
 /// `aggregate` — never re-folded by hand — so the worst-of rule this draws
 /// is the exact one The-Ply-Spec.md §7 pins and `tools/kernel` checks
 /// exhaustively.
-fn component_verdict_node(comp: &Component) -> VerdictNode {
+///
+/// `inherited` is the §5.1 checks default `comp` itself inherited from
+/// further up (`None` at the document root, or wherever no ancestor ever
+/// declared one) — each fn's ceiling is computed from its *effective* list
+/// (`ply_model::effective_checks`), and each nested component inherits
+/// `comp`'s own default in turn (`ply_model::component_default_checks`).
+fn component_verdict_node<'a>(
+    name: &'a str,
+    comp: &'a Component,
+    inherited: Option<InheritedChecks<'a>>,
+) -> VerdictNode {
+    let this_default = component_default_checks(name, comp, inherited);
     let mut children: Vec<VerdictNode> = comp
         .fns
         .values()
         .map(|fc| VerdictNode {
-            kind: NodeKind::Claimable(fn_declared_ceiling(fc)),
+            kind: NodeKind::Claimable(fn_declared_ceiling(effective_checks(fc, this_default))),
             statuses: BTreeSet::new(),
             conditional: None,
             children: Vec::new(),
         })
         .collect();
-    children.extend(comp.components.values().map(component_verdict_node));
+    children.extend(
+        comp.components
+            .iter()
+            .map(|(cname, c)| component_verdict_node(cname, c, this_default)),
+    );
     VerdictNode {
         kind: NodeKind::Container,
         statuses: BTreeSet::new(),
@@ -475,8 +492,8 @@ fn component_verdict_node(comp: &Component) -> VerdictNode {
     }
 }
 
-fn component_ceiling(comp: &Component) -> Evidence {
-    aggregate(&component_verdict_node(comp)).evidence
+fn component_ceiling(name: &str, comp: &Component, inherited: Option<InheritedChecks>) -> Evidence {
+    aggregate(&component_verdict_node(name, comp, inherited)).evidence
 }
 
 // ---- §7.1 collapse / expand (`--depth N`, `--focus`, `--collapse`) --------
@@ -844,8 +861,24 @@ struct FnChip {
     svg: String,
 }
 
-fn render_fn_chip(name: &str, fc: &FnClaim, component_path: &str, ctx: &FindingCtx) -> FnChip {
-    let glyphs = checks_glyph_row(&fc.checks);
+fn render_fn_chip(
+    name: &str,
+    fc: &FnClaim,
+    component_path: &str,
+    ctx: &FindingCtx,
+    inherited: Option<InheritedChecks>,
+) -> FnChip {
+    // §5.1: the list that actually governs this fn — its own if it declared
+    // one, else the nearest ancestor component's default (or nothing, if it
+    // has neither). Every downstream read of "this fn's checks" — the
+    // glyph row, the tooltip prose, the declared-ceiling fill computed
+    // elsewhere — goes through this, not `fc.checks` directly.
+    let effective = effective_checks(fc, inherited);
+    // `inherited` only ever carries a *non-empty* list (`component_default_
+    // checks` never constructs one otherwise), so this fn's own list being
+    // empty is exactly when `effective` came from that ancestor default.
+    let is_inherited = fc.checks.is_empty() && inherited.is_some();
+    let glyphs = checks_glyph_row(effective);
     let note = check_with_note(&fc.check_with);
     let has_shield = !fc.trusted.is_empty();
     let has_contract = !fc.requires.is_empty() || !fc.ensures.is_empty();
@@ -928,8 +961,25 @@ fn render_fn_chip(name: &str, fc: &FnClaim, component_path: &str, ctx: &FindingC
 
     let mut tip = finding_tooltip_lines(&findings);
     tip.push(name.to_string());
-    for c in &fc.checks {
-        tip.push(check_prose(c));
+    if is_inherited {
+        // §5.1 "checks: [...] # optional default checks for all fns in
+        // scope": this fn declares none of its own, so the tooltip must say
+        // plainly where the check actually came from — a newbie reading
+        // "bounded(2)" with no explanation would have no way to find the
+        // component that promised it.
+        let from = inherited
+            .expect("is_inherited implies inherited.is_some()")
+            .from_component;
+        for c in effective {
+            tip.push(format!(
+                "inherited from component `{from}`: {}",
+                check_prose(c)
+            ));
+        }
+    } else {
+        for c in effective {
+            tip.push(check_prose(c));
+        }
     }
     if has_contract {
         // §7.1 "contract clauses" / §7.2 the watermark: this is the mark
@@ -965,7 +1015,7 @@ fn render_fn_chip(name: &str, fc: &FnClaim, component_path: &str, ctx: &FindingC
     for p in &fc.unresolved {
         tip.push(unresolved_fn_pin_prose(p.id, &p.note));
     }
-    if fc.checks.is_empty() {
+    if effective.is_empty() {
         tip.push("no checks declared — nothing about this function is verified (unclaimed)".into());
     }
 
@@ -1078,18 +1128,26 @@ struct WalkCtx<'a> {
 /// collapses — "hollow means nothing inside; collapsed means plenty inside,
 /// folded" are mutually exclusive states, and hollow wins when the subtree
 /// really is empty.
-fn render_component_dispatch(
-    name: &str,
+fn render_component_dispatch<'a>(
+    name: &'a str,
     qualified: &str,
-    comp: &Component,
+    comp: &'a Component,
     walk: &WalkCtx,
     level: usize,
+    inherited: Option<InheritedChecks<'a>>,
 ) -> ComponentBox {
     let is_hollow = comp.fns.is_empty() && comp.components.is_empty();
     if !is_hollow && walk.collapse.should_collapse(qualified, level) {
-        render_collapsed_component(name, qualified, comp, walk.profiles, walk.findings)
+        render_collapsed_component(
+            name,
+            qualified,
+            comp,
+            walk.profiles,
+            walk.findings,
+            inherited,
+        )
     } else {
-        render_component(name, qualified, comp, walk, level)
+        render_component(name, qualified, comp, walk, level, inherited)
     }
 }
 
@@ -1108,9 +1166,10 @@ fn render_collapsed_component(
     comp: &Component,
     profiles: &IndexMap<String, Vec<String>>,
     ctx: &FindingCtx,
+    inherited: Option<InheritedChecks>,
 ) -> ComponentBox {
     let findings = collect_findings_subtree(qualified, comp, ctx);
-    let ceiling = component_ceiling(comp);
+    let ceiling = component_ceiling(name, comp, inherited);
     let (n_components, n_fns) = count_subtree(comp);
     let contents_line = format!(
         "{n_components} component{} \u{b7} {n_fns} fn{}",
@@ -1290,12 +1349,13 @@ fn internal_child_edges(
     out
 }
 
-fn render_component(
-    name: &str,
+fn render_component<'a>(
+    name: &'a str,
     qualified: &str,
-    comp: &Component,
+    comp: &'a Component,
     walk: &WalkCtx,
     level: usize,
+    inherited: Option<InheritedChecks<'a>>,
 ) -> ComponentBox {
     let WalkCtx {
         profiles,
@@ -1307,7 +1367,11 @@ fn render_component(
     // §7.1 "declared ceiling": the strongest verdict this component's own
     // declared checks could earn, folded worst-of over every fn in its
     // subtree by the real kernel `aggregate` (see `component_ceiling`).
-    let ceiling = component_ceiling(comp);
+    let ceiling = component_ceiling(name, comp, inherited);
+    // §5.1: what this component's own fns (and any nested component that
+    // declares no default of its own) inherit — threaded to the fn chips
+    // and nested boxes below.
+    let this_default = component_default_checks(name, comp, inherited);
     let finding_badge_w = finding_badge_width(&findings);
     let name_w = text_w(name, NAME_CHAR_W)
         + if findings.is_empty() {
@@ -1346,7 +1410,14 @@ fn render_component(
             let child_qualified = format!("{qualified}.{cname}");
             (
                 cname.clone(),
-                render_component_dispatch(cname, &child_qualified, c, walk, level + 1),
+                render_component_dispatch(
+                    cname,
+                    &child_qualified,
+                    c,
+                    walk,
+                    level + 1,
+                    this_default,
+                ),
             )
         })
         .collect();
@@ -1354,7 +1425,12 @@ fn render_component(
     let chips: Vec<(String, FnChip)> = comp
         .fns
         .iter()
-        .map(|(fname, fc)| (fname.clone(), render_fn_chip(fname, fc, qualified, ctx)))
+        .map(|(fname, fc)| {
+            (
+                fname.clone(),
+                render_fn_chip(fname, fc, qualified, ctx, this_default),
+            )
+        })
         .collect();
 
     // §7.1 amendment (vetting 003 finding 1): when this component's own
@@ -1722,6 +1798,7 @@ pub fn render_svg_with_options(
                         edges: &doc.edges,
                     },
                     1,
+                    None,
                 ),
             )
         })
