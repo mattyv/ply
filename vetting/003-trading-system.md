@@ -55,8 +55,65 @@ ingest [ feed → ring → decoder → book ]      (all of vetting 002, one leve
   full dotted paths (`ingest.feed -> ingest.ring`) because `edges:` only exists on
   the document — there is no component-scoped edge list. Candidate finding.
 
-## Runs
+## Runs (2026-08-23, findings-layer toolchain)
 
-Pending — the renderer is mid-rework (findings layer); `ply-check`, the render pass,
-and findings will be recorded here when it lands. Nothing below this line is verified
-yet.
+`ply-check` passes the document clean (exit 0), so the findings layer draws nothing
+red — correct on both counts.
+
+### The ambiguity probe — and what it taught
+
+The planned probe was wrong as written: with only one component named `book` in the
+tree, a bare `book` reference from the top level is *legal* (unique-leaf rule) and
+resolves to `ingest.book` — the validator rightly says nothing. Ambiguity needs two
+leaves sharing a name. Giving `strategy` a nested `book` of its own and then writing
+`strategy -> book`:
+
+```
+E0206: ambiguous component reference "book": matches ingest.book, strategy.book
+       — use the dotted qualified form (§5.1a rule 6)
+```
+
+Exactly the specced behavior: both candidates named, the fix stated. Rule 6 held.
+
+### Rendered
+
+[![the trading system drawn from this scenario](003-trading-system.svg)](003-trading-system.svg)
+
+Produced by `ply-render vetting/003-trading-system.ply.yaml`. First nested render
+ever: `ingest` draws its four children with their internal edges inside the parent
+box, `strategy` nests `signals`, dotted `except` lists render, and the whole system
+reads top-to-bottom. The structure held.
+
+### Findings from the render pass (2026-08-23)
+
+1. **Intra-container edge labels collide with boxes.** Inside `ingest`, the
+   `RawFrame`/`Tick` labels sit on the ring and decoder box borders. The label
+   clearance logic reserves space against the *edge line*, not against neighboring
+   boxes — at top level there is slack; inside a container there isn't.
+2. **An edge to a nested target cuts through its parent's content.** The
+   `strategy -> signals` call edge draws diagonally across the `signals` box
+   itself. Edges targeting a component inside the same parent need routing around
+   siblings, or at minimum boundary-to-boundary clipping inside the container.
+3. **Same-rank deny rules overlap.** `* -> risk except oms` and
+   `* -> gateway except oms` both anchor their `*` node at the same left-edge
+   spot; the two red lines and both `except oms` labels draw on top of each other,
+   one struck through. Deny geometry needs the same lane separation call/flow
+   edges got in 002.
+4. **The deny bar can strike its own `except` text** (`...decoder, strategy` on
+   the book rule). Same clearance family as finding 1.
+
+None of these are structural: every element is present, explained, and on-canvas —
+the 002-era invariants all pass. The gap is *collision-freedom inside containers*,
+a property no current invariant expresses. Next renderer pass should add one
+(no drawn element intersects a box it isn't inside) and make it red first.
+
+### Standing observations
+
+- The container aggregation question is now live: `ingest` has no verdict to
+  display because verdicts don't exist yet — when they do, the kernel's
+  container rule says its box shows the worst of its ten claimable fns.
+- Hand-copying 002 into `ingest` took a full rewrite of every internal edge to
+  dotted form — 002 finding 2 (no reuse mechanism) at full size, as predicted.
+- There is no component-scoped `edges:` list; all seventeen edges live at the
+  document top level, twelve of them fully dotted. Verbose but unambiguous —
+  candidate grammar question rather than defect.
