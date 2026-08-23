@@ -41,8 +41,7 @@ const MIN_BOX_W: f64 = 150.0;
 // A small solid square at the fn chip's left edge, drawn inside the chip's
 // existing `PAD` margin so it adds new geometry (its own few pixels) without
 // shifting anything else already positioned by `cursor_x`.
-const CONTRACT_MARK_SIZE: f64 = 6.0;
-const CONTRACT_MARK_X: f64 = 2.0;
+const CONTRACT_MARK_W: f64 = 3.0;
 
 // ---- findings (§7.1 "finding (tool-computed, not declared)") --------------
 //
@@ -96,6 +95,7 @@ pub const STYLE: &str = "\
 .workspace-frame{fill:#fbfbfd;stroke:#c8ccd4}\
 .workspace-title{fill:#6b7280}\
 .component-box{stroke:#3b4252;stroke-width:1.5}\
+.hollow-box{stroke-dasharray:6 4}\
 .pure-seal{fill:none;stroke:#3b4252}\
 .component-name{fill:#1f2430;font-weight:bold}\
 .component-anchor{fill:#6b7280;font-size:10px}\
@@ -611,13 +611,11 @@ fn render_fn_chip(name: &str, fc: &FnClaim, component_path: &str, ctx: &FindingC
     let mut inner = String::new();
     let text_y = CHIP_H / 2.0 + 4.0;
 
-    // §7.1 "contract clauses": a small solid square at the chip's left
-    // edge, drawn inside the existing `PAD` margin so nothing else already
-    // laid out from `cursor_x` moves — only these few new pixels appear.
+    // §7.1 "contract clauses" (amended): a gutter bar — full chip height,
+    // flush at the left edge. The original 6x6 square was too easy to miss.
     if has_contract {
         inner.push_str(&format!(
-            "<rect class=\"contract-mark\" x=\"{CONTRACT_MARK_X:.1}\" y=\"{:.1}\" width=\"{CONTRACT_MARK_SIZE:.1}\" height=\"{CONTRACT_MARK_SIZE:.1}\" />",
-            (CHIP_H - CONTRACT_MARK_SIZE) / 2.0
+            "<rect class=\"contract-mark\" x=\"0\" y=\"0\" width=\"{CONTRACT_MARK_W:.1}\" height=\"{CHIP_H:.1}\" />"
         ));
     }
 
@@ -954,14 +952,27 @@ fn render_component(
     }
     tip.push(ceiling_tooltip_line(ceiling));
 
+    // §7.1 "hollow component": derived from absence — nothing declared
+    // inside means a dashed sketch outline, the opposite claim to a
+    // collapsed box (plenty inside, folded away), which stays solid.
+    let is_hollow = comp.fns.is_empty() && comp.components.is_empty();
+    if is_hollow {
+        tip.push(
+            "hollow — declares nothing inside yet: no functions, no nested components. \
+             Nothing to zoom into; a sketch waiting for claims."
+                .into(),
+        );
+    }
+
     let component_box_class = format!(
-        "{} {}",
+        "{} {}{}",
         if findings.is_empty() {
             "component-box"
         } else {
             "component-box-finding"
         },
-        ceiling_class(ceiling)
+        ceiling_class(ceiling),
+        if is_hollow { " hollow-box" } else { "" }
     );
     let mut svg = format!(
         "<g class=\"component\" data-name=\"{}\">{}<rect class=\"{component_box_class}\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",

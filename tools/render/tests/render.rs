@@ -1060,3 +1060,102 @@ mod contract_mark {
         assert!(tooltip.contains("ensures: |r| r.is_err() == (order.qty > limits.max_qty)"));
     }
 }
+
+mod hollow_and_gutter {
+    use super::*;
+
+    /// §7.1 "contract clauses" (amended): the mark is a gutter bar — full
+    /// chip height, flush at the chip's left edge — because the original
+    /// 6x6 square was too easy to miss at a glance.
+    #[test]
+    fn contract_mark_is_a_full_height_gutter_bar() {
+        let svg = render_fixture("../../vetting/003-trading-system.ply.yaml");
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        let mark = doc
+            .descendants()
+            .find(|n| n.attribute("class") == Some("contract-mark"))
+            .expect("003's check_order declares clauses, so a mark must exist");
+        let h: f64 = mark.attribute("height").unwrap().parse().unwrap();
+        let x: f64 = mark.attribute("x").unwrap().parse().unwrap();
+        let w: f64 = mark.attribute("width").unwrap().parse().unwrap();
+        assert_eq!(h, 24.0, "gutter bar must span the full chip height");
+        assert_eq!(x, 0.0, "gutter bar sits flush at the chip's left edge");
+        assert!(w <= 4.0, "a gutter bar is thin, got width {w}");
+    }
+
+    /// §7.1 "hollow component": nothing declared inside — no fns, no nested
+    /// components — draws dashed (a sketch outline, nothing to zoom into)
+    /// and says so in the tooltip. The invariant runs both directions over
+    /// every fixture: hollow iff dashed-and-explained.
+    #[test]
+    fn every_hollow_component_is_dashed_and_says_so() {
+        for fixture in [
+            "tests/fixtures/hollow.ply.yaml",
+            "../../vetting/001-spsc-disruptor.ply.yaml",
+            "../../vetting/002-ingest-pipeline.ply.yaml",
+            "../../vetting/003-trading-system.ply.yaml",
+            "tests/fixtures/full.ply.yaml",
+            "tests/fixtures/qualified_refs.ply.yaml",
+        ] {
+            let yaml = std::fs::read_to_string(fixture).unwrap();
+            let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let svg = render_svg(&doc).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let sdoc = roxmltree::Document::parse(&svg).unwrap();
+
+            fn walk(
+                comp: &ply_render::model::Component,
+                name: &str,
+                out: &mut Vec<(String, bool)>,
+            ) {
+                out.push((
+                    name.to_string(),
+                    comp.fns.is_empty() && comp.components.is_empty(),
+                ));
+                for (n, c) in &comp.components {
+                    walk(c, n, out);
+                }
+            }
+            let mut expected = Vec::new();
+            for (n, c) in &doc.components {
+                walk(c, n, &mut expected);
+            }
+
+            for (name, is_hollow) in expected {
+                let g = sdoc
+                    .descendants()
+                    .find(|n| {
+                        n.attribute("class")
+                            .is_some_and(|c| c.split(' ').any(|t| t == "component"))
+                            && n.attribute("data-name") == Some(name.as_str())
+                    })
+                    .unwrap_or_else(|| panic!("{fixture}: no component group named {name:?}"));
+                let box_classes = g
+                    .children()
+                    .find(|c| {
+                        c.attribute("class")
+                            .is_some_and(|cl| cl.split(' ').any(|t| t == "component-box"))
+                    })
+                    .and_then(|r| r.attribute("class"))
+                    .unwrap_or_default()
+                    .to_string();
+                let dashed = box_classes.split(' ').any(|t| t == "hollow-box");
+                let tooltip = g
+                    .children()
+                    .find(|c| c.tag_name().name() == "title")
+                    .and_then(|t| t.text())
+                    .unwrap_or_default()
+                    .to_string();
+                let explained = tooltip.contains("hollow — declares nothing inside yet");
+                assert_eq!(
+                    dashed, is_hollow,
+                    "{fixture}: component {name:?} hollow={is_hollow} but dashed={dashed}"
+                );
+                assert_eq!(
+                    explained, is_hollow,
+                    "{fixture}: component {name:?} hollow={is_hollow} but tooltip explanation \
+                     present={explained}: {tooltip:?}"
+                );
+            }
+        }
+    }
+}

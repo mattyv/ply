@@ -1,0 +1,9 @@
+ply: 1
+components:
+  sketch:
+    anchor: app::sketch
+  parser:
+    anchor: app::parser
+    fns:
+      parse:
+        checks: [test]
