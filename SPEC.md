@@ -243,6 +243,25 @@ qualified by their parent, so only siblings can collide). A string that passes t
 regex but fails the real micro-syntax parser → `E0203`, stating the expected form.
 `mutate` without a `test` or `fuzz` entry in the same checks list → `E0504`.
 
+### 5.1a Strictness & lexical rules
+
+The schema must encode all of the following; the goldens (§9) pin them.
+
+1. **Unknown fields are errors.** Every object in the schema sets
+   `additionalProperties: false`; an unrecognized key → `E0204` with a
+   nearest-known-key suggestion. A typo must be caught, never ignored.
+2. **Identifiers.** Component and profile names match `[a-z][a-z0-9_]*` (snake_case,
+   ASCII). In edge and deny strings, tokens are separated by one or more spaces; the
+   parser accepts any run of whitespace and the canonical form uses single spaces.
+3. **Code paths.** Anchors and fn keys are plain segment paths: `IDENT(::IDENT)*`, where
+   a segment may also be a type name in `Type::method` position. No generics, no
+   trait-qualified paths (`<T as Trait>::f`), no lifetimes. An anchor or fn key outside
+   this form → `E0304 unsupported path form`, naming the construct.
+4. **Numeric bounds.** `fuzz(N)`: 1 ≤ N ≤ 1_000_000. `bounded(K)`: 1 ≤ K ≤ 64. Out of
+   range → `E0203`.
+5. **Unresolved ids** are positive integers, unique across the whole merged workspace
+   (registry and fn entries together); a duplicate → `E0205`.
+
 ### 5.2 Anchoring & staleness
 
 Every component anchors to a real crate or module; every fn claim anchors to a real
@@ -306,12 +325,14 @@ plain cargo they are inert.
 
 #### 5.4a Spec expression subset (accepted everywhere)
 
-Boolean Rust expressions over the function's parameters and `result`; calls to
-`pure`-marked helper fns; `==,!=,<,<=,>,>=`; `&&,||,!`; arithmetic; field access;
-`.len()`; `.is_ok()/.is_err()/.is_some()`; `matches!()`. No closures except the
-`|result| expr` ensures form. No `old()` (pre-state references) in v1 — `E0501`, noted
-as planned. No side effects (checked syntactically). Identifiers must resolve to
-parameters or `result`, sanity-checked against the anchored signature.
+Boolean Rust expressions over the function's parameters and `result`; literals (integer,
+bool, char, string); calls to `pure`-marked helper fns; `==,!=,<,<=,>,>=`; `&&,||,!`;
+arithmetic; field access; `.len()`; `.is_ok()/.is_err()/.is_some()`; `matches!()`. The
+list is closed: any construct outside it — indexing, other method calls, paths to
+constants, closures other than the `|result| expr` ensures form, `old()` (pre-state
+references, noted as planned) — is rejected with `E0501` naming the construct. No side
+effects (checked syntactically). Identifiers must resolve to parameters or `result`,
+sanity-checked against the anchored signature.
 
 #### 5.4b Supported signatures
 
