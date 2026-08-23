@@ -20,8 +20,6 @@
       text) plus a collision-freedom invariant test.
 - [ ] Gate debt (§7.1): visual forms or removal for `strict`, `mode: synth`,
       `examples`.
-- [ ] Vetting 004 — top-down authoring scenario (all-hollow sketch first, then fill
-      in; see memory/roadmap).
 - [ ] Run the kernel's Kani harnesses once Kani is installed (`cargo kani` in
       tools/kernel).
 - [ ] Renderer CLI entry point has zero test coverage (main.rs; the library is
