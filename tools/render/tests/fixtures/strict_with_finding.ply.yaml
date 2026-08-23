@@ -1,0 +1,12 @@
+ply: 1
+# §7.1 `strict` must compose with the finding-red border, not just the
+# ordinary component-box. `vault`'s anchor uses a generic parameter, which
+# `ply-check` flags as E0304 (component-level finding) — the same box must
+# then draw both the finding-red border and the strict notch together.
+components:
+  vault:
+    anchor: "app::vault<T>"
+    strict: true
+    fns:
+      Vault::wipe:
+        checks: [test]

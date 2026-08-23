@@ -18,8 +18,8 @@
       *different* margin columns can still cross (repro:
       tools/render/tests/fixtures/deny_stress.ply.yaml). Needs a routing policy
       decision (§7.1), not a guess.
-- [ ] Gate debt (§7.1): DRAW the three assigned-but-undrawn forms — `strict` corner
-      notch, `mode: synth` violet chip, `examples` e×N token.
+- [x] Gate debt closed for real — `strict` notch, `mode: synth` violet chip, `examples`
+      e×N token all drawn and test-pinned (worktree merge).
 
 ## From the external review (codex, 2026-08-23) — see docs/review-2026-08-23.md
 
@@ -60,5 +60,6 @@
       Kani struggles this much with std collections in a 300-line pure module, the
       supported-signature story (§5.4b) is optimistic. This is exactly the kind of
       engine limit M0 exists to find — more evidence for doing M0 next.
-- [ ] Renderer CLI entry point has zero test coverage (main.rs; the library is
-      covered).
+- [x] Renderer CLI now covered — 11 tests over flags, exit codes, and error wording;
+      two messages rewritten to the newbie bar (`--depth 0` and a non-numeric depth
+      used to fail silently or with clap's raw error).

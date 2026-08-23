@@ -1,0 +1,10 @@
+ply: 1
+# A genuine schema failure (not a document-local `ply-check` finding): an
+# unknown field, which `Component`'s `#[serde(deny_unknown_fields)]` rejects
+# at parse time. Used by tools/render/tests/cli.rs to prove `ply-render`
+# reports a parse error (not a panic, not a tool-error exit) for a document
+# that never becomes a `Document`.
+components:
+  foo:
+    anchor: app::foo
+    not_a_real_field: true

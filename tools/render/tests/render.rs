@@ -636,12 +636,15 @@ fn every_painted_element_resolves_a_style_rule() {
         "../../vetting/001-spsc-disruptor.ply.yaml",
         "tests/fixtures/full.ply.yaml",
         "tests/fixtures/qualified_refs.ply.yaml",
+        // §7.1 gate-debt closure: `strict`, `mode: synth`, `examples`.
+        "tests/fixtures/visual_forms.ply.yaml",
         // §7.1 finding coverage: these fixtures each carry a real finding
         // that must resolve through `FINDING_STYLE`, not just parse clean.
         "../check/tests/fixtures/bad_check_syntax.ply.yaml",
         "../check/tests/fixtures/bad_path_form.ply.yaml",
         "../check/tests/fixtures/duplicate_unresolved_id.ply.yaml",
         "../../demos/fault3.ply.yaml",
+        "tests/fixtures/strict_with_finding.ply.yaml",
     ] {
         let svg = render_fixture(fixture);
         assert!(svg.contains("<style>"), "{fixture}: no stylesheet emitted");
@@ -833,6 +836,7 @@ fn every_drawn_item_resolves_a_tooltip() {
         "../../vetting/001-spsc-disruptor.ply.yaml",
         "tests/fixtures/full.ply.yaml",
         "tests/fixtures/qualified_refs.ply.yaml",
+        "tests/fixtures/visual_forms.ply.yaml",
     ] {
         let svg = render_fixture(fixture);
         let doc = roxmltree::Document::parse(&svg).unwrap();
@@ -2450,6 +2454,323 @@ mod no_overlap {
             violations.is_empty(),
             "deny rules draw overlapping geometry:\n{}",
             violations.join("\n")
+        );
+    }
+}
+
+/// §7.1 gate debt closed 2026-08-23: `strict` was assigned a visual form (a
+/// solid ink triangle notch in the box's top-right corner) but the renderer
+/// never drew it. The invariant runs both directions, like
+/// `hollow_and_gutter::every_hollow_component_is_dashed_and_says_so`: a
+/// component draws the notch iff it declares `strict: true`.
+mod strict_notch {
+    use super::*;
+    use ply_render::svg::{RenderOptions, render_svg_with_options};
+
+    /// Keyed by leaf name, same convention `every_hollow_component_is_dashed_and_says_so`
+    /// already uses — every fixture below has unique leaf names.
+    fn walk_components(
+        comp: &ply_render::model::Component,
+        name: &str,
+        out: &mut Vec<(String, bool)>,
+    ) {
+        out.push((name.to_string(), comp.strict));
+        for (n, c) in &comp.components {
+            walk_components(c, n, out);
+        }
+    }
+
+    fn has_notch(g: roxmltree::Node) -> bool {
+        g.children()
+            .any(|c| c.attribute("class") == Some("strict-notch"))
+    }
+
+    #[test]
+    fn every_strict_component_draws_the_notch_and_only_strict_components_do() {
+        for fixture in [
+            "tests/fixtures/visual_forms.ply.yaml",
+            "tests/fixtures/full.ply.yaml",
+            "../../vetting/001-spsc-disruptor.ply.yaml",
+            "../../vetting/002-ingest-pipeline.ply.yaml",
+            "../../vetting/003-trading-system.ply.yaml",
+            "../../demos/fault3.ply.yaml",
+        ] {
+            let yaml = std::fs::read_to_string(fixture).unwrap();
+            let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let svg = render_svg(&doc).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let sdoc = roxmltree::Document::parse(&svg).unwrap();
+
+            let mut expected = Vec::new();
+            for (n, c) in &doc.components {
+                walk_components(c, n, &mut expected);
+            }
+
+            for (name, strict) in expected {
+                let g = sdoc
+                    .descendants()
+                    .find(|n| {
+                        n.attribute("class")
+                            .is_some_and(|c| c.split(' ').any(|t| t == "component"))
+                            && n.attribute("data-name") == Some(name.as_str())
+                    })
+                    .unwrap_or_else(|| panic!("{fixture}: no component group named {name:?}"));
+                assert_eq!(
+                    has_notch(g),
+                    strict,
+                    "{fixture}: component {name:?} strict={strict} but notch-drawn={}",
+                    has_notch(g)
+                );
+            }
+        }
+    }
+
+    /// `strict` must compose with the finding-red border: a component that
+    /// is both `strict` and the target of a real `ply-check` finding must
+    /// draw both marks together, not one clobbering the other.
+    #[test]
+    fn strict_notch_composes_with_the_finding_red_border() {
+        let svg = render_fixture("tests/fixtures/strict_with_finding.ply.yaml");
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        let vault = doc
+            .descendants()
+            .find(|n| {
+                n.attribute("class") == Some("component")
+                    && n.attribute("data-name") == Some("vault")
+            })
+            .expect("vault component group must exist");
+        let box_rect = vault
+            .children()
+            .find(|c| {
+                c.attribute("class").is_some_and(|cl| {
+                    cl.split_whitespace()
+                        .any(|t| t == "component-box" || t == "component-box-finding")
+                })
+            })
+            .expect("vault must have a component-box rect");
+        assert!(
+            box_rect
+                .attribute("class")
+                .unwrap()
+                .split_whitespace()
+                .any(|t| t == "component-box-finding"),
+            "vault should carry the finding-red border (E0304 on its anchor)"
+        );
+        assert!(
+            has_notch(vault),
+            "vault is strict, so it must still draw the notch alongside the red border"
+        );
+    }
+
+    /// `strict` must compose with the collapsed-stack card: a strict
+    /// component that folds under `--depth` still draws its notch.
+    #[test]
+    fn strict_notch_still_draws_when_the_component_collapses() {
+        let yaml = std::fs::read_to_string("../../demos/fault3.ply.yaml").unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let svg = render_svg_with_options(
+            &doc,
+            &RenderOptions {
+                depth: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let sdoc = roxmltree::Document::parse(&svg).unwrap();
+        let book = sdoc
+            .descendants()
+            .find(|n| {
+                n.attribute("class") == Some("component")
+                    && n.attribute("data-name") == Some("book")
+            })
+            .expect("book component group must exist");
+        assert!(
+            book.children().any(|c| c
+                .attribute("class")
+                .is_some_and(|cl| cl.split_whitespace().any(|t| t == "collapsed-stack"))),
+            "book must be collapsed at --depth 1"
+        );
+        assert!(
+            has_notch(book),
+            "book is strict, so the collapsed box must still draw the notch"
+        );
+    }
+}
+
+/// §7.1 gate debt closed 2026-08-23: `mode: synth` and `examples` were
+/// assigned visual forms but never drawn. Reuses `contract_mark`'s
+/// declare-order walk (a component's nested components' fns first,
+/// recursively, then its own) so expected and rendered line up by position.
+mod new_visual_forms {
+    use super::*;
+    use ply_render::model::Mode;
+
+    #[derive(Debug, Clone)]
+    struct ExpectedFn {
+        mode: Mode,
+        examples: usize,
+    }
+
+    fn walk_fn_claims(comp: &ply_render::model::Component, out: &mut Vec<ExpectedFn>) {
+        for c in comp.components.values() {
+            walk_fn_claims(c, out);
+        }
+        for fc in comp.fns.values() {
+            out.push(ExpectedFn {
+                mode: fc.mode.clone(),
+                examples: fc.examples.len(),
+            });
+        }
+    }
+
+    struct RenderedChip {
+        box_class: String,
+        examples_text: Option<String>,
+        tooltip: String,
+    }
+
+    fn rendered_fn_chips(svg: &str) -> Vec<RenderedChip> {
+        let doc = roxmltree::Document::parse(svg).unwrap();
+        doc.descendants()
+            .filter(|n| n.tag_name().name() == "g" && n.attribute("class") == Some("fn-chip"))
+            .map(|g| {
+                let box_class = g
+                    .children()
+                    .find(|c| c.tag_name().name() == "rect")
+                    .and_then(|r| r.attribute("class"))
+                    .unwrap_or_default()
+                    .to_string();
+                let examples_text = g
+                    .children()
+                    .find(|c| c.attribute("class") == Some("fn-examples"))
+                    .and_then(|t| t.text())
+                    .map(|s| s.to_string());
+                let tooltip = g
+                    .children()
+                    .find(|c| c.tag_name().name() == "title")
+                    .and_then(|t| t.text())
+                    .unwrap_or_default()
+                    .to_string();
+                RenderedChip {
+                    box_class,
+                    examples_text,
+                    tooltip,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_synth_fn_gets_violet_fill_and_explains_why_in_the_tooltip() {
+        let mut any_synth_seen = false;
+        for fixture in [
+            "tests/fixtures/visual_forms.ply.yaml",
+            "tests/fixtures/full.ply.yaml",
+            "../../vetting/001-spsc-disruptor.ply.yaml",
+            "../../vetting/002-ingest-pipeline.ply.yaml",
+            "../../vetting/003-trading-system.ply.yaml",
+        ] {
+            let yaml = std::fs::read_to_string(fixture).unwrap();
+            let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let svg = render_svg(&doc).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+
+            let mut expected: Vec<ExpectedFn> = Vec::new();
+            for c in doc.components.values() {
+                walk_fn_claims(c, &mut expected);
+            }
+            let rendered = rendered_fn_chips(&svg);
+            assert_eq!(
+                expected.len(),
+                rendered.len(),
+                "{fixture}: fn claim count doesn't match rendered fn-chip count"
+            );
+
+            for (exp, chip) in expected.iter().zip(rendered.iter()) {
+                let is_synth = exp.mode == Mode::Synth;
+                let has_violet = chip
+                    .box_class
+                    .split_whitespace()
+                    .any(|t| t == "fn-chip-box-synth");
+                assert_eq!(
+                    has_violet, is_synth,
+                    "{fixture}: fn-chip-box-synth presence ({has_violet}) doesn't match \
+                     mode: synth ({is_synth}); box_class: {:?}",
+                    chip.box_class
+                );
+                if is_synth {
+                    any_synth_seen = true;
+                    assert!(
+                        chip.tooltip.contains("machine-written"),
+                        "{fixture}: a synth chip's tooltip must say machine-written, got: {:?}",
+                        chip.tooltip
+                    );
+                    assert!(
+                        chip.tooltip.contains(
+                            "the body below the watermark is synthesized from the contract, \
+                             with the checks holding the line"
+                        ),
+                        "{fixture}: a synth chip's tooltip must say exactly what the violet \
+                         fill means, got: {:?}",
+                        chip.tooltip
+                    );
+                } else {
+                    assert!(
+                        !chip.tooltip.contains("machine-written"),
+                        "{fixture}: a non-synth chip must not gain authorship wording, got: {:?}",
+                        chip.tooltip
+                    );
+                }
+            }
+        }
+        assert!(
+            any_synth_seen,
+            "no fixture exercised mode: synth — this test would pass vacuously"
+        );
+    }
+
+    #[test]
+    fn every_example_bearing_chip_shows_the_e_times_n_token() {
+        let mut any_examples_seen = false;
+        for fixture in [
+            "tests/fixtures/visual_forms.ply.yaml",
+            "tests/fixtures/full.ply.yaml",
+            "../../vetting/001-spsc-disruptor.ply.yaml",
+            "../../vetting/002-ingest-pipeline.ply.yaml",
+            "../../vetting/003-trading-system.ply.yaml",
+        ] {
+            let yaml = std::fs::read_to_string(fixture).unwrap();
+            let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let svg = render_svg(&doc).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+
+            let mut expected: Vec<ExpectedFn> = Vec::new();
+            for c in doc.components.values() {
+                walk_fn_claims(c, &mut expected);
+            }
+            let rendered = rendered_fn_chips(&svg);
+            assert_eq!(expected.len(), rendered.len());
+
+            for (exp, chip) in expected.iter().zip(rendered.iter()) {
+                if exp.examples > 0 {
+                    any_examples_seen = true;
+                    assert_eq!(
+                        chip.examples_text,
+                        Some(format!("e\u{d7}{}", exp.examples)),
+                        "{fixture}: expected an e×{} token, got {:?}",
+                        exp.examples,
+                        chip.examples_text
+                    );
+                } else {
+                    assert_eq!(
+                        chip.examples_text, None,
+                        "{fixture}: a chip with no examples must not draw the e×N token, got \
+                         {:?}",
+                        chip.examples_text
+                    );
+                }
+            }
+        }
+        assert!(
+            any_examples_seen,
+            "no fixture exercised examples — this test would pass vacuously"
         );
     }
 }
