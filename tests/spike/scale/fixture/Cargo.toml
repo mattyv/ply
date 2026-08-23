@@ -1,0 +1,14 @@
+[workspace]
+# Empty table: marks this crate as its own workspace root, same trick as
+# tests/spike/fixture/Cargo.toml -- keeps it out of tools/Cargo.toml's
+# explicit member list and any other ancestor workspace. Throwaway spike
+# scaffolding for the ADR-0003 "open risk that gates M3" follow-up spike
+# (tests/spike/scale/SCALE-FINDINGS.md), not part of tools/.
+
+[package]
+name = "ply-spike-scale-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
