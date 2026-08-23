@@ -48,8 +48,11 @@
       overflow-safe assertion renderer, widening to i128 so the assertion states the
       broken promise instead of re-triggering the overflow; refusals reuse W0541 with
       a reason field; and `counterexample.kani_playback` is renamed `kani_witness` so
-      the schema stops implying it reproduces anything. OPEN: the witness budget
-      policy (--witnesses=all|N|none).
+      the schema stops implying it reproduces anything. DECIDED: `--witnesses=N`,
+      default 20 (`all`/`none` accepted) — ~20s near-fixed cost per witness makes
+      all-on untenable at scale, and repair is one-at-a-time anyway. The cap must be
+      visible: a skipped witness says so and names how to get it (W0541 reason
+      `budget_exhausted`), never silently absent.
 - [ ] **Callee-before-caller ordering needs kernel-grade treatment.** ADR-0003 proved
       Kani gives no backstop: a caller verifies while assuming an unproved callee. The
       scheduler that orders callees first is now soundness-critical and should be a pure

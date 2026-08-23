@@ -225,3 +225,21 @@ can go red:
 
 Out of scope for this plan: any change to `tools/`, the spike, or the spec text itself;
 u128 model-checking support; two-state specs beyond `old()`.
+
+## 8. Witness budget — decided 2026-08-23
+
+`--witnesses=N` (default **20**), with `all` and `none` accepted.
+
+Rationale: witness generation is ~20s of near-fixed overhead per failure (measured on a
+single-`u8` harness, versus 0.05s to detect), so a run with 200 failures would spend over
+an hour recording inputs it already knows. Repair is one-at-a-time in practice — an agent
+fixes a finding, re-runs, and the next batch of witnesses is generated then. Twenty is
+enough to work through without stalling the first run.
+
+**The cap must never be silent.** Any diagnostic whose witness was skipped for budget
+says so in its own text and names the way to get it — e.g. "witness not generated (budget
+20 reached); re-run with `--witnesses=all` or `--only <fn>` to get the failing input for
+this check." A finding that looks witness-less for a *reason* and one that is witness-less
+because Ply gave up must never be indistinguishable: that is the §8 "a non-result is still
+feedback" rule applied to our own throttling. `W0541`'s `reason` field carries
+`budget_exhausted` for this case, distinct from the render-refusal reasons.
