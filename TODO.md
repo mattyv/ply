@@ -21,6 +21,45 @@
 - [x] Gate debt closed for real — `strict` notch, `mode: synth` violet chip, `examples`
       e×N token all drawn and test-pinned (worktree merge).
 
+## Engine strategy — settled 2026-08-24 (fable review)
+
+- [x] **No pivot to VeriFast, and no additional engine now.** It is a category error:
+      Ply is multi-engine by design (D9, §5.4c), so there is no "primary engine" to
+      swap — only check kinds and adapters. Three independent reasons VeriFast is the
+      wrong first tenant: (1) it emits a symbolic-execution trace, never a concrete
+      counterexample, and a failure means *unproved*, not *false* — so a VeriFast-primary
+      Ply could never emit a `violation` from its main engine, deleting §1's core
+      mechanism rather than weakening it; (2) LLM proof-closure measures 31.4%
+      (arXiv:2606.26490, C) against Verus's 44% / AutoVerus ~90%, and our users are
+      agents; (3) measured cost on the real verify-rust-std proofs: linked_list
+      2,254 → 4,390 lines (+95%; 39 lemmas, 166 `open`, 229 `close`), raw_vec
+      854 → 3,246 (+280%).
+- [x] **Today's answer for external proofs**: they enter as `trusted` claims — no new
+      grammar, and safe now that attestations go stale with the code.
+- [ ] **When we reach M7**, the `prove` slot takes a deductive engine, with **Verus as
+      first tenant** (Rust-shaped, better agent proof-closure), not VeriFast. Adding any
+      engine is milestone-sized, and we are one milestone of seven in with no working
+      `cargo ply` — so the next step stays the thin end-to-end slice, not a second engine.
+- [ ] **Revisit triggers** (a decision with a trigger, not a dismissal): an
+      AutoVerus-equivalent for VeriFast reaching Verus-level proof-closure; VeriFast
+      emitting machine-readable failure output an adapter can parse; a vetting scenario
+      showing `fuzzed·spec-strong` is genuinely insufficient on recursive structures; or
+      the arena-flattening experiment failing.
+- [x] **Trusted claims had no staleness** — the evidence-lying hazard the fallback would
+      have shipped: an entry outlived the code it attested and rendered identically fresh
+      forever. §5.4d now fingerprints the attested item, marks it stale on change, and
+      requires human re-attestation (`accept` does not clear it).
+- [ ] **Separation-logic constructs: split the question.** Lemma functions and ghost
+      open/close are proof steps, not specification — below the watermark, never
+      spec-resident. Heap *predicates* are admissible in principle (the §7.1 gate admits
+      them on the same mark-plus-tooltip precedent as contract clauses; separation logic
+      is highly diagrammable), but largely unnecessary: §5.4a already admits calls to
+      `pure` helpers, so a recursive `pure fn len(&self)` is legal in a contract TODAY.
+      What is missing is an engine that can earn `proved` on it, not vocabulary.
+- [ ] Smallest useful version for M7: a per-fn `proof:` field naming a proof artifact,
+      drawn as a badge, fingerprinted under D14 so it goes stale with the body. No
+      predicate sub-language until a vetting scenario forces one.
+
 ## From the external review (codex, 2026-08-23) — see docs/review-2026-08-23.md
 
 - [x] **M0 spike done, ADR-0003 accepted** (0974f57). 8/9 mechanisms work; cross-crate
