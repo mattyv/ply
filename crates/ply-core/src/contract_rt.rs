@@ -25,7 +25,7 @@ use crate::harness::{ContractFn, RustType};
 /// broken contract). Leaves non-arithmetic constructs (deref, field access,
 /// method calls used as opaque leaves, logical operators) structurally
 /// alone -- only their *scalar* leaves get cast to i128.
-fn widen(expr: &Expr) -> proc_macro2::TokenStream {
+pub(crate) fn widen(expr: &Expr) -> proc_macro2::TokenStream {
     match expr {
         Expr::Binary(bin) => {
             let op = bin.op;

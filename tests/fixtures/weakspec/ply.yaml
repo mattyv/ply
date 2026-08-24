@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  weakspec:
+    anchor: ply_fixture_weakspec
+    fns:
+      vacuous:
+        checks: [fuzz(64), mutate]

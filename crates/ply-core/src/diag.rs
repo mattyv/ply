@@ -32,6 +32,25 @@ pub struct Counterexample {
     pub cargo_test: Option<String>,
 }
 
+/// One suggested repair (§8): "Ply proposes, never rewrites" -- a `Fix` is
+/// always a suggestion the caller may apply and a human may review, never
+/// something Ply applies itself. `edits` is left empty when Ply can name
+/// *what* would help (lower the bound, switch check kind, add a `requires`)
+/// but does not have a concrete source edit to offer -- an empty `edits` is
+/// still a real fix entry, not a placeholder.
+#[derive(Debug, Clone, Serialize)]
+pub struct Fix {
+    pub title: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<Edit>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Edit {
+    pub span: String,
+    pub insert: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Diagnostic {
     pub code: String,
@@ -45,6 +64,12 @@ pub struct Diagnostic {
     pub primary_span: Option<Span>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counterexample: Option<Counterexample>,
+    /// §8's non-result MUST: `timeout`/`unsupported`/`engine-missing` (and,
+    /// per M4, `weak-spec`) SHOULD populate this with the concrete options
+    /// a repair would need -- never left for the reader to guess from prose
+    /// alone.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub fixes: Vec<Fix>,
     pub open_item: Option<String>,
 }
 

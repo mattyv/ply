@@ -1,0 +1,12 @@
+ply: 1
+
+# No `checks:` on `count_unique` at all -- this fixture's whole point is
+# the M4 shape-aware default routing (§5.4c): `BTreeSet` fails the Kani
+# (`bounded`) gate (§5.4b's own measured exclusion, intractable past one
+# element) but passes the fuzz (proptest) gate, so the default must land on
+# `fuzz(256)`, never `bounded(2)` and never silently nothing.
+components:
+  btreeset:
+    anchor: ply_fixture_btreeset
+    fns:
+      count_unique: {}

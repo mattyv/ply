@@ -24,8 +24,13 @@ enum Commands {
     Verify {
         /// Path to the crate directory containing `ply.yaml`.
         path: PathBuf,
-        #[arg(long, default_value_t = 60)]
-        engine_timeout: u32,
+        /// Per-check engine time budget, in seconds. Omit to use the
+        /// shape-aware default (a `Vec`-typed `bounded(k)` check gets more
+        /// budget than a scalar one -- see
+        /// `verify::default_engine_timeout_secs`); pass a value to override
+        /// it for every check in this run.
+        #[arg(long)]
+        engine_timeout: Option<u32>,
     },
 }
 

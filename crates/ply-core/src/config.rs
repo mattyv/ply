@@ -65,12 +65,38 @@ impl Check {
 pub struct FnClaim {
     #[serde(default)]
     pub checks: Vec<String>,
+    /// §5.4a: "examples entries are exempt -- they are arbitrary Rust `==`
+    /// expressions, compiled as plain `#[test]`s and never translated for
+    /// an engine." Raw strings; parsed at codegen time (`fuzz_gen`).
+    #[serde(default)]
+    pub examples: Vec<String>,
 }
 
 impl FnClaim {
     pub fn parsed_checks(&self) -> Result<Vec<Check>> {
         self.checks.iter().map(|s| Check::parse(s)).collect()
     }
+}
+
+/// D12's own MUST: `mutate` requires a `test` or `fuzz` entry in the *same*
+/// list, else `E0504` -- `mutate` has no kill signal of its own. Returns
+/// `Ok(())` when the list is fine (including when `mutate` is simply
+/// absent), `Err` naming the defect otherwise.
+pub fn validate_mutate_has_kill_signal(checks: &[Check]) -> Result<()> {
+    let has_mutate = checks.iter().any(|c| matches!(c, Check::Mutate));
+    if !has_mutate {
+        return Ok(());
+    }
+    let has_kill_signal = checks.iter().any(|c| matches!(c, Check::Test | Check::Fuzz(_)));
+    if has_kill_signal {
+        return Ok(());
+    }
+    bail!(
+        "E0504: `mutate` has no `test` or `fuzz` entry in the same checks list to use as its \
+         mutant-kill signal -- mutation testing works by re-running an existing test suite \
+         against a deliberately broken copy of the function, so without `test` or `fuzz` \
+         alongside it, `mutate` has nothing to run. Add `test` or `fuzz(n)` to this fn's checks."
+    );
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -117,6 +143,27 @@ mod tests {
     fn rejects_bounded_out_of_range() {
         assert!(Check::parse("bounded(65)").is_err());
         assert!(Check::parse("bounded(0)").is_err());
+    }
+
+    #[test]
+    fn mutate_alone_is_e0504() {
+        let err = validate_mutate_has_kill_signal(&[Check::Mutate]).unwrap_err();
+        assert!(err.to_string().contains("E0504"), "{err}");
+    }
+
+    #[test]
+    fn mutate_with_fuzz_is_fine() {
+        assert!(validate_mutate_has_kill_signal(&[Check::Fuzz(256), Check::Mutate]).is_ok());
+    }
+
+    #[test]
+    fn mutate_with_test_is_fine() {
+        assert!(validate_mutate_has_kill_signal(&[Check::Test, Check::Mutate]).is_ok());
+    }
+
+    #[test]
+    fn no_mutate_at_all_is_fine() {
+        assert!(validate_mutate_has_kill_signal(&[Check::Bounded(2)]).is_ok());
     }
 
     #[test]

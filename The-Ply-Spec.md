@@ -482,12 +482,31 @@ wrong** — no such flag exists (cargo-mutants 27.1.0: `--test-tool` accepts onl
 `cargo`/`nextest`), and the M0 spike had never exercised it. The mechanism, verified end
 to end in `tests/spike/mutants/`, is package targeting plus a name filter:
 
-    cargo mutants -p <mutated-crate> --test-package <harness-crate> --re <fn> -- <test-name-filter>
+    cargo mutants -p <mutated-crate> --test-package <harness-crate> --re <fn> --copy-target true -- <test-name-filter>
 
-`--gitignore false` must be passed explicitly: the adapter's harnesses live under
-`target/ply/fuzz/`, which is git-ignored, and enabling gitignore-respecting copies (which
-a crate with a large `target/` would otherwise want) makes the build fail outright.
-Without this arrangement, `·spec-strong` would measure the wrong thing.
+**M4 correction: it is `--copy-target true`, not `--gitignore false`.** The earlier
+mutants spike's own recommendation ("pin `--gitignore false` explicitly") is falsified by
+M4's real runs, on two counts, both recorded in docs/m4-findings.md: (1) `--gitignore`'s
+own *default* is already off (confirmed directly against cargo-mutants 27.1.0's test
+suite, `gitignore_off_by_default`) — passing it explicitly changes nothing; (2) there is a
+second, separate skip `--gitignore` cannot reach at all: cargo-mutants' own copy step
+(`copy_tree.rs`) unconditionally prunes any directory literally named `target` sitting
+*directly at the copy root*, before the walk even considers `.gitignore` — Ply's harness
+crate at `<crate_dir>/target/ply/fuzz/<name>` sits exactly one level inside that directory,
+so every `mutate` run hit it (`cargo build failed in an unmutated tree`, the harness
+crate's `Cargo.toml` reported missing) even with `--gitignore false` passed. The earlier
+spike's own `harness-genloc` fixture never actually exercised this: its harness sat one
+level deeper (`lib/target/ply/fuzz/`, `lib` itself a subdirectory of the spike's copy
+root), so the top-level-target prune never matched it — an accident of that spike's
+fixture depth, not evidence of this placement's general safety. `--copy-target true` is
+the fix, and cargo-mutants' own CLI will not accept it alongside `--gitignore` at all
+(both share a mutually exclusive argument group) — since the default already matches what
+Ply wants, the adapter passes `--copy-target true` alone. The honest cost: this copies the
+target crate's entire `target/` build cache into every scratch tree cargo-mutants
+builds — measured at ~13s total (baseline + 2 trivial mutants) against a 189MB `target/`
+in this session's `weakspec` fixture; a real, size-dependent cost, not a free fix, and an
+open item for M5 (moving the harness crate to a location outside `target/` entirely would
+remove the need for this flag, at the cost of its own git-ignore entry).
 
 `W0502`'s surviving-mutant count is not a pure weak-spec measure: an *equivalent* mutant —
 one whose change cannot alter observable behaviour — survives any spec, however strong.
@@ -606,8 +625,26 @@ cargo ply skill              # (re)generate docs/PLY.skill.md from schema + diag
 ```
 
 Global flags: `--json` (schema §8, the agent surface — every command supports it),
-`--engine-timeout=<s>` (default 60 per fn), `--only-changed` (scope to the git diff),
-`--fail-on=warn|error`.
+`--engine-timeout=<s>` (shape-aware default, not a flat number — see below),
+`--only-changed` (scope to the git diff), `--fail-on=warn|error`.
+
+**The engine-timeout default is shape-aware, not a flat number (M4 correction).** A flat
+60s default (this section's own earlier text) does not fit every §5.4b-supported shape:
+the M3 review measured a `bounded(8)` proof over an 8-element `Vec` — a shape §5.4b lists
+as supported — timing out at 60s in 3/3 runs (62–63s each), while the M3 e2e suite's own
+fixture for exactly that case passes `150` explicitly to make it pass at all
+(docs/m3-slice-findings.md). A default that cannot finish a supported shape makes
+`timeout` the ordinary outcome rather than the exceptional one, which is how a status
+meant to mean "engine exhausted" decays into noise a user learns to skip. The fix (M4,
+`crates/ply-cli/src/verify.rs::default_engine_timeout_secs`) derives the budget from the
+declared check shape rather than guessing a bigger constant: a scalar-only `bounded(k)`
+harness keeps the original 60s (nothing in the M3 findings shows it insufficient there);
+a `Vec`-typed `bounded(k)` harness gets `30 + 15·k` seconds, a formula chosen to reproduce
+the M3 e2e suite's own working value exactly (`30 + 15·8 = 150`). `fuzz`/`test`/`mutate`
+checks keep a flat 60s: proptest and plain `cargo test` do not carry Kani's `Vec`-unwind
+cost profile, so nothing here shows a shape-aware scaling is needed for them yet. Passing
+`--engine-timeout` explicitly always overrides the default, for every check kind, exactly
+as before.
 
 Exit codes: 0 clean, 1 violations or failures, 2 tool error, 3 missing engine for an
 explicitly requested check.
@@ -918,6 +955,23 @@ it, or fail with `X0901` attaching the raw output for debugging.
 - Accept: a seeded-bug fixture shrunk to a minimal cex; a vacuous-ensures fixture
   flagged weak; a strong-spec fixture earning `·spec-strong`; a mutate-without-tier
   fixture producing E0504.
+- **M4 status (docs/m4-findings.md)**: built and green end to end —
+  `crates/ply-core/src/{fuzz_gen,harness_crate,engines/fuzz,engines/mutants}.rs`, the
+  shape-aware default-check routing (`ply-cli/src/verify.rs::default_checks_for`), and 5
+  new fixtures under `tests/fixtures/` (`fuzzbug`, `weakspec`, `strongspec`, `mutatetier`,
+  `btreeset`) with e2e tests under `tests/e2e/tests/`, covering all four of this
+  milestone's own acceptance fixtures plus the fifth (a `BTreeSet<u8>` fixture) that is
+  the point of the whole milestone: a shape §5.4b excludes from `bounded` earning an
+  honest `fuzzed(256)` verdict via the shape-aware default route. Fuzz-found violations
+  render through the *same* `contract_rt` renderer the Kani path uses (D7's design,
+  now both consumers wired) — confirmed on the `fuzzbug` fixture, FAIL-then-PASS. Struct
+  parameters ("field-by-field" fuzzing) are **not implemented** this session — a
+  deliberate scope cut recorded in docs/m4-findings.md, not a silent gap: `BTreeSet` was
+  used for the Kani-excluded acceptance shape instead (the spec's own "recursive, or a
+  `BTreeSet`" alternative). §6 and §5.4c amended for two falsified claims: the
+  engine-timeout default was flat, not shape-aware, and the mutate mechanism's own
+  `--gitignore false` guidance is superseded by `--copy-target true` (a second,
+  previously-undiscovered copy-skip, unconditional on gitignore).
 
 **M5 — verdict tree, aggregation, skill, polish** (~3 sessions)
 - Verdict tree with worst-of, status propagation, and open items; `--depth`/`--focus`;

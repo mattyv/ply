@@ -11,8 +11,23 @@ use anyhow::{bail, Context, Result};
 use quote::ToTokens;
 use syn::{Expr, ExprClosure, FnArg, ItemFn, Pat, Type};
 
-/// The minimal §5.4b-lite type vocabulary this slice supports. Anything else
+/// The type vocabulary Ply's codegen recognizes. `VecU8` is the only
+/// collection shape the *Kani* path (`bounded`) builds (with the mandatory
+/// unwind emission, §5.4b) -- `Vec(_)` and `BTreeSet(_)` exist only for the
+/// *fuzz* path (M4): proptest can generate any of these without Kani's
+/// construction/unwind cost, which is exactly why `BTreeSet` -- one of
+/// §5.4b's own measured exclusions -- is fuzz-supported but never
+/// bounded-supported (see `is_bounded_supported`/`is_fuzz_supported` below,
+/// the routing decision M4's shape-aware defaults depend on). Anything else
 /// is `Unsupported` and reported as such (V0505), never silently attempted.
+///
+/// Deliberately out of scope for M4 (recorded, not silently skipped, per
+/// docs/m4-findings.md): struct-typed parameters ("field-by-field" fuzzing).
+/// Kani's harness codegen here never supported them either, so adding fuzz
+/// support only for structs would create an asymmetry the shape-aware
+/// default can't express cleanly; the Kani-excluded acceptance shape uses
+/// `BTreeSet` instead (the spec's own alternative: "recursive, or a
+/// `BTreeSet`").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RustType {
     U8,
@@ -24,15 +39,67 @@ pub enum RustType {
     I32,
     I64,
     Bool,
-    /// `Vec<u8>` -- the only collection shape this slice's codegen builds
-    /// (with the mandatory unwind emission, §5.4b).
+    /// `Vec<u8>` -- the only collection shape the Kani path builds.
     VecU8,
+    /// `Vec<T>` for a scalar `T` other than `u8` -- fuzz-only (Kani's
+    /// harness codegen here never builds anything but `VecU8`).
+    Vec(Box<RustType>),
+    /// `BTreeSet<T>` for a scalar `T` -- fuzz-only. §5.4b measured this
+    /// shape as intractable for Kani beyond one element; proptest has no
+    /// such limit, which is the entire point of the M4 fuzz tier (§1: it
+    /// "reaches every signature shape ... §5.4b excludes from `bounded`").
+    BTreeSet(Box<RustType>),
     Unsupported(String),
 }
 
 impl RustType {
-    pub fn is_supported(&self) -> bool {
-        !matches!(self, RustType::Unsupported(_))
+    /// True for the plain scalar leaf types (never a collection) -- used to
+    /// decide whether a `Vec`/`BTreeSet` element type is itself fuzzable.
+    pub fn is_scalar(&self) -> bool {
+        matches!(
+            self,
+            RustType::U8
+                | RustType::U16
+                | RustType::U32
+                | RustType::U64
+                | RustType::I8
+                | RustType::I16
+                | RustType::I32
+                | RustType::I64
+                | RustType::Bool
+        )
+    }
+
+    /// The narrower gate: can Ply's *Kani* codegen build this type at all?
+    /// (Renamed from the M3 slice's `is_supported` now that a second,
+    /// broader gate -- `is_fuzz_supported` -- exists; every M3 call site is
+    /// updated to this name, behaviour unchanged for every type M3 knew
+    /// about.)
+    pub fn is_bounded_supported(&self) -> bool {
+        matches!(
+            self,
+            RustType::U8
+                | RustType::U16
+                | RustType::U32
+                | RustType::U64
+                | RustType::I8
+                | RustType::I16
+                | RustType::I32
+                | RustType::I64
+                | RustType::Bool
+                | RustType::VecU8
+        )
+    }
+
+    /// The M4 gate: can the *fuzz* (proptest) codegen build this type?
+    /// Strictly broader than `is_bounded_supported` -- every Kani-supported
+    /// shape is fuzz-supported too, plus `Vec`/`BTreeSet` of any scalar.
+    pub fn is_fuzz_supported(&self) -> bool {
+        match self {
+            RustType::Vec(inner) | RustType::BTreeSet(inner) => inner.is_scalar(),
+            RustType::Unsupported(_) => false,
+            other => other.is_bounded_supported() || other.is_scalar(),
+        }
     }
 
     /// The exact source text used both to declare `let name: <ty> = ...`
@@ -61,7 +128,10 @@ impl RustType {
             RustType::U16 | RustType::I16 => Some(2),
             RustType::U32 | RustType::I32 => Some(4),
             RustType::U64 | RustType::I64 => Some(8),
-            RustType::VecU8 | RustType::Unsupported(_) => None,
+            RustType::VecU8
+            | RustType::Vec(_)
+            | RustType::BTreeSet(_)
+            | RustType::Unsupported(_) => None,
         }
     }
 }
@@ -84,9 +154,29 @@ fn rust_type_from_syn(ty: &Type) -> RustType {
                 "bool" => RustType::Bool,
                 "Vec" => {
                     if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
-                        if let Some(syn::GenericArgument::Type(Type::Path(inner))) = ab.args.first() {
-                            if inner.path.is_ident("u8") {
-                                return RustType::VecU8;
+                        if let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first() {
+                            if let Type::Path(inner) = inner_ty {
+                                if inner.path.is_ident("u8") {
+                                    return RustType::VecU8;
+                                }
+                            }
+                            let inner = rust_type_from_syn(inner_ty);
+                            if inner.is_scalar() {
+                                return RustType::Vec(Box::new(inner));
+                            }
+                        }
+                    }
+                    RustType::Unsupported(ty.to_token_stream().to_string())
+                }
+                // Fuzz-only (§5.4b measured exclusion): proptest has no
+                // trouble generating a BTreeSet of scalars; Kani does, past
+                // one element, at any bound.
+                "BTreeSet" => {
+                    if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
+                        if let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first() {
+                            let inner = rust_type_from_syn(inner_ty);
+                            if inner.is_scalar() {
+                                return RustType::BTreeSet(Box::new(inner));
                             }
                         }
                     }
@@ -123,8 +213,23 @@ pub struct ContractFn {
 }
 
 impl ContractFn {
-    pub fn is_supported(&self) -> bool {
-        self.params.iter().all(|p| p.ty.is_supported())
+    /// Can Ply's Kani codegen build this fn's harness at all? (§5.4b gate.)
+    pub fn is_bounded_supported(&self) -> bool {
+        self.params.iter().all(|p| p.ty.is_bounded_supported())
+    }
+
+    /// Can Ply's proptest codegen build this fn's harness? (M4 gate --
+    /// strictly broader, see `RustType::is_fuzz_supported`.)
+    pub fn is_fuzz_supported(&self) -> bool {
+        self.params.iter().all(|p| p.ty.is_fuzz_supported())
+    }
+
+    /// Whether this fn carries any contract at all (`requires` and/or
+    /// `ensures`) -- the shape-aware default routing (§5.4c) only applies
+    /// a default check to a contracted fn; an uncontracted fn defaults to
+    /// no checks ("none otherwise").
+    pub fn has_contract(&self) -> bool {
+        self.requires.is_some() || self.ensures.is_some()
     }
 
     pub fn has_vec_param(&self) -> bool {
@@ -223,11 +328,11 @@ pub struct GeneratedHarness {
 /// shape in docs/m3-slice-findings.md. Without it, Kani's default unwind
 /// inference times out at every length, including 1.
 pub fn generate_proof_module(cf: &ContractFn, bound_k: u32) -> Result<GeneratedHarness> {
-    if !cf.is_supported() {
+    if !cf.is_bounded_supported() {
         let bad: Vec<String> = cf
             .params
             .iter()
-            .filter(|p| !p.ty.is_supported())
+            .filter(|p| !p.ty.is_bounded_supported())
             .map(|p| format!("{}: {:?}", p.name, p.ty))
             .collect();
         bail!("V0505: unsupported parameter type(s) for `{}`: {}", cf.name, bad.join(", "));
@@ -356,6 +461,71 @@ mod tests {
         path
     }
 
+    // -- M4: the fuzz-vs-bounded routing gate --------------------------
+    //
+    // These pin the exact asymmetry the M4 default-check routing depends
+    // on: BTreeSet is fuzz-supported but never bounded-supported (it is
+    // §5.4b's own measured Kani exclusion), and a general `Vec<T>` (T != u8)
+    // is fuzz-only because the Kani codegen here only ever builds `VecU8`.
+
+    #[test]
+    fn btree_set_of_scalar_is_fuzz_supported_but_not_bounded_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+use std::collections::BTreeSet;
+#[ply::ensures(|result| *result == xs.len() as u32)]
+pub fn count(xs: &BTreeSet<u8>) -> u32 { xs.len() as u32 }
+"#,
+        );
+        let cf = discover_fn(&path, "count").unwrap();
+        assert_eq!(cf.params[0].ty, RustType::BTreeSet(Box::new(RustType::U8)));
+        assert!(
+            cf.is_fuzz_supported(),
+            "BTreeSet<u8> must be fuzzable -- proptest has no trouble with it"
+        );
+        assert!(
+            !cf.is_bounded_supported(),
+            "BTreeSet must stay Kani-unsupported: §5.4b measured it intractable past one element"
+        );
+    }
+
+    #[test]
+    fn vec_of_non_u8_scalar_is_fuzz_supported_but_not_bounded_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::ensures(|result| *result == xs.len() as u32)]
+pub fn count(xs: &Vec<i32>) -> u32 { xs.len() as u32 }
+"#,
+        );
+        let cf = discover_fn(&path, "count").unwrap();
+        assert_eq!(cf.params[0].ty, RustType::Vec(Box::new(RustType::I32)));
+        assert!(cf.is_fuzz_supported());
+        assert!(
+            !cf.is_bounded_supported(),
+            "this slice's Kani codegen only ever builds VecU8, never a general Vec<T>"
+        );
+    }
+
+    #[test]
+    fn vec_u8_is_both_bounded_and_fuzz_supported_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::ensures(|result| *result <= 255u32 * v.len() as u32)]
+pub fn vec_sum(v: &Vec<u8>) -> u32 { 0 }
+"#,
+        );
+        let cf = discover_fn(&path, "vec_sum").unwrap();
+        assert_eq!(cf.params[0].ty, RustType::VecU8, "M3's VecU8 shape must not regress to Vec(U8)");
+        assert!(cf.is_bounded_supported());
+        assert!(cf.is_fuzz_supported());
+    }
+
     #[test]
     fn discovers_clamp_contract() {
         let dir = tempfile::tempdir().unwrap();
@@ -373,7 +543,7 @@ pub fn clamp(x: u32) -> u32 {
         assert_eq!(cf.params.len(), 1);
         assert_eq!(cf.params[0].ty, RustType::U32);
         assert!(cf.ensures.is_some());
-        assert!(cf.is_supported());
+        assert!(cf.is_bounded_supported());
     }
 
     #[test]

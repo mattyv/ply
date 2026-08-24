@@ -1,0 +1,11 @@
+ply: 1
+
+components:
+  strongspec:
+    anchor: ply_fixture_strongspec
+    fns:
+      add_small:
+        checks: [fuzz(256), test, mutate]
+        examples:
+          - "add_small(2, 3) == 5"
+          - "add_small(0, 0) == 0"
