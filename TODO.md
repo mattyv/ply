@@ -1,6 +1,6 @@
 # TODO
 
-## External systems and actors — landed 2026-08-24 (commit hash: see next entry)
+## External systems and actors — landed 2026-08-24 (31a669d)
 
 Full detail in `docs/external-elements-adoption.md`; the gate this was conditioned
 on (vetting re-run before any spec amendment) is recorded as a numbered finding
