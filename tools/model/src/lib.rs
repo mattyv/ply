@@ -15,6 +15,14 @@ pub struct Document {
     pub ply: u32,
     #[serde(default)]
     pub components: IndexMap<String, Component>,
+    /// docs/plans/external-elements.md §3: named outside parties (systems,
+    /// people) this codebase talks to but Ply never verifies. Top-level
+    /// only — an external has no interior and cannot nest. Shares the
+    /// component reference namespace for `~>` edge/`entry:` resolution
+    /// (§5.1a rule 6 applies unchanged), but is never a node of the §7
+    /// verdict tree.
+    #[serde(default)]
+    pub externals: IndexMap<String, External>,
     #[serde(default)]
     pub edges: Vec<String>,
     #[serde(default)]
@@ -47,6 +55,16 @@ pub struct Component {
     pub fns: IndexMap<String, FnClaim>,
 }
 
+/// docs/plans/external-elements.md §3: a named outside party — a system or
+/// person this codebase talks to but Ply never verifies. `note:` is
+/// required: an external is nothing but a name and a sentence, and a bare
+/// name tells a newbie nothing.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct External {
+    pub note: String,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
@@ -74,6 +92,12 @@ pub struct FnClaim {
     pub trusted: Vec<TrustedClaim>,
     #[serde(default)]
     pub unresolved: Vec<UnresolvedEntry>,
+    /// docs/plans/external-elements.md §3: names the externals that can
+    /// reach this fn — turns its `requires` clauses into environmental
+    /// assumptions (audit-only; no verdict change). Each name must resolve
+    /// to a declared external (checked in `ply-check`, not here).
+    #[serde(default)]
+    pub entry: Vec<String>,
 }
 
 /// §5.1 `checks: [bounded(2)] # optional default checks for all fns in
@@ -570,6 +594,94 @@ components:
             effective_checks(fc, curves_default),
             &["bounded(2)".to_string()][..]
         );
+    }
+
+    /// docs/plans/external-elements.md §3: a top-level `externals:` map,
+    /// each entry a name plus a required `note:`. Parses alongside
+    /// `components:`, independent of it.
+    #[test]
+    fn externals_block_parses_with_required_note() {
+        let doc = parse_document(
+            r#"
+ply: 1
+externals:
+  venue:
+    note: "the exchange: accepts orders, returns fills; market data source"
+"#,
+        )
+        .unwrap();
+        assert_eq!(doc.externals.len(), 1);
+        assert_eq!(
+            doc.externals["venue"].note,
+            "the exchange: accepts orders, returns fills; market data source"
+        );
+    }
+
+    /// `note:` is required — an external with none must fail to parse
+    /// (docs/plans/external-elements.md §3: "a bare name tells a newbie
+    /// nothing, and the tooltip must carry its own gloss").
+    #[test]
+    fn external_without_note_fails_to_parse() {
+        let err = parse_document(
+            r#"
+ply: 1
+externals:
+  venue: {}
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("note"),
+            "expected the parse error to name the missing `note` field, got: {err}"
+        );
+    }
+
+    /// A document with no `externals:` block at all parses with an empty map
+    /// — the field is optional, matching every other top-level collection.
+    #[test]
+    fn externals_block_is_optional() {
+        let doc = parse_document("ply: 1\n").unwrap();
+        assert!(doc.externals.is_empty());
+    }
+
+    /// docs/plans/external-elements.md §3: a per-fn `entry: [name, ...]`
+    /// field, naming the externals that can reach this fn.
+    #[test]
+    fn fn_claim_parses_entry_list() {
+        let doc = parse_document(
+            r#"
+ply: 1
+components:
+  oms:
+    anchor: oms
+    fns:
+      Oms::submit:
+        entry: [venue]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            doc.components["oms"].fns["Oms::submit"].entry,
+            vec!["venue".to_string()]
+        );
+    }
+
+    /// A fn claim with no `entry:` at all parses with an empty list — the
+    /// overwhelming common case (most fns are not externally reachable).
+    #[test]
+    fn fn_claim_without_entry_defaults_to_empty() {
+        let doc = parse_document(
+            r#"
+ply: 1
+components:
+  oms:
+    anchor: oms
+    fns:
+      Oms::submit: {}
+"#,
+        )
+        .unwrap();
+        assert!(doc.components["oms"].fns["Oms::submit"].entry.is_empty());
     }
 
     /// Nesting: a nested component that declares its own non-empty default

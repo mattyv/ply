@@ -227,6 +227,10 @@ Everything is declarative data. The only embedded syntaxes are:
 ```yaml
 ply: 1                           # schema version, required
 
+externals:                       # optional; named outside parties (§5.1a rule 6
+  venue:                         #   namespace; §5.3 edge rules; §7.1 visual form)
+    note: "the exchange: accepts orders, returns fills"   # required — no bare names
+
 components:
   pricing:                       # component name (unique across ALL merged files → E0202)
     anchor: pricing              # crate name, or crate::module::path — required
@@ -254,10 +258,15 @@ components:
           - { claim: "cross-thread safety", evidence: "loom test tests/loom_quote.rs" }
         unresolved:              # optional registry links for markers in this fn
           - { id: 147, note: "employee discount undecided" }
+        entry: [venue]           # optional; names of externals that can reach this
+                                  #   fn — its requires become environmental
+                                  #   assumptions on the audit surface (§5.3)
 
 edges:
   - pricing -> parser
   - "pricing ~> risk : pricing::Quote"
+  - "pricing ~> venue : pricing::Quote"   # ~> only — a `->` or `deny` naming an
+                                          #   external is an error (§5.3)
 
 deny:
   - "* -> db_raw except migrations"
@@ -278,6 +287,27 @@ diagnostics. Duplicate component names across merged files → `E0202` (nested n
 qualified by their parent, so only siblings can collide). A string that passes the schema
 regex but fails the real micro-syntax parser → `E0203`, stating the expected form.
 `mutate` without a `test` or `fuzz` entry in the same checks list → `E0504`.
+
+**Externals.** A top-level `externals:` map declares named outside parties — systems
+or people this codebase talks to but Ply can never verify: an exchange, a payment
+processor, a human operator. Each entry is a name plus a required `note:`; there is
+nothing else to declare, because an external carries no verdict, no ceiling, no
+checks, and is not a node of the §7 verdict tree — the kernel never sees it.
+Externals are top-level only (no interior, cannot nest) and share the component
+reference namespace (§5.1a rule 6): a name collision with a component or another
+external is `E0202`; a bare reference ambiguous between an external and a component
+leaf is `E0206`. An external may appear only as an endpoint of a `~>` flow edge, or
+be named in a fn's `entry:` list — never in a `->` call edge or a `deny` pattern
+(§5.3). `entry: [name, ...]` on a fn claim names the externals that can reach it:
+each name must resolve to a declared external (`E0209` otherwise), and the fn's own `requires` clauses
+become environmental assumptions Ply cannot discharge (nothing inside the workspace
+calls the fn, so no in-workspace caller ever checks them) — listed on the future
+`cargo ply audit`'s trust surface, never counted as an open item, and never changing
+the fn's own verdict. An external declared but named by no `~>` edge and no fn's
+`entry:` list is `W0410` — nothing in the document says how it connects. Externals
+have no staleness machinery: there is no body, no contract, no evidence string to
+fingerprint, so the tooltip and the (future) audit line always say plainly
+"declared, never checked by Ply" rather than pretending otherwise.
 
 ### 5.1a Strictness & lexical rules
 
@@ -301,7 +331,11 @@ The schema must encode all of the following; the goldens (§9) pin them.
    Rust paths: a bare name resolves only if it is unique across the whole merged tree;
    otherwise the dotted qualified form `parent.child` is required. An ambiguous bare
    reference → `E0206`, listing the candidates. (Discovered in vetting: two parents may
-   legally have same-named children, so `A -> B` alone can be ambiguous.)
+   legally have same-named children, so `A -> B` alone can be ambiguous.) Externals
+   share this same namespace and this same rule (§5.1) — they are top-level only, so
+   a dotted form never applies to one, but a bare external name is exactly as
+   resolvable, and exactly as ambiguity-checked against every component leaf, as a
+   bare component name is.
 
 ### 5.2 Anchoring & staleness
 
@@ -368,6 +402,18 @@ changes severity.
 
 Edges constrain **direct** calls only: `A -> B` and `B -> C` neither grants nor requires
 `A -> C`.
+
+**External edges.** Every solid arrow in a Ply diagram is a checked claim (a `->` edge,
+crate-tier or item-tier); every dashed arrow is declared-not-checked (`~>`, §5 item 2:
+"parsed and rendered, NOT checked in v1"). An external endpoint can never be checked —
+there is no crate, no item, nothing Ply's extractor can see — so routing it through
+anything but the dashed form would be a new "looks checked but isn't" surface, which
+this project refuses on principle (§1). Concretely: a `->` call edge naming an external,
+or a `deny` pattern naming one, is an error (`E0207`) whose message says why and points
+at `~>`/`entry:` instead — Ply cannot verify a call into code it cannot see, and cannot
+enforce a ban on a system it cannot observe. A `~>` flow needs at least one workspace
+endpoint; `external ~> external` describes the outside world talking to itself, which is
+none of this codebase's business to declare, and is `E0208`.
 
 ### 5.4 Contract semantics
 
@@ -754,6 +800,8 @@ grammar.**
 | `examples` | a gray `e×N` token in the chip's annotation area (next to the `T=...` note); the tooltip already counts and the `test` check runs them |
 | hollow component (derived, like findings) | a component that declares nothing inside — no fns, no nested components — draws with a dashed border: a sketch outline, nothing to zoom into yet. Tooltip says so plainly. Derived from absence rather than declared; the natural state of every box in top-down authoring, expected to solidify as claims arrive |
 | finding (tool-computed, not declared) | the offending item drawn in error red with an `E####` badge; its tooltip leads with the diagnostic. A finding with no drawable item attaches a red count to the workspace title. A document with findings still renders — a picture that refuses to draw hides the problem it should be showing (origin: fault-injection demo, where a faulted toolchain drew `bounded(0)` as legitimate evidence) |
+| external | a solid-bordered, unfilled, anchor-less, badge-less box **outside the workspace frame** — position extends its one declared meaning (containment) from "inside the box = part of the component" to "inside the frame = part of the system"; no new channel. Never on the verdict scale, not even `unclaimed`. Tooltip: "⟨name⟩ — a system or person outside this codebase: ⟨note⟩. Ply draws it so the boundary is visible, but checks nothing about it — every arrow touching it is a declaration, not a verified fact." |
+| `entry:` (derived edge) | a dashed arrow, labeled `entry`, from the reachable fn to the external that can reach it — crossing the frame border like any `~>` edge. Not a declared edge (fn claims are not edge endpoints, §5.3); the renderer derives it the same way it derives the ceiling fill. Tooltip names the fn, the external, and lists each `requires` clause now standing as an environmental assumption |
 
 A collapsed component is one solid-bordered box (never dashed — hollow means *nothing*
 inside; collapsed means *plenty* inside, folded) showing its name, anchor, a contents
@@ -778,8 +826,13 @@ someone who has learned nothing: every visual channel carries exactly one meanin
 each meaning borrows an instinct the viewer already has. Hue: red = forbidden or wrong;
 green = evidence; amber = a human's attention (owed, or vouched); ink = structure.
 Saturation: pastel = promised, saturated = earned. Border: dashed = hollow sketch,
-solid = specified, double = sealed pure. Edge dash: solid = may call, dashed = data
-flows, red-barred = must not. Small marks: solid square = a contract stands; numbered
+solid = specified, double = sealed pure. Edge dash: solid = may call (checked),
+dashed = **declared, not machine-checked**, red-barred = must not. The dashed meaning
+was originally stated narrower ("data flows"); externals' `~>` edges and derived
+`entry:` edges are that same declared-not-checked fact about a different kind of
+crossing, so the wider statement *subsumes* the original rather than adding a second
+meaning to the channel — a flow was always exactly "declared, not machine-checked",
+this just names what was already true. Small marks: solid square = a contract stands; numbered
 amber pin = decision owed; hollow shield = human-attested. A new visual form must draw
 from these channels consistently or claim an unused channel and name its single meaning
 here — reusing a channel for a second meaning is refused the way an undrawable
@@ -791,12 +844,14 @@ the picture must work on instinct alone. `ply-render --legend` opts into a compa
 legend strip appended below the frame (for docs, onboarding, print), generated from the
 same style constants the renderer draws with, so legend and drawing cannot drift apart.
 
-Gate debt: **none as of 2026-08-23** — and this time drawn, not merely assigned. Every
+Gate debt: **none as of 2026-08-24** — and this time drawn, not merely assigned. Every
 construct in the grammar has a visual form that the renderer actually emits and a test
 pins: the last three were `strict` (ink corner notch), `mode: synth` (violet chip fill),
-and `examples` (`e×N` token). The earlier version of this paragraph claimed closure when
-those forms existed only as table rows; the gate asks whether a reader of a real diagram
-can see the construct, so a row is not enough.
+and `examples` (`e×N` token); externals and the derived `entry:` edge followed the same
+day, gated on a vetting re-run (vetting 003's "external-elements gate" section) rather
+than assumed from the table row alone. The earlier version of this paragraph claimed
+closure when those forms existed only as table rows; the gate asks whether a reader of
+a real diagram can see the construct, so a row is not enough.
 
 ### 7.2 The watermark
 
@@ -823,15 +878,23 @@ machines, temporal rules, cross-function queries) are not yet expressible, and t
 section must not be read as implying they are. They are candidate watermark-lowering
 extensions, admitted one at a time through the §7.1 gate.
 
-The strata make the system's three kinds of *unspecified* distinct. The floor is
-permanently unspecifiable, by design. Below the watermark nothing is owed either: the
-body is not declared, it is verified against the contract above it. An `unresolved!`
-marker (§5.6) is different in kind: specification that is **owed but missing** — a
-tracked, numbered hole in the declarative stratum, expected to close. It sits physically
-in a body, but the missing decision usually belongs above the mark (the answer becomes a
-contract clause, an example, or a branch condition). This is why §5.6 caps such a fn at
-check `test`: with a decision unresolved, the contract cannot be complete, so the
-watermark is not yet a promise worth proving against.
+The strata make the system's kinds of *unspecified* distinct — **four**, not three:
+the floor is permanently unspecifiable, by design. Below the watermark nothing is
+owed either: the body is not declared, it is verified against the contract above it.
+An `unresolved!` marker (§5.6) is different in kind: specification that is **owed but
+missing** — a tracked, numbered hole in the declarative stratum, expected to close. It
+sits physically in a body, but the missing decision usually belongs above the mark
+(the answer becomes a contract clause, an example, or a branch condition). This is why
+§5.6 caps such a fn at check `test`: with a decision unresolved, the contract cannot be
+complete, so the watermark is not yet a promise worth proving against. An **external**
+(§5.1) is a fourth kind, distinct from all three: **out of scope by ownership**, not by
+incompleteness. A component nobody has specified yet and a system somebody else
+operates used to render identically — both simply absent from the model — and absence
+already means something (`unclaimed`), so the second case had no honest slot. An
+external will never be claimed, and that is correct rather than pending: it is not the
+floor (nothing here is imperative Rust), not a below-watermark body (there is no
+watermark — no signature, no contract), and not `unresolved!` (nobody owes a decision;
+the boundary is simply not this codebase's to specify).
 
 ## 8. Result JSON
 

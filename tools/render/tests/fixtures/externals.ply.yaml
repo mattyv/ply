@@ -1,0 +1,21 @@
+ply: 1
+externals:
+  venue:
+    note: "the exchange: accepts orders, returns fills; market data source"
+components:
+  gateway:
+    anchor: gw
+    uses: [net]
+    fns:
+      Gateway::send:
+        checks: [bounded(2)]
+        entry: [venue]
+        requires:
+          - "msg.len() > 0"
+  audit:
+    anchor: audit
+deny:
+  - "* -> audit"
+edges:
+  - "gateway ~> venue : FixMessage"
+  - "venue ~> gateway : Fill"

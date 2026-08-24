@@ -1,5 +1,52 @@
 # TODO
 
+## External systems and actors — landed 2026-08-24 (commit hash: see next entry)
+
+Full detail in `docs/external-elements-adoption.md`; the gate this was conditioned
+on (vetting re-run before any spec amendment) is recorded as a numbered finding
+plus an "external-elements gate" section in `vetting/003-trading-system.md`.
+
+- [x] `tools/model`: `externals:` (`External { note }`, required field) and
+      per-fn `entry: Vec<String>` on `FnClaim`.
+- [x] `tools/check`: five new document-local rules — `E0202` (name collides with a
+      component), `E0207` (external in a `->`/`deny`), `E0208`
+      (`external ~> external`), `E0209` (`entry:` names an undeclared external),
+      `W0410` (external declared, never referenced) — all fixture-tested,
+      `tools/check/tests/externals.rs`.
+- [x] `tools/render`: external box outside the frame, `~>`/derived `entry:` edges
+      routed around intervening components, frame border weight bumped to read as
+      a boundary. New invariant `frame_boundary::no_external_box_intersects_
+      the_frame_deny_wildcards_stay_inside_and_external_edges_cross_once`
+      (`tools/render/tests/render.rs`) — written red first (confirmed: it failed
+      on its own vacuous-pass guard before the renderer had any external support,
+      not a compile error), green after, mutation-tested (two real mutations,
+      each reverted). Fixed two pre-existing routing-algorithm limitations the
+      real 003 picture exposed (wrong rail-side heuristic, obstruction filter too
+      narrow) in a new dedicated function, without touching the existing
+      (already-tested) deny-line routing at all.
+- [x] `vetting/003-trading-system.ply.yaml`: `venue` external, three flow edges,
+      `entry: [venue]` on `Oms::submit`; `ply-check` clean. Both committed SVGs
+      regenerated and diffed line-by-line before accepting; `vetting/001-*.svg`,
+      `vetting/002-*.svg`, and the disruptor insta snapshot regenerated too (the
+      only diff in each: the frame stroke-width bump, confirmed by diffing).
+- [x] `The-Ply-Spec.md` amended: §5.1 (structure + example), §5.1a rule 6, §5.3
+      (external edges), §7.1 (two table rows + the dash-channel restatement),
+      §7.2 (the fourth kind of unspecified — "out of scope by ownership").
+- [x] Gate passed — no fallback to the flag-only form was needed.
+- [x] `cd tools && cargo test`, `cargo fmt --check`, and
+      `cargo clippy --release --all-targets -- -D warnings` all green/clean.
+- [ ] **Left for the maintainer, not attempted**: the squint test on the real
+      picture is explicitly the maintainer's own call, per the task brief — this
+      session's own visual review (converted locally to PNG for inspection) says
+      it holds, but did not certify it.
+- [ ] NOT RUN: a document with more than one external, or with two external
+      edges to the same external from different components sharing no lane —
+      the layout code has a defensive width-overflow guard but no fixture
+      exercises multi-external layout or that specific lane-fan gap.
+- [ ] Out of scope by the task brief, not attempted: `crates/` (the
+      `entry:`/audit surface lands there at M5); `tools/kernel` untouched (and
+      correctly so — externals never enter the verdict tree).
+
 ## M4 — fuzz + test + mutate tier — landed 2026-08-24 (2520f8b)
 
 Note on provenance: 2520f8b's own message flags that the full-suite result was "NOT

@@ -1,0 +1,7 @@
+ply: 1
+components:
+  oms:
+    anchor: oms
+    fns:
+      Oms::submit:
+        entry: [venue]

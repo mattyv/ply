@@ -1,0 +1,7 @@
+ply: 1
+externals:
+  venue:
+    note: "the exchange: accepts orders, returns fills"
+components:
+  venue:
+    anchor: app::venue

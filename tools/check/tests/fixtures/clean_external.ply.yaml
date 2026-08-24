@@ -1,0 +1,13 @@
+ply: 1
+externals:
+  venue:
+    note: "the exchange: accepts orders, returns fills"
+components:
+  gateway:
+    anchor: gw
+    fns:
+      Gateway::send:
+        entry: [venue]
+edges:
+  - "gateway ~> venue : FixMessage"
+  - "venue ~> gateway : Fill"

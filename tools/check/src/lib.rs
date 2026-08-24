@@ -8,8 +8,8 @@
 //! are out of scope.
 
 use ply_model::{
-    Check, Component, Document, Edge, InheritedChecks, component_default_checks, effective_checks,
-    parse_check, parse_deny, parse_edge,
+    Check, Component, Document, Edge, EdgeKind, InheritedChecks, component_default_checks,
+    effective_checks, parse_check, parse_deny, parse_edge,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -27,6 +27,10 @@ pub enum Target {
     },
     /// A component (its box), named by the same qualified path.
     Component(String),
+    /// docs/plans/external-elements.md: an external, named by its own
+    /// declared name (externals are top-level only, so this is always the
+    /// bare name — never a dotted path).
+    External(String),
     /// An entry in `doc.edges`, by position.
     EdgeIndex(usize),
     /// An entry in `doc.deny`, by position.
@@ -142,6 +146,7 @@ fn check_mutate_rule(
 /// ancestor ever declared one) — threaded in so a fn with no `checks` of its
 /// own can be validated against its real effective list, not silently
 /// skipped.
+#[allow(clippy::too_many_arguments)]
 fn walk_component<'a>(
     qualified: &str,
     leaf: &'a str,
@@ -150,6 +155,8 @@ fn walk_component<'a>(
     unresolved_ids: &mut Vec<(u64, String)>,
     leaf_index: &mut HashMap<String, Vec<String>>,
     inherited: Option<InheritedChecks<'a>>,
+    external_names: &HashSet<&str>,
+    used_externals: &mut HashSet<String>,
 ) {
     leaf_index
         .entry(leaf.to_string())
@@ -223,6 +230,27 @@ fn walk_component<'a>(
         for u in &fc.unresolved {
             unresolved_ids.push((u.id, location.clone()));
         }
+
+        // docs/plans/external-elements.md §3: each `entry:` name must
+        // resolve to a declared external — most likely failure is a typo,
+        // so the message points at the fix. A name that does resolve marks
+        // that external referenced, for the "declared but unused" check
+        // below.
+        for name in &fc.entry {
+            if external_names.contains(name.as_str()) {
+                used_externals.insert(name.clone());
+            } else {
+                out.push(diag(
+                    "E0209",
+                    format!(
+                        "entry: names {name:?}, but no external called {name:?} is declared — \
+                         add it under `externals:`, or check the spelling against the names \
+                         declared there ({location})"
+                    ),
+                    fn_target.clone(),
+                ));
+            }
+        }
     }
 
     for (child_name, nested) in &c.components {
@@ -235,6 +263,8 @@ fn walk_component<'a>(
             unresolved_ids,
             leaf_index,
             this_default,
+            external_names,
+            used_externals,
         );
     }
 }
@@ -358,10 +388,62 @@ fn check_containment_redundancy(
     ));
 }
 
+/// docs/plans/external-elements.md §3: the shared wording for a `->` call
+/// edge or a `deny` pattern that names an external — the two forms differ
+/// only in *why* Ply refuses it (`verb_clause`), and both point at the two
+/// forms that ARE allowed for an external endpoint.
+fn external_not_allowed_message(construct_str: &str, ext: &str, verb_clause: &str) -> String {
+    format!(
+        "{construct_str:?} is not allowed: {ext} is external (declared under `externals:`), \
+         and {verb_clause} — use a data-flow edge (\"{ext} ~> other : Type\") to show data \
+         crossing this boundary, or \"entry: [{ext}]\" on the function {ext} can reach"
+    )
+}
+
+/// docs/plans/external-elements.md §3: "A flow needs one workspace
+/// endpoint" — `external ~> external` involves nothing of ours.
+fn external_to_external_message(edge_str: &str) -> String {
+    format!(
+        "{edge_str:?} connects two externals with nothing of this codebase between them: a \
+         data-flow edge needs at least one real component as an endpoint — Ply draws \
+         externals to show where this codebase meets the outside world, not to describe the \
+         outside world talking to itself"
+    )
+}
+
+/// docs/plans/external-elements.md §3: "a name collision with any component
+/// (or another external) is the existing duplicate-name error (E0202)".
+fn external_duplicates_component_message(name: &str) -> String {
+    format!(
+        "{name:?} is declared twice: both as a component and as an external — externals \
+         share the component reference namespace, so every name must be unique across both"
+    )
+}
+
+/// An external nothing in the document ever points at: no `~>` edge names
+/// it, and no fn's `entry:` list does either. Not wrong the way a typo is,
+/// but silent in exactly the way a reviewer would otherwise have to notice
+/// by squinting at the picture.
+fn unreferenced_external_message(name: &str) -> String {
+    format!(
+        "external {name:?} is declared but never used: it is not named by any `~>` edge or \
+         any function's `entry:` list, so nothing in this document says how it connects — add \
+         an edge or an entry:, or remove it if it is no longer needed"
+    )
+}
+
 pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mut unresolved_ids: Vec<(u64, String)> = Vec::new();
     let mut leaf_index: HashMap<String, Vec<String>> = HashMap::new();
+    // docs/plans/external-elements.md §3: externals share the component
+    // reference namespace but are never nodes of the component tree, so
+    // they're tracked alongside it rather than folded in — `used_externals`
+    // is populated both here (via `entry:`, inside `walk_component`) and
+    // below (via a `~>` edge naming one), then reconciled against
+    // `doc.externals` at the end for the "declared but unused" check.
+    let external_names: HashSet<&str> = doc.externals.keys().map(String::as_str).collect();
+    let mut used_externals: HashSet<String> = HashSet::new();
 
     for (name, c) in &doc.components {
         walk_component(
@@ -372,7 +454,25 @@ pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
             &mut unresolved_ids,
             &mut leaf_index,
             None,
+            &external_names,
+            &mut used_externals,
         );
+    }
+
+    // §3: "a name collision with any component ... is the existing
+    // duplicate-name error (E0202)" — checked against top-level component
+    // names, the only ones an external (itself always top-level) can
+    // actually collide with by declaration; a collision with a *nested*
+    // leaf is ambiguity (E0206 below), not duplication, exactly as two
+    // components sharing a nested leaf name already is.
+    for name in doc.externals.keys() {
+        if doc.components.contains_key(name) {
+            out.push(diag(
+                "E0202",
+                external_duplicates_component_message(name),
+                Target::External(name.clone()),
+            ));
+        }
     }
 
     // Every qualified path any component actually has, used to resolve a
@@ -384,6 +484,47 @@ pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
         let target = Target::EdgeIndex(i);
         match parse_edge(e) {
             Ok(edge) => {
+                let from_ext = external_names.contains(edge.from.as_str());
+                let to_ext = external_names.contains(edge.to.as_str());
+                match (&edge.kind, from_ext, to_ext) {
+                    // §3: "A `->` call edge ... touching an external is an
+                    // error" — Ply can never verify a call into code it
+                    // cannot see.
+                    (EdgeKind::Call, true, _) => out.push(diag(
+                        "E0207",
+                        external_not_allowed_message(
+                            e.trim(),
+                            &edge.from,
+                            "Ply can never verify a call into code it cannot see",
+                        ),
+                        target.clone(),
+                    )),
+                    (EdgeKind::Call, false, true) => out.push(diag(
+                        "E0207",
+                        external_not_allowed_message(
+                            e.trim(),
+                            &edge.to,
+                            "Ply can never verify a call into code it cannot see",
+                        ),
+                        target.clone(),
+                    )),
+                    // §3: "A flow needs one workspace endpoint" —
+                    // `external ~> external` is an error; a flow with
+                    // exactly one external endpoint is the whole point of
+                    // this feature, and marks that external referenced.
+                    (EdgeKind::Flow(_), true, true) => out.push(diag(
+                        "E0208",
+                        external_to_external_message(e.trim()),
+                        target.clone(),
+                    )),
+                    (EdgeKind::Flow(_), true, false) => {
+                        used_externals.insert(edge.from.clone());
+                    }
+                    (EdgeKind::Flow(_), false, true) => {
+                        used_externals.insert(edge.to.clone());
+                    }
+                    (EdgeKind::Call, false, false) | (EdgeKind::Flow(_), false, false) => {}
+                }
                 check_token_ambiguity(&edge.from, &leaf_index, &target, &mut out);
                 check_token_ambiguity(&edge.to, &leaf_index, &target, &mut out);
                 check_containment_redundancy(
@@ -402,10 +543,46 @@ pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
         let target = Target::DenyIndex(i);
         match parse_deny(d) {
             Ok(deny) => {
+                // §3: "a `deny` pattern touching an external is an error"
+                // — Ply cannot enforce a ban on a system it cannot observe.
+                if external_names.contains(deny.from.as_str()) {
+                    out.push(diag(
+                        "E0207",
+                        external_not_allowed_message(
+                            d.trim(),
+                            &deny.from,
+                            "Ply cannot enforce a ban on a system it cannot observe",
+                        ),
+                        target.clone(),
+                    ));
+                }
+                if external_names.contains(deny.to.as_str()) {
+                    out.push(diag(
+                        "E0207",
+                        external_not_allowed_message(
+                            d.trim(),
+                            &deny.to,
+                            "Ply cannot enforce a ban on a system it cannot observe",
+                        ),
+                        target.clone(),
+                    ));
+                }
                 check_token_ambiguity(&deny.from, &leaf_index, &target, &mut out);
                 check_token_ambiguity(&deny.to, &leaf_index, &target, &mut out);
             }
             Err(err) => out.push(diag("E0203", format!("{err} (deny)"), target)),
+        }
+    }
+
+    // §3: an external nothing points at — checked last, once every edge
+    // and every fn's `entry:` list has had its chance to mark one used.
+    for name in doc.externals.keys() {
+        if !used_externals.contains(name) {
+            out.push(diag(
+                "W0410",
+                unreferenced_external_message(name),
+                Target::External(name.clone()),
+            ));
         }
     }
 

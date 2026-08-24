@@ -1,4 +1,7 @@
 ply: 1
+externals:
+  venue:
+    note: "the exchange: accepts orders, returns fills; market data source"
 components:
   ingest:
     anchor: ingest
@@ -71,6 +74,7 @@ components:
     fns:
       Oms::submit:
         checks: [bounded(2), fuzz(256)]
+        entry: [venue]
         unresolved:
           - { id: 9, note: "order id after venue reject: fresh id or reuse" }
       Oms::on_fill:
@@ -107,6 +111,9 @@ edges:
   - "oms ~> gateway : Order"
   - "gateway ~> oms : Fill"
   - "oms ~> pnl : Fill"
+  - "gateway ~> venue : FixMessage"
+  - "venue ~> gateway : Fill"
+  - "venue ~> ingest.feed : RawFrame"
 deny:
   - "* -> gateway except oms"
   - "* -> risk except oms"
