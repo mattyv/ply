@@ -13,7 +13,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Expr, ItemFn};
+use syn::{Expr, ItemFn, parse_macro_input};
 
 /// `#[ply::requires(expr)]` — precondition: what must hold on entry.
 #[proc_macro_attribute]
@@ -21,7 +21,12 @@ pub fn requires(attr: TokenStream, item: TokenStream) -> TokenStream {
     let expr = parse_macro_input!(attr as Expr);
     let func = parse_macro_input!(item as ItemFn);
 
-    let ItemFn { attrs, vis, sig, block } = func;
+    let ItemFn {
+        attrs,
+        vis,
+        sig,
+        block,
+    } = func;
 
     quote! {
         #(#attrs)*
@@ -39,7 +44,12 @@ pub fn ensures(attr: TokenStream, item: TokenStream) -> TokenStream {
     let closure = parse_macro_input!(attr as Expr);
     let func = parse_macro_input!(item as ItemFn);
 
-    let ItemFn { attrs, vis, sig, block } = func;
+    let ItemFn {
+        attrs,
+        vis,
+        sig,
+        block,
+    } = func;
 
     quote! {
         #(#attrs)*

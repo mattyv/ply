@@ -13,8 +13,14 @@ fn vacuous_ensures_is_flagged_weak_spec() {
     // fails) -- `mutate` is the one that must catch the weakness, as a
     // status flag alongside the verdict (D6: statuses propagate alongside
     // the evidence order, they don't replace it).
-    assert_eq!(run.json["root"]["verdict"], "fuzzed(64)", "envelope: {}", run.json);
-    let statuses = run.json["root"]["children"][0]["children"][0]["statuses"].as_array().unwrap();
+    assert_eq!(
+        run.json["root"]["verdict"], "fuzzed(64)",
+        "envelope: {}",
+        run.json
+    );
+    let statuses = run.json["root"]["children"][0]["children"][0]["statuses"]
+        .as_array()
+        .unwrap();
     assert!(
         statuses.iter().any(|s| s == "weak-spec"),
         "the fn node must carry a weak-spec status: {}",

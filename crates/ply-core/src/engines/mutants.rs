@@ -180,7 +180,12 @@ pub fn run(cfg: &MutantsRunConfig) -> Result<MutantsRunOutcome> {
         .current_dir(&cfg.workspace_root)
         .args(&argv[1..])
         .output()
-        .with_context(|| format!("spawning `cargo mutants` in {}", cfg.workspace_root.display()))?;
+        .with_context(|| {
+            format!(
+                "spawning `cargo mutants` in {}",
+                cfg.workspace_root.display()
+            )
+        })?;
 
     let combined = format!(
         "{}\n{}",
@@ -196,10 +201,16 @@ pub fn run(cfg: &MutantsRunConfig) -> Result<MutantsRunOutcome> {
 /// files cannot be read is a `ToolError`, and only a run that produced real
 /// per-mutant result files is `Completed`. Pure, so the classification is
 /// testable without a real cargo-mutants run.
-pub fn classify_run(exit_code: Option<i32>, combined: String, mutants_out: &Path) -> MutantsRunOutcome {
+pub fn classify_run(
+    exit_code: Option<i32>,
+    combined: String,
+    mutants_out: &Path,
+) -> MutantsRunOutcome {
     // GNU `timeout` exits 124 when it had to kill the child.
     if exit_code == Some(124) {
-        return MutantsRunOutcome::Timeout { raw_output: combined };
+        return MutantsRunOutcome::Timeout {
+            raw_output: combined,
+        };
     }
 
     if combined.contains("cargo build failed in an unmutated tree") {
@@ -233,7 +244,13 @@ pub fn classify_run(exit_code: Option<i32>, combined: String, mutants_out: &Path
         };
     }
 
-    MutantsRunOutcome::Completed(MutantsOutcome { caught, missed, unviable, timeout, raw_output: combined })
+    MutantsRunOutcome::Completed(MutantsOutcome {
+        caught,
+        missed,
+        unviable,
+        timeout,
+        raw_output: combined,
+    })
 }
 
 /// Lets a caller pre-flight-check whether `cargo mutants` is on `PATH` at
@@ -275,10 +292,19 @@ mod tests {
     #[test]
     fn the_whole_invocation_carries_a_wall_clock_cap_not_just_a_per_mutant_one() {
         let argv = mutants_argv(&cfg());
-        assert_eq!(argv[0], "timeout", "the run itself must be capped, not only each mutant: {argv:?}");
-        assert_eq!(argv[1], "600s", "the cap is the config's whole-run budget: {argv:?}");
+        assert_eq!(
+            argv[0], "timeout",
+            "the run itself must be capped, not only each mutant: {argv:?}"
+        );
+        assert_eq!(
+            argv[1], "600s",
+            "the cap is the config's whole-run budget: {argv:?}"
+        );
         assert_eq!(argv[2], "cargo");
-        assert!(argv.contains(&"-t".to_string()) && argv.contains(&"60".to_string()), "{argv:?}");
+        assert!(
+            argv.contains(&"-t".to_string()) && argv.contains(&"60".to_string()),
+            "{argv:?}"
+        );
     }
 
     /// GNU `timeout` exits 124 when it had to kill the child. Before the fix
@@ -299,14 +325,26 @@ mod tests {
     #[test]
     fn all_caught_is_false_with_zero_mutants() {
         let outcome = MutantsOutcome::default();
-        assert!(!outcome.all_caught(), "zero mutants run is not evidence of a strong spec");
+        assert!(
+            !outcome.all_caught(),
+            "zero mutants run is not evidence of a strong spec"
+        );
     }
 
     #[test]
     fn all_caught_true_only_when_nothing_survived_and_something_ran() {
-        let outcome = MutantsOutcome { caught: 5, missed: vec![], unviable: 1, timeout: 0, raw_output: String::new() };
+        let outcome = MutantsOutcome {
+            caught: 5,
+            missed: vec![],
+            unviable: 1,
+            timeout: 0,
+            raw_output: String::new(),
+        };
         assert!(outcome.all_caught());
-        let with_survivor = MutantsOutcome { missed: vec!["x".into()], ..outcome };
+        let with_survivor = MutantsOutcome {
+            missed: vec!["x".into()],
+            ..outcome
+        };
         assert!(!with_survivor.all_caught());
     }
 }

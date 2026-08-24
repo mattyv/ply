@@ -57,7 +57,12 @@ pub fn run_harness_tests(
         .arg("--nocapture")
         .current_dir(workspace_root)
         .output()
-        .with_context(|| format!("spawning `cargo test -p {harness_package}` in {}", workspace_root.display()))?;
+        .with_context(|| {
+            format!(
+                "spawning `cargo test -p {harness_package}` in {}",
+                workspace_root.display()
+            )
+        })?;
 
     let combined = format!(
         "{}\n{}",
@@ -138,7 +143,10 @@ pub fn first_build_error(combined: &str) -> Option<String> {
 /// `[...]` value (a `Vec`/`BTreeSet`) keep the brackets for
 /// `decode_marker_fields` to parse.
 pub fn parse_fuzz_marker(combined: &str) -> Option<(String, BTreeMap<String, String>)> {
-    let line = combined.lines().rev().find(|l| l.contains("PLY_FUZZED_CEX|"))?;
+    let line = combined
+        .lines()
+        .rev()
+        .find(|l| l.contains("PLY_FUZZED_CEX|"))?;
     let after = line.split_once("PLY_FUZZED_CEX|")?.1;
     let (fn_name, rest) = after.split_once('|')?;
     let mut fields = BTreeMap::new();
@@ -175,7 +183,9 @@ fn split_top_level_semicolons(s: &str) -> Vec<&str> {
 /// Parses the `PLY_FUZZ_HIGH_REJECT|<fn>|<detail>` marker (§5.4c: "a
 /// warning when the rejection rate is high"), if present.
 pub fn parse_high_reject_marker(combined: &str) -> Option<(String, String)> {
-    let line = combined.lines().find(|l| l.contains("PLY_FUZZ_HIGH_REJECT|"))?;
+    let line = combined
+        .lines()
+        .find(|l| l.contains("PLY_FUZZ_HIGH_REJECT|"))?;
     let after = line.split_once("PLY_FUZZ_HIGH_REJECT|")?.1;
     let (fn_name, detail) = after.split_once('|')?;
     Some((fn_name.trim().to_string(), detail.trim().to_string()))
@@ -206,9 +216,24 @@ pub fn parse_abort_marker(combined: &str) -> Option<FuzzAbort> {
     let mut parts = after.split('|');
     let fn_name = parts.next()?.trim().to_string();
     let reason = parts.next()?.trim().to_string();
-    let accepted = parts.next()?.trim().strip_prefix("accepted=")?.parse::<u32>().ok()?;
-    let rejected = parts.next()?.trim().strip_prefix("rejected=")?.parse::<u32>().ok()?;
-    Some(FuzzAbort { fn_name, reason, accepted, rejected })
+    let accepted = parts
+        .next()?
+        .trim()
+        .strip_prefix("accepted=")?
+        .parse::<u32>()
+        .ok()?;
+    let rejected = parts
+        .next()?
+        .trim()
+        .strip_prefix("rejected=")?
+        .parse::<u32>()
+        .ok()?;
+    Some(FuzzAbort {
+        fn_name,
+        reason,
+        accepted,
+        rejected,
+    })
 }
 
 fn parse_u8_list(raw: &str) -> Option<Vec<u8>> {
@@ -216,7 +241,10 @@ fn parse_u8_list(raw: &str) -> Option<Vec<u8>> {
     if inner.is_empty() {
         return Some(vec![]);
     }
-    inner.split(',').map(|s| s.trim().parse::<u8>().ok()).collect()
+    inner
+        .split(',')
+        .map(|s| s.trim().parse::<u8>().ok())
+        .collect()
 }
 
 /// Decodes a fuzz marker's fields into the *same* `WitnessValue` type Kani
@@ -227,7 +255,10 @@ fn parse_u8_list(raw: &str) -> Option<Vec<u8>> {
 /// included -- the M4 acceptance shape) and any `Vec` of a non-`u8` scalar
 /// land here. The caller reports that case as a witness-only violation
 /// (`W0541`), never force-rendered.
-pub fn decode_marker_fields(fields: &BTreeMap<String, String>, params: &[Param]) -> Option<Vec<WitnessValue>> {
+pub fn decode_marker_fields(
+    fields: &BTreeMap<String, String>,
+    params: &[Param],
+) -> Option<Vec<WitnessValue>> {
     let mut out = Vec::with_capacity(params.len());
     for p in params {
         let raw = fields.get(&p.name)?;
@@ -240,7 +271,9 @@ pub fn decode_marker_fields(fields: &BTreeMap<String, String>, params: &[Param])
                 WitnessValue::Int(raw.parse::<i128>().ok()?)
             }
             RustType::VecU8 => WitnessValue::VecU8(parse_u8_list(raw)?),
-            RustType::Vec(inner) if inner.as_ref() == &RustType::U8 => WitnessValue::VecU8(parse_u8_list(raw)?),
+            RustType::Vec(inner) if inner.as_ref() == &RustType::U8 => {
+                WitnessValue::VecU8(parse_u8_list(raw)?)
+            }
             RustType::Vec(_) | RustType::BTreeSet(_) | RustType::Unsupported(_) => return None,
         };
         out.push(value);
@@ -272,7 +305,10 @@ mod tests {
     fn parses_failing_test_names_under_nocapture_with_no_detail_headers() {
         let combined = "\nrunning 1 test\nPLY_FUZZED_CEX|seeded_bug|x=7\n\nthread panicked at src/lib.rs:1:1:\nproptest found a failing case\ntest seeded_bug_harness::ply_fuzz_seeded_bug ... FAILED\n\nfailures:\n\nfailures:\n    seeded_bug_harness::ply_fuzz_seeded_bug\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n\n";
         let names = parse_failed_test_names(combined);
-        assert_eq!(names, vec!["seeded_bug_harness::ply_fuzz_seeded_bug".to_string()]);
+        assert_eq!(
+            names,
+            vec!["seeded_bug_harness::ply_fuzz_seeded_bug".to_string()]
+        );
     }
 
     /// Real captured output from the `badexample` fixture's harness build
@@ -289,7 +325,10 @@ mod tests {
              \n\
              For more information about this error, try `rustc --explain E0308`.\n\
              error: could not compile `ply-fixture-badexample-ply-harness` (lib test) due to 1 previous error\n";
-        assert_eq!(first_build_error(combined).unwrap(), "error[E0308]: mismatched types");
+        assert_eq!(
+            first_build_error(combined).unwrap(),
+            "error[E0308]: mismatched types"
+        );
     }
 
     #[test]
@@ -307,7 +346,11 @@ mod tests {
 
     #[test]
     fn decodes_marker_fields_into_witness_values() {
-        let params = vec![Param { name: "x".into(), ty: RustType::U32, by_ref: false }];
+        let params = vec![Param {
+            name: "x".into(),
+            ty: RustType::U32,
+            by_ref: false,
+        }];
         let mut fields = BTreeMap::new();
         fields.insert("x".to_string(), "4294967295".to_string());
         let decoded = decode_marker_fields(&fields, &params).unwrap();
@@ -316,7 +359,11 @@ mod tests {
 
     #[test]
     fn decodes_vec_u8_marker_field() {
-        let params = vec![Param { name: "v".into(), ty: RustType::VecU8, by_ref: true }];
+        let params = vec![Param {
+            name: "v".into(),
+            ty: RustType::VecU8,
+            by_ref: true,
+        }];
         let mut fields = BTreeMap::new();
         fields.insert("v".to_string(), "[255,0,3]".to_string());
         let decoded = decode_marker_fields(&fields, &params).unwrap();
@@ -325,7 +372,11 @@ mod tests {
 
     #[test]
     fn refuses_to_decode_a_vec_of_non_u8_never_fabricating_a_value() {
-        let params = vec![Param { name: "xs".into(), ty: RustType::Vec(Box::new(RustType::I32)), by_ref: true }];
+        let params = vec![Param {
+            name: "xs".into(),
+            ty: RustType::Vec(Box::new(RustType::I32)),
+            by_ref: true,
+        }];
         let mut fields = BTreeMap::new();
         fields.insert("xs".to_string(), "[-1,2,3]".to_string());
         assert!(decode_marker_fields(&fields, &params).is_none());

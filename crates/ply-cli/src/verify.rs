@@ -62,11 +62,7 @@ pub struct VerifyOptions {
 /// explicitly, so only the unit test below exercises the formula (recorded
 /// in TODO.md, not left to be discovered).
 pub fn default_engine_timeout_secs(has_vec_param: bool, bound_k: u32) -> u32 {
-    if has_vec_param {
-        30 + 15 * bound_k
-    } else {
-        60
-    }
+    if has_vec_param { 30 + 15 * bound_k } else { 60 }
 }
 
 /// The `fuzz`/`test`/`mutate` engines never carry Kani's `Vec`-unwind cost
@@ -106,13 +102,23 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             let cf = match harness::discover_fn(&lib_path, fn_name) {
                 Ok(cf) => cf,
                 Err(e) => {
-                    diagnostics.push(unresolved_anchor_diag(&node_id, fn_name, "none", &e.to_string()));
-                    early_nodes_by_component.entry(comp_name).or_default().push(leaf_node(&node_id, "unclaimed"));
+                    diagnostics.push(unresolved_anchor_diag(
+                        &node_id,
+                        fn_name,
+                        "none",
+                        &e.to_string(),
+                    ));
+                    early_nodes_by_component
+                        .entry(comp_name)
+                        .or_default()
+                        .push(leaf_node(&node_id, "unclaimed"));
                     continue;
                 }
             };
 
-            let explicit = claim.parsed_checks().with_context(|| format!("parsing checks for {node_id}"))?;
+            let explicit = claim
+                .parsed_checks()
+                .with_context(|| format!("parsing checks for {node_id}"))?;
             let checks = if !explicit.is_empty() {
                 explicit
             } else {
@@ -133,12 +139,21 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     primary_span: None,
                     counterexample: None,
                     fixes: vec![
-                        Fix { title: format!("add `test` to `{fn_name}`'s checks list"), edits: vec![] },
-                        Fix { title: format!("add `fuzz(256)` to `{fn_name}`'s checks list"), edits: vec![] },
+                        Fix {
+                            title: format!("add `test` to `{fn_name}`'s checks list"),
+                            edits: vec![],
+                        },
+                        Fix {
+                            title: format!("add `fuzz(256)` to `{fn_name}`'s checks list"),
+                            edits: vec![],
+                        },
                     ],
                     open_item: Some("mutate_without_kill_signal".into()),
                 });
-                early_nodes_by_component.entry(comp_name).or_default().push(leaf_node(&node_id, "unclaimed"));
+                early_nodes_by_component
+                    .entry(comp_name)
+                    .or_default()
+                    .push(leaf_node(&node_id, "unclaimed"));
                 continue;
             }
 
@@ -147,14 +162,26 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 // contract whose shape neither gate can build inputs for.
                 if cf.has_contract() {
                     diagnostics.push(unsupported_shape_diag(&node_id, fn_name, &cf));
-                    early_nodes_by_component.entry(comp_name).or_default().push(leaf_node(&node_id, "unsupported"));
+                    early_nodes_by_component
+                        .entry(comp_name)
+                        .or_default()
+                        .push(leaf_node(&node_id, "unsupported"));
                 } else {
-                    early_nodes_by_component.entry(comp_name).or_default().push(leaf_node(&node_id, "unclaimed"));
+                    early_nodes_by_component
+                        .entry(comp_name)
+                        .or_default()
+                        .push(leaf_node(&node_id, "unclaimed"));
                 }
                 continue;
             }
 
-            plans.push(Plan { node_id, fn_name, claim, cf, checks });
+            plans.push(Plan {
+                node_id,
+                fn_name,
+                claim,
+                cf,
+                checks,
+            });
         }
     }
 
@@ -162,7 +189,9 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     // crate per target crate (§5.4c) -- write it once, fully, before
     // running anything, so mutate's baseline sees every fn's tests.
     let needs_harness = plans.iter().any(|p| {
-        p.checks.iter().any(|c| matches!(c, Check::Fuzz(_) | Check::Test | Check::Mutate))
+        p.checks
+            .iter()
+            .any(|c| matches!(c, Check::Fuzz(_) | Check::Test | Check::Mutate))
     });
     let mut harness_info: Option<(String, String)> = None; // (harness_package, target_lib_ident)
     if needs_harness {
@@ -178,24 +207,33 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
 
         let mut fn_modules = Vec::new();
         for plan in &plans {
-            let has_fuzz = plan.checks.iter().find_map(|c| if let Check::Fuzz(n) = c { Some(*n) } else { None });
+            let has_fuzz = plan.checks.iter().find_map(|c| {
+                if let Check::Fuzz(n) = c {
+                    Some(*n)
+                } else {
+                    None
+                }
+            });
             let has_test = plan.checks.iter().any(|c| matches!(c, Check::Test));
             if has_fuzz.is_none() && !has_test {
                 continue;
             }
             let mut bodies = Vec::new();
-            if let Some(n) = has_fuzz {
-                if let Ok(body) = ply_core::fuzz_gen::generate_fuzz_test(&plan.cf, n) {
-                    bodies.push(body);
-                }
-                // A build failure here (missing #[ply::ensures], etc.) is
-                // reported as a diagnostic in pass 3; no body means nothing
-                // to run for the fuzz half.
+            if let Some(n) = has_fuzz
+                && let Ok(body) = ply_core::fuzz_gen::generate_fuzz_test(&plan.cf, n)
+            {
+                bodies.push(body);
             }
+            // A build failure here (missing #[ply::ensures], etc.) is
+            // reported as a diagnostic in pass 3; no body means nothing
+            // to run for the fuzz half.
             if has_test {
                 for (i, example) in plan.claim.examples.iter().enumerate() {
-                    if let Ok(body) = ply_core::fuzz_gen::generate_example_test(plan.fn_name, (i + 1) as u32, example)
-                    {
+                    if let Ok(body) = ply_core::fuzz_gen::generate_example_test(
+                        plan.fn_name,
+                        (i + 1) as u32,
+                        example,
+                    ) {
                         bodies.push(body);
                     }
                 }
@@ -254,7 +292,12 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         children: components,
     };
 
-    Ok(Envelope { command: "verify".into(), ply_version: PLY_VERSION.into(), root, diagnostics })
+    Ok(Envelope {
+        command: "verify".into(),
+        ply_version: PLY_VERSION.into(),
+        root,
+        diagnostics,
+    })
 }
 
 /// The shape-aware default routing (§5.4c, the M4 non-negotiable MUST):
@@ -305,7 +348,11 @@ fn rank(v: &str) -> i32 {
 /// components -- a weak leaf must drag its parent down, so this always
 /// takes the minimum rank among children.
 fn worst_of(children: &[Node]) -> String {
-    children.iter().min_by_key(|n| rank(&n.verdict)).map(|n| n.verdict.clone()).unwrap_or_else(|| "unclaimed".into())
+    children
+        .iter()
+        .min_by_key(|n| rank(&n.verdict))
+        .map(|n| n.verdict.clone())
+        .unwrap_or_else(|| "unclaimed".into())
 }
 
 /// Combines the results of *one fn's own* checks list (§5.4c: "a function's
@@ -314,11 +361,18 @@ fn worst_of(children: &[Node]) -> String {
 /// direction from `worst_of`: when nothing failed, this takes the
 /// *strongest* passing verdict, not the weakest.
 fn combine_fn_check_verdicts(labels: &[String]) -> String {
-    let worst = labels.iter().filter(|l| rank(l) <= 4).min_by_key(|l| rank(l));
+    let worst = labels
+        .iter()
+        .filter(|l| rank(l) <= 4)
+        .min_by_key(|l| rank(l));
     if let Some(w) = worst {
         return w.clone();
     }
-    labels.iter().max_by_key(|l| rank(l.as_str())).cloned().unwrap_or_else(|| "unclaimed".into())
+    labels
+        .iter()
+        .max_by_key(|l| rank(l.as_str()))
+        .cloned()
+        .unwrap_or_else(|| "unclaimed".into())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -340,7 +394,9 @@ fn run_fn_checks(
     for check in checks {
         match check {
             Check::Bounded(k) => {
-                let (label, mut d) = run_bounded_check(cf, src_dir, lib_path, crate_dir, node_id, fn_name, *k, opts)?;
+                let (label, mut d) = run_bounded_check(
+                    cf, src_dir, lib_path, crate_dir, node_id, fn_name, *k, opts,
+                )?;
                 labels.push(label);
                 diagnostics.append(&mut d);
             }
@@ -387,7 +443,13 @@ fn run_fn_checks(
 
     // Fuzz/test share one harness-crate test run per fn (both check kinds'
     // generated tests live in the same `{fn}_harness` module).
-    let wants_fuzz = checks.iter().find_map(|c| if let Check::Fuzz(n) = c { Some(*n) } else { None });
+    let wants_fuzz = checks.iter().find_map(|c| {
+        if let Check::Fuzz(n) = c {
+            Some(*n)
+        } else {
+            None
+        }
+    });
     let wants_test = checks.iter().any(|c| matches!(c, Check::Test));
     if wants_fuzz.is_some() || wants_test {
         if !cf.is_fuzz_supported() {
@@ -495,12 +557,23 @@ fn run_fn_checks(
     }
 
     Ok((
-        Node { id: fn_name.to_string(), kind: "fn".into(), verdict, statuses, children: vec![] },
+        Node {
+            id: fn_name.to_string(),
+            kind: "fn".into(),
+            verdict,
+            statuses,
+            children: vec![],
+        },
         diagnostics,
     ))
 }
 
-fn unresolved_anchor_diag(node_id: &str, fn_name: &str, check_label: &str, err: &str) -> Diagnostic {
+fn unresolved_anchor_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    err: &str,
+) -> Diagnostic {
     Diagnostic {
         code: "E0301".into(),
         severity: "error".into(),
@@ -540,7 +613,9 @@ fn unsupported_shape_diag(node_id: &str, fn_name: &str, cf: &ContractFn) -> Diag
                 bad.join(", ")
             ),
             vec![Fix {
-                title: format!("add a `pure`-marked generator hook for `{fn_name}`'s parameter type (§5.4b)"),
+                title: format!(
+                    "add a `pure`-marked generator hook for `{fn_name}`'s parameter type (§5.4b)"
+                ),
                 edits: vec![],
             }],
         )
@@ -574,7 +649,10 @@ fn run_bounded_check(
     let check_label = format!("bounded({bound_k})");
 
     if !cf.is_bounded_supported() {
-        return Ok(("unsupported".into(), vec![unsupported_shape_diag(node_id, fn_name, cf)]));
+        return Ok((
+            "unsupported".into(),
+            vec![unsupported_shape_diag(node_id, fn_name, cf)],
+        ));
     }
 
     let generated = harness::generate_proof_module(cf, bound_k)?;
@@ -595,7 +673,9 @@ fn run_bounded_check(
     // FAIL -> PASS once a fix lands (see docs/m3-slice-findings.md finding
     // 6): persist any witness found, and re-render its regression test
     // against the CURRENT contract text on every run.
-    let witness_path = crate_dir.join("target/ply/witness").join(format!("{fn_name}.json"));
+    let witness_path = crate_dir
+        .join("target/ply/witness")
+        .join(format!("{fn_name}.json"));
     if let KaniOutcome::Violation { witness_bytes, .. } = &outcome {
         if let Some(parent) = witness_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -606,8 +686,10 @@ fn run_bounded_check(
         let stored: Vec<Vec<u8>> = serde_json::from_str(&std::fs::read_to_string(&witness_path)?)?;
         let values = kani::decode_witness(&stored, &cf.params, bound_k)?;
         let rendered = contract_rt::render_cex_test(cf, &values, &check_label, "K0502", 1)?;
-        let module_source =
-            contract_rt::wrap_test_module(&[RenderedTest { test_name: rendered.test_name, source: rendered.source }]);
+        let module_source = contract_rt::wrap_test_module(&[RenderedTest {
+            test_name: rendered.test_name,
+            source: rendered.source,
+        }]);
         harness::write_generated_test(src_dir, lib_path, &module_source)?;
     }
 
@@ -644,7 +726,9 @@ fn run_bounded_check(
                         edits: vec![],
                     },
                     Fix {
-                        title: format!("switch `{fn_name}` to `fuzz(256)` -- proptest has no unwind-bound cost"),
+                        title: format!(
+                            "switch `{fn_name}` to `fuzz(256)` -- proptest has no unwind-bound cost"
+                        ),
                         edits: vec![],
                     },
                 ],
@@ -669,7 +753,10 @@ fn run_bounded_check(
             };
             Ok(("tool_error".into(), vec![d]))
         }
-        KaniOutcome::Violation { witness_bytes, raw_output } => {
+        KaniOutcome::Violation {
+            witness_bytes,
+            raw_output,
+        } => {
             let _ = raw_output;
             let values = kani::decode_witness(&witness_bytes, &cf.params, bound_k)?;
             let rendered = contract_rt::render_cex_test(cf, &values, &check_label, "K0502", 1)?;
@@ -685,7 +772,11 @@ fn run_bounded_check(
             for (p, v) in cf.params.iter().zip(values.iter()) {
                 inputs.insert(p.name.clone(), format_value(v));
             }
-            let contract_text = cf.ensures.as_ref().map(|(_, t)| t.clone()).unwrap_or_default();
+            let contract_text = cf
+                .ensures
+                .as_ref()
+                .map(|(_, t)| t.clone())
+                .unwrap_or_default();
             let d = Diagnostic {
                 code: "K0502".into(),
                 severity: "error".into(),
@@ -706,7 +797,11 @@ fn run_bounded_check(
                         generated.proof_fn_path
                     )),
                     cargo_test: Some(
-                        test_file.strip_prefix(src_dir.parent().unwrap_or(src_dir)).unwrap_or(&test_file).display().to_string(),
+                        test_file
+                            .strip_prefix(src_dir.parent().unwrap_or(src_dir))
+                            .unwrap_or(&test_file)
+                            .display()
+                            .to_string(),
                     ),
                 }),
                 fixes: vec![],
@@ -730,7 +825,9 @@ fn run_fuzz_and_test_checks(
     wants_test: bool,
     opts: &VerifyOptions,
 ) -> Result<(Option<String>, Option<String>, Vec<Diagnostic>)> {
-    let timeout = opts.engine_timeout_secs.unwrap_or_else(default_secondary_engine_timeout_secs);
+    let timeout = opts
+        .engine_timeout_secs
+        .unwrap_or_else(default_secondary_engine_timeout_secs);
     let filter = format!("{fn_name}_harness::");
     let run = fuzz_engine::run_harness_tests(crate_dir, harness_pkg, &filter, timeout)?;
 
@@ -754,15 +851,29 @@ fn run_fuzz_and_test_checks(
         let cause = fuzz_engine::first_build_error(&run.combined_output);
         if let Some(n) = wants_fuzz {
             diagnostics.push(harness_did_not_run_diag(
-                node_id, fn_name, &format!("fuzz({n})"), harness_pkg, cause.as_deref(),
+                node_id,
+                fn_name,
+                &format!("fuzz({n})"),
+                harness_pkg,
+                cause.as_deref(),
             ));
         }
         if wants_test {
-            diagnostics.push(harness_did_not_run_diag(node_id, fn_name, "test", harness_pkg, cause.as_deref()));
+            diagnostics.push(harness_did_not_run_diag(
+                node_id,
+                fn_name,
+                "test",
+                harness_pkg,
+                cause.as_deref(),
+            ));
         }
         return Ok((
             wants_fuzz.map(|_| "tool_error".to_string()),
-            if wants_test { Some("tool_error".to_string()) } else { None },
+            if wants_test {
+                Some("tool_error".to_string())
+            } else {
+                None
+            },
             diagnostics,
         ));
     }
@@ -794,7 +905,14 @@ fn run_fuzz_and_test_checks(
             // emit a `violation` without a witness, and pushing it
             // unconditionally here did exactly that.
             let (label, d) = render_fuzz_violation(
-                cf, &run.combined_output, node_id, fn_name, &check_label, harness_pkg, src_dir, lib_path,
+                cf,
+                &run.combined_output,
+                node_id,
+                fn_name,
+                &check_label,
+                harness_pkg,
+                src_dir,
+                lib_path,
             )?;
             diagnostics.push(d);
             fuzz_label = Some(label);
@@ -1021,7 +1139,11 @@ fn render_fuzz_violation(
     src_dir: &Path,
     lib_path: &Path,
 ) -> Result<(String, Diagnostic)> {
-    let contract_text = cf.ensures.as_ref().map(|(_, t)| t.clone()).unwrap_or_default();
+    let contract_text = cf
+        .ensures
+        .as_ref()
+        .map(|(_, t)| t.clone())
+        .unwrap_or_default();
     let Some((_, fields)) = fuzz_engine::parse_fuzz_marker(combined_output) else {
         return Ok((
             "tool_error".to_string(),
@@ -1088,32 +1210,39 @@ fn render_fuzz_violation(
                     inputs.insert(p.name.clone(), raw.clone());
                 }
             }
-            Ok(("violation".to_string(), Diagnostic {
-                code: "P0502".into(),
-                severity: "error".into(),
-                phase: "verify".into(),
-                engine: "proptest".into(),
-                check: check_label.into(),
-                node_id: node_id.into(),
-                title: format!(
-                    "`{fn_name}` breaks its own postcondition `{contract_text}` for at least one input -- \
+            Ok((
+                "violation".to_string(),
+                Diagnostic {
+                    code: "P0502".into(),
+                    severity: "error".into(),
+                    phase: "verify".into(),
+                    engine: "proptest".into(),
+                    check: check_label.into(),
+                    node_id: node_id.into(),
+                    title: format!(
+                        "`{fn_name}` breaks its own postcondition `{contract_text}` for at least one input -- \
                      proptest shrank a failing case to this minimal example. (P0502)"
-                ),
-                primary_span: None,
-                counterexample: Some(Counterexample {
-                    inputs,
-                    kani_witness: Some(format!(
-                        "captured from proptest shrinking on harness `{fn_name}_harness::ply_fuzz_{fn_name}` \
+                    ),
+                    primary_span: None,
+                    counterexample: Some(Counterexample {
+                        inputs,
+                        kani_witness: Some(format!(
+                            "captured from proptest shrinking on harness `{fn_name}_harness::ply_fuzz_{fn_name}` \
                          (field named `kani_witness` for §8 schema stability; this witness is proptest-, \
                          not Kani-, sourced -- see docs/m4-findings.md)"
-                    )),
-                    cargo_test: Some(
-                        test_file.strip_prefix(src_dir.parent().unwrap_or(src_dir)).unwrap_or(&test_file).display().to_string(),
-                    ),
-                }),
-                fixes: vec![],
-                open_item: None,
-            }))
+                        )),
+                        cargo_test: Some(
+                            test_file
+                                .strip_prefix(src_dir.parent().unwrap_or(src_dir))
+                                .unwrap_or(&test_file)
+                                .display()
+                                .to_string(),
+                        ),
+                    }),
+                    fixes: vec![],
+                    open_item: None,
+                },
+            ))
         }
         None => {
             let mut inputs = BTreeMap::new();
@@ -1124,26 +1253,33 @@ fn render_fuzz_violation(
                     inputs.insert(p.name.clone(), raw.clone());
                 }
             }
-            Ok(("violation".to_string(), Diagnostic {
-                code: "W0541".into(),
-                severity: "error".into(),
-                phase: "verify".into(),
-                engine: "proptest".into(),
-                check: check_label.into(),
-                node_id: node_id.into(),
-                title: format!(
-                    "`{fn_name}` breaks its own postcondition `{contract_text}` for at least one input, \
+            Ok((
+                "violation".to_string(),
+                Diagnostic {
+                    code: "W0541".into(),
+                    severity: "error".into(),
+                    phase: "verify".into(),
+                    engine: "proptest".into(),
+                    check: check_label.into(),
+                    node_id: node_id.into(),
+                    title: format!(
+                        "`{fn_name}` breaks its own postcondition `{contract_text}` for at least one input, \
                      and proptest shrank that input down to the smallest one that still fails. Ply \
                      cannot turn it into a runnable Rust test, though: it has no way yet to spell a \
                      `BTreeSet`, or a `Vec` of anything but `u8`, as a literal value. The failing input \
                      is recorded below exactly as the engine reported it -- Ply never invents one. \
                      (W0541, reason: inputs_unrenderable)"
-                ),
-                primary_span: None,
-                counterexample: Some(Counterexample { inputs, kani_witness: None, cargo_test: None }),
-                fixes: vec![],
-                open_item: Some("inputs_unrenderable".into()),
-            }))
+                    ),
+                    primary_span: None,
+                    counterexample: Some(Counterexample {
+                        inputs,
+                        kani_witness: None,
+                        cargo_test: None,
+                    }),
+                    fixes: vec![],
+                    open_item: Some("inputs_unrenderable".into()),
+                },
+            ))
         }
     }
 }
@@ -1213,7 +1349,10 @@ fn run_mutate_check(
                 ),
                 primary_span: None,
                 counterexample: None,
-                fixes: vec![Fix { title: "cargo install cargo-mutants --locked".into(), edits: vec![] }],
+                fixes: vec![Fix {
+                    title: "cargo install cargo-mutants --locked".into(),
+                    edits: vec![],
+                }],
                 open_item: Some("engine_missing".into()),
             }],
         ));
@@ -1221,7 +1360,9 @@ fn run_mutate_check(
 
     let cargo_toml_text = std::fs::read_to_string(crate_dir.join("Cargo.toml"))?;
     let target_names = harness_crate::read_crate_names(&cargo_toml_text)?;
-    let timeout = opts.engine_timeout_secs.unwrap_or_else(default_secondary_engine_timeout_secs);
+    let timeout = opts
+        .engine_timeout_secs
+        .unwrap_or_else(default_secondary_engine_timeout_secs);
     let wall_clock = mutate_wall_clock_secs(timeout);
     let cfg = MutantsRunConfig {
         workspace_root: crate_dir.to_path_buf(),
@@ -1303,7 +1444,9 @@ fn run_mutate_check(
                         primary_span: None,
                         counterexample: None,
                         fixes: vec![Fix {
-                            title: format!("strengthen `{fn_name}`'s `#[ply::ensures]` or add `examples` that pin the surviving behavior"),
+                            title: format!(
+                                "strengthen `{fn_name}`'s `#[ply::ensures]` or add `examples` that pin the surviving behavior"
+                            ),
                             edits: vec![],
                         }],
                         open_item: Some("weak_spec".into()),
@@ -1363,7 +1506,9 @@ fn run_mutate_check(
                     engine: "cargo-mutants".into(),
                     check: check_label,
                     node_id: node_id.into(),
-                    title: format!("Ply's cargo-mutants adapter could not interpret its output: {reason}"),
+                    title: format!(
+                        "Ply's cargo-mutants adapter could not interpret its output: {reason}"
+                    ),
                     primary_span: None,
                     counterexample: None,
                     fixes: vec![],
@@ -1385,7 +1530,13 @@ fn format_value(v: &kani::WitnessValue) -> String {
 
 fn leaf_node(node_id: &str, verdict: &str) -> Node {
     let fn_part = node_id.rsplit("::").next().unwrap_or(node_id);
-    Node { id: fn_part.to_string(), kind: "fn".into(), verdict: verdict.to_string(), statuses: vec![], children: vec![] }
+    Node {
+        id: fn_part.to_string(),
+        kind: "fn".into(),
+        verdict: verdict.to_string(),
+        statuses: vec![],
+        children: vec![],
+    }
 }
 
 #[allow(dead_code)]
@@ -1397,9 +1548,14 @@ mod tests {
 
     #[test]
     fn engine_timeout_scales_only_for_vec_shaped_harnesses() {
-        assert_eq!(default_engine_timeout_secs(false, 2), 60, "scalar-only stays at the M3 default");
         assert_eq!(
-            default_engine_timeout_secs(true, 8), 150,
+            default_engine_timeout_secs(false, 2),
+            60,
+            "scalar-only stays at the M3 default"
+        );
+        assert_eq!(
+            default_engine_timeout_secs(true, 8),
+            150,
             "the M3 review measured bounded(8) over Vec<u8> needing 150s -- the formula must reproduce that exactly"
         );
         assert_eq!(default_engine_timeout_secs(true, 2), 60);
@@ -1412,7 +1568,11 @@ mod tests {
         // off the `fuzzed` prefix, and this was wrong once already (see
         // docs/m4-findings.md).
         assert_eq!(rank("fuzzed(256)"), 6);
-        assert_eq!(rank("fuzz(256)"), 4, "an unrecognized label falls back to the neutral rank, not a passing one");
+        assert_eq!(
+            rank("fuzz(256)"),
+            4,
+            "an unrecognized label falls back to the neutral rank, not a passing one"
+        );
     }
 
     #[test]
@@ -1425,7 +1585,8 @@ mod tests {
     fn combine_picks_the_failure_regardless_of_what_else_passed() {
         let labels = vec!["fuzzed(256)".to_string(), "violation".to_string()];
         assert_eq!(
-            combine_fn_check_verdicts(&labels), "violation",
+            combine_fn_check_verdicts(&labels),
+            "violation",
             "§5.4c: a failing check is a violation regardless of what else passed"
         );
     }
@@ -1442,12 +1603,19 @@ mod tests {
         let mut verdict = "fuzzed(256)".to_string();
         let mut statuses: Vec<String> = vec![];
         apply_mutate_outcome(&mut verdict, &mut statuses, MutateOutcome::Inconclusive);
-        assert_eq!(verdict, "fuzzed(256)", "an inconclusive mutate run neither strengthens nor weakens the verdict");
+        assert_eq!(
+            verdict, "fuzzed(256)",
+            "an inconclusive mutate run neither strengthens nor weakens the verdict"
+        );
         assert!(
             !statuses.contains(&"weak-spec".to_string()),
             "no mutant survived, because none ever ran -- `weak-spec` here is a finding no engine made: {statuses:?}"
         );
-        assert_eq!(statuses, vec!["inconclusive".to_string()], "D6's own status for exactly this: {statuses:?}");
+        assert_eq!(
+            statuses,
+            vec!["inconclusive".to_string()],
+            "D6's own status for exactly this: {statuses:?}"
+        );
     }
 
     #[test]
@@ -1468,9 +1636,25 @@ mod tests {
     #[test]
     fn worst_of_picks_the_weakest_child_not_the_strongest() {
         let children = vec![
-            Node { id: "a".into(), kind: "fn".into(), verdict: "bounded(2)".into(), statuses: vec![], children: vec![] },
-            Node { id: "b".into(), kind: "fn".into(), verdict: "tested".into(), statuses: vec![], children: vec![] },
+            Node {
+                id: "a".into(),
+                kind: "fn".into(),
+                verdict: "bounded(2)".into(),
+                statuses: vec![],
+                children: vec![],
+            },
+            Node {
+                id: "b".into(),
+                kind: "fn".into(),
+                verdict: "tested".into(),
+                statuses: vec![],
+                children: vec![],
+            },
         ];
-        assert_eq!(worst_of(&children), "tested", "D6: a weak leaf drags its parent down");
+        assert_eq!(
+            worst_of(&children),
+            "tested",
+            "D6: a weak leaf drags its parent down"
+        );
     }
 }

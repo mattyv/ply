@@ -16,7 +16,11 @@ fn timeout_is_reported_as_timeout_never_as_violation() {
     // the suite fast without weakening the assertion.
     let run = run_verify(&cargo_ply, fixture.path(), 30);
 
-    assert_eq!(run.json["root"]["verdict"], "timeout", "envelope: {}", run.json);
+    assert_eq!(
+        run.json["root"]["verdict"], "timeout",
+        "envelope: {}",
+        run.json
+    );
     let diagnostics = run.json["diagnostics"].as_array().unwrap();
     assert_eq!(diagnostics.len(), 1);
     let diag = &diagnostics[0];
@@ -26,12 +30,18 @@ fn timeout_is_reported_as_timeout_never_as_violation() {
         "a timeout must never carry a counterexample: {}",
         run.json
     );
-    assert_ne!(diag["severity"], "error", "a timeout is a warning, never an error-level violation");
+    assert_ne!(
+        diag["severity"], "error",
+        "a timeout is a warning, never an error-level violation"
+    );
     // The wording is EXPECTED to mention "violation" -- honestly, in a
     // negating clause ("never as a violation") -- so the check that
     // matters is on the structured fields (verdict, code, counterexample),
     // asserted above, not on the absence of the word in prose.
-    assert_eq!(diag["code"], "K0601", "must use the timeout code, never K0502 (the violation code)");
+    assert_eq!(
+        diag["code"], "K0601",
+        "must use the timeout code, never K0502 (the violation code)"
+    );
 
     // No cex test should ever be generated for a timeout.
     assert!(!fixture.path().join("src/ply_generated_cex.rs").exists());

@@ -110,6 +110,9 @@ mod tests {
         };
         let json = serde_json::to_string(&cex).unwrap();
         assert!(json.contains("kani_witness"));
-        assert!(!json.contains("kani_playback"), "D7's rename must not regress");
+        assert!(
+            !json.contains("kani_playback"),
+            "D7's rename must not regress"
+        );
     }
 }

@@ -19,7 +19,10 @@ fn a_failure_with_no_recoverable_witness_is_a_tool_error_not_a_violation() {
     assert_eq!(diagnostics.len(), 1, "envelope: {}", run.json);
     let diag = &diagnostics[0];
     assert_eq!(diag["code"], "X0901", "envelope: {}", run.json);
-    assert!(diag["counterexample"].is_null(), "there is no witness here: {diag}");
+    assert!(
+        diag["counterexample"].is_null(),
+        "there is no witness here: {diag}"
+    );
 
     assert_ne!(
         run.json["root"]["verdict"], "violation",
@@ -27,7 +30,11 @@ fn a_failure_with_no_recoverable_witness_is_a_tool_error_not_a_violation() {
          prevent -- there is no failing input in this envelope: {}",
         run.json
     );
-    assert_eq!(run.json["root"]["verdict"], "tool_error", "envelope: {}", run.json);
+    assert_eq!(
+        run.json["root"]["verdict"], "tool_error",
+        "envelope: {}",
+        run.json
+    );
 
     let title = diag["title"].as_str().unwrap();
     assert!(
@@ -38,7 +45,10 @@ fn a_failure_with_no_recoverable_witness_is_a_tool_error_not_a_violation() {
         title.contains("panicking"),
         "the diagnostic must name the likeliest cause a user can act on: {title}"
     );
-    assert!(!diag["fixes"].as_array().unwrap().is_empty(), "§8: a non-result diagnostic SHOULD carry fixes: {diag}");
+    assert!(
+        !diag["fixes"].as_array().unwrap().is_empty(),
+        "§8: a non-result diagnostic SHOULD carry fixes: {diag}"
+    );
     // Non-zero; see badexample_fixture.rs on why the exact code is not
     // pinned (§6 reserves 2 for a tool error; the CLI still returns 1).
     assert_ne!(run.exit_code, Some(0));

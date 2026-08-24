@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 /// One `checks:` list entry, parsed from its micro-syntax (§5, item 1).
@@ -57,7 +57,9 @@ impl Check {
             }
             return Ok(Check::Bounded(k));
         }
-        bail!("E0203: unrecognized check string `{s}` (expected test | fuzz(N) | bounded(K) | prove | mutate)")
+        bail!(
+            "E0203: unrecognized check string `{s}` (expected test | fuzz(N) | bounded(K) | prove | mutate)"
+        )
     }
 }
 
@@ -87,7 +89,9 @@ pub fn validate_mutate_has_kill_signal(checks: &[Check]) -> Result<()> {
     if !has_mutate {
         return Ok(());
     }
-    let has_kill_signal = checks.iter().any(|c| matches!(c, Check::Test | Check::Fuzz(_)));
+    let has_kill_signal = checks
+        .iter()
+        .any(|c| matches!(c, Check::Test | Check::Fuzz(_)));
     if has_kill_signal {
         return Ok(());
     }
@@ -125,7 +129,10 @@ pub fn load(path: &Path) -> Result<PlyFile> {
     let file: PlyFile = serde_yaml_ng::from_str(&text)
         .with_context(|| format!("parsing ply.yaml at {}", path.display()))?;
     if file.ply != 1 {
-        bail!("E0201: unsupported `ply:` schema version {} (expected 1)", file.ply);
+        bail!(
+            "E0201: unsupported `ply:` schema version {} (expected 1)",
+            file.ply
+        );
     }
     Ok(file)
 }

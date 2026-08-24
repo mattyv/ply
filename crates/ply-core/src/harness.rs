@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use quote::ToTokens;
 use syn::{Expr, ExprClosure, FnArg, ItemFn, Pat, Type};
 
@@ -153,17 +153,17 @@ fn rust_type_from_syn(ty: &Type) -> RustType {
                 "i64" => RustType::I64,
                 "bool" => RustType::Bool,
                 "Vec" => {
-                    if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
-                        if let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first() {
-                            if let Type::Path(inner) = inner_ty {
-                                if inner.path.is_ident("u8") {
-                                    return RustType::VecU8;
-                                }
-                            }
-                            let inner = rust_type_from_syn(inner_ty);
-                            if inner.is_scalar() {
-                                return RustType::Vec(Box::new(inner));
-                            }
+                    if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments
+                        && let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first()
+                    {
+                        if let Type::Path(inner) = inner_ty
+                            && inner.path.is_ident("u8")
+                        {
+                            return RustType::VecU8;
+                        }
+                        let inner = rust_type_from_syn(inner_ty);
+                        if inner.is_scalar() {
+                            return RustType::Vec(Box::new(inner));
                         }
                     }
                     RustType::Unsupported(ty.to_token_stream().to_string())
@@ -172,12 +172,12 @@ fn rust_type_from_syn(ty: &Type) -> RustType {
                 // trouble generating a BTreeSet of scalars; Kani does, past
                 // one element, at any bound.
                 "BTreeSet" => {
-                    if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
-                        if let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first() {
-                            let inner = rust_type_from_syn(inner_ty);
-                            if inner.is_scalar() {
-                                return RustType::BTreeSet(Box::new(inner));
-                            }
+                    if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments
+                        && let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first()
+                    {
+                        let inner = rust_type_from_syn(inner_ty);
+                        if inner.is_scalar() {
+                            return RustType::BTreeSet(Box::new(inner));
                         }
                     }
                     RustType::Unsupported(ty.to_token_stream().to_string())
@@ -247,10 +247,10 @@ pub fn discover_fn(src_path: &Path, fn_name: &str) -> Result<ContractFn> {
     let file = syn::parse_file(&src)
         .with_context(|| format!("parsing source at {}", src_path.display()))?;
     for item in &file.items {
-        if let syn::Item::Fn(f) = item {
-            if f.sig.ident == fn_name {
-                return build_contract_fn(f);
-            }
+        if let syn::Item::Fn(f) = item
+            && f.sig.ident == fn_name
+        {
+            return build_contract_fn(f);
         }
     }
     bail!(
@@ -266,7 +266,11 @@ pub fn discover_fn(src_path: &Path, fn_name: &str) -> Result<ContractFn> {
 /// the closure-pipe and leading-deref shapes this slice's own contracts
 /// use -- not a general Rust pretty-printer.
 fn tidy_contract_text(s: &str) -> String {
-    s.replace("| ", "|").replace(" |", "|").replace("* ", "*").replace(" . ", ".").replace(" ()", "()")
+    s.replace("| ", "|")
+        .replace(" |", "|")
+        .replace("* ", "*")
+        .replace(" . ", ".")
+        .replace(" ()", "()")
 }
 
 fn build_contract_fn(f: &ItemFn) -> Result<ContractFn> {
@@ -284,16 +288,26 @@ fn build_contract_fn(f: &ItemFn) -> Result<ContractFn> {
             Type::Reference(r) => (true, r.elem.as_ref()),
             other => (false, other),
         };
-        params.push(Param { name: pname, ty: rust_type_from_syn(inner_ty), by_ref });
+        params.push(Param {
+            name: pname,
+            ty: rust_type_from_syn(inner_ty),
+            by_ref,
+        });
     }
 
     let mut requires = None;
     let mut ensures = None;
     for attr in &f.attrs {
-        let segs: Vec<String> =
-            attr.path().segments.iter().map(|s| s.ident.to_string()).collect();
+        let segs: Vec<String> = attr
+            .path()
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect();
         if segs == ["ply", "requires"] {
-            let expr: Expr = attr.parse_args().context("E0501: could not parse #[ply::requires] as an expression")?;
+            let expr: Expr = attr
+                .parse_args()
+                .context("E0501: could not parse #[ply::requires] as an expression")?;
             let text = tidy_contract_text(&expr.to_token_stream().to_string());
             requires = Some((expr, text));
         } else if segs == ["ply", "ensures"] {
@@ -305,7 +319,12 @@ fn build_contract_fn(f: &ItemFn) -> Result<ContractFn> {
         }
     }
 
-    Ok(ContractFn { name, params, requires, ensures })
+    Ok(ContractFn {
+        name,
+        params,
+        requires,
+        ensures,
+    })
 }
 
 /// The generated Kani proof module for one `ContractFn`.
@@ -335,7 +354,11 @@ pub fn generate_proof_module(cf: &ContractFn, bound_k: u32) -> Result<GeneratedH
             .filter(|p| !p.ty.is_bounded_supported())
             .map(|p| format!("{}: {:?}", p.name, p.ty))
             .collect();
-        bail!("V0505: unsupported parameter type(s) for `{}`: {}", cf.name, bad.join(", "));
+        bail!(
+            "V0505: unsupported parameter type(s) for `{}`: {}",
+            cf.name,
+            bad.join(", ")
+        );
     }
 
     let mut lets = String::new();
@@ -360,7 +383,11 @@ pub fn generate_proof_module(cf: &ContractFn, bound_k: u32) -> Result<GeneratedH
                 ));
             }
         }
-        call_args.push(if p.by_ref { format!("&{}", p.name) } else { p.name.clone() });
+        call_args.push(if p.by_ref {
+            format!("&{}", p.name)
+        } else {
+            p.name.clone()
+        });
     }
 
     let unwind = if has_vec { Some(bound_k + 1) } else { None };
@@ -420,7 +447,12 @@ pub fn write_generated_test(
     lib_path: &Path,
     test_module_source: &str,
 ) -> Result<PathBuf> {
-    write_generated_file(crate_src_dir, lib_path, "ply_generated_cex", test_module_source)
+    write_generated_file(
+        crate_src_dir,
+        lib_path,
+        "ply_generated_cex",
+        test_module_source,
+    )
 }
 
 fn write_generated_file(
@@ -430,8 +462,7 @@ fn write_generated_file(
     source: &str,
 ) -> Result<PathBuf> {
     let out_path = crate_src_dir.join(format!("{file_stem}.rs"));
-    std::fs::write(&out_path, source)
-        .with_context(|| format!("writing {}", out_path.display()))?;
+    std::fs::write(&out_path, source).with_context(|| format!("writing {}", out_path.display()))?;
 
     let lib_src = std::fs::read_to_string(lib_path)
         .with_context(|| format!("reading {}", lib_path.display()))?;
@@ -463,9 +494,15 @@ mod tests {
     /// side observation, seen for real on the `BTreeSet` witness path).
     #[test]
     fn contract_text_reads_like_the_line_the_user_wrote_even_with_method_calls() {
-        assert_eq!(tidy_contract_text("| result | * result == xs . len () as u32"), "|result|*result == xs.len() as u32");
+        assert_eq!(
+            tidy_contract_text("| result | * result == xs . len () as u32"),
+            "|result|*result == xs.len() as u32"
+        );
         // The M3 shapes stay exactly as they were.
-        assert_eq!(tidy_contract_text("| result | * result >= lo"), "|result|*result >= lo");
+        assert_eq!(
+            tidy_contract_text("| result | * result >= lo"),
+            "|result|*result >= lo"
+        );
     }
 
     fn write_src(dir: &Path, content: &str) -> PathBuf {
@@ -534,7 +571,11 @@ pub fn vec_sum(v: &Vec<u8>) -> u32 { 0 }
 "#,
         );
         let cf = discover_fn(&path, "vec_sum").unwrap();
-        assert_eq!(cf.params[0].ty, RustType::VecU8, "M3's VecU8 shape must not regress to Vec(U8)");
+        assert_eq!(
+            cf.params[0].ty,
+            RustType::VecU8,
+            "M3's VecU8 shape must not regress to Vec(U8)"
+        );
         assert!(cf.is_bounded_supported());
         assert!(cf.is_fuzz_supported());
     }
@@ -587,9 +628,16 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
         );
         let cf = discover_fn(&path, "clamp").unwrap();
         let harness_out = generate_proof_module(&cf, 2).unwrap();
-        assert!(harness_out.unwind.is_none(), "scalar-only fn must not get an unwind annotation");
+        assert!(
+            harness_out.unwind.is_none(),
+            "scalar-only fn must not get an unwind annotation"
+        );
         assert!(harness_out.module_source.contains("kani::any()"));
-        assert!(harness_out.module_source.contains("#[kani::proof_for_contract(clamp)]"));
+        assert!(
+            harness_out
+                .module_source
+                .contains("#[kani::proof_for_contract(clamp)]")
+        );
         assert_eq!(harness_out.proof_fn_path, "ply_generated::ply_proof_clamp");
     }
 
@@ -605,9 +653,17 @@ pub fn vec_sum(v: &Vec<u8>) -> u32 { 0 }
         );
         let cf = discover_fn(&path, "vec_sum").unwrap();
         let harness_out = generate_proof_module(&cf, 8).unwrap();
-        assert_eq!(harness_out.unwind, Some(9), "measured bound for N=8 is N+1=9 (see m3-slice-findings.md)");
+        assert_eq!(
+            harness_out.unwind,
+            Some(9),
+            "measured bound for N=8 is N+1=9 (see m3-slice-findings.md)"
+        );
         assert!(harness_out.module_source.contains("#[kani::unwind(9)]"));
-        assert!(harness_out.module_source.contains("kani::vec::any_vec::<u8, 8>()"));
+        assert!(
+            harness_out
+                .module_source
+                .contains("kani::vec::any_vec::<u8, 8>()")
+        );
         assert!(harness_out.module_source.contains("vec_sum(&v);"));
     }
 
@@ -620,7 +676,10 @@ pub fn vec_sum(v: &Vec<u8>) -> u32 { 0 }
         let after_first = std::fs::read_to_string(&lib_path).unwrap();
         write_generated_module(src_dir, &lib_path, "// two\n").unwrap();
         let after_second = std::fs::read_to_string(&lib_path).unwrap();
-        assert_eq!(after_first, after_second, "mod declaration must be inserted exactly once");
+        assert_eq!(
+            after_first, after_second,
+            "mod declaration must be inserted exactly once"
+        );
         assert_eq!(
             std::fs::read_to_string(src_dir.join("ply_generated.rs")).unwrap(),
             "// two\n",

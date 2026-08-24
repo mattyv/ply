@@ -9,7 +9,11 @@ fn passing_fixture_earns_clean_bounded_verdict() {
     let fixture = copy_fixture("passing");
 
     let run = run_verify(&cargo_ply, fixture.path(), 90);
-    assert_eq!(run.json["root"]["verdict"], "bounded(2)", "envelope: {}", run.json);
+    assert_eq!(
+        run.json["root"]["verdict"], "bounded(2)",
+        "envelope: {}",
+        run.json
+    );
     assert_eq!(
         run.json["diagnostics"].as_array().unwrap().len(),
         0,

@@ -11,7 +11,7 @@
 //! for the right reason, but with the generic fallback message the D7 plan
 //! prescribes for exactly this case, not a per-case invention.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use quote::ToTokens;
 use syn::{BinOp, Expr, ExprClosure};
 
@@ -35,7 +35,12 @@ pub(crate) fn widen(expr: &Expr) -> proc_macro2::TokenStream {
                     let r = widen_leaf(&bin.right);
                     quote::quote!((#l #op #r))
                 }
-                BinOp::Eq(_) | BinOp::Ne(_) | BinOp::Lt(_) | BinOp::Le(_) | BinOp::Gt(_) | BinOp::Ge(_) => {
+                BinOp::Eq(_)
+                | BinOp::Ne(_)
+                | BinOp::Lt(_)
+                | BinOp::Le(_)
+                | BinOp::Gt(_)
+                | BinOp::Ge(_) => {
                     let l = widen_leaf(&bin.left);
                     let r = widen_leaf(&bin.right);
                     quote::quote!((#l) #op (#r))
@@ -153,7 +158,11 @@ pub fn render_cex_test(
                 ));
             }
         }
-        call_args.push(if p.by_ref { format!("&{}", p.name) } else { p.name.clone() });
+        call_args.push(if p.by_ref {
+            format!("&{}", p.name)
+        } else {
+            p.name.clone()
+        });
     }
 
     let result_ident = closure_result_ident(closure)?;
@@ -215,15 +224,18 @@ fn closure_result_ident(closure: &ExprClosure) -> Result<String> {
 /// D7 plan's own fallback clause -- never a bare, uninterpreted panic.
 fn render_message(cf: &ContractFn, body: &Expr, contract_text: &str, code: &str) -> Result<String> {
     let fname = &cf.name;
-    if let Expr::Binary(bin) = body {
-        if matches!(bin.op, BinOp::Eq(_) | BinOp::Ne(_) | BinOp::Lt(_) | BinOp::Le(_) | BinOp::Gt(_) | BinOp::Ge(_)) {
-            let l = widen_leaf(&bin.left).to_string();
-            let r = widen_leaf(&bin.right).to_string();
-            let msg = format!(
-                "\"Broken promise in `{fname}`: the function declares the postcondition \\\n         `{contract_text}` -- a postcondition is the guarantee a function makes about \\\n         its return value. For this input, the left side of the contract evaluated to \\\n         {{}}, and the right side evaluated to {{}}, which does not satisfy the contract's \\\n         comparison. One of the two is wrong: fix the body or fix the `#[ply::ensures]` \\\n         line, and this test will pass. ({code})\", {l}, {r}"
-            );
-            return Ok(msg);
-        }
+    if let Expr::Binary(bin) = body
+        && matches!(
+            bin.op,
+            BinOp::Eq(_) | BinOp::Ne(_) | BinOp::Lt(_) | BinOp::Le(_) | BinOp::Gt(_) | BinOp::Ge(_)
+        )
+    {
+        let l = widen_leaf(&bin.left).to_string();
+        let r = widen_leaf(&bin.right).to_string();
+        let msg = format!(
+            "\"Broken promise in `{fname}`: the function declares the postcondition \\\n         `{contract_text}` -- a postcondition is the guarantee a function makes about \\\n         its return value. For this input, the left side of the contract evaluated to \\\n         {{}}, and the right side evaluated to {{}}, which does not satisfy the contract's \\\n         comparison. One of the two is wrong: fix the body or fix the `#[ply::ensures]` \\\n         line, and this test will pass. ({code})\", {l}, {r}"
+        );
+        return Ok(msg);
     }
     Ok(format!(
         "\"Broken promise in `{fname}`: the function declares the postcondition `{contract_text}` \\\n         -- a postcondition is the guarantee a function makes about its return value. For \\\n         this input, that expression evaluated to false. Fix the body or fix the \\\n         `#[ply::ensures]` line, and this test will pass. ({code})\""
@@ -233,8 +245,8 @@ fn render_message(cf: &ContractFn, body: &Expr, contract_text: &str, code: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::discover_fn;
     use crate::engines::kani::WitnessValue;
+    use crate::harness::discover_fn;
 
     fn discover(src: &str, name: &str) -> ContractFn {
         let dir = tempfile::tempdir().unwrap();
@@ -278,7 +290,10 @@ pub fn saturating_bump(x: u8) -> u8 { x.saturating_add(1) }
             !rendered.source.contains("attempt to add with overflow"),
             "must never bake in the overflow trap's own panic text"
         );
-        assert!(rendered.source.contains("as i128"), "arithmetic must be widened");
+        assert!(
+            rendered.source.contains("as i128"),
+            "arithmetic must be widened"
+        );
         assert!(rendered.source.contains("(x as i128) + (1 as i128)"));
     }
 }

@@ -46,8 +46,13 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse_from(raw);
 
     match cli.command {
-        Commands::Verify { path, engine_timeout } => {
-            let opts = VerifyOptions { engine_timeout_secs: engine_timeout };
+        Commands::Verify {
+            path,
+            engine_timeout,
+        } => {
+            let opts = VerifyOptions {
+                engine_timeout_secs: engine_timeout,
+            };
             let envelope = verify::verify_crate(&path, &opts)?;
             if cli.json {
                 println!("{}", envelope.to_json_pretty());
@@ -73,13 +78,6 @@ fn print_human(envelope: &ply_core::diag::Envelope) {
 }
 
 fn exit_code_for(envelope: &ply_core::diag::Envelope) -> i32 {
-    let has_violation = envelope
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == "error");
-    if has_violation {
-        1
-    } else {
-        0
-    }
+    let has_violation = envelope.diagnostics.iter().any(|d| d.severity == "error");
+    if has_violation { 1 } else { 0 }
 }

@@ -13,8 +13,17 @@ fn kani_excluded_btreeset_shape_earns_an_honest_fuzzed_verdict_via_the_default_r
     let fixture = copy_fixture("btreeset");
 
     let run = run_verify(&cargo_ply, fixture.path(), 120);
-    assert_eq!(run.json["root"]["verdict"], "fuzzed(256)", "envelope: {}", run.json);
-    assert_eq!(run.json["diagnostics"].as_array().unwrap().len(), 0, "envelope: {}", run.json);
+    assert_eq!(
+        run.json["root"]["verdict"], "fuzzed(256)",
+        "envelope: {}",
+        run.json
+    );
+    assert_eq!(
+        run.json["diagnostics"].as_array().unwrap().len(),
+        0,
+        "envelope: {}",
+        run.json
+    );
 
     // No Kani harness was ever generated: this fn never entered the
     // bounded/Kani path at all.

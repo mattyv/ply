@@ -33,7 +33,10 @@ pub enum KaniOutcome {
     Verified,
     /// A genuine falsified claim, always carrying a witness (never
     /// constructed without one -- see `parse_output`).
-    Violation { witness_bytes: Vec<Vec<u8>>, raw_output: String },
+    Violation {
+        witness_bytes: Vec<Vec<u8>>,
+        raw_output: String,
+    },
     /// CBMC exhausted its budget -- distinguished from `Violation` by
     /// reading past Kani's shared "VERIFICATION:- FAILED" line to the
     /// "CBMC timed out" reason underneath (§5.4c).
@@ -103,7 +106,9 @@ pub fn parse_output(combined: &str) -> KaniOutcome {
     // per §5.4c's MUST: Kani renders a CBMC timeout and a genuine failed
     // check identically at that line.
     if combined.contains("CBMC timed out") {
-        return KaniOutcome::Timeout { raw_output: combined.to_string() };
+        return KaniOutcome::Timeout {
+            raw_output: combined.to_string(),
+        };
     }
     match extract_witness_bytes(combined) {
         Some(witness_bytes) => KaniOutcome::Violation { witness_bytes, raw_output: combined.to_string() },
@@ -224,9 +229,9 @@ pub fn decode_witness(
                 let n = vec_bound as usize;
                 let mut elems = Vec::with_capacity(length.min(n));
                 for k in 0..n {
-                    let entry = witness_bytes
-                        .get(cursor + k)
-                        .with_context(|| format!("missing element witness entry {k} for `{}`", p.name))?;
+                    let entry = witness_bytes.get(cursor + k).with_context(|| {
+                        format!("missing element witness entry {k} for `{}`", p.name)
+                    })?;
                     if k < length {
                         elems.push(*entry.first().unwrap_or(&0));
                     }
@@ -283,14 +288,25 @@ pub fn decode_witness(
 /// -- the §9 oracle's other half. Never asserts the replay *fails*: D7's
 /// caveat 3 established that an `ensures`-violation witness replays green
 /// (contract closures are never re-evaluated during playback).
-pub fn run_playback(crate_dir: &Path, exact_test_name: &str, timeout: Duration) -> Result<std::process::Output> {
+pub fn run_playback(
+    crate_dir: &Path,
+    exact_test_name: &str,
+    timeout: Duration,
+) -> Result<std::process::Output> {
     let secs = timeout.as_secs().max(1);
     let child = Command::new("timeout")
         .arg(format!("{secs}s"))
         .arg("cargo")
         .arg("kani")
         .arg("playback")
-        .args(["-Z", "concrete-playback", "-Z", "function-contracts", "-Z", "unstable-options"])
+        .args([
+            "-Z",
+            "concrete-playback",
+            "-Z",
+            "function-contracts",
+            "-Z",
+            "unstable-options",
+        ])
         .arg("--lib")
         .current_dir(crate_dir)
         .arg("--")
@@ -363,7 +379,11 @@ fn kani_concrete_playback_ply_proof_clamp_123() {
     fn decodes_u32_witness_matching_real_kani_output() {
         // Bytes observed for real from `cargo kani` on the clamp fixture:
         // x = u32::MAX, little-endian [255,255,255,255].
-        let params = vec![Param { name: "x".into(), ty: RustType::U32, by_ref: false }];
+        let params = vec![Param {
+            name: "x".into(),
+            ty: RustType::U32,
+            by_ref: false,
+        }];
         let decoded = decode_witness(&[vec![255, 255, 255, 255]], &params, 0).unwrap();
         assert_eq!(decoded, vec![WitnessValue::UInt(u32::MAX as u128)]);
     }
@@ -372,7 +392,11 @@ fn kani_concrete_playback_ply_proof_clamp_123() {
     fn decodes_vec_u8_witness_length_prefixed() {
         // Bytes observed for real from a Vec<u8> violation: one 8-byte
         // little-endian length entry, then N single-byte entries.
-        let params = vec![Param { name: "v".into(), ty: RustType::VecU8, by_ref: true }];
+        let params = vec![Param {
+            name: "v".into(),
+            ty: RustType::VecU8,
+            by_ref: true,
+        }];
         let witness = vec![
             vec![1, 0, 0, 0, 0, 0, 0, 0], // length = 1
             vec![255],

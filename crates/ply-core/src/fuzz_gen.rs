@@ -20,7 +20,7 @@
 //! no literal form this renderer can write, so the caller reports that case
 //! as a witness-only violation (`W0541`), never a fabricated input.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use quote::ToTokens;
 use syn::Expr;
 
@@ -44,12 +44,22 @@ fn strategy_expr(ty: &RustType) -> Result<String> {
                 "proptest::prop_oneof![3 => -16{name}..=16{name}, 1 => proptest::prelude::any::<{name}>()]"
             )
         }
-        RustType::VecU8 => "proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=8)".to_string(),
-        RustType::Vec(inner) => format!("proptest::collection::vec({}, 0..=8)", strategy_expr(inner)?),
-        RustType::BTreeSet(inner) => {
-            format!("proptest::collection::btree_set({}, 0..=8)", strategy_expr(inner)?)
+        RustType::VecU8 => {
+            "proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=8)".to_string()
         }
-        RustType::Unsupported(t) => bail!("cannot build a fuzz strategy for unsupported type `{t}`"),
+        RustType::Vec(inner) => format!(
+            "proptest::collection::vec({}, 0..=8)",
+            strategy_expr(inner)?
+        ),
+        RustType::BTreeSet(inner) => {
+            format!(
+                "proptest::collection::btree_set({}, 0..=8)",
+                strategy_expr(inner)?
+            )
+        }
+        RustType::Unsupported(t) => {
+            bail!("cannot build a fuzz strategy for unsupported type `{t}`")
+        }
     })
 }
 
@@ -91,11 +101,24 @@ fn value_pattern(cf: &ContractFn) -> String {
 fn combined_strategy_expr(cf: &ContractFn) -> Result<String> {
     let exprs: Result<Vec<String>> = cf.params.iter().map(|p| strategy_expr(&p.ty)).collect();
     let exprs = exprs?;
-    Ok(if exprs.len() == 1 { exprs[0].clone() } else { format!("({})", exprs.join(", ")) })
+    Ok(if exprs.len() == 1 {
+        exprs[0].clone()
+    } else {
+        format!("({})", exprs.join(", "))
+    })
 }
 
 fn call_args(cf: &ContractFn) -> Vec<String> {
-    cf.params.iter().map(|p| if p.by_ref { format!("&{}", p.name) } else { p.name.clone() }).collect()
+    cf.params
+        .iter()
+        .map(|p| {
+            if p.by_ref {
+                format!("&{}", p.name)
+            } else {
+                p.name.clone()
+            }
+        })
+        .collect()
 }
 
 /// Generates the `ply_fuzz_{fn}` proptest-driven test: `cases` runs of the
@@ -112,7 +135,10 @@ fn call_args(cf: &ContractFn) -> Vec<String> {
 /// the example/direct-case tests.
 pub fn generate_fuzz_test(cf: &ContractFn, cases: u32) -> Result<String> {
     let Some((_closure, _)) = &cf.ensures else {
-        bail!("fuzz check requires an #[ply::ensures] clause on `{}` to check against", cf.name);
+        bail!(
+            "fuzz check requires an #[ply::ensures] clause on `{}` to check against",
+            cf.name
+        );
     };
     if !cf.is_fuzz_supported() {
         let bad: Vec<String> = cf
@@ -121,7 +147,11 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32) -> Result<String> {
             .filter(|p| !p.ty.is_fuzz_supported())
             .map(|p| format!("{}: {:?}", p.name, p.ty))
             .collect();
-        bail!("V0505: `{}` has parameter(s) the fuzz codegen cannot build inputs for: {}", cf.name, bad.join(", "));
+        bail!(
+            "V0505: `{}` has parameter(s) the fuzz codegen cannot build inputs for: {}",
+            cf.name,
+            bad.join(", ")
+        );
     }
 
     let pattern = value_pattern(cf);
@@ -213,8 +243,11 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32) -> Result<String> {
 /// `E0501`-shaped parse failure surfaces as an error, never a silently
 /// skipped example.
 pub fn generate_example_test(fn_name: &str, index: u32, example_src: &str) -> Result<String> {
-    let expr: Expr = syn::parse_str(example_src)
-        .map_err(|e| anyhow::anyhow!("E0501: could not parse `examples` entry `{example_src}` as a Rust expression: {e}"))?;
+    let expr: Expr = syn::parse_str(example_src).map_err(|e| {
+        anyhow::anyhow!(
+            "E0501: could not parse `examples` entry `{example_src}` as a Rust expression: {e}"
+        )
+    })?;
     let text = expr.to_token_stream().to_string();
     // The entry is echoed back into the assert's failure message, so it has
     // to be escaped for a Rust string literal: an entry containing a `"`
@@ -246,10 +279,18 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
             vec![format!("0{n}"), format!("{n}::MIN"), format!("{n}::MAX")]
         }
         RustType::Bool => vec!["true".to_string(), "false".to_string()],
-        RustType::VecU8 => vec!["vec![]".to_string(), "vec![0u8]".to_string(), "vec![1u8; 8]".to_string()],
+        RustType::VecU8 => vec![
+            "vec![]".to_string(),
+            "vec![0u8]".to_string(),
+            "vec![1u8; 8]".to_string(),
+        ],
         RustType::Vec(inner) => {
             let n = inner.scalar_rust_name().unwrap_or("i64");
-            vec![format!("vec![]"), format!("vec![0{n}]"), format!("vec![1{n}; 8]")]
+            vec![
+                format!("vec![]"),
+                format!("vec![0{n}]"),
+                format!("vec![1{n}; 8]"),
+            ]
         }
         RustType::BTreeSet(inner) => {
             let n = inner.scalar_rust_name().unwrap_or("i64");
@@ -274,17 +315,23 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
 /// for (already reported elsewhere as `unsupported`/`V0505`) or with no
 /// `ensures` to assert.
 pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
-    let Some((closure, _)) = &cf.ensures else { return String::new() };
+    let Some((closure, _)) = &cf.ensures else {
+        return String::new();
+    };
     if !cf.is_fuzz_supported() {
         return String::new();
     }
-    let literal_sets: Vec<Vec<String>> = cf.params.iter().map(|p| boundary_literals(&p.ty)).collect();
+    let literal_sets: Vec<Vec<String>> =
+        cf.params.iter().map(|p| boundary_literals(&p.ty)).collect();
     if literal_sets.iter().any(|s| s.is_empty()) {
         return String::new();
     }
     let n_cases = literal_sets.iter().map(|s| s.len()).max().unwrap_or(0);
     let widened = crate::contract_rt::widen(&closure.body).to_string();
-    let requires_cond = cf.requires.as_ref().map(|(e, _)| e.to_token_stream().to_string());
+    let requires_cond = cf
+        .requires
+        .as_ref()
+        .map(|(e, _)| e.to_token_stream().to_string());
 
     let mut out = String::new();
     for case_idx in 0..n_cases {
@@ -317,7 +364,11 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
 /// bodies (fuzz test, example tests, direct-case tests), importing the
 /// target fn from `target_crate_ident` (the target crate's Rust identifier
 /// -- its `[lib] name`, not necessarily its package name).
-pub fn wrap_fn_harness_module(fn_name: &str, target_crate_ident: &str, bodies: &[String]) -> String {
+pub fn wrap_fn_harness_module(
+    fn_name: &str,
+    target_crate_ident: &str,
+    bodies: &[String],
+) -> String {
     let mut out = format!(
         "#[cfg(test)]\nmod {fn_name}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{fn_name};\n\n"
     );
@@ -369,7 +420,10 @@ pub fn count(xs: &BTreeSet<u8>) -> u32 { xs.len() as u32 }
         );
         let body = generate_fuzz_test(&cf, 64).unwrap();
         assert!(body.contains("btree_set"));
-        assert!(body.contains("&xs"), "by-ref param must be called by reference:\n{body}");
+        assert!(
+            body.contains("&xs"),
+            "by-ref param must be called by reference:\n{body}"
+        );
     }
 
     #[test]
@@ -384,7 +438,11 @@ pub fn safe_increment(x: u32) -> u32 { x + 1 }
         );
         let body = generate_fuzz_test(&cf, 256).unwrap();
         assert!(body.contains("TestCaseError::reject"));
-        assert!(body.contains("x < u32 :: MAX") || body.contains("x<u32::MAX") || body.contains("x < u32::MAX"));
+        assert!(
+            body.contains("x < u32 :: MAX")
+                || body.contains("x<u32::MAX")
+                || body.contains("x < u32::MAX")
+        );
     }
 
     #[test]

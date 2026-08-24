@@ -23,12 +23,22 @@ fn a_run_proptest_abandoned_earns_no_fuzz_evidence() {
     assert_eq!(verdict, "unclaimed", "envelope: {}", run.json);
 
     let diagnostics = run.json["diagnostics"].as_array().unwrap();
-    let warnings: Vec<&serde_json::Value> = diagnostics.iter().filter(|d| d["code"] == "W0503").collect();
-    assert_eq!(warnings.len(), 1, "the run must say why it produced nothing: {}", run.json);
+    let warnings: Vec<&serde_json::Value> = diagnostics
+        .iter()
+        .filter(|d| d["code"] == "W0503")
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "the run must say why it produced nothing: {}",
+        run.json
+    );
     let title = warnings[0]["title"].as_str().unwrap();
     assert!(
-        title.starts_with("proptest gave up on `narrow_window` before it could run the 256 cases \
-                           `fuzz(256)` asked for"),
+        title.starts_with(
+            "proptest gave up on `narrow_window` before it could run the 256 cases \
+                           `fuzz(256)` asked for"
+        ),
         "the warning must name the cause in plain words (newbie bar, exact wording): {title}"
     );
     assert!(
@@ -37,7 +47,12 @@ fn a_run_proptest_abandoned_earns_no_fuzz_evidence() {
     );
     assert!(
         !warnings[0]["fixes"].as_array().unwrap().is_empty(),
-        "§8: a non-result diagnostic SHOULD carry concrete fixes: {}", warnings[0]
+        "§8: a non-result diagnostic SHOULD carry concrete fixes: {}",
+        warnings[0]
     );
-    assert!(warnings[0]["counterexample"].is_null(), "nothing failed, so there is no witness: {}", warnings[0]);
+    assert!(
+        warnings[0]["counterexample"].is_null(),
+        "nothing failed, so there is no witness: {}",
+        warnings[0]
+    );
 }

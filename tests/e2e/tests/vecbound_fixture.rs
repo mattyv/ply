@@ -19,11 +19,18 @@ fn vec_fixture_verifies_with_the_measured_unwind() {
     let fixture = copy_fixture("vecbound");
 
     let run = run_verify(&cargo_ply, fixture.path(), 150);
-    assert_eq!(run.json["root"]["verdict"], "bounded(8)", "envelope: {}", run.json);
+    assert_eq!(
+        run.json["root"]["verdict"], "bounded(8)",
+        "envelope: {}",
+        run.json
+    );
     assert_eq!(run.json["diagnostics"].as_array().unwrap().len(), 0);
 
     let harness_src = std::fs::read_to_string(fixture.path().join("src/ply_generated.rs")).unwrap();
-    assert!(harness_src.contains("#[kani::unwind(9)]"), "codegen must emit the measured bound:\n{harness_src}");
+    assert!(
+        harness_src.contains("#[kani::unwind(9)]"),
+        "codegen must emit the measured bound:\n{harness_src}"
+    );
 }
 
 #[test]

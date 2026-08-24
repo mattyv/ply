@@ -74,7 +74,10 @@ pub fn copy_fixture(name: &str) -> FixtureCopy {
         "path = \"../../../crates/ply-attrs\"",
         &format!("path = \"{}\"", ply_attrs_abs.display()),
     );
-    assert_ne!(cargo_toml, rewritten, "fixture Cargo.toml did not contain the expected relative ply-attrs path");
+    assert_ne!(
+        cargo_toml, rewritten,
+        "fixture Cargo.toml did not contain the expected relative ply-attrs path"
+    );
     std::fs::write(&cargo_toml_path, rewritten).unwrap();
 
     FixtureCopy { dir }
@@ -123,7 +126,10 @@ pub fn run_verify(cargo_ply: &Path, fixture_dir: &Path, engine_timeout_secs: u32
             String::from_utf8_lossy(&output.stderr)
         )
     });
-    VerifyRun { json, exit_code: output.status.code() }
+    VerifyRun {
+        json,
+        exit_code: output.status.code(),
+    }
 }
 
 pub struct CargoTestRun {
@@ -145,5 +151,8 @@ pub fn run_cargo_test(crate_dir: &Path) -> CargoTestRun {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    CargoTestRun { success: output.status.success(), combined_output: combined }
+    CargoTestRun {
+        success: output.status.success(),
+        combined_output: combined,
+    }
 }

@@ -12,9 +12,21 @@ fn strong_spec_earns_the_spec_strong_suffix() {
     let run = run_verify(&cargo_ply, fixture.path(), 150);
     assert_eq!(
         run.json["root"]["verdict"], "fuzzed(256)\u{00b7}spec-strong",
-        "envelope: {}", run.json
+        "envelope: {}",
+        run.json
     );
-    assert_eq!(run.json["diagnostics"].as_array().unwrap().len(), 0, "envelope: {}", run.json);
-    let statuses = run.json["root"]["children"][0]["children"][0]["statuses"].as_array().unwrap();
-    assert!(statuses.is_empty(), "a strong spec must not carry weak-spec: {}", run.json);
+    assert_eq!(
+        run.json["diagnostics"].as_array().unwrap().len(),
+        0,
+        "envelope: {}",
+        run.json
+    );
+    let statuses = run.json["root"]["children"][0]["children"][0]["statuses"]
+        .as_array()
+        .unwrap();
+    assert!(
+        statuses.is_empty(),
+        "a strong spec must not carry weak-spec: {}",
+        run.json
+    );
 }

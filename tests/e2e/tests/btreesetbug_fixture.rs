@@ -20,7 +20,11 @@ fn a_violation_on_a_btreeset_is_reported_witness_only_with_the_shrunk_input() {
 
     let run = run_verify(&cargo_ply, fixture.path(), 120);
 
-    assert_eq!(run.json["root"]["verdict"], "violation", "envelope: {}", run.json);
+    assert_eq!(
+        run.json["root"]["verdict"], "violation",
+        "envelope: {}",
+        run.json
+    );
     let diagnostics = run.json["diagnostics"].as_array().unwrap();
     assert_eq!(diagnostics.len(), 1, "envelope: {}", run.json);
     let diag = &diagnostics[0];
@@ -32,15 +36,24 @@ fn a_violation_on_a_btreeset_is_reported_witness_only_with_the_shrunk_input() {
     // any set containing 3, so this value can only come from shrinking.
     assert_eq!(
         diag["counterexample"]["inputs"]["xs"], "[3]",
-        "proptest must shrink the failing set to the one element that matters: {}", run.json
+        "proptest must shrink the failing set to the one element that matters: {}",
+        run.json
     );
     // Witness-only: no rendered test is claimed, and none is written.
-    assert!(diag["counterexample"]["cargo_test"].is_null(), "no renderer exists for this shape: {diag}");
-    assert!(!fixture.path().join("src/ply_generated_cex.rs").exists(), "no cex test may be written for a shape Ply cannot spell");
+    assert!(
+        diag["counterexample"]["cargo_test"].is_null(),
+        "no renderer exists for this shape: {diag}"
+    );
+    assert!(
+        !fixture.path().join("src/ply_generated_cex.rs").exists(),
+        "no cex test may be written for a shape Ply cannot spell"
+    );
 
     let title = diag["title"].as_str().unwrap();
     assert!(
-        title.contains("no way yet to spell a `BTreeSet`, or a `Vec` of anything but `u8`, as a literal value"),
+        title.contains(
+            "no way yet to spell a `BTreeSet`, or a `Vec` of anything but `u8`, as a literal value"
+        ),
         "the diagnostic must be true for the type that triggered it -- this fires for every \
          `BTreeSet`, `BTreeSet<u8>` included (newbie bar, exact wording): {title}"
     );
@@ -52,5 +65,9 @@ fn a_violation_on_a_btreeset_is_reported_witness_only_with_the_shrunk_input() {
         title.contains("Ply never invents one"),
         "the diagnostic must say why there is no runnable test here: {title}"
     );
-    assert_eq!(run.exit_code, Some(1), "a violation fails the run (§6: exit 1)");
+    assert_eq!(
+        run.exit_code,
+        Some(1),
+        "a violation fails the run (§6: exit 1)"
+    );
 }

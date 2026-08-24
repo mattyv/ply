@@ -29,7 +29,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// The two names a dependent crate is known by: the Cargo package name
 /// (used as the `[dependencies]` key) and the Rust crate identifier its
@@ -52,7 +52,10 @@ pub fn read_crate_names(cargo_toml_text: &str) -> Result<CrateNames> {
         .context("Cargo.toml has no `[package]` name = \"...\" line")?;
     let lib_ident = find_key_after_section(cargo_toml_text, "[lib]", "name")
         .unwrap_or_else(|| package_name.replace('-', "_"));
-    Ok(CrateNames { package_name, lib_ident })
+    Ok(CrateNames {
+        package_name,
+        lib_ident,
+    })
 }
 
 /// Finds `key = "value"` on a line after the given `[section]` header (and
@@ -68,14 +71,12 @@ fn find_key_after_section(text: &str, section: &str, key: &str) -> Option<String
         if in_section && trimmed.starts_with('[') {
             break;
         }
-        if in_section {
-            if let Some(rest) = trimmed.strip_prefix(key) {
-                let rest = rest.trim_start();
-                if let Some(rest) = rest.strip_prefix('=') {
-                    let v = rest.trim();
-                    let v = v.trim_matches('"');
-                    return Some(v.to_string());
-                }
+        if in_section && let Some(rest) = trimmed.strip_prefix(key) {
+            let rest = rest.trim_start();
+            if let Some(rest) = rest.strip_prefix('=') {
+                let v = rest.trim();
+                let v = v.trim_matches('"');
+                return Some(v.to_string());
             }
         }
     }
@@ -91,7 +92,10 @@ pub fn harness_package_name(target_package_name: &str) -> String {
 /// Where the harness crate lives, relative to the target crate's root
 /// (§5.4c: `target/ply/fuzz/`).
 pub fn harness_rel_path(target_package_name: &str) -> String {
-    format!("target/ply/fuzz/{}", harness_package_name(target_package_name))
+    format!(
+        "target/ply/fuzz/{}",
+        harness_package_name(target_package_name)
+    )
 }
 
 /// Idempotently ensures `crate_dir`'s root `Cargo.toml` lists the harness
@@ -104,7 +108,10 @@ pub fn ensure_workspace_member(crate_cargo_toml: &Path, harness_rel: &str) -> Re
         .with_context(|| format!("reading {}", crate_cargo_toml.display()))?;
 
     let Some(ws_line_idx) = text.lines().position(|l| l.trim() == "[workspace]") else {
-        bail!("{} has no `[workspace]` table to add the harness crate to", crate_cargo_toml.display());
+        bail!(
+            "{} has no `[workspace]` table to add the harness crate to",
+            crate_cargo_toml.display()
+        );
     };
 
     // Does a `members = [...]` line already exist in the [workspace]
@@ -256,15 +263,17 @@ path = "src/lib.rs"
     fn ensure_workspace_member_inserts_into_empty_workspace_table() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Cargo.toml");
-        std::fs::write(
-            &path,
-            "[workspace]\n# comment\n\n[package]\nname = \"x\"\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[workspace]\n# comment\n\n[package]\nname = \"x\"\n").unwrap();
         ensure_workspace_member(&path, "target/ply/fuzz/x-ply-harness").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("members = [\".\", \"target/ply/fuzz/x-ply-harness\"]"), "{text}");
-        assert!(text.contains("[package]"), "must not disturb the rest of the file:\n{text}");
+        assert!(
+            text.contains("members = [\".\", \"target/ply/fuzz/x-ply-harness\"]"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[package]"),
+            "must not disturb the rest of the file:\n{text}"
+        );
     }
 
     #[test]
@@ -276,16 +285,26 @@ path = "src/lib.rs"
         let after_first = std::fs::read_to_string(&path).unwrap();
         ensure_workspace_member(&path, "target/ply/fuzz/x-ply-harness").unwrap();
         let after_second = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(after_first, after_second, "must not duplicate the member entry on rerun");
+        assert_eq!(
+            after_first, after_second,
+            "must not duplicate the member entry on rerun"
+        );
     }
 
     #[test]
     fn ensure_workspace_member_appends_to_existing_members_list() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Cargo.toml");
-        std::fs::write(&path, "[workspace]\nmembers = [\".\"]\n\n[package]\nname = \"x\"\n").unwrap();
+        std::fs::write(
+            &path,
+            "[workspace]\nmembers = [\".\"]\n\n[package]\nname = \"x\"\n",
+        )
+        .unwrap();
         ensure_workspace_member(&path, "target/ply/fuzz/x-ply-harness").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("members = [\".\", \"target/ply/fuzz/x-ply-harness\"]"), "{text}");
+        assert!(
+            text.contains("members = [\".\", \"target/ply/fuzz/x-ply-harness\"]"),
+            "{text}"
+        );
     }
 }

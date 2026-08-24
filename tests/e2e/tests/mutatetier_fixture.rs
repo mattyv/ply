@@ -13,7 +13,11 @@ fn mutate_without_a_kill_signal_is_e0504() {
     // proptest, cargo-mutants) is ever invoked -- a short timeout is enough
     // and also proves nothing slow ran.
     let run = run_verify(&cargo_ply, fixture.path(), 20);
-    assert_eq!(run.json["root"]["verdict"], "unclaimed", "envelope: {}", run.json);
+    assert_eq!(
+        run.json["root"]["verdict"], "unclaimed",
+        "envelope: {}",
+        run.json
+    );
     let diagnostics = run.json["diagnostics"].as_array().unwrap();
     assert_eq!(diagnostics.len(), 1, "envelope: {}", run.json);
     let diag = &diagnostics[0];
@@ -21,9 +25,16 @@ fn mutate_without_a_kill_signal_is_e0504() {
     assert_eq!(diag["severity"], "error");
     let title = diag["title"].as_str().unwrap();
     assert!(title.contains("mutate"), "{title}");
-    assert!(title.contains("test") && title.contains("fuzz"), "must name both remedies: {title}");
+    assert!(
+        title.contains("test") && title.contains("fuzz"),
+        "must name both remedies: {title}"
+    );
     let fixes = diag["fixes"].as_array().unwrap();
-    assert!(!fixes.is_empty(), "§8: a non-result diagnostic SHOULD populate fixes: {}", run.json);
+    assert!(
+        !fixes.is_empty(),
+        "§8: a non-result diagnostic SHOULD populate fixes: {}",
+        run.json
+    );
 
     // No harness crate should ever have been created for this fn: E0504 is
     // a config-time refusal, not something that runs and then fails.
