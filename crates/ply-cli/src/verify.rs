@@ -837,8 +837,16 @@ fn render_fuzz_violation(
                 }]),
             )?;
             let mut inputs = BTreeMap::new();
-            for (p, raw) in cf.params.iter().zip(fields.values()) {
-                inputs.insert(p.name.clone(), raw.clone());
+            for p in &cf.params {
+                // Look fields up by name: `fields` is a BTreeMap (sorted by
+                // key), so zipping params against `fields.values()` mislabels
+                // every fn whose parameter order is not alphabetical -- the
+                // rendered cex test was right but the JSON `inputs` map
+                // carried swapped values (found in the 2026-08-24 M4 review
+                // with a (z, a)-ordered probe fn).
+                if let Some(raw) = fields.get(&p.name) {
+                    inputs.insert(p.name.clone(), raw.clone());
+                }
             }
             Ok(Diagnostic {
                 code: "P0502".into(),
@@ -869,8 +877,12 @@ fn render_fuzz_violation(
         }
         None => {
             let mut inputs = BTreeMap::new();
-            for (p, raw) in cf.params.iter().zip(fields.values()) {
-                inputs.insert(p.name.clone(), raw.clone());
+            for p in &cf.params {
+                // By-name lookup for the same reason as the P0502 branch
+                // above: never zip params against a sorted map's values.
+                if let Some(raw) = fields.get(&p.name) {
+                    inputs.insert(p.name.clone(), raw.clone());
+                }
             }
             Ok(Diagnostic {
                 code: "W0541".into(),
