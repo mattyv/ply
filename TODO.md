@@ -40,6 +40,28 @@ plus an "external-elements gate" section in `vetting/003-trading-system.md`.
       straight vertical run first and only detours sideways when that specific
       run is blocked. Both 003 SVGs regenerated again and rasterised with
       headless Chromium; confirmed by eye, no line crosses a box it shouldn't.
+- [x] **Second correction, same session, coordinator review**: the committed
+      `003-trading-system.svg`'s `RawFrame` edge label was struck by a drawn
+      line (the derived `entry` edge's, not even its own path) — same shape of
+      gap as the correction above, this time in text, not boxes. Extended
+      `no_drawn_element_intersects_a_box_it_is_not_inside` to check every
+      `edge-label` against every drawn line (tried and rejected two narrower
+      forms first — all-text-vs-all-lines produced false positives on `any`
+      `*`/deny `except` labels, own-path-only produced a false negative on this
+      exact bug, since the striking line belonged to a *different* edge);
+      watched red first, naming the exact label and line, before any placement
+      code changed. Fixed by splitting external-edge rendering into a
+      route-then-draw two-pass structure so each label can be checked against
+      every sibling line (regular edges, deny lines, and other external
+      routes), not just its own, plus widening the label-placement escalation
+      to vary the anchor point along the segment as well as the perpendicular
+      offset. Mutation-tested (line-avoidance clause disabled, confirmed red,
+      reverted, confirmed green). 13 pre-existing, out-of-scope violations on
+      edges that predate this feature (`BookUpdate`/`OrderIntent`/`Order`/
+      `Fill`) are now surfaced by the general check but not failed on —
+      recorded, not fixed, per `docs/external-elements-adoption.md`. Both 003
+      SVGs regenerated a third time and rasterised again; confirmed by eye, no
+      label is struck by a line in either image.
 - [x] `vetting/003-trading-system.ply.yaml`: `venue` external, three flow edges,
       `entry: [venue]` on `Oms::submit`; `ply-check` clean. Both committed SVGs
       regenerated and diffed line-by-line before accepting; `vetting/001-*.svg`,
@@ -64,6 +86,14 @@ plus an "external-elements gate" section in `vetting/003-trading-system.md`.
 - [ ] Out of scope by the task brief, not attempted: `crates/` (the
       `entry:`/audit surface lands there at M5); `tools/kernel` untouched (and
       correctly so — externals never enter the verdict tree).
+- [ ] NOT FIXED, recorded: 13 pre-existing `edge-label`-vs-line violations on
+      edges that predate this feature (`BookUpdate`, `OrderIntent`, `Order`,
+      `Fill` between `gateway`/`oms`/`pnl`), now surfaced by the general
+      check added above but not failed on. Fixing them means extending this
+      session's two-pass restructure and multi-anchor escalation to the
+      regular-edge and deny-edge label placement code too — a larger, riskier
+      change to well-tested code, not attempted here. Full list printed by the
+      test itself; see `docs/external-elements-adoption.md`.
 
 ## M4 — fuzz + test + mutate tier — landed 2026-08-24 (2520f8b)
 

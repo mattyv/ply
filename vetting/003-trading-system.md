@@ -179,6 +179,18 @@ detour passed by well outside that box. Both are exactly the kind of finding thi
 gate exists to produce: the invariant (`no_drawn_element_intersects_a_box_it_is_
 not_inside`) caught both, red, before either fix.
 
+Two further rounds of coordinator review of the *committed* SVG, after this
+finding was first written, found two more defects of the same shape — real
+crossings the invariant did not yet catch because it never rendered, or never
+checked, the exact shape they lived in: a single-component `--collapse` (the
+committed picture's own canonical form) sweeping `venue ~> ingest.feed` through
+`strategy`/`signals`, and that same edge's own label struck by the derived
+`entry` edge's line. Both are fixed, both are now covered by extensions to the
+same invariant (a per-component `--collapse` sweep, and an `edge-label`-vs-line
+check), and both are recorded in full — root cause, fix, and what remains a
+recorded-but-out-of-scope gap — in `docs/external-elements-adoption.md`. The
+committed SVGs below reflect the final, twice-corrected render.
+
 **The gate's own invariant** — no external box intersects the frame; every deny
 `*` node stays inside it; every external-touching edge crosses the frame border
 exactly once — holds on this scenario (and is mutation-tested: forcing the

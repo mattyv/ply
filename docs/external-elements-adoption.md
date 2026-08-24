@@ -277,6 +277,137 @@ correctly rejects it and the algorithm falls back to the nearer clear edge of th
 combined span — which happens to be the left one this time. Neither file's
 canvas dimensions changed (routing, not layout, was the fix).
 
+## The second coverage gap: labels struck by lines
+
+Two rounds of coordinator review found two coverage gaps of the same kind, both
+in the same invariant, both in the same file's canonical committed picture:
+round 2 was a box the check never rendered the shape to catch; round 3 was a
+*label* — the check covered boxes but never covered text at all. Two gaps of
+the same shape in one feature is the finding worth recording on its own: the
+"walk the real rendered output" discipline (CLAUDE.md) has to be applied
+per-drawable-kind, not once for the invariant as a whole — proving it covers
+boxes says nothing about whether it covers text.
+
+**The defect:** `venue ~> ingest.feed`'s own label ("RawFrame") sat at a point
+its own edge's long vertical run passed straight through — in the committed
+`003-trading-system.svg` (`--collapse ingest`), the path runs `x=563.7` from
+`y=160` to `y=678`, and the label's midpoint-offset placement landed inside
+that run at `y=419`. It rendered as a strikethrough. Of the document's 8 edge
+labels, exactly one was struck; not a general convention, a real bug.
+
+**Extending the invariant — three attempts, two rejected, one kept:**
+
+1. *Every text node against every line.* The most general form: any `<text>`
+   in the document, checked against every drawn line segment. Rejected —
+   false positives on the `any`-node `*` glyph and the deny wall's `except`
+   label, both of which sit deliberately close to (in the `*` glyph's case,
+   touching) their own connector by design. Widening the check to every kind
+   of text conflated "struck because nobody checked" with "adjacent because
+   that's how the glyph is drawn."
+2. *A label struck only by a segment of its own edge's path* — the
+   coordinator's offered fallback, for exactly this reason. Tried, and
+   rejected on evidence, not preference: rendering the fixture and cropping
+   the actual raster around the RawFrame label (`cairosvg` + a zoomed PIL
+   crop, not a coordinate calculation) showed the line striking it was the
+   *derived `entry` edge's* line, not RawFrame's own path. The two edges run
+   near-parallel down the same left margin. A same-edge-only check would have
+   passed green over the exact defect the coordinator reported — a narrower
+   property that is unsound for this specific bug is worse than an expensive
+   general one, so this was dropped once the false negative was confirmed,
+   not assumed.
+3. **What shipped:** every `<text class="edge-label">` — scoped by CSS class,
+   not by "which edge owns it" — checked against every drawn line in the
+   document (`edge_labels_struck_by_any_line`, `tools/render/tests/render.rs`).
+   Scoping by class rather than by "only my own path" avoided attempt 1's
+   false positives (`*` uses `any-label`, `except` uses `deny-except` — neither
+   matches `edge-label`) while staying sound against attempt 2's false
+   negative (any line, not just the label's own). The bounding-box estimate
+   for a label reuses the existing worst-case monospace character width
+   (already erring wide, per CLAUDE.md's note that vetting 001 finding 4 once
+   shipped a bound that was too narrow) plus a small vertical pad.
+
+**Watched red first, against the currently-committed SVG**, before any
+label-placement code changed: the extended invariant failed naming the exact
+label, box, and striking segment — `edge label (516.7, 408.0, 56.0, 14.0)
+["RawFrame"] is struck by a drawn line segment [(563.7, 160.0), (563.7,
+678.0)]` — confirming the check finds the coordinator's exact defect before
+the fix existed.
+
+**The fix, and its actual root cause:** the coordinator's hypothesis (midpoint
+logic assumes a simple two-point line; on a long routed path the anchor lands
+on a run) was right, but the placement code also never had visibility into
+*sibling* edges' geometry — `render_external_edge` computed a route and drew
+its label inline, one edge at a time, so an edge's label could only avoid its
+*own* path, never a nearby edge's. Fixed by splitting the function into
+`compute_external_edge_route` (pure geometry) and `draw_external_edge`
+(drawing) and restructuring the render loop into two passes: pass 1 computes
+every external edge's route; pass 2 draws all of them, each label checked
+against a `lines_drawn_so_far` collector that includes every regular edge,
+every deny line, and every external edge's route computed so far — not just
+its own. The label-placement escalation search was also widened: it used to
+vary only the perpendicular offset from a fixed midpoint, which cannot escape
+a case (this one) where a *different* edge's line crosses near the midpoint
+broadly enough that no offset distance clears it; it now also varies the
+anchor point along the segment (five points from 0.15 to 0.85 of the way
+along), crossed with the existing offset/side search, 50 candidates total
+before falling back to the unescalated midpoint.
+
+**Mutation-tested:** disabling the new line-avoidance clause in the escalation
+predicate (leaving only the pre-existing box-avoidance clause) reproduced the
+invariant failure exactly, confirming the clause is load-bearing, not
+redundant with the box check. Reverted immediately after confirming red; the
+invariant returned to green.
+
+**What's still an open, recorded gap:** the general `edge-label`-vs-any-line
+check surfaces 13 more violations across the fixture sweep — all pre-existing,
+none touching `venue`/`RawFrame`/`entry` or any other construct this feature
+added. Every one belongs to an edge declared before this session
+(`BookUpdate`, `OrderIntent`, `Order`, `Fill` between `gateway`/`oms`/`pnl` —
+confirmed against `git show 31a669d -- vetting/003-trading-system.ply.yaml`,
+which shows only the three `venue` edges as additions). These are real defects
+of the same shape, just outside this feature's boundary: fixing them would
+mean extending the two-pass restructure and multi-anchor escalation to the
+regular-edge and deny-edge label placement code too — both delicate, both
+well-tested by existing invariants for box-avoidance already, and neither
+touched by this task. Rather than risk that refactor un-asked, the invariant
+now classifies each violation by checking whether its edge's tooltip contains
+the phrase "outside this codebase" (present on every external-touching edge
+and only those): a hit is a hard failure (`violations`), a miss is reported at
+`eprintln!` volume as a `known_pre_existing_gap` and does not fail the test.
+This keeps the invariant honest — it still runs the full general check, so
+regressing any `edge-label`'s clearance space (including these 13) would be
+visible in the test's own output — without silently blocking on, or silently
+absorbing, defects this task did not create and was not asked to fix. The 13
+are named in full in the test's own `eprintln!` output (edge label bounding
+box, offending line segment, per fixture/mode) so the next session that picks
+this up starts from an exact list, not a re-discovery.
+
+### Third regeneration, after the coordinator's second review (this gap)
+
+Both `003-trading-system-full.svg` and `003-trading-system.svg` were
+regenerated again once this fix landed. Diffed against the second-regeneration
+versions above:
+
+- **`003-trading-system.svg`** (`--collapse ingest`): two labels moved —
+  `RawFrame`'s `y` from `419.0` to `315.4` (off the vertical run entirely,
+  now sitting above `entry`'s own line rather than beside it), and the
+  `venue → gateway` `Fill` label's `x`/`y` from `(548.7, 670.5)` to
+  `(593.3, 713.5)` (it was also, independently, close enough to a line to
+  need the wider escalation once line-avoidance was turned on generally — not
+  struck as visibly as `RawFrame`'s, but the check is stricter now and the
+  escalation naturally picked a clearer spot). No path `d=` attribute changed
+  in this file — routing was untouched this round, only label placement.
+- **`003-trading-system-full.svg`**: one label moved — the same `venue →
+  gateway` `Fill` label, `y` from `1664.5` to `1707.5`. `RawFrame`'s label in
+  this fully-expanded layout was already clear (its route has more room here)
+  and did not need to move.
+- Rasterised both with the coordinator's own Chromium command and inspected by
+  eye (cropped to the `RawFrame` and `venue` regions at 3x for a close look):
+  no label in either image is struck by any line. `001`/`002` and the golden
+  snapshot were re-diffed too and are unaffected — this fix only touches the
+  external-edge label-placement code path, which only fires when a document
+  declares an `externals:` map.
+
 ## Exact new diagnostic and tooltip wording
 
 Pinned by tests (`tools/check/tests/externals.rs`, `tools/render/tests/render.rs`);
@@ -342,6 +473,24 @@ in either image crosses a box it is not attached to; the `RawFrame`/`entry`
 edges that used to strike through `strategy`/`signals` now run cleanly down the
 left margin, alongside (not through) `risk`, to `venue`.
 
+**Third round (label-vs-line fix)**: `cd tools && cargo test` (whole
+workspace, release): **green** — 22 test binaries, 0 failures, including
+`no_drawn_element_intersects_a_box_it_is_not_inside` now also passing the
+`edge-label`-vs-any-line check (13 pre-existing, out-of-scope violations
+reported via `eprintln!`, not failing the test — see "The second coverage
+gap" above). Watched red first against the currently-committed SVG (named the
+exact `RawFrame` label and the `entry` edge's segment striking it) before the
+label-placement fix landed. Mutation-tested: disabling only the new
+line-avoidance clause in the escalation predicate (leaving box-avoidance
+intact) reproduced the failure; reverted, confirmed green again. `cargo fmt`
+(one block needed reformatting after the new test function; re-ran the full
+suite after to confirm no behavioural change) then `cargo fmt --check`: clean.
+`cargo clippy --release --all-targets -- -D warnings`: clean, no new
+`#[allow(...)]` needed this round. Rasterised both committed 003 SVGs again
+with the coordinator's own Chromium command, cropped to the `RawFrame` and
+`venue`/`Fill` regions at 3x, and confirmed by eye: no label is struck by any
+line in either image.
+
 ## NOT RUN / left for the maintainer
 
 - **The holistic squint test — does this *read well*, not just "does nothing
@@ -375,6 +524,16 @@ left margin, alongside (not through) `risk`, to `venue`.
   workspace counterparts are all distinct pairs), and not covered by any
   invariant; a real second external, or a second edge to the same external from
   a *different* component, could plausibly need this and hasn't been checked.
+- **13 pre-existing `edge-label`-vs-line violations**, none touching this
+  feature's own constructs (`BookUpdate`, `OrderIntent`, `Order`, `Fill`
+  between `gateway`/`oms`/`pnl` — all declared before this session; see "The
+  second coverage gap" above for the exact classification rule and where the
+  full list is printed). The invariant now surfaces every one of them on every
+  test run rather than hiding them, but fixing them means extending the
+  two-pass geometry-then-labels restructure and multi-anchor escalation this
+  session built for external edges to the regular-edge and deny-edge label
+  placement code too — a larger, riskier change to well-tested code this task
+  was not asked to touch. Left as a recorded, visible gap, not a silent one.
 
 ## TODO.md
 

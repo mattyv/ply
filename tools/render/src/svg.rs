@@ -1914,19 +1914,21 @@ fn entry_edge_tooltip(fn_name: &str, ext_name: &str, requires: &[String]) -> Vec
 /// detours *inside* the frame (every obstruction it steps around is a real
 /// workspace component) before a final straight run to the external,
 /// strictly outside it.
-#[allow(clippy::too_many_arguments)]
-fn render_external_edge(
-    class: &str,
-    label: &str,
+/// The route only: split out of the drawing step (below) so every
+/// external edge's geometry can be computed *before* any of their labels
+/// are placed — label placement needs to see every sibling external
+/// edge's line, not just boxes, to avoid the exact defect this pair of
+/// functions replaces (vetting 003's coordinator review, third round:
+/// `RawFrame`'s label was struck by the separately-routed `entry` edge's
+/// line, not by its own — a per-edge, draw-as-you-go placement can never
+/// see a sibling that hasn't been drawn yet).
+fn compute_external_edge_route(
     workspace_rect: Rect,
     workspace_ancestor_rect: Rect,
     external_rect: Rect,
     lane: (f64, f64),
     obstacle_positions: &IndexMap<String, Rect>,
-    tooltip_lines: &[String],
-    findings: &[&Diagnostic],
-    out: &mut String,
-) {
+) -> Vec<(f64, f64)> {
     // Parallel lanes for two or more edges sharing the same (workspace
     // component, external) pair (vetting 002 finding 4's rule, extended
     // here) — otherwise a flow out, a flow back, and a derived `entry:` all
@@ -1942,9 +1944,31 @@ fn render_external_edge(
         lane,
     );
     let exclude = [workspace_rect, workspace_ancestor_rect];
-    let route = route_around_to_external(from, to, &exclude, obstacle_positions);
+    route_around_to_external(from, to, &exclude, obstacle_positions)
+}
 
-    let (seg_a, seg_b) = longest_segment(&route);
+/// Draws one already-routed external/`entry:` edge, placing its label
+/// clear of every real box *and* every drawn line handed in via `avoid_
+/// lines` — every regular top-level edge, every deny line, and every
+/// sibling external edge's own route, all computed before this is ever
+/// called (see `compute_external_edge_route`'s doc comment and this
+/// function's caller in `render_svg_with_options`). Always dashed — the
+/// `~>`/`entry:` "declared, not machine-checked" form (§4's restated
+/// dash-channel meaning) — and always crosses the frame border exactly
+/// once, since the route only detours *inside* the frame before a final
+/// straight run to the external, strictly outside it.
+#[allow(clippy::too_many_arguments)]
+fn draw_external_edge(
+    class: &str,
+    label: &str,
+    route: &[(f64, f64)],
+    obstacle_positions: &IndexMap<String, Rect>,
+    avoid_lines: &[Vec<(f64, f64)>],
+    tooltip_lines: &[String],
+    findings: &[&Diagnostic],
+    out: &mut String,
+) {
+    let (seg_a, seg_b) = longest_segment(route);
     let (mx, my) = ((seg_a.0 + seg_b.0) / 2.0, (seg_a.1 + seg_b.1) / 2.0);
     let (dx, dy) = (seg_b.0 - seg_a.0, seg_b.1 - seg_a.1);
     let len = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -1953,16 +1977,37 @@ fn render_external_edge(
     // Same escalating clearance search normal flow-edge labels already use
     // (`render_svg_with_options`'s own label placement): the natural side
     // first, then the mirrored side, at growing multiples, keeping the
-    // first that lands clear of every real box — a routed external edge's
-    // longest segment can sit close beside a component the same way a
-    // top-level edge's can (vetting 003's "same clearance family").
-    let at = |mult: f64, s: f64| (mx + px * clear * mult * s, my + py * clear * mult * s);
-    let (lx, ly) = [1.0, 1.5, 2.0, 2.5, 3.0]
+    // first that lands clear of every real box *and every drawn line*
+    // (vetting 003's "same clearance family", extended a second time: the
+    // first extension was box-vs-box only, the coordinator's review found
+    // the same gap for lines). A *perpendicular* escalation alone isn't
+    // enough here, though: two external edges sharing the same margin
+    // corridor can run roughly perpendicular to each other (one edge's
+    // long vertical run, another's long horizontal run, crossing near
+    // where both want their label) — every purely-perpendicular offset
+    // from the midpoint then stays on the crossing line's far side no
+    // matter how far it escalates, since it never moves *along* its own
+    // line to get past the crossing. So this also tries a few anchor
+    // points along the segment itself (still midpoint first, matching the
+    // un-escalated default everywhere else), not only the one at its
+    // center.
+    let at = |t: f64, mult: f64, s: f64| {
+        let (bx, by) = (seg_a.0 + dx * t, seg_a.1 + dy * t);
+        (bx + px * clear * mult * s, by + py * clear * mult * s)
+    };
+    let (lx, ly) = [0.5, 0.3, 0.7, 0.15, 0.85]
         .into_iter()
-        .flat_map(|mult| [(mult, 1.0), (mult, -1.0)])
-        .map(|(mult, s)| at(mult, s))
-        .find(|&pos| !label_clashes_with_any_box(pos, label, obstacle_positions))
-        .unwrap_or_else(|| at(1.0, 1.0));
+        .flat_map(|t| {
+            [1.0, 1.5, 2.0, 2.5, 3.0]
+                .into_iter()
+                .flat_map(move |mult| [(t, mult, 1.0), (t, mult, -1.0)])
+        })
+        .map(|(t, mult, s)| at(t, mult, s))
+        .find(|&pos| {
+            !label_clashes_with_any_box(pos, label, obstacle_positions)
+                && !label_clashes_with_any_line(pos, label, avoid_lines)
+        })
+        .unwrap_or_else(|| at(0.5, 1.0, 1.0));
 
     let line_class = if findings.is_empty() {
         "edge-line"
@@ -2082,6 +2127,64 @@ fn label_clashes_with_any_box(
     positions
         .values()
         .any(|r| lx0 < r.x + r.w && lx1 > r.x && ly0 < r.y + r.h && ly1 > r.y)
+}
+
+/// Does the segment `p0`-`p1` cross the *interior* of `rect`, shrunk inward
+/// by `shrink` on every side so a segment merely touching the boundary —
+/// the ordinary case for a line legitimately ending at a box's edge — does
+/// not count? Standard slab (Liang-Barsky-style) clip. Deliberately
+/// duplicated rather than shared with the equivalent test-side helper
+/// (`tools/render/tests/render.rs`'s own `segment_crosses_interior`):
+/// production code and the test oracle that checks its output must stay
+/// independent, or a bug in one silently launders the other.
+fn segment_crosses_rect_interior(p0: (f64, f64), p1: (f64, f64), rect: Rect, shrink: f64) -> bool {
+    let (xmin, xmax) = (rect.x + shrink, rect.x + rect.w - shrink);
+    let (ymin, ymax) = (rect.y + shrink, rect.y + rect.h - shrink);
+    if xmin >= xmax || ymin >= ymax {
+        return false; // box too small to have a meaningful interior
+    }
+    let mut t_enter = 0.0_f64;
+    let mut t_exit = 1.0_f64;
+    for &(p, d, lo, hi) in &[
+        (p0.0, p1.0 - p0.0, xmin, xmax),
+        (p0.1, p1.1 - p0.1, ymin, ymax),
+    ] {
+        if d.abs() < 1e-9 {
+            if p < lo || p > hi {
+                return false;
+            }
+        } else {
+            let (ta, tb) = ((lo - p) / d, (hi - p) / d);
+            let (ta, tb) = if ta < tb { (ta, tb) } else { (tb, ta) };
+            t_enter = t_enter.max(ta);
+            t_exit = t_exit.min(tb);
+            if t_enter > t_exit {
+                return false;
+            }
+        }
+    }
+    t_enter < t_exit - 1e-9
+}
+
+/// A label struck by any of `lines` — the escalating placement search's
+/// second clearance check (the first, `label_clashes_with_any_box`, only
+/// ever checked boxes; vetting 003's coordinator review, third round,
+/// found that gap for lines). Same worst-case label rect
+/// `label_clashes_with_any_box` uses (middle-anchored, `NAME_CHAR_W`-wide,
+/// a fixed 14px tall), checked against every real segment of every line
+/// handed in, not just the two lines' endpoints.
+fn label_clashes_with_any_line(pos: (f64, f64), text: &str, lines: &[Vec<(f64, f64)>]) -> bool {
+    let half_w = text_w(text, NAME_CHAR_W) / 2.0;
+    let rect = Rect {
+        x: pos.0 - half_w,
+        y: pos.1 - 11.0,
+        w: half_w * 2.0,
+        h: 14.0,
+    };
+    lines.iter().any(|pts| {
+        pts.windows(2)
+            .any(|seg| segment_crosses_rect_interior(seg[0], seg[1], rect, 1.0))
+    })
 }
 
 /// The stable entry point every existing caller uses: fully expanded,
@@ -2546,6 +2649,16 @@ pub fn render_svg_with_options(
     }
     let mut pair_seen: IndexMap<(String, String), usize> = IndexMap::new();
     let mut edges_svg = String::new();
+    // Every regular top-level edge's own line, captured as it's computed —
+    // used only so a *later*-drawn construct's label (deny lines, then
+    // externals, both rendered after this loop) can check itself against
+    // lines that already exist by the time it's placed. Regular edges'
+    // own labels are placed in this same loop, before deny/external lines
+    // exist, so they cannot benefit from this list themselves — a real,
+    // separate, pre-existing gap (§ "the coverage gap, round two" in
+    // docs/external-elements-adoption.md), not something this collector
+    // fixes.
+    let mut lines_drawn_so_far: Vec<Vec<(f64, f64)>> = Vec::new();
     for re in &resolved_edges {
         let key = pair_key(&re.from_q, &re.to_q);
         let total = pair_total[&key];
@@ -2631,6 +2744,7 @@ pub fn render_svg_with_options(
             (0.0, 0.0) // unused: EdgeKind::Call never renders a label
         };
 
+        lines_drawn_so_far.push(vec![(fx, fy), (tx, ty)]);
         let findings = ctx.edge_findings(re.edge_index);
         render_edge(
             &re.edge,
@@ -2688,6 +2802,7 @@ pub fn render_svg_with_options(
             &ctx,
             &mut any_columns,
             &mut deny_svg,
+            &mut lines_drawn_so_far,
         )?;
     }
 
@@ -2854,7 +2969,15 @@ pub fn render_svg_with_options(
     }
     let mut pair_seen: IndexMap<(String, String), usize> = IndexMap::new();
     let mut external_edges_svg = String::new();
-    for (spec, findings) in &specs {
+    // Pass 1: every external/`entry:` edge's route, computed before any of
+    // their labels are placed — a label needs to see every *sibling*
+    // external edge's line too, not just boxes and what regular edges/deny
+    // rules already drew (`lines_drawn_so_far`), and a sibling's route
+    // doesn't exist until this pass runs (`compute_external_edge_route`'s
+    // own doc comment explains why the old draw-as-you-go order missed
+    // this — vetting 003's coordinator review, third round).
+    let mut routes: Vec<Vec<(f64, f64)>> = Vec::with_capacity(specs.len());
+    for (spec, _) in &specs {
         let key = (spec.ancestor_name.clone(), spec.ext_name.clone());
         let total = pair_total[&key];
         let idx_slot = pair_seen.entry(key).or_insert(0);
@@ -2871,14 +2994,30 @@ pub fn render_svg_with_options(
         let (px, py) = (-dy / len, dx / len);
         let lane = (px * lane_mag, py * lane_mag);
 
-        render_external_edge(
-            spec.class,
-            &spec.label,
+        routes.push(compute_external_edge_route(
             spec.workspace_rect,
             spec.ancestor_rect,
             ext_rect,
             lane,
             &positions,
+        ));
+    }
+    // Pass 2: draw every edge and place every label, each checked against
+    // boxes, every regular/deny line already drawn, and every sibling
+    // external route from pass 1 (this edge's own included — a label must
+    // sit clear of its own line too).
+    let avoid_lines: Vec<Vec<(f64, f64)>> = lines_drawn_so_far
+        .iter()
+        .cloned()
+        .chain(routes.iter().cloned())
+        .collect();
+    for ((spec, findings), route) in specs.iter().zip(routes.iter()) {
+        draw_external_edge(
+            spec.class,
+            &spec.label,
+            route,
+            &positions,
+            &avoid_lines,
             &spec.tooltip,
             findings,
             &mut external_edges_svg,
@@ -3291,6 +3430,7 @@ fn longest_segment(points: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
 /// rule that names it draws its own pseudo-node, anchored near whichever
 /// side did resolve to a real component (or staggered by rule index, as a
 /// last resort, if neither side resolved).
+#[allow(clippy::too_many_arguments)]
 fn render_deny(
     index: usize,
     orig_index: usize,
@@ -3299,6 +3439,7 @@ fn render_deny(
     ctx: &FindingCtx,
     columns: &mut AnyColumns,
     out: &mut String,
+    out_lines: &mut Vec<Vec<(f64, f64)>>,
 ) -> Result<(), RenderError> {
     let DenyLayout {
         positions,
@@ -3371,6 +3512,11 @@ fn render_deny(
     } else {
         vec![(fx, fy), (tx, ty)]
     };
+    // Recorded so a *later*-drawn label (externals, always rendered last)
+    // can check itself against this deny line too — see the matching
+    // collector for regular top-level edges, `lines_drawn_so_far`, in
+    // `render_svg_with_options`.
+    out_lines.push(route.clone());
 
     let (bar_a, bar_b) = longest_segment(&route);
     let mx = (bar_a.0 + bar_b.0) / 2.0;
