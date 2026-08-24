@@ -538,6 +538,15 @@ is external renders indistinguishably green. They appear in `cargo ply audit` as
 the trust surface and carry a distinct visual form (§7.1). An agent must never add or
 edit a `trusted` entry on its own judgment; attestation is a human act.
 
+**A trusted claim goes stale like any other evidence.** An entry records the content hash
+of the item it attests (D14's fingerprint, item body and contract text). When the item
+changes, the attestation no longer covers what it vouched for: the entry is marked `stale`
+and draws the stale corner marker beside its shield, and `audit` lists it as owed
+re-attestation. Without this a `trusted` entry outlives the code it described — the shield
+renders identically fresh forever, and a human's word about last year's function silently
+vouches for this year's. That is evidence lying, in the one construct built entirely on
+trust. Re-attestation is a human act too: `accept` does not clear it.
+
 ### 5.5 Modular composition (D5)
 
 Verification runs callees-before-callers over the call graph. To verify fn `f` that calls
