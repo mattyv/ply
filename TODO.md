@@ -186,7 +186,7 @@
       two messages rewritten to the newbie bar (`--depth 0` and a non-numeric depth
       used to fail silently or with clap's raw error).
 
-## M3 thin vertical slice — landed 2026-08-24 (TODO_COMMIT_HASH)
+## M3 thin vertical slice — landed 2026-08-24 (7e6fc79)
 
 - [x] First production code of `cargo ply` itself: `crates/ply-attrs` (the
       `#[ply::requires]`/`#[ply::ensures]` proc macros, D2), `crates/ply-core`
