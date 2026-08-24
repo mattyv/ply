@@ -23,7 +23,7 @@ Terms this spec uses without further explanation. Ply-specific terms are marked 
 | engine | An external checking tool Ply drives as a subprocess: rustc, Kani, proptest, cargo-mutants, Verus, Miri. |
 | Kani | AWS's model checker for Rust. It explores every execution up to a loop bound and, when a claim can fail, reports a concrete failing input. Its function-contract support is unstable and needs the `-Zfunction-contracts` flag. |
 | bounded model checking | Exhaustive exploration of program behavior up to a fixed bound *k*. It finds every bug within the bound and says nothing beyond it. |
-| concrete playback | Kani's mechanism for replaying a counterexample: it emits the raw input bytes and re-runs them through the harness via `cargo kani playback`. Tied to the Kani version and flags that produced it. |
+| concrete playback | Kani's mechanism for replaying a counterexample: it emits the raw input bytes and re-runs them through the harness via `cargo kani playback`. Tied to the Kani version and flags that produced it. Replays the harness and the real body only; contract closures are not re-evaluated, so a replay of an `ensures` violation passes. Input storage, not a reproduction. |
 | Verus | A deductive verifier for Rust: it proves claims for *all* inputs, with no bound, in exchange for a restricted language subset and more annotation work. |
 | proptest / property testing | Running a function on hundreds of generated random inputs and checking its contract on each. *Shrinking* reduces a failing input to a minimal one. |
 | Arbitrary | The trait (in both Kani and proptest, separately) that lets an engine construct values of a type. A function is only checkable if its inputs are constructible. |
@@ -65,7 +65,9 @@ the 2025–26 verification literature drive the design:
    agent-loop success on identical models ([Ray & Goyal](https://arxiv.org/html/2607.14167v1)).
    Feedback without a witness performs little better than none. Every falsified
    executable claim Ply reports therefore MUST carry a concrete failing input and, where
-   possible, a replayable test. (Architecture violations, timeouts, tool errors, and
+   possible, a replayable test (the replayable test is Ply-rendered with the postcondition
+   asserted explicitly; engine playback data alone does not reproduce contract violations —
+   ADR-0003, D7). (Architecture violations, timeouts, tool errors, and
    surviving mutants have no input witness; they carry spans and evidence of their own
    kind.)
 3. **Local success does not compose.** Models whose single-function verification
@@ -99,12 +101,12 @@ proof search has gone off-spec — stop.
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | Plain stable Rust is the only executable artifact. Specs never compile to code, except Ply-generated harnesses, proof modules, and tests. | Zero migration cost; everything works with bare cargo. |
-| D2 | Contracts are written as **`#[ply::requires(...)]` / `#[ply::ensures(...)]`** attributes on the function. The `ply-attrs` macro re-emits the original function unchanged, adding `#[cfg_attr(kani, kani::requires(...))]` (and the ensures equivalent). Under plain cargo the attributes vanish; under `cargo kani` they instrument **the real function** — never a copy. Proof harnesses are generated into a `cfg(kani)`-gated module inside the target crate so they see private items. Pre-existing `#[cfg_attr(kani, kani::requires(...))]` attributes are harvested and merged by conjunction. | Kani's `proof_for_contract` verifies the function the attributes annotate; contracts on a generated copy would verify a different symbol. `cfg_attr` keeps bare `cargo build` working (D1). The in-crate module mechanism (generated file + one module declaration, or an equivalent include) is settled by the M0 spike; the fallback is verifying `pub` items only from a sibling harness crate — with reduced coverage for private-field invariant types (what smart constructors produce): a sibling crate can never supply `kani::Arbitrary` for them (field visibility, and the orphan rule), so witnesses must come from `pub` constructors plus `kani::assume` — verified to work (ADR-0003, item 3b), but capped at pub-reachable states and hand-written per type; only a type with no `pub` construction path is walled off entirely. |
+| D2 | Contracts are written as **`#[ply::requires(...)]` / `#[ply::ensures(...)]`** attributes on the function. The `ply-attrs` macro re-emits the original function unchanged, adding `#[cfg_attr(kani, kani::requires(...))]` (and the ensures equivalent). Under plain cargo the attributes vanish; under `cargo kani` they instrument **the real function** — never a copy. Proof harnesses are generated into a `cfg(kani)`-gated module inside the target crate so they see private items. Pre-existing `#[cfg_attr(kani, kani::requires(...))]` attributes are harvested and merged by conjunction. | Kani's `proof_for_contract` verifies the function the attributes annotate; contracts on a generated copy would verify a different symbol. `cfg_attr` keeps bare `cargo build` working (D1) but not *warning-clean* on its own: every `#[cfg_attr(kani, ...)]`/`#[cfg(kani)]` triggers `unexpected_cfgs` under bare cargo unless the instrumented crate also carries `[lints.rust] unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }` (M0 finding, confirmed again by the M3 slice's fixtures, each of which carries this line by hand). Automating that one-line insertion into a consuming crate's `Cargo.toml` the first time `cargo ply verify` instruments it is a natural near-term enhancement, not yet built: this M3 slice's fixtures all set it manually and `verify` does not currently check for or offer it. The in-crate module mechanism (generated file + one module declaration, or an equivalent include) is settled by the M0 spike; the fallback is verifying `pub` items only from a sibling harness crate — with reduced coverage for private-field invariant types (what smart constructors produce): a sibling crate can never supply `kani::Arbitrary` for them (field visibility, and the orphan rule), so witnesses must come from `pub` constructors plus `kani::assume` — verified to work (ADR-0003, item 3b), but capped at pub-reachable states and hand-written per type; only a type with no `pub` construction path is walled off entirely. |
 | D3 | Architecture claims, checks, capabilities, ownership, profiles, and the unresolved registry live in **`ply.yaml`**, validated against a normative JSON Schema (§5). | These claims are cross-cutting and have no natural attribute location. YAML plus a schema needs no parser of our own, and agents emit YAML reliably. The schema, not prose, is the formal definition. |
 | D4 | Architecture enforcement has two tiers. **Crate-level dependency rules** (from `cargo metadata`, which is exact) are errors and default-deny between declared components. **Item-level rules** (calls, capabilities, ownership — from syn, which is approximate) are warnings by default; a component opts into item-level errors with `strict: true`. | Default-deny is only honest over facts that are sound. Crate dependency data is sound today; syn-derived call data is not (no name resolution, no macro expansion). Advisory-until-strict gives teeth without theater. |
 | D5 | Verification is modular and evidence-honest. Kani's `stub_verified(g)` is used only when `g` itself passed a Kani contract proof this run — in the same crate, or via the caller-local re-proof below. **Kani does not enforce this and cannot: it checks only that a `#[proof_for_contract]` harness *exists* for the stub target, never that it ran or passed (ADR-0003, item 4 — a caller reported clean SUCCESS while assuming a deliberately falsified callee contract; Kani's RFC-0009 promises pass-gating, but 0.67.0 observably runs harnesses in arbitrary order and never retracts a caller's verdict when its callee's harness fails in the same invocation). Ply's scheduler — callees proved first, the caller credited only if those proofs passed — is therefore the entire soundness guarantee; an implementation that relaxes it is unsound and nothing downstream will notice.** Cross-crate callees are supported after all, by declaring a caller-local `proof_for_contract` for the remote `pub` item (ADR-0003, item 5; verified against the real linked body — a mutated callee body fails the caller-local proof); there is no cross-crate proof caching, so each consumer re-proves. Any weaker case — callee merely fuzzed or tested, a cross-crate callee that cannot be re-proved caller-locally (not `pub`, or its witnesses unconstructible per D2), cycle in the call graph — verifies the caller against an *assumed* contract and marks the verdict **`conditional`**, listing the assumptions. A conditional verdict never reads as plain `bounded`. | Stubbing is a soundness claim; fuzzing does not license it. Kani proof harnesses are crate-local, so cross-crate means caller-local re-verification of the real linked body, never reuse of the callee crate's proof. Never inline a contracted callee's body. |
 | D6 | Verdicts aggregate upward as **worst-of** over the evidence order `violation < unclaimed < tested < fuzzed < bounded < proved`. Statuses (`conditional`, `stale`, `weak-spec`, `unsupported`, `engine-missing`, `timeout`, `inconclusive`) do not sit in that order; they propagate upward as flags and open-item counts alongside it. | A proof in one corner must not hide a merely-tested boundary in another; and a timeout is not a weaker proof, it is a different kind of fact. |
-| D7 | Every counterexample is stored as **Kani playback data** (exact, engine-version-bound) and, whenever the inputs can be rendered as stable Rust source, additionally as an ordinary `#[test]` that fails under plain `cargo test`. When rendering fails, the diagnostic says so (`W0541`) — inputs are never fabricated. | Playback is what Kani actually provides; the portable test is the agent-friendly repair target and is emitted whenever honestly possible. |
+| D7 | Every counterexample is stored as **Kani witness data** (the exact input bytes, engine-version-bound — input storage, not a reproduction: Kani's playback replays the function body only and never re-evaluates contract closures, so an `ensures` violation replays green) and, whenever the inputs can be rendered as stable Rust source, additionally as an ordinary `#[test]` that **asserts the postcondition explicitly** and therefore fails under plain `cargo test` — the only red artifact, and D7's repair target. The assertion is rendered overflow-safe (widened/checked arithmetic), so it fails by stating the contract, never by re-triggering an incidental panic inside the check. When rendering fails, the diagnostic says so (`W0541`) — inputs are never fabricated. | Playback is exact but body-only (ADR-0003 caveat 3); the portable test is the agent-friendly repair target and carries the red-test promise alone. Implemented and verified end-to-end in M3 (docs/m3-slice-findings.md): the `clamp` fixture's rendered `#[test]` fails before a contract fix and passes after, on the pinned Kani 0.67.0. |
 | D8 | `synth` mode (the model writes the function body) is orchestration over the check pipeline: prompt assembly, a retry loop, and marking the output as derived. It ships last and adds no checking machinery. | Thin by design. |
 | D9 | Implementation language Rust; three crates (§4); engines run as subprocesses with version detection at startup, never linked as libraries. The Kani version is pinned in `ply.toml` and recorded in every fingerprint. | Engine version churn must not break our build or silently invalidate old evidence. |
 | D10 | `node_id` is the component path + item path only. The blake3 `content_hash` is a sibling field, never part of the ID. All JSON output shares one envelope (§8) containing a tree of nodes plus a flat diagnostics list. | IDs must survive edits so external consumers (a future canvas UI) can track nodes across runs. Design for the canvas now; build it never (out of scope). |
@@ -777,8 +779,8 @@ One Diagnostic schema for all engines:
   "primary_span": {"file": "crates/pricing/src/lib.rs", "start": [41, 5], "end": [41, 38]},
   "counterexample": {
     "inputs": {"inst": "Instrument { id: 0, tick: -1 }"},
-    "kani_playback": "target/ply/playback/pricing_quote_01.json",
-    "cargo_test": "tests/ply_cex_pricing_quote_01.rs",
+    "kani_witness": "target/ply/playback/pricing_quote_01.json",
+    "cargo_test": "crates/pricing/src/ply_generated_cex.rs",
     "trace": [ {"span": "…", "detail": "bid = tick * 2 = -2"} ]
   },
   "assumptions": [{"kind": "assumed_contract", "fn": "parser::parse", "verdict": "fuzzed(256)"}],
@@ -787,8 +789,15 @@ One Diagnostic schema for all engines:
 }
 ```
 
-`kani_playback` is present whenever Kani produced playback data; `cargo_test` only when
-the inputs rendered as stable Rust source (D7), else `W0541`.
+`kani_witness` (renamed from `kani_playback` — §8's stability rule permits this once,
+pre-M3) is present whenever the witness-extraction step ran: the exact failing input,
+byte-level and engine-version-bound. It is input storage — replaying it exercises the body
+but does not re-check the contract, so it is never the failing reproduction. `cargo_test`
+is that reproduction: present only when the inputs rendered as stable Rust source (D7),
+else `W0541` with a `reason` of `inputs_unrenderable` or `expression_unrenderable`. Its
+path is in-crate (D2's generated-module mechanism), not a `tests/` integration file — M3
+implements this as `<crate>/src/ply_generated_cex.rs`, one file per crate, declared via a
+`mod` line the same way the proof harness is (docs/m3-slice-findings.md).
 
 **A non-result is still feedback.** `timeout`, `unsupported`, and `engine-missing` carry
 no counterexample, but the consumer is usually an agent mid-repair, and §1's second
@@ -817,10 +826,15 @@ it, or fail with `X0901` attaching the raw output for debugging.
 - **Fixture e2e**: each feature ships a minimal fixture project + `ply.yaml` + expected
   `--json` output as insta goldens. Review goldens like API diffs.
 - **Cex validity oracle**: every rendered `cargo_test` must FAIL under `cargo test` in
-  the fixture before the fix and PASS after; every `kani_playback` artifact must
-  reproduce under `cargo kani playback` with the pinned version. The e2e harness asserts
-  both. A counterexample that does not reproduce is `X0902` (an adapter bug). This is
-  the primary correctness check of the whole tool.
+  the fixture before the fix — with failure output that states the contract, pinned by
+  substring — and PASS after; every `kani_witness` artifact must *replay* under
+  `cargo kani playback` with the pinned version and its decoded inputs must equal
+  `counterexample.inputs` (replay is not required to fail — ADR-0003 caveat 3). A
+  rendered test that does not fail, or a witness that does not replay, is `X0902` (an
+  adapter bug). This is the primary correctness check of the whole tool — implemented and
+  green in M3 on the `clamp` fixture (docs/m3-slice-findings.md); the witness-replay half
+  of the oracle (via `cargo kani playback`) is **not yet wired into the M3 e2e suite** —
+  recorded honestly as NOT RUN, not skipped silently.
 - **Schema goldens**: `schema/ply.schema.json` is golden-tested; a fixture set of valid
   and invalid `ply.yaml` documents pins validation behavior and E0201 pointer paths.
 - **Extraction differential**: property-test call-graph extraction against a naive
@@ -872,9 +886,10 @@ it, or fail with `X0901` attaching the raw output for debugging.
 - ply-attrs emitting `cfg_attr(kani, ...)`; harvest of pre-existing cfg_attr-kani
   attributes; `ply.yaml` contract merge; spec-subset validation (E0501); supported-
   signature gate (V0505 / `unsupported`); in-crate proof-module generation for
-  `bounded`; run and parse Kani; playback artifacts + rendered tests where possible;
-  Diagnostic assembly with suggested fixes for the mechanical cases (a missing
-  `requires` derived from a failed side condition).
+  `bounded`; run and parse Kani; witness artifacts (input storage) + rendered
+  contract-asserting tests where possible (docs/plans/d7-replayable-tests.md); witness
+  budget policy decided there; Diagnostic assembly with suggested fixes for the
+  mechanical cases (a missing `requires` derived from a failed side condition).
 - Callees-first order; `stub_verified` under D5's conditions; `conditional` verdicts
   with assumption chains.
 - Accept: a fixture where a cex is found, its playback reproduces, and its rendered test
@@ -882,6 +897,16 @@ it, or fail with `X0901` attaching the raw output for debugging.
   stubs proved callee; assumption chain empty); a caller-of-fuzzed-callee fixture
   earning `conditional`; an unsupported-signature fixture earning `unsupported`, not a
   build failure.
+- **M3 thin-slice status (docs/m3-slice-findings.md)**: the vertical slice
+  `ply.yaml` + contracted fn → Kani harness (with mandatory unwind emission) → run →
+  parse → `bounded(k)`/`violation`+witness/`timeout` → D7 rendered test → §8 envelope is
+  built and green end to end (`crates/ply-attrs`, `crates/ply-core`, `crates/ply-cli`,
+  4 fixtures under `tests/fixtures/`, e2e oracle tests under `tests/e2e/`). NOT yet
+  built, left for the rest of M3: callees-first/`stub_verified`/`conditional` (D5),
+  `ply.yaml` contract merge (only inline attributes are read), the mechanical-fix
+  suggestions, `impl`-method/generic/`check_with` support, and the witness-replay half
+  of the §9 oracle (`cargo kani playback` is implemented as an adapter function but not
+  yet wired into the e2e suite).
 
 **M4 — fuzz + test + mutate checks** (~4 sessions)
 - proptest harness generation over the supported-signature set (ints biased small,

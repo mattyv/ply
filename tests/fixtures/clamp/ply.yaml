@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  clamp:
+    anchor: ply_fixture_clamp
+    fns:
+      clamp:
+        checks: [bounded(2)]

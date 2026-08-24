@@ -185,3 +185,59 @@
 - [x] Renderer CLI now covered — 11 tests over flags, exit codes, and error wording;
       two messages rewritten to the newbie bar (`--depth 0` and a non-numeric depth
       used to fail silently or with clap's raw error).
+
+## M3 thin vertical slice — landed 2026-08-24 (TODO_COMMIT_HASH)
+
+- [x] First production code of `cargo ply` itself: `crates/ply-attrs` (the
+      `#[ply::requires]`/`#[ply::ensures]` proc macros, D2), `crates/ply-core`
+      (`config`, `harness`, `engines::kani`, `contract_rt`, `diag` — exactly the five
+      modules authorized, nothing more), `crates/ply-cli` (`cargo-ply verify` +
+      `--json`). Root `Cargo.toml` is now the product workspace
+      (`members = ["crates/*", "tests/e2e"]`, `exclude = ["tools", "tests/spike",
+      "tests/fixtures"]`), separate from `tools/Cargo.toml`.
+- [x] Four fixtures under `tests/fixtures/` (`clamp`, `passing`, `vecbound`,
+      `timeout`) plus 5 black-box e2e tests under `tests/e2e/` that build the real
+      binary and run it — the §9 cex validity oracle, for real, on the `clamp`
+      fixture: FAIL (stating the contract + "postcondition", never the overflow trap)
+      before the fix, PASS (the same `ply_cex_clamp_01` test) after. `cargo test
+      --workspace` green (17 unit tests + 5 e2e tests).
+- [x] Measured (not copied from §5.4b's own number, which is for a different harness
+      shape) the Vec unwind bound for this slice's own harness: `k+1` for a manual
+      indexed-loop consumer of `any_vec::<u8,k>` — 9 at k=8, confirmed 8 fails
+      ("unwinding assertion loop 0") and 9 succeeds, with an adversarial e2e test
+      proving the emission is load-bearing (the identical harness minus the
+      annotation does not verify within a bounded cap).
+- [x] Timeout correctly distinguished from violation end to end (`K0601` vs `K0502`,
+      `timeout` status carries no counterexample) — see docs/m3-slice-findings.md
+      finding 3 for a real, load-bearing caveat: this environment shows CBMC/CaDiCaL
+      SAT-solve wall-clock variance (~1s to ~107s on an *identical* harness), and one
+      run's raw CBMC log showed a SATISFIABLE result reached before Kani's own
+      "CBMC timed out" text was printed — meaning the timeout/violation textual
+      distinction can, rarely, itself be racing the engine's own reporting. Routed
+      around with generous timeouts here; not fixed. Flagged for the next session.
+- [x] Spec amended: D2 (the `unexpected_cfgs` lint requirement, confirmed again);
+      D7 + §0 + §1 + §8 + §9 + the M3 milestone bullet, applying
+      `docs/plans/d7-replayable-tests.md`'s own pre-drafted deltas now that the D7
+      renderer is actually built (the `kani_playback`→`kani_witness` rename is live in
+      code, pinned by a unit test).
+- [x] Two deliberate self-mutations (§ CLAUDE.md), each caught and reverted: disabling
+      the "CBMC timed out" check in `parse_output` (caught by a unit test); making the
+      rendered cex test's `Ok(false)` arm a no-op, i.e. "renderer skips the assertion"
+      (caught by the real `clamp_oracle` e2e test going red, not a unit test).
+- [ ] **KNOWN GAP, recorded not hidden**: `docs/m3-slice-findings.md` finding 6 — the
+      witness-persistence mechanism that makes the D7 oracle's "same test transitions
+      FAIL→PASS" promise hold across two `verify` runs (`target/ply/witness/<fn>.json`)
+      is a real design decision this slice made ad hoc; it was not settled in the D7
+      plan and duplicates a sliver of what full D14 staleness tracking will eventually
+      own. Needs an explicit call, not silent acceptance, once `ply.lock` lands (M1).
+- [ ] Witness-replay half of the §9 oracle (`cargo kani playback` reproducing a stored
+      `kani_witness`) is implemented (`engines::kani::run_playback`) but NOT wired into
+      `verify` or any e2e test — recorded as NOT RUN in §9, not silently skipped.
+- [ ] Not attempted this session, all explicitly out of scope per the M3 brief:
+      `impl`-method contracts (`&self`, `old()`), generic fns/`check_with`, cross-crate
+      callees, `stub_verified`/`conditional` (D5), the `ply.yaml`
+      `requires`/`ensures`-merge path (only inline attributes are read),
+      `BTreeSet`/`HashMap` handling, the engine-timeout reliability fix above.
+- [ ] TODO(M1), recorded in `crates/ply-core/src/config.rs`'s own doc comment:
+      reconcile the hand-rolled ~4-struct `ply.yaml` model here with `tools/model`'s
+      full model (promote one, delete the other).

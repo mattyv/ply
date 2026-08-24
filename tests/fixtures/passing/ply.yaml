@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  passing:
+    anchor: ply_fixture_passing
+    fns:
+      safe_increment:
+        checks: [bounded(2)]
