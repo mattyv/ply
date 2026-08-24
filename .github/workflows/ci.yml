@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  ci:
+  # Spec-validation tooling: its own workspace, predates the product.
+  tools:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -40,3 +41,58 @@ jobs:
           cargo run -q -p ply-render -- ../vetting/001-spsc-disruptor.ply.yaml -o ../vetting/001-spsc-disruptor.svg
           cargo run -q -p ply-render -- ../vetting/002-ingest-pipeline.ply.yaml -o ../vetting/002-ingest-pipeline.svg
           git diff --exit-code ../vetting
+
+  # The product itself (crates/ply-attrs, ply-core, ply-cli). Fast signal: no
+  # engines needed, so it stays a couple of minutes. ply-e2e is excluded here
+  # and gated by the `product-e2e` job below, which has to install Kani.
+  product:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test (unit, engine-free)
+        run: cargo test --workspace --exclude ply-e2e
+
+  # End-to-end: drives real Kani, proptest and cargo-mutants, so it is slow
+  # (minutes per proof) and needs a ~1GB toolchain. Separated so the fast
+  # signal above is not held hostage to it; still gates merges to main.
+  product-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e
+
+      # ADR-0003 pins the Kani version every verdict's fingerprint records;
+      # a drifting engine version silently invalidates recorded evidence
+      # (D9/D14), so this is pinned rather than latest.
+      - name: Cache Kani toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.kani
+          key: kani-0.67.0-${{ runner.os }}
+
+      - name: Install engines
+        run: |
+          cargo install --locked --version 0.67.0 kani-verifier
+          cargo kani setup
+          cargo install --locked --version 27.1.0 cargo-mutants
+          cargo kani --version
+          cargo mutants --version
+
+      - name: cargo test -p ply-e2e
+        run: cargo test -p ply-e2e
