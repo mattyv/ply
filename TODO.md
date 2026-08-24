@@ -57,9 +57,12 @@ in docs/m4-findings.md along with two deliberate self-mutations, each caught and
       *different* input than the one already rendered would leave a stale red test behind.
       Needs its own `<fn>_fuzz.json` path (never the same file Kani writes to, since one
       fn could in principle declare both `bounded` and `fuzz`).
-- [ ] `W0541` (unrenderable fuzz witness, `Vec`/`BTreeSet` of non-`u8`) is implemented but
-      NOT exercised against a real failing case -- no fixture in this session's suite
-      triggers it (the `btreeset` fixture is a clean pass). Recorded as NOT RUN.
+- [x] `W0541` (unrenderable fuzz witness) was implemented but NOT exercised against a real
+      failing case. **Now run** (2026-08-24 review closure): `tests/fixtures/btreesetbug` --
+      a `BTreeSet<u8>` violation reported witness-only, shrunk to `[3]`, no `cargo_test`
+      artifact, exit 1. The item's original wording ("`Vec`/`BTreeSet` of non-`u8`") was
+      itself wrong: the path fires for every `BTreeSet`. Still not run: a `Vec<i32>`-shaped
+      witness.
 - [ ] `mutate`'s `--re <fn>` is an unanchored substring match on cargo-mutants' own
       descriptive mutant names (anchoring with `^fn$` matched *zero* mutants in a real
       run -- confirmed and fixed to the unanchored form). This means a fn whose name is a
@@ -68,6 +71,101 @@ in docs/m4-findings.md along with two deliberate self-mutations, each caught and
       named.
 - [ ] TODO(M1, carried from M3): reconcile the hand-rolled `ply.yaml` model in
       `crates/ply-core/src/config.rs` with `tools/model`'s full model.
+
+## M4 adversarial review — closed 2026-08-24 (see docs/review-m4-2026-08-24.md and docs/m4-review-closure.md)
+
+Every item below was fixed red-first: the test that fails *because of that defect* was
+written and watched fail before the fix, and its failure message read to check it named
+the defect. `cargo test --workspace -- --test-threads=1` green afterwards: 405s (6m45s)
+wall clock, 72 tests (was 53), zero warnings on `cargo check --workspace --tests`.
+
+- [x] **D1 (SEVERE) — the fuzz/test adapter failed open on a harness that would not
+      compile**: an ill-typed `examples` entry earned `fuzzed(64)`/`tested` with zero
+      diagnostics and exit 0. A run that did not succeed, did not time out and named no
+      failing test ran *zero* cases: now `X0901` + verdict `tool_error` for every check in
+      that harness, carrying the compiler's own first error and two concrete fixes. Pinned
+      by `tests/fixtures/badexample` + `tests/e2e/tests/badexample_fixture.rs`. §5.4c
+      amended with the rule.
+- [x] D2 — counterexample `inputs` mislabeled for non-alphabetical parameter order: fixed
+      by the reviewer in `94e0a2d`, not redone here.
+- [x] D3 — the `>50%` rejection `W0503` was arithmetically unreachable (rejected draws
+      counted on both sides of the ratio, i.e. `accepted < 0`). Now `rejected/total`;
+      `tests/fixtures/highreject` (~62% rejection) pins it, and the wording no longer
+      claims fewer cases ran than the verdict says.
+- [x] D4 — a fuzz run proptest *abandoned* (global-reject abort) still earned
+      `fuzzed(256)`. Now `unclaimed` + a `W0503` naming the real accepted/rejected counts,
+      via a distinct `PLY_FUZZ_ABORT` marker. `tests/fixtures/rejectabort`. §5.4c amended.
+- [x] D5 — `M0601` was dead code and cargo-mutants ran with no wall-clock cap (`-t` caps
+      only each mutant's test phase, so a hung copy or baseline build hung `verify`
+      silently, which §5.4c forbids). The invocation is now wrapped in `timeout` like the
+      fuzz and Kani adapters, exit 124 classifies as `Timeout`, and the cap is 10x the
+      per-mutant budget (min 120s; measured runs use ~4% of it). M0601's wording no longer
+      says "per mutant".
+- [x] D6 — a `violation` could be emitted with no witness (marker-parse-failure path),
+      breaching §5.4c's MUST. The label now comes from what the renderer could establish;
+      `tests/fixtures/panicbug` (a panicking body — an ordinary case, not a contrived one)
+      pins `tool_error` with rewritten text and fixes.
+- [x] D7 — `W0541`'s wording was false for the exact shape that triggers it (it fires for
+      every `BTreeSet`, `BTreeSet<u8>` included). Reworded and exact-string tested; the
+      same false claim corrected in three doc comments and docs/m4-findings.md.
+      `harness::tidy_contract_text` also widened for method calls, so the quoted contract
+      reads `xs.len() as u32` instead of `xs . len () as u32`.
+- [x] D8 — five in-tree doc comments asserting claims the M4 commit itself falsified
+      (`--gitignore false` "must always pass it explicitly", the mutants mechanism block,
+      `failed_tests`' `---- name stdout ----` claim, "Ply always anchors this",
+      `write_harness_cargo_toml`'s phantom parameter) all corrected.
+- [x] O1 — "derived, not guessed" overstated two fitted constants: `verify.rs`'s doc
+      comment and §6 now separate the derived shape split from the fitted coefficients,
+      and both record that no e2e exercises the default.
+- [x] O2/O4 — the shrinking claim and the `btreeset` acceptance were weaker than their
+      names. `tests/fixtures/btreesetbug` (the Kani-excluded shape with a real bug) closes
+      both *and* docs/m4-findings.md's own NOT RUN item: witness-only `W0541`, shrunk to
+      `[3]`, no `cargo_test` artifact, exit 1.
+- [x] O3 — "every M4 non-result diagnostic carries a concrete `Fix`" was not true; the
+      claim is corrected in docs/m4-findings.md and all five named paths now carry fixes.
+- [x] O5 — partly closed (no-violation-without-witness, witness-only, and
+      never-claim-evidence-you-lack are now all tested end to end); the remainder is
+      recorded below.
+- [x] Found while fixing the above: an `examples` entry containing a `"` generated invalid
+      Rust (the entry is echoed into the assert message unescaped), and a `mutate` run that
+      produced no result at all was reported as `weak-spec` — a finding no engine made. Both
+      fixed red-first; inconclusive mutate runs now carry D6's own `inconclusive` status.
+- [ ] **NOT RUN, recorded not hidden**: `M0601` against a genuinely hung cargo-mutants, and
+      `P0601`/`R0601` against a genuinely slow harness. The caps and classifications are
+      unit-tested; no fixture is slow enough to trip them without making the suite
+      timing-fragile.
+- [ ] **NOT RUN**: the `W0110` engine-missing paths (`prove`, cargo-mutants absent) — no
+      fixture masks an engine, so their newly populated `fixes` are unobserved. §9's own
+      engine-absence matrix is the right home for this.
+- [ ] §5.4c's "MUST carry the distinguishing engine output into the diagnostic" is now met
+      by the new `X0901` (carries the compiler's error line) and `W0503` (real counts), but
+      every other adapter still drops `raw_output` (`let _ = raw_output;`) — M3-inherited,
+      unchanged.
+- [ ] The shape-aware engine-timeout default is exercised by a unit test only: every e2e
+      passes `--engine-timeout` explicitly, so no test observes the default in real use.
+- [ ] `ensure_workspace_member` bails on any crate whose `Cargo.toml` lacks a `[workspace]`
+      table — i.e. every ordinary crate inside a larger workspace, and every standalone
+      crate without the marker. `fuzz`/`test`/`mutate` therefore work only on
+      fixture-shaped crates today. Needs the same decision as the `--copy-target true`
+      cost: where the harness crate should live.
+- [ ] `mutants.out/` is left in the user's crate root after every mutate run (removed at the
+      *start* of the next one) — outside the `target/ply/` housekeeping convention.
+- [ ] A missing-engine label beats a passing check in `combine_fn_check_verdicts`
+      (`checks: [prove, fuzz(256)]` with fuzz passing yields `engine-missing`), contradicting
+      D9 and D6's status-vs-order split. Unreachable until M7 declares `prove` fixtures —
+      fold into the M5 verdict-kernel work.
+- [ ] `checks: [fuzz(n), test]` on a fn with no `ensures` silently drops the `test` check
+      too (the no-`ensures` `V0505` branch returns before the harness runs, examples
+      included). Examples need no postcondition, so this is a routing fix with its own
+      fixture, not a wording change.
+- [ ] Mutants whose tests time out land in cargo-mutants' `timeout.txt` and do not block
+      `all_caught()`, so a fn can earn `·spec-strong` with timed-out (uncaught) mutants.
+      Defensible as cargo-mutants' own convention; undocumented until now.
+- [ ] §6's exit-code table reserves 2 for a tool error, but `main::exit_code_for` returns 1
+      for every error-severity diagnostic (M3-inherited; now visible on D1's new path). The
+      new e2e tests assert *non-zero* rather than pinning 1, so no test blesses either
+      behaviour.
+
 
 - [x] `ply-render --depth N` / `--focus` / `--collapse <component>` (8d8910f) —
       collapsed box shows contents line, rolled-up capability badges, pin and finding

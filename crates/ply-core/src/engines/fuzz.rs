@@ -23,8 +23,12 @@ pub struct HarnessTestRun {
     pub success: bool,
     pub combined_output: String,
     /// Fully-qualified failing test names (`<fn>_harness::ply_fuzz_<fn>`,
-    /// etc.), extracted from cargo test's own `---- <name> stdout ----`
-    /// failure-detail headers -- present regardless of `--nocapture`.
+    /// etc.), extracted from libtest's final `failures:` summary block --
+    /// see `parse_failed_test_names`. It is deliberately *not* the per-test
+    /// `---- <name> stdout ----` detail header, which libtest never emits
+    /// under `--nocapture` (which this adapter always passes): relying on
+    /// that header reported every fuzz-found violation as a clean pass, the
+    /// real bug docs/m4-findings.md finding 3 records.
     pub failed_tests: Vec<String>,
 }
 
@@ -101,6 +105,34 @@ fn parse_failed_test_names(combined: &str) -> Vec<String> {
         .collect()
 }
 
+/// The first *specific* compiler error in a failed harness build -- the one
+/// line that names what actually went wrong (`error[E0308]: mismatched
+/// types`), not cargo's own trailing summary (`error: could not compile
+/// ...`, which names no cause at all). Returns `None` when the output
+/// carries no error line, so a caller never invents one.
+///
+/// This exists because §8 forbids passing engine output through raw while
+/// §5.4c requires carrying "the distinguishing engine output into the
+/// diagnostic": a harness that fails to build has no test result to parse,
+/// and this line is the only handle a reader (or an agent mid-repair) has.
+pub fn first_build_error(combined: &str) -> Option<String> {
+    let mut summary_only: Option<String> = None;
+    for line in combined.lines() {
+        let t = line.trim();
+        if !t.starts_with("error") {
+            continue;
+        }
+        if t.starts_with("error: could not compile") || t.starts_with("error: aborting") {
+            if summary_only.is_none() {
+                summary_only = Some(t.to_string());
+            }
+            continue;
+        }
+        return Some(t.to_string());
+    }
+    summary_only
+}
+
 /// Parses the last `PLY_FUZZED_CEX|<fn>|k1=v1;k2=v2` marker line out of
 /// captured output, returning the fn name and its fields. Fields with a
 /// `[...]` value (a `Vec`/`BTreeSet`) keep the brackets for
@@ -149,6 +181,36 @@ pub fn parse_high_reject_marker(combined: &str) -> Option<(String, String)> {
     Some((fn_name.trim().to_string(), detail.trim().to_string()))
 }
 
+/// What the generated test reports when proptest *abandoned* the run: its
+/// own global-reject limit fired, so it stopped drawing inputs long before
+/// the requested case count was reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FuzzAbort {
+    pub fn_name: String,
+    /// proptest's own reason text (e.g. "Too many global rejects").
+    pub reason: String,
+    /// Cases that passed the `requires` filter and were actually checked.
+    pub accepted: u32,
+    /// Inputs the `requires` filter threw away.
+    pub rejected: u32,
+}
+
+/// Parses the `PLY_FUZZ_ABORT|<fn>|<reason>|accepted=<a>|rejected=<r>`
+/// marker. Distinct from the high-rejection *warning* marker on purpose: a
+/// high rejection rate still produces the requested cases (weaker spread,
+/// honest count), while an abort produces essentially none, and the two must
+/// not reach the same verdict (2026-08-24 M4 review, D4).
+pub fn parse_abort_marker(combined: &str) -> Option<FuzzAbort> {
+    let line = combined.lines().find(|l| l.contains("PLY_FUZZ_ABORT|"))?;
+    let after = line.split_once("PLY_FUZZ_ABORT|")?.1;
+    let mut parts = after.split('|');
+    let fn_name = parts.next()?.trim().to_string();
+    let reason = parts.next()?.trim().to_string();
+    let accepted = parts.next()?.trim().strip_prefix("accepted=")?.parse::<u32>().ok()?;
+    let rejected = parts.next()?.trim().strip_prefix("rejected=")?.parse::<u32>().ok()?;
+    Some(FuzzAbort { fn_name, reason, accepted, rejected })
+}
+
 fn parse_u8_list(raw: &str) -> Option<Vec<u8>> {
     let inner = raw.strip_prefix('[')?.strip_suffix(']')?;
     if inner.is_empty() {
@@ -160,10 +222,11 @@ fn parse_u8_list(raw: &str) -> Option<Vec<u8>> {
 /// Decodes a fuzz marker's fields into the *same* `WitnessValue` type Kani
 /// witnesses decode into (the D7 plan's "two consumers, one renderer"), in
 /// `params` order. Returns `None` -- never a fabricated value -- for any
-/// parameter whose type has no `WitnessValue` representation: a
-/// `Vec`/`BTreeSet` of anything but `u8` cannot be rendered as a Rust
-/// literal this renderer knows how to write, so that case is reported as a
-/// witness-only violation (`W0541`) by the caller, not force-rendered.
+/// parameter whose type has no `WitnessValue` representation: `WitnessValue`
+/// can spell scalars and a `Vec<u8>`, so **any** `BTreeSet` (`BTreeSet<u8>`
+/// included -- the M4 acceptance shape) and any `Vec` of a non-`u8` scalar
+/// land here. The caller reports that case as a witness-only violation
+/// (`W0541`), never force-rendered.
 pub fn decode_marker_fields(fields: &BTreeMap<String, String>, params: &[Param]) -> Option<Vec<WitnessValue>> {
     let mut out = Vec::with_capacity(params.len());
     for p in params {
@@ -212,6 +275,28 @@ mod tests {
         assert_eq!(names, vec!["seeded_bug_harness::ply_fuzz_seeded_bug".to_string()]);
     }
 
+    /// Real captured output from the `badexample` fixture's harness build
+    /// (an `examples` entry comparing a `u32` to a string literal). The
+    /// summary line cargo prints last names no cause, so the extractor must
+    /// reach past it to the specific error.
+    #[test]
+    fn first_build_error_names_the_cause_not_cargos_summary_line() {
+        let combined = "   Compiling ply-fixture-badexample-ply-harness v0.0.0 (/tmp/bx)\n\
+             error[E0308]: mismatched types\n\
+             \x20 --> target/ply/fuzz/x/src/lib.rs:65:38\n\
+             \x20   |\n\
+             65 |         assert!(add_small (0 , 0) == \"zero\");\n\
+             \n\
+             For more information about this error, try `rustc --explain E0308`.\n\
+             error: could not compile `ply-fixture-badexample-ply-harness` (lib test) due to 1 previous error\n";
+        assert_eq!(first_build_error(combined).unwrap(), "error[E0308]: mismatched types");
+    }
+
+    #[test]
+    fn first_build_error_is_none_when_nothing_failed_to_build() {
+        assert!(first_build_error("running 1 test\ntest x ... ok\n").is_none());
+    }
+
     #[test]
     fn parses_the_fuzz_marker_scalar_and_vec_fields() {
         let combined = "some noise\nPLY_FUZZED_CEX|vec_sum|v=[1,2,3]\nmore noise\n";
@@ -244,6 +329,21 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("xs".to_string(), "[-1,2,3]".to_string());
         assert!(decode_marker_fields(&fields, &params).is_none());
+    }
+
+    #[test]
+    fn parses_the_abort_marker_with_its_case_counts() {
+        let combined = "noise\nPLY_FUZZ_ABORT|narrow_window|Too many global rejects|accepted=0|rejected=1024\nmore\n";
+        assert_eq!(
+            parse_abort_marker(combined).unwrap(),
+            FuzzAbort {
+                fn_name: "narrow_window".into(),
+                reason: "Too many global rejects".into(),
+                accepted: 0,
+                rejected: 1024,
+            }
+        );
+        assert!(parse_abort_marker("nothing here\n").is_none());
     }
 
     #[test]

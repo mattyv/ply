@@ -266,7 +266,7 @@ pub fn discover_fn(src_path: &Path, fn_name: &str) -> Result<ContractFn> {
 /// the closure-pipe and leading-deref shapes this slice's own contracts
 /// use -- not a general Rust pretty-printer.
 fn tidy_contract_text(s: &str) -> String {
-    s.replace("| ", "|").replace(" |", "|").replace("* ", "*")
+    s.replace("| ", "|").replace(" |", "|").replace("* ", "*").replace(" . ", ".").replace(" ()", "()")
 }
 
 fn build_contract_fn(f: &ItemFn) -> Result<ContractFn> {
@@ -454,6 +454,19 @@ fn write_generated_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Contract text is quoted verbatim into diagnostics and into the
+    /// rendered cex test's own failure message, so it has to read like the
+    /// line the user wrote. Token-stream text spaces out every token, and
+    /// the tidier only knew about `|` and `*` -- any contract calling a
+    /// method came out as `xs . len () as u32` (2026-08-24 M4 review, D7's
+    /// side observation, seen for real on the `BTreeSet` witness path).
+    #[test]
+    fn contract_text_reads_like_the_line_the_user_wrote_even_with_method_calls() {
+        assert_eq!(tidy_contract_text("| result | * result == xs . len () as u32"), "|result|*result == xs.len() as u32");
+        // The M3 shapes stay exactly as they were.
+        assert_eq!(tidy_contract_text("| result | * result >= lo"), "|result|*result >= lo");
+    }
 
     fn write_src(dir: &Path, content: &str) -> PathBuf {
         let path = dir.join("lib.rs");

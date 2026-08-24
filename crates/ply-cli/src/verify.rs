@@ -38,17 +38,29 @@ pub struct VerifyOptions {
 /// it is the shape of ordinary use, which is exactly how a status meant to
 /// mean "engine exhausted" turns into noise a user learns to skip.
 ///
-/// The fix here is the shape-aware one the brief asks for, not a bigger
-/// magic number: only `Vec`-typed harnesses get scaled, and the scaling is
-/// derived from the measured cost, not guessed. The M3 e2e suite's own
-/// vecbound fixture passes 150s explicitly for `bounded(8)`; solving
-/// `150 = base + rate * 8` with the M3-observed floor (`bounded(2)` proofs
-/// over scalars finished in ~1s in that same suite, so a small fixed base is
-/// safe) gives `base = 30, rate = 15`. A scalar-only (no `Vec` parameter)
-/// harness keeps the original 60s default unchanged: nothing in the M3
-/// findings shows that budget insufficient for any scalar-only fixture, and
-/// widening it without evidence would be exactly the "bigger magic number"
-/// this task warns against.
+/// The part of the fix that *is* derived is the shape split: within the
+/// §5.4b subset actually implemented, `Vec` is the only shape whose CBMC
+/// unwind cost grows with the bound, so it is the only shape scaled at all.
+/// The constants are chosen, not derived, and the 2026-08-24 M4 review was
+/// right to say so (O1): `30 + 15k` is picked to reproduce the M3 e2e
+/// suite's own working value for `bounded(8)` exactly (150s) while keeping
+/// `bounded(2)` at the unchanged 60s. `150 = base + rate * 8` is one
+/// equation in two unknowns -- `0 + 18.75k` and `60 + 11.25k` fit it just as
+/// well -- and the 150 itself is that fixture's generous constant, not a
+/// measured requirement: docs/m3-slice-findings.md finding 3 measured the
+/// *identical* harness anywhere from ~1s to ~107s across runs, variance that
+/// dominates any k-linear model. So: a shape-aware budget fitted to the one
+/// working data point we have, which is honest, and not a claim that the
+/// coefficients mean anything on their own.
+///
+/// A scalar-only (no `Vec` parameter) harness keeps the original 60s default
+/// unchanged: nothing in the M3 findings shows that budget insufficient for
+/// any scalar-only fixture, and widening it without evidence would be
+/// exactly the "bigger magic number" Task 0 warns against.
+///
+/// Not observed in real use by any test: every e2e passes `--engine-timeout`
+/// explicitly, so only the unit test below exercises the formula (recorded
+/// in TODO.md, not left to be discovered).
 pub fn default_engine_timeout_secs(has_vec_param: bool, bound_k: u32) -> u32 {
     if has_vec_param {
         30 + 15 * bound_k
@@ -348,7 +360,22 @@ fn run_fn_checks(
                     ),
                     primary_span: None,
                     counterexample: None,
-                    fixes: vec![],
+                    fixes: vec![
+                        Fix {
+                            title: format!(
+                                "drop `prove` from `{fn_name}`'s checks list until M7 lands the Verus \
+                                 adapter, so the run reports only checks Ply can actually perform"
+                            ),
+                            edits: vec![],
+                        },
+                        Fix {
+                            title: format!(
+                                "use `bounded(k)` for `{fn_name}` meanwhile -- exhaustive up to k, which is \
+                                 the strongest evidence Ply can earn today"
+                            ),
+                            edits: vec![],
+                        },
+                    ],
                     open_item: Some("engine_missing".into()),
                 });
                 labels.push("engine-missing".into());
@@ -381,7 +408,22 @@ fn run_fn_checks(
                 ),
                 primary_span: None,
                 counterexample: None,
-                fixes: vec![],
+                fixes: vec![
+                    Fix {
+                        title: format!(
+                            "add `#[ply::ensures(|result| ...)]` to `{fn_name}` -- one line naming what \
+                             its return value always satisfies"
+                        ),
+                        edits: vec![],
+                    },
+                    Fix {
+                        title: format!(
+                            "or drop `fuzz` from `{fn_name}`'s checks and declare `test` with `examples:` \
+                             instead, which needs no postcondition"
+                        ),
+                        edits: vec![],
+                    },
+                ],
                 open_item: Some("no_contract_to_check".into()),
             });
             labels.push("unsupported".into());
@@ -417,14 +459,10 @@ fn run_fn_checks(
     if checks.iter().any(|c| matches!(c, Check::Mutate)) {
         if rank(&verdict) > 4 {
             if let Some((harness_pkg, _)) = harness_info {
-                let (suffix_ok, mut d) =
+                let (outcome, mut d) =
                     run_mutate_check(crate_dir, harness_pkg, node_id, fn_name, checks, opts)?;
                 diagnostics.append(&mut d);
-                if suffix_ok {
-                    verdict.push_str("\u{00b7}spec-strong");
-                } else {
-                    statuses.push("weak-spec".into());
-                }
+                apply_mutate_outcome(&mut verdict, &mut statuses, outcome);
             }
         } else {
             diagnostics.push(Diagnostic {
@@ -435,12 +473,22 @@ fn run_fn_checks(
                 check: "mutate".into(),
                 node_id: node_id.into(),
                 title: format!(
-                    "`{fn_name}`'s `mutate` check was skipped: its own `test`/`fuzz` check did not \
-                     pass, so there is no working baseline to mutate against."
+                    "`{fn_name}`'s `mutate` check was skipped: mutation testing plants deliberate bugs \
+                     and asks whether the tests catch them, which only means anything once the tests \
+                     pass on the real code -- and `{fn_name}`'s own `test`/`fuzz` check did not. Fix that \
+                     check first; this run says nothing either way about spec strength."
                 ),
                 primary_span: None,
                 counterexample: None,
-                fixes: vec![],
+                fixes: vec![
+                    Fix {
+                        title: format!(
+                            "fix whatever made `{fn_name}`'s `test`/`fuzz` check fail (its own diagnostic is \
+                             in this same report), then re-run -- `mutate` will run on the next pass"
+                        ),
+                        edits: vec![],
+                    },
+                ],
                 open_item: Some("mutate_skipped_no_baseline".into()),
             });
         }
@@ -691,6 +739,34 @@ fn run_fuzz_and_test_checks(
     let mut fuzz_label = None;
     let mut test_label = None;
 
+    // The harness never ran at all (2026-08-24 M4 review, D1 -- the review's
+    // most serious finding, and this file's own fail-open bug one level up
+    // from the parser one docs/m4-findings.md finding 3 records). A run that
+    // did not succeed, did not time out, and named no failing test executed
+    // zero cases: the commonest cause is a harness crate that failed to
+    // *compile*, which produces no libtest `failures:` block at all. Both
+    // the `fuzz` and the `test` check live in that one crate, so neither
+    // ran. §8: adapters never pass engine output through raw -- they parse
+    // it or fail with `X0901` attaching what the engine said. It is
+    // emphatically not a pass (there is no evidence) and not a violation
+    // (§5.4c MUST: no violation without a witness).
+    if !run.success && !run.timed_out && run.failed_tests.is_empty() {
+        let cause = fuzz_engine::first_build_error(&run.combined_output);
+        if let Some(n) = wants_fuzz {
+            diagnostics.push(harness_did_not_run_diag(
+                node_id, fn_name, &format!("fuzz({n})"), harness_pkg, cause.as_deref(),
+            ));
+        }
+        if wants_test {
+            diagnostics.push(harness_did_not_run_diag(node_id, fn_name, "test", harness_pkg, cause.as_deref()));
+        }
+        return Ok((
+            wants_fuzz.map(|_| "tool_error".to_string()),
+            if wants_test { Some("tool_error".to_string()) } else { None },
+            diagnostics,
+        ));
+    }
+
     if let Some(n) = wants_fuzz {
         let check_label = format!("fuzz({n})");
         if run.timed_out {
@@ -712,9 +788,62 @@ fn run_fuzz_and_test_checks(
             });
             fuzz_label = Some("timeout".into());
         } else if run.failed_tests.iter().any(|t| t == &fuzz_test_name) {
-            let d = render_fuzz_violation(cf, &run.combined_output, node_id, fn_name, &check_label, src_dir, lib_path)?;
+            // The label comes from what the renderer could actually
+            // establish (2026-08-24 M4 review, D6): when no witness could be
+            // recovered, the honest label is `tool_error` -- §5.4c MUST NOT
+            // emit a `violation` without a witness, and pushing it
+            // unconditionally here did exactly that.
+            let (label, d) = render_fuzz_violation(
+                cf, &run.combined_output, node_id, fn_name, &check_label, harness_pkg, src_dir, lib_path,
+            )?;
             diagnostics.push(d);
-            fuzz_label = Some("violation".into());
+            fuzz_label = Some(label);
+        } else if let Some(abort) = fuzz_engine::parse_abort_marker(&run.combined_output) {
+            // proptest abandoned the run (2026-08-24 M4 review, D4): its own
+            // global-reject limit fired, so approximately no case was ever
+            // checked. The verdict must not read `fuzzed(n)` -- a warning
+            // beside a number that never happened still reports n cases of
+            // evidence. There is nothing to claim here, so nothing is
+            // claimed.
+            let total = abort.accepted + abort.rejected;
+            let reason = &abort.reason;
+            let (accepted, rejected) = (abort.accepted, abort.rejected);
+            diagnostics.push(Diagnostic {
+                code: "W0503".into(),
+                severity: "warning".into(),
+                phase: "verify".into(),
+                engine: "proptest".into(),
+                check: check_label.clone(),
+                node_id: node_id.into(),
+                title: format!(
+                    "proptest gave up on `{fn_name}` before it could run the {n} cases `fuzz({n})` \
+                     asked for: {rejected} of the {total} inputs it generated were thrown away by the \
+                     function's own `#[ply::requires]` precondition and only {accepted} were ever \
+                     checked, which tripped proptest's own limit ({reason}). So this function has no \
+                     fuzz evidence at all -- its verdict is `unclaimed`, not `fuzzed({n})`. (W0503)"
+                ),
+                primary_span: None,
+                counterexample: None,
+                fixes: vec![
+                    Fix {
+                        title: format!(
+                            "widen `{fn_name}`'s `#[ply::requires]`, or give its parameters a type whose \
+                             values satisfy it by construction -- proptest can only check inputs its \
+                             generator actually produces"
+                        ),
+                        edits: vec![],
+                    },
+                    Fix {
+                        title: format!(
+                            "swap `fuzz({n})` for `test` plus `examples:` entries naming concrete inputs \
+                             inside `{fn_name}`'s allowed domain"
+                        ),
+                        edits: vec![],
+                    },
+                ],
+                open_item: Some("no_cases_ran".into()),
+            });
+            fuzz_label = Some("unclaimed".into());
         } else {
             if let Some((_, detail)) = fuzz_engine::parse_high_reject_marker(&run.combined_output) {
                 diagnostics.push(Diagnostic {
@@ -725,14 +854,28 @@ fn run_fuzz_and_test_checks(
                     check: check_label.clone(),
                     node_id: node_id.into(),
                     title: format!(
-                        "most of the generated inputs for `{fn_name}` were rejected by its own \
-                         `#[ply::requires]` ({detail}) -- the fuzz check still ran, but on far fewer \
-                         real cases than {n} suggests. A precondition this strict makes fuzzing weak \
-                         evidence; consider narrowing the parameter type or the requires clause."
+                        "most of the inputs generated for `{fn_name}` were thrown away by its own \
+                         `#[ply::requires]` precondition ({detail} draws rejected). proptest kept \
+                         drawing until it had {n} accepted cases, so the count is honest -- but those \
+                         cases all come from the narrow corner of the input space the precondition \
+                         allows, which is weaker evidence than {n} on its own suggests. (W0503)"
                     ),
                     primary_span: None,
                     counterexample: None,
-                    fixes: vec![],
+                    fixes: vec![
+                        Fix {
+                            title: format!(
+                                "give `{fn_name}` a parameter type whose values are valid by \
+                                 construction, so the generator hits the allowed domain directly \
+                                 instead of being filtered into it"
+                            ),
+                            edits: vec![],
+                        },
+                        Fix {
+                            title: format!("relax `{fn_name}`'s `#[ply::requires]` if it is stricter than the function really needs"),
+                            edits: vec![],
+                        },
+                    ],
                     open_item: Some("high_rejection_rate".into()),
                 });
             }
@@ -760,10 +903,23 @@ fn run_fuzz_and_test_checks(
                 engine: "ply".into(),
                 check: "test".into(),
                 node_id: node_id.into(),
-                title: format!("`{fn_name}`'s example/direct-case tests did not finish within {timeout}s."),
+                title: format!(
+                    "`{fn_name}`'s `examples` and generated boundary-case tests did not finish within \
+                     their {timeout}s budget, so the `test` check has no result -- reported as \
+                     `timeout`, never as a violation."
+                ),
                 primary_span: None,
                 counterexample: None,
-                fixes: vec![],
+                fixes: vec![
+                    Fix { title: format!("raise --engine-timeout above {timeout}s"), edits: vec![] },
+                    Fix {
+                        title: format!(
+                            "check whether `{fn_name}` can loop forever on one of its `examples` inputs -- \
+                             these tests call the real function directly"
+                        ),
+                        edits: vec![],
+                    },
+                ],
                 open_item: Some("timeout".into()),
             });
             test_label = Some("timeout".into());
@@ -796,33 +952,117 @@ fn run_fuzz_and_test_checks(
     Ok((fuzz_label, test_label, diagnostics))
 }
 
+/// The `X0901` a check earns when its generated harness never ran a single
+/// case (2026-08-24 M4 review, D1). Written to the newbie bar: what
+/// happened, what it means for the verdict, what most likely caused it, and
+/// the compiler's own words -- then concrete `fixes`, per §8's non-result
+/// rule ("a non-result is still feedback").
+fn harness_did_not_run_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    harness_pkg: &str,
+    cause: Option<&str>,
+) -> Diagnostic {
+    let compiler_says = match cause {
+        Some(c) => format!(" The compiler's own first error was: {c}."),
+        None => String::new(),
+    };
+    Diagnostic {
+        code: "X0901".into(),
+        severity: "error".into(),
+        phase: "verify".into(),
+        engine: "proptest".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}`'s `{check_label}` check ran zero cases: the test harness Ply generates for it \
+             failed to compile, so nothing was checked at all. This is reported as a tool error -- \
+             never as a pass, because no evidence was gathered, and never as a violation, because \
+             there is no failing input to show.{compiler_says} The usual cause is an `examples:` \
+             entry in ply.yaml that does not type-check against `{fn_name}`'s real signature: Ply \
+             compiles those entries exactly as written (they are ordinary Rust `==` expressions), so \
+             a wrong type or a typo first shows up here. (X0901)"
+        ),
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![
+            Fix {
+                title: format!(
+                    "check every `examples:` entry for `{fn_name}` in ply.yaml -- each one must compile \
+                     as a Rust expression against `{fn_name}`'s real parameter and return types"
+                ),
+                edits: vec![],
+            },
+            Fix {
+                title: format!(
+                    "see the full compiler output by running `cargo test -p {harness_pkg} --lib \
+                     {fn_name}_harness::` from the crate root (Ply regenerates that harness crate on \
+                     every run, so editing it is never the fix)"
+                ),
+                edits: vec![],
+            },
+        ],
+        open_item: Some("tool_error".into()),
+    }
+}
+
+/// Renders a fuzz-found failure into (verdict label, diagnostic). The label
+/// is part of the return value on purpose: only the branch that recovered a
+/// real failing input may say `violation` (§5.4c).
+#[allow(clippy::too_many_arguments)]
 fn render_fuzz_violation(
     cf: &ContractFn,
     combined_output: &str,
     node_id: &str,
     fn_name: &str,
     check_label: &str,
+    harness_pkg: &str,
     src_dir: &Path,
     lib_path: &Path,
-) -> Result<Diagnostic> {
+) -> Result<(String, Diagnostic)> {
     let contract_text = cf.ensures.as_ref().map(|(_, t)| t.clone()).unwrap_or_default();
     let Some((_, fields)) = fuzz_engine::parse_fuzz_marker(combined_output) else {
-        return Ok(Diagnostic {
-            code: "X0901".into(),
-            severity: "error".into(),
-            phase: "verify".into(),
-            engine: "proptest".into(),
-            check: check_label.into(),
-            node_id: node_id.into(),
-            title: format!(
-                "`{fn_name}`'s fuzz check found a failing case, but Ply's adapter could not find the \
-                 shrunk input marker in proptest's output."
-            ),
-            primary_span: None,
-            counterexample: None,
-            fixes: vec![],
-            open_item: Some("tool_error".into()),
-        });
+        return Ok((
+            "tool_error".to_string(),
+            Diagnostic {
+                code: "X0901".into(),
+                severity: "error".into(),
+                phase: "verify".into(),
+                engine: "proptest".into(),
+                check: check_label.into(),
+                node_id: node_id.into(),
+                title: format!(
+                    "proptest reported a failing case for `{fn_name}`, but Ply could not find the line \
+                     its own generated harness prints to record the failing input -- so there is no \
+                     counterexample to show you. The commonest cause is `{fn_name}` itself panicking \
+                     (an overflow, an `unwrap`, an explicit `panic!`) before its postcondition was ever \
+                     checked: Ply records the input only once it has a returned value to compare \
+                     against. This is reported as a tool error, not as a violation -- Ply never reports \
+                     a broken promise it cannot show you the input for. (X0901)"
+                ),
+                primary_span: None,
+                counterexample: None,
+                fixes: vec![
+                    Fix {
+                        title: format!(
+                            "run the harness yourself -- `cargo test -p {harness_pkg} --lib \
+                             {fn_name}_harness::` from the crate root -- and read proptest's own report \
+                             of the failing input"
+                        ),
+                        edits: vec![],
+                    },
+                    Fix {
+                        title: format!(
+                            "if `{fn_name}` is meant to panic on some inputs, add a `#[ply::requires]` \
+                             that rules them out, so those inputs are never generated"
+                        ),
+                        edits: vec![],
+                    },
+                ],
+                open_item: Some("tool_error".into()),
+            },
+        ));
     };
 
     match fuzz_engine::decode_marker_fields(&fields, &cf.params) {
@@ -848,7 +1088,7 @@ fn render_fuzz_violation(
                     inputs.insert(p.name.clone(), raw.clone());
                 }
             }
-            Ok(Diagnostic {
+            Ok(("violation".to_string(), Diagnostic {
                 code: "P0502".into(),
                 severity: "error".into(),
                 phase: "verify".into(),
@@ -873,7 +1113,7 @@ fn render_fuzz_violation(
                 }),
                 fixes: vec![],
                 open_item: None,
-            })
+            }))
         }
         None => {
             let mut inputs = BTreeMap::new();
@@ -884,7 +1124,7 @@ fn render_fuzz_violation(
                     inputs.insert(p.name.clone(), raw.clone());
                 }
             }
-            Ok(Diagnostic {
+            Ok(("violation".to_string(), Diagnostic {
                 code: "W0541".into(),
                 severity: "error".into(),
                 phase: "verify".into(),
@@ -893,16 +1133,57 @@ fn render_fuzz_violation(
                 node_id: node_id.into(),
                 title: format!(
                     "`{fn_name}` breaks its own postcondition `{contract_text}` for at least one input, \
-                     but Ply cannot render it as a Rust literal (a `Vec`/`BTreeSet` of anything but `u8` \
-                     has no renderer yet) -- the raw values are recorded below; inputs are never \
-                     fabricated. (W0541, reason: inputs_unrenderable)"
+                     and proptest shrank that input down to the smallest one that still fails. Ply \
+                     cannot turn it into a runnable Rust test, though: it has no way yet to spell a \
+                     `BTreeSet`, or a `Vec` of anything but `u8`, as a literal value. The failing input \
+                     is recorded below exactly as the engine reported it -- Ply never invents one. \
+                     (W0541, reason: inputs_unrenderable)"
                 ),
                 primary_span: None,
                 counterexample: Some(Counterexample { inputs, kani_witness: None, cargo_test: None }),
                 fixes: vec![],
                 open_item: Some("inputs_unrenderable".into()),
-            })
+            }))
         }
+    }
+}
+
+/// The whole-run wall-clock cap for one `mutate` invocation (2026-08-24 M4
+/// review, D5). `--engine-timeout` caps each *mutant's* test phase
+/// (cargo-mutants' own `-t`), but a run is a tree copy plus an unmutated
+/// baseline build plus one test run per mutant, so the run as a whole needs
+/// its own cap or a hang outside the test phase hangs `verify` silently --
+/// which §5.4c forbids outright. Ten times the per-mutant budget, never less
+/// than 120s: M4's measured runs took 24-26s for 2-4 mutants at the 60s
+/// default (docs/m4-findings.md), i.e. ~4% of the resulting cap, so this
+/// cannot turn a healthy run into a spurious `timeout`.
+fn mutate_wall_clock_secs(per_mutant_secs: u32) -> u32 {
+    per_mutant_secs.saturating_mul(10).max(120)
+}
+
+/// What one `mutate` run actually established. Three outcomes, not two: a
+/// run that never produced a mutant count (engine missing, killed by the
+/// wall-clock cap, or output Ply could not read) says *nothing* about spec
+/// strength, and must not be reported as if it had found surviving mutants
+/// (2026-08-24 M4 review, D5's neighbourhood).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MutateOutcome {
+    /// Every viable mutant was caught -- the verdict earns `·spec-strong`.
+    SpecStrong,
+    /// Mutants survived: the spec is weaker than the code it describes.
+    WeakSpec,
+    /// The run produced no verdict either way.
+    Inconclusive,
+}
+
+fn apply_mutate_outcome(verdict: &mut String, statuses: &mut Vec<String>, outcome: MutateOutcome) {
+    match outcome {
+        MutateOutcome::SpecStrong => verdict.push_str("\u{00b7}spec-strong"),
+        MutateOutcome::WeakSpec => statuses.push("weak-spec".into()),
+        // Nothing was established either way: the engine never reported a
+        // mutant count. `inconclusive` is D6's own status for that, and it
+        // is emphatically not `weak-spec`, which asserts a real finding.
+        MutateOutcome::Inconclusive => statuses.push("inconclusive".into()),
     }
 }
 
@@ -913,11 +1194,11 @@ fn run_mutate_check(
     fn_name: &str,
     checks: &[Check],
     opts: &VerifyOptions,
-) -> Result<(bool, Vec<Diagnostic>)> {
+) -> Result<(MutateOutcome, Vec<Diagnostic>)> {
     let _ = checks;
     if !mutants::is_available() {
         return Ok((
-            false,
+            MutateOutcome::Inconclusive,
             vec![Diagnostic {
                 code: "W0110".into(),
                 severity: "warning".into(),
@@ -941,6 +1222,7 @@ fn run_mutate_check(
     let cargo_toml_text = std::fs::read_to_string(crate_dir.join("Cargo.toml"))?;
     let target_names = harness_crate::read_crate_names(&cargo_toml_text)?;
     let timeout = opts.engine_timeout_secs.unwrap_or_else(default_secondary_engine_timeout_secs);
+    let wall_clock = mutate_wall_clock_secs(timeout);
     let cfg = MutantsRunConfig {
         workspace_root: crate_dir.to_path_buf(),
         mutated_package: target_names.package_name,
@@ -953,6 +1235,7 @@ fn run_mutate_check(
         fn_regex: fn_name.to_string(),
         test_filter: format!("{fn_name}_harness::"),
         timeout_secs: timeout,
+        wall_clock_secs: wall_clock,
     };
     let outcome = mutants::run(&cfg)?;
 
@@ -960,12 +1243,12 @@ fn run_mutate_check(
     match outcome {
         MutantsRunOutcome::Completed(o) => {
             if o.all_caught() {
-                Ok((true, vec![]))
+                Ok((MutateOutcome::SpecStrong, vec![]))
             } else if o.missed.is_empty() {
                 // Nothing to mutate (unviable-only, or zero mutants found)
                 // is not evidence of strength either way.
                 Ok((
-                    false,
+                    MutateOutcome::Inconclusive,
                     vec![Diagnostic {
                         code: "W0502".into(),
                         severity: "warning".into(),
@@ -979,13 +1262,25 @@ fn run_mutate_check(
                         ),
                         primary_span: None,
                         counterexample: None,
-                        fixes: vec![],
+                        fixes: vec![
+                            Fix {
+                                title: format!(
+                                    "check that `{fn_name}` has a body cargo-mutants can alter at all (a \
+                                     one-line delegation or a constant often has no viable mutant)"
+                                ),
+                                edits: vec![],
+                            },
+                            Fix {
+                                title: "run `cargo mutants --list` in the crate to see what it would try".into(),
+                                edits: vec![],
+                            },
+                        ],
                         open_item: Some("no_mutants".into()),
                     }],
                 ))
             } else {
                 Ok((
-                    false,
+                    MutateOutcome::WeakSpec,
                     vec![Diagnostic {
                         code: "W0502".into(),
                         severity: "warning".into(),
@@ -1019,7 +1314,7 @@ fn run_mutate_check(
         MutantsRunOutcome::Timeout { raw_output } => {
             let _ = raw_output;
             Ok((
-                false,
+                MutateOutcome::Inconclusive,
                 vec![Diagnostic {
                     code: "M0601".into(),
                     severity: "warning".into(),
@@ -1027,10 +1322,32 @@ fn run_mutate_check(
                     engine: "cargo-mutants".into(),
                     check: check_label,
                     node_id: node_id.into(),
-                    title: format!("`{fn_name}`'s `mutate` run did not finish within {timeout}s per mutant."),
+                    title: format!(
+                        "`{fn_name}`'s `mutate` run was stopped after {wall_clock}s, the cap Ply puts \
+                         on the whole cargo-mutants invocation (it plants one deliberate bug at a time \
+                         and re-runs the tests for each, so a run is many test runs plus a copy of the \
+                         crate). Nothing is known about how many of those bugs the spec would have \
+                         caught -- this is reported as an exhausted run, never as a weak spec. (M0601)"
+                    ),
                     primary_span: None,
                     counterexample: None,
-                    fixes: vec![Fix { title: "raise --engine-timeout".into(), edits: vec![] }],
+                    fixes: vec![
+                        Fix {
+                            title: format!(
+                                "raise --engine-timeout above {timeout}s (Ply caps the whole mutate run \
+                                 at ten times that, currently {wall_clock}s)"
+                            ),
+                            edits: vec![],
+                        },
+                        Fix {
+                            title: format!(
+                                "narrow what `{fn_name}` mutates, or drop `mutate` from its checks list \
+                                 while keeping `test`/`fuzz` -- mutation testing is the slowest check \
+                                 Ply runs"
+                            ),
+                            edits: vec![],
+                        },
+                    ],
                     open_item: Some("timeout".into()),
                 }],
             ))
@@ -1038,7 +1355,7 @@ fn run_mutate_check(
         MutantsRunOutcome::ToolError { raw_output, reason } => {
             let _ = raw_output;
             Ok((
-                false,
+                MutateOutcome::Inconclusive,
                 vec![Diagnostic {
                     code: "X0901".into(),
                     severity: "error".into(),
@@ -1111,6 +1428,41 @@ mod tests {
             combine_fn_check_verdicts(&labels), "violation",
             "§5.4c: a failing check is a violation regardless of what else passed"
         );
+    }
+
+    /// D6: "a timeout is not a weaker proof, it is a different kind of
+    /// fact." A `mutate` run that produced no mutant count at all -- killed
+    /// by its wall-clock cap, engine not installed, output unreadable -- has
+    /// established nothing about the spec, and reporting it as `weak-spec`
+    /// puts a finding in the tree that no engine ever made (2026-08-24 M4
+    /// review, D5's own neighbourhood: `M0601` was unreachable, so this
+    /// mislabel was invisible until the timeout became constructible).
+    #[test]
+    fn a_mutate_run_that_produced_no_result_is_not_reported_as_a_weak_spec() {
+        let mut verdict = "fuzzed(256)".to_string();
+        let mut statuses: Vec<String> = vec![];
+        apply_mutate_outcome(&mut verdict, &mut statuses, MutateOutcome::Inconclusive);
+        assert_eq!(verdict, "fuzzed(256)", "an inconclusive mutate run neither strengthens nor weakens the verdict");
+        assert!(
+            !statuses.contains(&"weak-spec".to_string()),
+            "no mutant survived, because none ever ran -- `weak-spec` here is a finding no engine made: {statuses:?}"
+        );
+        assert_eq!(statuses, vec!["inconclusive".to_string()], "D6's own status for exactly this: {statuses:?}");
+    }
+
+    #[test]
+    fn a_completed_mutate_run_still_reports_both_of_its_real_outcomes() {
+        let mut verdict = "fuzzed(256)".to_string();
+        let mut statuses: Vec<String> = vec![];
+        apply_mutate_outcome(&mut verdict, &mut statuses, MutateOutcome::SpecStrong);
+        assert_eq!(verdict, "fuzzed(256)\u{00b7}spec-strong");
+        assert!(statuses.is_empty());
+
+        let mut verdict = "fuzzed(64)".to_string();
+        let mut statuses: Vec<String> = vec![];
+        apply_mutate_outcome(&mut verdict, &mut statuses, MutateOutcome::WeakSpec);
+        assert_eq!(verdict, "fuzzed(64)");
+        assert_eq!(statuses, vec!["weak-spec".to_string()]);
     }
 
     #[test]

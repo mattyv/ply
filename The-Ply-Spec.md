@@ -539,8 +539,37 @@ loop; Ply cannot rewrite a user's body. So a supported signature may still yield
 `timeout`, and that outcome must be cheap, fast, and clearly reported rather than
 prevented by promises.
 
+**A harness that never ran is a tool error, not a result (2026-08-24 M4 review, D1).**
+The `fuzz` and `test` checks share one generated harness crate, so a run that did not
+succeed, did not time out, and named no failing test executed *zero* cases — most often
+because that crate failed to compile (a user's `examples` entry that does not type-check
+is enough, and §5.4a exempts those entries from the contract subset, so nothing validates
+them earlier). Per §8, the adapter reports `X0901` carrying the compiler's own first
+error, for **every** check in that harness, and the node's verdict is `tool_error`: never
+a pass, because no evidence exists, and never a `violation`, because there is no witness.
+The same rule covers a failure whose witness cannot be recovered — a body that panics
+before its postcondition is evaluated leaves the harness with nothing to record, and
+`X0901`/`tool_error` is the honest report, not a witness-free `violation`.
+
+**An abandoned fuzz run earns no verdict (2026-08-24 M4 review, D4).** When `requires`
+rejects so much of the generated input space that proptest hits its own global-reject
+limit and gives up, approximately no case was checked. That run is `unclaimed` with a
+`W0503` naming the accepted/rejected counts — never `fuzzed(n)`, which would report *n*
+cases of evidence that never happened. A warning beside an overstated number is still an
+overstated number. The `n` in `fuzzed(n)` is the count the engine was asked for and
+reached; a high-but-survivable rejection rate (the ordinary `W0503` case) does keep
+`fuzzed(n)`, because proptest draws until it has *n* accepted cases — what is weak there
+is their spread, not their count.
+
 Per-harness time budget: every engine invocation carries a hard cap (`--engine-timeout`,
-§6). Exceeding it yields `timeout`, never a silent hang and never a `violation`. D14
+§6). Exceeding it yields `timeout`, never a silent hang and never a `violation`. The cap
+is on the **whole invocation**, not on one phase of it: cargo-mutants copies the tree,
+builds an unmutated baseline, and then runs the tests once per mutant, and its own `-t`
+caps only that last phase — so Ply wraps the invocation in `timeout` as well (10× the
+per-mutant budget, minimum 120s) and reports exit code 124 as `M0601`/`timeout`. A
+`mutate` run that produced no mutant count at all (killed by that cap, engine missing, or
+output Ply could not read) carries the `inconclusive` status, never `weak-spec`:
+`weak-spec` asserts a finding, and no engine made one (2026-08-24 M4 review, D5). D14
 caches passing verdicts only, so a timing-out function re-pays its cap on every run —
 which is why the cap must be small by default and the status cheap to re-report.
 
@@ -636,15 +665,24 @@ fixture for exactly that case passes `150` explicitly to make it pass at all
 (docs/m3-slice-findings.md). A default that cannot finish a supported shape makes
 `timeout` the ordinary outcome rather than the exceptional one, which is how a status
 meant to mean "engine exhausted" decays into noise a user learns to skip. The fix (M4,
-`crates/ply-cli/src/verify.rs::default_engine_timeout_secs`) derives the budget from the
-declared check shape rather than guessing a bigger constant: a scalar-only `bounded(k)`
-harness keeps the original 60s (nothing in the M3 findings shows it insufficient there);
-a `Vec`-typed `bounded(k)` harness gets `30 + 15·k` seconds, a formula chosen to reproduce
-the M3 e2e suite's own working value exactly (`30 + 15·8 = 150`). `fuzz`/`test`/`mutate`
-checks keep a flat 60s: proptest and plain `cargo test` do not carry Kani's `Vec`-unwind
-cost profile, so nothing here shows a shape-aware scaling is needed for them yet. Passing
-`--engine-timeout` explicitly always overrides the default, for every check kind, exactly
-as before.
+`crates/ply-cli/src/verify.rs::default_engine_timeout_secs`) makes the budget depend on
+the declared check's shape instead of raising one flat constant for everything: a
+scalar-only `bounded(k)` harness keeps the original 60s (nothing in the M3 findings shows
+it insufficient there); a `Vec`-typed `bounded(k)` harness gets `30 + 15·k` seconds. **The
+split is derived; the coefficients are fitted, and are not a measurement** (2026-08-24 M4
+review, O1). Derived: within the implemented §5.4b subset, `Vec` is the only shape whose
+CBMC unwind cost grows with the bound, so it is the only shape scaled. Fitted:
+`150 = base + rate·8` is one equation in two unknowns (`0 + 18.75·k` fits it equally
+well), and the 150 is the M3 e2e fixture's own generous constant rather than a measured
+requirement — docs/m3-slice-findings.md finding 3 measured the *identical* harness from
+~1s to ~107s across runs, variance that dominates any k-linear model. Nothing claims more
+than that. `fuzz`/`test`/`mutate` checks keep a flat 60s: proptest and plain `cargo test`
+do not carry Kani's `Vec`-unwind cost profile, so nothing here shows a shape-aware scaling
+is needed for them yet — except that a `mutate` run is many test runs, so Ply caps the
+whole cargo-mutants invocation separately (§5.4c). Passing `--engine-timeout` explicitly
+always overrides the default, for every check kind, exactly as before. The default itself
+is **not exercised by any e2e test**: every fixture passes `--engine-timeout` explicitly,
+so only a unit test on the formula covers it (recorded in TODO.md).
 
 Exit codes: 0 clean, 1 violations or failures, 2 tool error, 3 missing engine for an
 explicitly requested check.

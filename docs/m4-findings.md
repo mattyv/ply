@@ -55,6 +55,10 @@ outside. Wait for the completion report, or ask the agent, before concluding.
     biased small via `prop_oneof![3 => 0..=16, 1 => any::<T>()]`; `Vec`/`BTreeSet` use
     proptest's own `collection::{vec,btree_set}` combinators at length 0–8; `requires`
     becomes a `TestCaseError::reject`, counted so a >50% rejection rate can be flagged.
+    (**Corrected 2026-08-24 by the adversarial review, D3**: the counting was wrong --
+    rejected draws were added to *both* sides of the ratio, which reduces to
+    "rejected > total" and so could never hold, leaving the warning unreachable on this
+    path. Now `rejected/total`, with the `highreject` fixture pinning it at ~62%.)
     `ensures` is checked via the *same* `contract_rt::widen` the Kani cex renderer uses
     (exposed as `pub(crate)` for this reuse) inside `catch_unwind`, exactly mirroring
     `contract_rt::render_cex_test`'s own overflow discipline. On a shrunk failure (proptest
@@ -90,8 +94,11 @@ outside. Wait for the completion report, or ask the agent, before concluding.
   correct). `parse_fuzz_marker`/`decode_marker_fields` turn a `PLY_FUZZED_CEX` line back
   into the *same* `WitnessValue` type Kani witnesses decode into (the D7 plan's "two
   consumers, one renderer," now both wired) — returning `None`, never a fabricated value,
-  for a `Vec`/`BTreeSet` of anything but `u8` (no renderer exists for that yet; see W0541
-  below).
+  whenever the type has no `WitnessValue` form: **every** `BTreeSet` (`BTreeSet<u8>`
+  included -- this milestone's own headline shape) and any `Vec` of a non-`u8` scalar.
+  (This sentence originally read "a `Vec`/`BTreeSet` of anything but `u8`", which is false
+  for `BTreeSet<u8>`: the adversarial review's D7, which found the same false claim in
+  `W0541`'s own user-facing text.)
 - **`crates/ply-core/src/engines/mutants.rs`** (new) — the cargo-mutants adapter, using
   the mechanism `tests/spike/mutants/MUTANTS-FINDINGS.md` verified: `cargo mutants -p
   <target> --test-package <harness> --re <fn> --copy-target true --no-times -t <secs> --
@@ -107,7 +114,11 @@ outside. Wait for the completion report, or ask the agent, before concluding.
 - **`crates/ply-core/src/diag.rs`** — `Diagnostic` gained a `fixes: Vec<Fix>` field (`Fix {
   title, edits }`) — §8's own schema already specified this; M3 never populated it. Every
   M4 non-result diagnostic (`K0601` timeout, `E0504`, `V0505` unsupported, `W0502` weak
-  spec) now carries at least one concrete `Fix`.
+  spec) now carries at least one concrete `Fix`. (**Overstated, per the review's O3**: at
+  the time of writing, `fixes` was still empty on the no-`ensures` `V0505`, `R0601`, both
+  `W0110` skip paths, and the no-viable-mutants `W0502`. §8 says SHOULD, so this was an
+  overstatement here rather than a spec violation; all five are populated in the review
+  closure.)
 - **`crates/ply-cli/src/verify.rs`** — substantially restructured (three passes: discover
   + resolve effective checks + validate D12 for every fn; write the shared harness crate
   once if any fn needs it; run each fn's checks and combine). New: `default_checks_for`
@@ -135,7 +146,11 @@ outside. Wait for the completion report, or ask the agent, before concluding.
   `ensures(|result| *result == x)`. `fuzz(256)`'s biased-small strategy
   (`prop_oneof![3 => 0..=16, 1 => any::<u32>()]`) finds and shrinks to exactly `x = 7`
   reliably (deliberately chosen inside the small-range arm's support, not the rare
-  full-range one). Rendered through the *same* `contract_rt::render_cex_test` the Kani
+  full-range one). **Overstated, per the review's O2**: this fixture's bug fails at
+  exactly one input, so *any* failure it finds is already minimal -- the assertion passes
+  identically with shrinking disabled, and the fixture cannot detect the loss of
+  shrinking. The `btreesetbug` fixture added by the review closure does: its bug fires for
+  any set containing `3`, so only real shrinking reports `[3]`. Rendered through the *same* `contract_rt::render_cex_test` the Kani
   path uses, verified FAIL (states `postcondition` and the literal contract text
   `result == x`) then, after removing the seeded bug, the *same* test PASSES. Green.
 - **Vacuous-ensures fixture flagged weak** (`tests/fixtures/weakspec`,
@@ -164,7 +179,12 @@ outside. Wait for the completion report, or ask the agent, before concluding.
   `is_fuzz_supported`, so the default lands on `[fuzz(256)]`, never `[bounded(2)]` and
   never silently nothing. Verified no Kani harness (`ply_generated.rs`) was ever written
   for this fn. Root verdict `fuzzed(256)`, zero diagnostics. Green. **This is the point of
-  the whole milestone**, per the M4 brief, and it holds.
+  the whole milestone**, per the M4 brief, and it holds. **Two honest qualifications the
+  adversarial review added (O4, D1)**: this fixture's contract (`*result == xs.len()`) is
+  a tautology of its body, so the fuzz check cannot fail on it, and -- until D1 was fixed
+  -- its "`fuzzed(256)` + zero diagnostics" assertions would have passed identically if
+  the harness had never compiled. Both are closed by `tests/fixtures/btreesetbug` +
+  `tests/e2e/tests/badexample_fixture.rs` (see docs/m4-review-closure.md).
 - **§8 JSON envelope carries the new verdicts and diagnostics**: every fixture above is
   asserted against its real `--json` output (`serde_json::Value` field access), not
   invented — `fuzzed(n)`, the `·spec-strong` suffix (literal `\u{00b7}`, not a hyphen or
@@ -313,8 +333,12 @@ outside. Wait for the completion report, or ask the agent, before concluding.
 
 - Struct-parameter fuzzing (see Scope cuts).
 - Fuzz-witness persistence across separate `verify` runs (see Scope cuts).
-- A real fixture exercising `W0541` for an unrenderable fuzz witness (`Vec`/`BTreeSet` of a
-  non-`u8` scalar) actually violating its contract.
+- ~~A real fixture exercising `W0541` for an unrenderable fuzz witness actually violating
+  its contract.~~ **RUN, 2026-08-24**: `tests/fixtures/btreesetbug` +
+  `tests/e2e/tests/btreesetbug_fixture.rs` -- a `BTreeSet<u8>` violation reported
+  witness-only, shrunk to `[3]`, no `cargo_test` artifact written, exit 1. (Note the
+  original phrasing of this item repeated D7's error: the path fires for `BTreeSet<u8>`
+  too, not only for non-`u8` element types.)
 - `mutate`'s `--re` collision risk on a multi-fn crate with substring-overlapping fn names
   (noted, not reproduced or fixed).
 - The `prove` check's `engine-missing`/`W0110` path is implemented but only exercised by
@@ -364,8 +388,10 @@ red for exactly the right reason, then reverted (diffs shown here, not left in t
 3. Struct-parameter fuzzing, if a vetting scenario ever needs it — would also motivate
    giving Kani's `bounded` path the matching struct-Arbitrary codegen it currently lacks,
    so the two gates stay honestly comparable.
-4. Exercise `W0541` against a real `Vec<i32>`/`BTreeSet<i32>`-shaped violation to confirm
-   the witness-only-no-cargo_test path end to end, not just by code reading.
+4. ~~Exercise `W0541` against a real violation to confirm the witness-only-no-cargo_test
+   path end to end, not just by code reading.~~ Done in the review closure
+   (`btreesetbug`). Still not exercised: a `Vec<i32>`-shaped witness specifically (the
+   `BTreeSet` branch of the same code path is now covered).
 5. The `--copy-target true` cost (finding 1 above) is the one item most worth act ing on
    before `mutate` sees a real, large target crate: either accept the per-run `target/`
    copy cost as the price of this placement, or revisit the harness crate's location

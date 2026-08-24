@@ -1,0 +1,14 @@
+ply: 1
+
+# `mostly_rejected` accepts only x > 14. The fuzz strategy draws 3-in-4 of
+# its values from 0..=16 (§10 M4: "ints biased small"), so ~66% of every
+# generated input is rejected by the `requires` filter -- high, but nowhere
+# near the ~100% that makes proptest abort. §5.4c promises "a warning when
+# the rejection rate is high"; the 2026-08-24 M4 review's D3 found that
+# warning mathematically unreachable on this path.
+components:
+  highreject:
+    anchor: ply_fixture_highreject
+    fns:
+      mostly_rejected:
+        checks: [fuzz(256)]

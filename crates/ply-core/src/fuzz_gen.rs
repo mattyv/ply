@@ -15,10 +15,10 @@
 //! parses back into the *same* `WitnessValue` type Kani witnesses decode
 //! into -- so the shrunk failure renders through the *same*
 //! `contract_rt::render_cex_test` the Kani path uses (the D7 plan's "two
-//! consumers, one renderer", now both wired). A container element type with
-//! no `WitnessValue` variant (a `Vec`/`BTreeSet` of anything but `u8`) simply
-//! cannot be rendered as a literal -- `engines::fuzz` reports that case as a
-//! witness-only violation (`W0541`), never a fabricated input.
+//! consumers, one renderer", now both wired). Any container `WitnessValue`
+//! cannot spell -- every `BTreeSet`, and a `Vec` of anything but `u8` -- has
+//! no literal form this renderer can write, so the caller reports that case
+//! as a witness-only violation (`W0541`), never a fabricated input.
 
 use anyhow::{bail, Result};
 use quote::ToTokens;
@@ -193,13 +193,14 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32) -> Result<String> {
          \x20\x20\x20\x20\x20\x20\x20\x20}});\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rej = __ply_rejected.get();\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_tot = __ply_total.get();\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20if __ply_tot > 0 && (__ply_rej as f64) / ((__ply_tot + __ply_rej) as f64) > 0.5 {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_HIGH_REJECT|{fname}|{{}}/{{}}\", __ply_rej, __ply_tot + __ply_rej);\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
          \x20\x20\x20\x20\x20\x20\x20\x20match __ply_outcome {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(()) => {{}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(()) => {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if __ply_tot > 0 && (__ply_rej as f64) / (__ply_tot as f64) > 0.5 {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_HIGH_REJECT|{fname}|{{}}/{{}}\", __ply_rej, __ply_tot);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Err(proptest::test_runner::TestError::Abort(reason)) => {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_HIGH_REJECT|{fname}|abort:{{}}\", reason);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_ABORT|{fname}|{{}}|accepted={{}}|rejected={{}}\", reason, __ply_tot - __ply_rej, __ply_rej);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Err(e) => panic!(\"proptest found a failing case for `{fname}`: {{}}\", e),\n\
          \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
@@ -215,10 +216,17 @@ pub fn generate_example_test(fn_name: &str, index: u32, example_src: &str) -> Re
     let expr: Expr = syn::parse_str(example_src)
         .map_err(|e| anyhow::anyhow!("E0501: could not parse `examples` entry `{example_src}` as a Rust expression: {e}"))?;
     let text = expr.to_token_stream().to_string();
+    // The entry is echoed back into the assert's failure message, so it has
+    // to be escaped for a Rust string literal: an entry containing a `"`
+    // (`f(0) == "zero"`) otherwise closes the literal early and the harness
+    // crate fails to build with a *syntax* error inside Ply's own generated
+    // file -- burying the user's real mistake (2026-08-24 M4 review, D1's
+    // own probe).
+    let escaped_src = example_src.replace('\\', "\\\\").replace('"', "\\\"");
     Ok(format!(
         "    #[test]\n\
          \x20\x20\x20\x20fn ply_example_{fn_name}_{index:02}() {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20assert!({text}, \"example failed: `{example_src}` does not hold\");\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20assert!({text}, \"example failed: `{escaped_src}` does not hold\");\n\
          \x20\x20\x20\x20}}\n",
     ))
 }
@@ -384,6 +392,25 @@ pub fn safe_increment(x: u32) -> u32 { x + 1 }
         let body = generate_example_test("clamp", 1, "clamp(150) == 100").unwrap();
         assert!(body.contains("fn ply_example_clamp_01()"));
         assert!(body.contains("clamp (150) == 100") || body.contains("clamp(150) == 100"));
+    }
+
+    /// Every generated example test must be *valid Rust*, whatever the user
+    /// wrote in `examples`. The entry is echoed into the assert's own
+    /// failure message, and an entry containing a `"` (a perfectly ordinary
+    /// one -- `f(0) == "zero"` was the 2026-08-24 M4 review's own D1 probe)
+    /// used to close that message's string literal early, so the harness
+    /// crate failed to build with a *syntax* error in Ply's own generated
+    /// code -- burying the user's real mistake under a compiler error that
+    /// points at a file they never wrote.
+    #[test]
+    fn an_example_containing_a_quote_is_escaped_in_the_assert_message() {
+        let body = generate_example_test("greet", 1, r#"greet(0) == "zero""#).unwrap();
+        assert!(
+            body.contains(r#"`greet(0) == \"zero\"` does not hold"#),
+            "the example text is echoed into a Rust string literal, so its quotes must be escaped -- \
+             unescaped, the literal closes early and the harness fails to build with a syntax error \
+             in Ply's own generated file:\n{body}"
+        );
     }
 
     #[test]

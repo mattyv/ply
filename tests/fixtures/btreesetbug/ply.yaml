@@ -1,0 +1,14 @@
+ply: 1
+
+# The Kani-excluded shape (§5.4b) with a real bug in it. Ply has no way to
+# write a `BTreeSet` out as a Rust literal, so this violation is reported
+# witness-only (W0541) -- with the shrunk failing input and no rendered
+# test, never a fabricated one. m4-findings.md recorded exactly this path as
+# implemented but NOT RUN; the 2026-08-24 M4 review ran it by hand (O4) and
+# found the diagnostic's own wording wrong for this very case (D7).
+components:
+  btreesetbug:
+    anchor: ply_fixture_btreesetbug
+    fns:
+      count_unique:
+        checks: [fuzz(256)]

@@ -17,10 +17,15 @@
 //!    *path*, using its actual `[lib] name` (the Rust identifier `use`
 //!    needs), not necessarily its package name (they can differ by
 //!    dashes/underscores).
-//! 3. `--gitignore false` is the mutate adapter's job (`engines::mutants`),
-//!    not this module's -- but the placement here is exactly the one the
-//!    spike found dangerous under `--gitignore true`, so `engines::mutants`
-//!    must always pass it explicitly.
+//! 3. This placement -- one level inside the target crate's own top-level
+//!    `target/` -- is exactly the one cargo-mutants prunes from the tree it
+//!    copies, unconditionally and independently of `.gitignore`. Making it
+//!    work is the mutate adapter's job (`engines::mutants`), which passes
+//!    `--copy-target true` for it. It must **never** pass `--gitignore` as
+//!    well: cargo-mutants' own CLI rejects the two together (they share a
+//!    mutually exclusive argument group), and `--gitignore`'s default
+//!    already matches what Ply wants. See `engines::mutants`' module doc for
+//!    the full falsification (M4, docs/m4-findings.md finding 1).
 
 use std::path::{Path, PathBuf};
 
@@ -167,9 +172,10 @@ fn insert_before_closing_bracket(line: &str, new_item: &str) -> String {
 
 /// Writes the harness crate's own `Cargo.toml` (idempotent -- always
 /// regenerated, since it is entirely Ply-owned, `target/ply/` housekeeping,
-/// §6). `target_names` is the crate under test; `depth_to_target_root` is
-/// how many `../` steps get from the harness crate's directory back to the
-/// target crate's root (4, for the fixed `target/ply/fuzz/<name>/` depth).
+/// §6). `target_names` is the crate under test; the `../` steps back to the
+/// target crate's root are fixed by the generated layout
+/// (`target/ply/fuzz/<name>/`, four levels down) and written inline below,
+/// not passed in.
 pub fn write_harness_cargo_toml(
     harness_dir: &Path,
     harness_package: &str,

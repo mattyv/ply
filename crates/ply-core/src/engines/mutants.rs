@@ -5,9 +5,14 @@
 //! The real mechanism is package targeting:
 //!
 //! ```text
+//! timeout <wall-clock>s \
 //! cargo mutants -p <mutated-crate> --test-package <harness-crate> \
-//!     --re <fn> --gitignore false -- <test-name-filter>
+//!     --re <fn> --copy-target true --no-times -t <secs> -- <test-name-filter>
 //! ```
+//!
+//! (That is the command as it is actually spawned -- `mutants_argv` builds
+//! it. `--gitignore false`, which earlier drafts of this doc showed here as
+//! "the real mechanism", is falsified below and must never be passed.)
 //!
 //! §5.4c (pre-M4) said only `--gitignore false` was needed to make the
 //! harness crate's `target/ply/fuzz/` placement copy-safe. **That claim is
@@ -72,15 +77,26 @@ pub struct MutantsRunConfig {
     pub workspace_root: std::path::PathBuf,
     pub mutated_package: String,
     pub harness_package: String,
-    /// A regex matched against `--list`'s mutant names (cargo-mutants'
-    /// `--re`) -- Ply always anchors this to one function name.
+    /// A regex matched against cargo-mutants' own *descriptive* mutant
+    /// names (`src/lib.rs:8:5: replace vacuous -> u32 with 0`), not against
+    /// the bare function name -- so Ply passes the fn name **unanchored**.
+    /// `^fn$` matched zero mutants in a real run (docs/m4-findings.md
+    /// finding 4). Known limitation recorded there: an unanchored name can
+    /// over-match a fn whose name is a substring of another's.
     pub fn_regex: String,
     /// The cargo-test name filter appended after `--` -- narrows the
     /// harness package's test run to this fn's own generated tests, so a
     /// harness crate covering many functions never lets one fn's mutants
     /// hide behind another's passing tests.
     pub test_filter: String,
+    /// cargo-mutants' own `-t`: the cap on *each mutant's* test phase.
     pub timeout_secs: u32,
+    /// The cap on the whole invocation, enforced by Ply with the `timeout`
+    /// command exactly as `engines::fuzz` and `engines::kani::run_playback`
+    /// do. `-t` alone leaves the tree copy and the unmutated baseline build
+    /// uncapped, so a hang there hung `verify` with no report at all --
+    /// §5.4c forbids exactly that ("never a silent hang").
+    pub wall_clock_secs: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -120,6 +136,36 @@ pub enum MutantsRunOutcome {
     ToolError { raw_output: String, reason: String },
 }
 
+/// The exact argv one `mutate` run is spawned with, program name first.
+/// Split out from `run` so the invocation itself is testable without a real
+/// cargo-mutants run.
+pub fn mutants_argv(cfg: &MutantsRunConfig) -> Vec<String> {
+    vec![
+        // The whole invocation is capped, not just each mutant's test phase
+        // (2026-08-24 M4 review, D5): `-t` below is cargo-mutants' own
+        // per-mutant budget and leaves the tree copy and the unmutated
+        // baseline build uncapped. Same `timeout` wrapper the fuzz and Kani
+        // adapters use, so exit code 124 means "killed by the cap".
+        "timeout".to_string(),
+        format!("{}s", cfg.wall_clock_secs),
+        "cargo".to_string(),
+        "mutants".to_string(),
+        "-p".to_string(),
+        cfg.mutated_package.clone(),
+        "--test-package".to_string(),
+        cfg.harness_package.clone(),
+        "--re".to_string(),
+        cfg.fn_regex.clone(),
+        "--copy-target".to_string(),
+        "true".to_string(),
+        "--no-times".to_string(),
+        "-t".to_string(),
+        cfg.timeout_secs.to_string(),
+        "--".to_string(),
+        cfg.test_filter.clone(),
+    ]
+}
+
 /// Runs cargo-mutants and classifies the result by reading its own
 /// structured `mutants.out/*.txt` files (one mutant description per line) --
 /// far more robust than scraping the human-readable summary line, and
@@ -129,25 +175,10 @@ pub fn run(cfg: &MutantsRunConfig) -> Result<MutantsRunOutcome> {
     let mutants_out = cfg.workspace_root.join("mutants.out");
     let _ = std::fs::remove_dir_all(&mutants_out); // stale run from a prior verify, if any
 
-    let timeout_arg = cfg.timeout_secs.to_string();
-    let output = Command::new("cargo")
+    let argv = mutants_argv(cfg);
+    let output = Command::new(&argv[0])
         .current_dir(&cfg.workspace_root)
-        .args([
-            "mutants",
-            "-p",
-            &cfg.mutated_package,
-            "--test-package",
-            &cfg.harness_package,
-            "--re",
-            &cfg.fn_regex,
-            "--copy-target",
-            "true",
-            "--no-times",
-            "-t",
-            &timeout_arg,
-            "--",
-            &cfg.test_filter,
-        ])
+        .args(&argv[1..])
         .output()
         .with_context(|| format!("spawning `cargo mutants` in {}", cfg.workspace_root.display()))?;
 
@@ -157,13 +188,27 @@ pub fn run(cfg: &MutantsRunConfig) -> Result<MutantsRunOutcome> {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    Ok(classify_run(output.status.code(), combined, &mutants_out))
+}
+
+/// Turns one finished invocation into an engine-honest outcome: a run the
+/// wall-clock cap killed is a `Timeout`, a run whose own output or result
+/// files cannot be read is a `ToolError`, and only a run that produced real
+/// per-mutant result files is `Completed`. Pure, so the classification is
+/// testable without a real cargo-mutants run.
+pub fn classify_run(exit_code: Option<i32>, combined: String, mutants_out: &Path) -> MutantsRunOutcome {
+    // GNU `timeout` exits 124 when it had to kill the child.
+    if exit_code == Some(124) {
+        return MutantsRunOutcome::Timeout { raw_output: combined };
+    }
+
     if combined.contains("cargo build failed in an unmutated tree") {
-        return Ok(MutantsRunOutcome::ToolError {
+        return MutantsRunOutcome::ToolError {
             raw_output: combined,
             reason: "the unmutated baseline build failed -- this is a build problem in the copied \
                      tree (commonly a missing workspace member), not a spec-strength finding"
                 .into(),
-        });
+        };
     }
 
     let read_lines = |name: &str| -> Vec<String> {
@@ -180,15 +225,15 @@ pub fn run(cfg: &MutantsRunConfig) -> Result<MutantsRunOutcome> {
     let timeout = read_lines("timeout.txt").len() as u32;
 
     if caught == 0 && missed.is_empty() && unviable == 0 && timeout == 0 {
-        return Ok(MutantsRunOutcome::ToolError {
+        return MutantsRunOutcome::ToolError {
             raw_output: combined,
             reason: "cargo-mutants produced no mutants.out/*.txt result files -- could not \
                      determine caught/missed counts"
                 .into(),
-        });
+        };
     }
 
-    Ok(MutantsRunOutcome::Completed(MutantsOutcome { caught, missed, unviable, timeout, raw_output: combined }))
+    MutantsRunOutcome::Completed(MutantsOutcome { caught, missed, unviable, timeout, raw_output: combined })
 }
 
 /// Lets a caller pre-flight-check whether `cargo mutants` is on `PATH` at
@@ -208,6 +253,48 @@ fn unused_path_hint(_p: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cfg() -> MutantsRunConfig {
+        MutantsRunConfig {
+            workspace_root: std::path::PathBuf::from("/tmp/x"),
+            mutated_package: "target-pkg".into(),
+            harness_package: "harness-pkg".into(),
+            fn_regex: "add_small".into(),
+            test_filter: "add_small_harness::".into(),
+            timeout_secs: 60,
+            wall_clock_secs: 600,
+        }
+    }
+
+    /// §5.4c MUST: "every engine invocation carries a hard cap ... Exceeding
+    /// it yields `timeout`, never a silent hang." `-t` caps each *mutant's*
+    /// test phase inside cargo-mutants; it does not cap the invocation, so a
+    /// hung tree copy or baseline build hung `verify` with no cap at all
+    /// (2026-08-24 M4 review, D5). The sibling adapters (`engines::fuzz`,
+    /// `engines::kani::run_playback`) already wrap their spawn in `timeout`.
+    #[test]
+    fn the_whole_invocation_carries_a_wall_clock_cap_not_just_a_per_mutant_one() {
+        let argv = mutants_argv(&cfg());
+        assert_eq!(argv[0], "timeout", "the run itself must be capped, not only each mutant: {argv:?}");
+        assert_eq!(argv[1], "600s", "the cap is the config's whole-run budget: {argv:?}");
+        assert_eq!(argv[2], "cargo");
+        assert!(argv.contains(&"-t".to_string()) && argv.contains(&"60".to_string()), "{argv:?}");
+    }
+
+    /// GNU `timeout` exits 124 when it had to kill the child. Before the fix
+    /// this was indistinguishable from any other failed run and fell through
+    /// to `ToolError` -- `MutantsRunOutcome::Timeout` (and with it `M0601`)
+    /// was declared, matched on, and never constructed by anything.
+    #[test]
+    fn a_killed_run_is_a_timeout_not_a_tool_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = classify_run(Some(124), String::new(), dir.path());
+        assert!(
+            matches!(outcome, MutantsRunOutcome::Timeout { .. }),
+            "a run the wall-clock cap killed must be reported as `timeout`, never conflated with a \
+             tool error or a completed run"
+        );
+    }
 
     #[test]
     fn all_caught_is_false_with_zero_mutants() {
