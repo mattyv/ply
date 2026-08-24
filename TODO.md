@@ -1,5 +1,64 @@
 # TODO
 
+## Vetting 004 — legacy boundary, fragment-first — landed 2026-08-24
+
+The first vetting scenario designed inside §5.4b's fragment from line one, and the first
+run against the real `cargo ply verify` (Kani 0.67.0) rather than reasoned about on
+paper. Write-up: `vetting/004-legacy-extension.md`; two crates + `ply.yaml` + `run.sh`
+under `vetting/004-legacy-extension/`; SVG committed. Nothing in `crates/`, `tools/` or
+`The-Ply-Spec.md` was touched — this scenario finds, a later session decides.
+
+- [x] `legacy/` (ordinary `BTreeMap`/`Vec`/generic-helper module, no `ply::` anywhere) +
+      `feature/` (five fns, all claimed, contracts inline) + one `ply.yaml` read by
+      `verify`, `ply-check` (clean, exit 0) and `ply-render`.
+- [x] Twelve `verify` invocations across `run.sh s1..s8`, all reproducible; every verdict
+      quoted in the write-up is literal tool output (two long envelopes are cut to their
+      verdict spine, and say so).
+- [x] **The boundary's answer is `timeout`.** `tier_fee_cents` (fragment-clean signature,
+      body calling one unclaimed `BTreeMap`-backed legacy fn) never finished: `timeout` at
+      120s and again at **600s** (11m23s wall). Control: the identical fn with the legacy
+      call replaced by a `match` earns `bounded(2)` in 1m20s total. `conditional`/D5 never
+      fired — none of D5 (`stub_verified`, `W0511`, `ply-schedule`) is linked into
+      `crates/` at all.
+- [x] `--only-changed` and `cargo ply check` confirmed **absent** (§6 specifies both);
+      recorded as findings, not built.
+- [ ] **Finding 1 — a run that checked nothing exits 0.** `K0601 timeout` is warning
+      severity, `--fail-on` is unimplemented, so a run whose root verdict is `timeout` is
+      CI-green. Proposal in the write-up: absence of evidence fails by default.
+- [ ] **Finding 2 — D5 has no branch for an *unclaimed* callee.** Both its branches assume
+      the callee has a contract. Needs an explicit third rule, and the diagnostic must name
+      the callee that was descended into (K0601 today names only the caller).
+- [ ] **Finding 3 — checkability is about bodies, and §5.4b gates on types.**
+      `total_debit_cents` (no legacy contact at all) also timed out at 120s in the same run
+      where `fee_cents` passed.
+- [ ] **Finding 4 — `fuzzed(n)` is not reproducible.** Six fresh runs of the *same*
+      unfixed source: 3 × `fuzzed(256)`, 3 × `tool_error` (X0901, the real panic). Seed is
+      entropy-derived (`Config { cases, ..default() }`) and recorded nowhere; exit code
+      flips with it. The §8 envelope needs the seed, and a `--seed`/lockfile replay.
+- [ ] **Finding 5 — the implemented fragment is narrower than §5.4b.** `[u32; 4]` (the
+      spec's own *preferred* bounded shape) is `Unsupported`; so is a `type X = u64` alias.
+      No `Type::Array` arm and no alias resolution in `rust_type_from_syn`.
+- [ ] **Finding 6 — V0505's fix names a mechanism that does not exist** ("add a
+      `pure`-marked generator hook"): no `#[ply::pure]` macro, no ply.yaml key.
+- [ ] **Finding 7 — `verify` is single-crate**: `anchor:` is parsed and never used, every
+      component's fns are looked for in one `src/lib.rs`, and ply.yaml `requires`/`ensures`
+      are silently dropped (unknown serde fields) while `ply-check` on the same file
+      enforces `additionalProperties: false`.
+- [ ] **Finding 8 — the render draws declared ceilings as earned.** `tier_fee_cents B2`
+      and `withdraw B2` (unsupported!) draw exactly like the fn that really earned
+      `bounded(2)`. Already on this list as "separate declared ceilings from earned
+      verdicts"; 004 is the first live instance.
+- [ ] **Finding 9 — `--only-changed` is the delta thesis's mechanism**, not a convenience.
+- [ ] **Finding 10 — `verify` writes into the crate under test** (generated modules in
+      `src/`, harness member appended to `[workspace]`), which is why `run.sh` copies to a
+      scratch tree. Second vote for the "where the harness crate should live" item below.
+- [ ] **NOT COVERED: 004's document is outside the renderer's invariant sweep.**
+      `tools/render/tests/render.rs` walks a hardcoded list of 001/002/003 plus its own
+      fixtures. Adding 004 means editing `tools/`, which this session was not permitted to
+      do. The committed SVG was rasterised (CairoSVG) and checked by eye instead.
+- [ ] NOT RUN, recorded: `mutate`/`prove` in this scenario; a boundary callee with a
+      non-scalar signature; any bound other than `bounded(2)`; any budget above 600s.
+
 ## External systems and actors — landed 2026-08-24 (31a669d)
 
 Full detail in `docs/external-elements-adoption.md`; the gate this was conditioned

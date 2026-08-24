@@ -1,0 +1,14 @@
+[workspace]
+# Empty table: this crate is its own workspace root, per the tests/spike and
+# tests/fixtures convention -- a vetting scenario must never join the product
+# workspace at the repository root.
+
+[package]
+name = "ply-vetting-004-ledger"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ledger"
+path = "src/lib.rs"

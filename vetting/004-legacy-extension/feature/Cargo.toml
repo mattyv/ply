@@ -1,0 +1,22 @@
+[workspace]
+# Empty table: its own workspace root, like the legacy crate beside it and
+# like every fixture under tests/fixtures. `cargo ply verify` also appends
+# its generated harness crate to this table when a `fuzz`/`test`/`mutate`
+# check runs (crates/ply-core/src/harness_crate.rs::ensure_workspace_member).
+
+[package]
+name = "ply-vetting-004-withdrawal"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "withdrawal"
+path = "src/lib.rs"
+
+[dependencies]
+ply = { package = "ply-attrs", path = "../../../crates/ply-attrs" }
+ledger = { package = "ply-vetting-004-ledger", path = "../legacy" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
