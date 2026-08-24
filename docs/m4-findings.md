@@ -312,6 +312,23 @@ stays green** — re-run in full as part of this session's own final `cargo test
   total for the whole e2e test (two full `verify` invocations). `btreeset` (fuzz-only, clean
   pass): 11.32s. `mutatetier` (E0504, no engine invoked at all): 0.07s.
 
+## Mutation-tested, per CLAUDE.md
+
+Two deliberate self-mutations, each confirmed to make the relevant acceptance test go
+red for exactly the right reason, then reverted (diffs shown here, not left in the tree):
+
+- `verify::run_fn_checks`: replaced `verdict.push_str("·spec-strong")` with a no-op when
+  `mutate` succeeds. `strongspec_fixture::strong_spec_earns_the_spec_strong_suffix` failed
+  immediately: `left: "fuzzed(256)" / right: "fuzzed(256)·spec-strong"` — caught for
+  exactly the missing suffix, nothing else. Reverted.
+- `engines::mutants::run`: removed `--copy-target true` from the cargo-mutants invocation
+  (reintroducing the exact bug finding 1 above documents). `weakspec_fixture::
+  vacuous_ensures_is_flagged_weak_spec` failed immediately: `left: "X0901" / right:
+  "W0502"` — the same `cargo build failed in an unmutated tree` tool-error this session
+  hit for real before the fix, reproduced on demand and caught by the acceptance test.
+  Reverted; `cargo build --workspace` clean (no warnings) and both fixtures' e2e tests
+  green again afterward.
+
 ## What the next M4/M5 session should pick up
 
 1. Decide the fuzz-witness persistence gap (Scope cuts item 2) as a real design choice —

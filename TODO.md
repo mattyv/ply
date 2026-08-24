@@ -1,5 +1,74 @@
 # TODO
 
+## M4 — fuzz + test + mutate tier — landed 2026-08-24 (2520f8b)
+
+Note on provenance: 2520f8b's own message flags that the full-suite result was "NOT
+yet independently confirmed" at commit time (a session-salvage commit, written before
+verification finished). It now is: `cargo test --workspace` (single-threaded) is green,
+5m31.8s wall clock, zero warnings on a fresh `cargo check --workspace --tests` — recorded
+in docs/m4-findings.md along with two deliberate self-mutations, each caught and reverted.
+
+- [x] Task 0: engine-timeout default made shape-aware
+      (`verify::default_engine_timeout_secs`) — a `Vec`-typed `bounded(k)` harness now
+      gets `30 + 15·k` seconds (reproduces the M3-measured 150s for `bounded(8)` exactly);
+      scalar-only stays at 60s. §6 amended with the reasoning.
+- [x] `fuzz(n)` check: proptest harness generation (ints biased small, `Vec`/`BTreeSet`
+      length 0-8, `requires` as a reject filter with a >50%-rejection `W0503` warning),
+      shrink-on-failure rendered through the *same* `contract_rt` renderer the Kani path
+      uses. Struct-parameter fuzzing NOT implemented -- deliberate scope cut, recorded in
+      docs/m4-findings.md, not silently skipped.
+- [x] `test` check: `examples` entries (parsed as arbitrary `==` Rust exprs, §5.4a) +
+      generated direct-contract boundary cases.
+- [x] `mutate` check: cargo-mutants wired via the spike's verified mechanism, with a real
+      correction the spike didn't know about -- `--copy-target true`, not `--gitignore
+      false` (see below). `E0504` (mutate with no test/fuzz kill signal) implemented and
+      fixture-tested.
+- [x] Shape-aware default-check routing (§5.4c's own MUST, unimplemented in M3):
+      `default_checks_for` -- `[bounded(2)]` only when Kani-supported, `[fuzz(256)]` when
+      the shape is fuzz-supported but Kani-excluded, `[]` otherwise.
+- [x] 5 new fixtures + e2e tests (`fuzzbug`, `weakspec`, `strongspec`, `mutatetier`,
+      `btreeset`) -- all 6 of the M4 brief's acceptance criteria pass, including the
+      milestone's own headline case: a `BTreeSet<u8>` fixture (Kani-excluded per §5.4b)
+      earning an honest `fuzzed(256)` verdict via the default route, no `checks:` declared
+      by hand.
+- [x] **Falsified spec claim, real cost**: §5.4c's mutate mechanism said `--gitignore
+      false` was the fix for the harness crate's git-ignored `target/ply/fuzz/`
+      placement. Real runs found this wrong on two counts -- `--gitignore`'s own default
+      is already off, and there is a *separate*, gitignore-independent skip
+      (cargo-mutants prunes any directory literally named `target` at the copy root,
+      unconditionally) that hit every real `mutate` run. Fixed with `--copy-target true`
+      (which cannot even be passed alongside `--gitignore` -- confirmed, they share a
+      clap argument group). Honest cost: this copies the crate's entire `target/` build
+      cache into every scratch tree cargo-mutants builds (~13s against a 189MB `target/`
+      in this session's fixtures) -- a real, size-dependent tax flagged for M5, not a free
+      fix. §5.4c amended.
+- [x] Falsified: `engines::fuzz`'s failed-test-name parser looked for libtest's per-test
+      `---- name stdout ----` header, which never appears under `--nocapture` (which this
+      adapter always passes, for the high-rejection marker) -- caught because it silently
+      reported a real seeded bug as a clean pass on the first real run against a fixture,
+      not by a unit test in isolation. Fixed; a regression test pins the real output shape.
+- [x] Two deliberate self-mutations, each caught and reverted (docs/m4-findings.md):
+      suppressing the `·spec-strong` suffix append (caught by `strongspec_fixture`);
+      removing `--copy-target true` again (caught by `weakspec_fixture`, reproducing the
+      exact tool-error this session hit for real before the fix).
+- [ ] **KNOWN GAP, recorded not hidden**: fuzz-found witnesses are not persisted across
+      `verify` runs the way Kani's are (M3 finding 6's `target/ply/witness/<fn>.json`
+      convention has no fuzz-path equivalent yet) -- a fix that narrows a bug to a
+      *different* input than the one already rendered would leave a stale red test behind.
+      Needs its own `<fn>_fuzz.json` path (never the same file Kani writes to, since one
+      fn could in principle declare both `bounded` and `fuzz`).
+- [ ] `W0541` (unrenderable fuzz witness, `Vec`/`BTreeSet` of non-`u8`) is implemented but
+      NOT exercised against a real failing case -- no fixture in this session's suite
+      triggers it (the `btreeset` fixture is a clean pass). Recorded as NOT RUN.
+- [ ] `mutate`'s `--re <fn>` is an unanchored substring match on cargo-mutants' own
+      descriptive mutant names (anchoring with `^fn$` matched *zero* mutants in a real
+      run -- confirmed and fixed to the unanchored form). This means a fn whose name is a
+      substring of another's in the same crate could see cross-fn mutate scope leak; no
+      fixture here exercises more than one fn per crate, so this was not reproduced, only
+      named.
+- [ ] TODO(M1, carried from M3): reconcile the hand-rolled `ply.yaml` model in
+      `crates/ply-core/src/config.rs` with `tools/model`'s full model.
+
 - [x] `ply-render --depth N` / `--focus` / `--collapse <component>` (8d8910f) —
       collapsed box shows contents line, rolled-up capability badges, pin and finding
       counts; edges reattach; default output byte-identical without flags.
