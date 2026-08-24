@@ -2402,6 +2402,18 @@ mod no_overlap {
                 );
             }
         }
+        // Pre-existing label/line gaps (regular- and deny-edge label
+        // placement, predating external elements) are reported rather than
+        // failed -- fixing them means restructuring those two placement
+        // paths, which is its own work item (docs/external-elements-adoption.md,
+        // TODO.md). But the count is PINNED, not merely printed: a passing
+        // test that knows about N violations and says nothing is the
+        // "gate debt: none" over-claim this project already retracted once
+        // (see The-Ply-Spec.md 7.1's own note), and an eprintln in a green
+        // test is read by nobody. Pinning makes the debt a ratchet: it can
+        // only be paid down, never silently grow. Lower this number when you
+        // fix one; if it rises, you added one and the test says so.
+        const KNOWN_LABEL_LINE_GAPS: usize = 13;
         if !known_pre_existing_gaps.is_empty() {
             eprintln!(
                 "no_drawn_element_intersects_a_box_it_is_not_inside: {} known pre-existing \
@@ -2411,6 +2423,14 @@ mod no_overlap {
                 known_pre_existing_gaps.join("\n")
             );
         }
+        assert!(
+            known_pre_existing_gaps.len() <= KNOWN_LABEL_LINE_GAPS,
+            "label/line gaps grew from {} to {} -- this change added one. Fix the new \
+             collision rather than raising the pin:\n{}",
+            KNOWN_LABEL_LINE_GAPS,
+            known_pre_existing_gaps.len(),
+            known_pre_existing_gaps.join("\n")
+        );
         assert!(
             violations.is_empty(),
             "drawn elements intersecting boxes they are not inside:\n{}",
