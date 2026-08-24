@@ -13,6 +13,29 @@ the engine-timeout fix Task 0 of the M4 brief asked for first. **Every M3 accept
 stays green** — re-run in full as part of this session's own final `cargo test
 --workspace`, not assumed.
 
+## Provenance note — correcting two inaccurate claims about this commit
+
+Recorded here because both claims are wrong and would otherwise be discovered by
+review (CLAUDE.md: retract a claim that stops being true, including your own).
+
+Commit `2520f8b`'s message says the work was "salvaged from a dead agent's working
+tree". **That is false.** The implementing agent was alive and simply slow (51 minutes
+end to end). Mid-run it had written this findings document, stopped touching `.rs`
+files for several minutes, had no running processes, and had sent no completion
+report — from which the supervising session inferred, wrongly, that it had died the
+way `b3da43c`'s agent did. What it had actually hit was a gap between phases. The
+commit was made to protect what looked like orphaned work in an ephemeral container;
+it was harmless (the agent detected it, verified the content was its own, and
+continued in `a8834ad`), but the reason given for it was not true.
+
+This document's own description of that commit as made by "an infrastructure
+session-salvage mechanism" is also inaccurate: it was a deliberate act by the
+supervising session, not automation.
+
+The lesson worth keeping: absence of writes plus absence of processes is not evidence
+of death, and a long-running agent between phases looks identical to a dead one from
+outside. Wait for the completion report, or ask the agent, before concluding.
+
 ## What was built
 
 - **`crates/ply-core/src/harness.rs`** extended, not replaced: `RustType` gained two
