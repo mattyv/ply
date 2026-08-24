@@ -17,3 +17,6 @@ pub fn vec_sum(v: &Vec<u8>) -> u32 {
     }
     acc
 }
+
+// Ply-generated module declaration -- do not edit this line.
+mod ply_generated;

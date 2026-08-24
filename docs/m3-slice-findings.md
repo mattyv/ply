@@ -116,6 +116,21 @@ summing into `u32`) over `kani::vec::any_vec::<u8, 8>()`, wrapped in
 indexed-loop consumer of `any_vec::<u8, k>`, wrapped in `proof_for_contract`). This *is*
 the formula Ply's codegen uses (`harness::generate_proof_module`).
 
+**Caveat found in review (2026-08-24), and it qualifies the row above: the correct
+unwind bound is necessary but not sufficient at the spec's own default budget.** With
+`#[kani::unwind(9)]` emitted exactly as codegen produces it, three consecutive
+`cargo-ply verify tests/fixtures/vecbound` runs at the **§6 default `--engine-timeout=60`
+all returned `timeout` (62–63s wall each)**, never `SUCCESSFUL`. The e2e test that
+records this fixture as verifying passes `150`. So the honest statement is: the bound is
+right, and the proof does close — but a `bounded(8)` check over an 8-element `Vec`, a
+shape §5.4b lists as supported, **does not fit in the default engine budget in this
+environment**. Two consequences, neither resolved here: §6's 60s default is not
+calibrated to §5.4b's own supported set, and any claim that "the Vec fixture verifies"
+must name the budget it verified under or it is quietly reporting a 150s result as if it
+were a default-configuration one. This sits alongside finding 3 (timeout reliability) as
+input to the same decision, and strengthens it: the first thing that decision must fix is
+not the variance but the default.
+
 This measured number is smaller than §5.4b's own quoted figure ("`kani::vec::any_vec::<u8,
 8>` needs 22") for what is, on its face, the same `N=8` case. We did not chase down the
 discrepancy to a root cause (out of this slice's scope), but the two most likely
@@ -257,6 +272,11 @@ red, then reverted (diffs shown here, not left in the tree):
    policy, a way to trust CBMC's internal SAT-result line over Kani's summary
    verdict line, or an explicit documented floor under which `--engine-timeout` should
    never be set on this class of hardware. Left as an open, named risk, not a guess.
+   **Start with the default itself**: §6's `--engine-timeout=60` does not fit a
+   `bounded(8)` check over an 8-element `Vec` (measured in review, 3/3 runs timed out at
+   the default; the e2e passes 150). A default that cannot complete §5.4b's own supported
+   shapes makes `timeout` the ordinary outcome rather than the exceptional one, which is
+   how a status meant to signal "engine exhausted" decays into noise users learn to skip.
 2. Decide finding 6 (witness persistence for the regression-test oracle) as a real
    design choice, not an implementation accident — it currently lives entirely inside
    `ply-cli`'s orchestration and duplicates a sliver of what full D14 staleness
