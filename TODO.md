@@ -40,6 +40,17 @@
       first tenant** (Rust-shaped, better agent proof-closure), not VeriFast. Adding any
       engine is milestone-sized, and we are one milestone of seven in with no working
       `cargo ply` — so the next step stays the thin end-to-end slice, not a second engine.
+- [x] **Verus feasibility spike done** (`tests/spike/verus/`, FINDINGS.md) — the
+      deductive-vs-bounded question the scale spike left open. Result: a `Seq`/`Set`-based
+      Verus shadow of the kernel proves all four standing obligations, unbounded, by
+      structural induction, in ~2s (mutation-tested, not vacuous) — exactly where Kani's
+      bounded model checking cannot terminate at all on the same recursive shape. A
+      differential test (4,000 generated trees, plain `cargo test`) binds that shadow's
+      executable transcription to the real `ply-kernel` crate. **Open before M7 commits**:
+      this proved a faithful shadow, not `tools/kernel/src/lib.rs`'s literal
+      `Vec`/`String`-based source — whether Verus's own executable-collection support
+      pays the same symbolic cost that stalled Kani on `Vec<String>` is untested and is
+      the next spike, not a foregone conclusion of this one.
 - [ ] **Revisit triggers** (a decision with a trigger, not a dismissal): an
       AutoVerus-equivalent for VeriFast reaching Verus-level proof-closure; VeriFast
       emitting machine-readable failure output an adapter can parse; a vetting scenario
