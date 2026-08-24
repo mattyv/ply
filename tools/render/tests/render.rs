@@ -2207,6 +2207,31 @@ mod no_overlap {
             )
             .unwrap_or_else(|e| panic!("{fixture} --depth 1: {e}"));
             check_fixture(fixture, "--depth 1", &depth1_svg, &style, &mut violations);
+
+            // §7.1 `--collapse <name>`: folding *one* top-level component
+            // while every other stays fully expanded is its own distinct
+            // layout (routing/obstruction geometry for an edge into the
+            // collapsed box's siblings differs from both "default" and
+            // "--depth 1", which folds *everything* at once) — and it is
+            // exactly the configuration vetting 003's own canonical
+            // committed SVG uses (`--collapse ingest`). Neither "default"
+            // nor "--depth 1" alone exercises a single-component collapse,
+            // so a routing bug specific to that shape was invisible to this
+            // invariant until every top-level name got its own sweep here
+            // (found: `venue ~> ingest.feed` routed straight through
+            // `strategy.signals` under `--collapse ingest` specifically).
+            for name in doc.components.keys() {
+                let label = format!("--collapse {name}");
+                let collapsed_svg = render_svg_with_options(
+                    &doc,
+                    &RenderOptions {
+                        collapse: vec![name.clone()],
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|e| panic!("{fixture} {label}: {e}"));
+                check_fixture(fixture, &label, &collapsed_svg, &style, &mut violations);
+            }
         }
         assert!(
             violations.is_empty(),

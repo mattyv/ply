@@ -3135,25 +3135,57 @@ fn route_deny_line(
     ]
 }
 
-/// Like [`route_deny_line`], for the one shape its own rail-choice heuristic
-/// gets wrong: routing to an external. `route_deny_line` picks whichever
-/// rail (top or bottom of the combined obstruction span) is closer to the
-/// *midpoint* of `from`/`to` — sound when either end could plausibly sit on
-/// either side, which is true for a deny rule's wildcard margin node, but
-/// not here. Every external sits strictly below the frame (§4's "outside
-/// the frame" placement), so `to` (always the external side — see
-/// `render_external_edge`'s callers) is always the endpoint that must be
-/// approached cleanly, and it is always below every obstacle a workspace
-/// component can be. The midpoint heuristic instead follows wherever `from`
-/// happens to be, which is wrong exactly when `from` sits far in the
-/// opposite direction (vetting 003's `venue ~> ingest.feed`: `from` near
-/// the very top of the frame pulled the naive midpoint toward the *top*
-/// rail, so the final leg cut back down through `risk`'s box on the way to
-/// `to` — caught by `no_drawn_element_intersects_a_box_it_is_not_inside`
-/// before this function existed). Always choosing the bottom rail — never
-/// comparing to a midpoint — keeps the rail, and therefore the whole final
-/// approach to `to`, below every obstacle's own bottom edge, so the last
-/// leg can never re-enter one on the way down to an external.
+/// Like [`route_deny_line`], for the one shape its own two design
+/// assumptions get wrong: routing to an external.
+///
+/// **Wrong assumption 1 (fixed by this function's existence): rail choice.**
+/// `route_deny_line` picks whichever rail (top or bottom of the combined
+/// obstruction span) is closer to the *midpoint* of `from`/`to` — sound
+/// when either end could plausibly sit on either side, true for a deny
+/// rule's wildcard margin node, but not here. Every external sits strictly
+/// below the frame (§4's "outside the frame" placement), so `to` (always
+/// the external side — see `render_external_edge`'s callers) is always the
+/// endpoint that must be approached cleanly, and it is always below every
+/// obstacle a workspace component can be. This function always chooses the
+/// bottom rail, never comparing to a midpoint, which keeps the rail — and
+/// therefore the whole final approach to `to` — below every obstacle's own
+/// bottom edge: the last leg can never re-enter one on the way down.
+///
+/// **Wrong assumption 2 (fixed by this function's own first version being
+/// found insufficient, not fixed at design time): "the first leg, straight
+/// out from `from` at its own height, is always clear."** `route_deny_line`
+/// earns that for free because its `from` is always a wildcard margin node —
+/// genuinely off to the side, so a horizontal sweep toward the combined
+/// obstruction span never crosses anything on the way *to* that span. An
+/// external edge's `from` is an ordinary workspace component's own border,
+/// which can sit *inside* the horizontal range other obstacles occupy
+/// (vetting 003, `--collapse ingest`: `venue ~> ingest.feed`'s `from` sits
+/// on `ingest`'s own bottom border, x≈564 — squarely between `strategy`
+/// (x≈691) and the rest of the diagram — so a first version of this
+/// function that always swept sideways at `from`'s own height, the same way
+/// `route_deny_line` does, drew straight through `strategy` and its nested
+/// `signals` chip; `--collapse gateway` hit the same shape against `pnl`).
+/// Neither was caught until the invariant test itself was extended to sweep
+/// `--collapse <name>` for every top-level component, not just "default"
+/// and "--depth 1" — see `no_drawn_element_intersects_a_box_it_is_not_
+/// inside`'s own doc comment for why that gap existed. Fixed by trying a
+/// straight vertical run at `from`'s own X first (`vertical_run_is_clear`)
+/// and only detouring sideways — to whichever edge of the combined
+/// obstruction span is nearer — when that straight run would actually cross
+/// something. The symmetric case never arises for `to`: once *any* point of
+/// the route reaches the rail (below every obstacle's bottom edge by
+/// construction), everything further down — a straight run to `to`, at any
+/// X — is safe regardless, so `to`'s own leg needs no such check.
+///
+/// Known remaining gap, same *kind* as the one named in `route_deny_line`'s
+/// own doc comment: the sideways detour leg used when the straight-down
+/// check fails is itself an unchecked horizontal sweep, so a third
+/// obstacle positioned to block *that* specific leg would reproduce this
+/// same class of bug one level deeper. Not observed on any fixture in this
+/// repo (the full `--collapse <name>` sweep, one render per top-level
+/// component per fixture, is clean) — recorded honestly rather than
+/// papered over with an unbounded fixed-point solver this project doesn't
+/// need yet.
 fn route_around_to_external(
     from: (f64, f64),
     to: (f64, f64),
@@ -3173,7 +3205,7 @@ fn route_around_to_external(
     // narrow filter never even saw because `pnl` doesn't overlap `ring`'s
     // rank at all. Any component whose row the route merely passes *by*
     // must count, not just the ones near its own two endpoints.
-    let mut obstructions: Vec<Rect> = obstacle_positions
+    let obstructions: Vec<Rect> = obstacle_positions
         .values()
         .copied()
         .filter(|r| !exclude.contains(r) && r.y < y1 + 1.0 && r.y + r.h > y0 - 1.0)
@@ -3181,7 +3213,6 @@ fn route_around_to_external(
     if obstructions.is_empty() {
         return vec![from, to];
     }
-    obstructions.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap());
     let span_x0 = obstructions
         .iter()
         .map(|r| r.x)
@@ -3197,18 +3228,47 @@ fn route_around_to_external(
         .map(|r| r.y + r.h)
         .fold(f64::NEG_INFINITY, f64::max)
         + CLEARANCE;
-    let (enter_x, exit_x) = if from.0 <= to.0 {
-        (span_x0, span_x1)
+
+    // Prefer a straight vertical run at `from`'s own X; only detour to
+    // whichever combined-span edge is nearer when that straight run would
+    // actually cross an obstacle (wrong assumption 2 above).
+    let from_x = if vertical_run_is_clear(from.0, from.1, rail_y, &obstructions) {
+        from.0
+    } else if (from.0 - span_x0).abs() <= (from.0 - span_x1).abs() {
+        span_x0
     } else {
-        (span_x1, span_x0)
+        span_x1
     };
-    vec![
-        from,
-        (enter_x, from.1),
-        (enter_x, rail_y),
-        (exit_x, rail_y),
-        to,
-    ]
+
+    let mut route = vec![from];
+    if (from_x - from.0).abs() > 0.01 {
+        route.push((from_x, from.1));
+    }
+    route.push((from_x, rail_y));
+    // The rail run itself is safe at any X (it is, by construction, below
+    // every obstacle's bottom edge), and so is the final descent from it to
+    // `to` (also by construction — see wrong assumption 2's doc comment on
+    // why `to` needs no symmetric check) — so the route can go straight to
+    // `to`'s own X on the rail and down from there, no `exit_x` detour
+    // needed on this side.
+    if (to.0 - from_x).abs() > 0.01 {
+        route.push((to.0, rail_y));
+    }
+    route.push(to);
+    route
+}
+
+/// Is a vertical run from `(x, y_a)` to `(x, y_b)` clear of every obstacle's
+/// *interior* — touching an edge is fine, only actually crossing counts, so
+/// this deliberately shrinks each obstacle inward by a pixel rather than
+/// testing its exact boundary. Used by [`route_around_to_external`] to
+/// decide whether `from`'s own X is safe to descend at directly, or needs a
+/// sideways detour first.
+fn vertical_run_is_clear(x: f64, y_a: f64, y_b: f64, obstructions: &[Rect]) -> bool {
+    let (ylo, yhi) = (y_a.min(y_b), y_a.max(y_b));
+    !obstructions
+        .iter()
+        .any(|r| x > r.x + 1.0 && x < r.x + r.w - 1.0 && ylo < r.y + r.h - 1.0 && yhi > r.y + 1.0)
 }
 
 /// The longest straight segment of a (possibly routed) path — where the

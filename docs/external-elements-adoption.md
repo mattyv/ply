@@ -10,10 +10,14 @@ of the verdict tree, so the enumeration gate is untouched by construction).
 ## Verdict: gate passed
 
 The frame-crossing invariant is green and mutation-tested (below); the rendered
-picture reads correctly on inspection (both committed 003 SVGs, reviewed as PNG
-renders). `The-Ply-Spec.md` is amended: §5.1 (structure + example), §5.1a rule 6,
-§5.3 (external edges), §7.1 (two table rows + the dash-channel restatement), §7.2
-(the fourth kind of unspecified). No fallback to the flag-only form was needed.
+picture reads correctly on inspection — both committed 003 SVGs, first reviewed
+as locally-converted PNGs, then a real regression was found on exactly this
+picture by the coordinator's own review (a routed edge crossing `strategy`/
+`signals`, §"Three renderer bugs" below), fixed, and re-confirmed by rasterising
+both files with headless Chromium and inspecting the result by eye. `The-Ply-
+Spec.md` is amended: §5.1 (structure + example), §5.1a rule 6, §5.3 (external
+edges), §7.1 (two table rows + the dash-channel restatement), §7.2 (the fourth
+kind of unspecified). No fallback to the flag-only form was needed.
 
 ## What landed
 
@@ -106,13 +110,17 @@ its own without further changes to the test.
 Both real mutations reverted; the test returned to green (confirmed by re-running
 after each revert, not assumed).
 
-## Two renderer bugs the real picture found, not designed in ahead of time
+## Three renderer bugs the real picture found, not designed in ahead of time
 
-Both were caught by the *existing* invariant
+All three were caught by the *existing* invariant
 (`no_drawn_element_intersects_a_box_it_is_not_inside`) going red against the real
 003 fixture once external routing was wired in — exactly the role that invariant
 exists to play, extended to a new construct without any change to the invariant
-itself.
+itself needed for bugs 1 and 2. Bug 3 is different in kind (below): the invariant
+did *not* catch it on its own, because it never rendered the configuration the bug
+lived in — a coverage gap in the *test*, not a blind spot in the *check* the test
+performs, and it is documented in its own section further down because the
+coordinator's review asked for that distinction made explicit.
 
 1. **Wrong rail side.** The deny-line routing this work reused
    (`route_deny_line`) picks whichever rail (top or bottom of the combined
@@ -137,10 +145,74 @@ itself.
    against the *full* vertical travel range instead of X-overlap against the
    endpoints' own span: any component the route's corridor merely passes *by*
    now counts, not only the ones near its two ends.
+3. **First-leg sweep, found by the coordinator's own review of the committed
+   `003-trading-system.svg`** (`--collapse ingest`, the scenario's canonical
+   view) — `venue ~> ingest.feed`'s routed line ran horizontally through
+   `strategy` and its nested `signals` chip (visibly striking through the text
+   "momentum B2 F2048" in the rasterised PNG), and `--collapse gateway`'s own
+   `entry`/flow edges independently hit `pnl` the same way. Root cause: after
+   bugs 1–2's fixes, the route still did "move horizontally at `from`'s own
+   height to clear the combined obstruction span, *then* rise to the rail" —
+   sound for `route_deny_line`, whose `from` is always a wildcard margin node
+   genuinely off to the side, so that first horizontal leg never crosses
+   anything on its way *to* the span. An external edge's `from` is an ordinary
+   component's own border, which can sit *inside* the horizontal range other
+   components occupy (`ingest`'s collapsed box, x≈564, sits squarely between
+   `strategy` at x≈691 and the rest of the diagram) — so the first leg swept
+   straight through whatever was in between on its way out. Fixed by trying a
+   straight vertical run at `from`'s own X first (`vertical_run_is_clear`,
+   `svg.rs`) and only detouring sideways when that specific run would actually
+   cross something; `to`'s side needs no symmetric check because once any point
+   of the route reaches the rail — below every obstacle's bottom edge by
+   construction — everything further down is safe regardless of X (this is the
+   same fact bug 1's fix already established, applied to the other end).
 
-Both fixes are scoped to the new `route_around_to_external` function; `render_deny`
-and `route_deny_line` are byte-for-byte unchanged, and the full existing render
-test suite (including every deny-geometry test) stayed green throughout.
+All three fixes are scoped to the new `route_around_to_external` function (and its
+new helper `vertical_run_is_clear`); `render_deny` and `route_deny_line` are
+byte-for-byte unchanged throughout this whole session, and the full existing
+render test suite (including every deny-geometry test) stayed green at every
+step.
+
+## The coverage gap: why the invariant reported green over a real crossing
+
+The coordinator's review found that `no_drawn_element_intersects_a_box_it_is_not_
+inside` passed even though `vetting/003-trading-system.svg` — the *committed*
+file, produced by `ply-render --collapse ingest` — visibly drew `venue ~>
+ingest.feed` straight through `strategy`/`signals`. This was flagged as more
+serious than the routing bug itself, correctly: a check that is right in
+principle but never runs against the shape that breaks it is worse than an
+missing check, because it *looks* covered.
+
+**Root cause, found and confirmed, not guessed:** the invariant test rendered
+every fixture exactly two ways — `render_svg(&doc)` (fully expanded) and
+`render_svg_with_options(&doc, RenderOptions { depth: Some(1), .. })` (every
+top-level component collapsed at once). Neither of those is the configuration
+vetting 003's own canonical committed SVG uses. `--collapse ingest` folds *one*
+named top-level component while every other stays fully expanded — a third,
+distinct layout shape, not a point on the line between "default" and "--depth
+1": collapsing `ingest` alone changes the routing geometry around `strategy` and
+`signals` (which stay expanded, at their normal full-depth positions) in a way
+that collapsing *every* top-level component together, or collapsing *none*,
+never exercises. The box-collection and "is this box one the line is allowed to
+touch" logic in the test (`all_component_boxes`, `check_line_item`) were never
+the problem — both already walk the real rendered DOM by tag and class,
+transform-accumulated, nesting-depth-agnostic; the coordinator's own steer
+("likely in how boxes are collected... or the allowed-to-be-inside logic") was a
+reasonable place to look first, but the actual defect was one level up: the test
+simply never asked the renderer to *produce* the one layout its own fixture's
+committed artifact ships.
+
+**Fix:** `no_drawn_element_intersects_a_box_it_is_not_inside` now also renders,
+for every fixture, one `--collapse <name>` pass per top-level component the
+document declares (`tests/render.rs`, the loop over `doc.components.keys()`
+added alongside the existing "default" and "--depth 1" passes) — the general
+form of "test the configuration you actually ship," not a one-off special case
+for `ingest`. Run against the pre-fix routing code, this correctly went red on
+exactly the two real defects (`--collapse ingest` crossing `strategy`/`signals`,
+and the previously-unknown `--collapse gateway` crossing `pnl`), naming the
+offending edge and box in both cases, before any routing code for bug 3 was
+touched — confirming the *test* fix was the right one, independent of whatever
+the routing fix would turn out to be.
 
 ## Applying it to vetting 003
 
@@ -185,6 +257,25 @@ not blind-accepted.
 - **`tools/render/tests/snapshots/render__disruptor_fixture_golden_snapshot.snap`**
   (insta): same single-line stroke-width diff, reviewed the same way before
   accepting via `INSTA_UPDATE=always`.
+
+### Second regeneration, after the coordinator's review (bug 3 above)
+
+Both `003-trading-system-full.svg` and `003-trading-system.svg` were regenerated
+again once bug 3's fix landed. Diffed against the versions above; in both files
+the *only* change is the `d=` attribute (and, consequently, the label `x`/`y`) of
+the two long-haul edges — `venue ~> ingest.feed`'s `RawFrame` and the derived
+`entry` edge from `Oms::submit` — plus the same two lines' now-adjusted label
+positions. Every box, every other edge, every tooltip, and the frame itself are
+byte-identical to the first regeneration. In the collapsed file
+(`003-trading-system.svg`), both edges now run a clean straight line down `from`'s
+own X (`563.7`) with no sideways detour at all, since that column turned out to be
+genuinely clear; in the full file, both detour left (to the shared margin at
+`x=320`) instead of the first round's detour right (to `x=1056.8`), because
+`from`'s own X in the fully-expanded layout (`feed`'s real border, not `ingest`'s
+collapsed one) sits inside `gateway`'s column, so the straight-down check
+correctly rejects it and the algorithm falls back to the nearer clear edge of the
+combined span — which happens to be the left one this time. Neither file's
+canvas dimensions changed (routing, not layout, was the fix).
 
 ## Exact new diagnostic and tooltip wording
 
@@ -233,21 +324,39 @@ wrong, say what to do.
 `cd tools && cargo test` (whole workspace): **green** — every crate, every test
 file, including the new `frame_boundary` invariant, the six new `ply-check`
 externals tests, the mutation-tested invariant (reverted before the final run),
-and every pre-existing test (render, check, model, kernel, schedule). Re-run after
-`cargo fmt` to confirm formatting changed nothing behaviorally.
-`cargo fmt --check`: clean. `cargo clippy --release --all-targets -- -D warnings`:
-clean (one `#[allow(clippy::too_many_arguments)]` added to `walk_component`,
-matching the existing precedent on `render_deny`/`render_external_edge` for
-functions whose argument count is inherent to what they thread through, not
-accidental).
+`no_drawn_element_intersects_a_box_it_is_not_inside` with its new per-top-level-
+component `--collapse` sweep (watched go red against the coordinator's finding
+before the routing fix, green after), and every pre-existing test (render, check,
+model, kernel, schedule). Re-run after `cargo fmt` to confirm formatting changed
+nothing behaviorally. `cargo fmt --check`: clean. `cargo clippy --release
+--all-targets -- -D warnings`: clean (one `#[allow(clippy::too_many_arguments)]`
+added to `walk_component`, matching the existing precedent on
+`render_deny`/`render_external_edge` for functions whose argument count is
+inherent to what they thread through, not accidental).
+
+**Visual confirmation, both committed 003 SVGs, this round**: rasterised with the
+headless Chromium at `/opt/pw-browsers/chromium` (1600×2000 window;
+`dbus`/`UPower` connection errors in its stderr are sandbox noise, not render
+failures — both screenshots wrote successfully) and inspected by eye. No line
+in either image crosses a box it is not attached to; the `RawFrame`/`entry`
+edges that used to strike through `strategy`/`signals` now run cleanly down the
+left margin, alongside (not through) `risk`, to `venue`.
 
 ## NOT RUN / left for the maintainer
 
-- **The squint test on the real picture is the maintainer's own**, per the task
-  brief — I looked hard at both rendered PNGs (converted locally via `cairosvg`
-  for inspection, not part of the toolchain) and judged the frame reads as a
-  boundary and `venue` reads as clearly outside it, but that judgment is
-  ultimately the maintainer's to make, not mine to certify.
+- **The holistic squint test — does this *read well*, not just "does nothing
+  overlap" — is still the maintainer's own**, per the task brief. This session
+  rasterised both committed 003 SVGs with headless Chromium and confirmed by eye
+  that no line crosses a box it shouldn't (the specific defect the coordinator's
+  own review found), and separately judged the frame reads as a boundary and
+  `venue` reads as clearly outside it — but "is this a *good* diagram" beyond
+  that specific correctness property is the maintainer's call, not mine to
+  certify. The lesson this round leaves on the record: a first look that stops
+  at "looks fine to me" is not the same check as the coordinator's — theirs
+  computed the exact box a specific line's y-coordinate falls inside before
+  ever opening the image. That is the standard the *invariant* now meets
+  automatically; a human glance at a PNG is not a substitute for it, only a
+  sanity check on top of it.
 - **`cargo ply check`/`cargo ply audit` on this repo's own `ply.yaml`** (§11's
   session-end check) — NOT RUN. This repo does not yet have a self-describing
   `ply.yaml` (the spec says that lands "from M2 onward"); nothing in `crates/`

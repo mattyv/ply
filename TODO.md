@@ -24,6 +24,22 @@ plus an "external-elements gate" section in `vetting/003-trading-system.md`.
       real 003 picture exposed (wrong rail-side heuristic, obstruction filter too
       narrow) in a new dedicated function, without touching the existing
       (already-tested) deny-line routing at all.
+- [x] **Correction, same session, coordinator review**: the committed
+      `003-trading-system.svg` (`--collapse ingest`) drew `venue ~> ingest.feed`
+      straight through `strategy`/`signals` — a real crossing
+      `no_drawn_element_intersects_a_box_it_is_not_inside` did not catch, because
+      that test never rendered `--collapse <name>` for any single component, only
+      "default" and "--depth 1" (collapse-everything). Root cause and full fix in
+      `docs/external-elements-adoption.md`; short version: the test now sweeps
+      one `--collapse` per top-level component per fixture (watched go red on
+      the exact defect, plus a second, previously-unknown one on
+      `--collapse gateway` crossing `pnl`, before the routing fix landed), and
+      the router's first-leg sweep — sound for deny's always-off-to-the-side
+      `from`, unsound for an external edge's `from` (an ordinary component
+      border, which can sit inside another component's column) — now tries a
+      straight vertical run first and only detours sideways when that specific
+      run is blocked. Both 003 SVGs regenerated again and rasterised with
+      headless Chromium; confirmed by eye, no line crosses a box it shouldn't.
 - [x] `vetting/003-trading-system.ply.yaml`: `venue` external, three flow edges,
       `entry: [venue]` on `Oms::submit`; `ply-check` clean. Both committed SVGs
       regenerated and diffed line-by-line before accepting; `vetting/001-*.svg`,
@@ -35,10 +51,12 @@ plus an "external-elements gate" section in `vetting/003-trading-system.md`.
 - [x] Gate passed — no fallback to the flag-only form was needed.
 - [x] `cd tools && cargo test`, `cargo fmt --check`, and
       `cargo clippy --release --all-targets -- -D warnings` all green/clean.
-- [ ] **Left for the maintainer, not attempted**: the squint test on the real
-      picture is explicitly the maintainer's own call, per the task brief — this
-      session's own visual review (converted locally to PNG for inspection) says
-      it holds, but did not certify it.
+- [ ] **Left for the maintainer, not attempted**: the *holistic* squint test —
+      does this read well, beyond "nothing overlaps" — is explicitly the
+      maintainer's own call, per the task brief. The specific correctness
+      property (no line crosses a box it shouldn't) is now confirmed two ways,
+      not just judged: the extended invariant, and a direct-eye check of both
+      committed SVGs rasterised with headless Chromium.
 - [ ] NOT RUN: a document with more than one external, or with two external
       edges to the same external from different components sharing no lane —
       the layout code has a defensive width-overflow guard but no fixture
