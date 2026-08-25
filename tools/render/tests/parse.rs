@@ -25,12 +25,15 @@ fn parses_disruptor_fixture() {
 
     let slot = ring.fns.get("slot").expect("slot fn");
     assert_eq!(
-        slot.checks,
-        vec![
-            "bounded(2)".to_string(),
-            "mutate".to_string(),
-            "fuzz(4096)".to_string()
-        ]
+        slot.checks.as_deref(),
+        Some(
+            [
+                "bounded(2)".to_string(),
+                "mutate".to_string(),
+                "fuzz(4096)".to_string()
+            ]
+            .as_slice()
+        )
     );
 
     let try_push = ring.fns.get("Spsc::try_push").expect("Spsc::try_push fn");
@@ -53,7 +56,7 @@ fn parses_disruptor_fixture() {
 
     // sanity: every check string in the fixture parses under the micro-syntax
     for fn_claim in ring.fns.values() {
-        for c in &fn_claim.checks {
+        for c in fn_claim.checks.iter().flatten() {
             assert!(matches!(
                 ply_render::model::parse_check(c).unwrap(),
                 Check::Test | Check::Fuzz(_) | Check::Bounded(_) | Check::Prove | Check::Mutate

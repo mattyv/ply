@@ -766,6 +766,17 @@ signature passes the §5.4b gate; `[fuzz(256)]` when it has a contract whose sha
 excludes; none otherwise. A flat `[bounded(2)]` default would route most contracted
 functions in ordinary Rust into `unsupported` or a multi-minute timeout.
 
+**That default fires only where no checks list is written at all.** `checks: []` is a
+written list, an empty one, and it means what it reads as: check nothing here. Nothing
+runs, the verdict is `unclaimed`, and `W0515` says so in a sentence rather than leaving a
+reader to notice a missing verdict. It is not an absence and never inherits: an empty
+list on a fn overrides an ancestor component's default exactly as a full list does
+(§5.1), and an empty list declared as a component default means the fns under it are
+checked by nothing. Until 2026-08-25 `verify` tested the list for emptiness rather than
+for presence, so `checks: []` put the shape-aware default back and proved the function
+anyway — the document said "do not check this" and the tool answered `bounded(2)`, which
+is the failure mode §1 exists to refuse, in the reassuring direction.
+
 #### 5.4d Trusted claims
 
 Some load-bearing properties live outside Ply's reach — cross-thread safety proven by a

@@ -4,5 +4,7 @@ components:
     anchor: app::audit
     checks: [mutate]
     fns:
-      verify:
-        checks: []
+      # No `checks:` key at all -- that is what "inherits the component
+      # default" is spelled as. `checks: []` would be a list, an empty one,
+      # meaning "check nothing here" and inheriting nothing (§5.4c).
+      verify: {}

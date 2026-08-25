@@ -79,10 +79,23 @@ fn every_key_the_schema_declares_is_a_key_the_model_reads() {
     assert_eq!(c.uses, ["time"]);
     assert_eq!(c.owns, ["app::pricing::Book"]);
     assert_eq!(c.profile.as_deref(), Some("hot_path"));
-    assert_eq!(c.checks, ["bounded(2)"]);
+    assert_eq!(
+        c.checks.as_deref(),
+        Some(["bounded(2)".to_string()].as_slice())
+    );
     assert_eq!(c.components["curves"].anchor, "app::pricing::curves");
     let f = &c.fns["quote"];
-    assert_eq!(f.checks, ["fuzz(256)", "test", "mutate"]);
+    assert_eq!(
+        f.checks.as_deref(),
+        Some(
+            [
+                "fuzz(256)".to_string(),
+                "test".to_string(),
+                "mutate".to_string()
+            ]
+            .as_slice()
+        )
+    );
     assert_eq!(f.mode, ply_core::model::Mode::Synth);
     assert_eq!(f.requires, ["inst.tick > 0"]);
     assert_eq!(f.ensures, ["|result| result.bid <= result.ask"]);

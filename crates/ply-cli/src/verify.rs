@@ -173,7 +173,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 // A boundary component. Its contracts are already in
                 // `declared`; its `checks` cannot run from here, and saying
                 // so is the honest report (`verify` is single-crate).
-                if !claim.checks.is_empty() {
+                if claim.checks.as_deref().is_some_and(|c| !c.is_empty()) {
                     diagnostics.push(cross_crate_claim_diag(
                         &node_id,
                         fn_name,
@@ -216,8 +216,17 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 diagnostics.push(declared_contract_not_anded_diag(&node_id, fn_name));
             }
 
+            // §5.4c: **an empty list is a list.** `checks: []` reads to a
+            // person as "do not check this", and it is now what it reads
+            // as: nothing runs, and the claim earns no evidence. Reading it
+            // as *no* list -- which is what "is the list empty?" does -- put
+            // the shape-aware default back and proved the function anyway,
+            // silently doing the opposite of what the document said.
+            let declared_empty = claim.checks.as_deref().is_some_and(|c| c.is_empty());
             let checks = if !explicit.is_empty() {
                 explicit
+            } else if declared_empty {
+                vec![]
             } else {
                 default_checks_for(&cf)
             };
@@ -261,6 +270,17 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             }
 
             if checks.is_empty() {
+                if declared_empty {
+                    // The author asked for nothing, so nothing ran -- and
+                    // that is said out loud rather than left as a node
+                    // nobody expands.
+                    diagnostics.push(empty_checks_diag(&node_id, fn_name, &cf));
+                    early_nodes_by_component
+                        .entry(comp_name.clone())
+                        .or_default()
+                        .push(leaf_node(&node_id, "unclaimed"));
+                    continue;
+                }
                 // "none otherwise" (§5.4c): either no contract at all, or a
                 // contract whose shape neither gate can build inputs for.
                 if cf.has_contract() {
@@ -786,6 +806,64 @@ fn conditional_verdict_diag(
             })
             .collect(),
         open_item: Some("owed_evidence".into()),
+    }
+}
+
+/// One check, spelled the way it is written in `ply.yaml`.
+fn check_spelling(c: &Check) -> String {
+    match c {
+        Check::Test => "test".into(),
+        Check::Fuzz(n) => format!("fuzz({n})"),
+        Check::Bounded(k) => format!("bounded({k})"),
+        Check::Prove => "prove".into(),
+        Check::Mutate => "mutate".into(),
+    }
+}
+
+/// §5.4c: a claim whose `checks:` list is written and empty asked for
+/// nothing, and nothing ran. The node reads `unclaimed`; this is the
+/// sentence beside it, because a node nobody expands is not a report.
+///
+/// It names the default the author gave up, when there is one: the whole
+/// trap was that an empty list used to *be* that default, so a reader who
+/// wanted it needs to know how to ask for it back.
+fn empty_checks_diag(node_id: &str, fn_name: &str, cf: &ContractFn) -> Diagnostic {
+    let default: Vec<String> = default_checks_for(cf).iter().map(check_spelling).collect();
+    let default_note = if default.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Deleting the `checks:` line entirely would run `{}`, the check Ply picks from this \
+             function's shape. ",
+            default.join(", ")
+        )
+    };
+    Diagnostic {
+        code: "W0515".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` has an empty `checks:` list, so nothing was run against it and it earned \
+             no evidence: an empty list means \"check nothing\", not \"use the default\". \
+             {default_note}Write the checks you want to run it; leave the list empty to record a \
+             function you have deliberately not checked, and its verdict stays `unclaimed` — \
+             Ply's word for \"nothing was checked here\". (W0515, §5.4c)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![Fix {
+            title: format!(
+                "delete the `checks: []` line from `{fn_name}` to take the default Ply picks from \
+                 its shape"
+            ),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: Some("declared_unchecked".into()),
     }
 }
 

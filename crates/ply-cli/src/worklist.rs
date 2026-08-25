@@ -137,7 +137,11 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
     let mut claimed: Vec<(String, String, Vec<String>)> = Vec::new(); // (fn name, node id, checks)
     let mut registry: Vec<(u64, String, String)> = Vec::new(); // (id, note, node id)
     walk_fn_claims(&doc, |c| {
-        claimed.push((c.fn_name.clone(), c.node_id(), c.claim.checks.clone()));
+        claimed.push((
+            c.fn_name.clone(),
+            c.node_id(),
+            c.claim.checks.clone().unwrap_or_default(),
+        ));
         for entry in &c.claim.unresolved {
             registry.push((entry.id, entry.note.clone(), c.node_id()));
         }

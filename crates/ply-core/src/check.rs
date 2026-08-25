@@ -198,8 +198,9 @@ fn walk_component<'a>(
         ));
     }
     let location = format!("component {qualified}");
-    check_syntax(&c.checks, &location, &component_target, out);
-    check_mutate_rule(&c.checks, &location, &component_target, out);
+    let own_default = c.checks.as_deref().unwrap_or(&[]);
+    check_syntax(own_default, &location, &component_target, out);
+    check_mutate_rule(own_default, &location, &component_target, out);
 
     // §5.1: what this component's own fns (and any nested component that
     // declares no default of its own) inherit — this component's own
@@ -227,7 +228,12 @@ fn walk_component<'a>(
         // inherited list was already syntax-checked where it was declared
         // (as that ancestor's own `component {..}` location above), so
         // re-validating it here would only duplicate that diagnostic.
-        check_syntax(&fc.checks, &location, &fn_target, out);
+        check_syntax(
+            fc.checks.as_deref().unwrap_or(&[]),
+            &location,
+            &fn_target,
+            out,
+        );
 
         // §5.1 D12: `mutate` needs a `test`/`fuzz` in the *effective* list —
         // the fn's own non-empty list if it has one (which always wins
@@ -235,7 +241,7 @@ fn walk_component<'a>(
         // ancestor default. A fn with no checks and no ancestor default has
         // an empty effective list, which trivially can't trip this rule.
         let effective = effective_checks(fc, this_default);
-        let mutate_location = if fc.checks.is_empty() {
+        let mutate_location = if fc.checks.is_none() {
             match this_default {
                 Some(d) => format!(
                     "fn {fn_name}, checks inherited from component {}",
@@ -246,7 +252,7 @@ fn walk_component<'a>(
         } else {
             location.clone()
         };
-        check_mutate_rule(effective, &mutate_location, &fn_target, out);
+        check_mutate_rule(effective.unwrap_or(&[]), &mutate_location, &fn_target, out);
 
         for u in &fc.unresolved {
             unresolved_ids.push((u.id, location.clone()));

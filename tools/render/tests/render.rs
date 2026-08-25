@@ -904,7 +904,7 @@ mod declared_ceiling {
     /// same rule to keep in sync).
     fn fn_ceiling(fc: &FnClaim, inherited: Option<InheritedChecks>) -> Evidence {
         let mut best: Option<Evidence> = None;
-        for c in effective_checks(fc, inherited) {
+        for c in effective_checks(fc, inherited).unwrap_or(&[]) {
             let kind = match parse_check(c) {
                 Ok(Check::Test) => Some(Evidence::Tested),
                 Ok(Check::Fuzz(_)) => Some(Evidence::Fuzzed),

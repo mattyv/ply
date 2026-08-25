@@ -371,7 +371,7 @@ fn callee_checks(doc: &Document, path: &str, local_anchors: &[String]) -> Vec<St
             format!("{}::{}", c.anchor, c.fn_name)
         };
         if key == path {
-            found = c.claim.checks.clone();
+            found = c.claim.checks.clone().unwrap_or_default();
         }
     });
     found

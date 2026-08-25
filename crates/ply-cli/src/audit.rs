@@ -351,7 +351,7 @@ fn fn_claim_checks(doc: &ply_core::model::Document, name: &str) -> Option<Vec<St
     let mut found = None;
     walk_fn_claims(doc, |c| {
         if c.fn_name == name {
-            found = Some(c.claim.checks.clone());
+            found = Some(c.claim.checks.clone().unwrap_or_default());
         }
     });
     found

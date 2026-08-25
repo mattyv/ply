@@ -376,18 +376,27 @@ components:
 **`prove` has no engine in this build.** Writing it is accepted, and `verify` reports a
 missing engine rather than failing the check (`W0110`).
 
-### Defaults, and one trap
+### Defaults, and what an empty list means
 
 If a function's entry has no `checks:` at all, `verify` picks one from the function's
 shape: `bounded(2)` if it has a contract and a signature the model checker can build
 inputs for, `fuzz(256)` if it has a contract of a shape only the property-test runner
 can reach, and nothing at all if it has no contract.
 
-**`checks: []` does not mean "check nothing".** An empty list is treated the same as no
-list, so a contracted function written with `checks: []` still gets the shape-aware
-default and still runs. If you want a function listed but unchecked, leave the
-contract off, or give it a `requires:`/`ensures:` entry with no `checks:` — which means
-something specific, and is section 6's topic.
+**`checks: []` means "check nothing".** An empty list is a list — you writing down that
+this function is deliberately not checked. Nothing runs, the verdict is `unclaimed`
+(Ply's word for "nothing was checked here"), and Ply prints a sentence saying so
+(`W0515`) rather than leaving you to notice a verdict that is not there. It is a
+different statement from leaving the key out, which is how you ask for the shape-aware
+default above, and it overrides a component default the same way a full list does.
+
+Because a run that checked nothing is not a clean run (section 7), a function written
+`checks: []` makes `verify` exit 1 at the default `--fail-on evidence`. That is the
+honest report and not a bug: `--fail-on error` is the opt-out for a codebase where
+absences are expected and tracked elsewhere.
+
+A function you list only to give it a contract for its callers — a `requires:`/`ensures:`
+entry with no `checks:` — is a different thing again, and is section 6's topic.
 
 A component may declare a default for the functions under it:
 
@@ -747,9 +756,14 @@ lists the same boundary from the other side — the part somebody means to finis
       `tier_fee_cents`'s proof stands on a promise `ply.yaml` makes for
       `ledger::fees::bps_for_tier` — ensures |result| *result <= 10_000 — and nothing
       has run the real `ledger::fees::bps_for_tier` against it. […] To close it, add
-      `checks: [fuzz(256)]` to its `ply.yaml` entry — fuzzing crosses a legacy boundary
-      by simply calling the code, so it tests the promise against the real
-      `ledger::fees::bps_for_tier`.
+      `checks: [fuzz(256)]` to its `ply.yaml` entry and run `cargo ply verify` inside
+      the `ledger` crate, which is where that function lives — fuzzing crosses a legacy
+      boundary by simply calling the code, so it tests the promise against the real
+      `ledger::fees::bps_for_tier`. Adding the check changes nothing in this crate:
+      `cargo ply verify` checks one crate at a time and will decline to run it from
+      here. If you would rather not leave this crate, pass what
+      `ledger::fees::bps_for_tier` returns into `tier_fee_cents` as a parameter instead:
+      the value becomes the caller's own data and there is no promise left to owe.
       blocks: `withdrawal::tier_fee_cents` keeps a `conditional` verdict until the
               promise made for `ledger::fees::bps_for_tier` is checked against the real
               body.
@@ -759,11 +773,11 @@ That is the discharge route, and it works because the property-test tier needs n
 contracts on anything: it simply *runs* the code. Adding `checks: [fuzz(256)]` to the
 callee's entry tests your promise against the real legacy body.
 
-One wrinkle here. `verify` checks one crate at a time, so when the callee lives in
-another crate — as it does above — that `checks:` entry will not run from the caller's
-directory, and Ply says so rather than pretending (`W0303`). Run `cargo ply verify` in
-the `ledger` crate to settle it there. When caller and callee are in the *same* crate,
-adding the check to the same document is all it takes.
+Read the "inside the `ledger` crate" part literally. `verify` checks one crate at a
+time, so a `checks:` entry written for a function in *another* crate is read for its
+promise and declined for its checks (`W0303`) — the advice above names the crate to run
+it in for exactly that reason. When caller and callee are in the *same* crate, both
+commands drop the crate name and adding the check to the same document is all it takes.
 
 ### Four things to know before you trust a boundary contract
 
@@ -1220,6 +1234,7 @@ on something stable. These are the ones this build emits.
 | `W0512` | Ply refused to descend into a callee no contract describes, and names the callee and the call site. |
 | `W0513` | Ply followed a path into first-party source and could not read it, so it refused rather than descending. |
 | `W0514` | Ply could not tell whether a declared promise says anything, and reports it as unchecked rather than as fine. |
+| `W0515` | A `checks:` list was written and left empty, so nothing ran and the claim earned no evidence. |
 | `W0541` | A failing input was found but cannot be written out as runnable Rust, so the engine's own rendering is reported instead. Inputs are never invented. |
 
 ---
@@ -1252,7 +1267,6 @@ Collected in one place, so nothing here has to be discovered at minute eleven.
 - `ply.yaml` `requires`/`ensures` are not merged into the described function's own check
   (`W0510`). They work as boundary promises for callers.
 - Component-level default `checks:` are honoured by `check` and ignored by `verify`.
-- `checks: []` means "use the default", not "check nothing".
 - `old()` works on both checking paths, over values the function reads. The mutating
   shape it exists for — a parameter the function writes back through — is refused as an
   unsupported signature, by name, rather than attempted.

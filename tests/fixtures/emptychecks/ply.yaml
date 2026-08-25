@@ -1,0 +1,11 @@
+ply: 1
+
+components:
+  emptychecks:
+    anchor: ply_fixture_emptychecks
+    fns:
+      # An empty list is a decision: check nothing here.
+      declared_unchecked:
+        checks: []
+      # No list at all: Ply picks one from the function's shape (§5.4c).
+      left_to_the_default: {}
