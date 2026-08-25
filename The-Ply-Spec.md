@@ -332,7 +332,16 @@ The schema must encode all of the following; the goldens (§9) pin them.
 
 1. **Unknown fields are errors.** Every object in the schema sets
    `additionalProperties: false`; an unrecognized key → `E0204` with a
-   nearest-known-key suggestion. A typo must be caught, never ignored.
+   nearest-known-key suggestion. A typo must be caught, never ignored. **This binds
+   every tool that reads a `ply.yaml`, not only `check`** (2026-08-25): until then
+   `ply-check` enforced it while `cargo ply verify` read the same document with plain
+   serde and dropped whatever its own structs did not name, which is how a team's
+   external `ensures:` for a legacy callee reached no engine and raised no warning
+   (vetting 004 finding 7). Two tools disagreeing about one document is the defect; the
+   rule is the file's, not a command's. The converse binds equally: a tool must accept
+   **every** key §5 defines even where it acts on none of them — one document is read by
+   `verify`, `check` and `render`, and a reader that refuses the keys it ignores breaks
+   that outright.
 2. **Identifiers.** Component and profile names match `[a-z][a-z0-9_]*` (snake_case,
    ASCII). In edge and deny strings, tokens are separated by one or more spaces; the
    parser accepts any run of whitespace and the canonical form uses single spaces.
