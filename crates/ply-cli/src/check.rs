@@ -113,7 +113,7 @@ pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
     // top of the real one helps nobody.
     if !diagnostics.is_empty() {
         return Ok(CheckReport {
-            envelope: envelope(Node::empty_workspace(), diagnostics, coverage(None)),
+            envelope: envelope(empty_workspace(), diagnostics, coverage(None)),
             document: yaml_path.display().to_string(),
         });
     }
@@ -394,17 +394,16 @@ fn workspace_node(doc: &Document) -> Node {
     }
 }
 
-impl NodeExt for Node {}
-trait NodeExt {
-    fn empty_workspace() -> Node {
-        Node {
-            id: "workspace".into(),
-            kind: "workspace".into(),
-            verdict: "unclaimed".into(),
-            statuses: vec![],
-            evidence: None,
-            children: vec![],
-        }
+/// The root a run that never got past the schema reports: the workspace
+/// exists, and nothing below it was read well enough to describe.
+fn empty_workspace() -> Node {
+    Node {
+        id: "workspace".into(),
+        kind: "workspace".into(),
+        verdict: "unclaimed".into(),
+        statuses: vec![],
+        evidence: None,
+        children: vec![],
     }
 }
 
@@ -503,12 +502,13 @@ pub fn print_human(report: &CheckReport) {
     if report.envelope.diagnostics.is_empty() {
         println!("  No problems found in the document.");
     } else {
+        // No node id appended: every one of these sentences already names
+        // where it is -- `(fn clamp)`, ``Found at `components.x.fns.y` `` --
+        // because that is how they were written and exact-string tested.
+        // Repeating it as `[clamp::clamp]` says the same thing twice in a
+        // worse vocabulary. The id is in `--json`, where a machine wants it.
         for d in &report.envelope.diagnostics {
-            let where_at = match &d.pointer {
-                Some(_) => String::new(),
-                None => format!(" [{}]", d.node_id),
-            };
-            println!("  {} {}{}", d.code, wrap(&d.title, 4), where_at);
+            println!("  {} {}", d.code, wrap(&d.title, 4));
         }
     }
     println!();
