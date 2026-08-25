@@ -890,9 +890,32 @@ than that. `fuzz`/`test`/`mutate` checks keep a flat 60s: proptest and plain `ca
 do not carry Kani's `Vec`-unwind cost profile, so nothing here shows a shape-aware scaling
 is needed for them yet — except that a `mutate` run is many test runs, so Ply caps the
 whole cargo-mutants invocation separately (§5.4c). Passing `--engine-timeout` explicitly
-always overrides the default, for every check kind, exactly as before. The default itself
-is **not exercised by any e2e test**: every fixture passes `--engine-timeout` explicitly,
-so only a unit test on the formula covers it (recorded in TODO.md).
+always overrides the default, for every check kind, exactly as before.
+
+**A stubbed `bounded` harness gets a floor of 300s (2026-08-25).** §5.5's second branch
+replaces a callee with its declared contract, so where the real body returned one of a
+handful of concrete values the stub returns a *symbolic* one constrained only by
+`ensures` — strictly less information for the solver, and more work. Like the `Vec` split
+this is derived from something Ply knows *before* the run (the harness either carries a
+stub or it does not); unlike it, the constant is fitted to a single measurement, and a
+second measurement says the cost is not the stub's alone: vetting 004's `tier_fee_cents`
+needs **201.77s** stubbed, while the `boundarycontract` fixture — same rule, same stub,
+smaller body — verifies in **9.72s**. So a stub does not imply 200s; it implies the
+expensive direction, and 60s is not a budget this feature can live at. Until this landed
+it did not: `tier_fee_cents` is scalar-signature, so plain `cargo ply verify` gave it 60s
+and reported `timeout`, and the diagnostic that should have carried the assumption never
+appeared — the tranche's headline capability, dead at the tool's own defaults
+(adversarial review of the post-004 fixes, G1). 300 is 201.77s plus room for the
+run-to-run CBMC variance docs/m3-slice-findings.md measured on an identical harness
+(~1s–107s). **Body cost is not, and cannot be, in the default**: `arraycard`'s array
+parameter costs 0.036s to construct and its body ~139s, and no signature-shaped rule can
+know that (§5.4c: "checkability is a property of the body, not just the signature"). What
+a user gets there is `timeout` plus `K0601`, whose first fix is to raise the budget. A
+timed-out proof that *was* stubbed says so, and says why, in `K0601` itself.
+
+The default path is exercised end-to-end by one e2e (`boundarycontract_fixture`, which
+passes no `--engine-timeout` at all) plus unit tests on the formula; every other fixture
+passes the flag explicitly, which is how the default went unobserved for a milestone.
 
 Exit codes: 0 clean, 1 violations or failures — **including a run in which any node
 carries an absence of evidence** (`timeout`, `unsupported`, `tool_error`, `unclaimed`,

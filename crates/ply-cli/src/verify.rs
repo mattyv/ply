@@ -65,12 +65,41 @@ pub struct VerifyOptions {
 /// any scalar-only fixture, and widening it without evidence would be
 /// exactly the "bigger magic number" Task 0 warns against.
 ///
-/// Not observed in real use by any test: every e2e passes `--engine-timeout`
-/// explicitly, so only the unit test below exercises the formula (recorded
-/// in TODO.md, not left to be discovered).
-pub fn default_engine_timeout_secs(has_vec_param: bool, bound_k: u32) -> u32 {
-    if has_vec_param { 30 + 15 * bound_k } else { 60 }
+/// **The stub premium** (2026-08-25, adversarial review of the post-004
+/// fixes, G1). §5.5's second branch replaces a callee with its declared
+/// contract: where the real body returned one of four concrete values, the
+/// stub returns a symbolic one constrained only by `ensures`. That is
+/// strictly less information for CBMC, and it is knowable *before the run*,
+/// which is what makes it a shape the default can key on at all -- the same
+/// standard `Vec` meets. Without it the tranche's headline capability was
+/// dead at the tool's own defaults: vetting 004's `tier_fee_cents` is
+/// scalar-signature, so it got 60s, and its stubbed proof needs 201.77s
+/// (measured). A user who declared a boundary contract and ran plain
+/// `cargo ply verify` got `timeout`, and the diagnostic that should have
+/// carried the assumption never appeared.
+///
+/// The split is derived; **the 300 is fitted to one data point**, and the
+/// second data point says the cost is not the stub's alone: the
+/// `boundarycontract` fixture's stubbed proof -- same rule, same stub
+/// mechanism, smaller body -- verifies in **9.72s** (measured with
+/// `cargo kani` on the generated harness). So a stub does not imply 200s;
+/// what it implies is the expensive direction, and that 60s is not a budget
+/// the feature can live at. 300 is 201.77s plus room for the run-to-run CBMC
+/// variance docs/m3-slice-findings.md measured on an identical harness
+/// (~1s-107s). Nothing here claims more than that, and §6 says so too.
+pub fn default_engine_timeout_secs(has_vec_param: bool, bound_k: u32, has_stubs: bool) -> u32 {
+    let base = if has_vec_param { 30 + 15 * bound_k } else { 60 };
+    if has_stubs {
+        base.max(STUBBED_HARNESS_SECS)
+    } else {
+        base
+    }
 }
+
+/// The floor a *stubbed* `bounded` harness gets by default. See
+/// `default_engine_timeout_secs` for where the number comes from and what it
+/// does not claim.
+const STUBBED_HARNESS_SECS: u32 = 300;
 
 /// The `fuzz`/`test`/`mutate` engines never carry Kani's `Vec`-unwind cost
 /// profile -- proptest's own strategies and plain `cargo test` do not blow
@@ -1228,9 +1257,9 @@ fn run_bounded_check(
     let generated = harness::generate_proof_module(cf, bound_k, &boundary.stubs)?;
     harness::write_generated_module(src_dir, lib_path, &generated.module_source)?;
 
-    let engine_timeout_secs = opts
-        .engine_timeout_secs
-        .unwrap_or_else(|| default_engine_timeout_secs(cf.has_vec_param(), bound_k));
+    let engine_timeout_secs = opts.engine_timeout_secs.unwrap_or_else(|| {
+        default_engine_timeout_secs(cf.has_vec_param(), bound_k, !generated.stubbed.is_empty())
+    });
 
     let run_cfg = KaniRunConfig {
         crate_dir: crate_dir.to_path_buf(),
@@ -1297,12 +1326,7 @@ fn run_bounded_check(
                 engine: "kani".into(),
                 check: check_label,
                 node_id: node_id.into(),
-                title: format!(
-                    "Kani could not finish checking `{fn_name}` within its {engine_timeout_secs}s time \
-                     budget -- this is an exhausted search, not a broken promise: Kani never got far \
-                     enough to say whether the contract holds or not, so this is reported as `timeout`, \
-                     never as a violation. (K0601)"
-                ),
+                title: kani_timeout_title(fn_name, engine_timeout_secs, &generated.stubbed),
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![
@@ -1993,6 +2017,37 @@ fn render_fuzz_violation(
     }
 }
 
+/// `K0601`'s words. A timeout on a *stubbed* proof has a cause the reader
+/// cannot see from the body in front of them -- the assumption they declared
+/// is what turned a concrete callee into a symbolic value -- so the message
+/// says it, with the numbers (2026-08-25, adversarial review G1).
+fn kani_timeout_title(fn_name: &str, secs: u32, stubbed: &[StubSpec]) -> String {
+    let mut title = format!(
+        "Kani could not finish checking `{fn_name}` within its {secs}s time budget -- this is an \
+         exhausted search, not a broken promise: Kani never got far enough to say whether the \
+         contract holds or not, so this is reported as `timeout`, never as a violation. (K0601)"
+    );
+    if let Some(first) = stubbed.first() {
+        let names: Vec<String> = stubbed
+            .iter()
+            .map(|s| format!("`{}`", s.callee_path))
+            .collect();
+        title.push_str(&format!(
+            " This proof stood in for {list} with the contract declared for it in ply.yaml, which \
+             is what makes the verdict `conditional` -- and it is also why it costs more than the \
+             same function with the call removed: the stub hands Kani a symbolic value constrained \
+             only by that contract, where the real body returns a handful of concrete ones, and \
+             less information is more work. Measured on a stubbed proof of this shape: 201.77s \
+             (vetting 004's `tier_fee_cents`) against 9.72s for a smaller body, so the cost is the \
+             body's as much as the stub's. If `{first_callee}`'s contract is wider than the real \
+             code needs, narrowing it is the cheapest thing that helps.",
+            list = names.join(", "),
+            first_callee = first.callee_path
+        ));
+    }
+    title
+}
+
 /// `W0541`'s words. Extracted and made shape-aware 2026-08-25 (adversarial
 /// review of the post-004 fixes, D4): the message used to say Ply "has no way
 /// yet to spell a `BTreeSet`, or a `Vec` of anything but `u8`, as a literal
@@ -2315,16 +2370,76 @@ mod tests {
     #[test]
     fn engine_timeout_scales_only_for_vec_shaped_harnesses() {
         assert_eq!(
-            default_engine_timeout_secs(false, 2),
+            default_engine_timeout_secs(false, 2, false),
             60,
             "scalar-only stays at the M3 default"
         );
         assert_eq!(
-            default_engine_timeout_secs(true, 8),
+            default_engine_timeout_secs(true, 8, false),
             150,
             "the M3 review measured bounded(8) over Vec<u8> needing 150s -- the formula must reproduce that exactly"
         );
-        assert_eq!(default_engine_timeout_secs(true, 2), 60);
+        assert_eq!(default_engine_timeout_secs(true, 2, false), 60);
+    }
+
+    /// §5.5's second branch was dead at the tool's own defaults: vetting
+    /// 004's `tier_fee_cents` is scalar-signature, so it got 60s, and its
+    /// stubbed proof needs 201.77s. The measured cost is what the number has
+    /// to clear -- so the test says the measurement, not the constant.
+    #[test]
+    fn a_stubbed_harness_gets_a_budget_that_clears_the_measured_conditional_proof() {
+        const MEASURED_CONDITIONAL_PROOF_SECS: u32 = 202;
+        assert!(
+            default_engine_timeout_secs(false, 2, true) > MEASURED_CONDITIONAL_PROOF_SECS,
+            "a `conditional` proof that cannot finish at the default budget is a feature nobody \
+             can run without reading the source for a flag: got {}s for a proof measured at {}s",
+            default_engine_timeout_secs(false, 2, true),
+            MEASURED_CONDITIONAL_PROOF_SECS
+        );
+        assert_eq!(
+            default_engine_timeout_secs(false, 2, false),
+            60,
+            "and an unstubbed scalar harness is untouched -- the premium is for the shape that \
+             earns it, not a flat raise for everything"
+        );
+        assert!(
+            default_engine_timeout_secs(true, 8, true)
+                >= default_engine_timeout_secs(true, 8, false),
+            "a stubbed Vec harness never gets *less* than the same harness unstubbed"
+        );
+    }
+
+    /// The reader of a timed-out `conditional` proof cannot see the cause in
+    /// the body in front of them: the assumption they declared is what turned
+    /// a concrete callee into a symbolic value.
+    #[test]
+    fn a_timeout_on_a_stubbed_proof_names_the_assumption_as_the_cost() {
+        let stub = StubSpec {
+            callee_path: "ledger::fees::bps_for_tier".into(),
+            params: vec![("tier".into(), "u8".into())],
+            return_type: "u32".into(),
+            requires: vec![],
+            ensures: vec!["|result| *result <= 10_000".into()],
+        };
+        let title = kani_timeout_title("tier_fee_cents", 300, std::slice::from_ref(&stub));
+        assert!(
+            title.contains("`ledger::fees::bps_for_tier`"),
+            "name the callee that was stood in for: {title}"
+        );
+        assert!(
+            title.contains("symbolic value constrained only by that contract"),
+            "and say plainly why standing in for it costs more: {title}"
+        );
+        assert!(
+            title.contains("201.77s") && title.contains("9.72s"),
+            "with both measurements, so the reader can tell a stub premium from a heavy body: \
+             {title}"
+        );
+        let plain = kani_timeout_title("clamp", 60, &[]);
+        assert!(
+            !plain.contains("stood in for"),
+            "an unstubbed timeout must not carry an explanation that does not apply to it: {plain}"
+        );
     }
 
     #[test]

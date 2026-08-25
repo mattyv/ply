@@ -4,19 +4,29 @@
 //! verdict is `conditional` -- real evidence about the contract, resting on
 //! a named assumption that is owed evidence until something exercises it.
 //!
+//! It is also the only e2e that passes no `--engine-timeout`, so it is what
+//! observes §6's default budget end to end.
+//!
 //! Before this landed, `ply-core`'s `FnClaim` had no `ensures` field at all,
 //! so serde silently ate the declaration (vetting 004 finding 7) and the
 //! same fixture reported a plain, unqualified `bounded(2)` -- a proof that
 //! had quietly inlined the real body with nothing recording that it had.
 
-use ply_e2e::{build_cargo_ply, copy_fixture, run_verify};
+use ply_e2e::{build_cargo_ply, copy_fixture, run_verify_with_env};
 
 #[test]
 fn a_declared_contract_for_an_unclaimed_callee_earns_a_conditional_verdict() {
     let cargo_ply = build_cargo_ply();
     let fixture = copy_fixture("boundarycontract");
 
-    let run = run_verify(&cargo_ply, fixture.path(), 300);
+    // **No `--engine-timeout`.** This is the one e2e that runs on §6's own
+    // default budget, and it is the case that showed why that matters: at the
+    // 60s scalar default this fixture's stubbed proof times out and reports
+    // nothing about the assumption (adversarial review of the post-004 fixes,
+    // G1). A stubbed harness now gets 300s, against ~110s measured for this
+    // body -- headroom for the run-to-run CBMC variance the M3 findings
+    // recorded, not a number picked to be comfortable.
+    let run = run_verify_with_env(&cargo_ply, fixture.path(), None, &[]);
 
     assert_eq!(
         run.json["root"]["verdict"], "bounded(2)",
