@@ -37,7 +37,7 @@ Terms this spec uses without further explanation. Ply-specific terms are marked 
 | component | (Ply) A named architectural unit, declared in `ply.yaml` and anchored to a crate or module. |
 | capability (cap) | (Ply) A coarse effect a component is allowed: `net fs db time rand proc unsafe`. |
 | anchor | (Ply) The real code item (crate, module, or function) a claim attaches to. |
-| fingerprint | (Ply) The recorded hash of everything a result depended on: item body, contract text, the contracts assumed for the callees it crosses into, the checks that ran, engine name + version + flags, active features, target triple, **and Ply's own version**. It is recomputed from today's inputs every time a recorded result is used or shown: it matches, the result is reused; it does not, the check runs again (D14, §5.2a). |
+| fingerprint | (Ply) The recorded hash of everything a result depended on: item body, contract text, the contracts assumed for the callees it crosses into, the checks that ran, engine name + version + flags, active features, target triple, compiler version, **and Ply's own version**. It is recomputed from today's inputs every time a recorded result is used or shown: it matches, the result is reused; it does not, the check runs again (D14, §5.2a). |
 | verdict tree | (Ply) The aggregated per-node verdicts for the whole workspace, rendered by `cargo ply tree`. |
 | visual grammar | (Ply) The fixed one-to-one mapping between grammar constructs and visual forms (§7.1). A grammar feature that cannot be drawn is not admitted. |
 | watermark | (Ply) The per-function line where declaration stops and code begins: signature plus contract (§7.2). Below it, Ply verifies but never specifies; the un-specifiable imperative interior is the *floor*. |
@@ -141,7 +141,7 @@ proof search has gone off-spec — stop.
 | D11 | Extraction may be incomplete but never silently so: every call site the extractor cannot resolve is counted and reported (W0412 plus a per-component coverage metric in `check` output). | Visibility is what makes the advisory tier (D4) and any future `strict` opt-in meaningful. |
 | D12 | A function declares a **checks list**, e.g. `checks: [bounded(3), fuzz(256), mutate]`. `mutate` requires a `test` or `fuzz` entry in the same list (else `E0504`) and uses only those as its mutant-kill signal, scoped per function with cargo-mutants' `--re`. | One base check could not express "bounded plus a fuzz-backed mutation tier". Running Kani once per mutant costs minutes per mutant per function; proof-backed mutation needs an opt-in budget, which is out of scope. |
 | D13 | **Spike before build** (milestone M0): every engine-facing detail in this spec is provisional until a hands-on spike, with the pinned Kani version, records in ADR-0003 what actually works — attribute emission, in-crate harness modules, `stub_verified`, playback, input construction. The spec is then amended to match reality. | The engine surface is the highest-risk part of the design; paper decisions there are guesses. |
-| D14 | `ply.lock` (committed) records, per claim, a **fingerprint** beside the result that fingerprint earned: item token-stream hash, merged contract text, the contracts assumed for the callees it crosses into, the checks that ran, engine name + version + flags, active features, target triple, **and Ply's own version**. `verify` recomputes the fingerprint from today's inputs *before* it uses or shows a recorded result — matches, the result is reused and the run says so on the node; differs, the check runs again and the record is rewritten. **There is no `stale` state and nothing for a human to re-bless**: the hash is the confirmation, and it is checked at every single use. Only a result that earned evidence is recorded, so no failure, timeout or absence is ever carried forward. | Committing the record is what stops CI and the next colleague re-proving what is already proven, and lets a reviewer see in a diff that a claim was checked. Re-hashing at every use is what makes storing verdicts safe at all: a stored verdict a human re-blesses can drift from the code between blessings, and every warning that accumulates faster than it is cleared ends up meaning nothing. **Ply's own version is in the hash because a fix to Ply changes what a result means.** The four defects fixed on 2026-08-25 — a harness that failed to compile earning a confident pass, an ordinary `use` import letting an unvouched-for body into a proof, an unsatisfiable declared promise passing vacuously, a claim inside a nested component skipped in silence — would every one of them have hash-matched perfectly against a record written the day before, because the source had not changed: Ply had. |
+| D14 | `ply.lock` (committed) records, per claim, a **fingerprint** beside the result that fingerprint earned: item token-stream hash, merged contract text, the contracts assumed for the callees it crosses into, the checks that ran, engine name + version + flags, active features, target triple, compiler version, **and Ply's own version**. `verify` recomputes the fingerprint from today's inputs *before* it uses or shows a recorded result — matches, the result is reused and the run says so on the node; differs, the check runs again and the record is rewritten. **There is no `stale` state and nothing for a human to re-bless**: the hash is the confirmation, and it is checked at every single use. Only a result that earned evidence is recorded, so no failure, timeout or absence is ever carried forward. | Committing the record is what stops CI and the next colleague re-proving what is already proven, and lets a reviewer see in a diff that a claim was checked. Re-hashing at every use is what makes storing verdicts safe at all: a stored verdict a human re-blesses can drift from the code between blessings, and every warning that accumulates faster than it is cleared ends up meaning nothing. **Ply's own version is in the hash because a fix to Ply changes what a result means.** The four defects fixed on 2026-08-25 — a harness that failed to compile earning a confident pass, an ordinary `use` import letting an unvouched-for body into a proof, an unsatisfiable declared promise passing vacuously, a claim inside a nested component skipped in silence — would every one of them have hash-matched perfectly against a record written the day before, because the source had not changed: Ply had. |
 
 ## 3. Toolchain
 
@@ -477,7 +477,10 @@ order:
    the derived one;
 5. the engine behind each of those checks: name, version, and the flags that shape the
    obligation it discharged;
-6. the build target triple and the crate's active feature set;
+6. the build target triple, the compiler that builds for it (D9's "an old success must
+   not bless ... a different toolchain"), and the crate's declared feature table — Ply
+   passes no `--features`, so the set that is active is the default set that table
+   defines;
 7. **Ply's own version.**
 
 Ply's own version is in there for the reason D14 gives, and it is the input that makes
@@ -830,8 +833,8 @@ The default is resolved in one place for every consumer —
 `audit`, `worklist` and the renderer cannot disagree about which list governs a fn.
 `verify` read a fn's own list and nothing else until 2026-08-25, which made a
 component's declared default a line `check` resolved and `verify` silently ignored: one
-document, two answers. The two listing commands read it that way for one commit longer,
-which was worse where it showed: a trust listing that misreads which functions are
+document, two answers. The two listing commands went on reading it that way a few
+commits longer, which was worse where it showed: a trust listing that misreads which functions are
 checked misreports what a result rests on, and it did so in both directions — naming an
 assumption `verify` never makes for a fn that inherits `fuzz`, and calling a fn nothing
 checks when its component checks it.

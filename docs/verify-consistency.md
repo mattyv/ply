@@ -352,10 +352,10 @@ Done, this session:
 
 Open, found while doing the above and deliberately not fixed here:
 
-- [x] **`audit` and `worklist` do not resolve component-default `checks:`.** Fixed
-      since, the way this entry described: `walk_fn_claims` now
-      carries the inherited default down the tree, and every reader of a checks list in
-      those two commands goes through one accessor over the same shared resolution. It
+- [x] **`audit` and `worklist` do not resolve component-default `checks:`.** Fixed since,
+      the way this entry described: `walk_fn_claims` now carries the inherited default
+      down the tree, and every reader of a checks list in those two commands goes through
+      one accessor over the same shared resolution. It
       was wrong in both directions — listing an assumed contract `verify` never assumes,
       and calling a helper unchecked that the document checks. Written up, with the
       failures watched first and the before/after on a real crate, in
