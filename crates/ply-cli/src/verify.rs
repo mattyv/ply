@@ -15,11 +15,13 @@ use ply_core::config;
 use ply_core::contract_rt::{self, RenderedTest};
 use ply_core::diag::{Assumption, Counterexample, Diagnostic, Envelope, Evidence, Fix, Node};
 use ply_core::engines::fuzz as fuzz_engine;
+use ply_core::engines::kani::ProbeOutcome;
 use ply_core::engines::kani::{self, KaniOutcome, KaniRunConfig};
 use ply_core::engines::mutants::{self, MutantsRunConfig, MutantsRunOutcome};
 use ply_core::harness::{self, ContractFn, StubSpec};
 use ply_core::harness_crate;
 use ply_core::model::{Check, FnClaim};
+use ply_core::promise::{ClauseKind, ClauseVerdict, HarnessAnswer, PromiseFinding, PromisePlan};
 
 use crate::shared::{self, declared_contracts, local_anchor_names, sorted_by_key};
 
@@ -642,10 +644,31 @@ fn conditional_verdict_diag(
     fn_name: &str,
     check_label: &str,
     stubs: &[StubSpec],
+    promise: &[PromiseFinding],
 ) -> Diagnostic {
     let assumed: Vec<String> = stubs.iter().map(|s| s.assumption_text()).collect();
     let list = assumed.join("; ");
     let first = &stubs[0].callee_path;
+    // A clause that turned out to be true of every value is not an
+    // assumption and is owed nothing. Saying otherwise here would send a
+    // reader off to discharge a debt that does not exist -- and the sentence
+    // this paragraph exists to write ("each one is owed evidence") would be
+    // false about it.
+    let empty: Vec<String> = promise
+        .iter()
+        .filter(|f| f.verdict == ClauseVerdict::TriviallyTrue)
+        .map(|f| format!("`{}`'s `{}: {}`", f.callee, f.kind.key(), f.clause))
+        .collect();
+    let empty_note = if empty.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Not all of them, though, and that is why this run does not pass: {} constrained \
+             nothing -- it is true of every value, so the proof assumed nothing there and there \
+             is nothing to owe. E0503 below says what to do about it.",
+            empty.join(" and ")
+        )
+    };
     Diagnostic {
         code: "W0511".into(),
         severity: "warning".into(),
@@ -658,8 +681,8 @@ fn conditional_verdict_diag(
              declared in ply.yaml for each callee it crosses into, instead of that callee's real \
              body. Assumed: {list}. That is what `conditional` means here -- the result holds if \
              those promises do. Nothing has checked them against the real code yet, so each one is \
-             owed evidence rather than settled: an assumed contract nobody exercises is green paint. \
-             (W0511, §5.5)"
+             owed evidence rather than settled: an assumed contract nobody exercises is green paint.\
+             {empty_note} (W0511, §5.5)"
         ),
         pointer: None,
         primary_span: None,
@@ -905,12 +928,23 @@ fn run_fn_checks(
     for check in checks {
         match check {
             Check::Bounded(k) => {
+                let mut promise_diags = Vec::new();
                 let (label, mut s, mut d) = run_bounded_check(
-                    cf, src_dir, lib_path, crate_dir, node_id, fn_name, *k, boundary, opts,
+                    cf,
+                    src_dir,
+                    lib_path,
+                    crate_dir,
+                    node_id,
+                    fn_name,
+                    *k,
+                    boundary,
+                    opts,
+                    &mut promise_diags,
                 )?;
                 labels.push(label);
                 statuses.append(&mut s);
                 diagnostics.append(&mut d);
+                diagnostics.append(&mut promise_diags);
             }
             Check::Prove => {
                 // M7, not yet implemented -- D9: a missing engine downgrades
@@ -1107,6 +1141,210 @@ fn run_fn_checks(
     ))
 }
 
+/// Runs every promise-content probe for this proof and reads the answers
+/// (§5.5). One `cargo kani` invocation per probe: the crate is already
+/// compiled by then, and each probe carries no function body, so they cost
+/// well under a second apiece.
+fn promise_findings(plan: &PromisePlan, run_cfg: &KaniRunConfig) -> Vec<PromiseFinding> {
+    if plan.is_empty() {
+        return vec![];
+    }
+    ply_core::promise::findings(plan, |h| {
+        let cfg = KaniRunConfig {
+            crate_dir: run_cfg.crate_dir.clone(),
+            harness_path: format!("ply_generated::{}", h.fn_name),
+            // A probe over one scalar type is solved in hundredths of a
+            // second (measured 2026-08-25). A minute is generous; the point
+            // of capping it is that a pathological clause must not eat the
+            // proof's own budget before the proof has started.
+            engine_timeout_secs: run_cfg.engine_timeout_secs.min(60),
+            enable_stubbing: run_cfg.enable_stubbing,
+        };
+        match kani::run_probe(&cfg) {
+            Ok(ProbeOutcome::Holds) => HarnessAnswer::Holds,
+            Ok(ProbeOutcome::Refuted) => HarnessAnswer::Refuted,
+            Ok(ProbeOutcome::Undecided(why)) => HarnessAnswer::Undecided(why),
+            Err(e) => HarnessAnswer::Undecided(e.to_string()),
+        }
+    })
+}
+
+/// §5.5's promise-content findings, in the words a user needs. Three
+/// sentences per finding, in the order the newbie bar asks for: what Ply
+/// looked for, what it found, and why that matters for the verdict.
+fn promise_diagnostics(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    findings: &[PromiseFinding],
+) -> Vec<Diagnostic> {
+    findings
+        .iter()
+        .map(|f| match &f.verdict {
+            ClauseVerdict::Unsatisfiable => {
+                unsatisfiable_promise_diag(node_id, fn_name, check_label, f)
+            }
+            ClauseVerdict::TriviallyTrue => trivial_promise_diag(node_id, fn_name, check_label, f),
+            ClauseVerdict::Undecided(why) => undecided_promise_diag(node_id, check_label, f, why),
+            // `Meaningful` never reaches here -- a promise that says
+            // something is the ordinary case and earns no diagnostic.
+            ClauseVerdict::Meaningful => unreachable!(),
+        })
+        .collect()
+}
+
+fn unsatisfiable_promise_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    f: &PromiseFinding,
+) -> Diagnostic {
+    let callee = &f.callee;
+    let clause = &f.clause;
+    let what = match f.kind {
+        ClauseKind::Ensures => format!(
+            "Ply searched every value a `{domain}` can hold -- that is what `{callee}` returns -- \
+             and found none that satisfies `{clause}`",
+            domain = f.domain
+        ),
+        ClauseKind::Requires => format!(
+            "Ply searched every combination of `{callee}`'s arguments ({domain}) and found none \
+             that satisfies `{clause}`",
+            domain = f.domain
+        ),
+    };
+    Diagnostic {
+        code: "E0502".into(),
+        severity: "error".into(),
+        phase: "verify".into(),
+        engine: "kani".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "Ply did not check `{fn_name}`: the promise declared in ply.yaml for `{callee}` \
+             cannot be true of anything. {what}. A proof that assumes something impossible proves \
+             everything -- it would have come back green for `{fn_name}` whatever `{fn_name}` \
+             actually does, and that green would have meant nothing. So Ply did not run it: this \
+             check earned no evidence and the verdict is `unclaimed`, never `{check_label}`. Fix \
+             the promise and re-run. (E0502, §5.5)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![
+            Fix {
+                title: format!(
+                    "rewrite `{callee}`'s `{key}:` entry so that at least one value satisfies it \
+                     -- `{clause}` currently rules out everything",
+                    key = f.kind.key()
+                ),
+                edits: vec![],
+            },
+            Fix {
+                title: format!(
+                    "or delete the entry: `{callee}` is then reported as a callee nobody has \
+                     vouched for (W0512), which is a smaller claim than a false one"
+                ),
+                edits: vec![],
+            },
+        ],
+        assumptions: vec![],
+        open_item: Some("unsatisfiable_promise".into()),
+    }
+}
+
+fn trivial_promise_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    f: &PromiseFinding,
+) -> Diagnostic {
+    let callee = &f.callee;
+    let clause = &f.clause;
+    let domain = &f.domain;
+    let title = match f.kind {
+        ClauseKind::Ensures => format!(
+            "The promise declared in ply.yaml for `{callee}` says nothing: `{clause}` is true of \
+             every `{domain}`, and `{domain}` is what `{callee}` returns. Ply searched for a \
+             value that would break it and there is none. Inside the proof of `{fn_name}` that \
+             clause constrained nothing: `{callee}` was replaced by an arbitrary `{domain}`, so \
+             `{fn_name}`'s {check_label} result is real and holds whatever `{callee}` returns -- \
+             but nothing about `{callee}` was assumed, and nothing is owed on this clause. If you \
+             meant to state a real property of `{callee}`, this one does not. (E0503, §5.5)"
+        ),
+        ClauseKind::Requires => format!(
+            "The promise declared in ply.yaml for `{callee}` says nothing: `{clause}` is true for \
+             every value of its arguments ({domain}). Ply searched for a combination that would \
+             break it and there is none. A `requires:` entry is what a caller must establish \
+             before calling, so this one asks `{fn_name}` for nothing at all while still being \
+             listed as a condition the result rests on. If you meant to state a real precondition \
+             for `{callee}`, this one does not. (E0503, §5.5)"
+        ),
+    };
+    Diagnostic {
+        code: "E0503".into(),
+        severity: "error".into(),
+        phase: "verify".into(),
+        engine: "kani".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title,
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![
+            Fix {
+                title: format!(
+                    "replace `{clause}` with what `{callee}` actually guarantees -- a bound, a \
+                     range, a relationship to its arguments"
+                ),
+                edits: vec![],
+            },
+            Fix {
+                title: format!(
+                    "or delete it: `{callee}` is then reported as a callee nobody has vouched for \
+                     (W0512), which is the truth this clause was hiding"
+                ),
+                edits: vec![],
+            },
+        ],
+        assumptions: vec![],
+        open_item: Some("empty_promise".into()),
+    }
+}
+
+fn undecided_promise_diag(
+    node_id: &str,
+    check_label: &str,
+    f: &PromiseFinding,
+    why: &str,
+) -> Diagnostic {
+    let callee = &f.callee;
+    let key = f.kind.key();
+    Diagnostic {
+        code: "W0514".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "kani".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "Ply could not tell whether the `{key}:` promise declared for `{callee}` says \
+             anything at all. Ply normally asks two questions about a declared promise -- can any \
+             value satisfy it, and can any value break it -- so that a promise which is \
+             impossible, or trivially true, is caught before a proof rests on it. Here it could \
+             not ask: {why}. So that promise is reported as unchecked, not as sound: the verdict \
+             beside it still assumes it. (W0514, §5.5)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: Some("promise_not_checked".into()),
+    }
+}
+
 fn unresolved_anchor_diag(
     node_id: &str,
     fn_name: &str,
@@ -1189,6 +1427,13 @@ fn run_bounded_check(
     bound_k: u32,
     boundary: &BoundaryPlan,
     opts: &VerifyOptions,
+    // §5.5's promise-content findings go straight into the caller's list
+    // rather than travelling back through the return value. Whatever the
+    // proof then said -- verified, violated, timed out -- a promise that
+    // says nothing is a defect in the document, and dropping it on the
+    // unhappy path would be exactly the quiet failure this gate exists to
+    // stop.
+    promise_out: &mut Vec<Diagnostic>,
 ) -> Result<(String, Vec<String>, Vec<Diagnostic>)> {
     let check_label = format!("bounded({bound_k})");
 
@@ -1253,6 +1498,27 @@ fn run_bounded_check(
         engine_timeout_secs,
         enable_stubbing: !generated.stubbed.is_empty(),
     };
+
+    // §5.5's promise-content gate, before the proof rather than after it: a
+    // proof that rests on a promise nothing can satisfy holds vacuously, so
+    // running it would produce a green verdict that means nothing. The
+    // probes carry no function body and solve in well under a second each
+    // (measured 2026-08-25), and they ride in the same generated module, so
+    // the crate is compiled once for the whole set.
+    let promise_findings = promise_findings(&generated.promise, &run_cfg);
+    promise_out.append(&mut promise_diagnostics(
+        node_id,
+        fn_name,
+        &check_label,
+        &promise_findings,
+    ));
+    if promise_findings
+        .iter()
+        .any(|f| f.verdict == ClauseVerdict::Unsatisfiable)
+    {
+        return Ok(("unclaimed".into(), vec![], vec![]));
+    }
+
     let outcome = kani::run(&run_cfg)?;
 
     // §9's cex validity oracle demands the SAME rendered test transitions
@@ -1294,8 +1560,13 @@ fn run_bounded_check(
                 // declared assumption. `conditional` is a status (D6), not
                 // a weaker rung -- the verdict stays `bounded(k)` and the
                 // assumption travels beside it.
-                let d =
-                    conditional_verdict_diag(node_id, fn_name, &check_label, &generated.stubbed);
+                let d = conditional_verdict_diag(
+                    node_id,
+                    fn_name,
+                    &check_label,
+                    &generated.stubbed,
+                    &promise_findings,
+                );
                 Ok((
                     check_label,
                     vec!["conditional".into(), "owed-evidence".into()],

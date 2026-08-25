@@ -740,6 +740,11 @@ pub struct GeneratedHarness {
     /// order they appear in the proof's attributes. Non-empty means the run
     /// needs Kani's `-Z stubbing` and the verdict is `conditional`.
     pub stubbed: Vec<StubSpec>,
+    /// The promise-content probes generated beside the proof: one harness
+    /// per question Ply asks about each declared clause (§5.5, `crate::promise`).
+    /// They ride in the same generated module so the crate compiles once for
+    /// all of them.
+    pub promise: crate::promise::PromisePlan,
 }
 
 /// Generates the `#[kani::proof_for_contract]` harness for `cf`, sized by
@@ -802,6 +807,7 @@ pub fn generate_proof_module(
         .map(|n| format!("#[kani::unwind({n})]\n"))
         .unwrap_or_default();
 
+    let promise = crate::promise::plan(stubs);
     let mut stub_defs = String::new();
     let mut stub_attrs = String::new();
     for s in stubs {
@@ -828,7 +834,8 @@ pub fn generate_proof_module(
          fn {proof_fn_name}() {{\n\
          {lets}\
          \x20\x20\x20\x20{fname}({args});\n\
-         }}\n",
+         }}\n\
+         {promise_defs}",
         fname = cf.path,
         k = bound_k,
         stub_defs = stub_defs,
@@ -837,6 +844,7 @@ pub fn generate_proof_module(
         proof_fn_name = proof_fn_name,
         lets = lets,
         args = call_args.join(", "),
+        promise_defs = promise.source(),
     );
 
     Ok(GeneratedHarness {
@@ -844,6 +852,7 @@ pub fn generate_proof_module(
         proof_fn_path: format!("ply_generated::{proof_fn_name}"),
         unwind,
         stubbed: stubs.to_vec(),
+        promise,
     })
 }
 

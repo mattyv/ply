@@ -64,6 +64,14 @@ pub struct KaniRunConfig {
 /// print`) -- cheap on success (nothing to print) and the only source of a
 /// witness on failure.
 pub fn run(cfg: &KaniRunConfig) -> Result<KaniOutcome> {
+    Ok(parse_output(&invoke(cfg)?))
+}
+
+/// Runs one harness and returns its combined stdout+stderr. The flag set is
+/// identical for every harness in a crate on purpose: Kani's `-Z` flags are
+/// compilation inputs, so varying them between the proof and the
+/// promise-content probes beside it would rebuild the crate for each.
+fn invoke(cfg: &KaniRunConfig) -> Result<String> {
     let timeout_arg = format!("{}s", cfg.engine_timeout_secs);
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cfg.crate_dir).args([
@@ -91,12 +99,54 @@ pub fn run(cfg: &KaniRunConfig) -> Result<KaniOutcome> {
         .output()
         .with_context(|| format!("spawning `cargo kani` in {}", cfg.crate_dir.display()))?;
 
-    let combined = format!(
+    Ok(format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(parse_output(&combined))
+    ))
+}
+
+/// Runs one **probe**: a harness asked a yes/no question about an assertion,
+/// with no function body in it (§5.5's promise-content gate). Deliberately
+/// not [`run`]: a probe wants no witness and demanding one would be the
+/// wrong rule here. §5.4c's MUST is that a *violation verdict* never appears
+/// without evidence; a probe's failing assertion is not a verdict about
+/// anyone's code, it is the benign answer "a value exists".
+pub fn run_probe(cfg: &KaniRunConfig) -> Result<ProbeOutcome> {
+    Ok(classify_probe(&invoke(cfg)?))
+}
+
+/// What one promise-content probe said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// The assertion held for every value in the probe's domain.
+    Holds,
+    /// A value breaking the assertion exists.
+    Refuted,
+    /// Neither -- a timeout, or output this adapter does not recognise.
+    /// Never rounded to either answer.
+    Undecided(String),
+}
+
+/// The same reading discipline as [`parse_output`], minus the witness: read
+/// PAST the shared "VERIFICATION:- FAILED" line to the reason underneath,
+/// because Kani renders a CBMC timeout and a genuine failing check
+/// identically at that line (§5.4c).
+pub fn classify_probe(combined: &str) -> ProbeOutcome {
+    if combined.contains("VERIFICATION:- SUCCESSFUL") {
+        return ProbeOutcome::Holds;
+    }
+    if combined.contains("CBMC timed out") {
+        return ProbeOutcome::Undecided("the engine ran out of time on it".into());
+    }
+    if combined.contains("VERIFICATION:- FAILED") {
+        return ProbeOutcome::Refuted;
+    }
+    ProbeOutcome::Undecided(
+        "the engine printed neither a pass nor a failure for it, so Ply has no answer to \
+         report"
+            .into(),
+    )
 }
 
 /// Parses Kani's combined stdout+stderr into a `KaniOutcome`. Pure function,

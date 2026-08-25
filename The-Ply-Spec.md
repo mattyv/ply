@@ -771,7 +771,9 @@ the evidence behind `g`'s contract, the third on there being no contract to key 
   another crate, `f` and `g` in a cycle, or `g` carrying no verification at all but a
   contract declared for it in `ply.yaml` (§5.4's external-spec route) → verify `f`
   assuming `g`'s contract, stub `g` out of the proof, and mark `f`'s verdict
-  `conditional` (`W0511`), listing each assumed contract.
+  `conditional` (`W0511`), listing each assumed contract. The contract has to *say*
+  something first: a promise nothing can satisfy, or one true of every value, is caught
+  before the proof runs (`E0502`/`E0503`, below).
 - **No contract is declared for `g` anywhere** — not inline, not in `ply.yaml` → Ply
   **refuses to descend into `g`'s body**. `f`'s `bounded` check earns no evidence:
   verdict `unclaimed`, diagnostic `W0512`, and the run fails by default (§1's
@@ -875,6 +877,49 @@ A `ply.yaml` fn entry that declares `requires`/`ensures` and asks for no `checks
 about that function. It contributes an assumption and earns no node of its own, in this
 crate or another — reporting it as an `unclaimed` claim would say the opposite of what
 was written.
+
+**A declared promise that constrains nothing is a defect in the document, and never
+counts as an assumption.** This is §1's rule one turn further in: an *absence of real
+assumption is not a pass* either. Under the design Ply is built for, a language model
+writes one promise per piece of old code a new feature calls, so an empty, tautological or
+self-contradictory promise is not a hypothetical — it is the realistic failure, and it is
+the one way per-function promises can quietly lie. Before running a proof that stubs a
+callee, Ply asks the engine two questions about each declared clause, over the clause
+alone with no function body anywhere in the harness: **can any value satisfy it**, and
+**can any value break it**. Both are answered exhaustively over the value space (CBMC
+solves them symbolically, not by sampling), and each costs well under a second once the
+crate is compiled — measured 2026-08-25.
+
+- **Unsatisfiable** — no value satisfies it. Ply hands the clause to the engine as an
+  assumption, so the caller's proof holds *vacuously* and anything at all is provable
+  under it. Measured on `tests/fixtures/emptypromise`: a caller whose own postcondition is
+  plainly false came back `bounded(2)`, exit 0, with the impossible promise listed beside
+  the verdict as though it were carrying weight. Ply now **refuses to run the proof**:
+  `E0502`, verdict `unclaimed`, and the diagnostic quotes the clause back.
+- **Trivially true** — true of every value the type can hold (`|result| true`, or
+  `|result| *result >= 0` on an unsigned integer). It constrains nothing, so the callee
+  was in effect replaced by an arbitrary value. The caller's verdict **stands and is
+  honest** — an unconstrained value is the *weaker* assumption, not the stronger one, so
+  the result holds whatever that callee returns — but the report called it an assumption
+  owed evidence, which sends a reader off to discharge a debt that does not exist.
+  `E0503`, error severity so the run fails, the clause quoted back with the type it ranges
+  over, and `W0511`'s `conditional` sentence names the empty clause rather than counting
+  it among the promises that are owed evidence.
+- **Neither answer** — a clause whose parameters have a type the bounded codegen cannot
+  build an arbitrary value for, a clause Ply cannot parse, or an engine that timed out.
+  Reported as unchecked (`W0514`), never as sound: the verdict beside it still assumes the
+  promise, and the diagnostic says so.
+
+What this does not reach, stated rather than left to be discovered: it decides
+*emptiness*, not *strength* — a promise that excludes one value out of four billion is
+neither unsatisfiable nor trivially true and passes this gate while carrying almost no
+information; it says nothing about whether the real callee *honours* the promise, which
+is the separate `owed-evidence` debt discharged by fuzzing the callee against it; it asks
+about each declared promise alone, not about the harness as a whole, so vacuity arising
+from the interaction between a caller's own `requires` and a stub's assumptions is not
+caught here (Kani's `kani::cover` is the instrument for that, and is not built); and it
+does not look at a verified function's own inline `#[ply::ensures]`, where a weak spec is
+the `mutate` tier's question (`W0502`) rather than this one's.
 
 The verdict tree shows each verdict's assumption chain; `conditional` propagates upward as a
 status (D6). Cross-crate `stub_verified` (Kani's wrapper/double-stub workaround) is out

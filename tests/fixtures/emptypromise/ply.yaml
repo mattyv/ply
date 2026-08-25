@@ -1,0 +1,24 @@
+ply: 1
+
+# Two declared promises, neither of which says anything.
+#
+# `legacy_rate`'s is satisfiable by no `u32` at all: nothing is both greater
+# than 10_000 and less than 5. Assuming it makes any proof that rests on it
+# hold vacuously.
+#
+# `legacy_cap`'s is true of every `u32`: an unsigned integer is always at
+# least zero. Assuming it constrains nothing at all.
+components:
+  emptypromise:
+    anchor: ply_fixture_emptypromise
+    fns:
+      legacy_rate:
+        ensures:
+          - "|result| *result > 10_000 && *result < 5"
+      legacy_cap:
+        ensures:
+          - "|result| *result >= 0"
+      vacuous_fee:
+        checks: [bounded(2)]
+      havoc_fee:
+        checks: [bounded(2)]
