@@ -784,8 +784,11 @@ than a shortcut:
    surface), stale-able (D14), and — the part that makes it better than trust — checkable
    by the cheap tier: `fuzz` has no trouble crossing the boundary, so a declared contract
    on a legacy callee can be fuzz-checked against the real legacy body. Until it is, the
-   caller's node carries the `owed-evidence` status, and `audit` and `worklist` will list
-   it as owed **(M5 — neither command is built yet, §10)**. `conditional` is the *normal*
+   caller's node carries the `owed-evidence` status, and **`cargo ply audit` lists it**:
+   the callee, the promise, the caller resting on it, and what would discharge it
+   (2026-08-25, Phase 1b — before that both commands were unbuilt and this paragraph
+   described them in the present tense anyway, which made the enforcement loop an IOU).
+   `cargo ply worklist` does not list it yet. `conditional` is the *normal*
    state of a legacy-extension codebase, so it
    must read as routine and legible rather than as an alarm — the annotation carries the
    trust story, and a user who learns to skip it has lost it.
@@ -884,6 +887,7 @@ cargo ply verify [path|fn]   # run checks via engines, callees first; write cex 
 cargo ply tree               # verdict tree, worst-of aggregation, assumption chains
 cargo ply worklist           # unresolved markers + weak specs (W0502) + stale claims (W0302)
 cargo ply audit              # trust surface: profile escapes, assumed contracts, derived fns
+                             # IMPLEMENTED: six tiers, no engines (see below).
 cargo ply accept [id|--all]  # re-record fingerprints in ply.lock (§5.2)
 cargo ply doctor             # engine presence + versions vs pins; prints the exact
                              # install command for each missing engine, never installs
@@ -908,6 +912,28 @@ the code, and the human surface says so in as many words. `check`'s exit codes a
 clean or advisory-only, 1 any error-severity finding, 2 tool error; `--fail-on` is not
 wired to it yet (its `evidence` default is meaningless for a command that gathers none),
 and neither are `--only-changed` or `--engine-timeout`.
+
+**`audit` ships as of 2026-08-25 (Phase 1b), and reports none of its findings as a
+failure.** The one-line description above predates most of the surface it now covers, so
+the command lists, in this fixed order: **assumed boundary contracts** (§5.5) — each
+naming the callee, the promise `ply.yaml` declares for it, the caller whose verdict rests
+on it, and the `owed-evidence` that promise carries until something exercises it;
+**environmental assumptions** (§5.1's `entry:`); **`trusted` claims** with their evidence
+(§5.4d); **helpers called from contracts** (§5.4a); **`#[ply::allow(...)]` escapes**
+(§5.3); and **derived bodies** (§5.7). Three of those have no owed state and never will:
+an escape, an environmental assumption and an attestation are permanent trust surface, and
+counting one as an open item would pressure a user into deleting an honest declaration —
+the opposite of what the surface is for. The command exits 0 with a surface to report;
+only a document that will not load fails it (1), and a missing one is a tool error (2).
+What it cannot see rides in `coverage.not_checked`, the same way `check` carries its
+missing tiers: **trusted-claim staleness** and **assumption discharge** both need
+`ply.lock` (Phase 1c), so every attestation is listed undated and every assumption is
+listed owed; **helper evidence** needs a verdict, and this command produces none; call
+sites Ply's reader cannot see (§5.5's own gaps) are absent from the assumed-contract list;
+and the **architecture bans** an escape suppresses are M2, so today an escape switches
+nothing off. Like `check`, `audit` runs no engines, so every node in its envelope reads
+`unclaimed`, and its last line says so. The surface itself rides in the envelope as
+`trust_surface`, an additive §8 field.
 
 Global flags: `--json` (schema §8, the agent surface — every command supports it),
 `--engine-timeout=<s>` (shape-aware default, not a flat number — see below),

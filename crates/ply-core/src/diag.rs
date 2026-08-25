@@ -157,6 +157,61 @@ pub struct Coverage {
     pub not_checked: Vec<Tier>,
 }
 
+/// One entry on `cargo ply audit`'s trust surface (§6): something a
+/// verdict in this codebase rests on that Ply itself never checked.
+///
+/// **Not a diagnostic.** Every entry is a decision somebody made on
+/// purpose — an assumed boundary contract (§5.5), an attested claim
+/// (§5.4d), a helper a contract calls (§5.4a), an escape from a ban
+/// (§5.3), a derived body (§5.7), an assumption about the world outside
+/// (§5.1's `entry:`). They are listed so the decision stays visible, never
+/// so a user is pushed into deleting one: an honest declaration that gets
+/// reported as a failure is a declaration people learn to stop writing.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrustItem {
+    /// Which tier this belongs to (`assumed_contract`, `trusted_claim`, …).
+    pub kind: String,
+    /// What is being trusted: the callee, the claim, the helper, the ban.
+    pub subject: String,
+    /// The §7 node whose evidence rests on it, or where it is declared.
+    pub node_id: String,
+    /// D6 statuses this item carries — `owed-evidence` on an assumption
+    /// nothing has exercised, `staleness-unknown` on an attestation Ply
+    /// cannot date.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub statuses: Vec<String>,
+    /// `file:line`, where the item came from source rather than ply.yaml.
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub where_: Option<String>,
+    /// The plain sentence a reader needs: what is trusted, what rests on
+    /// it, and what would settle it.
+    pub detail: String,
+}
+
+/// One entry on `cargo ply worklist` (§6): something that is owed and
+/// expected to close — an unresolved marker (§5.6), a weak spec (`W0502`),
+/// a stale claim (`W0302`).
+///
+/// The distinction from [`TrustItem`] is the whole design: trust surface is
+/// permanent and listing it must never read as a demand, while an open item
+/// is a thing somebody intends to finish.
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenItem {
+    pub kind: String,
+    /// The unresolved id (§5.6), where the item has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    /// The §7 node it sits in — the fn or component, or `ply.yaml` for a
+    /// registry entry with no code behind it.
+    pub node_id: String,
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub where_: Option<String>,
+    /// What this item blocks right now, in one line (§5.6's "blocking
+    /// status").
+    pub blocking: String,
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Envelope {
     pub command: String,
@@ -165,6 +220,14 @@ pub struct Envelope {
     pub diagnostics: Vec<Diagnostic>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coverage: Option<Coverage>,
+    /// §6's `audit`. Absent on every other command — an empty array means
+    /// "this crate rests on nothing Ply can see", which is a different fact
+    /// from "this command does not report a trust surface".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_surface: Option<Vec<TrustItem>>,
+    /// §6's `worklist`, with the same absent/empty distinction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_items: Option<Vec<OpenItem>>,
 }
 
 impl Envelope {

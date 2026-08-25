@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use ply_core::callgraph::{CalleeStatus, DeclaredContract, Resolver};
+use ply_core::callgraph::{CalleeStatus, Resolver};
 use ply_core::config;
 use ply_core::contract_rt::{self, RenderedTest};
 use ply_core::diag::{Assumption, Counterexample, Diagnostic, Envelope, Evidence, Fix, Node};
@@ -20,6 +20,8 @@ use ply_core::engines::mutants::{self, MutantsRunConfig, MutantsRunOutcome};
 use ply_core::harness::{self, ContractFn, StubSpec};
 use ply_core::harness_crate;
 use ply_core::model::{Check, FnClaim};
+
+use crate::shared::{self, declared_contracts, local_anchor_names, sorted_by_key};
 
 pub const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -110,16 +112,6 @@ fn default_secondary_engine_timeout_secs() -> u32 {
     60
 }
 
-/// Runs `verify` over every fn claim declared in `<crate_dir>/ply.yaml`,
-/// against the source at `<crate_dir>/src/lib.rs`. Returns the §8 envelope.
-/// The entries of an order-preserving map, in key order. See the note at
-/// its use site: `verify`'s output order is sorted by name, and stays so.
-fn sorted_by_key<V>(map: &indexmap::IndexMap<String, V>) -> Vec<(&String, &V)> {
-    let mut entries: Vec<(&String, &V)> = map.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(b.0));
-    entries
-}
-
 pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> {
     let yaml_path = crate_dir.join("ply.yaml");
     let file = config::load(&yaml_path)?;
@@ -150,34 +142,14 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     // names another crate is a **boundary component**: Ply does not verify
     // its fns from here, it reads the contracts they declare (§5.5).
     let local_anchors = local_anchor_names(crate_dir);
-    let is_local = |anchor: &str| -> bool {
-        local_anchors.is_empty() || local_anchors.contains(&anchor.replace('-', "_"))
-    };
+    let is_local = |anchor: &str| -> bool { shared::is_local(&local_anchors, anchor) };
 
     // §5.4's external-spec route, read for the first time on the verify
     // path: a `requires:`/`ensures:` entry declares a contract for a fn,
-    // keyed by the path a caller writes.
-    let mut declared: BTreeMap<String, DeclaredContract> = BTreeMap::new();
-    for (_, comp) in sorted_by_key(&file.components) {
-        for (fn_key, claim) in sorted_by_key(&comp.fns) {
-            if claim.requires.is_empty() && claim.ensures.is_empty() {
-                continue;
-            }
-            let path = if is_local(&comp.anchor) {
-                fn_key.clone()
-            } else {
-                format!("{}::{}", comp.anchor, fn_key)
-            };
-            declared.insert(
-                path.clone(),
-                DeclaredContract {
-                    path,
-                    requires: claim.requires.clone(),
-                    ensures: claim.ensures.clone(),
-                },
-            );
-        }
-    }
+    // keyed by the path a caller writes. `audit` reads the same map to list
+    // what this crate's proofs rest on, so the two commands cannot disagree
+    // about which callee has a promise behind it.
+    let declared = declared_contracts(&file, &local_anchors);
     let lib_src = std::fs::read_to_string(&lib_path).unwrap_or_default();
     let mut resolver = Resolver::new(&lib_src, crate_dir, declared)?;
 
@@ -450,6 +422,8 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         root,
         diagnostics,
         coverage: None,
+        trust_surface: None,
+        open_items: None,
     })
 }
 
@@ -460,7 +434,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
 /// `has_contract`) otherwise. A flat `[bounded(2)]` default would route
 /// most contracted functions in ordinary Rust into `unsupported` or a
 /// multi-minute timeout (§5.4c).
-fn default_checks_for(cf: &ContractFn) -> Vec<Check> {
+pub(crate) fn default_checks_for(cf: &ContractFn) -> Vec<Check> {
     if !cf.has_contract() {
         return vec![];
     }
@@ -470,24 +444,6 @@ fn default_checks_for(cf: &ContractFn) -> Vec<Check> {
         vec![Check::Fuzz(256)]
     } else {
         vec![]
-    }
-}
-
-/// The names this crate answers to in an `anchor:` (§5.1): its `[lib] name`
-/// and its package name, both normalised to Rust identifier spelling. Empty
-/// when there is no readable `Cargo.toml`, in which case every component is
-/// treated as local -- the pre-2026-08-25 behaviour, kept as the fallback so
-/// a missing manifest degrades rather than mis-reports.
-fn local_anchor_names(crate_dir: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(crate_dir.join("Cargo.toml")) else {
-        return vec![];
-    };
-    match harness_crate::read_crate_names(&text) {
-        Ok(names) => vec![
-            names.lib_ident.replace('-', "_"),
-            names.package_name.replace('-', "_"),
-        ],
-        Err(_) => vec![],
     }
 }
 

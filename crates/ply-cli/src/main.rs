@@ -1,4 +1,6 @@
+mod audit;
 mod check;
+mod shared;
 mod verify;
 
 use std::path::PathBuf;
@@ -23,6 +25,12 @@ struct Cli {
 enum Commands {
     /// Validate ply.yaml and the anchors it points at (§6). Fast, no engines.
     Check {
+        /// Path to the crate directory containing `ply.yaml`.
+        path: PathBuf,
+    },
+    /// List the trust surface: what this codebase's evidence rests on and
+    /// Ply never checks (§6). Fast, no engines.
+    Audit {
         /// Path to the crate directory containing `ply.yaml`.
         path: PathBuf,
     },
@@ -85,6 +93,15 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", report.envelope.to_json_pretty());
             } else {
                 check::print_human(&report);
+            }
+            std::process::exit(report.exit_code());
+        }
+        Commands::Audit { path } => {
+            let report = audit::audit_crate(&path)?;
+            if cli.json {
+                println!("{}", report.envelope.to_json_pretty());
+            } else {
+                audit::print_human(&report);
             }
             std::process::exit(report.exit_code());
         }
@@ -245,6 +262,8 @@ mod tests {
             },
             diagnostics: vec![],
             coverage: None,
+            trust_surface: None,
+            open_items: None,
         }
     }
 

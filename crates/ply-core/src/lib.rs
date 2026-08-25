@@ -9,3 +9,4 @@ pub mod harness;
 pub mod harness_crate;
 pub mod model;
 pub mod schema;
+pub mod surface;

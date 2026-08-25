@@ -26,13 +26,17 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ply_core::callgraph::{CallSite, CalleeStatus, Resolver};
 use ply_core::check::Target;
 use ply_core::diag::{Coverage, Diagnostic, Envelope, Node, Tier};
 use ply_core::harness;
 use ply_core::model::{Component, Document};
 use ply_core::schema;
+
+use crate::shared::{
+    Loaded, empty_workspace, is_local, load_document, local_anchor_names, workspace_node, wrap,
+};
 
 const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -85,40 +89,23 @@ impl CheckReport {
 
 pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
     let yaml_path = crate_dir.join("ply.yaml");
-    let text = std::fs::read_to_string(&yaml_path).with_context(|| {
-        format!(
-            "Ply could not read a ply.yaml at {}. `cargo ply check` expects the path to a crate \
-             directory that has one.",
-            yaml_path.display()
-        )
-    })?;
 
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     // Tier 1a: the document against the schema. A document that is not even
     // YAML is the parser's error, not a finding: there is nothing to report
-    // findings *about*.
-    let violations = schema::validate_text(&text).map_err(|e| {
-        anyhow::anyhow!(
-            "{} is not valid YAML, so Ply could not read it as a ply.yaml at all: {e}",
-            yaml_path.display()
-        )
-    })?;
-    for v in &violations {
-        diagnostics.push(schema_diag(v));
-    }
-
-    // A document with schema violations does not get a second opinion: the
-    // model would refuse it anyway, and a pile of consequential errors on
-    // top of the real one helps nobody.
-    if !diagnostics.is_empty() {
-        return Ok(CheckReport {
-            envelope: envelope(empty_workspace(), diagnostics, coverage(None)),
-            document: yaml_path.display().to_string(),
-        });
-    }
-
-    let doc = ply_core::model::parse_document(&text).map_err(|e| anyhow::anyhow!("{e}"))?;
+    // findings *about*. A document that fails the schema does not get a
+    // second opinion either -- the model would refuse it anyway, and a pile
+    // of consequential errors on top of the real one helps nobody.
+    let doc = match load_document(&yaml_path, "check")? {
+        Loaded::Document(doc) => *doc,
+        Loaded::SchemaViolations(violations) => {
+            return Ok(CheckReport {
+                envelope: envelope(empty_workspace(), violations, coverage(None)),
+                document: yaml_path.display().to_string(),
+            });
+        }
+    };
 
     // Tier 1b: every document-local rule, in document order.
     for d in ply_core::check::run_checks(&doc) {
@@ -196,8 +183,7 @@ fn walk_anchors(
     // The same locality test `verify` applies (§5.5): a component anchored
     // to another crate is a boundary component, and this slice reads its
     // declared contracts rather than its code.
-    let local = local_anchors.is_empty() || local_anchors.contains(&comp.anchor.replace('-', "_"));
-    if local {
+    if is_local(local_anchors, &comp.anchor) {
         for fn_name in comp.fns.keys() {
             let node_id = format!("{qualified}::{fn_name}");
             if harness::discover_fn(lib_path, fn_name).is_ok() {
@@ -289,24 +275,6 @@ fn unresolved_anchor_diag(
     }
 }
 
-fn schema_diag(v: &schema::SchemaViolation) -> Diagnostic {
-    Diagnostic {
-        code: v.code.into(),
-        severity: "error".into(),
-        phase: "check".into(),
-        engine: "ply".into(),
-        check: "schema".into(),
-        node_id: "ply.yaml".into(),
-        title: v.message.clone(),
-        primary_span: None,
-        pointer: Some(v.pointer.clone()),
-        counterexample: None,
-        fixes: vec![],
-        assumptions: vec![],
-        open_item: None,
-    }
-}
-
 fn document_diag(d: &ply_core::check::Diagnostic) -> Diagnostic {
     Diagnostic {
         code: d.code.into(),
@@ -348,63 +316,6 @@ fn count_fn_claims(doc: &Document) -> usize {
         c.fns.len() + c.components.values().map(walk).sum::<usize>()
     }
     doc.components.values().map(walk).sum()
-}
-
-/// The document's declared shape as a §7 tree. Order is the document's own,
-/// not sorted: a person fixing a `ply.yaml` reads it top to bottom.
-fn workspace_node(doc: &Document) -> Node {
-    fn component_node(name: &str, c: &Component) -> Node {
-        let mut children: Vec<Node> = c
-            .fns
-            .keys()
-            .map(|f| Node {
-                id: format!("{name}::{f}"),
-                kind: "fn".into(),
-                verdict: "unclaimed".into(),
-                statuses: vec![],
-                evidence: None,
-                children: vec![],
-            })
-            .collect();
-        children.extend(
-            c.components
-                .iter()
-                .map(|(child, nested)| component_node(&format!("{name}.{child}"), nested)),
-        );
-        Node {
-            id: name.to_string(),
-            kind: "component".into(),
-            verdict: "unclaimed".into(),
-            statuses: vec![],
-            evidence: None,
-            children,
-        }
-    }
-    Node {
-        id: "workspace".into(),
-        kind: "workspace".into(),
-        verdict: "unclaimed".into(),
-        statuses: vec![],
-        evidence: None,
-        children: doc
-            .components
-            .iter()
-            .map(|(n, c)| component_node(n, c))
-            .collect(),
-    }
-}
-
-/// The root a run that never got past the schema reports: the workspace
-/// exists, and nothing below it was read well enough to describe.
-fn empty_workspace() -> Node {
-    Node {
-        id: "workspace".into(),
-        kind: "workspace".into(),
-        verdict: "unclaimed".into(),
-        statuses: vec![],
-        evidence: None,
-        children: vec![],
-    }
 }
 
 fn coverage(anchors: Option<AnchorTally>) -> Coverage {
@@ -464,22 +375,8 @@ fn envelope(root: Node, diagnostics: Vec<Diagnostic>, coverage: Coverage) -> Env
         root,
         diagnostics,
         coverage: Some(coverage),
-    }
-}
-
-/// The crate names an `anchor:` may use to mean "this crate" — the same two
-/// `verify` accepts, so the two commands never disagree about which
-/// component is local.
-fn local_anchor_names(crate_dir: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(crate_dir.join("Cargo.toml")) else {
-        return vec![];
-    };
-    match ply_core::harness_crate::read_crate_names(&text) {
-        Ok(names) => vec![
-            names.lib_ident.replace('-', "_"),
-            names.package_name.replace('-', "_"),
-        ],
-        Err(_) => vec![],
+        trust_surface: None,
+        open_items: None,
     }
 }
 
@@ -518,25 +415,6 @@ pub fn print_human(report: &CheckReport) {
     }
     println!();
     println!("{}", wrap(NO_VERDICTS, 0));
-}
-
-/// Reflow a sentence to ~92 columns, indenting continuations to `indent`.
-fn wrap(text: &str, indent: usize) -> String {
-    let mut out = String::new();
-    let mut col = indent;
-    for word in text.split_whitespace() {
-        if col + word.len() + 1 > 92 && col > indent {
-            out.push('\n');
-            out.push_str(&" ".repeat(indent));
-            col = indent;
-        } else if !out.is_empty() {
-            out.push(' ');
-            col += 1;
-        }
-        out.push_str(word);
-        col += word.len();
-    }
-    out
 }
 
 #[cfg(test)]
