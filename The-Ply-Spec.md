@@ -33,11 +33,11 @@ Terms this spec uses without further explanation. Ply-specific terms are marked 
 | harness | A small generated program that exercises one function under one engine. Ply generates these; users never write them. |
 | check | (Ply) One verification method applied to a function: `test`, `fuzz(n)`, `bounded(k)`, `prove`, or `mutate`. A function declares a *checks list*. |
 | verdict | (Ply) The evidence level a function's passing checks earned: `tested`, `fuzzed(n)`, `bounded(k)`, `proved`. |
-| status | (Ply) A qualifier on a verdict: `conditional` (rests on assumed contracts), `owed-evidence` (an assumed contract that nothing has yet checked against the real code — it travels with `conditional` and is what turns "we assumed this" into "and here is the debt"), `stale`, `weak-spec`, `unsupported`, `engine-missing`, `timeout`, `inconclusive`. |
+| status | (Ply) A qualifier on a verdict: `conditional` (rests on assumed contracts), `owed-evidence` (an assumed contract that nothing has yet checked against the real code — it travels with `conditional` and is what turns "we assumed this" into "and here is the debt"), `weak-spec`, `unsupported`, `engine-missing`, `timeout`, `inconclusive`. |
 | component | (Ply) A named architectural unit, declared in `ply.yaml` and anchored to a crate or module. |
 | capability (cap) | (Ply) A coarse effect a component is allowed: `net fs db time rand proc unsafe`. |
 | anchor | (Ply) The real code item (crate, module, or function) a claim attaches to. |
-| fingerprint | (Ply) The recorded hash of everything a verdict depended on: item body, contract text, callee contracts, engine name + version + flags, features, target. A claim whose fingerprint no longer matches is *stale*. |
+| fingerprint | (Ply) The recorded hash of everything a result depended on: item body, contract text, the contracts assumed for the callees it crosses into, the checks that ran, engine name + version + flags, active features, target triple, **and Ply's own version**. It is recomputed from today's inputs every time a recorded result is used or shown: it matches, the result is reused; it does not, the check runs again (D14, §5.2a). |
 | verdict tree | (Ply) The aggregated per-node verdicts for the whole workspace, rendered by `cargo ply tree`. |
 | visual grammar | (Ply) The fixed one-to-one mapping between grammar constructs and visual forms (§7.1). A grammar feature that cannot be drawn is not admitted. |
 | watermark | (Ply) The per-function line where declaration stops and code begins: signature plus contract (§7.2). Below it, Ply verifies but never specifies; the un-specifiable imperative interior is the *floor*. |
@@ -133,7 +133,7 @@ proof search has gone off-spec — stop.
 | D3 | Architecture claims, checks, capabilities, ownership, profiles, and the unresolved registry live in **`ply.yaml`**, validated against a normative JSON Schema (§5). | These claims are cross-cutting and have no natural attribute location. YAML plus a schema needs no parser of our own, and agents emit YAML reliably. The schema, not prose, is the formal definition. |
 | D4 | Architecture enforcement has two tiers. **Crate-level dependency rules** (from `cargo metadata`, which is exact) are errors and default-deny between declared components. **Item-level rules** (calls, capabilities, ownership — from syn, which is approximate) are warnings by default; a component opts into item-level errors with `strict: true`. | Default-deny is only honest over facts that are sound. Crate dependency data is sound today; syn-derived call data is not (no name resolution, no macro expansion). Advisory-until-strict gives teeth without theater. |
 | D5 | Verification is modular and evidence-honest. Kani's `stub_verified(g)` is used only when `g` itself passed a Kani contract proof this run — in the same crate, or via the caller-local re-proof below. **Kani does not enforce this and cannot: it checks only that a `#[proof_for_contract]` harness *exists* for the stub target, never that it ran or passed (ADR-0003, item 4 — a caller reported clean SUCCESS while assuming a deliberately falsified callee contract; Kani's RFC-0009 promises pass-gating, but 0.67.0 observably runs harnesses in arbitrary order and never retracts a caller's verdict when its callee's harness fails in the same invocation). Ply's scheduler — callees proved first, the caller credited only if those proofs passed — is therefore the entire soundness guarantee; an implementation that relaxes it is unsound and nothing downstream will notice.** Cross-crate callees are supported after all, by declaring a caller-local `proof_for_contract` for the remote `pub` item (ADR-0003, item 5; verified against the real linked body — a mutated callee body fails the caller-local proof); there is no cross-crate proof caching, so each consumer re-proves. Any weaker case — callee merely fuzzed or tested, a cross-crate callee that cannot be re-proved caller-locally (not `pub`, or its witnesses unconstructible per D2), cycle in the call graph — verifies the caller against an *assumed* contract and marks the verdict **`conditional`**, listing the assumptions. A conditional verdict never reads as plain `bounded`. **A callee with no declared contract at all — the case every unannotated legacy module falls into — is a third branch, added 2026-08-25 after vetting 004: Ply refuses to descend into it, the caller's `bounded` check earns no evidence, and the diagnostic names the callee (§5.5).** | Stubbing is a soundness claim; fuzzing does not license it. Kani proof harnesses are crate-local, so cross-crate means caller-local re-verification of the real linked body, never reuse of the callee crate's proof. Never inline a contracted callee's body. |
-| D6 | Verdicts aggregate upward as **worst-of** over the evidence order `violation < unclaimed < tested < fuzzed < bounded < proved`. Statuses (`conditional`, `owed-evidence`, `stale`, `weak-spec`, `unsupported`, `engine-missing`, `timeout`, `inconclusive`) do not sit in that order; they propagate upward as flags and open-item counts alongside it. `owed-evidence` is the debt half of `conditional` (§5.5, added to this list 2026-08-25 — it was being emitted before it was defined): `conditional` says the verdict rests on an assumed contract, `owed-evidence` says nothing has yet checked that contract against the real body. They are two facts, and a run that discharges the second keeps the first. | A proof in one corner must not hide a merely-tested boundary in another; and a timeout is not a weaker proof, it is a different kind of fact. |
+| D6 | Verdicts aggregate upward as **worst-of** over the evidence order `violation < unclaimed < tested < fuzzed < bounded < proved`. Statuses (`conditional`, `owed-evidence`, `weak-spec`, `unsupported`, `engine-missing`, `timeout`, `inconclusive`) do not sit in that order; they propagate upward as flags and open-item counts alongside it. `owed-evidence` is the debt half of `conditional` (§5.5, added to this list 2026-08-25 — it was being emitted before it was defined): `conditional` says the verdict rests on an assumed contract, `owed-evidence` says nothing has yet checked that contract against the real body. They are two facts, and a run that discharges the second keeps the first. | A proof in one corner must not hide a merely-tested boundary in another; and a timeout is not a weaker proof, it is a different kind of fact. |
 | D7 | Every counterexample is stored as **Kani witness data** (the exact input bytes, engine-version-bound — input storage, not a reproduction: Kani's playback replays the function body only and never re-evaluates contract closures, so an `ensures` violation replays green) and, whenever the inputs can be rendered as stable Rust source, additionally as an ordinary `#[test]` that **asserts the postcondition explicitly** and therefore fails under plain `cargo test` — the only red artifact, and D7's repair target. The assertion is rendered overflow-safe (widened/checked arithmetic), so it fails by stating the contract, never by re-triggering an incidental panic inside the check. When rendering fails, the diagnostic says so (`W0541`) — inputs are never fabricated. **The red-test promise is qualified to failures arising in the function's own body.** A failure that depends on a *stubbed* callee's invented return (§5.5's assumed-contract branch) has no faithful plain-Rust reproduction: the rendered test calls the real callee, which never produces the stub's value, so it is emitted green — verified in `tests/spike/kani-pin/FINDINGS.md`, and unfixable by engine version. Such a failure reports `W0541` with reason `stub_substituted`, carrying the fabricated value and a proposed contract tightening, because its repair target is the declared contract rather than the code (docs/plans/d7-stub-failures.md). Rendering a red test against a rewritten body is refused: it would fail for a program the user does not run. | Playback is exact but body-only (ADR-0003 caveat 3); the portable test is the agent-friendly repair target and carries the red-test promise alone. Implemented and verified end-to-end in M3 (docs/m3-slice-findings.md): the `clamp` fixture's rendered `#[test]` fails before a contract fix and passes after, on the pinned Kani 0.67.0. |
 | D8 | `synth` mode (the model writes the function body) is orchestration over the check pipeline: prompt assembly, a retry loop, and marking the output as derived. It ships last and adds no checking machinery. | Thin by design. |
 | D9 | Implementation language Rust; three crates (§4); engines run as subprocesses with version detection at startup, never linked as libraries. The Kani version is pinned in `ply.toml` and recorded in every fingerprint. | Engine version churn must not break our build or silently invalidate old evidence. |
@@ -141,7 +141,7 @@ proof search has gone off-spec — stop.
 | D11 | Extraction may be incomplete but never silently so: every call site the extractor cannot resolve is counted and reported (W0412 plus a per-component coverage metric in `check` output). | Visibility is what makes the advisory tier (D4) and any future `strict` opt-in meaningful. |
 | D12 | A function declares a **checks list**, e.g. `checks: [bounded(3), fuzz(256), mutate]`. `mutate` requires a `test` or `fuzz` entry in the same list (else `E0504`) and uses only those as its mutant-kill signal, scoped per function with cargo-mutants' `--re`. | One base check could not express "bounded plus a fuzz-backed mutation tier". Running Kani once per mutant costs minutes per mutant per function; proof-backed mutation needs an opt-in budget, which is out of scope. |
 | D13 | **Spike before build** (milestone M0): every engine-facing detail in this spec is provisional until a hands-on spike, with the pinned Kani version, records in ADR-0003 what actually works — attribute emission, in-crate harness modules, `stub_verified`, playback, input construction. The spec is then amended to match reality. | The engine surface is the highest-risk part of the design; paper decisions there are guesses. |
-| D14 | `ply.lock` records, per claim, a **fingerprint**: item token-stream hash, merged contract text, callee contract hashes, engine name + version + flags, active features, target triple. A verdict is `stale` when any part changed. `cargo ply accept` re-blesses fingerprints and refuses (`E0303`) nodes whose last run failed. The fingerprint is also the verification cache key: `verify` skips any node whose fingerprint matches a recorded passing verdict and reuses it; `--force` reruns. | An old success must not bless changed assumptions or a different toolchain; without an accept verb, staleness warnings accumulate until they mean nothing; and without fingerprint-keyed skipping, every CI run re-pays full engine cost and the tool becomes nightly-only. |
+| D14 | `ply.lock` (committed) records, per claim, a **fingerprint** beside the result that fingerprint earned: item token-stream hash, merged contract text, the contracts assumed for the callees it crosses into, the checks that ran, engine name + version + flags, active features, target triple, **and Ply's own version**. `verify` recomputes the fingerprint from today's inputs *before* it uses or shows a recorded result — matches, the result is reused and the run says so on the node; differs, the check runs again and the record is rewritten. **There is no `stale` state and nothing for a human to re-bless**: the hash is the confirmation, and it is checked at every single use. Only a result that earned evidence is recorded, so no failure, timeout or absence is ever carried forward. | Committing the record is what stops CI and the next colleague re-proving what is already proven, and lets a reviewer see in a diff that a claim was checked. Re-hashing at every use is what makes storing verdicts safe at all: a stored verdict a human re-blesses can drift from the code between blessings, and every warning that accumulates faster than it is cleared ends up meaning nothing. **Ply's own version is in the hash because a fix to Ply changes what a result means.** The four defects fixed on 2026-08-25 — a harness that failed to compile earning a confident pass, an ordinary `use` import letting an unvouched-for body into a proof, an unsatisfiable declared promise passing vacuously, a claim inside a nested component skipped in silence — would every one of them have hash-matched perfectly against a record written the day before, because the source had not changed: Ply had. |
 
 ## 3. Toolchain
 
@@ -364,9 +364,9 @@ become environmental assumptions Ply cannot discharge (nothing inside the worksp
 calls the fn, so no in-workspace caller ever checks them) — listed on the future
 `cargo ply audit`'s trust surface, never counted as an open item, and never changing
 the fn's own verdict. An external declared but named by no `~>` edge and no fn's
-`entry:` list is `W0410` — nothing in the document says how it connects. Externals
-have no staleness machinery: there is no body, no contract, no evidence string to
-fingerprint, so the tooltip and the (future) audit line always say plainly
+`entry:` list is `W0410` — nothing in the document says how it connects. An external is never
+fingerprinted and never recorded (§5.2a): there is no body, no contract and no evidence
+string to hash, so the tooltip and the (future) audit line always say plainly
 "declared, never checked by Ply" rather than pretending otherwise.
 
 ### 5.1a Strictness & lexical rules
@@ -409,7 +409,7 @@ The schema must encode all of the following; the goldens (§9) pin them.
    resolvable, and exactly as ambiguity-checked against every component leaf, as a
    bare component name is.
 
-### 5.2 Anchoring & staleness
+### 5.2 Anchoring
 
 Every component anchors to a real crate or module; every fn claim anchors to a real
 function. `ply check` resolves anchors via the extractor. An unresolvable anchor →
@@ -453,11 +453,69 @@ private `fn`, or the private `mod` between it and the root — never "no such fu
 which would send a reader hunting for a typo that is not there. Items private *at* the
 crate root are unaffected: the generated module is a child of the root and sees them.
 
-Each claim's fingerprint (D14) lives in `ply.lock` (committed). When any part of
-the fingerprint no longer matches, `ply check` reports `W0302 claim may be stale` and the
-node carries status `stale`. `cargo ply accept [node_id ...|--all]` re-records
-fingerprints once a human (or an agent, after verifying) confirms the claims still hold;
-it refuses (`E0303`) nodes whose last verify run failed.
+### 5.2a Recorded results and reuse (D14)
+
+`verify` records what it earned, and re-earns it whenever anything it depended on
+changed. The record is `ply.lock`, it sits beside `ply.yaml`, and **it is committed** —
+not a throwaway cache. Committing it is what stops CI and the next colleague from
+re-proving what is already proven, and it puts "this claim was checked, and here is the
+fingerprint of what it was checked against" into a diff a reviewer reads.
+
+**The fingerprint covers everything the answer depended on.** For each claim, in this
+order:
+
+1. the checked function's own source (its token stream, so formatting and comments do
+   not count as change but every token does);
+2. its contract — the inline `#[ply::requires]`/`#[ply::ensures]` and anything `ply.yaml`
+   declares for it;
+3. the promises assumed for everything it crosses into: each stubbed callee's canonical
+   path and the contract text assumed for it (§5.5's second branch). A caller's proof is
+   *about* those promises, so a promise edited in `ply.yaml` re-runs every caller resting
+   on it;
+4. the checks that were run, as written, plus the `fuzz` seed that drew the cases
+   (§5.4c) — a `--seed` that replays a different run must not match a record written by
+   the derived one;
+5. the engine behind each of those checks: name, version, and the flags that shape the
+   obligation it discharged;
+6. the build target triple and the crate's active feature set;
+7. **Ply's own version.**
+
+Ply's own version is in there for the reason D14 gives, and it is the input that makes
+this scheme sound rather than merely fast: a defect fixed in Ply changes what a recorded
+result *means*, and every result recorded by the previous build would otherwise
+hash-match perfectly, because the user's source did not change. Putting the version in
+the hash invalidates exactly the results a tool fix should invalidate, automatically,
+with nobody having to remember which release carried which bug.
+
+Two inputs are deliberately *not* in it. The per-check wall-clock budget
+(`--engine-timeout`) is not: a proof that finished inside 300s is not made false by a
+later run that would only have allowed 60s, and folding the budget in would re-pay every
+proof in a CI job that sets a different one. And the *result* of an engine run is not an
+input to its own fingerprint, which is why only results that earned evidence are stored:
+a timeout, an absence of any kind, and a violation are never recorded, so nothing that
+failed can be carried forward, and a timing-out function re-pays its cap on every run
+(§5.4c).
+
+**The honesty rule: a recorded result never reaches a user's eyes without being
+re-hashed first.** That is the whole difference between this and a file of remembered
+verdicts. The record cannot drift out of agreement with reality, because agreement is
+what is checked at the moment of use — every use, every run, with no command in between
+and nothing for a human to confirm. It follows that there is no `stale` status, no
+`W0302`, no `cargo ply accept` and no `E0303`: a claim is never in a state of "recorded
+but possibly no longer true", because the recorded result is either used with its
+fingerprint verified or thrown away and re-earned.
+
+**A reused result says so.** The §8 node carries `reused: true`, and the printed tree
+marks that node `[reused]` beside its verdict, glossed in plain words beneath the tree
+the way `[assumed]` and `[evidence owed]` are (§6). A person reading `bounded(2)` can
+therefore tell whether it happened just now or was carried forward from an earlier run
+whose inputs still hash the same. Reuse is a fact about *when the run happened*, not a
+qualifier on the evidence, so it is not a D6 status: it never enters the evidence order,
+never propagates upward, and never changes an exit code. What is reused is the whole
+result — verdict, statuses, evidence block and the diagnostics that came with it — so a
+reused conditional verdict still prints the assumption it rests on, word for word.
+
+Deleting `ply.lock` re-runs everything; there is no `--force` flag.
 
 ### 5.3 Architecture semantics (always-on, M2)
 
@@ -758,8 +816,9 @@ per-mutant budget, minimum 120s) and reports exit code 124 as `M0601`/`timeout`.
 `mutate` run that produced no mutant count at all (killed by that cap, engine missing, or
 output Ply could not read) carries the `inconclusive` status, never `weak-spec`:
 `weak-spec` asserts a finding, and no engine made one (2026-08-24 M4 review, D5). D14
-caches passing verdicts only, so a timing-out function re-pays its cap on every run —
-which is why the cap must be small by default and the status cheap to re-report.
+records only results that earned evidence, so a timing-out function re-pays its cap on
+every run — which is why the cap must be small by default and the status cheap to
+re-report.
 
 Default checks: shape-aware. `[bounded(2)]` when the fn has a contract **and** its
 signature passes the §5.4b gate; `[fuzz(256)]` when it has a contract whose shape §5.4b
@@ -793,14 +852,16 @@ is external renders indistinguishably green. They appear in `cargo ply audit` as
 the trust surface and carry a distinct visual form (§7.1). An agent must never add or
 edit a `trusted` entry on its own judgment; attestation is a human act.
 
-**A trusted claim goes stale like any other evidence.** An entry records the content hash
-of the item it attests (D14's fingerprint, item body and contract text). When the item
-changes, the attestation no longer covers what it vouched for: the entry is marked `stale`
-and draws the stale corner marker beside its shield, and `audit` lists it as owed
-re-attestation. Without this a `trusted` entry outlives the code it described — the shield
-renders identically fresh forever, and a human's word about last year's function silently
-vouches for this year's. That is evidence lying, in the one construct built entirely on
-trust. Re-attestation is a human act too: `accept` does not clear it.
+**An attestation stops covering an item that changed.** An entry records the content hash
+of the item it attests (item body and contract text, the same two inputs §5.2a hashes
+first). When the item changes, the attestation no longer covers what it vouched for: the
+entry draws the "no longer covers this" corner marker beside its shield, and `audit` lists
+it as owed re-attestation. Without this a `trusted` entry outlives the code it described —
+the shield renders identically fresh forever, and a human's word about last year's function
+silently vouches for this year's. That is evidence lying, in the one construct built
+entirely on trust. Re-attestation is a human act, and nothing in Ply clears it: unlike a
+checked result, which §5.2a re-earns automatically the moment its fingerprint moves, an
+attestation can only be renewed by the person who made it.
 
 ### 5.5 Modular composition (D5)
 
@@ -852,11 +913,12 @@ than a shortcut:
 3. **An assumed boundary contract is owed evidence until something exercises it.** A
    contract declared in `ply.yaml` for an unclaimed callee is trusted, and trust that is
    never checked is green paint. The assumption is auditable (`cargo ply audit`'s trust
-   surface), stale-able (D14), and — the part that makes it better than trust — checkable
-   by the cheap tier: `fuzz` has no trouble crossing the boundary, so a declared contract
-   on a legacy callee can be fuzz-checked against the real legacy body. Until it is, the
-   caller's node carries the `owed-evidence` status, and **`cargo ply audit` lists it**:
-   the callee, the promise, the caller resting on it, and what would discharge it
+   surface), part of the caller's own fingerprint so that editing the promise re-runs
+   every caller resting on it (D14, §5.2a), and — the part that makes it better than
+   trust — checkable by the cheap tier: `fuzz` has no trouble crossing the boundary, so a
+   declared contract on a legacy callee can be fuzz-checked against the real legacy body.
+   Until it is, the caller's node carries the `owed-evidence` status, and **`cargo ply
+   audit` lists it**: the callee, the promise, the caller resting on it, and what would discharge it
    (2026-08-25, Phase 1b — before that both commands were unbuilt and this paragraph
    described them in the present tense anyway, which made the enforcement loop an IOU).
    `cargo ply worklist` lists the same thing from the other side: the *assumption* is
@@ -1005,42 +1067,43 @@ No streaming, no IDE integration, no multi-fn synthesis in v1.
 ## 6. CLI
 
 ```
-cargo ply check              # schema + anchors + staleness + architecture. Fast, no engines.
+cargo ply check              # schema + anchors + architecture. Fast, no engines.
                              # IMPLEMENTED: schema + anchors only (see below).
 cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts
-                             # (skips fingerprint-fresh passes, D14; --force reruns)
+                             # (reuses a recorded result whose fingerprint still matches,
+                             #  D14/§5.2a; a mismatch re-runs the check)
 cargo ply tree               # verdict tree, worst-of aggregation, assumption chains
-cargo ply worklist           # unresolved markers + weak specs (W0502) + stale claims (W0302)
+cargo ply worklist           # unresolved markers + weak specs (W0502)
                              # IMPLEMENTED: markers + owed evidence, no engines (see below).
 cargo ply audit              # trust surface: profile escapes, assumed contracts, derived fns
                              # IMPLEMENTED: six tiers, no engines (see below).
-cargo ply accept [id|--all]  # re-record fingerprints in ply.lock (§5.2)
 cargo ply doctor             # engine presence + versions vs pins; prints the exact
                              # install command for each missing engine, never installs
 cargo ply synth <fn>         # M6
 cargo ply skill              # (re)generate docs/PLY.skill.md from schema + diag registry
 ```
 
-**`check` implements two of its four tiers (2026-08-25, Phase 1a), and says so in its own
+**`check` implements two of its three tiers (2026-08-25, Phase 1a), and says so in its own
 output.** Schema (the document against `schema/ply.schema.json` — `E0201`, `E0204` — then
 every document-local rule that needs no code behind the anchors) and anchors (every fn
 claim resolved through the same resolver `verify` anchors with — which is also the one
 that classifies calls (§5.2, §5.5) — so the two commands never disagree about which
 claims point at real code; `E0301` names the nearest item-index name, and where the
 function is real but unreachable from a crate-root harness because it or a module above
-it is private, the diagnostic says *that* instead of "not found"). Staleness needs
-`ply.lock`, which nothing writes yet; the architecture tier is M2. Both gaps are carried
-in the `--json` envelope as a `coverage.not_checked` array and printed under "What this
-command did NOT check", because a command that reports only findings lets a clean run
-read as full coverage — the same failure as an absence of evidence reported as a pass
-(§1). `check` runs no engines, so every node in its envelope carries the verdict
+it is private, the diagnostic says *that* instead of "not found"). The architecture tier
+is M2. There is no staleness tier left to implement: §5.2a settles a recorded result by
+re-hashing it at the moment `verify` uses it, so no command has a "possibly out of date"
+state to report. That gap is carried in the `--json` envelope as a `coverage.not_checked`
+array and printed under "What this command did NOT check", because a command that reports
+only findings lets a clean run read as full coverage — the same failure as an absence of
+evidence reported as a pass (§1). `check` runs no engines, so every node in its envelope carries the verdict
 `unclaimed`: that is the command reporting no evidence of its own, not a judgement about
 the code, and the human surface says so in as many words. `check`'s exit codes are 0
 clean or advisory-only, 1 any error-severity finding, 2 tool error; `--fail-on` is not
 wired to it yet (its `evidence` default is meaningless for a command that gathers none),
 and neither are `--only-changed` or `--engine-timeout`.
 
-**`worklist` ships two tiers as of 2026-08-25 (Phase 1b), and names the two it cannot.**
+**`worklist` ships two tiers as of 2026-08-25 (Phase 1b), and names the one it cannot.**
 It lists **unresolved markers** (§5.6) — `ply::unresolved!` in the code and the `ply.yaml`
 registry, merged by id so one decision written in both places is one item, each with its
 span, its enclosing function and what it blocks — and **owed evidence** (§5.5): an assumed
@@ -1052,8 +1115,9 @@ assumption (§5.1's `entry:`) is therefore on `audit` and never here — nobody 
 it, so counting it as owed would pressure a user into deleting an honest declaration.
 **`worklist` exits 0 whether or not it has items**, for the same reason: a command that
 failed a build for containing a `TODO` would make deleting the `TODO` the cheapest fix.
-Its `coverage.not_checked` carries three things: `W0502` weak specs need a `mutate` run
-and a record of past runs (`ply.lock`, Phase 1c); `W0302` stale claims need the same file;
+Its `coverage.not_checked` carries two things: `W0502` weak specs need a `mutate` run,
+which is engine work this command does not start, and it does not read the recorded
+results either (§5.2a), so a weak spec found by an earlier `verify` is not listed here;
 and §5.6's cap of a marked function at check `test` (`W0521`) **is not enforced by this
 build**, so each marker's blocking line says what §5.6 intends rather than what Ply stops
 you doing. The items ride in the envelope as `open_items`, an additive §8 field. The
@@ -1074,8 +1138,9 @@ counting one as an open item would pressure a user into deleting an honest decla
 the opposite of what the surface is for. The command exits 0 with a surface to report;
 only a document that will not load fails it (1), and a missing one is a tool error (2).
 What it cannot see rides in `coverage.not_checked`, the same way `check` carries its
-missing tiers: **trusted-claim staleness** and **assumption discharge** both need
-`ply.lock` (Phase 1c), so every attestation is listed undated and every assumption is
+missing tiers: **whether an attestation still covers its item** (§5.4d) is not computed,
+so every attestation is listed undated, and **assumption discharge** needs a verdict this
+command does not produce and does not read from the record (§5.2a), so every assumption is
 listed owed; **helper evidence** needs a verdict, and this command produces none; call
 sites Ply's reader cannot see (§5.5's own gaps) are absent from the assumed-contract list;
 and the **architecture bans** an escape suppresses are M2, so today an escape switches
@@ -1185,7 +1250,10 @@ The model is a tree: workspace → components → nested components → fns. Eve
 carries `{ id, kind, anchor, content_hash, verdict, statuses, worst_descendant,
 open_items }`. `verdict` is the node's own claim status; `worst_descendant` implements
 D6 over the evidence order; `statuses` and `open_items` (unresolved markers, weak specs,
-conditional, owed-evidence or stale verdicts) propagate upward as counts.
+conditional or owed-evidence verdicts) propagate upward as counts. A node whose result
+was reused rather than re-run additionally carries `reused: true` (§5.2a) — a fact about
+when the run happened, not a status: it stays on the node that earned it, propagates
+nowhere, and enters neither the evidence order nor any exit code.
 
 Aggregation rules the verdict kernel (`tools/kernel`) checks exhaustively and the tool
 must preserve:
@@ -1230,7 +1298,7 @@ grammar.**
 | profile | tag on the box |
 | checks list | glyph row on the fn chip |
 | verdict | node fill on the ordinal scale: `violation` red → `proved` deepest green; `unclaimed` unfilled |
-| statuses | corner markers on the node (conditional, stale, weak-spec, …) |
+| statuses | corner markers on the node (conditional, weak-spec, …) |
 | worst_descendant | a collapsed box takes its weakest descendant's fill — D6 made visible |
 | assumption chain | thin dotted arrows from a verdict to the contracts it assumed |
 | unresolved marker | numbered pin on the fn or component |
@@ -1344,6 +1412,13 @@ Every command emits one envelope:
 `{ "command": "...", "ply_version": "...", "root": <node tree §7>, "diagnostics": [<Diagnostic>...] }`.
 Stability rule: additive changes only after M3; the goldens in tests/ui are the contract.
 
+A node whose result was **reused** rather than re-run carries `reused: true` (§5.2a);
+the field is absent otherwise, never `false`. It is set only after the node's fingerprint
+was recomputed from today's inputs and matched the recorded one, so its presence is a
+statement that the recorded result is about the code in front of you. Everything else on
+such a node — verdict, statuses, `evidence`, and the diagnostics carrying its node id —
+is exactly what the run that earned it emitted.
+
 A node whose verdict came from a sampling engine that **actually ran** additionally
 carries `evidence: { "engine": "proptest", "seed": "<64 hex chars>", "cases": 256 }` —
 §1's requirement that every verdict name what produced it concretely enough to reproduce
@@ -1421,7 +1496,7 @@ a user's data structures to suit an engine — a proof about a program the user 
 run is worth less than no proof, and the agent, not the tool, owns that trade.
 
 Diagnostic codes live in one exhaustive enum: `E02xx` config/schema, `E03xx/W03xx`
-anchoring/staleness, `A04xx/W04xx` architecture and resolution, `E05xx/V05xx/W05xx` contracts and
+anchoring, `A04xx/W04xx` architecture and resolution, `E05xx/V05xx/W05xx` contracts and
 verification, prefixes `K/P/M/R` reserved for engine-specific codes, `W01xx` environment,
 `X09xx` internal errors. Adapters never pass engine stderr/stdout through raw: they parse
 it, or fail with `X0901` attaching the raw output for debugging.
@@ -1479,11 +1554,11 @@ it, or fail with `X0901` attaching the raw output for debugging.
 - `schema/ply.schema.json`; serde model; validation with pointer→line mapping;
   multi-file merge; micro-syntax parsers; E02xx suite (goldens). ADR-0002 written.
 - syn-based item index; anchor resolution with suggestions (E0301); fingerprint
-  recording and staleness (W0302, D14 — engine fields filled as engines land); `accept`;
+  recording and result reuse (D14, §5.2a — engine fields filled as engines land);
   `check` and `worklist` (markers only); `--json` envelope everywhere.
-- Accept: a fixture with 2 crates, nested components, one broken anchor, and one stale
-  claim (then blessed via `accept`) — golden output exact; invalid-yaml fixture set
-  pinned.
+- Accept: a fixture with 2 crates, nested components, one broken anchor, one claim whose
+  recorded result is reused on a second run, and one whose fingerprint moved and is
+  re-run — golden output exact; invalid-yaml fixture set pinned.
 
 **M2 — architecture engine** (~4 sessions)
 - Crate tier from `cargo metadata` (A0401/A0405 as errors). Item tier behind
