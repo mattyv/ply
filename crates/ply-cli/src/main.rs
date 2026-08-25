@@ -463,7 +463,7 @@ mod tests {
             exit_code_for(
                 &envelope_with_statuses(
                     &["bounded(2)"],
-                    &["conditional", "owed-evidence", "weak-spec", "stale"]
+                    &["conditional", "owed-evidence", "weak-spec"]
                 ),
                 FailOn::Evidence
             ),

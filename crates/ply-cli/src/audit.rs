@@ -49,15 +49,15 @@ const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What `audit` cannot look at, in the words a user needs to know what this
 /// list leaves out. Exact strings, tested as such: the honesty of a short
 /// trust surface is carried entirely by these five sentences.
-const STALENESS_GAP: &str = "NOT CHECKED. §5.4d says a `trusted` entry goes stale when the code \
-     it vouches for changes, and that `audit` then lists it as owed re-attestation. That \
-     comparison needs the fingerprint in `ply.lock` — a file this version of Ply does not write \
-     yet. So every attestation above is listed with no staleness state at all, and one signed off \
-     against a function that has since been rewritten looks exactly like one signed off this \
-     morning.";
+const ATTESTATION_GAP: &str = "NOT CHECKED. §5.4d says an attestation stops covering an item \
+     once that item changes, and that `audit` then lists it as owed re-attestation. Ply does \
+     record a hash of what it checks, but only for claims it checked itself — an attestation is a \
+     person's word, nothing runs for it, and no hash of the item it vouches for is kept. So every \
+     attestation above is listed with no coverage state at all, and one signed off against a \
+     function that has since been rewritten looks exactly like one signed off this morning.";
 const DISCHARGE_GAP: &str = "NOT CHECKED. An assumed contract stops being owed once something \
-     runs the real callee against the promise. Ply keeps no record of past runs until `ply.lock` \
-     exists, and this command starts no engines, so every assumption above is reported as owed — \
+     runs the real callee against the promise. This command starts no engines and does not read \
+     the results `cargo ply verify` records, so every assumption above is reported as owed — \
      including one whose callee declares a check that has been passing for months. `cargo ply \
      verify` is what exercises it.";
 const HELPER_GAP: &str = "NOT CHECKED. §5.4a says a helper used in a contract that does not \
@@ -489,7 +489,7 @@ fn trusted_claim_item(node_id: &str, fn_name: &str, claim: &str, evidence: &str)
              lives outside Ply does not render indistinguishably green beside one Ply proved. \
              Whether the code it vouches for has changed since somebody signed it off is not known \
              in this run — see what this command could not look at, below. Re-attestation is a \
-             human act; `cargo ply accept` does not clear it. (§5.4d)"
+             human act, and nothing in Ply clears it. (§5.4d)"
         ),
     }
 }
@@ -664,8 +664,8 @@ fn plural(n: usize, noun: &str) -> String {
 fn gaps() -> Vec<Tier> {
     vec![
         Tier {
-            tier: "trusted-claim staleness".into(),
-            detail: STALENESS_GAP.into(),
+            tier: "attestation coverage".into(),
+            detail: ATTESTATION_GAP.into(),
         },
         Tier {
             tier: "assumption discharge".into(),
@@ -1046,7 +1046,8 @@ mod tests {
     }
 
     /// §5.4d: a trusted claim is a human's word, listed with the evidence
-    /// they cited. Its staleness state is the part Ply cannot supply yet,
+    /// they cited. Whether it still covers the item is the part Ply cannot
+    /// supply yet,
     /// and saying "not known" is the difference between an honest list and
     /// one that implies every attestation is current.
     #[test]
@@ -1299,15 +1300,14 @@ mod tests {
         assert_eq!(
             names,
             [
-                "trusted-claim staleness",
+                "attestation coverage",
                 "assumption discharge",
                 "helper evidence",
                 "unreadable call sites",
                 "architecture bans"
             ]
         );
-        assert_eq!(cov.not_checked[0].detail, STALENESS_GAP);
-        assert!(STALENESS_GAP.contains("ply.lock"));
+        assert_eq!(cov.not_checked[0].detail, ATTESTATION_GAP);
         assert_eq!(cov.not_checked[1].detail, DISCHARGE_GAP);
         assert_eq!(cov.not_checked[2].detail, HELPER_GAP);
         assert_eq!(cov.not_checked[3].detail, CALL_SITE_GAP);

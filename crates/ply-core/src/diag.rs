@@ -225,8 +225,7 @@ pub struct TrustItem {
 }
 
 /// One entry on `cargo ply worklist` (§6): something that is owed and
-/// expected to close — an unresolved marker (§5.6), a weak spec (`W0502`),
-/// a stale claim (`W0302`).
+/// expected to close — an unresolved marker (§5.6), a weak spec (`W0502`).
 ///
 /// The distinction from [`TrustItem`] is the whole design: trust surface is
 /// permanent and listing it must never read as a demand, while an open item

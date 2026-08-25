@@ -7,10 +7,9 @@
 //! constructs that parse cleanly but still violate The-Ply-Spec.md.
 //!
 //! Anchor resolution (§5.2) lives in `crate::anchors`, which needs the real
-//! source behind each anchor; staleness needs `ply.lock` (D14) and the
-//! architecture tier (§5.3) needs the crate and call graphs. Neither is
-//! implemented yet, and `cargo ply check` says so in its own output rather
-//! than letting a clean run read as full coverage.
+//! source behind each anchor; the architecture tier (§5.3) needs the crate
+//! and call graphs and is not implemented yet, and `cargo ply check` says so
+//! in its own output rather than letting a clean run read as full coverage.
 //!
 //! Promoted from `tools/check` in Phase 1a, wording and targets unchanged:
 //! `tools/check`'s binary and `tools/render` now consume it from here.

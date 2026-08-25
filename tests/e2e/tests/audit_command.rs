@@ -76,7 +76,7 @@ fn json_is_the_section_8_envelope_with_the_trust_surface_as_data() {
     assert_eq!(
         not_checked,
         [
-            "trusted-claim staleness",
+            "attestation coverage",
             "assumption discharge",
             "helper evidence",
             "unreadable call sites",

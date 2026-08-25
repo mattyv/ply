@@ -1,5 +1,4 @@
-//! `cargo ply worklist` (§6): "unresolved markers + weak specs (W0502) +
-//! stale claims (W0302)".
+//! `cargo ply worklist` (§6): "unresolved markers + weak specs (W0502)".
 //!
 //! **What is owed, and expected to close.** That is the whole difference
 //! from `cargo ply audit`, and it is a line worth keeping sharp: `audit`
@@ -10,10 +9,10 @@
 //! would pressure a user into deleting an honest declaration; it appears on
 //! `audit` and nowhere here.
 //!
-//! Two of §6's three tiers do not exist yet, and this command says so
-//! rather than letting a short list read as a short backlog: a weak spec is
-//! a finding from a `mutate` run, and a stale claim needs the fingerprint
-//! in `ply.lock` (Phase 1c). What it does list is:
+//! One of §6's tiers does not exist yet, and this command says so rather
+//! than letting a short list read as a short backlog: a weak spec is a
+//! finding from a `mutate` run, and this command starts no engines and does
+//! not read what an earlier run recorded. What it does list is:
 //!
 //! - **unresolved markers** (§5.6) — `ply::unresolved!` in the code and the
 //!   `ply.yaml` registry, merged by id, each with its span, its enclosing
@@ -44,13 +43,9 @@ const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// needs to know what a short list is not telling them. Exact strings.
 const WEAK_SPEC_GAP: &str = "NOT CHECKED. `W0502` is a finding from a `mutate` run: \
      cargo-mutants changes the code, the checks run again, and a mutant that survives means the \
-     spec was too weak to notice. That is engine work, and this command starts none. Ply keeps no \
-     record of previous runs either, until `ply.lock` exists (Phase 1c) — so a weak spec found \
-     this morning is not on this list. `cargo ply verify` reports it in the run that finds it.";
-const STALE_CLAIM_GAP: &str = "NOT CHECKED. A claim is stale when the function it describes has \
-     changed since its evidence was recorded, and that comparison needs the fingerprint in \
-     `ply.lock` — a file this version of Ply does not write yet (Phase 1c). No `W0302` can be \
-     reported here, so nothing on this list means your evidence is current.";
+     spec was too weak to notice. That is engine work, and this command starts none. It does not \
+     read the results `cargo ply verify` records either — so a weak spec found this morning is \
+     not on this list. `cargo ply verify` reports it in the run that finds it.";
 const CHECK_CAP_GAP: &str = "NOT ENFORCED. §5.6 caps a function containing an unresolved marker \
      at check `test`, with `W0521`. Ply does not apply that cap yet: `cargo ply verify` still \
      runs whatever the claim asks for, against a body that panics when it reaches the marker. The \
@@ -410,10 +405,6 @@ fn gaps() -> Vec<Tier> {
         Tier {
             tier: "weak specs (W0502)".into(),
             detail: WEAK_SPEC_GAP.into(),
-        },
-        Tier {
-            tier: "stale claims (W0302)".into(),
-            detail: STALE_CLAIM_GAP.into(),
         },
         Tier {
             tier: "check cap (W0521)".into(),
@@ -807,18 +798,9 @@ mod tests {
         let report = worklist_crate(dir.path()).unwrap();
         let cov = report.envelope.coverage.as_ref().unwrap();
         let names: Vec<&str> = cov.not_checked.iter().map(|t| t.tier.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "weak specs (W0502)",
-                "stale claims (W0302)",
-                "check cap (W0521)"
-            ]
-        );
+        assert_eq!(names, ["weak specs (W0502)", "check cap (W0521)"]);
         assert_eq!(cov.not_checked[0].detail, WEAK_SPEC_GAP);
-        assert_eq!(cov.not_checked[1].detail, STALE_CLAIM_GAP);
-        assert_eq!(cov.not_checked[2].detail, CHECK_CAP_GAP);
-        assert!(STALE_CLAIM_GAP.contains("ply.lock"));
+        assert_eq!(cov.not_checked[1].detail, CHECK_CAP_GAP);
         assert!(WEAK_SPEC_GAP.contains("mutate"));
     }
 
