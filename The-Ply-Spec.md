@@ -203,7 +203,7 @@ ply/
                             #             cex tests
                             #   diag/     Diagnostic types, JSON envelope, human renderer
     ply-cli/                # cargo-ply binary: check|verify|tree|worklist|audit|
-                            # accept|synth|skill
+                            # synth|skill
   templates/                # harness code templates (plain format strings)
   tests/
     ui/                     # ply.yaml + Rust fixtures + golden JSON (insta)

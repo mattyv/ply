@@ -1,11 +1,12 @@
 //! `cargo ply check` (§6): "schema + anchors + architecture.
 //! Fast, no engines."
 //!
-//! **Two of those four tiers do not exist yet**, and this command says so
-//! in both its surfaces rather than letting a clean run read as full
-//! coverage. Staleness needs `ply.lock` (D14), which Ply does not write;
-//! the architecture tier needs the crate and call graphs (M2). What runs
-//! here is:
+//! **One of those three tiers does not exist yet**, and this command says
+//! so in both its surfaces rather than letting a clean run read as full
+//! coverage: the architecture tier needs the crate and call graphs (M2).
+//! (There is no staleness tier any more: `verify` re-hashes every recorded
+//! result at the moment of use, D14/§5.2a, so there is no recorded-but-
+//! possibly-stale state for this command to report on.) What runs here is:
 //!
 //! - **schema** — the document against `schema/ply.schema.json` (`E0201`,
 //!   `E0204`), then every document-local rule that needs no code behind the
