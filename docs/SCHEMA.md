@@ -516,12 +516,16 @@ Three honest caveats:
 - **Nothing validates that subset today.** Write something outside it and Ply will not
   tell you; the expression is passed straight to the engine, and you find out from the
   Rust compiler or from a tool error.
-- **`old(expr)` — the value an expression had on entry — half works.** It reaches the
-  model checker unchanged and is accepted there for by-value parameters. It does *not*
-  work on the `test`/`fuzz` path: the generated harness fails to compile with "cannot
-  find function `old` in this scope", which surfaces as a tool error. And the case
-  `old()` exists for — a function that mutates something through `&mut` and returns
-  nothing — does not work at all in this build. Both were run to confirm.
+- **`old(expr)` — the value an expression had on entry — works on both checking
+  paths.** The model checker maps it onto its own primitive. The generated `test`/`fuzz`
+  harness reads the expression into a binding *before* the call and compares against
+  that, which is the only thing ordinary Rust can do and is what the design
+  specification prescribes. What `old()` cannot reach in this build is the shape it was
+  introduced for: a function that changes something through a `&mut` parameter and
+  returns nothing. A `&mut` parameter is a type neither engine can build an input for
+  (last row of the table below), so such a function is reported as an unsupported shape
+  — naming the parameter and spelling its type the way you wrote it — and no check runs.
+  Both were run to confirm.
 - **A `fuzz` check needs a postcondition.** With no `ensures` there is nothing for the
   generated inputs to be checked against, so nothing runs and Ply says so rather than
   reporting a pass. If what you have is concrete cases rather than a general property,
@@ -1249,8 +1253,9 @@ Collected in one place, so nothing here has to be discovered at minute eleven.
   (`W0510`). They work as boundary promises for callers.
 - Component-level default `checks:` are honoured by `check` and ignored by `verify`.
 - `checks: []` means "use the default", not "check nothing".
-- `old()` works on the model-checking path for by-value parameters, fails to compile on
-  the `test`/`fuzz` path, and does not work for the mutating case it exists for.
+- `old()` works on both checking paths, over values the function reads. The mutating
+  shape it exists for — a parameter the function writes back through — is refused as an
+  unsupported signature, by name, rather than attempted.
 - The contract expression subset is documented but not validated; an expression outside
   it fails later, in the compiler or the engine.
 - A boundary promise that cannot be satisfied makes the caller's proof pass vacuously,

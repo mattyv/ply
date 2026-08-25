@@ -18,6 +18,81 @@ use syn::{BinOp, Expr, ExprClosure};
 use crate::engines::kani::WitnessValue;
 use crate::harness::{ContractFn, RustType};
 
+/// One `old(expr)` occurrence lifted out of an `ensures` clause: the name
+/// of the binding a generated harness must create, and the expression it
+/// must read into it.
+///
+/// `old(expr)` means "the value `expr` had when the function was entered"
+/// (§5.4a). The model checker has a primitive for that and Kani maps the
+/// call onto it; a generated `#[test]`/proptest harness has none, so the
+/// spec prescribes the only thing that can work there -- "evaluate `expr`
+/// before the call and substitute the snapshot". Until 2026-08-25 nothing
+/// did, and the clause reached the generated file verbatim: the harness
+/// called a function named `old`, which exists nowhere, and the whole check
+/// died with the compiler's "cannot find function `old` in this scope"
+/// dressed up as an internal tool error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EntryValue {
+    /// The generated binding's name (`__ply_old_0`).
+    pub ident: String,
+    /// The expression to read into it, as source text.
+    pub expr: String,
+}
+
+/// Rewrites every `old(expr)` in `body` into a plain reference to a binding
+/// the caller must emit **before** the call, and returns those bindings in
+/// evaluation order. A clause with no `old()` comes back unchanged and with
+/// an empty list, so every caller can run this unconditionally.
+pub(crate) fn lift_entry_values(body: &Expr) -> (Expr, Vec<EntryValue>) {
+    use syn::visit_mut::VisitMut;
+
+    struct Lifter {
+        found: Vec<EntryValue>,
+    }
+    impl VisitMut for Lifter {
+        fn visit_expr_mut(&mut self, e: &mut Expr) {
+            // Depth first, so the bindings come out in the order a reader
+            // of the clause meets them, left to right.
+            syn::visit_mut::visit_expr_mut(self, e);
+            let Expr::Call(call) = &*e else { return };
+            let Expr::Path(path) = call.func.as_ref() else {
+                return;
+            };
+            if !path.path.is_ident("old") || call.args.len() != 1 {
+                return;
+            }
+            let ident = format!("__ply_old_{}", self.found.len());
+            self.found.push(EntryValue {
+                ident: ident.clone(),
+                expr: call.args[0].to_token_stream().to_string(),
+            });
+            *e = syn::parse_str::<Expr>(&ident).expect("an identifier is an expression");
+        }
+    }
+
+    let mut rewritten = body.clone();
+    let mut lifter = Lifter { found: Vec::new() };
+    lifter.visit_expr_mut(&mut rewritten);
+    (rewritten, lifter.found)
+}
+
+/// The `let` statements that read the entry values, one per binding, each
+/// followed by a newline and `indent` so the caller can splice them in at
+/// the point the call is about to be written. `.clone()` rather than a bare
+/// move: it is a no-op for the scalars this reaches in practice and keeps a
+/// collection parameter usable in the call that follows.
+pub(crate) fn entry_value_lets(values: &[EntryValue], indent: &str) -> String {
+    let mut out = String::new();
+    for v in values {
+        out.push_str(&format!(
+            "let {ident} = ({expr}).clone();\n{indent}",
+            ident = v.ident,
+            expr = v.expr
+        ));
+    }
+    out
+}
+
 /// Recursively widens every arithmetic/comparison subexpression to `i128` so
 /// the rendered assertion can never itself overflow while checking the
 /// contract (the D7 plan's "spike trap" fix: `result == x + 1` at x = 255
@@ -168,12 +243,17 @@ pub fn render_cex_test(
     let result_ident = closure_result_ident(closure)?;
     let _ = result_ident; // Kani's own closure names it `result`; we bind the same name below.
 
-    let widened = widen(&closure.body);
+    // `old(expr)` is read into its own binding first: the value on entry is
+    // only the value on entry if it is read before the call.
+    let (checked_body, entry_values) = lift_entry_values(&closure.body);
+    let entry_lets = entry_value_lets(&entry_values, "    ");
+
+    let widened = widen(&checked_body);
     let widened_str = widened.to_string();
 
     let test_name = format!("ply_cex_{}_{:02}", cf.ident(), index);
 
-    let message = render_message(cf, &closure.body, contract_text, diagnostic_code)?;
+    let message = render_message(cf, &checked_body, contract_text, diagnostic_code)?;
 
     let source = format!(
         "// Reproduces the counterexample for `{fname}` found by check\n\
@@ -183,7 +263,7 @@ pub fn render_cex_test(
          #[test]\n\
          fn {test_name}() {{\n\
          {lets}\n\
-         \x20\x20\x20\x20let result = &{fname}({args});\n\n\
+         \x20\x20\x20\x20{entry_lets}let result = &{fname}({args});\n\n\
          \x20\x20\x20\x20// Contract under test: #[ply::ensures({contract_text})]\n\
          \x20\x20\x20\x20// Arithmetic is evaluated in i128 so the test can report the broken\n\
          \x20\x20\x20\x20// promise instead of overflowing while checking it.\n\
@@ -199,6 +279,7 @@ pub fn render_cex_test(
         code = diagnostic_code,
         test_name = test_name,
         lets = lets,
+        entry_lets = entry_lets,
         args = call_args.join(", "),
         contract_text = contract_text,
         widened_expr = widened_str,
@@ -270,6 +351,57 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
         assert!(rendered.source.contains("postcondition"));
         assert!(rendered.source.contains("result == x"));
         assert!(rendered.source.contains("255u32"));
+    }
+
+    /// The replay test Ply writes when a check finds a failing input has
+    /// to compile under plain `cargo test`. A contract that refers to a
+    /// parameter's value on entry -- `old(x)` -- rendered that call
+    /// verbatim, so the file Ply generated referred to a function that does
+    /// not exist and the user's own test run broke on Ply's code.
+    #[test]
+    fn a_before_value_in_the_contract_is_read_before_the_call_in_the_replay_test() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == old(x) + 1)]
+pub fn bump(x: u8) -> u8 { x.saturating_add(1) }
+"#,
+            "bump",
+        );
+        let rendered =
+            render_cex_test(&cf, &[WitnessValue::UInt(255)], "fuzz(64)", "F0502", 1).unwrap();
+        let check_line = rendered
+            .source
+            .lines()
+            .find(|l| l.contains("catch_unwind"))
+            .expect("the replay test always evaluates the contract");
+        assert!(
+            !check_line.replace(' ', "").contains("old("),
+            "the line that evaluates the contract must not call a function named `old` -- there \
+             is no such function, and the file Ply generates then breaks the user's own \
+             `cargo test` run:\n{check_line}"
+        );
+        assert!(
+            check_line.contains("__ply_old_0"),
+            "it must read the entry value out of the binding instead:\n{check_line}"
+        );
+        let snapshot = rendered
+            .source
+            .find("let __ply_old_0")
+            .expect("the entry value must be read into a binding of its own");
+        let call = rendered
+            .source
+            .find("let result = &")
+            .expect("the replay test always calls the function");
+        assert!(
+            snapshot < call,
+            "the entry value has to be read before the call:\n{}",
+            rendered.source
+        );
+        assert!(
+            rendered.source.contains("old(x) + 1"),
+            "the contract is still quoted back to the reader the way they wrote it:\n{}",
+            rendered.source
+        );
     }
 
     #[test]

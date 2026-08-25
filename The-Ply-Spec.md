@@ -551,7 +551,18 @@ itself drawn from this subset and `old()` non-nested. It exists because single-s
 postconditions cannot correctly specify anything that mutates (vetting 001: the
 push/pop contracts flagged correct code without it). Engines: Kani maps it to
 `kani::old(expr)`; generated test/fuzz harnesses evaluate `expr` before the call and
-substitute the snapshot. `old()` in `requires` is meaningless and rejected (`E0501`).
+substitute the snapshot (implemented 2026-08-25 — before that the clause reached the
+generated harness verbatim and the harness crate did not build). `old()` in `requires`
+is meaningless and rejected (`E0501`).
+
+**Honest limit as of 2026-08-25.** The mutating shape `old()` was introduced for cannot
+be checked at all, because §5.4b's supported signatures stop at a shared `&T`: a
+parameter the function writes back through is not a value either engine can construct
+and observe, so such a function is `unsupported`/`V0505` naming the parameter and its
+type. `old()` is therefore usable today only over values the function *reads* — the
+distinction v1 supports is "the entry value of an argument", not "the state before and
+after a mutation". Lifting that needs `&mut` in the supported set, which for Kani also
+needs `modifies` clauses; it is not in this build.
 Full two-state/model-based specs (sequence histories, FIFO ordering) remain out of
 scope — `old()` is the single two-state primitive.
 
