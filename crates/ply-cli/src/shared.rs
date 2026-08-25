@@ -315,8 +315,17 @@ pub(crate) fn assumed_contracts(
         }
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for site in &cf.calls {
-            if let ply_core::callgraph::CalleeStatus::Assumed { contract, .. } =
-                resolver.classify(site).status
+            // A callee that returns nothing is skipped, and that is not a
+            // detail: Ply stands in for a callee by producing a value for
+            // it, so with no return value the assumption cannot be encoded
+            // at all. `verify` refuses it (`W0512`) and the caller earns no
+            // evidence -- nobody is trusting anything, so there is nothing
+            // for a trust surface to list and nothing owed on it.
+            if let ply_core::callgraph::CalleeStatus::Assumed {
+                contract,
+                signature,
+            } = resolver.classify(site).status
+                && signature.return_type.is_some()
                 && seen.insert(site.path.clone())
             {
                 found.push(AssumedContract {

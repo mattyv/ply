@@ -911,6 +911,28 @@ mod tests {
         );
     }
 
+    /// A promise nothing can rest on is not trust surface. When the callee
+    /// returns nothing, Ply's codegen has no value to stand in for it with,
+    /// so `verify` refuses the assumption (`W0512`) and the caller earns no
+    /// evidence — nobody is trusting anything. Listing it here would say a
+    /// verdict rests on a promise when no verdict does.
+    #[test]
+    fn a_promise_verify_cannot_use_is_not_on_the_trust_surface() {
+        let dir = crate_with(
+            "pub fn log_rate(tier: u8) {}\n\
+             #[ply::requires(amount <= 100)]\n\
+             #[ply::ensures(|result| *result <= amount)]\n\
+             pub fn tiered_fee(amount: u32, tier: u8) -> u32 { log_rate(tier); amount }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      log_rate:\n        requires:\n          - \"tier < 4\"\n      tiered_fee:\n        checks: [bounded(2)]\n",
+        );
+        let report = audit_crate(dir.path()).unwrap();
+        assert!(
+            !item_kinds(&report).contains(&"assumed_contract"),
+            "{:#?}",
+            report.envelope.trust_surface
+        );
+    }
+
     /// §5.7: a body the model wrote, from ply.yaml's `mode: synth` and from
     /// the attribute `synth` leaves behind.
     #[test]
