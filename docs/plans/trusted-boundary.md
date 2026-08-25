@@ -1,5 +1,23 @@
 # Proposal — trusted boundary (`given:` regions), in reduced form
 
+> **SUPERSEDED BY ITS OWN GATE, 2026-08-25 — `tests/spike/havoc/FINDINGS.md`.**
+> The gate this document sets for itself in §7 has run, and it returned the negative
+> outcome §10's closing paragraph names in advance. Measured: **2 of 8 crossings pass
+> under havoc (25%)**, and both passes are 004's own functions; **none of the six
+> callers written without this experiment in mind passed**. The §7 prediction about
+> `tier_fee_cents` **held** (133.74s, inside §6's 300s floor) and cost is not an
+> objection (havoc costs the same as the declared-contract stub), but the empirical
+> claim the recommendation rests on — "real callers are defensive at boundaries" —
+> did not survive a sample that was not chosen for it. The spike also found three
+> outcomes this document has no row for: a havoc'd loop bound that times out with no
+> witness; breaking values that name the direction of the missing contract but never
+> its threshold; and `extract_witness_bytes` reporting the least useful witness where
+> Kani emits several. **The standing recommendation is now open question 6's fallback**
+> — a clause-free per-callee boundary entry means havoc, no new grammar — and the
+> region, the fill-channel restatement, the lock inventory and the §7.2 slot are
+> refused. Everything below is left as written, as the record of the argument the gate
+> was run against.
+
 Status: **recommend adoption in reduced form, gated on a vetting re-run (an extension of
 004's own `run.sh`) before any spec amendment, with the failure-side payoff explicitly
 sequenced behind the Kani pin spike already in flight (which reported 2026-08-25:

@@ -1,0 +1,18 @@
+[workspace]
+# Empty table: its own workspace root, per the tests/spike convention.
+
+[package]
+name = "havoc-natural-billing"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+catalog = { package = "havoc-natural-catalog", path = "../legacy" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
+[lib]
+name = "billing"
+path = "src/lib.rs"

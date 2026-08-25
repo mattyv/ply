@@ -27,6 +27,30 @@
       attestation would have outlived the code it vouched for. Proposal first, gate,
       then adopt — the sequence that worked for external elements.
 
+      **GATE RUN 2026-08-25 — the answer is no; take the fallback.**
+      `docs/plans/trusted-boundary.md` bound itself to one empirical claim: that real
+      callers are defensive enough to verify with the callee replaced by an
+      unconstrained symbolic return, and that "if most crossings fail under havoc, this
+      is a hint generator wearing a grammar construct." **Most crossings fail: 2 of 8
+      pass (25%), and both passes are 004's own functions.** Zero of six callers written
+      without the experiment in mind passed; six of six failed, five with a
+      counterexample and one by timing out at the 300s floor with no witness at all.
+      The falsifiable prediction on record **held** — `tier_fee_cents` passes under
+      havoc (133.74s, inside the floor) because of its own `.min(10_000)`, and so does
+      `approve_withdrawal` above it (212.63s) — but it held only on the two functions
+      the plan already knew about. Cost is not the objection: havoc costs the same as a
+      declared contract stub (133.74s vs 148.62s on the same function) and lands inside
+      §6's floor. Three findings the plan has no row for: a havoc'd loop bound turns a
+      22s proof into a 300s timeout with no diagnostic; the breaking value names the
+      callee and the direction but never the threshold (`2_813_465` where the contract
+      needed is `<= 100_000`); and Ply would print the *least* useful witness where
+      several exist. **Recommendation: do not build `given:` as a grammar construct;
+      adopt the plan's own open question 6 fallback** — let a clause-free boundary entry
+      mean havoc, per callee, no new grammar (the codegen already emits it; only
+      `verify.rs`'s `if claim.requires.is_empty() && claim.ensures.is_empty() { continue; }`
+      stands in the way). Evidence, fixtures and a reproducing `run.sh`:
+      `tests/spike/havoc/FINDINGS.md`.
+
 ## Kani pin — spiked 2026-08-25; recommendation: stay put, two gaps left open
 
 - [x] **Bump the Kani pin — a D13-shaped spike, not a fork.** Ran, against Kani `main`
