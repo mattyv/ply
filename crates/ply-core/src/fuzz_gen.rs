@@ -238,7 +238,13 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
     let seed_hex = seed_hex(seed);
     let strategy = combined_strategy_expr(cf)?;
     let args = call_args(cf).join(", ");
+    // Two spellings, deliberately. `fname` is the bare identifier the
+    // harness module imports and therefore calls; `label` is where the
+    // function lives, which is what a reader of the output needs to see.
+    // They differ only for a function inside a module.
     let fname = &cf.name;
+    let label = &cf.path;
+    let ident = cf.ident();
 
     let requires_check = match &cf.requires {
         Some((expr, _)) => {
@@ -262,7 +268,7 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
     // since a Vec/BTreeSet field is a block expression, not a literal.
     let mut marker_build = String::from("let mut __ply_marker = String::new();\n");
     marker_build.push_str(&format!(
-        "            __ply_marker.push_str(\"PLY_FUZZED_CEX|{fname}|\");\n"
+        "            __ply_marker.push_str(\"PLY_FUZZED_CEX|{label}|\");\n"
     ));
     for (i, field) in marker_fields.iter().enumerate() {
         let (name, value_expr) = field.split_once('=').expect("field has name=expr shape");
@@ -276,8 +282,8 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
 
     Ok(format!(
         "    #[test]\n\
-         \x20\x20\x20\x20fn ply_fuzz_{fname}() {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_SEED|{fname}|{seed_hex}\");\n\
+         \x20\x20\x20\x20fn ply_fuzz_{ident}() {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_SEED|{label}|{seed_hex}\");\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let mut __ply_runner = proptest::test_runner::TestRunner::new_with_rng(\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::Config {{ cases: {cases}, failure_persistence: None, ..proptest::test_runner::Config::default() }},\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::TestRng::from_seed(\n\
@@ -310,13 +316,13 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
          \x20\x20\x20\x20\x20\x20\x20\x20match __ply_outcome {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(()) => {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if __ply_tot > 0 && (__ply_rej as f64) / (__ply_tot as f64) > 0.5 {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_HIGH_REJECT|{fname}|{{}}/{{}}\", __ply_rej, __ply_tot);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_HIGH_REJECT|{label}|{{}}/{{}}\", __ply_rej, __ply_tot);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Err(proptest::test_runner::TestError::Abort(reason)) => {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_ABORT|{fname}|{{}}|accepted={{}}|rejected={{}}\", reason, __ply_tot - __ply_rej, __ply_rej);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_ABORT|{label}|{{}}|accepted={{}}|rejected={{}}\", reason, __ply_tot - __ply_rej, __ply_rej);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Err(e) => panic!(\"proptest found a failing case for `{fname}`: {{}}\", e),\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Err(e) => panic!(\"proptest found a failing case for `{label}`: {{}}\", e),\n\
          \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
          \x20\x20\x20\x20}}\n",
     ))
@@ -457,14 +463,16 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
         };
         out.push_str(&format!(
             "    #[test]\n\
-             \x20\x20\x20\x20fn ply_direct_{fname}_{case_idx:02}() {{\n\
+             \x20\x20\x20\x20fn ply_direct_{ident}_{case_idx:02}() {{\n\
              {lets}\
              \x20\x20\x20\x20\x20\x20\x20\x20{guard}\
              \x20\x20\x20\x20\x20\x20\x20\x20let __ply_call_result = {fname}({args});\n\
              \x20\x20\x20\x20\x20\x20\x20\x20let result = &__ply_call_result;\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20assert!({widened}, \"direct contract case for `{fname}` broke its postcondition\");\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20assert!({widened}, \"direct contract case for `{label}` broke its postcondition\");\n\
              \x20\x20\x20\x20}}\n",
             fname = cf.name,
+            label = cf.path,
+            ident = cf.ident(),
         ));
     }
     out
@@ -475,12 +483,14 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
 /// target fn from `target_crate_ident` (the target crate's Rust identifier
 /// -- its `[lib] name`, not necessarily its package name).
 pub fn wrap_fn_harness_module(
-    fn_name: &str,
+    cf: &ContractFn,
     target_crate_ident: &str,
     bodies: &[String],
 ) -> String {
+    let module_ident = cf.ident();
+    let fn_path = &cf.path;
     let mut out = format!(
-        "#[cfg(test)]\nmod {fn_name}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{fn_name};\n\n"
+        "#[cfg(test)]\nmod {module_ident}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{fn_path};\n\n"
     );
     for b in bodies {
         out.push_str(b);

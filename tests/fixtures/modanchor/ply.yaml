@@ -1,0 +1,17 @@
+ply: 1
+
+# A promise attached to a function inside a module (§5.5's boundary contract
+# declaration, §5.2's anchor resolution). `rates::legacy_rate` is spelled the
+# way a reader of this crate would spell it; the caller reaches it through
+# `use rates::legacy_rate;` and calls it by its bare name. Ply must decide
+# both questions -- "does a contract describe this callee" and "does this
+# claim point at real code" -- about the same function.
+components:
+  modanchor:
+    anchor: ply_fixture_modanchor
+    fns:
+      rates::legacy_rate:
+        ensures:
+          - "|result| *result <= 10_000"
+      tiered_fee:
+        checks: [bounded(2)]

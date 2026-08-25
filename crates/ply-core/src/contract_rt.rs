@@ -171,7 +171,7 @@ pub fn render_cex_test(
     let widened = widen(&closure.body);
     let widened_str = widened.to_string();
 
-    let test_name = format!("ply_cex_{}_{:02}", cf.name, index);
+    let test_name = format!("ply_cex_{}_{:02}", cf.ident(), index);
 
     let message = render_message(cf, &closure.body, contract_text, diagnostic_code)?;
 
@@ -194,7 +194,7 @@ pub fn render_cex_test(
          \x20\x20\x20\x20\x20\x20\x20\x20Err(_) => panic!(\"the contract's own check crashed at this input: the contract or a `pure` helper it calls is wrong for this input, which itself means the contract could not even be evaluated here. ({code})\"),\n\
          \x20\x20\x20\x20}}\n\
          }}\n",
-        fname = cf.name,
+        fname = cf.path,
         check_label = check_label,
         code = diagnostic_code,
         test_name = test_name,
@@ -223,7 +223,7 @@ fn closure_result_ident(closure: &ExprClosure) -> Result<String> {
 /// "this expression evaluated to false" message for anything else, per the
 /// D7 plan's own fallback clause -- never a bare, uninterpreted panic.
 fn render_message(cf: &ContractFn, body: &Expr, contract_text: &str, code: &str) -> Result<String> {
-    let fname = &cf.name;
+    let fname = &cf.path;
     if let Expr::Binary(bin) = body
         && matches!(
             bin.op,

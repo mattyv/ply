@@ -27,10 +27,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
-use ply_core::callgraph::{CallSite, CalleeStatus, Resolver};
+use ply_core::callgraph::Resolver;
 use ply_core::check::Target;
 use ply_core::diag::{Coverage, Diagnostic, Envelope, Node, Tier};
-use ply_core::harness;
+use ply_core::harness::{self, AnchorError};
 use ply_core::model::{Component, Document};
 use ply_core::schema;
 
@@ -151,7 +151,7 @@ fn check_anchors(
         return tally;
     };
     let local_anchors = local_anchor_names(crate_dir);
-    let known_fns = harness::top_level_fn_names(&lib_path).unwrap_or_default();
+    let known_fns = harness::crate_fn_paths(&lib_path).unwrap_or_default();
     let mut resolver = Resolver::new(&lib_src, crate_dir, BTreeMap::new()).ok();
 
     for (name, comp) in &doc.components {
@@ -186,25 +186,28 @@ fn walk_anchors(
     if is_local(local_anchors, &comp.anchor) {
         for fn_name in comp.fns.keys() {
             let node_id = format!("{qualified}::{fn_name}");
-            if harness::discover_fn(lib_path, fn_name).is_ok() {
-                tally.resolved += 1;
-                continue;
+            // The same resolver `verify` anchors with, so the two commands
+            // cannot disagree about which claims point at real code -- and,
+            // since 2026-08-25, the same one call classification uses, so
+            // Ply can no longer name a callee as unvouched-for and then
+            // refuse the claim that would vouch for it.
+            let outcome = match resolver.as_deref_mut() {
+                Some(r) => harness::resolve_anchor(r, fn_name, lib_path).err(),
+                None => Some(harness::AnchorError::Unreadable(format!(
+                    "Ply could not parse {} at all, so no claim in this document could be \
+                     resolved against it",
+                    lib_path.display()
+                ))),
+            };
+            match outcome {
+                None => tally.resolved += 1,
+                Some(err) => {
+                    tally.unresolved += 1;
+                    diagnostics.push(unresolved_anchor_diag(
+                        &node_id, fn_name, known_fns, &err, lib_path,
+                    ));
+                }
             }
-            tally.unresolved += 1;
-            let elsewhere = resolver
-                .as_deref_mut()
-                .map(|r| {
-                    r.classify(&CallSite {
-                        path: fn_name.clone(),
-                        line: 0,
-                        col: 0,
-                    })
-                    .status
-                })
-                .is_some_and(|s| !matches!(s, CalleeStatus::Unresolved | CalleeStatus::Opaque(_)));
-            diagnostics.push(unresolved_anchor_diag(
-                &node_id, fn_name, known_fns, elsewhere, lib_path,
-            ));
         }
     } else {
         tally.elsewhere += comp.fns.len();
@@ -230,33 +233,44 @@ fn unresolved_anchor_diag(
     node_id: &str,
     fn_name: &str,
     known_fns: &[String],
-    resolves_elsewhere: bool,
+    err: &AnchorError,
     lib_path: &Path,
 ) -> Diagnostic {
-    let title = if resolves_elsewhere {
-        format!(
-            "`{fn_name}` exists in this crate, but not where Ply can verify it from. This slice \
-             reads functions declared at the top level of {}; `{fn_name}` is inside a module or \
-             behind a `use`. Move the claim's component to an `anchor:` on that module, or move \
-             the function up, until Ply learns to descend.",
-            lib_path.display()
-        )
-    } else {
-        let suggestion = match schema::nearest_key(fn_name, known_fns) {
-            Some(near) => format!(
-                " The closest name Ply can see is `{near}` — if the function was renamed, the \
-                 claim needs renaming with it."
-            ),
-            None if known_fns.is_empty() => {
-                format!(" Ply found no functions at all in {}.", lib_path.display())
-            }
-            None => String::new(),
-        };
-        format!(
-            "Ply could not find a function called `{fn_name}` in {}, so this claim describes \
-             nothing.{suggestion}",
-            lib_path.display()
-        )
+    // Four different facts, four different sentences. Saying "could not
+    // find" about a function that is right there sends a reader hunting for
+    // a typo that is not there — which is the whole reason this branches.
+    let title = match err {
+        AnchorError::NotFound => {
+            let suggestion = match schema::nearest_key(fn_name, known_fns) {
+                Some(near) => format!(
+                    " The closest name Ply can see is `{near}` — if the function was renamed, \
+                     the claim needs renaming with it."
+                ),
+                None if known_fns.is_empty() => {
+                    format!(" Ply found no functions at all in {}.", lib_path.display())
+                }
+                None => String::new(),
+            };
+            format!(
+                "Ply could not find a function called `{fn_name}` in {}, or in any module it \
+                 declares, so this claim describes nothing.{suggestion}",
+                lib_path.display()
+            )
+        }
+        AnchorError::Private(reason) => format!(
+            "Ply found `{fn_name}` but cannot verify from it: {reason}. Make it (and every \
+             module between it and the crate root) `pub` or `pub(crate)`, or move the claim to \
+             a function that is reachable."
+        ),
+        AnchorError::Unreadable(reason) => format!(
+            "Ply could not read the source `{fn_name}` would be in: {reason}. Not being able to \
+             look is not the same as there being nothing there, so this claim is reported as \
+             unresolved rather than assumed fine."
+        ),
+        AnchorError::Shape(e) => format!(
+            "Ply found `{fn_name}` and cannot read its shape: {e}. The claim points at real \
+             code; what this slice cannot handle is the function's signature or its contract."
+        ),
     };
     Diagnostic {
         code: "E0301".into(),
@@ -483,14 +497,36 @@ mod tests {
         assert_eq!(report.exit_code(), 1);
     }
 
-    /// The other shape of the same failure, and a different fix: the
-    /// function is right there, just not somewhere this slice can verify
-    /// from. Saying "could not find" would be false and would send the user
-    /// hunting for a typo that is not there.
+    /// A claim on a function inside a module resolves. Until 2026-08-25 it
+    /// did not: this test asserted the opposite, and the sentence it
+    /// asserted ("exists in this crate, but not where Ply can verify it
+    /// from") described a limit that made per-function promises unusable
+    /// for real legacy code, which lives in modules and files rather than
+    /// at the top of `src/lib.rs`.
     #[test]
-    fn a_function_ply_can_see_but_not_verify_from_says_which_of_the_two_it_is() {
+    fn a_claim_on_a_function_inside_a_module_resolves() {
         let dir = crate_with(
             "pub mod util { pub fn helper(x: u32) -> u32 { x } }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      util::helper:\n        checks: [bounded(2)]\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        assert!(
+            report.envelope.diagnostics.is_empty(),
+            "{:#?}",
+            report.envelope.diagnostics
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    /// The case that genuinely stays closed, and it gets its own sentence:
+    /// Ply generates its harness at the crate root, so a private item
+    /// inside a module is a name that harness cannot write. Saying "could
+    /// not find" would be false and would send the user hunting for a typo
+    /// that is not there.
+    #[test]
+    fn a_private_function_inside_a_module_says_which_of_the_two_it_is() {
+        let dir = crate_with(
+            "pub mod util { fn helper(x: u32) -> u32 { x } }\n",
             "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      util::helper:\n        checks: [bounded(2)]\n",
         );
         let report = check_crate(dir.path()).unwrap();
@@ -502,10 +538,11 @@ mod tests {
             .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
         assert!(
             d.title
-                .contains("exists in this crate, but not where Ply can verify it from"),
+                .contains("Ply found `util::helper` but cannot verify from it"),
             "{}",
             d.title
         );
+        assert!(d.title.contains("private"), "{}", d.title);
     }
 
     /// §5.3: an advisory finding is worth reporting and is not a violation.

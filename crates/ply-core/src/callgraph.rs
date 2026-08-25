@@ -111,6 +111,13 @@ pub enum CalleeStatus {
     /// `conditional`.
     Assumed {
         contract: DeclaredContract,
+        /// The one name Ply uses for this callee everywhere it says
+        /// anything about it — the generated `#[kani::stub(..)]` attribute,
+        /// the assumption text, the audit trust surface. Not necessarily the
+        /// spelling at the call site, which may be a bare name that only a
+        /// private `use` in `lib.rs` puts in scope and that the generated
+        /// module therefore cannot name.
+        canonical_path: String,
         signature: CalleeSignature,
     },
     /// Resolved, and nothing anywhere describes it: §5.5's third branch.
@@ -172,13 +179,75 @@ struct SourceFile {
     dir: PathBuf,
 }
 
+/// A free function the resolver found, with everything a caller of the
+/// resolver needs to talk about it.
+pub struct FoundFn {
+    pub item: syn::ItemFn,
+    /// The path spelled from the crate root, with every `use` expanded:
+    /// `legacy_rate` reached through `use rates::legacy_rate;` canonicalises
+    /// to `rates::legacy_rate`. This is the string that lets the two halves
+    /// of Ply agree about *which function* they are each talking about —
+    /// the call site writes one spelling and `ply.yaml` writes another, and
+    /// canonicalising both is what lets a promise attach to a callee.
+    pub canonical: String,
+    /// The parsed file the fn was declared in, so its `type` aliases are the
+    /// ones read when the signature is interpreted.
+    pub file: std::rc::Rc<syn::File>,
+    /// `Some(reason)` when the fn is real but a generated harness sitting at
+    /// the crate root could not *name* it: a private `mod` or a private `fn`
+    /// somewhere below the crate root. Stated rather than discovered as a
+    /// compile error in generated code.
+    pub unnameable: Option<String>,
+    /// Whether the whole walk stayed inside this crate. A resolution that
+    /// went through a path dependency keeps the spelling the caller wrote,
+    /// because the dependency's own crate-root path is not what a `#[kani::stub]`
+    /// attribute in *this* crate can name.
+    pub local: bool,
+}
+
 /// What one path lookup found. `Opaque` is the branch that keeps the rule
 /// honest: it means Ply followed the path into first-party source and could
 /// not read it, which is neither "found" nor "outside the workspace".
-enum Resolution {
-    Found(Box<syn::ItemFn>),
+pub enum Resolution {
+    Found(Box<FoundFn>),
     Opaque(String),
     NotFound,
+}
+
+impl Resolution {
+    /// Records that the walk descended through module `name` to get here:
+    /// the canonical path grows a segment on the front, and a private module
+    /// anywhere in the chain makes the function unnameable from the crate
+    /// root even though it was found.
+    fn under_module(self, name: &str, module_is_private: bool) -> Resolution {
+        match self {
+            Resolution::Found(mut f) => {
+                f.canonical = format!("{name}::{}", f.canonical);
+                if module_is_private && f.unnameable.is_none() {
+                    f.unnameable = Some(format!(
+                        "the module `{name}` is private, so the harness Ply generates at the \
+                         crate root cannot name anything inside it"
+                    ));
+                }
+                Resolution::Found(f)
+            }
+            other => other,
+        }
+    }
+
+    /// Records that the walk left this crate. The canonical path stops being
+    /// something this crate's generated code can name, so callers fall back
+    /// to the spelling at the call site.
+    fn into_dependency(self) -> Resolution {
+        match self {
+            Resolution::Found(mut f) => {
+                f.local = false;
+                f.unnameable = None;
+                Resolution::Found(f)
+            }
+            other => other,
+        }
+    }
 }
 
 /// How deep the resolver will follow module nesting and import chains
@@ -214,25 +283,107 @@ impl Resolver {
         }
     }
 
-    fn status_of(&mut self, path: &str) -> CalleeStatus {
+    /// Resolves one path — written the way a `ply.yaml` claim writes it, or
+    /// the way a call site writes it — to the function it names. The single
+    /// entry point both halves of Ply use, so neither can have its own idea
+    /// of where a function lives.
+    pub fn lookup_fn(&mut self, path: &str) -> Resolution {
         let segments: Vec<String> = path.split("::").map(|s| s.to_string()).collect();
-        let f = match self.resolve_path(&segments) {
+        self.resolve_path(&segments)
+    }
+
+    fn status_of(&mut self, path: &str) -> CalleeStatus {
+        let found = match self.lookup_fn(path) {
             Resolution::Found(f) => *f,
             Resolution::Opaque(reason) => return CalleeStatus::Opaque(reason),
             Resolution::NotFound => return CalleeStatus::Unresolved,
         };
-        if has_inline_contract(&f) {
+        if has_inline_contract(&found.item) {
             return CalleeStatus::Contracted;
         }
-        // Keyed on the path *as the caller spells it*: that is the string a
-        // user writes in ply.yaml, and matching anything else would ask them
-        // to guess at Ply's internal renaming.
-        match self.declared.get(path) {
+        // Two spellings name one function, and a promise must attach through
+        // either. The path *as the caller spells it* is tried first, because
+        // that is what a cross-crate `anchor:` produces; the canonical
+        // crate-root path is tried second, because that is what a reader of
+        // the crate writes in `ply.yaml` for a callee reached through a
+        // `use` (`legacy_rate` at the call site, `rates::legacy_rate` in the
+        // document). Before 2026-08-25 only the first was tried, so a
+        // promise written for a function in a module attached to nothing.
+        let contract = self
+            .declared
+            .get(path)
+            .or_else(|| self.declared.get(&found.canonical));
+        match contract {
             Some(contract) => CalleeStatus::Assumed {
                 contract: contract.clone(),
-                signature: signature_of(&f),
+                // The name a generated `#[kani::stub(..)]` must use. Inside
+                // this crate that is the canonical path, which is nameable
+                // from the generated module at the crate root; a bare name
+                // that only exists because of a private `use` in lib.rs is
+                // not. A resolution that crossed into a path dependency
+                // keeps the caller's spelling, which is the one that names
+                // the dependency here.
+                canonical_path: if found.local {
+                    found.canonical.clone()
+                } else {
+                    path.to_string()
+                },
+                signature: signature_of(&found.item),
             },
             None => CalleeStatus::Unclaimed,
+        }
+    }
+
+    /// Every free function this crate declares that a claim could anchor to,
+    /// as canonical crate-root paths, in a stable order. The item index
+    /// behind `E0301`'s nearest-name suggestions — deliberately the *same*
+    /// set [`Resolver::lookup_fn`] can find, so a suggestion is never a name
+    /// that would then fail to resolve.
+    pub fn fn_index(&mut self) -> Vec<String> {
+        let local = self.local.clone();
+        let mut out = Vec::new();
+        self.collect_fns(&local, &mut Vec::new(), 0, &mut out);
+        out
+    }
+
+    fn collect_fns(
+        &mut self,
+        file: &SourceFile,
+        prefix: &mut Vec<String>,
+        depth: usize,
+        out: &mut Vec<String>,
+    ) {
+        if depth > MAX_DEPTH {
+            return;
+        }
+        for item in &file.ast.items.clone() {
+            match item {
+                syn::Item::Fn(f) => {
+                    let mut segs = prefix.clone();
+                    segs.push(f.sig.ident.to_string());
+                    out.push(segs.join("::"));
+                }
+                syn::Item::Mod(m) => {
+                    let name = m.ident.to_string();
+                    let nested = match &m.content {
+                        Some((_, inner)) => Some(SourceFile {
+                            ast: std::rc::Rc::new(syn::File {
+                                shebang: None,
+                                attrs: vec![],
+                                items: inner.clone(),
+                            }),
+                            dir: file.dir.join(&name),
+                        }),
+                        None => self.module_file(&file.dir, &name),
+                    };
+                    if let Some(nested) = nested {
+                        prefix.push(name);
+                        self.collect_fns(&nested, prefix, depth + 1, out);
+                        prefix.pop();
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -244,7 +395,7 @@ impl Resolver {
         if segs.len() >= 2 {
             match self.dep_root(&segs[0]) {
                 Some(Some(root)) => {
-                    let in_dep = self.resolve_in_file(&root, &segs[1..], 0);
+                    let in_dep = self.resolve_in_file(&root, &segs[1..], 0).into_dependency();
                     // Only `NotFound` falls through to the local file: a
                     // module of this crate may share a dependency's name, and
                     // in edition 2018+ the local one is what the path means.
@@ -297,7 +448,29 @@ impl Resolver {
         };
         if rest.is_empty() {
             return match top_level_fn(&file.ast.items, head) {
-                Some(f) => Resolution::Found(Box::new(f)),
+                Some(f) => {
+                    // A private item below the crate root cannot be *named*
+                    // by the module Ply generates, which sits at the crate
+                    // root: a sibling module sees only what is `pub` (or
+                    // `pub(crate)`/`pub(super)`) further down. At the crate
+                    // root itself, private is fine — the generated module is
+                    // a child of the root and sees the root's own items.
+                    let unnameable = (depth > 0
+                        && matches!(f.vis, syn::Visibility::Inherited))
+                    .then(|| {
+                        format!(
+                            "`{head}` is private to the module it is declared in, so the harness \
+                             Ply generates at the crate root cannot call it by name"
+                        )
+                    });
+                    Resolution::Found(Box::new(FoundFn {
+                        item: f,
+                        canonical: head.clone(),
+                        file: file.ast.clone(),
+                        unnameable,
+                        local: true,
+                    }))
+                }
                 None => Resolution::NotFound,
             };
         }
@@ -306,7 +479,8 @@ impl Resolver {
             if let syn::Item::Mod(m) = item
                 && m.ident == head.as_str()
             {
-                return match &m.content {
+                let mod_private = depth > 0 && matches!(m.vis, syn::Visibility::Inherited);
+                let inner = match &m.content {
                     Some((_, inner)) => {
                         let nested = SourceFile {
                             ast: std::rc::Rc::new(syn::File {
@@ -327,6 +501,7 @@ impl Resolver {
                         )),
                     },
                 };
+                return inner.under_module(head, mod_private);
             }
         }
         Resolution::NotFound
@@ -732,8 +907,10 @@ pub fn helper(tier: u8) -> u32 { 150 }
         match r.status_of("helper") {
             CalleeStatus::Assumed {
                 contract,
+                canonical_path,
                 signature,
             } => {
+                assert_eq!(canonical_path, "helper");
                 assert_eq!(contract.ensures, vec!["|result| *result <= 10_000"]);
                 assert_eq!(
                     signature.params,

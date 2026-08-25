@@ -416,6 +416,28 @@ function. `ply check` resolves anchors via the extractor. An unresolvable anchor
 `E0301` with nearest-name suggestions (edit distance over the item index). **A renamed
 function must break CI, not silently orphan its claims.**
 
+**A claim's anchor is resolved by the same walk that classifies a call (§5.5), and that
+sentence is load-bearing.** It was false as written until 2026-08-25: call classification
+followed `use` imports, inline `mod`s, file modules and re-exports, while anchor
+resolution read `src/lib.rs` and walked its top-level items only. So `verify` would name
+`rates::legacy_rate` as a callee nobody had vouched for and, in the same envelope, reject
+with `E0301` the claim written to vouch for it. That closed off the per-function-promise
+route for essentially all real legacy code, which lives in `rates.rs` or `pricing.rs` or
+inside a `mod` and almost never at the top level of a crate root. One resolver now answers
+both questions, so a fn claim may be keyed on any path a reader of the crate would write
+(`rates::legacy_rate`, `pricing::caps::cap_bps`), and the same function reached by two
+spellings — a claim written `rates::legacy_rate`, a call written `legacy_rate` after a
+`use` — is recognised as one function. The item index behind `E0301`'s suggestions is the
+same set, for the same reason it always was: a suggestion naming something resolution
+would then refuse is worse than no suggestion.
+
+One case stays closed, and it is not a limit of the walk. Ply's generated harness is a
+module at the crate root, so a **private** item below the root is a name that harness
+cannot write. Such a claim is refused with `E0301` naming the actual obstacle — the
+private `fn`, or the private `mod` between it and the root — never "no such function",
+which would send a reader hunting for a typo that is not there. Items private *at* the
+crate root are unaffected: the generated module is a child of the root and sees them.
+
 Each claim's fingerprint (D14) lives in `ply.lock` (committed). When any part of
 the fingerprint no longer matches, `ply check` reports `W0302 claim may be stale` and the
 node carries status `stale`. `cargo ply accept [node_id ...|--all]` re-records
@@ -914,10 +936,11 @@ cargo ply skill              # (re)generate docs/PLY.skill.md from schema + diag
 **`check` implements two of its four tiers (2026-08-25, Phase 1a), and says so in its own
 output.** Schema (the document against `schema/ply.schema.json` — `E0201`, `E0204` — then
 every document-local rule that needs no code behind the anchors) and anchors (every fn
-claim resolved through the same `discover_fn` `verify` uses, so the two commands never
-disagree about which claims point at real code; `E0301` names the nearest item-index
-name, and where the `use`-following resolver can see the function somewhere this slice
-cannot verify from, the diagnostic says *that* instead of "not found"). Staleness needs
+claim resolved through the same resolver `verify` anchors with — which is also the one
+that classifies calls (§5.2, §5.5) — so the two commands never disagree about which
+claims point at real code; `E0301` names the nearest item-index name, and where the
+function is real but unreachable from a crate-root harness because it or a module above
+it is private, the diagnostic says *that* instead of "not found"). Staleness needs
 `ply.lock`, which nothing writes yet; the architecture tier is M2. Both gaps are carried
 in the `--json` envelope as a `coverage.not_checked` array and printed under "What this
 command did NOT check", because a command that reports only findings lets a clean run

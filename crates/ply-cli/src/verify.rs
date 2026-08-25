@@ -171,7 +171,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 }
                 continue;
             }
-            let cf = match harness::discover_fn(&lib_path, fn_name) {
+            let cf = match harness::discover_fn_with(&mut resolver, fn_name, &lib_path) {
                 Ok(cf) => cf,
                 Err(e) => {
                     diagnostics.push(unresolved_anchor_diag(
@@ -360,7 +360,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             }
             if !bodies.is_empty() {
                 fn_modules.push(ply_core::fuzz_gen::wrap_fn_harness_module(
-                    plan.fn_name,
+                    &plan.cf,
                     &target_names.lib_ident,
                     &bodies,
                 ));
@@ -493,22 +493,21 @@ fn boundary_plan(resolver: &mut Resolver, cf: &ContractFn) -> BoundaryPlan {
             }
             CalleeStatus::Assumed {
                 contract,
+                canonical_path,
                 signature,
             } => {
-                if plan.stubs.iter().any(|s| s.callee_path == site.path) {
+                if plan.stubs.iter().any(|s| s.callee_path == canonical_path) {
                     continue;
                 }
                 match signature.return_type {
                     Some(ret) => plan.stubs.push(StubSpec {
-                        callee_path: site.path.clone(),
+                        callee_path: canonical_path,
                         params: signature.params,
                         return_type: ret,
                         requires: contract.requires,
                         ensures: contract.ensures,
                     }),
-                    None => plan
-                        .unstubbable
-                        .push((site.path.clone(), site.where_text())),
+                    None => plan.unstubbable.push((canonical_path, site.where_text())),
                 }
             }
         }

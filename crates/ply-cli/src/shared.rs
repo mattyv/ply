@@ -323,17 +323,18 @@ pub(crate) fn assumed_contracts(
             // for a trust surface to list and nothing owed on it.
             if let ply_core::callgraph::CalleeStatus::Assumed {
                 contract,
+                canonical_path,
                 signature,
             } = resolver.classify(site).status
                 && signature.return_type.is_some()
-                && seen.insert(site.path.clone())
+                && seen.insert(canonical_path.clone())
             {
                 found.push(AssumedContract {
                     caller_node_id: c.node_id(),
                     caller_fn: c.fn_name.clone(),
-                    callee: site.path.clone(),
+                    callee: canonical_path.clone(),
                     contract: contract_text(&contract.requires, &contract.ensures),
-                    callee_checks: callee_checks(doc, &site.path, local_anchors),
+                    callee_checks: callee_checks(doc, &canonical_path, local_anchors),
                     where_text: site.where_text(),
                 });
             }

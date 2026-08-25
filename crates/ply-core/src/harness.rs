@@ -236,6 +236,19 @@ pub type AliasMap = std::collections::BTreeMap<String, Type>;
 /// compile, but this reader is not a compiler and must not hang on one.
 const MAX_ALIAS_DEPTH: usize = 8;
 
+/// Reads one rendered type source (`u8`, `& Vec < u8 >`) back into a
+/// [`RustType`]. References are looked through: what matters for building an
+/// arbitrary value is the type behind the `&`. Returns `None` when the text
+/// is not a Rust type at all.
+pub fn rust_type_from_source(src: &str) -> Option<RustType> {
+    let ty: Type = syn::parse_str(src).ok()?;
+    let inner = match &ty {
+        Type::Reference(r) => r.elem.as_ref(),
+        other => other,
+    };
+    Some(rust_type_from_syn(inner, &AliasMap::new()))
+}
+
 fn rust_type_from_syn(ty: &Type, aliases: &AliasMap) -> RustType {
     rust_type_from_syn_at(ty, aliases, 0)
 }
@@ -379,7 +392,14 @@ pub struct Param {
 /// harness codegen and `contract_rt` rendering.
 #[derive(Debug, Clone)]
 pub struct ContractFn {
+    /// The function's own identifier (`legacy_rate`), with no module path.
     pub name: String,
+    /// Where the function lives, spelled from the crate root
+    /// (`rates::legacy_rate`). Equal to `name` for a function declared at
+    /// the top level of `src/lib.rs`. Generated code must call the function
+    /// by *this*, because the module Ply generates sits at the crate root
+    /// and a bare name only reaches a top-level function.
+    pub path: String,
     pub params: Vec<Param>,
     /// `#[ply::requires(expr)]`, if present: the raw boolean expression.
     pub requires: Option<(Expr, String)>,
@@ -393,6 +413,15 @@ pub struct ContractFn {
 }
 
 impl ContractFn {
+    /// A single Rust identifier derived from `path`, for naming generated
+    /// items (`ply_proof_rates_legacy_rate`). Two functions of the same name
+    /// in different modules must not collide into one generated harness, so
+    /// the whole path goes into the identifier, not just the last segment.
+    /// For a top-level function this is exactly `name`.
+    pub fn ident(&self) -> String {
+        self.path.replace("::", "_")
+    }
+
     /// Can Ply's Kani codegen build this fn's harness at all? (§5.4b gate.)
     pub fn is_bounded_supported(&self) -> bool {
         self.params.iter().all(|p| p.ty.is_bounded_supported())
@@ -417,50 +446,107 @@ impl ContractFn {
     }
 }
 
-/// Parses `src_path` and returns the contracted function named `fn_name`.
-/// Only top-level free functions are supported in this slice (no `impl`
-/// methods, no nested modules) -- the full extractor (§4's `extract/`
-/// module) is out of scope.
-/// Every free function declared at the top level of `src_path`, in source
-/// order — the item index §5.2 wants behind `E0301`'s "nearest-name
-/// suggestions".
-///
-/// Deliberately the *same* set [`discover_fn`] searches, not a wider one: a
-/// suggestion naming a function `discover_fn` would then fail to find would
-/// be worse than no suggestion. Functions inside modules are not here for
-/// the same reason they are not there.
-pub fn top_level_fn_names(src_path: &Path) -> Result<Vec<String>> {
+/// Builds a resolver over `src_path` alone, for callers that have no
+/// long-lived one: the crate directory is inferred from the conventional
+/// `<crate>/src/lib.rs` layout so file modules (`mod rates;`) still resolve.
+pub fn resolver_for(src_path: &Path) -> Result<crate::callgraph::Resolver> {
     let src = std::fs::read_to_string(src_path)
         .with_context(|| format!("reading source at {}", src_path.display()))?;
-    let file = syn::parse_file(&src)
-        .with_context(|| format!("parsing source at {}", src_path.display()))?;
-    Ok(file
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Fn(f) => Some(f.sig.ident.to_string()),
-            _ => None,
-        })
-        .collect())
+    let crate_dir = src_path
+        .parent()
+        .and_then(|src_dir| src_dir.parent())
+        .unwrap_or_else(|| Path::new("."));
+    crate::callgraph::Resolver::new(&src, crate_dir, std::collections::BTreeMap::new())
+        .with_context(|| format!("parsing source at {}", src_path.display()))
 }
 
-pub fn discover_fn(src_path: &Path, fn_name: &str) -> Result<ContractFn> {
-    let src = std::fs::read_to_string(src_path)
-        .with_context(|| format!("reading source at {}", src_path.display()))?;
-    let file = syn::parse_file(&src)
-        .with_context(|| format!("parsing source at {}", src_path.display()))?;
-    let aliases = alias_map(&file);
-    for item in &file.items {
-        if let syn::Item::Fn(f) = item
-            && f.sig.ident == fn_name
-        {
-            return build_contract_fn(f, &aliases);
+/// Every free function in this crate a claim could anchor to, as canonical
+/// crate-root paths — the item index §5.2 wants behind `E0301`'s
+/// "nearest-name suggestions".
+///
+/// Deliberately the *same* set [`discover_fn_with`] searches, not a wider or
+/// a narrower one: a suggestion naming a function anchor resolution would
+/// then fail to find would be worse than no suggestion. Until 2026-08-25
+/// both sets stopped at the top level of `src/lib.rs`, which is why the
+/// suggestion machinery agreed with the resolution machinery and both were
+/// wrong about the same functions.
+pub fn crate_fn_paths(src_path: &Path) -> Result<Vec<String>> {
+    Ok(resolver_for(src_path)?.fn_index())
+}
+
+/// Resolves `fn_path` — written the way the `ply.yaml` claim writes it,
+/// relative to its component's anchor — to the function it names, walking
+/// `use` imports, inline `mod`s and file modules exactly as call
+/// classification does (§5.5). One resolver answers both questions, so Ply
+/// can no longer report a callee as unvouched-for and then refuse the claim
+/// that would vouch for it.
+pub fn discover_fn_with(
+    resolver: &mut crate::callgraph::Resolver,
+    fn_path: &str,
+    src_path: &Path,
+) -> Result<ContractFn> {
+    resolve_anchor(resolver, fn_path, src_path).map_err(|e| match e {
+        AnchorError::NotFound => anyhow::anyhow!(
+            "E0301: could not find fn `{fn_path}` in {} or any module it declares (unresolvable \
+             anchor)",
+            src_path.display()
+        ),
+        other => anyhow::anyhow!("E0301: {other}"),
+    })
+}
+
+/// Why an anchor did not resolve. Three different facts, and they take three
+/// different sentences: a name that is nowhere (suggest the nearest one), a
+/// function that is real but out of a crate-root harness's reach, and a
+/// function Ply found and could not read the shape of.
+#[derive(Debug)]
+pub enum AnchorError {
+    /// No such function, in `src/lib.rs` or any module it declares.
+    NotFound,
+    /// Found, but a private `fn` or a private `mod` between it and the crate
+    /// root means the generated harness cannot name it.
+    Private(String),
+    /// Ply followed the path into first-party source and could not read it.
+    Unreadable(String),
+    /// Found and named, but its signature or its contract is a shape this
+    /// slice does not support (`E0304`, `E0501`).
+    Shape(anyhow::Error),
+}
+
+impl std::fmt::Display for AnchorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnchorError::NotFound => write!(f, "no such function in this crate"),
+            AnchorError::Private(r) | AnchorError::Unreadable(r) => write!(f, "{r}"),
+            AnchorError::Shape(e) => write!(f, "{e}"),
         }
     }
-    bail!(
-        "E0301: could not find fn `{fn_name}` in {} (unresolvable anchor)",
-        src_path.display()
-    )
+}
+
+/// [`discover_fn_with`], with the reason kept as data rather than flattened
+/// into a message — `check` needs to say which of the four things happened.
+pub fn resolve_anchor(
+    resolver: &mut crate::callgraph::Resolver,
+    fn_path: &str,
+    _src_path: &Path,
+) -> std::result::Result<ContractFn, AnchorError> {
+    match resolver.lookup_fn(fn_path) {
+        crate::callgraph::Resolution::Found(found) => {
+            if let Some(reason) = found.unnameable {
+                return Err(AnchorError::Private(reason));
+            }
+            build_contract_fn(&found.item, &alias_map(&found.file), &found.canonical)
+                .map_err(AnchorError::Shape)
+        }
+        crate::callgraph::Resolution::Opaque(reason) => Err(AnchorError::Unreadable(reason)),
+        crate::callgraph::Resolution::NotFound => Err(AnchorError::NotFound),
+    }
+}
+
+/// [`discover_fn_with`] for a caller with no resolver of its own.
+pub fn discover_fn(src_path: &Path, fn_path: &str) -> Result<ContractFn> {
+    let mut resolver = resolver_for(src_path)?;
+    discover_fn_with(&mut resolver, fn_path, src_path)
 }
 
 /// `quote`'s `TokenStream::to_string()` inserts a space between every token
@@ -477,7 +563,7 @@ fn tidy_contract_text(s: &str) -> String {
         .replace(" ()", "()")
 }
 
-fn build_contract_fn(f: &ItemFn, aliases: &AliasMap) -> Result<ContractFn> {
+fn build_contract_fn(f: &ItemFn, aliases: &AliasMap, path: &str) -> Result<ContractFn> {
     let name = f.sig.ident.to_string();
     let mut params = Vec::new();
     for arg in &f.sig.inputs {
@@ -525,6 +611,7 @@ fn build_contract_fn(f: &ItemFn, aliases: &AliasMap) -> Result<ContractFn> {
 
     Ok(ContractFn {
         name,
+        path: path.to_string(),
         params,
         requires,
         ensures,
@@ -727,7 +814,7 @@ pub fn generate_proof_module(
         ));
     }
 
-    let proof_fn_name = format!("ply_proof_{}", cf.name);
+    let proof_fn_name = format!("ply_proof_{}", cf.ident());
     let module_source = format!(
         "//! Generated by Ply -- do not edit. Kani proof harness for `{fname}`\n\
          //! (check bounded({k})). See The-Ply-Spec.md D2 and §5.4b.\n\
@@ -742,7 +829,7 @@ pub fn generate_proof_module(
          {lets}\
          \x20\x20\x20\x20{fname}({args});\n\
          }}\n",
-        fname = cf.name,
+        fname = cf.path,
         k = bound_k,
         stub_defs = stub_defs,
         stub_attrs = stub_attrs,
@@ -846,6 +933,203 @@ mod tests {
         let path = dir.join("lib.rs");
         std::fs::write(&path, content).unwrap();
         path
+    }
+
+    // -- anchor resolution follows the crate's own structure (2026-08-25)
+    //
+    // Ply's two halves disagreed about where a function is: call
+    // classification walked `use` imports, inline `mod`s and file modules,
+    // anchor resolution read one file's top-level items. So a promise could
+    // not be attached to the very callee Ply had just named as unvouched
+    // for. These pin the walk that closed that, and the one case that
+    // legitimately stays closed.
+
+    /// Lays out `<crate>/src/...` so file modules resolve the way they do
+    /// in a real crate, and returns the `src/lib.rs` path.
+    fn write_crate(dir: &Path, files: &[(&str, &str)]) -> PathBuf {
+        let src = dir.join("src");
+        for (rel, content) in files {
+            let path = src.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, content).unwrap();
+        }
+        src.join("lib.rs")
+    }
+
+    #[test]
+    fn a_fn_in_an_inline_module_resolves_and_reports_where_it_lives() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub mod rates {
+    #[ply::ensures(|result| *result <= 10_000)]
+    pub fn legacy_rate(tier: u8) -> u32 { if tier == 0 { 150 } else { 90 } }
+}
+"#,
+            )],
+        );
+        let cf = discover_fn(&lib, "rates::legacy_rate").unwrap();
+        assert_eq!(cf.name, "legacy_rate");
+        assert_eq!(
+            cf.path, "rates::legacy_rate",
+            "generated code sits at the crate root, so it must call the function by where it              lives, not by its bare name"
+        );
+        assert_eq!(cf.ident(), "rates_legacy_rate");
+        assert!(cf.ensures.is_some());
+    }
+
+    #[test]
+    fn a_fn_in_a_file_module_resolves_through_both_of_rusts_spellings() {
+        for (rel, name) in [("rates.rs", "rates.rs"), ("rates/mod.rs", "rates/mod.rs")] {
+            let dir = tempfile::tempdir().unwrap();
+            let lib = write_crate(
+                dir.path(),
+                &[
+                    (
+                        "lib.rs",
+                        "mod rates;
+use rates::legacy_rate;
+",
+                    ),
+                    (
+                        rel,
+                        "pub fn legacy_rate(tier: u8) -> u32 { tier as u32 }
+",
+                    ),
+                ],
+            );
+            let cf =
+                discover_fn(&lib, "rates::legacy_rate").unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(cf.path, "rates::legacy_rate", "{name}");
+        }
+    }
+
+    #[test]
+    fn a_claim_written_the_way_the_caller_spells_it_lands_on_the_same_fn() {
+        // `use rates::legacy_rate;` in lib.rs, and a claim keyed on the
+        // bare name. Both spellings must name one function, and both must
+        // canonicalise to the same path -- that is what lets a promise
+        // written in ply.yaml attach to the callee at a call site.
+        let dir = tempfile::tempdir().unwrap();
+        let lib = write_crate(
+            dir.path(),
+            &[
+                (
+                    "lib.rs",
+                    "mod rates;
+use rates::legacy_rate;
+",
+                ),
+                (
+                    "rates.rs",
+                    "pub fn legacy_rate(tier: u8) -> u32 { tier as u32 }
+",
+                ),
+            ],
+        );
+        assert_eq!(
+            discover_fn(&lib, "legacy_rate").unwrap().path,
+            discover_fn(&lib, "rates::legacy_rate").unwrap().path
+        );
+    }
+
+    #[test]
+    fn a_fn_in_a_nested_module_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = write_crate(
+            dir.path(),
+            &[
+                (
+                    "lib.rs",
+                    "mod pricing;
+",
+                ),
+                (
+                    "pricing.rs",
+                    "pub mod caps { pub fn cap_bps(b: u32) -> u32 { b.min(10_000) } }
+",
+                ),
+            ],
+        );
+        let cf = discover_fn(&lib, "pricing::caps::cap_bps").unwrap();
+        assert_eq!(cf.path, "pricing::caps::cap_bps");
+        assert_eq!(cf.ident(), "pricing_caps_cap_bps");
+    }
+
+    #[test]
+    fn a_private_fn_below_the_crate_root_is_refused_and_says_why() {
+        // The one case that stays closed, and it is not a limitation of the
+        // walk: the module Ply generates is a sibling of `rates`, so a
+        // private item inside `rates` is a name it cannot write. Reported
+        // rather than left to surface as a compile error in generated code.
+        let dir = tempfile::tempdir().unwrap();
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                "pub mod rates { fn legacy_rate(t: u8) -> u32 { t as u32 } }
+",
+            )],
+        );
+        let err = discover_fn(&lib, "rates::legacy_rate")
+            .expect_err("a private fn is found but not usable")
+            .to_string();
+        assert!(err.contains("E0301"), "{err}");
+        assert!(
+            err.contains("private"),
+            "the reason must be the actual one -- not `no such function`: {err}"
+        );
+    }
+
+    #[test]
+    fn a_private_module_makes_everything_inside_it_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                "pub mod a { mod b { pub fn f(x: u32) -> u32 { x } } }
+",
+            )],
+        );
+        let err = discover_fn(&lib, "a::b::f")
+            .expect_err("`b` is private to `a`")
+            .to_string();
+        assert!(err.contains("private"), "{err}");
+    }
+
+    #[test]
+    fn the_item_index_lists_functions_inside_modules_too() {
+        // `E0301`'s nearest-name suggestions come from this index, and a
+        // suggestion naming something anchor resolution would then refuse
+        // is worse than no suggestion -- so the two sets must be the same.
+        let dir = tempfile::tempdir().unwrap();
+        let lib = write_crate(
+            dir.path(),
+            &[
+                (
+                    "lib.rs",
+                    "mod rates;
+pub fn tiered_fee(x: u32) -> u32 { x }
+",
+                ),
+                (
+                    "rates.rs",
+                    "pub fn legacy_rate(t: u8) -> u32 { t as u32 }
+pub mod caps { pub fn cap(x: u32) -> u32 { x } }
+",
+                ),
+            ],
+        );
+        let mut index = crate_fn_paths(&lib).unwrap();
+        index.sort();
+        assert_eq!(
+            index,
+            vec!["rates::caps::cap", "rates::legacy_rate", "tiered_fee"]
+        );
     }
 
     // -- M4: the fuzz-vs-bounded routing gate --------------------------

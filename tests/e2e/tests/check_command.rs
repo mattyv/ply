@@ -4,6 +4,15 @@
 
 use ply_e2e::{build_cargo_ply, copy_fixture};
 
+/// The CLI reflows diagnostics to ~92 columns, so where a sentence breaks
+/// depends on how long the tempdir path happens to be. Collapsing runs of
+/// whitespace keeps these assertions exact-string about the *words* -- which
+/// is what §8 and the newbie bar are about -- without coupling them to the
+/// wrap column.
+fn unwrapped(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn run(args: &[&str]) -> (i32, String, String) {
     let cargo_ply = build_cargo_ply();
     let out = std::process::Command::new(&cargo_ply)
@@ -75,7 +84,7 @@ fn a_renamed_function_fails_the_run_and_the_diagnostic_names_the_near_miss() {
     assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
     assert!(stdout.contains("E0301"), "{stdout}");
     assert!(
-        stdout.contains("The closest name Ply can see is `clamp_to_max`"),
+        unwrapped(&stdout).contains("The closest name Ply can see is `clamp_to_max`"),
         "{stdout}"
     );
 }
@@ -108,5 +117,47 @@ fn a_typoed_key_is_a_schema_finding_with_its_json_pointer() {
             .unwrap()
             .contains("Did you mean `ensures`?"),
         "{d}"
+    );
+}
+
+/// The anchor tier resolves a claim the same way call classification
+/// resolves a call, so `check` and `verify` cannot disagree about where a
+/// function lives. Before 2026-08-25 this printed `E0301` for a claim on
+/// `rates::legacy_rate` while `verify` was, in the same breath, naming
+/// `legacy_rate` as a callee nobody had vouched for.
+#[test]
+fn a_claim_on_a_function_inside_a_module_resolves() {
+    let fixture = copy_fixture("modanchor");
+    let (code, stdout, stderr) = run(&["check", fixture.path().to_str().unwrap()]);
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stdout.contains("E0301"), "{stdout}");
+    assert!(
+        unwrapped(&stdout)
+            .contains("2 of 2 fn claims in this crate point at a function Ply can find"),
+        "{stdout}"
+    );
+}
+
+/// The case that genuinely stays closed, reported as itself. Ply generates
+/// its harness at the crate root, so a private item inside a module is a
+/// name that harness cannot write -- which is a different fact from "no
+/// such function", and gets a different sentence.
+#[test]
+fn a_private_function_inside_a_module_is_refused_with_the_real_reason() {
+    let fixture = copy_fixture("modanchor");
+    let rates = fixture.path().join("src/rates.rs");
+    let src = std::fs::read_to_string(&rates).unwrap();
+    std::fs::write(&rates, src.replace("pub fn legacy_rate", "fn legacy_rate")).unwrap();
+
+    let (code, stdout, stderr) = run(&["check", fixture.path().to_str().unwrap()]);
+    assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("E0301"), "{stdout}");
+    assert!(
+        stdout.contains("private"),
+        "the diagnostic must name the actual obstacle: {stdout}"
+    );
+    assert!(
+        !unwrapped(&stdout).contains("could not find a function called"),
+        "the function was found; saying otherwise sends the reader hunting for a typo: {stdout}"
     );
 }
