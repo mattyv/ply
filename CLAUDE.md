@@ -65,6 +65,26 @@ Report outcomes, not code churn. Skip file names, function names, and diff-speak
 asked. Say what changed in behaviour, where to see it, and whether it works. Make routine
 technical calls yourself; only ask questions that can be answered without reading code.
 
+**Every report opens with a TLDR, and the maintainer should never have to ask for one.**
+Two or three sentences, at the very top, carrying the answer — not the setup, not the
+approach, not what you were about to do. Assume it is the only part read. If it survives
+alone, the detail below it is a bonus; if it needs the detail to make sense, it is not a
+TLDR, it is a preamble. The same report, twice:
+
+> I verified the fix independently. I wrote my own fixture at the correct depth and ran
+> four cases against it, including two that had to keep reusing, because a fix that
+> invalidates everything is the feature deleted with extra steps. Here is what each one
+> did. [six paragraphs, then the verdict]
+
+> **It works, and I checked it myself rather than taking the agent's word.** Breaking a
+> helper is now caught and reported with a failing input; untouched code still comes back
+> in 0.039s, so the speed-up survived. One caveat: build flags are still outside the hash,
+> and that is now written down rather than implied.
+
+The second one is the report. Lead with what is true now, then the one thing that is
+still wrong or still open — bad news goes in the TLDR, never held back for paragraph
+nine. Length below it is fine; burying the answer is not.
+
 **No project jargon in conversation, ever, unless asked for it.** The newbie bar below
 governs what the *tool* says; this governs what *you* say. The same sentence, twice:
 
