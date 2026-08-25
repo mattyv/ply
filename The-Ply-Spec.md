@@ -518,6 +518,23 @@ never propagates upward, and never changes an exit code. What is reused is the w
 result — verdict, statuses, evidence block and the diagnostics that came with it — so a
 reused conditional verdict still prints the assumption it rests on, word for word.
 
+**The file holds only what the last run stood behind.** Every entry the run neither
+reused nor earned is dropped: a claim deleted from the document, a claim whose function no
+longer resolves, a claim this run checked and got no evidence for. None of them could ever
+be reused — their fingerprints cannot match — and leaving one there would show a reviewer
+a verdict the run did not produce, which is the remembered opinion this design refuses.
+A consequence worth stating: a machine that cannot reproduce a result (no engine
+installed, a different toolchain) drops it rather than keeping somebody else's, so two
+machines with different toolchains take turns rewriting the record. That is inherent in
+one entry per claim.
+
+Two gaps, stated rather than implied. The `fuzz` tier's engine version is the version
+*requirement* Ply writes into the harness crate it generates, not the version cargo
+resolved: a patch release of the sampling library that changed how a strategy draws would
+keep that string, so a record written before it can be reused after it. And the
+fingerprint guards a stored result against its inputs *moving*, not against somebody
+editing `ply.lock`: a hand-edited record is trusted exactly as hand-edited source is.
+
 Deleting `ply.lock` re-runs everything; there is no `--force` flag.
 
 ### 5.3 Architecture semantics (always-on, M2)
