@@ -237,7 +237,7 @@ pub fn load(path: &Path, ply_version: &str) -> Result<Record> {
     }
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading the recorded results at {}", path.display()))?;
-    let record: Record = serde_json::from_str(&text).with_context(|| {
+    let mut record: Record = serde_json::from_str(&text).with_context(|| {
         format!(
             "`{}` holds the results of previous runs, and this one could not be read. If it has \
              merge-conflict markers in it, or was hand-edited, delete it and run `cargo ply \
@@ -245,6 +245,11 @@ pub fn load(path: &Path, ply_version: &str) -> Result<Record> {
             path.display()
         )
     })?;
+    // `written_by` names the version that last *wrote* the file, not the one
+    // that first did: every entry that survives a run was either matched by
+    // a fingerprint carrying this version or written by this run, so
+    // stamping it here is a fact rather than a guess.
+    record.written_by = ply_version.to_string();
     if record.format != FORMAT {
         // Ignored, not misread: a record written in a format this build does
         // not know says nothing this build can trust.
@@ -522,6 +527,31 @@ mod tests {
     /// A record from a format this build does not know is ignored, not
     /// misread: reusing a result whose meaning is unknown is exactly the
     /// failure the fingerprint exists to prevent.
+    /// The record says which Ply wrote it, so a reader of the diff can see
+    /// that without decoding a hash. It names the version that last wrote
+    /// the file, which after any run is the version that produced every
+    /// entry in it -- a fingerprint carrying a different Ply version can
+    /// never match.
+    #[test]
+    fn the_record_names_the_ply_that_last_wrote_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ply.lock");
+        let mut record = Record::new("0.1.0");
+        record.record(
+            "a::f",
+            RecordEntry {
+                fingerprint: "h".into(),
+                verdict: "tested".into(),
+                statuses: vec![],
+                evidence: None,
+                diagnostics: vec![],
+            },
+        );
+        save(&path, &record).unwrap();
+        let reloaded = load(&path, "0.1.1").unwrap();
+        assert_eq!(reloaded.written_by, "0.1.1");
+    }
+
     #[test]
     fn a_record_in_an_unknown_format_is_ignored_rather_than_misread() {
         let dir = tempfile::tempdir().unwrap();

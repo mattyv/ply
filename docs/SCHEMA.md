@@ -134,10 +134,8 @@ machine-readable envelope with a node per claim and a list of diagnostics.
 | `cargo ply audit <dir>` | Lists the trust surface: every place your evidence rests on something Ply never checked. | No |
 | `cargo ply worklist <dir>` | Lists what is owed: open decisions you recorded, and promises nothing has tested yet. | No |
 
-`check` covers two of its four intended jobs, and says so at the bottom of its own
-output: it does not compare claims against a record of past runs (that needs a
-`ply.lock` file nothing writes yet), and it does not check the architecture rules
-described in section 8 below.
+`check` covers two of its three intended jobs, and says so at the bottom of its own
+output: it does not check the architecture rules described in section 8 below.
 
 `verify`'s useful flags:
 
@@ -147,6 +145,9 @@ described in section 8 below.
   (those are dramatically slower). Passing the flag overrides all of that.
 - `--fail-on warn|evidence|error` — what makes the run fail. See section 7.
 - `--seed <64 hex characters>` — replay one recorded `fuzz` run exactly.
+
+`verify` does not re-run a check whose result it already has and whose inputs have not
+moved — see section 7's "Results Ply already has".
 
 ### What you need installed
 
@@ -166,12 +167,16 @@ so it does not affect an ordinary build. The `test`/`fuzz` tier additionally wri
 small crate under `target/ply/`. Ply owns everything under `target/ply/` and every
 generated test whose name begins with `ply_cex_`.
 
+It also writes **`ply.lock`** beside your `ply.yaml`: the results this run earned, each
+one beside a hash of everything it depended on. **Commit it.** It is what stops CI and
+your colleagues from re-proving what is already proven, and it is checked against
+reality every time it is read — section 7 explains exactly how.
+
 **These do not exist yet**, though the design specification describes them:
-`cargo ply tree` (the verdict tree as a browsable, collapsible view), `cargo ply
-accept` (re-bless claims after an intentional change), `cargo ply doctor` (report which
-checking engines are installed), `cargo ply synth` (have a model write a body from its
-contract), and `cargo ply skill` (generate an agent-facing reference). `verify`'s
-`--only-changed` and `--force` flags are also not built.
+`cargo ply tree` (the verdict tree as a browsable, collapsible view), `cargo ply doctor`
+(report which checking engines are installed), `cargo ply synth` (have a model write a
+body from its contract), and `cargo ply skill` (generate an agent-facing reference).
+`verify`'s `--only-changed` flag is also not built.
 
 ---
 
@@ -791,7 +796,10 @@ this build, not hypotheticals.
    and non-trivial, and prefer to discharge them with a `fuzz` check rather than leaving
    them standing.
 2. **A promise does not go stale.** If the legacy code changes under a standing
-   assumption, nothing notices. (Attestations have the same gap — see section 11.)
+   assumption, nothing notices. The recorded results in section 7 do not close this: a
+   caller's result is hashed against the *promise*, because the promise is what its
+   proof used — not against the old body it was never allowed to look at. (Attestations
+   have the same gap — see section 10.)
 3. **The refusal only inspects the claimed function's own body.** If your function calls
    a *contracted* callee, whatever *that* callee calls still travels into the proof
    unnamed.
@@ -841,7 +849,6 @@ they are different kinds of fact, and they travel upward as flags:
 | `tool_error` | The check did not run — usually the generated harness failed to compile. Zero cases ran, so this is never a pass and never a violation. |
 | `inconclusive` | A check ran and settled nothing. |
 | `weak-spec` | A `mutate` run planted bugs your checks did not catch. |
-| `stale` | The code changed since the evidence was recorded. (Needs `ply.lock`; not produced yet.) |
 
 ### What the terminal shows
 
@@ -857,7 +864,20 @@ workspace — bounded(2)  [assumed, evidence owed]
   [evidence owed]  nothing has run the real code against that promise yet; the lines below name it and say what would settle it
 ```
 
-The marks travel upward the way the statuses do, so a qualified result deep in the tree
+A third mark, `[reused]`, says the result was carried forward from an earlier run rather
+than earned in this one. Unlike the other two it does not travel upward — it is not a
+qualifier on the evidence, it is a fact about when the run happened:
+
+```
+workspace — bounded(2)  [assumed, evidence owed]
+  billing — bounded(2)  [assumed, evidence owed]
+    safe_increment — bounded(2)  [reused]
+    tiered_fee — bounded(2)  [assumed, evidence owed, reused]
+
+  [reused]         this result was not re-run: an earlier run recorded it, and everything it depended on — the code, the promises it assumes, the checks, the engines, Ply's own version — hashes the same today
+```
+
+The other marks travel upward the way the statuses do, so a qualified result deep in the tree
 is visible at the root without expanding anything — the same job the corner markers do
 on the diagram. The two lines explaining them are printed only when the tree actually
 carries a mark. `--json` has carried this all along, in `statuses`; the terminal did
@@ -869,6 +889,55 @@ not: **checked and fine** (`tested`/`fuzzed`/`bounded`/`proved`), **checked noth
 `inconclusive`), and **fine, assuming something nobody verified** (any verdict carrying
 `conditional`). Most tools collapse the middle group into the first. Ply does not, and
 that is the point of the whole exercise.
+
+### Results Ply already has
+
+`cargo ply verify` writes what it earned into `ply.lock`, next to your `ply.yaml`, and
+reuses it on the next run instead of paying for the same proof twice. On a small crate
+here that is 1m23s the first time and 0.07s the second. **Commit the file**: it is what
+stops CI and the next person from re-proving what is already proven, and it puts "this
+claim was checked" into a diff a reviewer reads.
+
+Each result is stored beside a hash of **everything the answer depended on**:
+
+- the checked function's own source, as tokens — reformatting it or editing a comment
+  above it changes nothing;
+- its contract, whether written on the function or declared in `ply.yaml`;
+- every promise the proof stood on instead of real code, exactly as written;
+- the checks that ran, and the seed the generated cases were drawn from;
+- each engine's name, version and flags, plus the compiler and the build target;
+- the crate's declared features;
+- **Ply's own version.**
+
+Before a stored result is used or shown, that hash is recomputed from today's inputs. It
+matches, and the result is reused and marked `[reused]`. It does not, and the check runs
+again. There is no command to re-bless anything and no "this might be out of date" state
+to chase: the hash *is* the confirmation, and it is checked every single time.
+
+Ply's own version is in there because a fix to Ply changes what a result means. Four
+defects were fixed here on 2026-08-25 — a test harness that failed to compile earned a
+confident pass, an ordinary `use` import let a proof include code nobody had vouched
+for, an impossible declared promise made a proof succeed vacuously, and a claim inside a
+nested group was skipped in silence. Every result recorded the day before carries one of
+those risks, and every one of them would match perfectly today on the source alone. A
+new Ply invalidates exactly the results it should, and nobody has to remember which
+release had which bug.
+
+Two things are deliberately **not** hashed. The time budget (`--engine-timeout`) is not:
+a proof that finished inside 300s is not made false by a later run that would have
+allowed only 60s. And a run that earned nothing is never stored at all — a violation, a
+timeout, a missing engine, a shape Ply cannot build inputs for, a claim that asked for
+nothing. Nothing that failed can be carried forward, and a check that times out re-pays
+its budget on every run.
+
+What *is* carried forward is the whole result, diagnostics included, so a reused verdict
+that stands on an unchecked promise still prints the paragraph naming that promise.
+
+To re-run everything from scratch, delete `ply.lock`. There is no `--force` flag.
+
+If `ply.lock` cannot be read — the likeliest cause is a merge conflict in a committed
+file — `verify` says so and stops rather than quietly re-proving everything. Deleting
+the file costs you engine time and nothing else.
 
 ### Exit codes
 
@@ -1119,10 +1188,12 @@ evidence.
 
 Two things to know. Attestation is a human act — a claim about what a person has
 verified should be added by that person, not on an agent's judgment. And a trusted claim
-is *supposed* to go stale when the code it vouches for changes, so that `audit` asks for
-re-attestation; **that comparison is not implemented**, so an attestation signed off
-against a function that has since been rewritten looks exactly like one signed off this
-morning. `audit` says so on every run.
+is *supposed* to stop covering the code it vouches for once that code changes, so that
+`audit` asks for re-attestation; **that comparison is not implemented**, so an
+attestation signed off against a function that has since been rewritten looks exactly
+like one signed off this morning. `audit` says so on every run. (This is not the same
+machinery as the recorded results in section 7: those cover claims Ply checked itself,
+and an attestation is a person's word about something Ply never ran.)
 
 ---
 
@@ -1268,11 +1339,8 @@ Collected in one place, so nothing here has to be discovered at minute eleven.
 
 - The architecture tier. `uses`, `pure`, `owns`, `profile`, `strict`, `edges:` and
   `deny:` are validated and then compared against nothing.
-- `cargo ply tree`, `accept`, `doctor`, `synth`, `skill`; `verify --only-changed` and
-  `--force`.
+- `cargo ply tree`, `doctor`, `synth`, `skill`; `verify --only-changed`.
 - The `prove` check — no engine.
-- `ply.lock`, and everything that needs it: staleness of any kind, and skipping checks
-  whose result is already recorded. Every run re-pays full engine cost.
 - The attributes `#[ply::allow]`, `#[ply::pure]` and `#[ply::derived]`. They are read
   by `audit` if present in source, but `ply-attrs` does not define them, so writing one
   does not compile.
@@ -1294,6 +1362,8 @@ Collected in one place, so nothing here has to be discovered at minute eleven.
   it fails later, in the compiler or the engine.
 - A boundary promise that cannot be satisfied makes the caller's proof pass vacuously,
   and nothing detects that.
+- Whether an attestation still covers the item it vouches for is not computed (section
+  10). Results Ply checked itself do carry that guard; a person's word does not.
 - A claim under a component anchored at a *module* (`anchor: ingest::book`) cannot be
   run: function keys are read as paths from the crate root, not relative to the anchor.
   Such a claim is reported (`W0303`) with the crate-root spelling that would run.
