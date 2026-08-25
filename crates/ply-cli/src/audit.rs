@@ -34,15 +34,14 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::Result;
-use ply_core::callgraph::{CalleeStatus, Resolver};
 use ply_core::diag::{Coverage, Envelope, Tier, TrustItem};
-use ply_core::harness::{self, ContractFn};
-use ply_core::model::{Check, Mode};
+use ply_core::harness;
+use ply_core::model::Mode;
 use ply_core::surface::{self, SourceSurface};
 
 use crate::shared::{
-    self, Loaded, declared_contracts, empty_workspace, load_document, local_anchor_names,
-    walk_fn_claims, workspace_node, wrap,
+    self, Loaded, empty_workspace, load_document, local_anchor_names, walk_fn_claims,
+    workspace_node, wrap,
 };
 
 const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -206,11 +205,8 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
     };
 
     let local_anchors = local_anchor_names(crate_dir);
-    let declared = declared_contracts(&doc, &local_anchors);
     let scanned = surface::scan_crate(crate_dir);
     let lib_path = crate_dir.join("src/lib.rs");
-    let lib_src = std::fs::read_to_string(&lib_path).unwrap_or_default();
-    let mut resolver = Resolver::new(&lib_src, crate_dir, declared).ok();
 
     let mut items: Vec<TrustItem> = Vec::new();
     let mut claims = 0usize;
@@ -225,32 +221,6 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
         } else {
             None
         };
-
-        // §5.5's second branch, decided exactly the way `verify` decides it
-        // -- from the call graph, before any engine would start. Only a
-        // `bounded` check makes a callee's promise load-bearing: the fuzz
-        // tier crosses a legacy boundary by simply running the code.
-        if let (Some(cf), Some(resolver)) = (cf.as_ref(), resolver.as_mut())
-            && checks_for(c.claim, cf)
-                .iter()
-                .any(|k| matches!(k, Check::Bounded(_)))
-        {
-            let mut seen: BTreeSet<String> = BTreeSet::new();
-            for site in &cf.calls {
-                if let CalleeStatus::Assumed { contract, .. } = resolver.classify(site).status
-                    && seen.insert(site.path.clone())
-                {
-                    items.push(assumed_contract_item(
-                        &node_id,
-                        c.fn_name,
-                        &site.path,
-                        &contract_text(&contract.requires, &contract.ensures),
-                        callee_checks(&doc, &site.path, &local_anchors),
-                        &site.where_text(),
-                    ));
-                }
-            }
-        }
 
         // §5.1: an `entry:` fn's own preconditions are assumptions about the
         // world outside. Deduplicated across the two places a contract can
@@ -332,6 +302,10 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
         }
     }
 
+    for a in shared::assumed_contracts(crate_dir, &doc, &local_anchors) {
+        items.push(assumed_contract_item(&a));
+    }
+
     for e in &scanned.escapes {
         items.push(escape_item(e));
     }
@@ -367,58 +341,6 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
     })
 }
 
-/// The checks that actually govern one fn claim, resolved the way `verify`
-/// resolves them (its own list if it has one, else the shape-aware default
-/// of §5.4c) — so `audit` and `verify` never disagree about which claims
-/// make a callee's promise load-bearing.
-fn checks_for(claim: &ply_core::model::FnClaim, cf: &ContractFn) -> Vec<Check> {
-    match claim.parsed_checks() {
-        Ok(explicit) if !explicit.is_empty() => explicit,
-        // An unparseable checks list is `E0203`, which `check` reports;
-        // `audit` reads what it can and says nothing about the rest.
-        Ok(_) => crate::verify::default_checks_for(cf),
-        Err(_) => vec![],
-    }
-}
-
-/// One contract, as a reader would say it out loud.
-fn contract_text(requires: &[String], ensures: &[String]) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for r in requires {
-        parts.push(format!("requires {r}"));
-    }
-    for e in ensures {
-        parts.push(format!("ensures {e}"));
-    }
-    if parts.is_empty() {
-        "a contract declared with no clauses".to_string()
-    } else {
-        parts.join(", ")
-    }
-}
-
-/// The checks a `ply.yaml` entry declares for the callee at `path`, if it
-/// has an entry at all. The path is the one a caller writes, so a boundary
-/// component's fn is matched by `<anchor>::<fn>` (§5.5).
-fn callee_checks(
-    doc: &ply_core::model::Document,
-    path: &str,
-    local_anchors: &[String],
-) -> Vec<String> {
-    let mut found = Vec::new();
-    walk_fn_claims(doc, |c| {
-        let key = if shared::is_local(local_anchors, c.anchor) {
-            c.fn_name.clone()
-        } else {
-            format!("{}::{}", c.anchor, c.fn_name)
-        };
-        if key == path {
-            found = c.claim.checks.clone();
-        }
-    });
-    found
-}
-
 /// The checks declared for a fn by name alone, for a helper that may or may
 /// not be claimed anywhere.
 fn fn_claim_checks(doc: &ply_core::model::Document, name: &str) -> Option<Vec<String>> {
@@ -431,15 +353,9 @@ fn fn_claim_checks(doc: &ply_core::model::Document, name: &str) -> Option<Vec<St
     found
 }
 
-fn assumed_contract_item(
-    node_id: &str,
-    caller: &str,
-    callee: &str,
-    contract: &str,
-    callee_checks: Vec<String>,
-    where_text: &str,
-) -> TrustItem {
-    let discharge = match callee_checks.first() {
+fn assumed_contract_item(a: &shared::AssumedContract) -> TrustItem {
+    let (caller, callee, contract) = (&a.caller_fn, &a.callee, &a.contract);
+    let discharge = match a.callee_checks.first() {
         Some(check) => format!(
             "Its `ply.yaml` entry already asks for `{check}`, which runs the real body against \
              the promise: `cargo ply verify` is what settles it."
@@ -452,10 +368,10 @@ fn assumed_contract_item(
     };
     TrustItem {
         kind: "assumed_contract".into(),
-        subject: callee.into(),
-        node_id: node_id.into(),
+        subject: callee.clone(),
+        node_id: a.caller_node_id.clone(),
         statuses: vec!["owed-evidence".into()],
-        where_: Some(where_text.into()),
+        where_: Some(a.where_text.clone()),
         detail: format!(
             "`{caller}`'s proof never reads `{callee}`'s code. Ply replaces the call with the \
              promise `ply.yaml` declares for that function — {contract} — and proves `{caller}` \

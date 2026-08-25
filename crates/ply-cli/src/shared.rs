@@ -254,6 +254,119 @@ impl FnClaimRef<'_> {
     }
 }
 
+/// One assumed boundary contract (§5.5's second branch): a `bounded`
+/// claim whose proof stands on a promise `ply.yaml` makes for a callee Ply
+/// never reads.
+///
+/// `audit` reports it as trust surface and `worklist` reports the evidence
+/// owed on it. They read it from here, so the two commands cannot disagree
+/// about what this codebase is assuming.
+pub(crate) struct AssumedContract {
+    pub caller_node_id: String,
+    pub caller_fn: String,
+    pub callee: String,
+    /// The promise, as a reader would say it out loud: `requires x, ensures y`.
+    pub contract: String,
+    /// What the callee's own `ply.yaml` entry asks for, if it has one — the
+    /// difference between "add a check" and "run the one you declared".
+    pub callee_checks: Vec<String>,
+    pub where_text: String,
+}
+
+/// Every assumed boundary contract in one crate, decided exactly the way
+/// `verify` decides it — from the call graph, before any engine would
+/// start.
+///
+/// Only a `bounded` check makes a callee's promise load-bearing: Kani
+/// descends into a callee's body, while the fuzz tier crosses a legacy
+/// boundary by simply running the code (§5.5).
+pub(crate) fn assumed_contracts(
+    crate_dir: &Path,
+    doc: &Document,
+    local_anchors: &[String],
+) -> Vec<AssumedContract> {
+    let declared = declared_contracts(doc, local_anchors);
+    let lib_path = crate_dir.join("src/lib.rs");
+    let lib_src = std::fs::read_to_string(&lib_path).unwrap_or_default();
+    let Ok(mut resolver) = ply_core::callgraph::Resolver::new(&lib_src, crate_dir, declared) else {
+        return vec![];
+    };
+
+    let mut found = Vec::new();
+    walk_fn_claims(doc, |c| {
+        if !is_local(local_anchors, c.anchor) {
+            return;
+        }
+        let Ok(cf) = ply_core::harness::discover_fn(&lib_path, c.fn_name) else {
+            return;
+        };
+        let checks = match c.claim.parsed_checks() {
+            Ok(explicit) if !explicit.is_empty() => explicit,
+            // An unparseable checks list is `E0203`, which `check`
+            // reports; a listing command reads what it can.
+            Ok(_) => crate::verify::default_checks_for(&cf),
+            Err(_) => return,
+        };
+        if !checks
+            .iter()
+            .any(|k| matches!(k, ply_core::model::Check::Bounded(_)))
+        {
+            return;
+        }
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for site in &cf.calls {
+            if let ply_core::callgraph::CalleeStatus::Assumed { contract, .. } =
+                resolver.classify(site).status
+                && seen.insert(site.path.clone())
+            {
+                found.push(AssumedContract {
+                    caller_node_id: c.node_id(),
+                    caller_fn: c.fn_name.clone(),
+                    callee: site.path.clone(),
+                    contract: contract_text(&contract.requires, &contract.ensures),
+                    callee_checks: callee_checks(doc, &site.path, local_anchors),
+                    where_text: site.where_text(),
+                });
+            }
+        }
+    });
+    found
+}
+
+/// One contract, as a reader would say it out loud.
+pub(crate) fn contract_text(requires: &[String], ensures: &[String]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for r in requires {
+        parts.push(format!("requires {r}"));
+    }
+    for e in ensures {
+        parts.push(format!("ensures {e}"));
+    }
+    if parts.is_empty() {
+        "a contract declared with no clauses".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// The checks a `ply.yaml` entry declares for the callee at `path`, if it
+/// has an entry at all. The path is the one a caller writes, so a boundary
+/// component's fn is matched by `<anchor>::<fn>` (§5.5).
+fn callee_checks(doc: &Document, path: &str, local_anchors: &[String]) -> Vec<String> {
+    let mut found = Vec::new();
+    walk_fn_claims(doc, |c| {
+        let key = if is_local(local_anchors, c.anchor) {
+            c.fn_name.clone()
+        } else {
+            format!("{}::{}", c.anchor, c.fn_name)
+        };
+        if key == path {
+            found = c.claim.checks.clone();
+        }
+    });
+    found
+}
+
 /// Reflow a sentence to ~92 columns, indenting continuations to `indent`.
 pub(crate) fn wrap(text: &str, indent: usize) -> String {
     let mut out = String::new();

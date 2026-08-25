@@ -788,7 +788,9 @@ than a shortcut:
    the callee, the promise, the caller resting on it, and what would discharge it
    (2026-08-25, Phase 1b — before that both commands were unbuilt and this paragraph
    described them in the present tense anyway, which made the enforcement loop an IOU).
-   `cargo ply worklist` does not list it yet. `conditional` is the *normal*
+   `cargo ply worklist` lists the same thing from the other side: the *assumption* is
+   permanent trust surface, and the *evidence owed on it* is work that closes, so `audit`
+   carries the first and `worklist` the second. `conditional` is the *normal*
    state of a legacy-extension codebase, so it
    must read as routine and legible rather than as an alarm — the annotation carries the
    trust story, and a user who learns to skip it has lost it.
@@ -886,6 +888,7 @@ cargo ply verify [path|fn]   # run checks via engines, callees first; write cex 
                              # (skips fingerprint-fresh passes, D14; --force reruns)
 cargo ply tree               # verdict tree, worst-of aggregation, assumption chains
 cargo ply worklist           # unresolved markers + weak specs (W0502) + stale claims (W0302)
+                             # IMPLEMENTED: markers + owed evidence, no engines (see below).
 cargo ply audit              # trust surface: profile escapes, assumed contracts, derived fns
                              # IMPLEMENTED: six tiers, no engines (see below).
 cargo ply accept [id|--all]  # re-record fingerprints in ply.lock (§5.2)
@@ -912,6 +915,27 @@ the code, and the human surface says so in as many words. `check`'s exit codes a
 clean or advisory-only, 1 any error-severity finding, 2 tool error; `--fail-on` is not
 wired to it yet (its `evidence` default is meaningless for a command that gathers none),
 and neither are `--only-changed` or `--engine-timeout`.
+
+**`worklist` ships two tiers as of 2026-08-25 (Phase 1b), and names the two it cannot.**
+It lists **unresolved markers** (§5.6) — `ply::unresolved!` in the code and the `ply.yaml`
+registry, merged by id so one decision written in both places is one item, each with its
+span, its enclosing function and what it blocks — and **owed evidence** (§5.5): an assumed
+boundary contract nothing has yet run the real callee against, with the one line of
+`ply.yaml` that would close it. That second tier is the same fact `audit` reports, read
+the other way round, and the split is the point: `audit` lists what a codebase rests on
+permanently, `worklist` lists what somebody recorded and means to finish. An environmental
+assumption (§5.1's `entry:`) is therefore on `audit` and never here — nobody can discharge
+it, so counting it as owed would pressure a user into deleting an honest declaration.
+**`worklist` exits 0 whether or not it has items**, for the same reason: a command that
+failed a build for containing a `TODO` would make deleting the `TODO` the cheapest fix.
+Its `coverage.not_checked` carries three things: `W0502` weak specs need a `mutate` run
+and a record of past runs (`ply.lock`, Phase 1c); `W0302` stale claims need the same file;
+and §5.6's cap of a marked function at check `test` (`W0521`) **is not enforced by this
+build**, so each marker's blocking line says what §5.6 intends rather than what Ply stops
+you doing. The items ride in the envelope as `open_items`, an additive §8 field. The
+`ply::unresolved!` macro itself now exists in `ply-attrs` (it expands to
+`unimplemented!("unresolved #<id>: <note>")` unconditionally, exactly as §5.6 states);
+before Phase 1b it did not, so no code containing a marker could compile.
 
 **`audit` ships as of 2026-08-25 (Phase 1b), and reports none of its findings as a
 failure.** The one-line description above predates most of the surface it now covers, so

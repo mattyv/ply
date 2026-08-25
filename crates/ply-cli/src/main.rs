@@ -2,6 +2,7 @@ mod audit;
 mod check;
 mod shared;
 mod verify;
+mod worklist;
 
 use std::path::PathBuf;
 
@@ -31,6 +32,12 @@ enum Commands {
     /// List the trust surface: what this codebase's evidence rests on and
     /// Ply never checks (§6). Fast, no engines.
     Audit {
+        /// Path to the crate directory containing `ply.yaml`.
+        path: PathBuf,
+    },
+    /// List what is owed: unresolved markers and assumed contracts still
+    /// waiting on evidence (§6). Fast, no engines.
+    Worklist {
         /// Path to the crate directory containing `ply.yaml`.
         path: PathBuf,
     },
@@ -102,6 +109,15 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", report.envelope.to_json_pretty());
             } else {
                 audit::print_human(&report);
+            }
+            std::process::exit(report.exit_code());
+        }
+        Commands::Worklist { path } => {
+            let report = worklist::worklist_crate(&path)?;
+            if cli.json {
+                println!("{}", report.envelope.to_json_pretty());
+            } else {
+                worklist::print_human(&report);
             }
             std::process::exit(report.exit_code());
         }
