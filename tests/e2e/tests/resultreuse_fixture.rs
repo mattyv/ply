@@ -150,6 +150,41 @@ fn editing_only_a_declared_promise_re_runs_the_claim_that_rests_on_it() {
     );
 }
 
+/// The sampling tier reaches `verify` by a different route from the proof
+/// tier -- it generates a whole test crate -- and a run that reuses every
+/// sampled result must not write or compile that crate at all.
+#[test]
+fn a_sampled_result_is_reused_with_the_run_that_produced_it() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("resultreuse");
+
+    let first = run_verify(&cargo_ply, fixture.path(), 300);
+    let fresh = &first.json["root"]["children"][0]["children"][2];
+    assert_eq!(fresh["id"], "widen", "envelope: {}", first.json);
+    assert_eq!(fresh["verdict"], "fuzzed(64)", "envelope: {}", first.json);
+    assert!(
+        fresh["evidence"]["seed"]
+            .as_str()
+            .is_some_and(|s| s.len() == 64),
+        "the run that happened names its seed, or the comparison below is vacuous: {}",
+        first.json
+    );
+
+    let second = run_verify(&cargo_ply, fixture.path(), 300);
+    let reused = &second.json["root"]["children"][0]["children"][2];
+    assert_eq!(
+        reused["reused"], true,
+        "a sampled result whose inputs still hash the same is carried forward too: {}",
+        second.json
+    );
+    assert_eq!(
+        reused["evidence"], fresh["evidence"],
+        "and it carries the seed and case count of the run that actually happened -- a \
+         reused verdict that named no run would be a verdict nobody could repeat: {}",
+        second.json
+    );
+}
+
 /// A reused result reaches the terminal marked as reused, and the mark is
 /// explained where it is used -- a marker nobody can decode is decoration.
 #[test]

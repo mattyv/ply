@@ -204,18 +204,18 @@ impl Toolchain {
     }
 }
 
-/// The exact `-Z` set `engines::kani::invoke` passes. Written here as one
-/// string rather than reconstructed from the adapter because it is a
-/// *recorded* fact: if the adapter's flags change, this changing with it is
-/// what re-runs every proof they shaped.
+/// The flags that shape what a `cargo kani` run checks, as one recorded
+/// string. The `-Z` set comes from the adapter itself
+/// (`engines::kani::unstable_flags`) rather than being copied here: a flag
+/// list that could change without this string changing would let a proof
+/// earned under the old flags be reused under the new ones. The constant
+/// tail is the rest of what every invocation passes; the per-run harness
+/// name and the wall-clock budget are deliberately not here (§5.2a).
 fn kani_flags(has_stubs: bool) -> String {
-    let mut flags = String::from(
-        "-Z function-contracts -Z unstable-options -Z concrete-playback --concrete-playback print",
-    );
-    if has_stubs {
-        flags.push_str(" -Z stubbing");
-    }
-    flags
+    format!(
+        "{} --exact --concrete-playback print",
+        kani::unstable_flags(has_stubs).join(" ")
+    )
 }
 
 /// `rustc -vV`, split into the version line and the host triple. Both

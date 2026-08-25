@@ -24,6 +24,15 @@ pub fn safe_increment(x: u32) -> u32 {
     x + 1
 }
 
+/// Checked by sampling rather than by proof: the generated test crate is a
+/// different route through `verify` from the proof module, and a run that
+/// reuses every sampled result must not write that crate at all.
+#[ply::requires(x <= 1_000)]
+#[ply::ensures(|result| *result >= x)]
+pub fn widen(x: u32) -> u32 {
+    x * 2
+}
+
 /// Stands on the promise declared for `legacy_rate`, not on its body.
 #[ply::requires(amount <= 1_000)]
 #[ply::ensures(|result| *result <= 11_000)]

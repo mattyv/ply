@@ -16,3 +16,5 @@ components:
         checks: [bounded(2)]
       total:
         checks: [bounded(2)]
+      widen:
+        checks: [fuzz(64)]
