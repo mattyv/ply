@@ -22,7 +22,7 @@ might have gone quietly wrong — the confirmation happens at every single use.
 | A verdict recorded in a file, with a warning when the code moved under it | A verdict recorded beside a hash of what it stood on |
 | A `stale` state on the node, and a warning code for it | No such state. A result whose hash no longer matches is not shown; it is re-earned |
 | `cargo ply accept`, plus an error for blessing a failed claim | Deleted. Nothing to confirm |
-| "Every run re-pays full engine cost" | 77s the first time, under a second the second |
+| "Every run re-pays full engine cost" | 89s the first time, under a second the second |
 
 ---
 
@@ -75,27 +75,9 @@ reads, in one place, so the next absence added cannot be missed by one of the tw
 
 ## What the record looks like
 
-`ply.lock`, beside `ply.yaml`, committed:
-
-```json
-{
-  "format": 1,
-  "written_by": "0.1.0",
-  "results": {
-    "resultreuse::safe_increment": {
-      "fingerprint": "21864b737e97b24f4ac029607b858107e77f3be7ca5afac00f217aebf43408b0",
-      "verdict": "bounded(2)",
-      "statuses": []
-    },
-    "resultreuse::total": {
-      "fingerprint": "52f486d96a505337cdc779f9d8f55e929e0b624a0950f431800386f011f50ee9",
-      "verdict": "bounded(2)",
-      "statuses": ["conditional", "owed-evidence"],
-      "diagnostics": [ … the paragraph naming the promise this result rests on … ]
-    }
-  }
-}
-```
+`ply.lock`, beside `ply.yaml`, committed. One entry per claim: the fingerprint, the
+verdict, the statuses beside it, the evidence block naming the run where there was one,
+and the diagnostics that came with it. Demonstration 1 below shows a real one in full.
 
 The diagnostics are stored with the result on purpose. What gets carried forward is the
 *whole* report: a reused result that stands on an unchecked promise still prints the
@@ -190,18 +172,22 @@ spot-check would not catch the field nobody remembered to add.
 
 ## Five demonstrations, on a real crate
 
-The crate is `tests/fixtures/resultreuse`: two claims, one standing on its own body
-(`safe_increment`), one standing on a promise declared for old code it calls
-(`total` → `legacy_rate`). Every block below is verbatim terminal output.
+The crate is `tests/fixtures/resultreuse`. Three claims: one standing on its own body
+(`safe_increment`), one standing on a promise declared for the old code it calls
+(`total` → `legacy_rate`), and one checked by sampling rather than by proof (`widen`).
+Every block below is verbatim terminal output, captured in one sitting on a machine that
+was also running the full test suite — so the wall-clock figures are if anything
+pessimistic.
 
 ### 1. Verify once
 
 ```
 $ cargo ply verify . --engine-timeout 300
-workspace — bounded(2)  [assumed, evidence owed]
-  resultreuse — bounded(2)  [assumed, evidence owed]
+workspace — fuzzed(64)  [assumed, evidence owed]
+  resultreuse — fuzzed(64)  [assumed, evidence owed]
     safe_increment — bounded(2)
     total — bounded(2)  [assumed, evidence owed]
+    widen — fuzzed(64)
 
   [assumed]        this result rests on a promise Ply was handed and did not check — if the promise is wrong, the result is wrong with it
   [evidence owed]  nothing has run the real code against that promise yet; the lines below name it and say what would settle it
@@ -210,21 +196,55 @@ workspace — bounded(2)  [assumed, evidence owed]
 contract declared in ply.yaml for each callee it crosses into, instead of that callee's real
 body. Assumed: `legacy_rate`: ensures |result| *result <= 10_000. …
 
-[wall clock: 77s]
+[wall clock: 89s]
 ```
 
-It leaves the record shown above: two results, two fingerprints, and the paragraph that
-belongs beside the conditional one.
+The record it leaves, complete for the two claims whose entries are short (the third
+carries the assumption paragraph shown above, elided here):
+
+```json
+{
+  "format": 1,
+  "written_by": "0.1.0",
+  "results": {
+    "resultreuse::safe_increment": {
+      "fingerprint": "f4c12c511c1ffdef0a4a6be4167ea2980b21e404582bc17a94747899e6de4091",
+      "verdict": "bounded(2)",
+      "statuses": []
+    },
+    "resultreuse::total": {
+      "fingerprint": "c28a8fad98bbc3b859ad4a889c00a305ba223eb991dcb4f467ce5a785a38dcff",
+      "verdict": "bounded(2)",
+      "statuses": ["conditional", "owed-evidence"],
+      "diagnostics": [ … the paragraph naming the promise this result rests on … ]
+    },
+    "resultreuse::widen": {
+      "fingerprint": "a96cfb04d8c7814d521f8885293fb5a153626f7a7b34dca9b507c1828ccdc469",
+      "verdict": "fuzzed(64)",
+      "statuses": [],
+      "evidence": {
+        "engine": "proptest",
+        "seed": "fd465ecffe482b0396c2aab6ad3483640359c833e139c5e40c7ad21350d99a0c",
+        "cases": 64
+      }
+    }
+  }
+}
+```
+
+The sampled claim keeps the seed and the case count of the run that actually happened, so
+a reused `fuzzed(64)` still names a run somebody can repeat.
 
 ### 2. Verify again — the results are reused
 
 Nothing touched, same command:
 
 ```
-workspace — bounded(2)  [assumed, evidence owed]
-  resultreuse — bounded(2)  [assumed, evidence owed]
+workspace — fuzzed(64)  [assumed, evidence owed]
+  resultreuse — fuzzed(64)  [assumed, evidence owed]
     safe_increment — bounded(2)  [reused]
     total — bounded(2)  [assumed, evidence owed, reused]
+    widen — fuzzed(64)  [reused]
 
   [assumed]        this result rests on a promise Ply was handed and did not check — if the promise is wrong, the result is wrong with it
   [evidence owed]  nothing has run the real code against that promise yet; the lines below name it and say what would settle it
@@ -232,91 +252,126 @@ workspace — bounded(2)  [assumed, evidence owed]
 
 [W0511] resultreuse::total — … Assumed: `legacy_rate`: ensures |result| *result <= 10_000. …
 
-[wall clock: 1s]
+[wall clock: 0s]
 ```
 
-**77 seconds to 1.** Both marks that qualify the second result are still there, and so is
-the paragraph naming the promise it stands on. The measured floor on a warm run of the
-same crate elsewhere in this session was 0.06s; the 1 here is the shell's own rounding.
+**89 seconds to under one.** (Measured to 0.06s elsewhere in the same session, on a quiet
+machine.) Both marks qualifying the middle result are still there, and so is the paragraph
+naming the promise it stands on: what is carried forward is the report, not just a word.
 
 ### 3. Change the function — that claim is re-run, and only that claim
 
 `safe_increment`'s body becomes `let step = 1; x + step`. Nothing else moves:
 
 ```
-workspace — bounded(2)  [assumed, evidence owed]
-  resultreuse — bounded(2)  [assumed, evidence owed]
+workspace — fuzzed(64)  [assumed, evidence owed]
+  resultreuse — fuzzed(64)  [assumed, evidence owed]
     safe_increment — bounded(2)
     total — bounded(2)  [assumed, evidence owed, reused]
+    widen — fuzzed(64)  [reused]
 
-[wall clock: 37s]
+[wall clock: 35s]
 ```
 
-`safe_increment` lost its `[reused]` mark: its recorded result was about code that is no
-longer there, so it was proved again. `total` kept its mark. A hash over the whole crate
-would have re-paid both.
+`safe_increment` lost its `[reused]` mark — its recorded result was about code that is no
+longer there, so it was proved again. The other two kept theirs. A hash over the whole
+crate would have re-paid all three.
 
 ### 4. Change *only* a declared promise — the claim resting on it is re-run
 
 No Rust is touched at all. The promise declared for `legacy_rate` in `ply.yaml` goes from
-`*result <= 10_000` to `*result <= 9_000`. The source file's checksum before and after the
-run is identical (`e682c4525a1d061a7737773cd294dcc2` both times):
+`*result <= 10_000` to `*result <= 9_000`, and the source checksum is identical before and
+after the run (`9de025a63bcae61e7abaee8cb1ee2cda` both times):
 
 ```
-workspace — bounded(2)  [assumed, evidence owed]
-  resultreuse — bounded(2)  [assumed, evidence owed]
+workspace — fuzzed(64)  [assumed, evidence owed]
+  resultreuse — fuzzed(64)  [assumed, evidence owed]
     safe_increment — bounded(2)  [reused]
     total — bounded(2)  [assumed, evidence owed]
+    widen — fuzzed(64)  [reused]
 
-[W0511] resultreuse::total — … Assumed: `legacy_rate`: ensures |result| *result <= 9_000. …
-
-[wall clock: 31s]
+[wall clock: 30s]
 ```
 
-`total` was proved again — its proof was *about* that promise — and the diagnostic now
-quotes the new one. `safe_increment`, which assumes nothing, was reused. This is the
-demonstration that the record is not a cache of function bodies.
+`total` was proved again — its proof was *about* that promise — while the two claims that
+assume nothing were reused. This is the demonstration that the record is not a cache of
+function bodies.
 
 ### 5. Change Ply's own version — every stored result is invalidated
 
-The only edit is Ply's version number, from `0.1.0` to `0.1.1`; the binary is rebuilt and
-the same crate is verified again. The crate's own files are byte-identical before and
-after (`md5sum` of `src/lib.rs` and `ply.yaml` unchanged across the run):
+The only edit is Ply's version number, `0.1.0` to `0.1.1`; the binary is rebuilt and the
+same crate verified again. The crate's own files are byte-identical either side of it:
 
 ```
 $ md5sum src/lib.rs ply.yaml
-52e99a264369e7dd8fa4cbc42dcae10d  src/lib.rs
-d82bf0e4381d4740456127f9b2d4ccdd  ply.yaml
+9de025a63bcae61e7abaee8cb1ee2cda  src/lib.rs
+fd5adcc5a6ef091a09fe7c76fb7b78f5  ply.yaml
 
 $ grep fingerprint ply.lock
-      "fingerprint": "21864b737e97b24f4ac029607b858107e77f3be7ca5afac00f217aebf43408b0",
-      "fingerprint": "52f486d96a505337cdc779f9d8f55e929e0b624a0950f431800386f011f50ee9",
+      "fingerprint": "a88affb052747079137d57ce897f482a4b59942bf9f5dcd7a3a34e6b0356649d",
+      "fingerprint": "95a73be0572283243665e71f4fa2f16bd9a123591c9fd13ec89d9af309aefd24",
+      "fingerprint": "a96cfb04d8c7814d521f8885293fb5a153626f7a7b34dca9b507c1828ccdc469",
 
-$ cargo ply verify . --engine-timeout 300        # under Ply 0.1.1
-workspace — bounded(2)  [assumed, evidence owed]
-  resultreuse — bounded(2)  [assumed, evidence owed]
+$ cargo ply verify . --engine-timeout 300          # under Ply 0.1.1
+workspace — fuzzed(64)  [assumed, evidence owed]
+  resultreuse — fuzzed(64)  [assumed, evidence owed]
     safe_increment — bounded(2)
     total — bounded(2)  [assumed, evidence owed]
+    widen — fuzzed(64)
 
-real	1m4.399s
+[wall clock: 67s]
 
-$ grep fingerprint ply.lock
-      "fingerprint": "832753bea83f73743aaac0d2f46f048f3ca2a0d3661704942e65f5ceda9720db",
-      "fingerprint": "68b453053feb5c1ed15a381df27ed5191ae9e3ff8243ae1403ecbece9007b0d6",
+$ grep -E '"fingerprint"|"written_by"' ply.lock
+  "written_by": "0.1.1",
+      "fingerprint": "ef4e5d7563849dc2e91bb3a9afddd7279abf31acfe84af9ad69d0cae7560a321",
+      "fingerprint": "8676e92d6a83a6beda8597875be429181cfd310768fcc0f0043b2ec559807323",
+      "fingerprint": "107148a787f45906371f071c0bd330c543e3ed1fe02dd6f0d4b5c44604ef5619",
 
 $ md5sum src/lib.rs ply.yaml
-52e99a264369e7dd8fa4cbc42dcae10d  src/lib.rs
-d82bf0e4381d4740456127f9b2d4ccdd  ply.yaml
+9de025a63bcae61e7abaee8cb1ee2cda  src/lib.rs
+fd5adcc5a6ef091a09fe7c76fb7b78f5  ply.yaml
 ```
 
-Not one `[reused]` mark, 64 seconds of real engine work, and two new fingerprints — for a
-crate in which not a single character changed. That is the whole argument: had this been
-a release that fixed a defect in how proofs are built, every result earned under the old
-one would have been thrown away and re-earned, without anyone deciding which results the
-fix touched.
+Not one `[reused]` mark, 67 seconds of real engine work, three new fingerprints — for a
+crate in which not a single character changed. That is the whole argument: had this been a
+release that fixed a defect in how proofs are built, every result earned under the old one
+would have been thrown away and re-earned, with nobody deciding which results the fix
+touched.
 
-A second run under 0.1.1 reuses again, in 0.061s: the invalidation is one-shot, not a
-permanent penalty.
+The invalidation is one-shot, not a standing penalty. The next run under 0.1.1:
+
+```
+    safe_increment — bounded(2)  [reused]
+    total — bounded(2)  [assumed, evidence owed, reused]
+    widen — fuzzed(64)  [reused]
+
+[wall clock: 0s]
+```
+
+### And the case committing the record exists for
+
+A clone with the file and none of the build output: no `target/`, no generated proof
+module, not even the line declaring it. Nothing in a fingerprint is keyed on any of that:
+
+```
+$ ls src/
+lib.rs
+
+$ time cargo ply verify . --engine-timeout 300
+workspace — bounded(2)  [assumed, evidence owed]
+  resultreuse — bounded(2)  [assumed, evidence owed]
+    safe_increment — bounded(2)  [reused]
+    total — bounded(2)  [assumed, evidence owed, reused]
+…
+real	0m0.064s
+
+$ ls src/
+lib.rs
+```
+
+Same verdicts, 64 milliseconds, nothing compiled and nothing written back. That is the CI
+run and the colleague's first checkout. It is pinned by a test
+(`a_checkout_with_the_record_and_no_build_output_still_reuses`).
 
 ---
 

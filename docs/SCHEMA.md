@@ -790,11 +790,16 @@ commands drop the crate name and adding the check to the same document is all it
 Each of these is a way a green result can mean less than it looks. They are real gaps in
 this build, not hypotheticals.
 
-1. **A promise that cannot be satisfied proves everything.** Writing
-   `ensures: ["|result| false"]` makes the assumption unsatisfiable, and the caller's
-   proof then passes vacuously. Nothing detects this yet. Write promises that are true
-   and non-trivial, and prefer to discharge them with a `fuzz` check rather than leaving
-   them standing.
+1. **A promise that cannot be satisfied proves everything — and Ply now refuses it.**
+   Writing `ensures: ["|result| false"]` makes the assumption unsatisfiable, so a proof
+   resting on it would pass whatever the code does. Before running any proof that stands
+   on a declared promise, Ply asks the solver two questions about each clause on its own:
+   can any value satisfy it, and can any value break it. A clause nothing can satisfy is
+   refused and the check earns nothing; a clause everything satisfies is reported, because
+   it constrained nothing and there is no debt to owe. Both are errors, so a run carrying
+   either does not pass. What this does *not* measure is strength: a promise excluding one
+   value in four billion passes the test. Write promises that are true and non-trivial,
+   and prefer to discharge them with a `fuzz` check rather than leaving them standing.
 2. **A promise does not go stale.** If the legacy code changes under a standing
    assumption, nothing notices. The recorded results in section 7 do not close this: a
    caller's result is hashed against the *promise*, because the promise is what its
@@ -1372,8 +1377,9 @@ Collected in one place, so nothing here has to be discovered at minute eleven.
   unsupported signature, by name, rather than attempted.
 - The contract expression subset is documented but not validated; an expression outside
   it fails later, in the compiler or the engine.
-- A boundary promise that cannot be satisfied makes the caller's proof pass vacuously,
-  and nothing detects that.
+- The strength of a boundary promise is not measured. One that cannot be satisfied, or
+  that every value satisfies, is detected and refused (section 6) — but a promise that
+  rules out a single value passes as readily as a tight one.
 - Whether an attestation still covers the item it vouches for is not computed (section
   10). Results Ply checked itself do carry that guard; a person's word does not.
 - A claim under a component anchored at a *module* (`anchor: ingest::book`) cannot be
