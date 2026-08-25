@@ -49,7 +49,7 @@
       mean havoc, per callee, no new grammar (the codegen already emits it; only
       `verify.rs`'s `if claim.requires.is_empty() && claim.ensures.is_empty() { continue; }`
       stands in the way). Evidence, fixtures and a reproducing `run.sh`:
-      `tests/spike/havoc/FINDINGS.md`.
+      `tests/spike/havoc/FINDINGS.md`. Commit `ff15b23`.
 
 ## Kani pin — spiked 2026-08-25; recommendation: stay put, two gaps left open
 
