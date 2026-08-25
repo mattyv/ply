@@ -168,9 +168,10 @@ small crate under `target/ply/`. Ply owns everything under `target/ply/` and eve
 generated test whose name begins with `ply_cex_`.
 
 It also writes **`ply.lock`** beside your `ply.yaml`: the results this run earned, each
-one beside a hash of everything it depended on. **Commit it.** It is what stops CI and
-your colleagues from re-proving what is already proven, and it is checked against
-reality every time it is read — section 7 explains exactly how.
+one beside a hash of what it depended on — including the bodies of the helpers each check
+actually runs. **Commit it.** It is what stops CI and your colleagues from re-proving what
+is already proven, and it is checked against reality every time it is read — section 7
+explains exactly how, and exactly what that hash does and does not cover.
 
 **These do not exist yet**, though the design specification describes them:
 `cargo ply tree` (the verdict tree as a browsable, collapsible view), `cargo ply doctor`
@@ -879,7 +880,7 @@ workspace — bounded(2)  [assumed, evidence owed]
     safe_increment — bounded(2)  [reused]
     tiered_fee — bounded(2)  [assumed, evidence owed, reused]
 
-  [reused]         this result was not re-run: an earlier run recorded it, and everything it depended on — the code, the promises it assumes, the checks, the engines, Ply's own version — hashes the same today
+  [reused]         this result was not re-run: an earlier run recorded it, and every input Ply hashes still hashes the same — the function's own source, the code it calls, the promises it assumes, the examples it checks, the checks themselves, the engines, the compiler and target, the crate's features, the resolved versions of its dependencies, and Ply's own version
 ```
 
 The other marks travel upward the way the statuses do, so a qualified result deep in the tree
@@ -903,16 +904,45 @@ here that is around 80 seconds the first time and under a tenth of a second the 
 stops CI and the next person from re-proving what is already proven, and it puts "this
 claim was checked" into a diff a reviewer reads.
 
-Each result is stored beside a hash of **everything the answer depended on**:
+Each result is stored beside a hash of these, and this is the whole list:
 
 - the checked function's own source, as tokens — reformatting it or editing a comment
   above it changes nothing;
 - its contract, whether written on the function or declared in `ply.yaml`;
+- **the code that check runs**: the body of every function in your crate it can reach,
+  followed through calls and through plain mentions of a function by name. Break a helper
+  your checked function calls and the check runs again, and finds the bug;
+- the worked `examples:` a `test` check turns into assertions — each one is part of what
+  that check asserts;
 - every promise the proof stood on instead of real code, exactly as written;
 - the checks that ran, and the seed the generated cases were drawn from;
 - each engine's name, version and flags, plus the compiler and the build target;
 - the crate's declared features;
+- the versions your dependencies resolve to, as `Cargo.lock` pins them — `cargo update`
+  changes what a check ran against. Without a `Cargo.lock`, Ply records that it does not
+  know them, and a result recorded with one is not reused without one;
 - **Ply's own version.**
+
+**One of those needs a caveat, and it is the third.** To know which bodies a check can
+reach, Ply follows the calls in your code — and the functions your contract itself calls,
+and a function you pass by name rather than call. It cannot follow a method call
+(`x.helper()` — which body that names depends on the type of `x`), an operator you have
+implemented yourself, a macro, or an attribute macro on a function it walks into. So it
+only trusts that walk when your crate makes all of those impossible: no `impl` blocks, no
+traits, no constants, no macros in the bodies it walks, no unfamiliar attributes on them.
+The moment your crate has any of them — which most crates do — Ply stops guessing and
+hashes **every line of source in the crate and in its path dependencies** instead. That
+is safe and it is blunter: editing any function then re-earns every claim in the crate
+rather than only the ones that could reach it. The list above is still exact; what
+changes is how wide the third entry is.
+
+**What is not in the hash**, so you know where to be careful: `RUSTFLAGS` and `[profile]`
+settings (turning `overflow-checks` on or off changes what an arithmetic check finds),
+anything a proc macro from outside your workspace expands to, and the file itself — a
+hash cannot stop a text editor. Ply does catch the honest version of that last one: if
+`ply.lock` claims a verdict the checks recorded beside it could never earn — `proved` next
+to a `fuzz` check — the entry is refused, the run says so (`W0516`), and the claim is
+checked again.
 
 Before a stored result is used or shown, that hash is recomputed from today's inputs. It
 matches, and the result is reused and marked `[reused]`. It does not, and the check runs
@@ -949,6 +979,18 @@ for. The file holds what the last run stood behind, and nothing else. One conseq
 machine that cannot reproduce a result (no model checker installed, a different
 toolchain) drops it rather than keeping somebody else's, so two machines with different
 toolchains will take turns rewriting the file.
+
+**When a result is not carried forward, the run says which input moved.** A claim whose
+recorded result no longer matches gets a line of its own beneath the tree:
+
+```
+  Checked again rather than carried forward from an earlier run, because what each one depended on has changed:
+    billing::tiered_fee — the code it runs changed since that result was recorded
+```
+
+The same information is in `--json`, as `not_carried_forward`. A full-price re-run with no
+stated reason is exactly what this file exists to prevent, so it does not happen silently
+when a compiler or an engine updates under you.
 
 To re-run everything from scratch, delete `ply.lock`. There is no `--force` flag.
 
@@ -1344,6 +1386,7 @@ on something stable. These are the ones this build emits.
 | `W0513` | Ply followed a path into first-party source and could not read it, so it refused rather than descending. |
 | `W0514` | Ply could not tell whether a declared promise says anything, and reports it as unchecked rather than as fine. |
 | `W0515` | A `checks:` list was written and left empty, so nothing ran and the claim earned no evidence. |
+| `W0516` | A stored result in `ply.lock` claims a verdict its own checks could never earn, so it did not come from a run of Ply. It was refused and the claim checked again. |
 | `W0541` | A failing input was found but cannot be written out as runnable Rust, so the engine's own rendering is reported instead. Inputs are never invented. |
 
 ---

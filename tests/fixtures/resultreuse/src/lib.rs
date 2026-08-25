@@ -1,5 +1,9 @@
 //! Fixture for The-Ply-Spec.md §5.2a: a result is recorded beside a hash of
-//! everything it depended on, and re-earned the moment any of that moves.
+//! what it depended on, and re-earned the moment any of that moves.
+//!
+//! Note what is *not* here, and see `reusehelper` for it: no claim in this
+//! crate calls an ordinary local helper. That absence is why the record's
+//! largest defect survived 284 green tests.
 //!
 //! Two claims, because the record has to be able to reuse one and re-run the
 //! other in the same run:

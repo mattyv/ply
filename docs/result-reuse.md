@@ -16,10 +16,16 @@ from a real run rather than reconstructed.*
 >
 > Everything else in this page stands: the mechanism, the honesty rule, the removals, the
 > demonstrations, and the version-invalidation argument. The completeness claim does not,
-> and the `[reused]` legend printed to users repeats it. A fix is in flight in a parallel
-> session (`crates/ply-core/src/reach.rs`: the set of first-party bodies a check can reach,
-> with a whole-crate fallback whenever the walk cannot be bounded). **This page, the
-> specification, the schema page and that legend all have to move with it.**
+> and the `[reused]` legend printed to users repeated it.
+>
+> **The fix has since landed** (`docs/reuse-hash-gap-closed.md`): the hash now covers the
+> body of every function in the crate a check can reach, the worked examples a `test`
+> check asserts, and the resolved versions of everything outside the workspace — and
+> where a syntactic walk cannot bound what a check reaches, it covers the whole of the
+> crate's source instead. The specification, the schema page and the printed legend now
+> state what is covered rather than claiming everything. Read the table below as *the
+> inputs this page's build hashed*, not as the list Ply hashes today; that list is in
+> §5.2a.
 
 Ply used to re-pay full engine cost on every run. A crate whose proofs took four minutes
 took four minutes again on a branch that touched a README, and a diff never showed that a
@@ -29,8 +35,8 @@ human to re-bless the drifted claims, and an error for blessing something that h
 failed — four pieces of machinery that exist only to manage the consequences of
 *remembering a verdict*.
 
-This replaces all of it with something smaller. A result is stored beside a hash of
-everything the answer depended on, and that hash is recomputed **before the stored result
+This replaces all of it with something smaller. A result is stored beside a hash of what
+the answer depended on, and that hash is recomputed **before the stored result
 is ever used or shown**. It matches: reuse it, and say so. It does not: run the check
 again. There is nothing to re-bless, because there is no window in which a stored result
 might have gone quietly wrong — the confirmation happens at every single use.
@@ -267,6 +273,8 @@ workspace — fuzzed(64)  [assumed, evidence owed]
   [assumed]        this result rests on a promise Ply was handed and did not check — if the promise is wrong, the result is wrong with it
   [evidence owed]  nothing has run the real code against that promise yet; the lines below name it and say what would settle it
   [reused]         this result was not re-run: an earlier run recorded it, and everything it depended on — the code, the promises it assumes, the checks, the engines, Ply's own version — hashes the same today
+  [the wording above is the one this run printed; it overclaimed, and has since been
+   replaced — see docs/reuse-hash-gap-closed.md]
 
 [W0511] resultreuse::total — … Assumed: `legacy_rate`: ensures |result| *result <= 10_000. …
 

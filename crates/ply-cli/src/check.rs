@@ -381,6 +381,7 @@ fn envelope(root: Node, diagnostics: Vec<Diagnostic>, coverage: Coverage) -> Env
         coverage: Some(coverage),
         trust_surface: None,
         open_items: None,
+        not_carried_forward: vec![],
     }
 }
 

@@ -255,10 +255,13 @@ fn the_terminal_says_which_results_were_carried_forward() {
     );
     assert!(
         stdout.contains(
-            "[reused]         this result was not re-run: an earlier run recorded it, and \
-             everything it depended on — the code, the promises it assumes, the checks, the \
-             engines, Ply's own version — hashes the same today"
+            "[reused]         this result was not re-run: an earlier run recorded it, and every \
+             input Ply hashes still hashes the same — the function's own source, the code it \
+             calls, the promises it assumes, the examples it checks, the checks themselves, the \
+             engines, the compiler and target, the crate's features, the resolved versions of its \
+             dependencies, and Ply's own version"
         ),
-        "and the mark must be explained in plain words: {stdout}"
+        "and the mark must be explained in plain words, and must not claim to cover more than \
+         Ply hashes: {stdout}"
     );
 }

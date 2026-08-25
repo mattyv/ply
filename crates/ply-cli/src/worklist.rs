@@ -117,6 +117,7 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
                     trust_surface: None,
                     // Absent, not empty: this run never got to look.
                     open_items: None,
+                    not_carried_forward: vec![],
                 },
                 document,
             });
@@ -205,6 +206,7 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
             coverage: Some(read_coverage(&document, markers, owed)),
             trust_surface: None,
             open_items: Some(items),
+            not_carried_forward: vec![],
         },
         document,
     })

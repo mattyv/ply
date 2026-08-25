@@ -24,7 +24,8 @@ use ply_core::model::{
     Check, Component, FnClaim, InheritedChecks, component_default_checks, effective_checks,
 };
 use ply_core::promise::{ClauseKind, ClauseVerdict, HarnessAnswer, PromiseFinding, PromisePlan};
-use ply_core::record::{self, AssumedPromise, EngineId, FingerprintInputs, RecordEntry};
+use ply_core::reach;
+use ply_core::record::{self, AssumedPromise, EngineId, FingerprintInputs, Match, RecordEntry};
 
 use crate::shared::{self, declared_contracts, local_anchor_names, sorted_by_key};
 
@@ -219,9 +220,16 @@ fn kani_flags(has_stubs: bool) -> String {
 }
 
 /// `rustc -vV`, split into the version line and the host triple. Both
-/// unknown when rustc will not answer -- which cannot happen in a run that
-/// gets far enough to compile anything, and would only ever make a
-/// fingerprint match less often.
+/// `unknown` when rustc will not answer -- which cannot happen in a run
+/// that gets far enough to compile anything.
+///
+/// The safe direction holds where it matters: a record written by a healthy
+/// probe can never be matched by a broken one. It is not unconditional, and
+/// the comment here used to say it was: two runs whose probes both fail
+/// hash the same `unknown`/`unknown` whatever compilers are really behind
+/// them. That needs a broken `rustc -vV` beside a working cargo on both
+/// machines, which is exotic -- but "would only ever make a fingerprint
+/// match less often" was a claim with an exception in it.
 fn rustc_identity() -> (String, String) {
     let out = std::process::Command::new("rustc").arg("-vV").output();
     let text = match out {
@@ -290,11 +298,14 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         checks: Vec<Check>,
         boundary: BoundaryPlan,
         seed: [u8; 32],
-        /// The hash of everything this claim's result depends on (§5.2a).
-        /// Computed before anything runs, because one hash answers both
-        /// questions: may a recorded result be reused, and what is a newly
-        /// earned one stored under.
-        fingerprint: String,
+        /// Everything this claim's result depends on (§5.2a), hashed
+        /// before anything runs -- one hash answers both questions: may a
+        /// recorded result be reused, and what is a newly earned one
+        /// stored under.
+        inputs: FingerprintInputs,
+        /// The checks as `ply.yaml` spells them, which is what a recorded
+        /// verdict is checked against for possibility before it is trusted.
+        check_spellings: Vec<String>,
     }
     let mut plans: Vec<Plan> = Vec::new();
     let mut early_nodes_by_component: BTreeMap<String, Vec<Node>> = BTreeMap::new();
@@ -326,6 +337,15 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     let record_path = crate_dir.join("ply.lock");
     let mut record = record::load(&record_path, PLY_VERSION)?;
     let toolchain = Toolchain::probe(crate_dir);
+    // §5.2a's largest input, read once for the whole run: every first-party
+    // source file this crate can reach, and the resolved versions of
+    // everything outside it. A check does not run the claimed function
+    // alone -- it runs whatever that function calls, and a proof descends
+    // into it -- so the bodies reachable from a claim are part of what its
+    // result stood on. Leaving them out is what made a broken helper reuse
+    // a green verdict (adversarial review of result reuse, D1).
+    let first_party = reach::scan_first_party(crate_dir);
+    let deps_at_plan_time = reach::dependency_identity(crate_dir);
     // Every claim this run either reused or earned. Everything else is
     // dropped from the record at the end: a claim somebody deleted, one
     // whose function no longer resolves, one this run checked and got no
@@ -514,7 +534,25 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 .seed
                 .unwrap_or_else(|| ply_core::fuzz_gen::derive_seed(fn_name, &contract_text));
 
-            let fingerprint = record::fingerprint(&FingerprintInputs {
+            // The callees this claim's proof replaces with a promise, and
+            // therefore never looks inside. Only a claim whose every check
+            // is `bounded` gets that: `fuzz`, `test` and `mutate` run the
+            // real body however many promises are declared for it, so for
+            // them the body is part of what the result stood on.
+            let all_bounded = checks.iter().all(|c| matches!(c, Check::Bounded(_)));
+            let stubbed: std::collections::BTreeSet<String> = if all_bounded {
+                boundary
+                    .stubs
+                    .iter()
+                    .map(|s| s.callee_path.clone())
+                    .collect()
+            } else {
+                std::collections::BTreeSet::new()
+            };
+            let code = reach::code_scope(&mut resolver, &first_party, &cf.path, &stubbed);
+            let check_spellings: Vec<String> = checks.iter().map(check_spelling).collect();
+
+            let inputs = FingerprintInputs {
                 node_id: node_id.clone(),
                 fn_path: cf.path.clone(),
                 fn_source: cf.source.clone(),
@@ -537,16 +575,29 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                         callee: s.callee_path.clone(),
                         requires: s.requires.clone(),
                         ensures: s.ensures.clone(),
+                        signature: format!(
+                            "({}) -> {}",
+                            s.params
+                                .iter()
+                                .map(|(n, t)| format!("{n}: {t}"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            s.return_type
+                        ),
                     })
                     .collect(),
-                checks: checks.iter().map(check_spelling).collect(),
+                examples: claim.examples.clone(),
+                code_scope: code.scope.to_string(),
+                code: code.units,
+                deps: deps_at_plan_time.clone(),
+                checks: check_spellings.clone(),
                 seed: ply_core::fuzz_gen::seed_hex(&seed),
                 engines: toolchain.engines_for(&checks, !boundary.stubs.is_empty()),
                 target: toolchain.target.clone(),
                 rustc: toolchain.rustc.clone(),
                 features: toolchain.features.clone(),
                 ply_version: PLY_VERSION.to_string(),
-            });
+            };
 
             plans.push(Plan {
                 node_id,
@@ -557,7 +608,8 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 checks,
                 boundary,
                 seed,
-                fingerprint,
+                inputs,
+                check_spellings,
             });
         }
     }
@@ -565,9 +617,31 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     // §5.2a's honesty rule, in the one place it can be enforced: a recorded
     // result is looked up *by today's hash*, so no path exists that reaches
     // a stored verdict without re-deriving what it depended on first.
+    // Why a stored result could not be used, per claim -- the names of the
+    // inputs that moved. A full-price re-run that says nothing about what
+    // changed is the very experience this feature exists to end.
+    let mut not_carried_forward: Vec<ply_core::diag::NotCarriedForward> = Vec::new();
     let reused: Vec<Option<RecordEntry>> = plans
         .iter()
-        .map(|p| record.matching(&p.node_id, &p.fingerprint).cloned())
+        .map(|p| {
+            let fingerprint = record::fingerprint(&p.inputs);
+            match record.matching(&p.node_id, &fingerprint, &p.check_spellings) {
+                Match::Hit(entry) => Some(entry.clone()),
+                Match::Impossible(sentence) => {
+                    diagnostics.push(impossible_record_diag(&p.node_id, sentence));
+                    None
+                }
+                Match::Miss => {
+                    if let Some(because) = record.displaced_by(&p.node_id, &p.inputs) {
+                        not_carried_forward.push(ply_core::diag::NotCarriedForward {
+                            node_id: p.node_id.clone(),
+                            because,
+                        });
+                    }
+                    None
+                }
+            }
+        })
         .collect();
 
     // Pass 2: any fn needing fuzz/test/mutate shares one generated harness
@@ -688,14 +762,23 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         // failed can ever be carried forward (§5.2a).
         if earned_evidence(&node, &fn_diags) {
             kept_claims.insert(plan.node_id.clone());
+            // The dependency versions are read again here, not reused from
+            // plan time: a crate that had never been built has no lockfile
+            // until this run compiled it, and the versions that governed
+            // the run that just happened are the ones the result stood on.
+            // Without this a first run would record a fingerprint no second
+            // run could ever match, and every crate would pay twice.
+            let mut inputs = plan.inputs.clone();
+            inputs.deps = reach::dependency_identity(crate_dir);
             record.record(
                 &plan.node_id,
                 RecordEntry {
-                    fingerprint: plan.fingerprint.clone(),
+                    fingerprint: record::fingerprint(&inputs),
                     verdict: node.verdict.clone(),
                     statuses: node.statuses.clone(),
                     evidence: node.evidence.clone(),
                     diagnostics: fn_diags.clone(),
+                    inputs: inputs.per_group_digests(),
                 },
             );
         }
@@ -740,7 +823,34 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         coverage: None,
         trust_surface: None,
         open_items: None,
+        not_carried_forward,
     })
+}
+
+/// A stored result whose verdict none of its own checks could have earned:
+/// the file was edited by something that is not Ply. Reported, and the
+/// claim checked again -- never used.
+fn impossible_record_diag(node_id: &str, sentence: String) -> Diagnostic {
+    Diagnostic {
+        code: "W0516".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "record".into(),
+        node_id: node_id.into(),
+        title: sentence,
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![Fix {
+            title: "delete `ply.lock` and run `cargo ply verify` again -- the file is rebuilt \
+                    from what this run earns, and nothing is lost but the engine time"
+                .into(),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: None,
+    }
 }
 
 /// Every component in the document, depth first, each paired with its

@@ -1,0 +1,15 @@
+ply: 1
+
+# `doubled` also carries a worked example, because an edited example is the
+# other thing a recorded result used to survive: the `test` check compiles
+# each one into an assertion, so changing one changes what was checked.
+components:
+  reusehelper:
+    anchor: ply_fixture_reusehelper
+    fns:
+      doubled:
+        checks: [fuzz(64), test]
+        examples:
+          - "doubled(2) == 4"
+      bumped:
+        checks: [fuzz(64)]

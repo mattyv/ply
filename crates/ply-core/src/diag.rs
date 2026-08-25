@@ -263,6 +263,26 @@ pub struct Envelope {
     /// §6's `worklist`, with the same absent/empty distinction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_items: Option<Vec<OpenItem>>,
+    /// Claims that had a recorded result and could not use it, each with
+    /// the names of the inputs that moved (§5.2a). Empty on every command
+    /// but `verify`, and on a `verify` that carried everything forward or
+    /// had nothing recorded to carry.
+    ///
+    /// A full re-run with no explanation is the experience the record
+    /// exists to end, arriving without a reason the moment a compiler or an
+    /// engine updates. This is the reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_carried_forward: Vec<NotCarriedForward>,
+}
+
+/// One claim whose recorded result could not be reused, and why.
+#[derive(Debug, Clone, Serialize)]
+pub struct NotCarriedForward {
+    pub node_id: String,
+    /// The named inputs whose content changed since the result was
+    /// recorded, in plain words ("the code it runs", "the compiler and the
+    /// build target").
+    pub because: Vec<String>,
 }
 
 impl Envelope {

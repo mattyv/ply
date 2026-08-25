@@ -211,11 +211,21 @@ const MARK_GLOSS: [(&str, &str); 3] = [
     ),
     (
         "reused",
-        "this result was not re-run: an earlier run recorded it, and everything it depended on — \
-         the code, the promises it assumes, the checks, the engines, Ply's own version — hashes \
-         the same today",
+        "this result was not re-run: an earlier run recorded it, and every input Ply hashes still \
+         hashes the same — the function's own source, the code it calls, the promises it assumes, \
+         the examples it checks, the checks themselves, the engines, the compiler and target, the \
+         crate's features, the resolved versions of its dependencies, and Ply's own version",
     ),
 ];
+
+/// `a`, `a and b`, `a, b and c` — a list a person reads, not a debug print.
+fn join_plainly(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
 
 /// The §7 tree as a person reads it in a terminal, with the status marks
 /// and — when any appear — what they mean.
@@ -255,6 +265,24 @@ fn tree_report(envelope: &ply_core::diag::Envelope) -> String {
         }
         // The diagnostics come next, and they are paragraphs. Without this
         // the gloss and the first diagnostic run together into one block.
+        out.push('\n');
+    }
+    // A claim that *had* a recorded result and could not use it. Saying
+    // which input moved is the difference between "it re-proved everything
+    // and I do not know why" and one line naming the compiler that updated
+    // under you (§5.2a).
+    if !envelope.not_carried_forward.is_empty() {
+        out.push_str(
+            "  Checked again rather than carried forward from an earlier run, because what \
+             each one depended on has changed:\n",
+        );
+        for item in &envelope.not_carried_forward {
+            out.push_str(&format!(
+                "    {} — {} changed since that result was recorded\n",
+                item.node_id,
+                join_plainly(&item.because)
+            ));
+        }
         out.push('\n');
     }
     out
@@ -355,6 +383,7 @@ mod tests {
             coverage: None,
             trust_surface: None,
             open_items: None,
+            not_carried_forward: vec![],
         }
     }
 

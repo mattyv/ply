@@ -198,6 +198,7 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
                     // and finding nothing.
                     trust_surface: None,
                     open_items: None,
+                    not_carried_forward: vec![],
                 },
                 document,
             });
@@ -340,6 +341,7 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
             coverage: Some(coverage),
             trust_surface: Some(items),
             open_items: None,
+            not_carried_forward: vec![],
         },
         document,
     })
