@@ -1,0 +1,16 @@
+[workspace]
+# Empty table: this fixture is its own workspace root, per tests/spike's
+# convention -- it must never join the product workspace or tools/.
+
+[package]
+name = "kanipin-boundary"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "kanipin_boundary"
+path = "src/lib.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

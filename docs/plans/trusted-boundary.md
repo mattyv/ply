@@ -2,7 +2,9 @@
 
 Status: **recommend adoption in reduced form, gated on a vetting re-run (an extension of
 004's own `run.sh`) before any spec amendment, with the failure-side payoff explicitly
-sequenced behind the Kani pin spike already in flight.** Not specced, not built. Origin:
+sequenced behind the Kani pin spike already in flight (which reported 2026-08-25:
+witness recovery through a stub already works at the pinned Kani, so that sequencing
+constraint is discharged — `tests/spike/kani-pin/FINDINGS.md`).** Not specced, not built. Origin:
 the maintainer's idea, 2026-08-25; TODO.md carries the three conditions agreed up front
 (never reads as evidence; counted on the audit surface; must draw). Date: 2026-08-25.
 
@@ -15,9 +17,10 @@ every value the region could return) and keeps its verdict with status `conditio
 the assumption naming the region and what little was assumed (the call returns, does not
 panic, mutates nothing the caller reads). A proof that fails is **not a violation** — it
 is the named fact that the caller's claim depends on what the region returns, reported
-as an absence whose diagnostic names the callee and, once witnesses survive stubbing
-(the pin spike's question), the breaking return value — which is precisely the contract
-the proof needs, with a witness for why. A per-callee declared contract always wins over
+as an absence whose diagnostic names the callee and the breaking return value — which
+is precisely the contract the proof needs, with a witness for why. (Witnesses were the
+pin spike's question; it reported 2026-08-25 that they already survive stubbing at the
+pinned Kani, fabricated callee return included — `tests/spike/kani-pin/FINDINGS.md`.) A per-callee declared contract always wins over
 the region. The region is counted on `audit`'s trust surface, and its fn inventory is
 fingerprinted in `ply.lock` so that *growth* — not content change — trips `stale`.
 It draws as an amber-washed component box (§6 below). Everything cut from the idea as
@@ -104,10 +107,15 @@ exactly the right honesty properties, which is the reason to adopt rather than r
   assumption, printed.
 - **Fail under havoc ⇒ not a violation.** The breaking counterexample contains a
   fabricated callee return that the real body may never produce; reporting it as
-  `violation` would be false evidence, and §8 forbids the witness-free form anyway
-  (at the pinned Kani a stubbed failure cannot carry a witness at all —
-  docs/kani-docs-sweep.md; TODO.md's pin-bump item; the `tests/spike/kani-pin/`
-  spike's `tiered_fee_halfclaim` is this exact case built to measure). The honest
+  `violation` would be false evidence, and §8 forbids the witness-free form anyway.
+  (**Corrected 2026-08-25 by the pin spike, which has now reported**: at the pinned
+  Kani a stubbed failure *does* carry a witness, and the witness *does* include the
+  fabricated callee return — `tests/spike/kani-pin/FINDINGS.md`, where
+  `tiered_fee_halfclaim` yields `amount = 39663841, tier = 255, stubbed rate = 9217`.
+  So the diagnostic can name the breaking value today, with no pin move. What the
+  witness cannot do is become a red D7 test: written out against the real code it is
+  green, because the real callee never returns 9217. That strengthens the case for an
+  absence over a `violation` rather than weakening it.) The honest
   report is an **absence**: the caller's claim depends on what the region returns, so
   nothing was established — verdict `inconclusive`, run fails by default (§1, §6),
   diagnostic naming the callee and the breaking value when recoverable. Which is the
@@ -332,6 +340,8 @@ Applied to 004, concretely and falsifiably:
 - A **new stage**: a caller *without* the defensive `.min`, to measure the fail side —
   the absence verdict, the diagnostic's usefulness (does it actually tell the user
   which contract to write?), and, at the pinned Kani, the witness gap in the flesh.
+  (The pin spike has since measured that gap: the witness *is* recoverable and names
+  the fabricated return; what is not recoverable is a red test of the real code.)
 - **`withdraw` — unchanged, `unsupported`, and this limit is stated up front**: the
   region fixes nothing about unclaimable *signatures*. 004's usefulness verdict was
   half about the shell, and a given region does not touch that half. Anyone reading
@@ -345,8 +355,9 @@ The gate condition, same sequence external-elements bound itself to: (1) record 
 squint-test, read the tooltips cold, record what held and broke; (3) only then amend
 The-Ply-Spec.md, citing the vetting record. Additionally and unlike external-elements:
 the fail-side reporting depends on witness recovery through a stub, so the **Kani pin
-spike (TODO.md item 1, `tests/spike/kani-pin/` already on disk) must report before the
-fail-side wording is specced** — the pass side and the refusal-stands rows have no such
+spike (`tests/spike/kani-pin/`) must report before the fail-side wording is specced** —
+**it has, on 2026-08-25: witness recovery through a stub works at the pin, so this gate
+is discharged and no pin move is needed for it** — the pass side and the refusal-stands rows have no such
 dependency and can gate first.
 
 ## 8. Scope limits
@@ -391,8 +402,9 @@ Touch points read, not guessed:
 
 Total: roughly **3.5–5 sessions** for tools + crates + the vetting re-run, ~1 later
 session at M5 for audit/accept/lock, spec pass alongside adoption. The fail-side
-witness payoff is additionally gated on the Kani pin spike, which is already budgeted
-independently.
+witness payoff was gated on the Kani pin spike; that spike has now run
+(`tests/spike/kani-pin/FINDINGS.md`, 2026-08-25) and reports the gate open at the
+current pin, so no engine work is budgeted against it.
 
 ## 10. Open questions a human must settle
 

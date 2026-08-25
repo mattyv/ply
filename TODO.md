@@ -2,18 +2,6 @@
 
 ## Agreed with the maintainer, not yet started
 
-- [ ] **Bump the Kani pin — a D13-shaped spike, not a fork.** The trusted-boundary idea
-      and D5's assumed-contract path both want `#[kani::stub]`, and
-      `docs/kani-docs-sweep.md` records two blockers at the pinned 0.67.0: stubbing and
-      `--concrete-playback` are mutually exclusive (so a stubbed failure yields no
-      witness, and §8 forbids a witness-free `violation`), and `#[kani::stub]` on a
-      *contracted* callee does not compile (Kani #4591). The same sweep records that
-      **both are lifted on Kani `main`** — stub annotations become per-harness and
-      "Stubbing is compatible with `--concrete-playback`". So the question is whether to
-      move the pin, not whether to patch the engine: a fork would put every D14
-      fingerprint on a build only we have, and §1 says we build glue, never solvers.
-      Spike it against a newer Kani; if it still fails, file upstream (we already cite
-      #4294/#4295/#4591), do not fork.
 - [ ] **Trusted boundary declared in `ply.yaml`** (maintainer's idea, 2026-08-25) — the
       coarse-grained sibling of §5.5's per-callee rule: declare a region taken as given,
       rather than writing a contract per legacy function a new feature happens to touch.
@@ -26,6 +14,46 @@
       per §7.1's gate. Carry `trusted`'s own lesson: it shipped with no staleness and an
       attestation would have outlived the code it vouched for. Proposal first, gate,
       then adopt — the sequence that worked for external elements.
+
+## Kani pin — spiked 2026-08-25; recommendation: stay put, two gaps left open
+
+- [x] **Bump the Kani pin — a D13-shaped spike, not a fork.** Ran, against Kani `main`
+      built from source (`245709373965fcb78209135822cbafb59c08d036`, 2026-08-25, CBMC
+      6.10.0, `nightly-2026-04-01`) beside the untouched 0.67.0. **Recommendation: do
+      not move the pin, and do not fork.** Four measured reasons.
+      (1) There is nothing to bump *to* — crates.io's newest `kani-verifier` is still
+      0.67.0, so a bump means pinning a commit of an unreleased branch that still
+      reports itself as `0.67.0`, which would stamp two different engines with one D14
+      fingerprint.
+      (2) Blocker 2 is **not fixed**: `#[kani::stub]` over a contracted target still
+      fails with `Failed to find contract closure __kani_recursion_check_<fn>` on
+      today's `main` (Kani #4591, open).
+      (3) Blocker 1 as recorded here was **never true** — at 0.67.0 a stubbed harness
+      that fails *does* print a concrete-playback witness, and Ply's own
+      `extract_witness_bytes` would accept it. The real limit, identical on both
+      toolchains and stated in Kani's own generated doc comment, is that the playback
+      test **does not apply the stub**: replaying a stub-caused failure panics on
+      leftover concrete values instead of reproducing anything. That is worse than the
+      documented blocker because a naive "the test is red" check passes.
+      (4) Ply's real §5.5 shape already works at the pin — `boundarycontract`'s stubbed
+      proof verifies (94.6s, 85 checks) and a violation in the same configuration yields
+      a witness — at ~12-14% *lower* cost than the candidate (107.7s, 110 checks).
+      Evidence, fixtures and a reproducing `run.sh`: `tests/spike/kani-pin/FINDINGS.md`.
+      Commit hash added in the follow-up commit.
+- [ ] **KNOWN GAP, raised by the spike, no Kani version fixes it.** §5.5 can produce a
+      violation that no test of the real code can reproduce: the counterexample's third
+      value is the *stub's* invented return, and the real callee never returns it. Written
+      out D7-style at the two real inputs, the test is green
+      (`tests/spike/kani-pin/boundary/src/lib.rs::witness_replay`, observed passing).
+      §8 forbids a witness-free `violation`; here the witness exists but is not
+      replayable. A spec conversation about §5.5/§8, not an engine upgrade.
+- [ ] **`boundarycontract`'s clean proof does not exercise its own assumption.** Delete
+      the generated stub's `kani::assume` so the callee is unconstrained and
+      `ply_proof_tiered_fee` still verifies (86.4s at the pin, 107.1s on the candidate):
+      `legacy_rate(tier).min(10_000)` clamps whatever comes back, so the proof holds for
+      *any* callee. The `conditional` verdict is still honest, but the fixture does not
+      show the assumption doing work. Consider adding a harness that does (the spike's
+      `tiered_fee_halfclaim` is one).
 
 ## Post-004 review closure — landed 2026-08-25
 
