@@ -379,6 +379,21 @@ person's word.
 
 ---
 
+## One thing worth arguing about later
+
+Putting Ply's version in the hash is right, and the granularity is blunt: *any* version
+change throws away *every* recorded result in every repository, including the ones no
+change could possibly have affected. That is the conservative direction and it is the
+correct default — a fix whose blast radius nobody can enumerate should invalidate
+everything — but it means an ordinary tool upgrade costs a full re-verification of every
+codebase that uses it, which on a large one is measured in hours of CI. The obvious
+follow-up is a separate number that only moves when something about *how a result is
+earned* changes, so that a release fixing a diagram colour does not re-prove a workspace.
+That is a decision for whoever owns releases, and it should be made deliberately rather
+than discovered the first time an upgrade lands.
+
+---
+
 ## TODO deltas
 
 Not applied — `TODO.md` was out of bounds for this change. These are the lines it wants:
@@ -389,6 +404,10 @@ Not applied — `TODO.md` was out of bounds for this change. These are the lines
   anticipated them.
 - **KNOWN GAP (new)**: the fuzz engine's version in a fingerprint is the requirement Ply
   writes, not the resolved version (gap 1 above).
+- **KNOWN GAP (new)**: the record is guarded against its inputs moving, not against being
+  hand-edited (gap 4 above).
+- **Open question (new)**: whether every Ply version bump should invalidate every stored
+  result, or only one that changes how a result is earned — see the section above.
 - **Found while working, not fixed, not mine**: `docs/SCHEMA.md` still says in two places
   that a promise which cannot be satisfied is undetected ("Nothing detects this yet",
   section 6; and the not-built list in section 14). The commit that added that detection

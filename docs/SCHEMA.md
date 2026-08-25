@@ -894,7 +894,7 @@ that is the point of the whole exercise.
 
 `cargo ply verify` writes what it earned into `ply.lock`, next to your `ply.yaml`, and
 reuses it on the next run instead of paying for the same proof twice. On a small crate
-here that is 1m23s the first time and 0.07s the second. **Commit the file**: it is what
+here that is around 80 seconds the first time and under a tenth of a second the second. **Commit the file**: it is what
 stops CI and the next person from re-proving what is already proven, and it puts "this
 claim was checked" into a diff a reviewer reads.
 
@@ -932,6 +932,18 @@ its budget on every run.
 
 What *is* carried forward is the whole result, diagnostics included, so a reused verdict
 that stands on an unchecked promise still prints the paragraph naming that promise.
+
+A clone that has the file and none of the build output reuses everything too: nothing
+here is keyed on the generated proof module or on `target/`, so a fresh checkout with a
+committed `ply.lock` reports the same verdicts in a fraction of a second, having compiled
+nothing.
+
+Entries are dropped for anything the run did not reuse or earn — a claim you deleted, a
+claim whose function no longer resolves, a claim this run checked and got no evidence
+for. The file holds what the last run stood behind, and nothing else. One consequence: a
+machine that cannot reproduce a result (no model checker installed, a different
+toolchain) drops it rather than keeping somebody else's, so two machines with different
+toolchains will take turns rewriting the file.
 
 To re-run everything from scratch, delete `ply.lock`. There is no `--force` flag.
 

@@ -78,6 +78,53 @@ fn a_second_run_reuses_what_the_first_one_earned_and_says_so() {
     );
 }
 
+/// The case committing the record exists for: a clone that has the file and
+/// none of the build output. Nothing in a fingerprint is keyed on the
+/// generated proof module or on `target/`, so a fresh checkout reports the
+/// same verdicts having compiled nothing at all.
+#[test]
+fn a_checkout_with_the_record_and_no_build_output_still_reuses() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("resultreuse");
+
+    let first = run_verify(&cargo_ply, fixture.path(), 300);
+    assert_eq!(first.exit_code, Some(0), "envelope: {}", first.json);
+
+    // Everything a clone would not have: the build directory, the proof
+    // module Ply generated, and the line declaring it.
+    std::fs::remove_dir_all(fixture.path().join("target")).ok();
+    std::fs::remove_file(fixture.path().join("src/ply_generated.rs")).ok();
+    let lib = fixture.read_lib_rs();
+    fixture.write_lib_rs(
+        &lib.lines()
+            .filter(|l| !l.starts_with("mod ply_generated;"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+
+    let started = std::time::Instant::now();
+    let clone = run_verify(&cargo_ply, fixture.path(), 300);
+    let elapsed = started.elapsed();
+
+    let fns = &clone.json["root"]["children"][0]["children"];
+    for i in 0..3 {
+        assert_eq!(
+            fns[i]["reused"], true,
+            "a checkout carrying the record must not re-prove anything: {}",
+            clone.json
+        );
+    }
+    assert_eq!(clone.exit_code, Some(0), "envelope: {}", clone.json);
+    assert!(
+        elapsed.as_secs() < 20,
+        "and must not compile anything either; this took {elapsed:?}"
+    );
+    assert!(
+        !fixture.path().join("src/ply_generated.rs").exists(),
+        "a run that checked nothing must not write a proof module either"
+    );
+}
+
 /// Editing the function re-earns *that* claim and leaves the other one
 /// alone: the fingerprint is per claim, not per crate.
 #[test]
