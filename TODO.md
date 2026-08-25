@@ -90,7 +90,7 @@ The review that forced it: `docs/review-result-reuse.md`.
       stored checks could never earn. A hash cannot defend the file against a text editor.
 - [ ] The fuzz engine's recorded version is the requirement written in the manifest, not
       the version actually resolved.
-- [x] **The coarse mode now explains itself** (`abc3723`). It already worked out why
+- [x] **The coarse mode now explains itself** (`bf6048f`). It already worked out why
       it abandoned the call walk and kept it to itself, so a person who edited one function
       and watched an unrelated claim re-run was told only "the code it runs changed" — true,
       and useless. The run now names the construct that cost the walk and says the crate is
