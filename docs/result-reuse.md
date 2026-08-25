@@ -375,6 +375,25 @@ run and the colleague's first checkout. It is pinned by a test
 
 ---
 
+## Everything else stays green
+
+Both suites were run in a clean checkout of this branch, in a worktree of its own, because
+a second session was editing the shared crate alongside this work and a half-finished edit
+there had already broken one test run that had nothing to do with it.
+
+| Suite | Result |
+|---|---|
+| product workspace (`cargo test --workspace`) | **284 passed, 0 failed**, exit 0 |
+| specification tooling (`cd tools && cargo test --release`) | **118 passed, 0 failed**, exit 0 |
+
+Formatting and lint are clean in both workspaces (`cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets`). The product count was 257 before this work: the
+difference is this change's own tests — eleven on the record and the fingerprint, one table
+covering what may be stored, one pinning the model checker's flag set, and seven end to end
+on the fixture above.
+
+---
+
 ## What was removed
 
 - **The re-blessing command** (`cargo ply accept`) and the error for blessing a claim
