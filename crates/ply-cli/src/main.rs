@@ -7,6 +7,13 @@ mod worklist;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
+// The absence vocabulary (§1: "an absence is a name, not a slot") lives in
+// ply-core, because a second consumer now reads it -- the rule that decides
+// whether a result may be recorded and reused at all (§5.2a records only
+// results that earned evidence). Two copies of one vocabulary is how the
+// next absence gets missed by one of them, which is the exact shape of the
+// defect that put this rule here.
+use ply_core::diag::is_absence;
 use verify::VerifyOptions;
 
 /// cargo-ply -- the Ply CLI. This M3 thin slice implements only `verify`
@@ -178,12 +185,20 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
     if node.statuses.iter().any(|s| s == "owed-evidence") {
         marks.push("evidence owed");
     }
+    // Last, and from its own field rather than from `statuses`: reuse is
+    // not a qualifier on the evidence (D6), it is a fact about when the run
+    // happened. A person reading `bounded(2)` should be able to tell
+    // whether that happened just now or was carried forward from an earlier
+    // run whose inputs still hash the same (§5.2a).
+    if node.reused {
+        marks.push("reused");
+    }
     marks
 }
 
 /// What each mark means, printed once beneath the tree and only when the
 /// tree actually carries it. A mark a reader cannot decode is decoration.
-const MARK_GLOSS: [(&str, &str); 2] = [
+const MARK_GLOSS: [(&str, &str); 3] = [
     (
         "assumed",
         "this result rests on a promise Ply was handed and did not check — if the promise is \
@@ -193,6 +208,12 @@ const MARK_GLOSS: [(&str, &str); 2] = [
         "evidence owed",
         "nothing has run the real code against that promise yet; the lines below name it and say \
          what would settle it",
+    ),
+    (
+        "reused",
+        "this result was not re-run: an earlier run recorded it, and everything it depended on — \
+         the code, the promises it assumes, the checks, the engines, Ply's own version — hashes \
+         the same today",
     ),
 ];
 
@@ -244,30 +265,6 @@ fn print_human(envelope: &ply_core::diag::Envelope) {
     for d in &envelope.diagnostics {
         println!("[{}] {} — {}", d.code, d.node_id, d.title);
     }
-}
-
-/// A name that reports no evidence (§1): the engine was exhausted, the shape
-/// was out of reach, the tool broke, nothing was claimed, no engine existed,
-/// or a check ran and settled nothing. None of them is a claim about the
-/// code; all of them used to exit 0.
-///
-/// **An absence is a name, not a slot** (adversarial review of the post-004
-/// fixes, D2). The same names appear in two places in a §8 node -- as its
-/// `verdict`, and as a `status` beside it (D6) -- and they mean the same
-/// thing in both. The first version of this rule enumerated verdict strings
-/// only, which was complete over the verdicts the tool can emit and blind to
-/// every absence encoded as a status: a `mutate` check whose engine was
-/// missing reported `inconclusive` beside an untouched `fuzzed(64)` verdict
-/// and exited 0, against §1's own principle and §6's exit-3 row. Adding one
-/// more verdict string would have left the next status-shaped absence open,
-/// so the rule reads both fields against one vocabulary instead.
-fn is_absence(name: &str) -> bool {
-    name == "timeout"
-        || name == "unclaimed"
-        || name == "engine-missing"
-        || name == "inconclusive"
-        || name.starts_with("unsupported")
-        || name.starts_with("tool_error")
 }
 
 /// Every absence a node carries, in either field, over the whole tree.
@@ -337,6 +334,7 @@ mod tests {
                 kind: "fn".into(),
                 verdict: (*v).into(),
                 statuses: statuses.iter().map(|s| (*s).to_string()).collect(),
+                reused: false,
                 evidence: None,
                 children: vec![],
             })
@@ -349,6 +347,7 @@ mod tests {
                 kind: "workspace".into(),
                 verdict: verdicts.first().copied().unwrap_or("unclaimed").into(),
                 statuses: vec![],
+                reused: false,
                 evidence: None,
                 children,
             },

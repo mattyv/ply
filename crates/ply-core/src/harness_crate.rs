@@ -31,6 +31,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+/// The proptest version requirement Ply writes into every harness crate it
+/// generates. Named because it is also *recorded*: it is the fuzz tier's
+/// engine version in a result's fingerprint (§5.2a), and the two must be the
+/// same string or the record would guard a version that was never used.
+pub const PROPTEST_REQUIREMENT: &str = "1";
+
 /// The two names a dependent crate is known by: the Cargo package name
 /// (used as the `[dependencies]` key) and the Rust crate identifier its
 /// `[lib] name` gives `use` statements (falls back to the package name with
@@ -201,9 +207,10 @@ pub fn write_harness_cargo_toml(
          publish = false\n\n\
          [dev-dependencies]\n\
          {target_pkg} = {{ path = \"../../../..\" }}\n\
-         proptest = \"1\"\n",
+         proptest = \"{proptest}\"\n",
         target = target_names.package_name,
         target_pkg = target_names.package_name,
+        proptest = PROPTEST_REQUIREMENT,
     );
     std::fs::write(harness_dir.join("Cargo.toml"), toml)
         .with_context(|| format!("writing {}/Cargo.toml", harness_dir.display()))?;

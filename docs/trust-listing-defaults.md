@@ -188,9 +188,9 @@ function claims and declares no component default anywhere, so there is no inher
 it to resolve. `cargo ply audit` and `cargo ply worklist` on it are byte-identical before
 and after — confirmed by diffing the two binaries' output, not by inspection. The same
 sweep over all 25 fixtures in `tests/fixtures/` (50 runs, two commands each) found no
-output change either. `componentdefault` is the only fixture with a component default, and it has no markers,
-no contract helpers and no boundary promises, so it has nothing for these two commands to
-report.
+output change either. `componentdefault` is the only fixture with a component default,
+and it has no markers, no contract helpers and no boundary promises, so it has nothing for
+these two commands to report.
 
 ---
 

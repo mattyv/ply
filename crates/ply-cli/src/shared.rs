@@ -166,6 +166,7 @@ pub(crate) fn workspace_node(doc: &Document) -> Node {
                 kind: "fn".into(),
                 verdict: "unclaimed".into(),
                 statuses: vec![],
+                reused: false,
                 evidence: None,
                 children: vec![],
             })
@@ -180,6 +181,7 @@ pub(crate) fn workspace_node(doc: &Document) -> Node {
             kind: "component".into(),
             verdict: "unclaimed".into(),
             statuses: vec![],
+            reused: false,
             evidence: None,
             children,
         }
@@ -189,6 +191,7 @@ pub(crate) fn workspace_node(doc: &Document) -> Node {
         kind: "workspace".into(),
         verdict: "unclaimed".into(),
         statuses: vec![],
+        reused: false,
         evidence: None,
         children: doc
             .components
@@ -206,6 +209,7 @@ pub(crate) fn empty_workspace() -> Node {
         kind: "workspace".into(),
         verdict: "unclaimed".into(),
         statuses: vec![],
+        reused: false,
         evidence: None,
         children: vec![],
     }

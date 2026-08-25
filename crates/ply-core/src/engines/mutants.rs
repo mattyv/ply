@@ -253,6 +253,22 @@ pub fn classify_run(
     })
 }
 
+/// What this machine's cargo-mutants calls itself, for the record a result
+/// is stored under (§5.2a). `None` when it is not installed -- the `mutate`
+/// check then reports a missing engine, which is an absence and is never
+/// recorded.
+pub fn version() -> Option<String> {
+    let out = Command::new("cargo")
+        .args(["mutants", "--version"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
+
 /// Lets a caller pre-flight-check whether `cargo mutants` is on `PATH` at
 /// all, so a missing engine can be reported as `engine-missing`/`W0110`
 /// (D9) rather than a confusing subprocess-spawn error.

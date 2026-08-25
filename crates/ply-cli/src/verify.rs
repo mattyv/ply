@@ -24,6 +24,7 @@ use ply_core::model::{
     Check, Component, FnClaim, InheritedChecks, component_default_checks, effective_checks,
 };
 use ply_core::promise::{ClauseKind, ClauseVerdict, HarnessAnswer, PromiseFinding, PromisePlan};
+use ply_core::record::{self, AssumedPromise, EngineId, FingerprintInputs, RecordEntry};
 
 use crate::shared::{self, declared_contracts, local_anchor_names, sorted_by_key};
 
@@ -116,6 +117,156 @@ fn default_secondary_engine_timeout_secs() -> u32 {
     60
 }
 
+/// Everything outside the user's source that a result depended on, probed
+/// once per run (§5.2a's inputs 5 and 6).
+///
+struct Toolchain {
+    /// The target triple this run builds for.
+    target: String,
+    /// The compiler behind every engine here. A different rustc is a
+    /// different build of the code that was checked, which is D9's "an old
+    /// success must not bless ... a different toolchain".
+    rustc: String,
+    /// The crate's declared `[features]` table. Ply passes no `--features`,
+    /// so the set that is active is the default set this text defines --
+    /// and a change to the table is a change to what was built.
+    features: String,
+    /// Probed on first use, not at startup: a crate of `fuzz` claims must
+    /// not pay a `cargo kani --version` subprocess, and a machine with no
+    /// Kani installed must not be slower for having none.
+    kani: std::cell::OnceCell<Option<String>>,
+    mutants: std::cell::OnceCell<Option<String>>,
+}
+
+impl Toolchain {
+    fn probe(crate_dir: &Path) -> Toolchain {
+        let (rustc, target) = rustc_identity();
+        Toolchain {
+            target,
+            rustc,
+            features: declared_features(crate_dir),
+            kani: std::cell::OnceCell::new(),
+            mutants: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The engines one claim's checks stand on, in check order. An engine
+    /// that could not be probed is recorded as `not installed`: a check with
+    /// no engine behind it earns no evidence and is never recorded, so this
+    /// value can never end up guarding a stored result.
+    fn engines_for(&self, checks: &[Check], has_stubs: bool) -> Vec<EngineId> {
+        let missing = || "not installed".to_string();
+        let mut out: Vec<EngineId> = Vec::new();
+        for check in checks {
+            let id = match check {
+                Check::Bounded(_) => EngineId {
+                    name: "kani".into(),
+                    version: self
+                        .kani
+                        .get_or_init(kani::version)
+                        .clone()
+                        .unwrap_or_else(missing),
+                    // The flags that shape the obligation, exactly as
+                    // `engines::kani::invoke` passes them. The wall-clock
+                    // budget is deliberately absent (§5.2a).
+                    flags: kani_flags(has_stubs),
+                },
+                Check::Fuzz(_) | Check::Test => EngineId {
+                    name: "proptest".into(),
+                    // The requirement Ply writes into the harness crate it
+                    // generates, which is the version identity Ply itself
+                    // controls. KNOWN GAP: a 1.x release of proptest that
+                    // changes how a strategy draws would keep this string,
+                    // so a record written before it can be reused after it.
+                    version: harness_crate::PROPTEST_REQUIREMENT.to_string(),
+                    flags: String::new(),
+                },
+                Check::Mutate => EngineId {
+                    name: "cargo-mutants".into(),
+                    version: self
+                        .mutants
+                        .get_or_init(mutants::version)
+                        .clone()
+                        .unwrap_or_else(missing),
+                    flags: String::new(),
+                },
+                Check::Prove => EngineId {
+                    name: "verus".into(),
+                    version: missing(),
+                    flags: String::new(),
+                },
+            };
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+}
+
+/// The exact `-Z` set `engines::kani::invoke` passes. Written here as one
+/// string rather than reconstructed from the adapter because it is a
+/// *recorded* fact: if the adapter's flags change, this changing with it is
+/// what re-runs every proof they shaped.
+fn kani_flags(has_stubs: bool) -> String {
+    let mut flags = String::from(
+        "-Z function-contracts -Z unstable-options -Z concrete-playback --concrete-playback print",
+    );
+    if has_stubs {
+        flags.push_str(" -Z stubbing");
+    }
+    flags
+}
+
+/// `rustc -vV`, split into the version line and the host triple. Both
+/// unknown when rustc will not answer -- which cannot happen in a run that
+/// gets far enough to compile anything, and would only ever make a
+/// fingerprint match less often.
+fn rustc_identity() -> (String, String) {
+    let out = std::process::Command::new("rustc").arg("-vV").output();
+    let text = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        _ => return ("unknown".into(), "unknown".into()),
+    };
+    let mut version = "unknown".to_string();
+    let mut host = "unknown".to_string();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("host: ") {
+            host = rest.trim().to_string();
+        } else if line.starts_with("rustc ") {
+            version = line.trim().to_string();
+        }
+    }
+    (version, host)
+}
+
+/// The crate's `[features]` table, verbatim. A hand-rolled section scan
+/// rather than a TOML parse: this text is hashed, never interpreted, so the
+/// only property it needs is that it changes when the table changes.
+fn declared_features(crate_dir: &Path) -> String {
+    let Ok(text) = std::fs::read_to_string(crate_dir.join("Cargo.toml")) else {
+        return "(no manifest)".into();
+    };
+    let mut out = String::new();
+    let mut inside = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            inside = trimmed == "[features]";
+            continue;
+        }
+        if inside && !trimmed.is_empty() && !trimmed.starts_with('#') {
+            out.push_str(trimmed);
+            out.push('\n');
+        }
+    }
+    if out.is_empty() {
+        "(no features declared)".into()
+    } else {
+        out
+    }
+}
+
 pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> {
     let yaml_path = crate_dir.join("ply.yaml");
     let file = config::load(&yaml_path)?;
@@ -139,6 +290,11 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         checks: Vec<Check>,
         boundary: BoundaryPlan,
         seed: [u8; 32],
+        /// The hash of everything this claim's result depends on (§5.2a).
+        /// Computed before anything runs, because one hash answers both
+        /// questions: may a recorded result be reused, and what is a newly
+        /// earned one stored under.
+        fingerprint: String,
     }
     let mut plans: Vec<Plan> = Vec::new();
     let mut early_nodes_by_component: BTreeMap<String, Vec<Node>> = BTreeMap::new();
@@ -162,6 +318,19 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     let lib_src = std::fs::read_to_string(&lib_path).unwrap_or_default();
     let mut resolver = Resolver::new(&lib_src, crate_dir, declared)?;
 
+    // §5.2a: the committed record of what earlier runs earned, and the
+    // toolchain facts every fingerprint in this run is taken over. Loading
+    // the record can fail (a merge conflict in a committed file is the
+    // likely cause) and that is reported rather than swallowed -- silently
+    // continuing would re-pay every proof and tell nobody why.
+    let record_path = crate_dir.join("ply.lock");
+    let mut record = record::load(&record_path, PLY_VERSION)?;
+    let toolchain = Toolchain::probe(crate_dir);
+    // Every claim the document contains, however it ends up -- so a result
+    // recorded for a claim somebody deleted is dropped rather than left
+    // behind where nothing can ever invalidate it.
+    let mut live_claims: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
     // Name order, not declaration order. The promoted model preserves the
     // order the author wrote (the renderer lays boxes out that way); `verify`
     // read a `BTreeMap` before Phase 1a, so its node and diagnostic order was
@@ -171,6 +340,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     for (comp_name, comp, inherited) in flatten_components(&file) {
         for (fn_name, claim) in sorted_by_key(&comp.fns) {
             let node_id = format!("{comp_name}::{fn_name}");
+            live_claims.insert(node_id.clone());
             // §5.1: the list that actually governs this fn — its own if it
             // wrote one (an empty one included, §5.4c), else the nearest
             // ancestor component's default, else nothing written anywhere.
@@ -342,6 +512,40 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 .seed
                 .unwrap_or_else(|| ply_core::fuzz_gen::derive_seed(fn_name, &contract_text));
 
+            let fingerprint = record::fingerprint(&FingerprintInputs {
+                node_id: node_id.clone(),
+                fn_path: cf.path.clone(),
+                fn_source: cf.source.clone(),
+                inline_requires: cf
+                    .requires
+                    .as_ref()
+                    .map(|(_, t)| t.clone())
+                    .unwrap_or_default(),
+                inline_ensures: cf
+                    .ensures
+                    .as_ref()
+                    .map(|(_, t)| t.clone())
+                    .unwrap_or_default(),
+                declared_requires: claim.requires.clone(),
+                declared_ensures: claim.ensures.clone(),
+                assumed: boundary
+                    .stubs
+                    .iter()
+                    .map(|s| AssumedPromise {
+                        callee: s.callee_path.clone(),
+                        requires: s.requires.clone(),
+                        ensures: s.ensures.clone(),
+                    })
+                    .collect(),
+                checks: checks.iter().map(check_spelling).collect(),
+                seed: ply_core::fuzz_gen::seed_hex(&seed),
+                engines: toolchain.engines_for(&checks, !boundary.stubs.is_empty()),
+                target: toolchain.target.clone(),
+                rustc: toolchain.rustc.clone(),
+                features: toolchain.features.clone(),
+                ply_version: PLY_VERSION.to_string(),
+            });
+
             plans.push(Plan {
                 node_id,
                 component_path: comp_name.clone(),
@@ -351,17 +555,30 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 checks,
                 boundary,
                 seed,
+                fingerprint,
             });
         }
     }
 
+    // §5.2a's honesty rule, in the one place it can be enforced: a recorded
+    // result is looked up *by today's hash*, so no path exists that reaches
+    // a stored verdict without re-deriving what it depended on first.
+    let reused: Vec<Option<RecordEntry>> = plans
+        .iter()
+        .map(|p| record.matching(&p.node_id, &p.fingerprint).cloned())
+        .collect();
+
     // Pass 2: any fn needing fuzz/test/mutate shares one generated harness
     // crate per target crate (§5.4c) -- write it once, fully, before
     // running anything, so mutate's baseline sees every fn's tests.
-    let needs_harness = plans.iter().any(|p| {
-        p.checks
-            .iter()
-            .any(|c| matches!(c, Check::Fuzz(_) | Check::Test | Check::Mutate))
+    // A reused claim runs no engine, so it needs no harness. A crate whose
+    // every fuzz claim is reused therefore writes no harness crate and
+    // compiles nothing at all.
+    let needs_harness = plans.iter().zip(&reused).any(|(p, r)| {
+        r.is_none()
+            && p.checks
+                .iter()
+                .any(|c| matches!(c, Check::Fuzz(_) | Check::Test | Check::Mutate))
     });
     let mut harness_info: Option<(String, String)> = None; // (harness_package, target_lib_ident)
     if needs_harness {
@@ -376,7 +593,10 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         harness_crate::write_harness_cargo_toml(&harness_dir, &harness_pkg, &target_names)?;
 
         let mut fn_modules = Vec::new();
-        for plan in &plans {
+        for (plan, reused) in plans.iter().zip(&reused) {
+            if reused.is_some() {
+                continue;
+            }
             let has_fuzz = plan.checks.iter().find_map(|c| {
                 if let Check::Fuzz(n) = c {
                     Some(*n)
@@ -426,7 +646,27 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
 
     // Pass 3: run each fn's checks and assemble its verdict + diagnostics.
     let mut component_nodes: BTreeMap<String, Vec<Node>> = early_nodes_by_component;
-    for plan in &plans {
+    for (plan, reused) in plans.iter().zip(&reused) {
+        // Carried forward, and said so on the node: everything the recorded
+        // run reported about this claim, re-emitted as it was, because a
+        // reused `conditional` verdict whose assumption paragraph went
+        // missing would be a worse report than no reuse at all.
+        if let Some(entry) = reused {
+            diagnostics.extend(entry.diagnostics.iter().cloned());
+            component_nodes
+                .entry(plan.component_path.clone())
+                .or_default()
+                .push(Node {
+                    id: plan.fn_name.to_string(),
+                    kind: "fn".into(),
+                    verdict: entry.verdict.clone(),
+                    statuses: entry.statuses.clone(),
+                    reused: true,
+                    evidence: entry.evidence.clone(),
+                    children: vec![],
+                });
+            continue;
+        }
         let (node, mut fn_diags) = run_fn_checks(
             &plan.node_id,
             &src_dir,
@@ -440,12 +680,35 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             harness_info.as_ref(),
             opts,
         )?;
+        // Recorded only when this run earned evidence: a violation, a
+        // timeout or any other absence is never stored, so nothing that
+        // failed can ever be carried forward (§5.2a).
+        if earned_evidence(&node, &fn_diags) {
+            record.record(
+                &plan.node_id,
+                RecordEntry {
+                    fingerprint: plan.fingerprint.clone(),
+                    verdict: node.verdict.clone(),
+                    statuses: node.statuses.clone(),
+                    evidence: node.evidence.clone(),
+                    diagnostics: fn_diags.clone(),
+                },
+            );
+        } else {
+            // An earlier run's result for this claim would be about inputs
+            // that no longer produce it, and this run has nothing to put in
+            // its place.
+            record.results.remove(&plan.node_id);
+        }
         diagnostics.append(&mut fn_diags);
         component_nodes
             .entry(plan.component_path.clone())
             .or_default()
             .push(node);
     }
+
+    record.retain_claims(&live_claims);
+    record::save(&record_path, &record)?;
 
     // The tree the document declares, with each claim's node under the
     // component that declares it however deep that is (§5.1's nested
@@ -465,6 +728,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         kind: "workspace".into(),
         verdict: worst_of(&components),
         statuses: union_statuses(&components),
+        reused: false,
         evidence: None,
         children: components,
     };
@@ -547,6 +811,7 @@ fn component_node(
         kind: "component".into(),
         verdict: worst_of(&children),
         // D6: statuses are not in the evidence order -- they propagate
+        reused: false,
         // upward as flags beside the verdict. A `conditional` leaf must
         // still be visible from the root, or the trust story stops at
         // the fn nobody expanded.
@@ -1389,6 +1654,7 @@ fn run_fn_checks(
             kind: "fn".into(),
             verdict,
             statuses,
+            reused: false,
             evidence: fuzz_evidence,
             children: vec![],
         },
@@ -2878,6 +3144,27 @@ fn format_value(v: &kani::WitnessValue) -> String {
     }
 }
 
+/// Whether this run earned something worth recording (§5.2a).
+///
+/// Only a result that **earned evidence** is stored. A violation is a real
+/// result and still not stored: its whole value is the witness and the red
+/// test beside it, and those are artifacts on disk that a later run would
+/// have to re-render anyway. Everything else that could be stored here is an
+/// absence — a timeout, a missing engine, a shape Ply cannot build, a
+/// harness that would not compile, a claim that asked for nothing — and
+/// carrying an absence forward would mean reporting "nothing was checked"
+/// without having looked.
+///
+/// The absence vocabulary is `ply_core::diag::is_absence`, the same one the
+/// exit code reads. Two copies of it is how the next absence gets missed by
+/// one of them (§1: an absence is a name, not a slot).
+fn earned_evidence(node: &Node, diagnostics: &[Diagnostic]) -> bool {
+    !ply_core::diag::is_absence(&node.verdict)
+        && node.verdict != "violation"
+        && !node.statuses.iter().any(|s| ply_core::diag::is_absence(s))
+        && !diagnostics.iter().any(|d| d.severity == "error")
+}
+
 fn leaf_node(node_id: &str, verdict: &str) -> Node {
     let fn_part = node_id.rsplit("::").next().unwrap_or(node_id);
     Node {
@@ -2885,6 +3172,7 @@ fn leaf_node(node_id: &str, verdict: &str) -> Node {
         kind: "fn".into(),
         verdict: verdict.to_string(),
         statuses: vec![],
+        reused: false,
         evidence: None,
         children: vec![],
     }
@@ -3181,6 +3469,7 @@ mod tests {
                 kind: "fn".into(),
                 verdict: "bounded(2)".into(),
                 statuses: vec![],
+                reused: false,
                 evidence: None,
                 children: vec![],
             },
@@ -3189,6 +3478,7 @@ mod tests {
                 kind: "fn".into(),
                 verdict: "tested".into(),
                 statuses: vec![],
+                reused: false,
                 evidence: None,
                 children: vec![],
             },

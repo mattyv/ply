@@ -435,6 +435,13 @@ pub struct ContractFn {
     /// Every free-function call in the body, in source order (§5.5's D5
     /// split is decided from these, before any engine runs).
     pub calls: Vec<crate::callgraph::CallSite>,
+    /// The whole item as tokens, contract attributes included -- what
+    /// §5.2a hashes first when it records this claim's result. A token
+    /// stream and not the raw text on purpose: reformatting a function or
+    /// editing a comment above it changes nothing about what was proved,
+    /// and re-running a four-minute proof for a reflowed line is how a
+    /// record earns a reputation for being wrong.
+    pub source: String,
 }
 
 impl ContractFn {
@@ -647,6 +654,7 @@ fn build_contract_fn(f: &ItemFn, aliases: &AliasMap, path: &str) -> Result<Contr
         requires,
         ensures,
         calls: crate::callgraph::call_sites(f),
+        source: f.to_token_stream().to_string(),
     })
 }
 

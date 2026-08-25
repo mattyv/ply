@@ -59,6 +59,23 @@ pub struct KaniRunConfig {
     pub enable_stubbing: bool,
 }
 
+/// What this machine's Kani calls itself, for the record a result is stored
+/// under (§5.2a): a proof earned under one engine version is not evidence
+/// about another. `None` when `cargo kani` is not installed or will not
+/// answer -- a `bounded` check then earns no evidence at all, so nothing is
+/// recorded and nothing can be reused.
+pub fn version() -> Option<String> {
+    let out = Command::new("cargo")
+        .args(["kani", "--version"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
+
 /// Runs `cargo kani` against one harness and classifies the result. Always
 /// requests concrete playback (`-Z concrete-playback --concrete-playback
 /// print`) -- cheap on success (nothing to print) and the only source of a
