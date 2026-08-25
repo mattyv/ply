@@ -39,6 +39,64 @@ Full write-up with verbatim red-first failures: `docs/phase-1a.md`.
       inherits the limit so it never passes an anchor `verify` would fail; the diagnostic
       now says which of the two failures you hit, which makes the limit visible.
 
+## Result reuse, and the gap a review found in it — landed 2026-08-25
+
+Full write-up with the literal red-first failures and the timings: `docs/reuse-hash-gap-closed.md`.
+The review that forced it: `docs/review-result-reuse.md`.
+
+- [x] **Ply remembers a checked result and skips re-checking while nothing it depended on
+      moved** (`107a491`, superseded below). Cold 11.8s / warm 0.028s on the small fixture;
+      97.3s / 0.067s on the older one.
+- [x] **The review found the feature's load-bearing claim false, and it was fixed before
+      merge** (`c650e55`, write-up `eca129f`). The hash covered the checked function's own
+      lines and the promises written for old code it calls — not the ordinary helpers the
+      check actually runs, not the bodies a proof walks into, not the worked examples, not
+      the resolved dependency versions. Break a helper so the checked function genuinely
+      violates its own guarantee, and the tool answered "carried forward, still fine" in
+      0.03s while printing a line claiming the code hashed the same. That is this
+      project's own worst failure mode — a green result over code nobody checked — and it
+      is the seventh instance of it found and closed.
+
+      The hash now covers every first-party body a check can reach: through calls, through
+      a function named as a value, and through the claim's own contract expression. Where
+      the walk cannot be trusted — a method call, a hand-written operator, a macro, an
+      unrecognised attribute — it is abandoned and the whole crate is hashed instead:
+      coarser, never wrong, and which mode ran is itself hashed. Allowlist on purpose, so
+      an unanticipated construct costs engine time rather than a false pass.
+
+      Verified independently of the agent that built it, on a fixture written for the
+      purpose: helper broken → the claim re-runs and reports the violation with a
+      counterexample, while an unrelated claim in the same crate keeps its result; only the
+      unrelated claim edited → the reaching claim still reuses; nothing touched → both
+      reuse in 0.039s; and the method-behind-a-type case, which no syntactic walk could
+      follow, caught by the coarse mode with the unrelated claim honestly re-run too.
+
+- [x] **Two smaller review findings closed in the same commit.** A stored verdict none of
+      its own checks could ever have produced is now refused, said out loud, and re-run,
+      instead of being believed forever. And a run that cannot use a stored result now
+      names the input that moved — distinguishing "the function's own source changed" from
+      "the code it runs changed" — rather than silently re-paying full cost.
+- [x] **Every place claiming the hash covered "everything" now states what it covers and
+      what it does not** — the spec, the schema page, the module comment, the fixture
+      comment, the exact-string test, and the line printed on every reused run. §5.2a
+      carries a "what it does not cover, stated rather than implied" paragraph.
+
+- [ ] KNOWN GAP, recorded not hidden: build environment that never appears in a file
+      (`RUSTFLAGS`, `[profile]` settings such as `overflow-checks`, a `#[path]` attribute)
+      is not hashed; nor is what an outside proc macro expands to beyond its crate
+      identity. Reuse across machines needs a committed lockfile — without one Ply records
+      that it does not know the versions rather than guessing.
+- [ ] KNOWN GAP: a hand-edited record is caught only where the stored verdict is one the
+      stored checks could never earn. A hash cannot defend the file against a text editor.
+- [ ] The fuzz engine's recorded version is the requirement written in the manifest, not
+      the version actually resolved.
+- [ ] The coarse mode computes *why* it widened ("this crate defines a type, so a method
+      call could go anywhere") and does not print it. On a crate with types that would turn
+      "the code it runs changed" from true-but-puzzling into something a person can act on.
+- [ ] Open question, deliberately left: whether every Ply release should invalidate every
+      record. Fable's answer was yes — a hand-maintained "only when it matters" flag
+      recreates the judgment call the design exists to eliminate. Not yet revisited.
+
 ## Agreed with the maintainer, not yet started
 
 - [ ] **D7 for stubbed crossings — `W0541 stub_substituted`** (planned
@@ -53,7 +111,11 @@ Full write-up with verbatim red-first failures: `docs/phase-1a.md`.
       Refused by name: rendering the test against a rewritten body, which would go red for
       a program the user does not run.
 
-- [ ] **Trusted boundary declared in `ply.yaml`** (maintainer's idea, 2026-08-25) — the
+- [x] **Trusted boundary declared in `ply.yaml`** — CLOSED 2026-08-25, will not be built.
+      The gate below answered no on evidence, and the maintainer closed the idea in
+      conversation the same day: a per-function promise is the whole of what was wanted,
+      and there is to be no region-wide or module-wide variant. Kept here for the
+      evidence, not as pending work. Original framing follows. — the
       coarse-grained sibling of §5.5's per-callee rule: declare a region taken as given,
       rather than writing a contract per legacy function a new feature happens to touch.
       Fills a real hole in §7.2's taxonomy — *our code, checkable in principle,
