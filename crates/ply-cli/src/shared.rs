@@ -15,7 +15,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use ply_core::callgraph::DeclaredContract;
 use ply_core::diag::{Diagnostic, Node};
-use ply_core::model::{Component, Document};
+use ply_core::model::{
+    Component, Document, InheritedChecks, component_default_checks, effective_checks,
+};
 use ply_core::schema;
 
 /// The entries of an order-preserving map, in key order.
@@ -210,47 +212,96 @@ pub(crate) fn empty_workspace() -> Node {
 }
 
 /// Every fn claim in the document, depth first, each paired with the
-/// qualified name of the component that declares it and that component's
-/// `anchor:`.
+/// qualified name of the component that declares it, that component's
+/// `anchor:`, and the §5.1 `checks:` default in force where it sits.
 ///
 /// Nested components are walked, unlike `verify`'s own loop, which reads
 /// only top-level ones (recorded as a gap in TODO.md rather than papered
 /// over here): a claim a user wrote inside a nested component is still a
 /// claim they wrote, and a listing command that skipped it would be
 /// reporting less than the document says.
+///
+/// The inherited default is carried down the same walk, from the same
+/// shared resolution `check`, `verify` and the renderer use
+/// (`ply_core::model::component_default_checks`), so no command can decide
+/// on its own which list governs a fn. `audit` and `worklist` used to read
+/// a fn's own `checks:` and nothing else, which made a fn that takes its
+/// checks from its component look as though it declared none — a listing
+/// that misreads which functions are checked misreports what the evidence
+/// rests on.
 pub(crate) fn walk_fn_claims<'a>(doc: &'a Document, mut visit: impl FnMut(FnClaimRef<'a>)) {
-    fn walk<'a>(qualified: &str, comp: &'a Component, visit: &mut impl FnMut(FnClaimRef<'a>)) {
+    fn walk<'a>(
+        qualified: &str,
+        leaf: &'a str,
+        comp: &'a Component,
+        inherited: Option<InheritedChecks<'a>>,
+        visit: &mut impl FnMut(FnClaimRef<'a>),
+    ) {
+        let below = component_default_checks(leaf, comp, inherited);
         for (fn_name, claim) in sorted_by_key(&comp.fns) {
             visit(FnClaimRef {
                 component: qualified.to_string(),
                 anchor: &comp.anchor,
                 fn_name,
                 claim,
+                inherited: below,
             });
         }
         for (child, nested) in sorted_by_key(&comp.components) {
-            walk(&format!("{qualified}.{child}"), nested, visit);
+            walk(&format!("{qualified}.{child}"), child, nested, below, visit);
         }
     }
     for (name, comp) in sorted_by_key(&doc.components) {
-        walk(name, comp, &mut visit);
+        walk(name, name, comp, None, &mut visit);
     }
 }
 
-/// One fn claim, with enough of its surroundings to name it and to know
-/// whether it belongs to this crate.
+/// One fn claim, with enough of its surroundings to name it, to know
+/// whether it belongs to this crate, and to say which checks govern it.
 pub(crate) struct FnClaimRef<'a> {
     /// The qualified component name — `pricing`, or `pricing.curves`.
     pub component: String,
     pub anchor: &'a str,
     pub fn_name: &'a String,
     pub claim: &'a ply_core::model::FnClaim,
+    /// The default declared by the nearest ancestor component that declared
+    /// one, `None` when no ancestor did. Private: every reader goes through
+    /// [`FnClaimRef::governing_checks`] rather than resolving it again.
+    inherited: Option<InheritedChecks<'a>>,
 }
 
-impl FnClaimRef<'_> {
+/// The checks list that actually governs one fn, and where it was written.
+pub(crate) struct Governing<'a> {
+    /// The governing list. **Empty is an answer**: `checks: []` says "check
+    /// nothing here" (§5.4c), and is not the same fact as no list anywhere.
+    pub checks: &'a [String],
+    /// The component the list came from, when the fn wrote none of its own;
+    /// `None` when the list is the fn's own. A sentence that points at a
+    /// `checks:` line the reader will not find on the fn is a sentence that
+    /// sends them looking for it.
+    pub from_component: Option<&'a str>,
+}
+
+impl<'a> FnClaimRef<'a> {
     /// The §7 node id this claim would carry.
     pub fn node_id(&self) -> String {
         format!("{}::{}", self.component, self.fn_name)
+    }
+
+    /// §5.1, through the one shared resolution: the fn's own `checks:` if
+    /// it wrote one (an empty one included), else the nearest ancestor
+    /// component's default, else `None` — nothing written anywhere, which
+    /// is the only case a caller may fill in with a default of its own.
+    pub fn governing_checks(&self) -> Option<Governing<'a>> {
+        let checks = effective_checks(self.claim, self.inherited)?;
+        let from_component = match self.claim.checks {
+            Some(_) => None,
+            None => self.inherited.map(|i| i.from_component),
+        };
+        Some(Governing {
+            checks,
+            from_component,
+        })
     }
 }
 
@@ -267,9 +318,16 @@ pub(crate) struct AssumedContract {
     pub callee: String,
     /// The promise, as a reader would say it out loud: `requires x, ensures y`.
     pub contract: String,
-    /// What the callee's own `ply.yaml` entry asks for, if it has one — the
+    /// What the callee's `ply.yaml` entry asks for, if anything — the
     /// difference between "add a check" and "run the one you declared".
+    /// Resolved the way every other reader resolves it: the entry's own
+    /// list, else the default its component declares (§5.1).
     pub callee_checks: Vec<String>,
+    /// The component that default came from, when the callee's entry wrote
+    /// no list of its own. Advice that says "its entry already asks for
+    /// `fuzz(256)`" about a line the reader cannot find on that entry is
+    /// advice they cannot follow.
+    pub callee_checks_from: Option<String>,
     /// The crate the callee's `ply.yaml` entry is anchored to, when that is
     /// **not** the crate this command is standing in.
     ///
@@ -310,12 +368,25 @@ pub(crate) fn assumed_contracts(
         let Ok(cf) = ply_core::harness::discover_fn(&lib_path, c.fn_name) else {
             return;
         };
-        let checks = match c.claim.parsed_checks() {
-            Ok(explicit) if !explicit.is_empty() => explicit,
-            // An unparseable checks list is `E0203`, which `check`
-            // reports; a listing command reads what it can.
-            Ok(_) => crate::verify::default_checks_for(&cf),
-            Err(_) => return,
+        // §5.1, through the one shared resolution: a fn that wrote no
+        // `checks:` of its own runs whatever its component declares for
+        // everything inside it, and only a fn no list anywhere governs
+        // falls through to the shape-aware default. Reading the fn's own
+        // line alone made a component that asked for `fuzz(64)` look like a
+        // proof, so this listed an assumption `verify` never makes.
+        let checks = match c.governing_checks() {
+            Some(g) => match g
+                .checks
+                .iter()
+                .map(|s| ply_core::model::parse_check(s))
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(parsed) => parsed,
+                // An unparseable checks list is `E0203`, which `check`
+                // reports; a listing command reads what it can.
+                Err(_) => return,
+            },
+            None => crate::verify::default_checks_for(&cf),
         };
         if !checks
             .iter()
@@ -339,13 +410,15 @@ pub(crate) fn assumed_contracts(
                 && signature.return_type.is_some()
                 && seen.insert(canonical_path.clone())
             {
-                let (checks, anchor) = callee_entry(doc, &canonical_path, local_anchors);
+                let (checks, checks_from, anchor) =
+                    callee_entry(doc, &canonical_path, local_anchors);
                 found.push(AssumedContract {
                     caller_node_id: c.node_id(),
                     caller_fn: c.fn_name.clone(),
                     callee: canonical_path.clone(),
                     contract: contract_text(&contract.requires, &contract.ensures),
                     callee_checks: checks,
+                    callee_checks_from: checks_from,
                     callee_anchor: anchor,
                     where_text: site.where_text(),
                 });
@@ -371,16 +444,17 @@ pub(crate) fn contract_text(requires: &[String], ensures: &[String]) -> String {
     }
 }
 
-/// The callee's own `ply.yaml` entry, as far as advice needs it: the checks
-/// it declares, and the crate it is anchored to when that is not this one.
-/// The path is the one a caller writes, so a boundary component's fn is
-/// matched by `<anchor>::<fn>` (§5.5).
+/// The callee's `ply.yaml` entry, as far as advice needs it: the checks
+/// that govern it, the component those checks were written on when they
+/// were not written on the entry itself, and the crate it is anchored to
+/// when that is not this one. The path is the one a caller writes, so a
+/// boundary component's fn is matched by `<anchor>::<fn>` (§5.5).
 fn callee_entry(
     doc: &Document,
     path: &str,
     local_anchors: &[String],
-) -> (Vec<String>, Option<String>) {
-    let mut found = (Vec::new(), None);
+) -> (Vec<String>, Option<String>, Option<String>) {
+    let mut found = (Vec::new(), None, None);
     walk_fn_claims(doc, |c| {
         let local = is_local(local_anchors, c.anchor);
         let key = if local {
@@ -389,8 +463,15 @@ fn callee_entry(
             format!("{}::{}", c.anchor, c.fn_name)
         };
         if key == path {
+            let governing = c.governing_checks();
             found = (
-                c.claim.checks.clone().unwrap_or_default(),
+                governing
+                    .as_ref()
+                    .map(|g| g.checks.to_vec())
+                    .unwrap_or_default(),
+                governing
+                    .as_ref()
+                    .and_then(|g| g.from_component.map(str::to_string)),
                 if local {
                     None
                 } else {

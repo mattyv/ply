@@ -413,10 +413,11 @@ components:
 ```
 
 A function's own non-empty list replaces the inherited one entirely — there is no
-merge. `last_px` above runs `fuzz(256)` and nothing else. Note that `cargo ply check`
-honours this inheritance and `cargo ply verify` does not: `verify` reads only the
-function's own list and otherwise falls back to the shape-aware default. Until that is
-reconciled, write the checks you mean on the function.
+merge. `last_px` above runs `fuzz(256)` and nothing else. The default reaches down
+through nested components too: a component that declares no default of its own passes on
+whatever it inherited. Every command reads this the same way — `check`, `verify`,
+`audit`, `worklist` and the diagram resolve a function's checks in one shared place, so
+none of them can tell you a different story about which check runs.
 
 ### `examples`
 

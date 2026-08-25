@@ -352,13 +352,14 @@ Done, this session:
 
 Open, found while doing the above and deliberately not fixed here:
 
-- [ ] **`audit` and `worklist` do not resolve component-default `checks:`.** They read a
-      function's own list and otherwise fall back to the shape-aware default, so for a
-      function whose component default is `fuzz(64)` they still reason as though a proof
-      would run — which can overstate the trust surface (listing an assumed contract that
-      `verify` never assumes). Same class of defect as #3, one command over; the shared
-      walk (`walk_fn_claims`) would need to carry the inherited default the way
-      `verify`'s does.
+- [x] **`audit` and `worklist` do not resolve component-default `checks:`.** Fixed
+      since, the way this entry described: `walk_fn_claims` now
+      carries the inherited default down the tree, and every reader of a checks list in
+      those two commands goes through one accessor over the same shared resolution. It
+      was wrong in both directions — listing an assumed contract `verify` never assumes,
+      and calling a helper unchecked that the document checks. Written up, with the
+      failures watched first and the before/after on a real crate, in
+      `docs/trust-listing-defaults.md`.
 - [ ] **A claim under a module anchor still cannot run.** Function keys are read as paths
       from the crate root rather than relative to the component's anchor, so the ordinary
       way of writing a nested component (`anchor: ingest::book`) yields a reported,

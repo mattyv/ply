@@ -826,10 +826,15 @@ excludes; none otherwise. A flat `[bounded(2)]` default would route most contrac
 functions in ordinary Rust into `unsupported` or a multi-minute timeout.
 
 The default is resolved in one place for every consumer —
-`ply_core::model::{effective_checks, component_default_checks}` — so `check`, `verify`
-and the renderer cannot disagree about which list governs a fn. `verify` read a fn's own
-list and nothing else until 2026-08-25, which made a component's declared default a line
-`check` resolved and `verify` silently ignored: one document, two answers.
+`ply_core::model::{effective_checks, component_default_checks}` — so `check`, `verify`,
+`audit`, `worklist` and the renderer cannot disagree about which list governs a fn.
+`verify` read a fn's own list and nothing else until 2026-08-25, which made a
+component's declared default a line `check` resolved and `verify` silently ignored: one
+document, two answers. The two listing commands read it that way for one commit longer,
+which was worse where it showed: a trust listing that misreads which functions are
+checked misreports what a result rests on, and it did so in both directions — naming an
+assumption `verify` never makes for a fn that inherits `fuzz`, and calling a fn nothing
+checks when its component checks it.
 
 **That default fires only where no checks list is written at all.** `checks: []` is a
 written list, an empty one, and it means what it reads as: check nothing here. Nothing

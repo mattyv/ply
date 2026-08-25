@@ -345,13 +345,31 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
     })
 }
 
-/// The checks declared for a fn by name alone, for a helper that may or may
-/// not be claimed anywhere.
-fn fn_claim_checks(doc: &ply_core::model::Document, name: &str) -> Option<Vec<String>> {
+/// What the document asks for on a fn named by name alone, for a helper
+/// that may or may not be claimed anywhere: `None` when no entry names it,
+/// otherwise the checks that govern it and the component they were written
+/// on when they were not written on the entry itself.
+///
+/// Resolved through the one shared §5.1 resolution (`FnClaimRef::
+/// governing_checks`), so a helper that takes its checks from its component
+/// is not reported as one nothing checks.
+fn fn_claim_checks(
+    doc: &ply_core::model::Document,
+    name: &str,
+) -> Option<(Vec<String>, Option<String>)> {
     let mut found = None;
     walk_fn_claims(doc, |c| {
         if c.fn_name == name {
-            found = Some(c.claim.checks.clone().unwrap_or_default());
+            let governing = c.governing_checks();
+            found = Some((
+                governing
+                    .as_ref()
+                    .map(|g| g.checks.to_vec())
+                    .unwrap_or_default(),
+                governing
+                    .as_ref()
+                    .and_then(|g| g.from_component.map(str::to_string)),
+            ));
         }
     });
     found
@@ -388,16 +406,29 @@ fn assumed_contract_item(a: &shared::AssumedContract) -> TrustItem {
 /// to run it in and the route that needs no second crate go on the line.
 fn discharge_advice(a: &shared::AssumedContract) -> String {
     let (caller, callee) = (&a.caller_fn, &a.callee);
+    // Where the check the callee already has was written. A default
+    // declared on its component governs it exactly as a line on the entry
+    // would (§5.1), but telling a reader to look at "its entry" for a line
+    // that is one level up sends them hunting.
+    let asks = |check: &String| match a.callee_checks_from.as_deref() {
+        None => format!("Its `ply.yaml` entry already asks for `{check}`"),
+        Some(from) => format!(
+            "Its `ply.yaml` entry already asks for `{check}` — the default the component \
+             `{from}` sets for everything inside it"
+        ),
+    };
     match (a.callee_checks.first(), a.callee_anchor.as_deref()) {
         (Some(check), None) => format!(
-            "Its `ply.yaml` entry already asks for `{check}`, which runs the real body against \
-             the promise: `cargo ply verify` is what settles it."
+            "{}, which runs the real body against the promise: `cargo ply verify` is what \
+             settles it.",
+            asks(check)
         ),
         (Some(check), Some(anchor)) => format!(
-            "Its `ply.yaml` entry already asks for `{check}`, which runs the real body against \
-             the promise — but only where that function lives: run `cargo ply verify` inside the \
-             `{anchor}` crate. This run checks one crate at a time, so from here that entry's \
-             promise is read and its checks are skipped."
+            "{}, which runs the real body against the promise — but only where that function \
+             lives: run `cargo ply verify` inside the `{anchor}` crate. This run checks one \
+             crate at a time, so from here that entry's promise is read and its checks are \
+             skipped.",
+            asks(check)
         ),
         (None, None) => format!(
             "To settle it, add `checks: [fuzz(256)]` to its `ply.yaml` entry — fuzzing crosses a \
@@ -467,18 +498,28 @@ fn contract_helper_item(
     node_id: &str,
     caller: &str,
     helper: &str,
-    claimed: Option<Vec<String>>,
+    claimed: Option<(Vec<String>, Option<String>)>,
 ) -> TrustItem {
     let standing = match claimed {
         None => {
             format!("`{helper}` carries no claim of its own in `ply.yaml`, so nothing checks it.")
         }
-        Some(checks) if checks.is_empty() => format!(
+        Some((checks, None)) if checks.is_empty() => format!(
             "`{helper}` has a `ply.yaml` entry that asks for no checks, so nothing checks it."
         ),
-        Some(checks) => format!(
+        Some((checks, Some(from))) if checks.is_empty() => format!(
+            "`{helper}` writes no checks of its own, and the component `{from}` declares an empty \
+             list as the default for everything inside it, so nothing checks it."
+        ),
+        Some((checks, None)) => format!(
             "`{helper}` carries its own claim (`checks: [{}]`); whether that check passes is not \
              something this command knows.",
+            checks.join(", ")
+        ),
+        Some((checks, Some(from))) => format!(
+            "`{helper}` is checked with `{}`, which the component `{from}` declares as the \
+             default for everything inside it; whether that check passes is not something this \
+             command knows.",
             checks.join(", ")
         ),
     };
@@ -882,6 +923,122 @@ mod tests {
             item.detail.contains(
                 "Its `ply.yaml` entry already asks for `fuzz(256)`, which runs the real body \
                  against the promise: `cargo ply verify` is what settles it"
+            ),
+            "{}",
+            item.detail
+        );
+    }
+
+    /// §5.1: a component's `checks:` is the default for every fn inside
+    /// it, and a trust listing has to read it through the same resolution
+    /// `check` and `verify` use. This document asks for `fuzz(64)` on
+    /// everything in `demo`; fuzzing crosses a legacy boundary by calling
+    /// the real code (§5.5), so `tiered_fee` assumes nothing about
+    /// `legacy_rate` and there is nothing here to list. Reading the fn's
+    /// own (absent) list instead put the shape-aware `bounded(2)` back and
+    /// printed an assumption `verify` never makes.
+    #[test]
+    fn a_component_default_that_asks_for_fuzzing_leaves_nothing_assumed() {
+        let yaml = "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: [fuzz(64)]\n    fns:\n      legacy_rate:\n        checks: []\n        ensures:\n          - \"|result| *result <= 10_000\"\n      tiered_fee: {}\n";
+        let dir = crate_with(BOUNDARY_LIB, yaml);
+        let report = audit_crate(dir.path()).unwrap();
+        assert!(
+            !item_kinds(&report).contains(&"assumed_contract"),
+            "`tiered_fee` inherits `fuzz(64)` from its component, and fuzzing runs the real \
+             `legacy_rate` -- nothing is assumed here, so nothing may be listed as assumed: {:#?}",
+            report.envelope.trust_surface
+        );
+    }
+
+    /// The same resolution's other rule, reaching these two commands for
+    /// the first time: **an empty list is a list** (§5.4c). A caller that
+    /// writes `checks: []` is checked by nothing, so it proves nothing, so
+    /// it assumes nothing — and there is no trust surface to list. Reading
+    /// the list for emptiness rather than for presence put the shape-aware
+    /// `bounded(2)` back and listed the assumption that proof would have
+    /// made.
+    #[test]
+    fn a_caller_that_asks_for_no_checks_at_all_leaves_nothing_assumed() {
+        let yaml = BOUNDARY_YAML.replace(
+            "      tiered_fee:\n        checks: [bounded(2)]\n",
+            "      tiered_fee:\n        checks: []\n",
+        );
+        let dir = crate_with(BOUNDARY_LIB, &yaml);
+        let report = audit_crate(dir.path()).unwrap();
+        assert!(
+            !item_kinds(&report).contains(&"assumed_contract"),
+            "nothing checks `tiered_fee`, so nothing of its rests on `legacy_rate`'s promise: \
+             {:#?}",
+            report.envelope.trust_surface
+        );
+    }
+
+    /// The same resolution the other way round, and one level down: the
+    /// helper a contract calls writes no `checks:` of its own and sits in a
+    /// nested component, so what runs against it is the default declared
+    /// above. Reading only its own line said "nothing checks it" about a fn
+    /// this document does check.
+    #[test]
+    fn a_helper_that_inherits_its_checks_is_not_reported_as_unchecked() {
+        let dir = crate_with(
+            "pub fn bps_ok(bps: u32) -> bool { bps <= 10_000 }\n\
+             #[ply::requires(bps_ok(bps))]\n\
+             pub fn fee(bps: u32) -> u32 { bps }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: [test]\n    fns:\n      fee: {}\n    components:\n      helpers:\n        anchor: demo\n        fns:\n          bps_ok: {}\n",
+        );
+        let report = audit_crate(dir.path()).unwrap();
+        let item = only(&report, "contract_helper");
+        assert!(
+            item.detail.contains(
+                "`bps_ok` is checked with `test`, which the component `demo` declares as the \
+                 default for everything inside it"
+            ),
+            "a helper that inherits its checks is checked, and saying otherwise overstates what \
+             this contract rests on: {}",
+            item.detail
+        );
+    }
+
+    /// A fn's own `checks:` still wins entirely over the default above it,
+    /// and the advice for settling a promise has to point at the line that
+    /// carries the check: "its entry already asks for `fuzz(256)`" sends a
+    /// reader to a line that is one level up from where they will look.
+    #[test]
+    fn advice_says_where_a_callee_takes_its_check_from_when_it_is_not_its_own_line() {
+        let yaml = "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: [fuzz(256)]\n    fns:\n      legacy_rate:\n        ensures:\n          - \"|result| *result <= 10_000\"\n      tiered_fee:\n        checks: [bounded(2)]\n";
+        let dir = crate_with(BOUNDARY_LIB, yaml);
+        let report = audit_crate(dir.path()).unwrap();
+        let item = only(&report, "assumed_contract");
+        assert!(
+            item.detail.contains(
+                "Its `ply.yaml` entry already asks for `fuzz(256)` — the default the component \
+                 `demo` sets for everything inside it, which runs the real body against the \
+                 promise: `cargo ply verify` is what settles it."
+            ),
+            "{}",
+            item.detail
+        );
+    }
+
+    /// An inherited *empty* default: the component says "check nothing" for
+    /// everything inside it (§5.4c). Nothing checks the helper, which is
+    /// what the old sentence said — but the `checks:` line a reader would
+    /// go looking for is on the component, not on the entry, so the
+    /// sentence has to say which one it is.
+    #[test]
+    fn a_helper_under_an_empty_component_default_names_the_component_that_declared_it() {
+        let dir = crate_with(
+            "pub fn bps_ok(bps: u32) -> bool { bps <= 10_000 }\n\
+             #[ply::requires(bps_ok(bps))]\n\
+             pub fn fee(bps: u32) -> u32 { bps }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: []\n    fns:\n      fee: {}\n      bps_ok: {}\n",
+        );
+        let report = audit_crate(dir.path()).unwrap();
+        let item = only(&report, "contract_helper");
+        assert!(
+            item.detail.contains(
+                "`bps_ok` writes no checks of its own, and the component `demo` declares an empty \
+                 list as the default for everything inside it, so nothing checks it."
             ),
             "{}",
             item.detail

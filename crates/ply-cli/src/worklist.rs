@@ -134,14 +134,15 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
     // Which fn claims exist, so a marker can say what it caps -- and which
     // registry entries exist, so a marker written in both places is one
     // item rather than two.
-    let mut claimed: Vec<(String, String, Vec<String>)> = Vec::new(); // (fn name, node id, checks)
+    let mut claimed: Vec<ClaimedFn> = Vec::new();
     let mut registry: Vec<(u64, String, String)> = Vec::new(); // (id, note, node id)
     walk_fn_claims(&doc, |c| {
-        claimed.push((
-            c.fn_name.clone(),
-            c.node_id(),
-            c.claim.checks.clone().unwrap_or_default(),
-        ));
+        let governing = c.governing_checks();
+        claimed.push(ClaimedFn {
+            name: c.fn_name.clone(),
+            node_id: c.node_id(),
+            governing: governing.map(|g| (g.checks.to_vec(), g.from_component.map(str::to_string))),
+        });
         for entry in &c.claim.unresolved {
             registry.push((entry.id, entry.note.clone(), c.node_id()));
         }
@@ -157,7 +158,7 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
         let claim = m
             .enclosing_fn
             .as_ref()
-            .and_then(|f| claimed.iter().find(|(name, _, _)| name == f));
+            .and_then(|f| claimed.iter().find(|c| &c.name == f));
         // The registry's note is the fuller of the two by design (§5.1
         // calls a fn's `unresolved:` "registry links for markers in this
         // fn"), so it wins the merge, and the marker keeps the span.
@@ -214,9 +215,21 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
     })
 }
 
+/// One fn claim, as the line under a marker needs it: what it is called,
+/// what it is called in a §7 tree, and the checks that govern it —
+/// resolved through the one shared §5.1 resolution, so a fn that takes its
+/// checks from its component is not reported as declaring none.
+struct ClaimedFn {
+    name: String,
+    node_id: String,
+    /// The governing list and the component it was written on when the fn
+    /// wrote none of its own; `None` when no list is written anywhere.
+    governing: Option<(Vec<String>, Option<String>)>,
+}
+
 fn marker_item(
     m: &ply_core::surface::Marker,
-    claim: Option<&(String, String, Vec<String>)>,
+    claim: Option<&ClaimedFn>,
     note: Option<&str>,
 ) -> OpenItem {
     let id_text = match m.id {
@@ -228,11 +241,27 @@ fn marker_item(
         None => "no note was written with it".to_string(),
     };
     let (node_id, blocking) = match claim {
-        Some((_, node_id, checks)) => {
-            let asks = if checks.is_empty() {
-                "it declares no checks of its own".to_string()
-            } else {
-                format!("it claims `{}`", checks.join(", "))
+        Some(c) => {
+            let node_id = &c.node_id;
+            // §5.1: a fn that writes no `checks:` of its own runs whatever
+            // its component declares for everything inside it. Saying "no
+            // checks of its own" about such a fn is true of the line and
+            // false about the run.
+            let asks = match &c.governing {
+                None => "it declares no checks of its own".to_string(),
+                Some((checks, None)) if checks.is_empty() => {
+                    "its `checks:` list is empty, so nothing runs against it".to_string()
+                }
+                Some((checks, Some(from))) if checks.is_empty() => format!(
+                    "the component `{from}` declares an empty list as the default for everything \
+                     inside it, so nothing runs against it"
+                ),
+                Some((checks, None)) => format!("it claims `{}`", checks.join(", ")),
+                Some((checks, Some(from))) => format!(
+                    "it claims `{}`, the default the component `{from}` sets for everything \
+                     inside it",
+                    checks.join(", ")
+                ),
             };
             (
                 node_id.clone(),
@@ -574,6 +603,77 @@ mod tests {
             items[0].detail.contains("employee discount undecided"),
             "the registry's note is the fuller one, so it is the one that survives the merge: {}",
             items[0].detail
+        );
+    }
+
+    /// §5.1: a component's `checks:` is the default for every fn inside
+    /// it, nested components included. The line under a marker says what
+    /// the marker holds up, so it has to name the check that would actually
+    /// run -- reading only the fn's own (absent) list reported "no checks"
+    /// for a fn the document does check.
+    #[test]
+    fn a_marker_in_a_fn_that_inherits_its_checks_names_the_check_that_would_run() {
+        let dir = crate_with(
+            "pub fn discount(pct: u32) -> u32 {\n    \
+             ply::unresolved!(147, \"employee discount undecided\");\n}\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: [bounded(2)]\n    components:\n      pricing:\n        anchor: demo\n        fns:\n          discount: {}\n",
+        );
+        let report = worklist_crate(dir.path()).unwrap();
+        assert_eq!(
+            items(&report)[0].blocking,
+            "§5.6 caps `demo.pricing::discount` at check `test` while this stands; it claims \
+             `bounded(2)`, the default the component `demo` sets for everything inside it."
+        );
+    }
+
+    /// The other half of the same misreading: a fn that inherits `fuzz(64)`
+    /// never has its callee stubbed, because fuzzing crosses a legacy
+    /// boundary by running the real code (§5.5). Nothing is assumed, so
+    /// nothing is owed -- and an open item nobody owes is work invented by
+    /// the tool.
+    #[test]
+    fn a_component_default_that_asks_for_fuzzing_owes_no_evidence() {
+        let dir = crate_with(
+            "pub fn legacy_rate(tier: u8) -> u32 { if tier == 0 { 150 } else { 90 } }\n\
+             #[ply::requires(amount <= 100)]\n\
+             #[ply::ensures(|result| *result <= amount)]\n\
+             pub fn tiered_fee(amount: u32, tier: u8) -> u32 { legacy_rate(tier).min(amount) }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: [fuzz(64)]\n    fns:\n      legacy_rate:\n        checks: []\n        ensures:\n          - \"|result| *result <= 10_000\"\n      tiered_fee: {}\n",
+        );
+        let report = worklist_crate(dir.path()).unwrap();
+        assert!(
+            items(&report).iter().all(|i| i.kind != "owed_evidence"),
+            "{:#?}",
+            items(&report)
+        );
+    }
+
+    /// The two ways a document can say "check nothing" (§5.4c) read
+    /// differently to somebody looking for the line that says it: one is on
+    /// the fn, the other on the component above it.
+    #[test]
+    fn an_empty_checks_list_says_which_line_it_was_written_on() {
+        let lib = "pub fn discount(pct: u32) -> u32 {\n    \
+                   ply::unresolved!(147, \"employee discount undecided\");\n}\n";
+        let own = crate_with(
+            lib,
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      discount:\n        checks: []\n",
+        );
+        assert_eq!(
+            items(&worklist_crate(own.path()).unwrap())[0].blocking,
+            "§5.6 caps `demo::discount` at check `test` while this stands; its `checks:` list is \
+             empty, so nothing runs against it."
+        );
+
+        let inherited = crate_with(
+            lib,
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: []\n    fns:\n      discount: {}\n",
+        );
+        assert_eq!(
+            items(&worklist_crate(inherited.path()).unwrap())[0].blocking,
+            "§5.6 caps `demo::discount` at check `test` while this stands; the component `demo` \
+             declares an empty list as the default for everything inside it, so nothing runs \
+             against it."
         );
     }
 
