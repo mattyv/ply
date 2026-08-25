@@ -78,6 +78,12 @@ pub struct Diagnostic {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_span: Option<Span>,
+    /// §5: a schema violation carries "the JSON-pointer path" into the
+    /// document — `/components/pricing/fns/quote/ensure`. Present on
+    /// `E0201`/`E0204`, absent on everything else, since a diagnostic about
+    /// a *function* points at source, not at YAML.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pointer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counterexample: Option<Counterexample>,
     /// §8's non-result MUST: `timeout`/`unsupported`/`engine-missing` (and,
@@ -128,12 +134,37 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
+/// One tier of what a command checks, and what that tier found or why it
+/// found nothing.
+#[derive(Debug, Clone, Serialize)]
+pub struct Tier {
+    pub tier: String,
+    pub detail: String,
+}
+
+/// What this run actually covered, and what it did not.
+///
+/// §6 lists four tiers for `check` — schema, anchors, staleness,
+/// architecture — and two of them do not exist yet. A command that only
+/// reports findings lets a clean run read as full coverage, which is the
+/// same failure as an absence of evidence reported as a pass (§1). So the
+/// envelope carries the gaps as data, and the human surface prints them.
+///
+/// Absent on `verify`, whose envelope is unchanged.
+#[derive(Debug, Clone, Serialize)]
+pub struct Coverage {
+    pub checked: Vec<Tier>,
+    pub not_checked: Vec<Tier>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Envelope {
     pub command: String,
     pub ply_version: String,
     pub root: Node,
     pub diagnostics: Vec<Diagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<Coverage>,
 }
 
 impl Envelope {

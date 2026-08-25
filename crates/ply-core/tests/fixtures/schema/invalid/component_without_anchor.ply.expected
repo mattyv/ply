@@ -1,0 +1,1 @@
+E0201: a component needs its `anchor:` line, and this one has none. The crate or crate::module::path this component is. Every component anchors to real code; an unresolvable anchor is E0301. Found at `components.pricing` in ply.yaml.

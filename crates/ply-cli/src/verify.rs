@@ -253,6 +253,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     check: "mutate".into(),
                     node_id: node_id.clone(),
                     title: msg,
+                    pointer: None,
                     primary_span: None,
                     counterexample: None,
                     fixes: vec![
@@ -448,6 +449,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         ply_version: PLY_VERSION.into(),
         root,
         diagnostics,
+        coverage: None,
     })
 }
 
@@ -592,6 +594,7 @@ fn unclaimed_callee_diag(
              code nobody vouched for. So this check earned no evidence at all -- the verdict is \
              `unclaimed`, never `{check_label}`, and never a violation. (W0512, §5.5)"
         ),
+        pointer: None,
         primary_span: None,
         counterexample: None,
         fixes: vec![
@@ -651,6 +654,7 @@ fn unreadable_callee_diag(
              verdict is `unclaimed`, never `{check_label}`. (W0513, §5.5)",
             list = named.join(", ")
         ),
+        pointer: None,
         primary_span: None,
         counterexample: None,
         fixes: vec![
@@ -702,6 +706,7 @@ fn conditional_verdict_diag(
              owed evidence rather than settled: an assumed contract nobody exercises is green paint. \
              (W0511, §5.5)"
         ),
+        pointer: None,
         primary_span: None,
         counterexample: None,
         fixes: vec![
@@ -753,6 +758,7 @@ fn cross_crate_claim_diag(node_id: &str, fn_name: &str, anchor: &str) -> Diagnos
              declares is still read: that is how a callee outside this crate gets a contract Ply can \
              assume at the boundary (§5.5). (W0303)"
         ),
+        pointer: None,
         primary_span: None,
         counterexample: None,
         fixes: vec![
@@ -803,6 +809,7 @@ fn unstubbable_callee_diag(
              `{check_label}`. (W0512, §5.5)",
             list = named.join(", ")
         ),
+        pointer: None,
         primary_span: None,
         counterexample: None,
         fixes: vec![Fix {
@@ -850,6 +857,7 @@ fn declared_contract_not_anded_diag(node_id: &str, fn_name: &str) -> Diagnostic 
              checked `{fn_name}` against its inline `#[ply::requires]`/`#[ply::ensures]` only. \
              (W0510)"
         ),
+        pointer: None,
         primary_span: None,
         counterexample: None,
         fixes: vec![Fix {
@@ -963,6 +971,7 @@ fn run_fn_checks(
                         "`{fn_name}` declares `prove`, but Ply's Verus adapter does not exist yet (M7) -- \
                          this is reported as a missing engine, never as a failure of the check itself."
                     ),
+                    pointer: None,
                     primary_span: None,
                     counterexample: None,
                     fixes: vec![
@@ -1018,6 +1027,7 @@ fn run_fn_checks(
                      postcondition to check against, so nothing was run. Add an `#[ply::ensures]` \
                      clause naming what `{fn_name}` promises about its result."
                 ),
+                pointer: None,
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![
@@ -1101,6 +1111,7 @@ fn run_fn_checks(
                      pass on the real code -- and `{fn_name}`'s own `test`/`fuzz` check did not. Fix that \
                      check first; this run says nothing either way about spec strength."
                 ),
+                pointer: None,
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![
@@ -1155,6 +1166,7 @@ fn unresolved_anchor_diag(
         check: check_label.into(),
         node_id: node_id.into(),
         title: format!("Ply could not find the function `{fn_name}` this claim anchors to. {err}"),
+        pointer: None,
         primary_span: None,
         counterexample: None,
         fixes: vec![],
@@ -1202,6 +1214,7 @@ fn unsupported_shape_diag(node_id: &str, fn_name: &str, cf: &ContractFn) -> Diag
         check: "".into(),
         node_id: node_id.into(),
         title,
+        pointer: None,
         primary_span: None,
         counterexample: None,
         fixes,
@@ -1345,6 +1358,7 @@ fn run_bounded_check(
                 check: check_label,
                 node_id: node_id.into(),
                 title: kani_timeout_title(fn_name, engine_timeout_secs, &generated.stubbed),
+                pointer: None,
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![
@@ -1382,6 +1396,7 @@ fn run_bounded_check(
                 check: check_label,
                 node_id: node_id.into(),
                 title: format!("Ply's Kani adapter could not interpret Kani's output: {reason}"),
+                pointer: None,
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![],
@@ -1429,6 +1444,7 @@ fn run_bounded_check(
                              error rather than as a violation Ply cannot evidence ({e}). (X0901)",
                             list = unreadable.join(", ")
                         ),
+                        pointer: None,
                         primary_span: None,
                         counterexample: None,
                         fixes: vec![Fix {
@@ -1474,6 +1490,7 @@ fn run_bounded_check(
                      -- a postcondition is the guarantee a function makes about its return value, and \
                      Kani found a case where that guarantee does not hold. (K0502)"
                 ),
+                pointer: None,
                 primary_span: None,
                 counterexample: Some(Counterexample {
                     inputs,
@@ -1597,6 +1614,7 @@ fn run_fuzz_and_test_checks(
                     "proptest could not finish {n} cases for `{fn_name}` within its {timeout}s time \
                      budget -- reported as `timeout`, never as a violation."
                 ),
+                pointer: None,
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![Fix { title: "lower fuzz(n)'s case count, or raise --engine-timeout".into(), edits: vec![] }],
@@ -1647,6 +1665,7 @@ fn run_fuzz_and_test_checks(
                      checked, which tripped proptest's own limit ({reason}). So this function has no \
                      fuzz evidence at all -- its verdict is `unclaimed`, not `fuzzed({n})`. (W0503)"
                 ),
+                pointer: None,
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![
@@ -1690,6 +1709,7 @@ fn run_fuzz_and_test_checks(
                          cases all come from the narrow corner of the input space the precondition \
                          allows, which is weaker evidence than {n} on its own suggests. (W0503)"
                     ),
+                    pointer: None,
                     primary_span: None,
                     counterexample: None,
                     fixes: vec![
@@ -1740,6 +1760,7 @@ fn run_fuzz_and_test_checks(
                      their {timeout}s budget, so the `test` check has no result -- reported as \
                      `timeout`, never as a violation."
                 ),
+                pointer: None,
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![
@@ -1771,6 +1792,7 @@ fn run_fuzz_and_test_checks(
                     failing_test_checks.len(),
                     failing_test_checks.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
                 ),
+                pointer: None,
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![],
@@ -1824,6 +1846,7 @@ fn harness_did_not_run_diag(
              compiles those entries exactly as written (they are ordinary Rust `==` expressions), so \
              a wrong type or a typo first shows up here. (X0901)"
         ),
+        pointer: None,
         primary_span: None,
         counterexample: None,
         fixes: vec![
@@ -1906,6 +1929,7 @@ fn render_fuzz_violation(
                      counterexample to show you. This is reported as a tool error, not as a violation: \
                      Ply never reports a broken promise it cannot show you the input for. (X0901)"
                 ),
+                pointer: None,
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![
@@ -1978,6 +2002,7 @@ fn render_fuzz_violation(
                      proptest shrank a failing case to this minimal example. (P0502)"
                         )
                     },
+                    pointer: None,
                     primary_span: None,
                     counterexample: Some(Counterexample {
                         inputs,
@@ -2020,6 +2045,7 @@ fn render_fuzz_violation(
                     check: check_label.into(),
                     node_id: node_id.into(),
                     title: unrenderable_inputs_title(fn_name, &contract_text, &cf.params),
+                    pointer: None,
                     primary_span: None,
                     counterexample: Some(Counterexample {
                         inputs,
@@ -2180,6 +2206,7 @@ fn run_mutate_check(
                      declares produced no evidence, so the run does not pass -- it exits 3, the \
                      code §6 reserves for an explicitly requested check with no engine behind it."
                 ),
+                pointer: None,
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![Fix {
@@ -2235,6 +2262,7 @@ fn run_mutate_check(
                             "`{fn_name}`'s `mutate` check produced no viable mutants to test against -- \
                              this is not evidence of a strong spec, just an absence of a signal either way."
                         ),
+                        pointer: None,
                         primary_span: None,
                         counterexample: None,
                         fixes: vec![
@@ -2276,6 +2304,7 @@ fn run_mutate_check(
                             o.missed.len(),
                             o.missed.join("; ")
                         ),
+                        pointer: None,
                         primary_span: None,
                         counterexample: None,
                         fixes: vec![Fix {
@@ -2308,6 +2337,7 @@ fn run_mutate_check(
                          crate). Nothing is known about how many of those bugs the spec would have \
                          caught -- this is reported as an exhausted run, never as a weak spec. (M0601)"
                     ),
+                    pointer: None,
                     primary_span: None,
                     counterexample: None,
                     fixes: vec![
@@ -2346,6 +2376,7 @@ fn run_mutate_check(
                     title: format!(
                         "Ply's cargo-mutants adapter could not interpret its output: {reason}"
                     ),
+                    pointer: None,
                     primary_span: None,
                     counterexample: None,
                     fixes: vec![],

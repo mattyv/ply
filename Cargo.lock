@@ -242,6 +242,7 @@ dependencies = [
  "indexmap",
  "ply-core",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

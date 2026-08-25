@@ -136,6 +136,30 @@ pub fn code_path_pattern() -> &'static str {
     pattern("/$defs/code_path")
 }
 
+/// The keys `/$defs/{level}`'s `required` array names, and for each the
+/// schema's own `description` of it — so a "this is missing" diagnostic
+/// explains what the key is for without a second copy of that sentence.
+fn required_keys(level: Level) -> Vec<(String, String)> {
+    let def = schema()
+        .pointer(level.definition_pointer())
+        .expect("every level has a schema definition");
+    let Some(required) = def.get("required").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    required
+        .iter()
+        .filter_map(Value::as_str)
+        .map(|k| {
+            let why = def
+                .pointer(&format!("/properties/{k}/description"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            (k.to_string(), why)
+        })
+        .collect()
+}
+
 fn pattern(def_pointer: &str) -> &'static str {
     schema()
         .pointer(&format!("{def_pointer}/pattern"))
@@ -229,6 +253,15 @@ fn violation(code: &'static str, pointer: String, message: String) -> SchemaViol
 /// duplicate names or ids (`E0202`/`E0205`, which need the whole merged
 /// tree). Each of those has a diagnostic that can say *where*, which a
 /// pointer-only schema pass cannot.
+/// [`validate`] over raw document text. `Err` carries the YAML parser's own
+/// message: a document that is not YAML has no structure to report findings
+/// about, and that is a different failure from a document that parses and is
+/// wrong.
+pub fn validate_text(text: &str) -> Result<Vec<SchemaViolation>, String> {
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
+    Ok(validate(&value))
+}
+
 pub fn validate(doc: &serde_yaml_ng::Value) -> Vec<SchemaViolation> {
     let mut out = Vec::new();
     let Some(map) = doc.as_mapping() else {
@@ -455,6 +488,8 @@ fn check_enum_list(
     }
 }
 
+/// Both halves of a level's key contract: nothing unknown (`E0204`) and
+/// nothing required missing (`E0201`).
 fn check_keys(
     value: &serde_yaml_ng::Value,
     level: Level,
@@ -464,6 +499,27 @@ fn check_keys(
     let Some(map) = value.as_mapping() else {
         return;
     };
+    // The document's own `ply:` requirement has a bespoke sentence (there is
+    // exactly one of it, and "add `ply: 1` as the first line" is more use
+    // than a generic phrasing), so it is handled in `validate` instead.
+    if level != Level::Document {
+        for (key, why) in required_keys(level) {
+            if map.get(&key).is_some() {
+                continue;
+            }
+            let at = format!("{pointer}/{key}");
+            out.push(violation(
+                "E0201",
+                at.clone(),
+                format!(
+                    "{level_name} needs its `{key}:` line, and this one has none. {why} Found \
+                     at `{loc}` in ply.yaml.",
+                    level_name = level.name(),
+                    loc = dotted(pointer),
+                ),
+            ));
+        }
+    }
     let known = known_keys(level);
     for key in map.keys() {
         let Some(name) = key.as_str() else { continue };

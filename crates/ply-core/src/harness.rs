@@ -421,6 +421,29 @@ impl ContractFn {
 /// Only top-level free functions are supported in this slice (no `impl`
 /// methods, no nested modules) -- the full extractor (§4's `extract/`
 /// module) is out of scope.
+/// Every free function declared at the top level of `src_path`, in source
+/// order — the item index §5.2 wants behind `E0301`'s "nearest-name
+/// suggestions".
+///
+/// Deliberately the *same* set [`discover_fn`] searches, not a wider one: a
+/// suggestion naming a function `discover_fn` would then fail to find would
+/// be worse than no suggestion. Functions inside modules are not here for
+/// the same reason they are not there.
+pub fn top_level_fn_names(src_path: &Path) -> Result<Vec<String>> {
+    let src = std::fs::read_to_string(src_path)
+        .with_context(|| format!("reading source at {}", src_path.display()))?;
+    let file = syn::parse_file(&src)
+        .with_context(|| format!("parsing source at {}", src_path.display()))?;
+    Ok(file
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(f) => Some(f.sig.ident.to_string()),
+            _ => None,
+        })
+        .collect())
+}
+
 pub fn discover_fn(src_path: &Path, fn_name: &str) -> Result<ContractFn> {
     let src = std::fs::read_to_string(src_path)
         .with_context(|| format!("reading source at {}", src_path.display()))?;

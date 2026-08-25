@@ -878,6 +878,7 @@ No streaming, no IDE integration, no multi-fn synthesis in v1.
 
 ```
 cargo ply check              # schema + anchors + staleness + architecture. Fast, no engines.
+                             # IMPLEMENTED: schema + anchors only (see below).
 cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts
                              # (skips fingerprint-fresh passes, D14; --force reruns)
 cargo ply tree               # verdict tree, worst-of aggregation, assumption chains
@@ -889,6 +890,24 @@ cargo ply doctor             # engine presence + versions vs pins; prints the ex
 cargo ply synth <fn>         # M6
 cargo ply skill              # (re)generate docs/PLY.skill.md from schema + diag registry
 ```
+
+**`check` implements two of its four tiers (2026-08-25, Phase 1a), and says so in its own
+output.** Schema (the document against `schema/ply.schema.json` — `E0201`, `E0204` — then
+every document-local rule that needs no code behind the anchors) and anchors (every fn
+claim resolved through the same `discover_fn` `verify` uses, so the two commands never
+disagree about which claims point at real code; `E0301` names the nearest item-index
+name, and where the `use`-following resolver can see the function somewhere this slice
+cannot verify from, the diagnostic says *that* instead of "not found"). Staleness needs
+`ply.lock`, which nothing writes yet; the architecture tier is M2. Both gaps are carried
+in the `--json` envelope as a `coverage.not_checked` array and printed under "What this
+command did NOT check", because a command that reports only findings lets a clean run
+read as full coverage — the same failure as an absence of evidence reported as a pass
+(§1). `check` runs no engines, so every node in its envelope carries the verdict
+`unclaimed`: that is the command reporting no evidence of its own, not a judgement about
+the code, and the human surface says so in as many words. `check`'s exit codes are 0
+clean or advisory-only, 1 any error-severity finding, 2 tool error; `--fail-on` is not
+wired to it yet (its `evidence` default is meaningless for a command that gathers none),
+and neither are `--only-changed` or `--engine-timeout`.
 
 Global flags: `--json` (schema §8, the agent surface — every command supports it),
 `--engine-timeout=<s>` (shape-aware default, not a flat number — see below),

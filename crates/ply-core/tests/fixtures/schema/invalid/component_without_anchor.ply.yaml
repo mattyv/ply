@@ -1,0 +1,4 @@
+ply: 1
+components:
+  pricing:
+    checks: [bounded(2)]

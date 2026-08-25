@@ -1,3 +1,4 @@
+mod check;
 mod verify;
 
 use std::path::PathBuf;
@@ -20,6 +21,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Validate ply.yaml and the anchors it points at (§6). Fast, no engines.
+    Check {
+        /// Path to the crate directory containing `ply.yaml`.
+        path: PathBuf,
+    },
     /// Run checks via engines and write cex artifacts (§6).
     Verify {
         /// Path to the crate directory containing `ply.yaml`.
@@ -73,6 +79,15 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse_from(raw);
 
     match cli.command {
+        Commands::Check { path } => {
+            let report = check::check_crate(&path)?;
+            if cli.json {
+                println!("{}", report.envelope.to_json_pretty());
+            } else {
+                check::print_human(&report);
+            }
+            std::process::exit(report.exit_code());
+        }
         Commands::Verify {
             path,
             engine_timeout,
@@ -229,6 +244,7 @@ mod tests {
                 children,
             },
             diagnostics: vec![],
+            coverage: None,
         }
     }
 
