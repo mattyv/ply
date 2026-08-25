@@ -27,6 +27,18 @@ fn a_harness_that_fails_to_compile_is_a_tool_error_not_a_clean_pass() {
     );
     assert_eq!(verdict, "tool_error", "envelope: {}", run.json);
 
+    // The node also used to carry `evidence: { engine: "proptest", seed,
+    // cases: 64 }` -- for a harness that never compiled and ran zero cases
+    // (adversarial review of the post-004 fixes, D5). §1 asks a verdict to
+    // name the evidence that produced it; this verdict has none, so the
+    // honest envelope has no evidence block at all.
+    let fn_node = &run.json["root"]["children"][0]["children"][0];
+    assert!(
+        fn_node["evidence"].is_null(),
+        "nothing ran, so there is no run to name -- an `evidence` block here describes a fuzz \
+         run that never happened: {fn_node}"
+    );
+
     let diagnostics = run.json["diagnostics"].as_array().unwrap();
     assert!(
         !diagnostics.is_empty(),

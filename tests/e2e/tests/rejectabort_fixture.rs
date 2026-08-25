@@ -22,6 +22,24 @@ fn a_run_proptest_abandoned_earns_no_fuzz_evidence() {
     );
     assert_eq!(verdict, "unclaimed", "envelope: {}", run.json);
 
+    // §1: "every verdict must name the evidence that produced it concretely
+    // enough to reproduce it". The `evidence` block said `cases: 256` for
+    // this run too -- attached because `fuzz(256)` was *declared*, not
+    // because 256 cases were reached (adversarial review of the post-004
+    // fixes, D5). The count that goes in the envelope is the count proptest
+    // actually accepted, which is what "cases the engine reached" means.
+    let fn_node = &run.json["root"]["children"][0]["children"][0];
+    let cases = fn_node["evidence"]["cases"].as_u64();
+    assert!(
+        cases != Some(256),
+        "a run proptest abandoned reached nowhere near the 256 cases it was asked for, and the \
+         envelope must not report the declared number as if it had: {fn_node}"
+    );
+    assert!(
+        fn_node["evidence"]["seed"].is_string(),
+        "the seed is still real -- it is what this run used, and it is what replays it: {fn_node}"
+    );
+
     let diagnostics = run.json["diagnostics"].as_array().unwrap();
     let warnings: Vec<&serde_json::Value> = diagnostics
         .iter()

@@ -105,7 +105,13 @@ pub struct Evidence {
     /// `cargo ply verify <path> --seed <hex>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<String>,
-    /// Cases the engine was asked for and reached.
+    /// Cases the engine actually reached -- never the number the checks list
+    /// asked for. Absent when the run happened but the count is not the
+    /// declared one and not knowable either: a run cut short by its time
+    /// budget, or stopped at the first failing case. The whole `Evidence`
+    /// block is absent when no run happened at all (2026-08-25: it used to
+    /// be attached whenever `fuzz(n)` was declared, so a harness that never
+    /// compiled reported `cases: n` for a run of zero).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cases: Option<u32>,
 }

@@ -1085,10 +1085,20 @@ Every command emits one envelope:
 `{ "command": "...", "ply_version": "...", "root": <node tree §7>, "diagnostics": [<Diagnostic>...] }`.
 Stability rule: additive changes only after M3; the goldens in tests/ui are the contract.
 
-A node whose verdict came from a sampling engine additionally carries
-`evidence: { "engine": "proptest", "seed": "<64 hex chars>", "cases": 256 }` — §1's
-requirement that every verdict name what produced it concretely enough to reproduce it.
-`cargo ply verify <path> --seed <hex>` replays that exact run.
+A node whose verdict came from a sampling engine that **actually ran** additionally
+carries `evidence: { "engine": "proptest", "seed": "<64 hex chars>", "cases": 256 }` —
+§1's requirement that every verdict name what produced it concretely enough to reproduce
+it. `cargo ply verify <path> --seed <hex>` replays that exact run.
+
+`evidence` describes a run that happened, never a run that was declared. It is **absent**
+when nothing ran — an `unsupported` shape, a harness that failed to compile — and `cases`
+alone is absent when the run happened but its count is neither the declared number nor
+knowable: a run cut short by its time budget, or stopped at its first failing case.
+`cases` is what the engine reached, so on a run proptest abandoned to its own reject limit
+it is the small number it accepted, beside a verdict of `unclaimed`. (Corrected
+2026-08-25: `evidence` was attached whenever `fuzz(n)` was declared, so a check that never
+ran a single case still reported `cases: n` — adversarial review of the post-004 fixes,
+D5. The declared count remains visible on the diagnostic's `check` field.)
 
 One Diagnostic schema for all engines:
 

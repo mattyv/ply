@@ -890,6 +890,7 @@ fn run_fn_checks(
     let mut diagnostics = Vec::new();
     let mut labels: Vec<String> = Vec::new();
     let mut statuses: Vec<String> = Vec::new();
+    let mut fuzz_evidence: Option<Evidence> = None;
 
     for check in checks {
         match check {
@@ -993,7 +994,7 @@ fn run_fn_checks(
             });
             labels.push("unsupported".into());
         } else if let Some((harness_pkg, _)) = harness_info {
-            let (fuzz_label, test_label, mut d) = run_fuzz_and_test_checks(
+            let mut run = run_fuzz_and_test_checks(
                 cf,
                 src_dir,
                 lib_path,
@@ -1006,12 +1007,21 @@ fn run_fn_checks(
                 seed,
                 opts,
             )?;
-            diagnostics.append(&mut d);
-            if let Some(l) = fuzz_label {
+            diagnostics.append(&mut run.diagnostics);
+            if let Some(l) = run.fuzz_label {
                 labels.push(l);
             }
-            if let Some(l) = test_label {
+            if let Some(l) = run.test_label {
                 labels.push(l);
+            }
+            // §1: a verdict names the evidence that produced it. Only a run
+            // that happened has any to name.
+            if run.fuzz_ran && wants_fuzz.is_some() {
+                fuzz_evidence = Some(Evidence {
+                    engine: "proptest".into(),
+                    seed: Some(ply_core::fuzz_gen::seed_hex(seed)),
+                    cases: run.fuzz_cases_reached,
+                });
             }
         }
     }
@@ -1061,23 +1071,23 @@ fn run_fn_checks(
         }
     }
 
-    // The fuzz tier's verdict names the run that produced it (§1): seed
-    // plus the case count actually asked for. Without it, `fuzzed(256)`
-    // describes a run nobody can repeat, and the run that missed a bug is
-    // indistinguishable from one that could not have found it.
-    let evidence = wants_fuzz.map(|n| Evidence {
-        engine: "proptest".into(),
-        seed: Some(ply_core::fuzz_gen::seed_hex(seed)),
-        cases: Some(n),
-    });
-
+    // The fuzz tier's verdict names the run that produced it (§1): the seed
+    // it used, and the number of cases it actually reached. Without it,
+    // `fuzzed(256)` describes a run nobody can repeat, and the run that
+    // missed a bug is indistinguishable from one that could not have found
+    // it. It was first written as `wants_fuzz.map(..)` -- attached whenever
+    // `fuzz(n)` was *declared* -- so a check that was refused as
+    // `unsupported`, abandoned by proptest, timed out, or died in a harness
+    // that never compiled still reported `cases: n` for a run of zero
+    // (adversarial review of the post-004 fixes, D5). `evidence` is built
+    // where the run happens, or not at all.
     Ok((
         Node {
             id: fn_name.to_string(),
             kind: "fn".into(),
             verdict,
             statuses,
-            evidence,
+            evidence: fuzz_evidence,
             children: vec![],
         },
         diagnostics,
@@ -1446,6 +1456,20 @@ fn run_bounded_check(
     }
 }
 
+/// What one invocation of the generated harness crate established. The two
+/// fields beyond the labels exist because §8's `evidence` block must
+/// describe a run that happened: `fuzz_ran` says whether the harness
+/// executed at all, and `fuzz_cases_reached` is the number of cases proptest
+/// actually accepted and checked -- never the number the checks list asked
+/// for (adversarial review of the post-004 fixes, D5).
+struct HarnessRun {
+    fuzz_label: Option<String>,
+    test_label: Option<String>,
+    fuzz_ran: bool,
+    fuzz_cases_reached: Option<u32>,
+    diagnostics: Vec<Diagnostic>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_fuzz_and_test_checks(
     cf: &ContractFn,
@@ -1459,7 +1483,7 @@ fn run_fuzz_and_test_checks(
     wants_test: bool,
     seed: &[u8; 32],
     opts: &VerifyOptions,
-) -> Result<(Option<String>, Option<String>, Vec<Diagnostic>)> {
+) -> Result<HarnessRun> {
     let timeout = opts
         .engine_timeout_secs
         .unwrap_or_else(default_secondary_engine_timeout_secs);
@@ -1470,6 +1494,7 @@ fn run_fuzz_and_test_checks(
     let fuzz_test_name = format!("{fn_name}_harness::ply_fuzz_{fn_name}");
     let mut fuzz_label = None;
     let mut test_label = None;
+    let mut fuzz_cases_reached: Option<u32> = None;
 
     // The harness never ran at all (2026-08-24 M4 review, D1 -- the review's
     // most serious finding, and this file's own fail-open bug one level up
@@ -1502,15 +1527,18 @@ fn run_fuzz_and_test_checks(
                 cause.as_deref(),
             ));
         }
-        return Ok((
-            wants_fuzz.map(|_| "tool_error".to_string()),
-            if wants_test {
+        return Ok(HarnessRun {
+            fuzz_label: wants_fuzz.map(|_| "tool_error".to_string()),
+            test_label: if wants_test {
                 Some("tool_error".to_string())
             } else {
                 None
             },
+            // Zero cases ran, so there is no run to name in §8's `evidence`.
+            fuzz_ran: false,
+            fuzz_cases_reached: None,
             diagnostics,
-        ));
+        });
     }
 
     if let Some(n) = wants_fuzz {
@@ -1600,6 +1628,10 @@ fn run_fuzz_and_test_checks(
                 open_item: Some("no_cases_ran".into()),
             });
             fuzz_label = Some("unclaimed".into());
+            // The cases proptest really did check before giving up. It is a
+            // small number beside a `fuzz(256)` declaration, and that is the
+            // point: it is the one that happened.
+            fuzz_cases_reached = Some(accepted);
         } else {
             if let Some((_, detail)) = fuzz_engine::parse_high_reject_marker(&run.combined_output) {
                 diagnostics.push(Diagnostic {
@@ -1643,6 +1675,7 @@ fn run_fuzz_and_test_checks(
             // `rank()`/`combine_fn_check_verdicts` key off the `fuzzed`
             // prefix.
             fuzz_label = Some(format!("fuzzed({n})"));
+            fuzz_cases_reached = Some(n);
         }
     }
 
@@ -1708,7 +1741,13 @@ fn run_fuzz_and_test_checks(
         }
     }
 
-    Ok((fuzz_label, test_label, diagnostics))
+    Ok(HarnessRun {
+        fuzz_label,
+        test_label,
+        fuzz_ran: true,
+        fuzz_cases_reached,
+        diagnostics,
+    })
 }
 
 /// The `X0901` a check earns when its generated harness never ran a single

@@ -64,7 +64,18 @@ fn a_panicking_body_earns_a_violation_with_the_input_that_crashes_it() {
     let fn_node = &run.json["root"]["children"][0]["children"][0];
     let seed = fn_node["evidence"]["seed"].as_str().unwrap();
     assert_eq!(seed.len(), 64, "node: {fn_node}");
-    assert_eq!(fn_node["evidence"]["cases"], 256, "node: {fn_node}");
+    // ...and `cases` is *absent*, deliberately (changed 2026-08-25,
+    // adversarial review D5). This assertion used to read `cases == 256`,
+    // which described a run that did not happen: proptest stops at the first
+    // failing case and shrinks from there, so a violation never reaches the
+    // declared count. The number asked for is still on the diagnostic's
+    // `check` field (`fuzz(256)`); what the envelope must not do is report it
+    // as a count the engine reached.
+    assert!(
+        fn_node["evidence"]["cases"].is_null(),
+        "a violation stopped the run early -- the declared count is not a count of cases run: \
+         {fn_node}"
+    );
 
     assert_eq!(run.exit_code, Some(1), "a violation fails the run (§6)");
 }
