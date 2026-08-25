@@ -100,7 +100,7 @@ reading past that line.
 | g2 | same claim, **no stub**: Kani descends into the real `BTreeMap`-behind-`OnceLock` lookup | TIMEOUT@300s | — | 340s |
 | g3 | same stub with the declared contract's one `kani::assume` put back (§5.5's second branch) | SUCCESSFUL | 148.62s | 150s |
 | **g4** | `approve_withdrawal` — the **transitive** crossing; it never names `ledger` | **SUCCESSFUL** | 212.63s | 215s |
-| g5 | `withdraw` — `&mut ledger::Ledger` | **no harness exists**: `error[E0277]: the trait bound ledger::Ledger: kani::Arbitrary is not satisfied` | — | 0s |
+| g5 | `withdraw` — `&mut ledger::Ledger` | **no harness exists**: `error[E0277]: the trait bound ledger::Ledger: kani::Arbitrary is not satisfied` | — | 1s |
 
 ### Group B — the six naturally-written callers
 
@@ -111,7 +111,7 @@ reading past that line.
 | n2 | `line_total_cents` — units × a returned price | SUCCESSFUL 17.76s | **FAILED** 42.05s | `unit_price_cents = 2_813_465` |
 | n3 | `top_band_price_cents` — index from a returned length | SUCCESSFUL 27.97s | **FAILED** 46.51s | `band_count = 0` |
 | n4 | `batches_needed` — ceiling-divide by a returned divisor | SUCCESSFUL 38.05s | **FAILED** 67.25s | `batch_size = 4_294_574_072` |
-| n5 | `manifest_weight_grams` — accumulate over a returned count | SUCCESSFUL 22.18s | **TIMEOUT@300s** | *none — no witness at all* |
+| n5 | `manifest_weight_grams` — accumulate over a returned count | SUCCESSFUL 22.18s | **TIMEOUT@300s** (wall 301s) | *none — no witness at all* |
 | n6 | `remaining_limit_cents` — subtract against a returned limit | SUCCESSFUL 17.01s | **FAILED** 27.60s | `spend_limit_cents = 183_558_144` |
 
 ### Mutation and sensitivity rows
@@ -152,9 +152,11 @@ the plan's own stated risk, and the generalisation does not survive.
 
 ### 2. Why the naturally-written callers fail, and why that is not a fixable sample
 
-They fail on **arithmetic safety, not on their postconditions**. Of the six, four fail on
-a panic check Rust itself inserts — multiply/add/subtract overflow, divide-by-zero, index
-out of bounds — before any declared `ensures` is reached. That is the pattern:
+They fail mostly on **arithmetic safety, not on their postconditions**. Of the five that
+produced a counterexample, three (n1f, n3, n4) fail *only* on panic checks Rust itself
+inserts — multiply/add/subtract overflow, divide-by-zero, index out of bounds — before any
+declared `ensures` is reached; a fourth (n2) fails on both a panic check and its
+postcondition; only n6 fails purely on what it promised. That is the pattern:
 
 > An ordinary caller is defensive about *meaning* and trusting about *magnitude*. It
 > checks whether the number is sensible for the business (n6 guards its subtraction, n4
