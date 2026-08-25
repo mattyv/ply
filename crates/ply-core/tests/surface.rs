@@ -141,6 +141,27 @@ fn an_unparseable_contract_yields_no_helpers() {
     assert!(surface::contract_helpers("this is not rust ((").is_empty());
 }
 
+/// The same contract clause can be written twice — once as a
+/// `#[ply::requires]` attribute and once in `ply.yaml` — and the two
+/// spellings do not match textually: the attribute comes back from the
+/// parser token-spaced (`bps_ok (bps)`) while the document holds what the
+/// user typed. Comparing the raw strings made `audit` list one assumption
+/// as two, which is how a list of things a codebase trusts starts
+/// overstating itself.
+#[test]
+fn two_spellings_of_one_expression_are_recognised_as_the_same_clause() {
+    assert!(surface::same_expression("bps_ok (bps)", "bps_ok(bps)"));
+    assert!(surface::same_expression("a  &&   b", "a && b"));
+    assert!(!surface::same_expression("tick > 0", "tick >= 0"));
+    // A difference inside a string literal is a real difference, which is
+    // why this compares parsed tokens rather than stripping whitespace.
+    assert!(!surface::same_expression("s == \"a b\"", "s == \"ab\""));
+    // Neither side parses: fall back to the strings themselves rather than
+    // calling two unrelated clauses equal.
+    assert!(surface::same_expression("((", "(("));
+    assert!(!surface::same_expression("((", "))"));
+}
+
 /// A crate with no `src/` at all is not a crash: `audit` runs on whatever
 /// it was pointed at.
 #[test]

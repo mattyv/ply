@@ -305,6 +305,32 @@ fn path_string(path: &syn::Path) -> String {
         .join("::")
 }
 
+/// Whether two contract clauses are the same expression, spelled two ways.
+///
+/// A clause can be written twice — once as a `#[ply::requires]` attribute
+/// and once in `ply.yaml` — and the two strings do not match: the attribute
+/// comes back from the parser token-spaced (`bps_ok (bps)`) while the
+/// document holds what the user typed. Comparing raw strings made `audit`
+/// report one environmental assumption as two, which is a trust surface
+/// overstating itself.
+///
+/// The comparison is over parsed tokens, not over whitespace-stripped text,
+/// so a difference inside a string literal stays a difference. When either
+/// side does not parse, the strings themselves decide — two clauses Ply
+/// cannot read are not thereby the same clause.
+pub fn same_expression(a: &str, b: &str) -> bool {
+    match (
+        syn::parse_str::<syn::Expr>(a),
+        syn::parse_str::<syn::Expr>(b),
+    ) {
+        (Ok(ea), Ok(eb)) => {
+            use quote::ToTokens;
+            ea.to_token_stream().to_string() == eb.to_token_stream().to_string()
+        }
+        _ => a == b,
+    }
+}
+
 /// The helper functions one contract expression calls (§5.4a).
 ///
 /// Two names that look like calls are deliberately not helpers: `old(expr)`

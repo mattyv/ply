@@ -226,10 +226,14 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
         // world outside. Deduplicated across the two places a contract can
         // be written, since one clause written twice is still one assumption.
         if !c.claim.entry.is_empty() {
+            // The document's spelling wins: it is what the user typed,
+            // while the inline attribute comes back from the parser
+            // token-spaced (`bps_ok (bps)`). Comparing the raw strings
+            // listed one assumption twice.
             let mut clauses: Vec<String> = c.claim.requires.clone();
             if let Some(cf) = cf.as_ref()
                 && let Some((_, text)) = &cf.requires
-                && !clauses.iter().any(|r| r == text)
+                && !clauses.iter().any(|r| surface::same_expression(r, text))
             {
                 clauses.push(text.clone());
             }
@@ -883,6 +887,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// One clause, written in both places a contract can live, is one
+    /// assumption. The two spellings do not match textually — the inline
+    /// attribute comes back token-spaced — and comparing the raw strings
+    /// listed it twice, which is a trust surface overstating itself. Found
+    /// by reading the output, not by a failing assertion.
+    #[test]
+    fn a_clause_written_in_both_places_is_one_assumption_not_two() {
+        let dir = crate_with(
+            "pub fn bps_ok(bps: u32) -> bool { bps <= 10_000 }\n\
+             #[ply::requires(bps_ok(bps))]\n\
+             pub fn fee(bps: u32) -> u32 { bps }\n",
+            "ply: 1\nexternals:\n  venue:\n    note: \"the exchange: accepts orders, returns fills\"\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      fee:\n        checks: [test]\n        requires:\n          - \"bps_ok(bps)\"\n        entry: [venue]\n",
+        );
+        let report = audit_crate(dir.path()).unwrap();
+        let item = only(&report, "environmental_assumption");
+        assert_eq!(
+            item.subject, "bps_ok(bps)",
+            "the spelling that survives is the one the user typed in ply.yaml, not the \
+             parser's token rendering"
+        );
     }
 
     /// §5.7: a body the model wrote, from ply.yaml's `mode: synth` and from

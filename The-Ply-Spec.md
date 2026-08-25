@@ -862,6 +862,15 @@ always, dev and prod alike. Simple, honest, greppable. `ply worklist` lists ever
 (macro or `ply.yaml` registry) with its span, enclosing component, and blocking status.
 A fn containing `unresolved!` is capped at check `test`, flagged `W0521`.
 
+**Implemented 2026-08-25 (Phase 1b), with one half missing.** The macro exists in
+`ply-attrs` and expands exactly as stated; `worklist` lists markers from both sources,
+merged by id so one decision written in both places is one item, each carrying its
+`file:line:col`, the `component::fn` node it sits in (or the function alone, where no
+claim names it) and what it blocks. **The cap is not enforced**: nothing applies `W0521`,
+so `cargo ply verify` still runs whatever the claim asks for against a body that panics at
+the marker. `worklist` says so on every marker line and in its `coverage.not_checked`,
+which makes the gap visible rather than closed.
+
 ### 5.7 Synth mode (M6, experimental)
 
 `mode: synth` on a fn claim means the model writes the body. `cargo ply synth <fn>`:
@@ -1245,6 +1254,16 @@ One Diagnostic schema for all engines:
   "open_item": null
 }
 ```
+
+Two further top-level fields are **additive and command-specific** (2026-08-25, Phase 1b):
+`trust_surface`, an array of `{kind, subject, node_id, statuses, where?, detail}` emitted
+by `audit`, and `open_items`, an array of `{kind, id?, node_id, where?, blocking, detail}`
+emitted by `worklist`. Each is present only on its own command, and **absent is not the
+same as empty**: an empty array means the command looked and found nothing, while an
+absent one means it never got to look (a document that failed the schema). `detail` is the
+plain sentence the human surface prints; `statuses` carries the D6 names an item bears —
+`owed-evidence` on an assumption nothing has exercised, `staleness-unknown` on an
+attestation Ply cannot date.
 
 `kani_witness` (renamed from `kani_playback` — §8's stability rule permits this once,
 pre-M3) is present whenever the witness-extraction step ran: the exact failing input,
