@@ -303,6 +303,12 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         /// recorded result be reused, and what is a newly earned one
         /// stored under.
         inputs: FingerprintInputs,
+        /// Why the call walk was abandoned for this claim, when it was.
+        /// Deliberately *not* a fingerprint input: the scope itself already
+        /// is one, and the reason is derived from the same source, so
+        /// hashing it would only make a reworded sentence invalidate every
+        /// stored result.
+        widened_because: Option<String>,
         /// The checks as `ply.yaml` spells them, which is what a recorded
         /// verdict is checked against for possibility before it is trusted.
         check_spellings: Vec<String>,
@@ -550,6 +556,8 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 std::collections::BTreeSet::new()
             };
             let code = reach::code_scope(&mut resolver, &first_party, &cf.path, &stubbed);
+            // Taken before `code.units` is moved into the fingerprint below.
+            let widened_because = code.widened_because.clone();
             let check_spellings: Vec<String> = checks.iter().map(check_spelling).collect();
 
             let inputs = FingerprintInputs {
@@ -609,6 +617,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 boundary,
                 seed,
                 inputs,
+                widened_because,
                 check_spellings,
             });
         }
@@ -635,6 +644,11 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     if let Some(because) = record.displaced_by(&p.node_id, &p.inputs) {
                         not_carried_forward.push(ply_core::diag::NotCarriedForward {
                             node_id: p.node_id.clone(),
+                            widened_because: because
+                                .iter()
+                                .any(|b| b == "the code it runs")
+                                .then(|| p.widened_because.clone())
+                                .flatten(),
                             because,
                         });
                     }

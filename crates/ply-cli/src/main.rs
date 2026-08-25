@@ -283,9 +283,48 @@ fn tree_report(envelope: &ply_core::diag::Envelope) -> String {
                 join_plainly(&item.because)
             ));
         }
+        // Under the coarse mode "the code it runs" above means the whole
+        // crate, so those lines can fire for an edit in a function the claim
+        // never calls. Left unexplained that reads as Ply re-running for no
+        // reason. The reason is a property of the crate rather than of any
+        // one claim, so it is said once however many claims it displaced --
+        // the same paragraph twenty times is noise, not explanation.
+        let mut said: Vec<&str> = Vec::new();
+        for item in &envelope.not_carried_forward {
+            let Some(why) = item.widened_because.as_deref() else {
+                continue;
+            };
+            if said.contains(&why) {
+                continue;
+            }
+            said.push(why);
+            let (claims, plural) = claims_sharing(&envelope.not_carried_forward, why);
+            let (calls, they, them) = if plural {
+                ("call", "they", "them")
+            } else {
+                ("calls", "it", "it")
+            };
+            out.push_str(&format!(
+                "\n  For {claims}, \"the code it runs\" means every line of the crate, not \
+                 only the functions {they} {calls}, because {why}. So any edit in that crate \
+                 re-runs {them}, even an edit in code {they} never {calls}.\n"
+            ));
+        }
         out.push('\n');
     }
     out
+}
+
+/// The claims one widening reason displaced, named rather than counted:
+/// "for `billing::total`" beats "for 1 claim", and a person scanning the
+/// list above wants to match them up.
+fn claims_sharing(items: &[ply_core::diag::NotCarriedForward], why: &str) -> (String, bool) {
+    let names: Vec<String> = items
+        .iter()
+        .filter(|i| i.widened_because.as_deref() == Some(why))
+        .map(|i| format!("`{}`", i.node_id))
+        .collect();
+    (join_plainly(&names), names.len() > 1)
 }
 
 fn print_human(envelope: &ply_core::diag::Envelope) {

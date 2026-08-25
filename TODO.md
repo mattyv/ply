@@ -90,9 +90,17 @@ The review that forced it: `docs/review-result-reuse.md`.
       stored checks could never earn. A hash cannot defend the file against a text editor.
 - [ ] The fuzz engine's recorded version is the requirement written in the manifest, not
       the version actually resolved.
-- [ ] The coarse mode computes *why* it widened ("this crate defines a type, so a method
-      call could go anywhere") and does not print it. On a crate with types that would turn
-      "the code it runs changed" from true-but-puzzling into something a person can act on.
+- [x] **The coarse mode now explains itself** (`abc3723`). It already worked out why
+      it abandoned the call walk and kept it to itself, so a person who edited one function
+      and watched an unrelated claim re-run was told only "the code it runs changed" — true,
+      and useless. The run now names the construct that cost the walk and says the crate is
+      the unit: *"For `x` and `y`, \"the code it runs\" means every line of the crate, not
+      only the functions they call, because src/lib.rs declares an `impl` block for
+      `Scaler`, and Ply cannot tell by reading the source which of its bodies a method call
+      or an operator would run."* Said once per crate however many claims it displaced —
+      the first build repeated it per claim, which reading the real output caught — and
+      never printed for a bounded walk, where it would be false. Both of those are pinned
+      by tests, the second one negatively. New fixture `reusewiden` carries the shape.
 - [ ] Open question, deliberately left: whether every Ply release should invalidate every
       record. Fable's answer was yes — a hand-maintained "only when it matters" flag
       recreates the judgment call the design exists to eliminate. Not yet revisited.

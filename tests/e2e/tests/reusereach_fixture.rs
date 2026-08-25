@@ -234,3 +234,94 @@ fn editing_a_body_a_proof_descends_into_re_earns_the_proof() {
         second.json
     );
 }
+
+/// The coarse mode's honest price is that editing one claim re-runs its
+/// neighbours. Ply already works out *why* it widened -- it has to, to decide
+/// -- and until now kept it. "the code it runs changed" is true and useless
+/// when you did not touch anything that claim calls: the sentence a person can
+/// act on names the construct that cost them the walk.
+#[test]
+fn a_run_that_widened_the_walk_says_which_construct_cost_it() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("reusewiden");
+
+    run_verify(&cargo_ply, fixture.path(), 120);
+
+    let src = fixture.read_lib_rs();
+    let edited = src.replace(
+        "pub fn bumped(x: u32) -> u32 {\n    x + 1\n}",
+        "pub fn bumped(x: u32) -> u32 {\n    x + 2\n}",
+    );
+    assert_ne!(src, edited, "the edit must have landed");
+    fixture.write_lib_rs(&edited);
+
+    let out = std::process::Command::new(&cargo_ply)
+        .args(["verify", fixture.path().to_str().unwrap()])
+        .arg("--engine-timeout")
+        .arg("120")
+        .output()
+        .expect("spawning cargo-ply verify");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    assert!(
+        stdout.contains("reusewiden::halved"),
+        "the untouched claim is re-run under the coarse mode -- that is the whole point \
+         of explaining it: {stdout}"
+    );
+    assert!(
+        stdout.contains("declares an `impl` block for `Scaler`"),
+        "a person who edited `bumped` and watched `halved` re-run needs the construct \
+         named, not just \"the code it runs changed\": {stdout}"
+    );
+    assert!(
+        stdout.contains("means every line of the crate, not only the functions they call"),
+        "and needs telling that the whole crate is the unit now, so the re-run is \
+         explained rather than merely announced: {stdout}"
+    );
+    assert!(
+        stdout.contains("even an edit in code they never call"),
+        "the sentence has to close the loop the person actually noticed -- they edited \
+         something these claims do not call: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("means every line of the crate").count(),
+        1,
+        "the reason belongs to the crate, not to each claim: repeating the same paragraph \
+         once per displaced claim is noise, and on a crate with twenty claims it would \
+         bury the list it is explaining: {stdout}"
+    );
+}
+
+/// The explanation must stay rare. A bounded walk is the ordinary case, and
+/// a paragraph about widening printed when nothing widened would train the
+/// reader to skip the one that matters.
+#[test]
+fn an_ordinary_bounded_walk_is_re_run_without_the_widening_paragraph() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("reusehelper");
+
+    run_verify(&cargo_ply, fixture.path(), 120);
+    let src = fixture.read_lib_rs();
+    fixture.write_lib_rs(&src.replace(
+        "pub fn scale(x: u32) -> u32 {\n    x * 2\n}",
+        "pub fn scale(x: u32) -> u32 {\n    x * 4\n}",
+    ));
+
+    let out = std::process::Command::new(&cargo_ply)
+        .args(["verify", fixture.path().to_str().unwrap()])
+        .arg("--engine-timeout")
+        .arg("120")
+        .output()
+        .expect("spawning cargo-ply verify");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    assert!(
+        stdout.contains("the code it runs changed"),
+        "the helper edit must still displace the claim that calls it: {stdout}"
+    );
+    assert!(
+        !stdout.contains("means every line of the crate"),
+        "this crate's walk was bounded -- Ply hashed the helper because the claim really \
+         does call it, and saying the whole crate was hashed would be false: {stdout}"
+    );
+}

@@ -992,6 +992,25 @@ The same information is in `--json`, as `not_carried_forward`. A full-price re-r
 stated reason is exactly what this file exists to prevent, so it does not happen silently
 when a compiler or an engine updates under you.
 
+**If Ply could not follow your calls, it says so and names what stopped it.** Ply normally
+hashes only the functions a claim actually reaches. It cannot do that by reading source
+alone when a method call, a hand-written operator, a macro, or an attribute it does not
+recognise is in the way — which body those run depends on types. Rather than guess, it
+hashes the whole crate. Then "the code it runs changed" is true of an edit anywhere, and
+the run explains why:
+
+```
+  Checked again rather than carried forward from an earlier run, because what each one depended on has changed:
+    billing::tiered_fee — the code it runs changed since that result was recorded
+    billing::rounded — the function's own source and the code it runs changed since that result was recorded
+
+  For `billing::tiered_fee` and `billing::rounded`, "the code it runs" means every line of the crate, not only the functions they call, because src/lib.rs declares an `impl` block for `Ledger`, and Ply cannot tell by reading the source which of its bodies a method call or an operator would run. So any edit in that crate re-runs them, even an edit in code they never call.
+```
+
+It costs machine time and never correctness, and it is the common case in any crate with
+types. Said once per crate, however many claims it displaced, and never said at all when
+the calls were followed.
+
 To re-run everything from scratch, delete `ply.lock`. There is no `--force` flag.
 
 If `ply.lock` cannot be read — the likeliest cause is a merge conflict in a committed

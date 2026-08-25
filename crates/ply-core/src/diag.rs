@@ -283,6 +283,14 @@ pub struct NotCarriedForward {
     /// recorded, in plain words ("the code it runs", "the compiler and the
     /// build target").
     pub because: Vec<String>,
+    /// Set when Ply could not bound the call walk for this claim and hashed
+    /// every line of the crate instead (§5.2a's coarse mode). Then "the code
+    /// it runs changed" is true of an edit anywhere in the crate, including
+    /// one in a function this claim never calls -- so the run has to name the
+    /// construct that cost it the walk, or the re-run reads as unexplained.
+    /// `None` when the walk was bounded, which is the ordinary case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widened_because: Option<String>,
 }
 
 impl Envelope {

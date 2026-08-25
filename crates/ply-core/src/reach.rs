@@ -97,8 +97,8 @@ impl FirstParty {
 fn item_is_walkable(item: &syn::Item, label: &str) -> Result<(), String> {
     let named = |what: &str, name: String| {
         Err(format!(
-            "{label} declares {what} `{name}`, and Ply's call walk cannot tell which of its \
-             bodies a method call or an operator would run"
+            "{label} declares {what} `{name}`, and Ply cannot tell by reading the source \
+             which of its bodies a method call or an operator would run"
         ))
     };
     match item {
@@ -122,12 +122,12 @@ fn item_is_walkable(item: &syn::Item, label: &str) -> Result<(), String> {
         syn::Item::Const(c) => named("a constant", c.ident.to_string()),
         syn::Item::Static(s) => named("a static", s.ident.to_string()),
         syn::Item::Macro(m) => Err(format!(
-            "{label} declares or invokes a macro at the top level, and a macro's expansion is \
-             not in the tokens Ply's call walk reads: {}",
+            "{label} declares or invokes a macro at the top level, and what a macro expands \
+             to is not in the source Ply reads: {}",
             m.mac.path.to_token_stream()
         )),
         other => Err(format!(
-            "{label} declares `{}`, an item kind Ply's call walk does not know how to bound",
+            "{label} declares `{}`, an item kind Ply does not know how to follow calls out of",
             first_tokens(other)
         )),
     }

@@ -512,6 +512,16 @@ edit anywhere in the crate re-earns every claim in it — and it is never wrong.
 condition is an allowlist on purpose: an item kind nobody anticipated costs engine time,
 where a denylist would have cost a user a green verdict over code nobody checked.
 
+**The coarse mode explains itself, once.** Under it, "the code it runs changed" is true
+of an edit in a function the claim never calls, so a run that only announced the re-run
+would leave the reader with no way to tell a real dependency from the widening. When a
+claim displaced this way is reported, Ply names the construct that cost it the walk —
+the `impl` block, the macro, the unrecognised attribute — and says that the crate is the
+unit now. The reason belongs to the crate rather than to any one claim, so it is stated
+once for all the claims sharing it, naming them; the same paragraph repeated per claim
+would bury the list it exists to explain. It is never printed for a bounded walk, where
+it would be false.
+
 **What it does not cover, stated rather than implied.** Environment that shapes a build
 without appearing in any file Ply reads — `RUSTFLAGS`, `[profile]` settings such as
 `overflow-checks`, a `#[path]` module attribute — is not an input. Neither is anything a
