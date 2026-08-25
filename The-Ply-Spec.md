@@ -92,9 +92,20 @@ proof of a vacuous contract is a green nothing.** The evidence story is therefor
 axes, rung and spec-strength, not one ladder.
 
 **A run succeeds only if every claim earned its declared evidence.** `timeout`,
-`unsupported`, `tool_error`, `unclaimed`, and `engine-missing` are absences of evidence,
-and absence of evidence fails the run by default — `--fail-on` exists to relax that,
-never to enable it. And every verdict, passing or failing, must name the evidence that
+`unsupported`, `tool_error`, `unclaimed`, `engine-missing` and `inconclusive` are
+absences of evidence, and absence of evidence fails the run by default — `--fail-on`
+exists to relax that, never to enable it.
+
+**An absence is a name, not a slot.** Those names appear in two places in a §8 node — as
+its `verdict`, and as a `status` beside it (D6) — and they mean the same thing in both.
+A `mutate` check whose engine is missing leaves the fn's `fuzzed(64)` verdict alone,
+because the fuzz check really did run, and records the missing engine as a status; a rule
+that reads only verdicts calls that run clean. It did: until 2026-08-25 this principle was
+implemented as an enumeration of verdict *strings*, complete over every verdict the tool
+can emit and blind to every absence encoded as a status, so `checks: [fuzz(64), mutate]`
+with cargo-mutants absent exited 0 against §6's own exit-3 row (adversarial review of the
+post-004 fixes, D2). The rule is stated over names precisely so that the next absence
+recorded in a new field is caught by the vocabulary rather than by another special case. And every verdict, passing or failing, must name the evidence that
 produced it concretely enough to reproduce it: a fuzz verdict carries its seed and case
 count the way a violation carries its witness.
 
@@ -143,7 +154,14 @@ writing — confirm at M1, record in ADR-0002); `jsonschema`; `clap`; `insta`; `
 
 External engines run as subprocesses and are detected at startup. Each is optional: a
 missing engine downgrades the checks that need it, with warning `W0110` and status
-`engine-missing`. It never fails the run.
+`engine-missing`. **It is never reported as a failure of the check itself** — nothing
+about a missing cargo-mutants says a spec is weak, and nothing about a missing Verus says
+a contract is false. **It does not make the run pass, either**: the check earned no
+evidence, so §1's absence-of-evidence rule applies and §6 returns exit 3. (Reconciled
+2026-08-25: this paragraph used to end "It never fails the run", which contradicted §6's
+own exit-3 row outright, and the implementation had split the difference — `prove` with no
+engine exited 3, `mutate` with no engine exited 0. `--fail-on error` is the documented
+opt-out for a codebase mid-adoption.)
 
 | Engine | Used for | Invocation |
 |---|---|---|
@@ -876,9 +894,13 @@ always overrides the default, for every check kind, exactly as before. The defau
 is **not exercised by any e2e test**: every fixture passes `--engine-timeout` explicitly,
 so only a unit test on the formula covers it (recorded in TODO.md).
 
-Exit codes: 0 clean, 1 violations or failures — **including a run in which any node's
-verdict is an absence of evidence** (`timeout`, `unsupported`, `tool_error`, `unclaimed`,
-`engine-missing`) — 2 tool error, 3 missing engine for an explicitly requested check.
+Exit codes: 0 clean, 1 violations or failures — **including a run in which any node
+carries an absence of evidence** (`timeout`, `unsupported`, `tool_error`, `unclaimed`,
+`engine-missing`, `inconclusive`), **as its verdict or as a status beside it** (§1: an
+absence is a name, not a slot) — 2 tool error, 3 missing engine for an explicitly
+requested check. The code is chosen by the absence, wherever it was recorded: a missing
+engine is 3 whether it arrived as a `bounded` check's verdict or as a status on a fn
+whose fuzz check passed.
 
 **`--fail-on` relaxes that default; it never enables it.** Three values, from strictest to
 loosest:
@@ -886,7 +908,7 @@ loosest:
 | `--fail-on` | the run fails when |
 |---|---|
 | `warn` | any diagnostic of warning severity or worse was emitted — including the ones that sit beside a real verdict (`W0502` weak spec, `W0503` narrow spread) |
-| `evidence` (default) | any node's verdict is an absence of evidence, or any error-severity diagnostic was emitted |
+| `evidence` (default) | any node carries an absence of evidence — as its verdict or as a status — or any error-severity diagnostic was emitted |
 | `error` | only an error-severity diagnostic was emitted (a violation, an unresolvable anchor, a tool error) |
 
 `error` is the pre-2026-08-25 behaviour, kept as the documented opt-out for a codebase
@@ -1145,7 +1167,10 @@ it, or fail with `X0901` attaching the raw output for debugging.
   AST-walk reference on generated fixture modules; any disagreement is a bug. Assert
   resolution coverage (D11) on fixtures with known-unresolvable sites.
 - **Engine-absence matrix**: run every e2e once per engine with that engine masked out,
-  asserting graceful downgrade (`W0110` / `engine-missing`), not failure.
+  asserting graceful downgrade (`W0110` / `engine-missing` rather than a violation, a
+  weak-spec finding or a crash) **and exit 3, never exit 0** — the check did not fail, and
+  it also did not happen. One masked-engine case is built (`mutate` with cargo-mutants
+  masked, `tests/e2e/tests/mutate_engine_missing.rs`); the full matrix is not.
 - **Self-hosting**: golden tests for `skill` output, and `cargo ply check` runs clean on
   this repo (this workspace gets its own `ply.yaml` from M2 onward, kept green in CI).
   Once M5 lands, `cargo ply verify` runs over this workspace too: contracts on our own

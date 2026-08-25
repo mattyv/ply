@@ -1979,8 +1979,15 @@ enum MutateOutcome {
     SpecStrong,
     /// Mutants survived: the spec is weaker than the code it describes.
     WeakSpec,
-    /// The run produced no verdict either way.
-    Inconclusive,
+    /// The run produced no verdict either way, and the payload says which
+    /// absence it was: `engine-missing`, `timeout`, `tool_error`, or plain
+    /// `inconclusive` (the run completed and found nothing to mutate). All
+    /// four are absences of evidence (§1) and fail the run; naming them
+    /// apart is what lets §6's exit table tell "no engine" (3) from "the
+    /// tool broke" (2) from "it ran and settled nothing" (1), which a single
+    /// `inconclusive` could not (adversarial review of the post-004 fixes,
+    /// D2).
+    Inconclusive(&'static str),
 }
 
 fn apply_mutate_outcome(verdict: &mut String, statuses: &mut Vec<String>, outcome: MutateOutcome) {
@@ -1988,9 +1995,12 @@ fn apply_mutate_outcome(verdict: &mut String, statuses: &mut Vec<String>, outcom
         MutateOutcome::SpecStrong => verdict.push_str("\u{00b7}spec-strong"),
         MutateOutcome::WeakSpec => statuses.push("weak-spec".into()),
         // Nothing was established either way: the engine never reported a
-        // mutant count. `inconclusive` is D6's own status for that, and it
-        // is emphatically not `weak-spec`, which asserts a real finding.
-        MutateOutcome::Inconclusive => statuses.push("inconclusive".into()),
+        // mutant count. These are D6's own statuses for that, and none of
+        // them is `weak-spec`, which asserts a real finding. Each is an
+        // absence of evidence, so the run fails (§1) -- the verdict itself
+        // is untouched, because the `test`/`fuzz` check that produced it
+        // really did run.
+        MutateOutcome::Inconclusive(status) => statuses.push(status.to_string()),
     }
 }
 
@@ -2005,7 +2015,7 @@ fn run_mutate_check(
     let _ = checks;
     if !mutants::is_available() {
         return Ok((
-            MutateOutcome::Inconclusive,
+            MutateOutcome::Inconclusive("engine-missing"),
             vec![Diagnostic {
                 code: "W0110".into(),
                 severity: "warning".into(),
@@ -2015,8 +2025,11 @@ fn run_mutate_check(
                 node_id: node_id.into(),
                 title: format!(
                     "`{fn_name}` declares `mutate`, but `cargo-mutants` is not installed -- run \
-                     `cargo install cargo-mutants --locked` (see `cargo ply doctor`). Reported as a \
-                     missing engine, never as a failure of the check itself."
+                     `cargo install cargo-mutants --locked` (see `cargo ply doctor`). This is \
+                     reported as a missing engine and never as a failure of the check itself: \
+                     nothing here says the spec is weak. It does mean the `mutate` check `{fn_name}` \
+                     declares produced no evidence, so the run does not pass -- it exits 3, the \
+                     code §6 reserves for an explicitly requested check with no engine behind it."
                 ),
                 primary_span: None,
                 counterexample: None,
@@ -2061,7 +2074,7 @@ fn run_mutate_check(
                 // Nothing to mutate (unviable-only, or zero mutants found)
                 // is not evidence of strength either way.
                 Ok((
-                    MutateOutcome::Inconclusive,
+                    MutateOutcome::Inconclusive("inconclusive"),
                     vec![Diagnostic {
                         code: "W0502".into(),
                         severity: "warning".into(),
@@ -2131,7 +2144,7 @@ fn run_mutate_check(
         MutantsRunOutcome::Timeout { raw_output } => {
             let _ = raw_output;
             Ok((
-                MutateOutcome::Inconclusive,
+                MutateOutcome::Inconclusive("timeout"),
                 vec![Diagnostic {
                     code: "M0601".into(),
                     severity: "warning".into(),
@@ -2173,7 +2186,7 @@ fn run_mutate_check(
         MutantsRunOutcome::ToolError { raw_output, reason } => {
             let _ = raw_output;
             Ok((
-                MutateOutcome::Inconclusive,
+                MutateOutcome::Inconclusive("tool_error"),
                 vec![Diagnostic {
                     code: "X0901".into(),
                     severity: "error".into(),
@@ -2279,7 +2292,11 @@ mod tests {
     fn a_mutate_run_that_produced_no_result_is_not_reported_as_a_weak_spec() {
         let mut verdict = "fuzzed(256)".to_string();
         let mut statuses: Vec<String> = vec![];
-        apply_mutate_outcome(&mut verdict, &mut statuses, MutateOutcome::Inconclusive);
+        apply_mutate_outcome(
+            &mut verdict,
+            &mut statuses,
+            MutateOutcome::Inconclusive("inconclusive"),
+        );
         assert_eq!(
             verdict, "fuzzed(256)",
             "an inconclusive mutate run neither strengthens nor weakens the verdict"

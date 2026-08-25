@@ -122,22 +122,38 @@ fn print_human(envelope: &ply_core::diag::Envelope) {
     }
 }
 
-/// A verdict that reports no evidence (§1). These are exactly the outcomes
-/// §1 names as absences: the engine was exhausted, the shape was out of
-/// reach, the tool broke, nothing was claimed, no engine existed. None of
-/// them is a claim about the code; all of them used to exit 0.
-fn is_absence_of_evidence(verdict: &str) -> bool {
-    verdict == "timeout"
-        || verdict == "unclaimed"
-        || verdict == "engine-missing"
-        || verdict.starts_with("unsupported")
-        || verdict.starts_with("tool_error")
+/// A name that reports no evidence (§1): the engine was exhausted, the shape
+/// was out of reach, the tool broke, nothing was claimed, no engine existed,
+/// or a check ran and settled nothing. None of them is a claim about the
+/// code; all of them used to exit 0.
+///
+/// **An absence is a name, not a slot** (adversarial review of the post-004
+/// fixes, D2). The same names appear in two places in a §8 node -- as its
+/// `verdict`, and as a `status` beside it (D6) -- and they mean the same
+/// thing in both. The first version of this rule enumerated verdict strings
+/// only, which was complete over the verdicts the tool can emit and blind to
+/// every absence encoded as a status: a `mutate` check whose engine was
+/// missing reported `inconclusive` beside an untouched `fuzzed(64)` verdict
+/// and exited 0, against §1's own principle and §6's exit-3 row. Adding one
+/// more verdict string would have left the next status-shaped absence open,
+/// so the rule reads both fields against one vocabulary instead.
+fn is_absence(name: &str) -> bool {
+    name == "timeout"
+        || name == "unclaimed"
+        || name == "engine-missing"
+        || name == "inconclusive"
+        || name.starts_with("unsupported")
+        || name.starts_with("tool_error")
 }
 
-fn walk_verdicts(node: &ply_core::diag::Node, f: &mut impl FnMut(&str)) {
+/// Every absence a node carries, in either field, over the whole tree.
+fn walk_absences(node: &ply_core::diag::Node, f: &mut impl FnMut(&str)) {
     f(&node.verdict);
+    for s in &node.statuses {
+        f(s);
+    }
     for c in &node.children {
-        walk_verdicts(c, f);
+        walk_absences(c, f);
     }
 }
 
@@ -157,8 +173,8 @@ fn exit_code_for(envelope: &ply_core::diag::Envelope, fail_on: FailOn) -> i32 {
         .any(|d| d.severity == "warning" || d.severity == "error");
 
     let mut absences: Vec<String> = Vec::new();
-    walk_verdicts(&envelope.root, &mut |v| {
-        if is_absence_of_evidence(v) {
+    walk_absences(&envelope.root, &mut |v| {
+        if is_absence(v) {
             absences.push(v.to_string());
         }
     });
@@ -186,13 +202,17 @@ mod tests {
     use ply_core::diag::{Envelope, Node};
 
     fn envelope(verdicts: &[&str]) -> Envelope {
+        envelope_with_statuses(verdicts, &[])
+    }
+
+    fn envelope_with_statuses(verdicts: &[&str], statuses: &[&str]) -> Envelope {
         let children: Vec<Node> = verdicts
             .iter()
             .map(|v| Node {
                 id: "f".into(),
                 kind: "fn".into(),
                 verdict: (*v).into(),
-                statuses: vec![],
+                statuses: statuses.iter().map(|s| (*s).to_string()).collect(),
                 evidence: None,
                 children: vec![],
             })
@@ -234,6 +254,59 @@ mod tests {
     #[test]
     fn fail_on_error_is_the_opt_out_and_lets_an_absence_through() {
         assert_eq!(exit_code_for(&envelope(&["timeout"]), FailOn::Error), 0);
+    }
+
+    /// The rule is over *names*, not over the field a name sits in (§1, D2 of
+    /// the 2026-08-25 adversarial review). A `mutate` check whose engine is
+    /// missing leaves the fn's verdict alone -- the fuzz check that ran is
+    /// still real evidence -- and records the absence as a status. Reading
+    /// only the verdict made that run exit 0, which said a declared check
+    /// had been performed when nothing had performed it.
+    #[test]
+    fn an_absence_recorded_as_a_status_fails_the_run_like_one_recorded_as_a_verdict() {
+        assert_eq!(
+            exit_code_for(
+                &envelope_with_statuses(&["fuzzed(64)"], &["engine-missing"]),
+                FailOn::Evidence
+            ),
+            3,
+            "a declared check with no engine behind it is §6's exit 3, wherever the envelope \
+             records it"
+        );
+        assert_eq!(
+            exit_code_for(
+                &envelope_with_statuses(&["fuzzed(64)"], &["inconclusive"]),
+                FailOn::Evidence
+            ),
+            1,
+            "a check that ran and established nothing earned no evidence either"
+        );
+        assert_eq!(
+            exit_code_for(
+                &envelope_with_statuses(&["fuzzed(64)"], &["tool_error"]),
+                FailOn::Evidence
+            ),
+            2
+        );
+    }
+
+    /// The statuses that are *not* absences must keep exiting 0, or the rule
+    /// has turned into "any status fails", which would fail every legacy
+    /// codebase §5.5 exists to serve on its very first `conditional` run.
+    #[test]
+    fn a_status_that_is_not_an_absence_still_exits_zero() {
+        assert_eq!(
+            exit_code_for(
+                &envelope_with_statuses(
+                    &["bounded(2)"],
+                    &["conditional", "owed-evidence", "weak-spec", "stale"]
+                ),
+                FailOn::Evidence
+            ),
+            0,
+            "`conditional` is the normal state of legacy-extension code (§5.5), and `weak-spec` \
+             is a real finding beside real evidence -- neither is an absence"
+        );
     }
 
     #[test]

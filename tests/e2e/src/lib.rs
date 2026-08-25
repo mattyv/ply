@@ -109,16 +109,36 @@ pub struct VerifyRun {
 /// Runs `cargo-ply verify <fixture_dir> --json --engine-timeout <secs>` and
 /// parses its stdout as the §8 envelope.
 pub fn run_verify(cargo_ply: &Path, fixture_dir: &Path, engine_timeout_secs: u32) -> VerifyRun {
-    let output = Command::new(cargo_ply)
-        .args([
-            "verify",
-            fixture_dir.to_str().unwrap(),
-            "--json",
-            "--engine-timeout",
-            &engine_timeout_secs.to_string(),
-        ])
-        .output()
-        .expect("spawning cargo-ply verify");
+    run_verify_with_env(cargo_ply, fixture_dir, Some(engine_timeout_secs), &[])
+}
+
+/// The same run with environment overrides, and with `--engine-timeout`
+/// optional: passing `None` exercises §6's shape-aware **default** budget,
+/// which no test observed until 2026-08-25 (§6 said so itself). The env
+/// overrides exist for the engine-absence matrix §9 asks for -- masking an
+/// engine means changing what `cargo mutants --version` does, which means
+/// changing `PATH`.
+pub fn run_verify_with_env(
+    cargo_ply: &Path,
+    fixture_dir: &Path,
+    engine_timeout_secs: Option<u32>,
+    env: &[(&str, String)],
+) -> VerifyRun {
+    let mut args: Vec<String> = vec![
+        "verify".into(),
+        fixture_dir.to_str().unwrap().into(),
+        "--json".into(),
+    ];
+    if let Some(secs) = engine_timeout_secs {
+        args.push("--engine-timeout".into());
+        args.push(secs.to_string());
+    }
+    let mut cmd = Command::new(cargo_ply);
+    cmd.args(&args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let output = cmd.output().expect("spawning cargo-ply verify");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
         panic!(
