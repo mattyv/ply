@@ -356,7 +356,7 @@ impl Resolver {
         if depth > MAX_DEPTH {
             return;
         }
-        for item in &file.ast.items.clone() {
+        for item in &file.ast.items {
             match item {
                 syn::Item::Fn(f) => {
                     let mut segs = prefix.clone();

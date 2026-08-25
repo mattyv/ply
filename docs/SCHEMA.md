@@ -311,13 +311,22 @@ components:
 Keys are plain path segments joined by `::`. Generics, lifetimes, and trait-qualified
 spellings like `<T as Trait>::f` are not accepted (`E0304`).
 
-> **What this build can actually reach.** Ply finds functions by reading the top level
-> of the crate's `src/lib.rs`. A function inside a module, or a method in an `impl`
-> block, is *not* reachable: `check` will tell you it "exists in this crate, but not
-> where Ply can verify it from", and `verify` cannot check it. Both spellings above
-> parse and validate; only the first can be verified today. This is the single limit
-> most likely to bite you first, and it is actively being worked on — expect it to
-> change.
+> **What this build can actually reach.** Ply follows your crate's own structure to find
+> a function: `use` imports (renames and groups included), inline `mod` blocks, file
+> modules (`mod rates;` → `rates.rs` or `rates/mod.rs`), nested modules, and re-exports.
+> So `fees::bps_for_tier` above works, and so does a claim written the way you would say
+> it out loud for a function three modules down.
+>
+> Two things are still out of reach, and each says which it is rather than "no such
+> function":
+>
+> - **A method in an `impl` block.** `Invoice::total` parses and validates, and cannot
+>   be verified today.
+> - **A private function below the crate root.** Ply writes its harness as a module at
+>   the top of your crate, so a `fn` that is private inside `rates` — or a private `mod
+>   rates` — is a name that harness cannot write. Make the function, and every module
+>   between it and the crate root, `pub` or `pub(crate)`. A private function *at* the top
+>   of `src/lib.rs` is fine: the generated module sits beside it and can see it.
 
 ### The checks list
 
@@ -674,6 +683,33 @@ Two facts sit on that node, and they are different facts:
   the verdict is wrong with it.
 - **`owed-evidence`** — nothing has yet checked that promise against the real code.
   Trust that is never checked is green paint.
+
+### The promise has to say something
+
+Before it runs a proof that stands on a promise, Ply checks that the promise is not
+empty. It asks two questions about each clause you wrote, over the clause on its own:
+*can any value satisfy it*, and *can any value break it*. Both are answered exhaustively
+over the type, and both together cost about a second.
+
+- **Nothing can satisfy it** — say you wrote `|result| *result > 10_000 && *result < 5`.
+  Assuming something impossible lets a proof conclude anything at all, so the proof would
+  come back green no matter what your function does. Ply refuses to run it: `E0502`, the
+  function earns no evidence, and the message quotes the clause back to you.
+- **Nothing can break it** — say you wrote `|result| *result >= 0` about a function
+  returning `u32`. That is true of every `u32`, so it constrains nothing: inside the
+  proof the callee was replaced by *any* value, not by the promise. Your function's
+  verdict still stands and is honest — it holds whatever that callee returns — but the
+  clause is not an assumption and nothing is owed on it. `E0503` says so, and the
+  `conditional` message stops listing it as a debt.
+- **Ply could not tell** — a precondition over a parameter type the model checker cannot
+  build a value for, a clause it cannot parse, or a solver that ran out of time. `W0514`,
+  and the promise is reported as unchecked rather than as fine.
+
+Both `E0502` and `E0503` are errors, so a run carrying either does not pass. What they
+cannot tell you is whether a promise is *strong enough* — one that rules out a single
+value out of four billion is neither impossible nor trivial — nor whether your real code
+actually keeps the promise. That second one is what `owed-evidence` is about, and
+fuzzing the callee is what closes it.
 
 In a codebase that is mostly legacy, `conditional` is the *normal* state, not an alarm.
 `owed-evidence` is the half that is supposed to close.
@@ -1145,7 +1181,7 @@ on something stable. These are the ones this build emits.
 
 | Code | What happened |
 |---|---|
-| `E0301` | A claim points at a function Ply cannot find — or one it can see but cannot verify from where it stands. The message says which. |
+| `E0301` | A claim points at a function Ply cannot find — or one it found and cannot verify from, because the function or a module above it is private. The message says which. |
 | `E0304` | An anchor or function key is not a plain path. |
 | `W0303` | This claim's component is anchored to another crate, so its checks did not run here. |
 
@@ -1155,6 +1191,8 @@ on something stable. These are the ones this build emits.
 |---|---|
 | `E0504` | `mutate` with no `test` or `fuzz` beside it — nothing to catch the planted bugs. |
 | `E0501` | A contract expression could not be parsed. |
+| `E0502` | A promise declared for a callee is satisfiable by no value at all. Assuming it would make any proof standing on it hold for nothing, so the proof is not run. |
+| `E0503` | A promise declared for a callee is true of every value, so it constrains nothing and is not an assumption. |
 | `K0502` | The model checker found an input that breaks the postcondition. This is a real violation, with a witness. |
 | `V0505` | The signature is a shape Ply cannot build inputs for. Reported, not attempted. |
 | `K0601` / `M0601` | The proof, or the mutation run, ran out of time. Not a failure of the code. |
@@ -1166,6 +1204,7 @@ on something stable. These are the ones this build emits.
 | `W0511` | The verdict is conditional: it used a declared contract instead of a callee's real body, and names what it assumed. |
 | `W0512` | Ply refused to descend into a callee no contract describes, and names the callee and the call site. |
 | `W0513` | Ply followed a path into first-party source and could not read it, so it refused rather than descending. |
+| `W0514` | Ply could not tell whether a declared promise says anything, and reports it as unchecked rather than as fine. |
 | `W0541` | A failing input was found but cannot be written out as runnable Rust, so the engine's own rendering is reported instead. Inputs are never invented. |
 
 ---
