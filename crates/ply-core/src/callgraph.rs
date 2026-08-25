@@ -243,7 +243,17 @@ impl Resolver {
         }
         if segs.len() >= 2 {
             match self.dep_root(&segs[0]) {
-                Some(Some(root)) => return self.resolve_in_file(&root, &segs[1..], 0),
+                Some(Some(root)) => {
+                    let in_dep = self.resolve_in_file(&root, &segs[1..], 0);
+                    // Only `NotFound` falls through to the local file: a
+                    // module of this crate may share a dependency's name, and
+                    // in edition 2018+ the local one is what the path means.
+                    // An `Opaque` from the dependency is a real answer and is
+                    // not retried into a different one.
+                    if !matches!(in_dep, Resolution::NotFound) {
+                        return in_dep;
+                    }
+                }
                 Some(None) => {
                     return Resolution::Opaque(format!(
                         "`{}` is a path dependency of this crate, but Ply could not read its \
