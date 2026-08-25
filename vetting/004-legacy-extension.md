@@ -252,6 +252,14 @@ not a convenience flag in this particular thesis.
 > was: the outputs here are the ones measured on 2026-08-24, not what `run.sh` produces
 > today. Two stage budgets were raised in `run.sh` as part of those fixes (s5 and s7,
 > annotated in place). Findings 3, 6, 8, 9 and 10 remain open.
+>
+> **Second follow-up, 2026-08-25** (`docs/post-004-review-closure.md`). An adversarial
+> review of those fixes found the boundary rule bypassable by an ordinary `use` import,
+> and found that `s5`'s stage budget was hiding something: at the tool's own **default**
+> budget the same stage still reported `timeout` after 1m6.776s, because a scalar-signature
+> fn gets 60s and this stubbed proof needs ~202s. Both are closed. `s5` run with no
+> `--engine-timeout` at all now earns `bounded(2)`, statuses `["conditional",
+> "owed-evidence"]`, `W0511` carrying the assumption, in 3m5.487s, exit 0.
 
 
 1. **A run in which nothing was checked exits 0.** `run.sh s2` — the scenario after the

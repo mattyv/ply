@@ -745,10 +745,15 @@ than a shortcut:
    can act on (§8's non-result rule). `W0512`'s `fixes` offer the two real options:
    declare a contract for the callee, or drop the check to `fuzz(n)`, which crosses the
    boundary by simply running the code.
-2. **Ply never inlines an unclaimed body into a caller's proof.** Descending is not the
-   more honest option, only the slower one: it either exhausts the budget and reports
-   nothing, or it proves the caller *against a body nobody claimed*, yielding a `bounded`
-   verdict whose meaning silently includes code no contract vouches for.
+2. **Ply never inlines an unclaimed body into a caller's proof, at any call site in the
+   caller's own body.** Descending is not the more honest option, only the slower one: it
+   either exhausts the budget and reports nothing, or it proves the caller *against a body
+   nobody claimed*, yielding a `bounded` verdict whose meaning silently includes code no
+   contract vouches for. The qualifier is exact and not decorative: this condition holds
+   for the call sites this rule inspects, which are the ones written in the function being
+   checked. An unclaimed callee *below a contracted callee* is a gap that stays open until
+   D5's first branch stubs the contracted one — see this section's limits below, where it
+   is stated rather than implied.
 3. **An assumed boundary contract is owed evidence until something exercises it.** A
    contract declared in `ply.yaml` for an unclaimed callee is trusted, and trust that is
    never checked is green paint. The assumption is auditable (`cargo ply audit`'s trust

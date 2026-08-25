@@ -1,5 +1,87 @@
 # TODO
 
+## Post-004 review closure — landed 2026-08-25
+
+Disposition of every finding in `docs/review-post-004-fixes.md`, with the red-first
+failure message and literal before/after for each: `docs/post-004-review-closure.md`.
+Six commits, one per finding.
+
+- [x] **Review D1 (MAJOR) — an ordinary `use` import bypassed the boundary rule.** The
+      resolver never read `use` declarations, so a bare-name call classified `Unresolved`
+      and `Unresolved` meant descend: `bounded(2)`, zero diagnostics, **exit 0** in
+      40.562s over an unclaimed body, against `unclaimed`/`W0512`/**exit 1** in 0.007s for
+      the identical claim spelled with a qualified path. Resolution now follows `use`
+      (renames, groups, globs), inline and file modules, re-exports, and a path
+      dependency's `src/lib.rs`; first-party source Ply cannot read is refused (`W0513`,
+      new) rather than descended into. New fixture `useimport` + e2e, nine `ply-core` unit
+      tests. §5.5's "just never a first-party one" retracted here, in
+      `docs/post-004-fixes.md` and in this file. Commit `e83ccb9`.
+- [x] **Review D2 — the fail-by-default rule missed absences encoded as statuses.**
+      `mutate` with cargo-mutants masked: `fuzzed(64)` + status `inconclusive` + exit 0,
+      against §6's own exit-3 row. The rule is now over **names, not slots** — one
+      absence vocabulary read against a node's verdict *and* its statuses — and `mutate`'s
+      non-results name which absence they are, so exit 3/2/1 follow the fact. Masked-engine
+      e2e (§9's matrix, first entry built) + unit tests, including that `conditional`,
+      `owed-evidence`, `weak-spec` and `stale` still exit 0. §3's "It never fails the run"
+      reconciled with §6. Commit `a92e61f`.
+- [x] **Review D4 — `W0541`'s wording was false for the shapes it now fires on.** It named
+      `BTreeSet`/`Vec` to users whose parameter is a `[u32; 4]`. It now names the
+      parameters and types that blocked the rendering; `RustType::display_name` fixes the
+      same omission in `X0901` ("`xs: `", type missing). Commit `681fc75`.
+- [x] **Review D5 — `evidence` described runs that never happened.** `cases: n` was
+      attached whenever `fuzz(n)` was *declared*: a harness that never compiled reported
+      `cases: 64`. Now built where the run happens, with `cases` only when the count is
+      real. Commit `283cd83`.
+- [x] **Review D6 — `owed-evidence` was emitted but defined nowhere.** Defined in §0's
+      glossary and D6's status list as the debt half of `conditional`; §5.5 calls it a
+      status; the verdict kernel gains the variant and a round-trip test over the whole
+      vocabulary. Enumeration unchanged and green. Commit `9c730dd`.
+- [x] **Review G1 — the `conditional` path was dead at the tool's own defaults.** 004's
+      `tier_fee_cents` is scalar-signature, so plain `cargo ply verify` gave it 60s and
+      reported `timeout` in 1m6.776s, saying nothing about the assumption. A **stubbed**
+      `bounded` harness now gets a 300s floor — derived split (a stub is knowable before
+      the run and always trades concrete values for a symbolic one), fitted constant
+      (201.77s measured, plus the ~107s CBMC variance the M3 findings recorded), with
+      9.72s and ~110s as the second and third measurements showing the cost is the body's
+      as much as the stub's. `K0601` explains the premium when there was one. The
+      `boundarycontract` fixture now carries 004's body shape and its e2e passes **no**
+      `--engine-timeout`: the only test that observes §6's default end to end.
+      Commit `182e9e1`.
+- [x] **Review O2, O3, O5 — overstatements corrected in place** ("Nothing was lost" on
+      seeding; §5.5's present-tense `audit`/`worklist`; "s1/s2 behaviour unchanged", which
+      item 2 falsified by flipping their exit codes).
+- [x] **Review O4 — DISPUTED, with evidence.** The tree holds **21** e2e `#[test]`
+      functions at `3adca0e`, counted file by file, so `70 + 11 + 21 = 102` was right and
+      the review's 22 was wrong. Nothing changed.
+- [ ] **KNOWN GAP — the boundary rule inspects the claimed function's own body only.**
+      Until D5's first branch lands, a contracted callee `g` is inlined rather than
+      stubbed, so an unclaimed callee one level below `g` still travels into the caller's
+      proof unnamed. Same pattern as review D1, a different bypass; stated in §5.5's
+      limits. Not started deliberately (out of that task's scope).
+- [ ] **KNOWN GAP — calls Ply's reader cannot see are not call sites for the rule**:
+      macro-generated calls, `#[path = "..."]` module attributes, function pointers and
+      trait methods.
+- [ ] **KNOWN GAP (review G2) — the assumed-contract enforcement loop, as ONE item**,
+      because the three parts are one loop and their conjunction is the risk: (1) no
+      vacuity check — a declared `ensures: ["|result| false"]` makes the stub's
+      `kani::assume` unsatisfiable and the caller's proof vacuously green, and a
+      `kani::cover!` after the stubbed call would catch it cheaply; (2) no staleness — D14
+      fingerprints trusted claims, nothing fingerprints a declared boundary contract
+      against the callee's body, so legacy code can change under a standing assumption
+      (the hazard §5.4d closed for `trusted`, reopened one mechanism over); (3) no
+      accumulating surface — `audit`/`worklist` are not built, so the debt lives only in
+      per-run output that scrolls away, and the run is CI-green by default.
+- [ ] **KNOWN GAP (review G3) — declared-contract keying assumes the anchor equals the
+      Cargo.toml dependency key.** `ledger = { package = "real-name", path = ... }` with
+      `anchor: real-name` would not match the path a caller writes, and the callee would
+      classify `Unclaimed`. It fails **closed** (a loud `W0512` naming a callee whose
+      contract the user just wrote), so this is a usability gap, not an honesty one. Fix:
+      resolve the anchor through the same rename logic the resolver already has.
+- [ ] **Recorded-entropy fuzz mode** (the review's complement to the seeding decision):
+      vary the seed by default in some contexts and *always* record it, so cross-run
+      detection accumulation comes back without reopening the re-roll-until-green channel
+      that determinism closed.
+
 ## Post-004 fixes — landed 2026-08-25
 
 Closes the five items `docs/review-post-004-strategy.md` sequenced after vetting 004.
@@ -39,18 +121,19 @@ costs: `docs/post-004-fixes.md`. Four commits, one per item plus item 1's spec-a
       first (Kani `Verification Time`, trivial bodies): 0.028s `u32`, 0.064s `char`,
       0.036s `Option<u32>`, 0.040s `Result<u32,u8>`, 0.036s `[u32; 4]`, 0.041s
       `[u32; 16]`, 0.028s alias. No unwind annotation for an array — its bound is a
-      compile-time constant.
+      compile-time constant. Commit `593cf9a`.
 - [ ] **KNOWN GAP — D5's *first* branch is still not implemented.** A callee that passed
       its own Kani proof this run is inlined, not `stub_verified`, because callees-first
       scheduling (ADR-0003's "entire soundness guarantee", living unlinked in
       `tools/schedule`) is not promoted into the product. Concretely: 004's
       `total_debit_cents` still times out at 120s with `fee_cents` inlined. The review
       sequences this as the next tranche.
-- [ ] **KNOWN GAP — §5.5's rule does not reach `std`/`core`/registry callees.** It fires
-      for callees Ply resolves (the caller's own file, or a path dependency's
-      `src/lib.rs`). A call into a crate whose source Ply cannot read is left alone, so a
-      `bounded` verdict can still include a body Ply never examined — just never a
-      first-party one. Stated in §5.5, not left to be discovered.
+- [ ] **KNOWN GAP — §5.5's rule does not reach `std`/`core`/registry callees.** A call
+      into a crate whose source Ply cannot read is left alone, so a `bounded` verdict can
+      still include a body Ply never examined. Stated in §5.5, not left to be discovered.
+      (The clause "just never a first-party one" was **retracted 2026-08-25**: an
+      ordinary `use` import bypassed the rule entirely — see the closure of the review's
+      D1 below.)
 - [ ] **KNOWN GAP — a boundary assumption is reported as owed, and nothing exercises it.**
       §5.5 says an unexercised assumption is owed evidence and that `audit`/`worklist`
       list it. The `owed-evidence` status and `W0511` are built; `cargo ply audit` and
@@ -74,9 +157,10 @@ costs: `docs/post-004-fixes.md`. Four commits, one per item plus item 1's spec-a
       §9's cex-oracle clause "failure output states the contract" therefore does not hold
       for that shape; the contract is named in the generated test's comment. The oracle
       test itself (`clamp_oracle.rs`) is unaffected and green.
-- [ ] **`run.sh` budgets raised, annotated in place**: s5 120s → 600s (the stubbed proof
+- [x] **`run.sh` budgets raised, annotated in place**: s5 120s → 600s (the stubbed proof
       needs ~202s of Kani time), s7 120s → 600s (arrays are cheap, this fn's body is not).
-      Both original runs are quoted in `docs/post-004-fixes.md`.
+      Both original runs are quoted in `docs/post-004-fixes.md`. (A record of a done thing;
+      the unchecked box was a bookkeeping slip the 2026-08-25 review caught.)
 
 ## Vetting 004 — legacy boundary, fragment-first — landed 2026-08-24
 

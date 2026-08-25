@@ -23,7 +23,9 @@ declared contract but weaker evidence — **including one carrying no verificati
 but a contract declared in `ply.yaml`** — is assumed, stubbed, and the caller marked
 `conditional`; and a callee **no contract describes anywhere** is not descended into at
 all. Three honesty conditions attach, all in §5.5: the diagnostic names the callee and
-the call site; Ply never inlines an unclaimed body into a caller's proof; and an assumed
+the call site; Ply never inlines an unclaimed body into a caller's proof (qualified
+2026-08-25 to "at any call site in the caller's own body" -- an unclaimed callee below a
+*contracted* callee still travels in, because D5's first branch does not stub it yet); and an assumed
 boundary contract is *owed evidence* until something exercises it against the real body.
 The §2 D5 row and a new "what this rule reaches" paragraph (its limits, below) landed with
 it.
@@ -476,7 +478,10 @@ diagnostic says so in words a user can act on.
 ## Gates
 
 - `cargo test --workspace -- --test-threads=1`: **102 passed, 0 failed** (was 72 before
-  this round). 70 `ply-core` unit, 11 `ply-cli` unit, 21 e2e. New fixtures:
+  this round). 70 `ply-core` unit, 11 `ply-cli` unit, 21 e2e. (Re-counted 2026-08-25 file
+  by file at this commit, because the adversarial review's O4 called the arithmetic wrong:
+  the tree holds 21 e2e `#[test]` functions, not 22, and 70 + 11 + 21 = 102. The numbers
+  here stand.) New fixtures:
   `unclaimedcallee`, `boundarycontract`, `arraycard`; new e2e:
   `unclaimedcallee_fixture`, `boundarycontract_fixture`, `unknown_key_fixture` (2 tests),
   `arraycard_fixture`, plus one added to `timeout_fixture`; `panicbug_fixture` rewritten.
