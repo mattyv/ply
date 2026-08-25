@@ -126,6 +126,83 @@ the 002-era invariants all pass. The gap is *collision-freedom inside containers
 a property no current invariant expresses. Next renderer pass should add one
 (no drawn element intersects a box it isn't inside) and make it red first.
 
+5. **The venue does not exist in the model.** Four constructs orbit a boundary the
+   picture cannot show: `gateway`'s `trusted` claim reads "venue protocol
+   conformance", the deny wall (`* -> gateway except oms`) guards the route to a
+   place that is not on the map, and both open decisions (#8 venue failover, #9
+   order id after venue reject) name a counterparty that appears nowhere except as
+   prose. `gateway`'s honest unclaimedness (no checks, no anchor for venue I/O)
+   reads as omission rather than boundary — a component nobody has specified yet
+   and a system somebody else operates render identically, and §7.2's taxonomy
+   has no slot for the latter. → Recorded as the gate case for
+   `docs/plans/external-elements.md`'s reduced-form `externals:` proposal (2026-08-24).
+   The re-run below is that gate.
+
+### The external-elements gate (2026-08-24)
+
+`docs/plans/external-elements.md` proposed `externals:` — a top-level map of named
+outside parties (name + required `note:`), appearing only as `~>` flow endpoints or
+a fn's `entry:` list, gated on a vetting re-run before any spec amendment
+(§6 of that document). This is that re-run, against finding 5 above.
+
+Applied to this scenario: `venue` declared under `externals:`; `gateway ~> venue :
+FixMessage` continues the order flow out past the boundary; `venue ~> gateway :
+Fill` brings the return path back in; `venue ~> ingest.feed : RawFrame` closes the
+left column's previously-dangling start (market data has always come from
+somewhere — now the picture says where); `entry: [venue]` on `Oms::submit` marks
+the one fn a rejected order can re-enter from outside (open decision #9 is,
+concretely, a question about *this* boundary).
+
+**Grammar and checks.** Clean end to end: `ply-check` passes with zero
+diagnostics — the same "no findings" result the scenario has held since finding 1
+was fixed, now covering four new edges, one `entry:`, and one external declaration.
+
+**Render.** `venue` draws exactly as specced: a solid-bordered, unfilled box
+outside the workspace frame, no anchor line, no badges — the absence itself is
+part of the drawing. `gateway ~> venue` and `venue ~> gateway` are short dashed
+crossings right at the frame's bottom edge, next to `gateway`, which the ranked
+layout already happened to place on the bottom row. `venue ~> ingest.feed` is the
+hard case: `ingest.feed` sits at the *top* of the frame, `venue` outside the
+*bottom* — the longest edge this renderer has ever had to route, crossing every
+intervening rank. It now runs cleanly up the right margin, outside every
+component's silhouette, and back in at the top — legible, not decorative. The
+derived `entry:` arrow from `Oms::submit` follows the same margin, labeled
+`entry`, dashed like every other declared-not-checked line.
+
+Two renderer bugs surfaced and were fixed by this exercise, not designed in ahead
+of time (recorded in full in `docs/external-elements-adoption.md`): the existing
+deny-routing algorithm's rail-choice heuristic (nearer to the *midpoint* of the
+two endpoints) is wrong for a line that always ends below the frame regardless of
+where it starts, and the obstruction filter it reused considered only boxes
+overlapping the two endpoints' own narrow bounding box, missing a box the route's
+detour passed by well outside that box. Both are exactly the kind of finding this
+gate exists to produce: the invariant (`no_drawn_element_intersects_a_box_it_is_
+not_inside`) caught both, red, before either fix.
+
+Two further rounds of coordinator review of the *committed* SVG, after this
+finding was first written, found two more defects of the same shape — real
+crossings the invariant did not yet catch because it never rendered, or never
+checked, the exact shape they lived in: a single-component `--collapse` (the
+committed picture's own canonical form) sweeping `venue ~> ingest.feed` through
+`strategy`/`signals`, and that same edge's own label struck by the derived
+`entry` edge's line. Both are fixed, both are now covered by extensions to the
+same invariant (a per-component `--collapse` sweep, and an `edge-label`-vs-line
+check), and both are recorded in full — root cause, fix, and what remains a
+recorded-but-out-of-scope gap — in `docs/external-elements-adoption.md`. The
+committed SVGs below reflect the final, twice-corrected render.
+
+**The gate's own invariant** — no external box intersects the frame; every deny
+`*` node stays inside it; every external-touching edge crosses the frame border
+exactly once — holds on this scenario (and is mutation-tested: forcing the
+external band inside the frame, and forcing a `*` node outside it, both turn it
+red; reverting turns it green again).
+
+**Verdict: gate passed.** The frame reads as a boundary (bolder now — the
+proposal's own §4 point 3 called this a live renderer judgment, made here), `venue`
+sits unmistakably outside it, and the four previously-orbiting constructs
+(`trusted`, the deny wall, and both open decisions) now share a real referent. The
+spec is amended accordingly (`The-Ply-Spec.md` §5.1, §5.1a, §5.3, §7.1, §7.2).
+
 ### Standing observations
 
 - Container aggregation is now on the canvas: every box carries its **declared

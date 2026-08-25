@@ -1,0 +1,23 @@
+[package]
+name = "ply-core"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "Ply core: config, harness codegen, engine adapters, contract runtime rendering, diagnostics."
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+quote = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+indexmap = { version = "2", features = ["serde"] }
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+# Test-only: the shipping binary carries no regex engine. The schema's
+# patterns are enforced by hand-written matchers, and these tests are what
+# hold those matchers to the schema.
+regex = "1"

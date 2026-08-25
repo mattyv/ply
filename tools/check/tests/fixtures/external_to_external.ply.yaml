@@ -1,0 +1,8 @@
+ply: 1
+externals:
+  venue:
+    note: "the exchange: accepts orders, returns fills"
+  clock:
+    note: "an NTP time source"
+edges:
+  - "venue ~> clock : TimeSync"

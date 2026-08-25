@@ -3,13 +3,13 @@ name = "ply-check"
 version = "0.1.0"
 edition = "2024"
 
-[lib]
-name = "ply_check"
-path = "src/lib.rs"
-
+# Library-free since Phase 1a: the document-local rules this binary prints
+# live in the product now (`ply_core::check`), so there is exactly one copy
+# of them. What is left here is the CLI contract -- exit codes and "never
+# emits SVG" -- and the tests that pin it.
 [[bin]]
 name = "ply-check"
 path = "src/main.rs"
 
 [dependencies]
-ply-model = { path = "../model" }
+ply-core = { path = "../../crates/ply-core" }

@@ -1,0 +1,10 @@
+ply: 1
+components:
+  pricing:
+    anchor: app::pricing
+    fns:
+      quote:
+        trusted:
+          - claim: "cross-thread safety"
+            evidence: "tests/loom_quote.rs"
+            evidences: "tests/loom_quote.rs"

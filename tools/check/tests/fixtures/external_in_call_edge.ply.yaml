@@ -1,0 +1,9 @@
+ply: 1
+externals:
+  venue:
+    note: "the exchange: accepts orders, returns fills"
+components:
+  gateway:
+    anchor: gw
+edges:
+  - "gateway -> venue"

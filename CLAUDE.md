@@ -65,6 +65,26 @@ Report outcomes, not code churn. Skip file names, function names, and diff-speak
 asked. Say what changed in behaviour, where to see it, and whether it works. Make routine
 technical calls yourself; only ask questions that can be answered without reading code.
 
+**No project jargon in conversation, ever, unless asked for it.** The newbie bar below
+governs what the *tool* says; this governs what *you* say. The same sentence, twice:
+
+> D5's third branch now fires on an unclaimed callee: `W0512`, verdict `unclaimed`,
+> and §5.5 is amended.
+
+> When your new code calls old code that carries no promises, Ply now stops and names
+> the function it refused to walk into, instead of grinding for eleven minutes.
+
+The second one is the report. Banned unless the reader asked: § references, decision
+letters (D5, D7), diagnostic codes (`W0512`, `E0204`), verdict and status words as
+though they were English (`conditional`, `bounded(2)`, `owed-evidence`, `unclaimed`),
+milestone and phase numbers, engine and crate names, and anything whose meaning needs
+the spec open. Name the *thing that happened*, in words a competent developer who has
+never read this repo would follow.
+
+Numbers and evidence still belong in the report — "3 of 8 passed", "eleven minutes to
+five milliseconds", "the test goes red when you break it". Those are the substance;
+the jargon was never carrying it.
+
 ## Every user-facing sentence passes the newbie bar
 
 Tooltips, diagnostics, CLI output: written for someone who has never seen Ply. Name the

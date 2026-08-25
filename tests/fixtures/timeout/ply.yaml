@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  timeout:
+    anchor: ply_fixture_timeout
+    fns:
+      vec_iter_sum:
+        checks: [bounded(1)]

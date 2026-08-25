@@ -1,0 +1,14 @@
+ply: 1
+
+# `narrow_window` accepts only 20 < x < 24. Nothing the fuzz strategy draws
+# lands there in practice, so proptest gives up (its own global-reject
+# abort) having checked essentially nothing. The 2026-08-24 M4 review's D4:
+# that run still earned the full `fuzzed(256)` verdict, with a warning
+# alongside it -- a verdict claiming 256 cases of evidence for a run that
+# executed approximately none.
+components:
+  rejectabort:
+    anchor: ply_fixture_rejectabort
+    fns:
+      narrow_window:
+        checks: [fuzz(256)]

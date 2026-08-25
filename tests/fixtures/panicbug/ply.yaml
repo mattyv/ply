@@ -1,0 +1,15 @@
+ply: 1
+
+# `halves` panics on an odd input instead of returning. proptest finds that
+# input and fails the generated test, but the harness prints its
+# failing-input marker only from the postcondition arm -- a panic skips it.
+# The 2026-08-24 M4 review's D6: that path built a correct `X0901`
+# tool-error diagnostic with no counterexample and then labelled the node
+# `violation` anyway, which §5.4c's MUST forbids ("MUST NOT emit a
+# `violation` without a witness").
+components:
+  panicbug:
+    anchor: ply_fixture_panicbug
+    fns:
+      halves:
+        checks: [fuzz(256)]

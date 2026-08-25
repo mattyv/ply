@@ -786,6 +786,18 @@ Two consequences, both immediate:
    something other than `violation`. Worth pinning as a test before we generate our first
    stub.
 
+   **RETRACTED 2026-08-25, by measurement** (`tests/spike/kani-pin/FINDINGS.md`). The book
+   sentence quoted above is stale about its own release: at 0.67.0 a stubbed harness that
+   fails **does** print a full concrete-playback witness, including the value the stub
+   invented, and Ply's `extract_witness_bytes` accepts it. This paragraph's inference from
+   the doc was wrong, and this is exactly the case the standing rule at the top of this
+   file covers — measurement wins. What *is* broken, identically at 0.67.0 and on `main`,
+   is one step later: the generated playback test **does not apply the stub** (Kani says so
+   itself in the test's doc comment, from
+   `kani-driver/src/concrete_playback/test_generator.rs`), so replaying a stub-caused
+   failure panics on leftover concrete values rather than reproducing the failure. Silent,
+   and worse than the limitation this paragraph claimed.
+
 The scope caveat, stated plainly because it matters: this paragraph is about `-Z stubbing`
 and `#[kani::stub]`. We have *not* established that it binds `#[kani::stub_verified]`
 identically — indeed our own whole-crate run exercised `stub_verified` without `--harness`.
@@ -794,6 +806,13 @@ a crate contains multiple harnesses with different stub configurations, each har
 verified independently"; "**Concrete playback:** Stubbing is compatible with
 `--concrete-playback`"), which is a real argument for bumping the pin — and a D13-shaped
 spike question, not something to settle from documents.
+
+**Spiked 2026-08-25; the argument did not survive** (`tests/spike/kani-pin/FINDINGS.md`).
+Kani `main` @ `2457093` was built from source and run against Ply's own shapes beside the
+untouched 0.67.0. The `--concrete-playback` restriction was already absent at 0.67.0, and
+`main`'s stronger claim — "Kani can generate a concrete test case that reproduces the
+failure using the stub's behavior" — is contradicted by `main`'s own source and by the
+run. Nothing was gained by moving, so the recommendation is to stay at 0.67.0.
 
 `main` also documents stubbing capabilities that do not exist at 0.67.0 and that we should
 not design around yet: `kani::stub_set!` / `#[kani::use_stub_set(..)]` for reusable composable
@@ -862,6 +881,10 @@ That is the vacuous-success hazard of §3 item 9, in the specific form Ply will 
 D5's fallback path — a callee that is merely fuzzed or tested, verified under an *assumed*
 contract with a `conditional` verdict — must not be implemented as a plain `#[kani::stub]`
 over a contracted callee. That combination is broken today.
+
+**Confirmed 2026-08-25, and still broken on `main`** (`tests/spike/kani-pin/FINDINGS.md`):
+the same error, word for word, from a source build of `main` @ `2457093`. #4591 is not a
+release-lag problem.
 
 
 ### 4. `autoharness` is converging on Ply's M4, fast, and it already handles cases we don't

@@ -638,6 +638,9 @@ fn every_painted_element_resolves_a_style_rule() {
         "tests/fixtures/qualified_refs.ply.yaml",
         // §7.1 gate-debt closure: `strict`, `mode: synth`, `examples`.
         "tests/fixtures/visual_forms.ply.yaml",
+        // docs/plans/external-elements.md: external box, `~>` edges
+        // touching one, and a derived `entry:` edge.
+        "tests/fixtures/externals.ply.yaml",
         // §7.1 finding coverage: these fixtures each carry a real finding
         // that must resolve through `FINDING_STYLE`, not just parse clean.
         "../check/tests/fixtures/bad_check_syntax.ply.yaml",
@@ -829,6 +832,11 @@ fn every_drawn_item_resolves_a_tooltip() {
         "edge-flow",
         "deny-rule",
         "any-node",
+        // docs/plans/external-elements.md: the external box itself, and
+        // the derived `entry:` edge (an explicit `~>` touching one reuses
+        // `edge-flow` above — same construct, same tooltip mechanism).
+        "external",
+        "edge-entry",
     ];
 
     let mut untitled: Vec<String> = Vec::new();
@@ -837,6 +845,7 @@ fn every_drawn_item_resolves_a_tooltip() {
         "tests/fixtures/full.ply.yaml",
         "tests/fixtures/qualified_refs.ply.yaml",
         "tests/fixtures/visual_forms.ply.yaml",
+        "tests/fixtures/externals.ply.yaml",
     ] {
         let svg = render_fixture(fixture);
         let doc = roxmltree::Document::parse(&svg).unwrap();
@@ -888,7 +897,7 @@ mod declared_ceiling {
     /// contribute nothing). Deliberately re-derived here from `parse_check`,
     /// not imported from the renderer, so this is a real second opinion
     /// rather than the same code asserting against itself — the effective
-    /// list itself comes from `ply_model::effective_checks`, the single
+    /// list itself comes from `ply_core::model::effective_checks`, the single
     /// shared resolution of §5.1's component-default inheritance rule that
     /// both `ply-check` and this renderer must agree with (re-deriving that
     /// resolution independently here would just be a second copy of the
@@ -1742,6 +1751,8 @@ mod collapse {
             "edge-flow",
             "deny-rule",
             "any-node",
+            "external",
+            "edge-entry",
         ];
 
         let mut unstyled: Vec<String> = Vec::new();
@@ -2085,15 +2096,151 @@ mod no_overlap {
         }
     }
 
+    /// An edge label struck by its *own* line — the narrower property
+    /// (vetting 003's coordinator review, second round): a first attempt at
+    /// this checked every label against every drawn line in the document
+    /// and immediately produced false positives on already-reviewed,
+    /// unrelated designs -- a wildcard `*` any-node's own "*" glyph is
+    /// legitimately touched by the deny line that starts there (that is
+    /// the point: the line visibly emanates from the node it names), and a
+    /// deny rule's `except` label sits deliberately close to its own
+    /// routed line inside the reserved margin. Both are real, reviewed
+    /// design choices this invariant has no business flagging. `edge-label`
+    /// text (the payload-type label on a `~>`/derived `entry:` edge) has no
+    /// such legitimate reason to touch a line at all -- it is meant to sit
+    /// clearly *beside* its own path, never on it -- so the check is
+    /// scoped to exactly that pairing: each `edge-label` against the
+    /// points of the `<path>` sharing its own immediate `<g>` (the two are
+    /// always drawn as siblings -- see `render_edge`/`render_external_edge`),
+    /// not the general "any label vs. any line" sweep the coordinator's
+    /// own fallback anticipated could be needed.
+    /// Every drawn line's points, gathered in one pass — the same shapes
+    /// `check_fixture`'s own line-matching arms already recognize: any
+    /// edge's path (call, flow, or the derived `entry:` edge all share the
+    /// `edge-line`/`edge-line-finding` class on the `<path>` itself,
+    /// regardless of their wrapping `<g>`'s class), a deny line, or a deny
+    /// bar.
+    fn all_line_segments(doc: &roxmltree::Document) -> Vec<Vec<(f64, f64)>> {
+        let mut out = Vec::new();
+        for node in doc.descendants().filter(|n| n.is_element()) {
+            if node.ancestors().any(|a| a.tag_name().name() == "defs") {
+                continue; // the arrowhead marker glyph, not real canvas geometry
+            }
+            match (node.tag_name().name(), node.attribute("class")) {
+                ("line", Some("deny-bar")) => {
+                    let x1: f64 = node.attribute("x1").unwrap().parse().unwrap();
+                    let y1: f64 = node.attribute("y1").unwrap().parse().unwrap();
+                    let x2: f64 = node.attribute("x2").unwrap().parse().unwrap();
+                    let y2: f64 = node.attribute("y2").unwrap().parse().unwrap();
+                    out.push(vec![(x1, y1), (x2, y2)]);
+                }
+                (
+                    "path",
+                    Some("edge-line" | "edge-line-finding" | "deny-line" | "deny-line-finding"),
+                ) => {
+                    out.push(parse_path_points(node.attribute("d").unwrap()));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// An `edge-label` (the payload-type label on a `~>` edge, or the
+    /// literal word on a derived `entry:` edge) struck by *any* drawn
+    /// line — its own edge's included, but not only that: the real defect
+    /// this was written for (vetting 003's coordinator review, second
+    /// round) turned out to be `RawFrame`'s label struck by the
+    /// *`entry:`* edge's line running close beside it, not by `RawFrame`'s
+    /// own path — a same-edge-only check would have missed it entirely.
+    /// Deliberately scoped to the `edge-label` class alone, not every
+    /// drawn string: a first attempt checked *every* text node against
+    /// every line and immediately produced real false positives on
+    /// already-reviewed, unrelated designs — a wildcard `*` any-node's own
+    /// glyph (class `any-label`) is legitimately touched by the deny line
+    /// that starts there (the line is meant to visibly emanate from the
+    /// node it names), and a deny rule's `except` text (class
+    /// `deny-except`) sits deliberately close to its own routed line
+    /// inside the reserved margin. Neither of those classes is
+    /// `edge-label`, so scoping to that one class keeps the real property
+    /// (an edge's payload/`entry` label must sit clear of every line) and
+    /// drops the false positives, without needing the narrower
+    /// "only its own path" fallback the coordinator's own message allowed
+    /// for — that fallback was tried first and rejected here precisely
+    /// because it would have missed the actual reported defect.
+    fn edge_labels_struck_by_any_line(
+        doc: &roxmltree::Document,
+        style: &str,
+        lines: &[Vec<(f64, f64)>],
+        fixture: &str,
+        label: &str,
+        violations: &mut Vec<String>,
+        known_pre_existing_gaps: &mut Vec<String>,
+    ) {
+        for text in doc
+            .descendants()
+            .filter(|n| n.tag_name().name() == "text" && n.attribute("class") == Some("edge-label"))
+        {
+            let (bbox, _) = text_bbox(text, style);
+            // docs/external-elements-adoption.md, "the coverage gap, round
+            // three": every `edge-label` this session's own work can draw
+            // (an explicit `~>` touching an external, or a derived
+            // `entry:` edge) carries this exact phrase in its enclosing
+            // `<g>`'s tooltip (`external_flow_tooltip`/`entry_edge_
+            // tooltip`, svg.rs) — a reliable, non-coordinate-based way to
+            // tell "one of this session's own constructs" from "a regular,
+            // pre-existing flow edge's label", since the two need
+            // different verdicts here: a strike on the former is this
+            // session's own defect to fix (and is fixed — this branch is
+            // never reached for one); a strike on the latter is real but
+            // predates this feature entirely (confirmed against the
+            // pre-session commit, same coordinates) and needs a larger,
+            // separate fix (a two-pass label-placement restructure for
+            // *every* edge class, not just externals) this session did not
+            // attempt — recorded, not silently swallowed.
+            let is_external_construct = text
+                .ancestors()
+                .find_map(|a| a.children().find(|c| c.tag_name().name() == "title"))
+                .and_then(|t| t.text().map(str::to_string))
+                .is_some_and(|t| t.contains("outside this codebase"));
+            for pts in lines {
+                for seg in pts.windows(2) {
+                    if segment_crosses_interior(seg[0], seg[1], bbox, 1.0) {
+                        let msg = format!(
+                            "{fixture} ({label}): edge label {bbox:?} is struck by a drawn line segment {seg:?}"
+                        );
+                        if is_external_construct {
+                            violations.push(msg);
+                        } else {
+                            known_pre_existing_gaps.push(msg);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     fn check_fixture(
         fixture: &str,
         label: &str,
         svg: &str,
         style: &str,
         violations: &mut Vec<String>,
+        known_pre_existing_gaps: &mut Vec<String>,
     ) {
         let xml = roxmltree::Document::parse(svg).unwrap();
         let boxes = all_component_boxes(&xml);
+        let lines = all_line_segments(&xml);
+        edge_labels_struck_by_any_line(
+            &xml,
+            style,
+            &lines,
+            fixture,
+            label,
+            violations,
+            known_pre_existing_gaps,
+        );
 
         for node in xml.descendants().filter(|n| n.is_element()) {
             if node.ancestors().any(|a| a.tag_name().name() == "defs") {
@@ -2170,6 +2317,18 @@ mod no_overlap {
             ply_render::svg::FINDING_STYLE
         );
         let mut violations: Vec<String> = Vec::new();
+        // docs/external-elements-adoption.md, "the coverage gap, round
+        // three": real, pre-session, out-of-scope label/line collisions on
+        // *regular* (non-external) edges — confirmed against the commit
+        // that predates the external-elements feature entirely, same
+        // coordinates. Reported, never silently dropped, but not a hard
+        // failure here: fixing them needs a two-pass label-placement
+        // restructure for every edge class (this session only built and
+        // verified that pattern for external/`entry:` edges, the ones the
+        // coordinator's review actually asked about), which this session
+        // did not attempt against well-tested, delicate deny/lane code it
+        // has no mandate to touch.
+        let mut known_pre_existing_gaps: Vec<String> = Vec::new();
         for fixture in [
             "../../vetting/001-spsc-disruptor.ply.yaml",
             "../../vetting/002-ingest-pipeline.ply.yaml",
@@ -2185,7 +2344,14 @@ mod no_overlap {
             let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
 
             let default_svg = render_svg(&doc).unwrap_or_else(|e| panic!("{fixture}: {e}"));
-            check_fixture(fixture, "default", &default_svg, &style, &mut violations);
+            check_fixture(
+                fixture,
+                "default",
+                &default_svg,
+                &style,
+                &mut violations,
+                &mut known_pre_existing_gaps,
+            );
 
             let depth1_svg = render_svg_with_options(
                 &doc,
@@ -2195,8 +2361,76 @@ mod no_overlap {
                 },
             )
             .unwrap_or_else(|e| panic!("{fixture} --depth 1: {e}"));
-            check_fixture(fixture, "--depth 1", &depth1_svg, &style, &mut violations);
+            check_fixture(
+                fixture,
+                "--depth 1",
+                &depth1_svg,
+                &style,
+                &mut violations,
+                &mut known_pre_existing_gaps,
+            );
+
+            // §7.1 `--collapse <name>`: folding *one* top-level component
+            // while every other stays fully expanded is its own distinct
+            // layout (routing/obstruction geometry for an edge into the
+            // collapsed box's siblings differs from both "default" and
+            // "--depth 1", which folds *everything* at once) — and it is
+            // exactly the configuration vetting 003's own canonical
+            // committed SVG uses (`--collapse ingest`). Neither "default"
+            // nor "--depth 1" alone exercises a single-component collapse,
+            // so a routing bug specific to that shape was invisible to this
+            // invariant until every top-level name got its own sweep here
+            // (found: `venue ~> ingest.feed` routed straight through
+            // `strategy.signals` under `--collapse ingest` specifically).
+            for name in doc.components.keys() {
+                let label = format!("--collapse {name}");
+                let collapsed_svg = render_svg_with_options(
+                    &doc,
+                    &RenderOptions {
+                        collapse: vec![name.clone()],
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|e| panic!("{fixture} {label}: {e}"));
+                check_fixture(
+                    fixture,
+                    &label,
+                    &collapsed_svg,
+                    &style,
+                    &mut violations,
+                    &mut known_pre_existing_gaps,
+                );
+            }
         }
+        // Pre-existing label/line gaps (regular- and deny-edge label
+        // placement, predating external elements) are reported rather than
+        // failed -- fixing them means restructuring those two placement
+        // paths, which is its own work item (docs/external-elements-adoption.md,
+        // TODO.md). But the count is PINNED, not merely printed: a passing
+        // test that knows about N violations and says nothing is the
+        // "gate debt: none" over-claim this project already retracted once
+        // (see The-Ply-Spec.md 7.1's own note), and an eprintln in a green
+        // test is read by nobody. Pinning makes the debt a ratchet: it can
+        // only be paid down, never silently grow. Lower this number when you
+        // fix one; if it rises, you added one and the test says so.
+        const KNOWN_LABEL_LINE_GAPS: usize = 13;
+        if !known_pre_existing_gaps.is_empty() {
+            eprintln!(
+                "no_drawn_element_intersects_a_box_it_is_not_inside: {} known pre-existing \
+                 label/line gap(s), predating the external-elements feature, reported not \
+                 failed (docs/external-elements-adoption.md):\n{}",
+                known_pre_existing_gaps.len(),
+                known_pre_existing_gaps.join("\n")
+            );
+        }
+        assert!(
+            known_pre_existing_gaps.len() <= KNOWN_LABEL_LINE_GAPS,
+            "label/line gaps grew from {} to {} -- this change added one. Fix the new \
+             collision rather than raising the pin:\n{}",
+            KNOWN_LABEL_LINE_GAPS,
+            known_pre_existing_gaps.len(),
+            known_pre_existing_gaps.join("\n")
+        );
         assert!(
             violations.is_empty(),
             "drawn elements intersecting boxes they are not inside:\n{}",
@@ -2771,6 +3005,247 @@ mod new_visual_forms {
         assert!(
             any_examples_seen,
             "no fixture exercised examples — this test would pass vacuously"
+        );
+    }
+}
+
+/// docs/plans/external-elements.md §4.2 / CLAUDE.md's render-invariant
+/// family (same shape as `no_drawn_element_intersects_a_box_it_is_not_
+/// inside`): the frame-crossing invariant the external-elements gate is
+/// conditioned on. Three clauses, walked against the real rendered output,
+/// not spot-checked:
+///
+/// 1. No external box intersects the workspace frame — externals draw
+///    strictly *outside* it, never overlapping (§7.1's extended "inside the
+///    frame = part of the system").
+/// 2. Every deny `*` wildcard node stays *inside* the frame — a `*` means
+///    "any component inside the workspace", and must never be mistaken for
+///    an external by drawing in the same outside region.
+/// 3. Every edge with an external endpoint crosses the frame border exactly
+///    once — not zero (it would then read as entirely inside or outside),
+///    not two-or-more (it would zigzag across the boundary it exists to
+///    show).
+///
+/// Written RED FIRST: before `svg.rs` knew about `externals:`, `~>` edges
+/// naming one were silently dropped (resolved to nothing, matching any
+/// other unresolvable endpoint) and `entry:` had no rendering at all, so
+/// `tests/fixtures/externals.ply.yaml` rendered with zero external boxes
+/// and zero external-touching edges — the "any external box found" /
+/// "any external edge found" guards below failed with exactly that message,
+/// not a compile error, confirming the fixture and the *absence* of the
+/// feature were the reason, not a typo in the test.
+mod frame_boundary {
+    use super::*;
+
+    type Rectf = (f64, f64, f64, f64); // (x, y, w, h)
+
+    fn rects_overlap(a: Rectf, b: Rectf, eps: f64) -> bool {
+        a.0 + eps < b.0 + b.2
+            && a.0 + a.2 > b.0 + eps
+            && a.1 + eps < b.1 + b.3
+            && a.1 + a.3 > b.1 + eps
+    }
+
+    fn point_in_rect(p: (f64, f64), r: Rectf, eps: f64) -> bool {
+        p.0 >= r.0 - eps && p.0 <= r.0 + r.2 + eps && p.1 >= r.1 - eps && p.1 <= r.1 + r.3 + eps
+    }
+
+    fn absolute_offset(node: roxmltree::Node) -> (f64, f64) {
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut cur = Some(node);
+        while let Some(n) = cur {
+            if let Some(t) = n.attribute("transform")
+                && let Some(inner) = t
+                    .strip_prefix("translate(")
+                    .and_then(|s| s.strip_suffix(")"))
+            {
+                let parts: Vec<f64> = inner
+                    .split(',')
+                    .map(|p| p.trim().parse().unwrap())
+                    .collect();
+                x += parts[0];
+                y += parts[1];
+            }
+            cur = n.parent();
+        }
+        (x, y)
+    }
+
+    /// The workspace frame's own rect, in absolute canvas coordinates (it is
+    /// drawn at document-root level with no ancestor transform, but read via
+    /// the same accumulation as everything else for robustness).
+    fn frame_rect(doc: &roxmltree::Document) -> Rectf {
+        let node = doc
+            .descendants()
+            .find(|n| n.attribute("class") == Some("workspace-frame"))
+            .expect("workspace-frame rect must exist");
+        let (ox, oy) = absolute_offset(node);
+        let x: f64 = node.attribute("x").unwrap().parse().unwrap();
+        let y: f64 = node.attribute("y").unwrap().parse().unwrap();
+        let w: f64 = node.attribute("width").unwrap().parse().unwrap();
+        let h: f64 = node.attribute("height").unwrap().parse().unwrap();
+        (x + ox, y + oy, w, h)
+    }
+
+    /// Every external box's absolute rect — the `external-box` rect inside
+    /// each `<g class="external">`.
+    fn external_rects(doc: &roxmltree::Document) -> Vec<Rectf> {
+        doc.descendants()
+            .filter(|n| n.tag_name().name() == "g" && n.attribute("class") == Some("external"))
+            .map(|g| {
+                let rect = g
+                    .children()
+                    .find(|c| c.attribute("class") == Some("external-box"))
+                    .expect("external group must have an external-box rect");
+                let (ox, oy) = absolute_offset(g);
+                let x: f64 = rect.attribute("x").unwrap_or("0").parse().unwrap();
+                let y: f64 = rect.attribute("y").unwrap_or("0").parse().unwrap();
+                let w: f64 = rect.attribute("width").unwrap().parse().unwrap();
+                let h: f64 = rect.attribute("height").unwrap().parse().unwrap();
+                (x + ox, y + oy, w, h)
+            })
+            .collect()
+    }
+
+    /// Every deny wildcard node's bounding box (from its `circle`), absolute.
+    fn any_node_rects(doc: &roxmltree::Document) -> Vec<Rectf> {
+        doc.descendants()
+            .filter(|n| n.attribute("class") == Some("any-node"))
+            .map(|g| {
+                let circle = g
+                    .children()
+                    .find(|c| c.tag_name().name() == "circle")
+                    .unwrap();
+                let (ox, oy) = absolute_offset(g);
+                let cx: f64 = circle.attribute("cx").unwrap().parse().unwrap();
+                let cy: f64 = circle.attribute("cy").unwrap().parse().unwrap();
+                let r: f64 = circle.attribute("r").unwrap().parse().unwrap();
+                (cx + ox - r, cy + oy - r, r * 2.0, r * 2.0)
+            })
+            .collect()
+    }
+
+    /// Every edge/entry line whose path has at least one endpoint landing
+    /// inside an external box — the "edge with an external endpoint" set
+    /// clause 3 is about. Absolute path points.
+    fn external_touching_edge_paths(
+        doc: &roxmltree::Document,
+        externals: &[Rectf],
+    ) -> Vec<Vec<(f64, f64)>> {
+        let mut out = Vec::new();
+        for g in doc.descendants().filter(|n| {
+            n.tag_name().name() == "g"
+                && matches!(n.attribute("class"), Some("edge-flow") | Some("edge-entry"))
+        }) {
+            let path = g
+                .children()
+                .find(|c| c.tag_name().name() == "path")
+                .expect("edge-flow/edge-entry group must have a path");
+            let (ox, oy) = absolute_offset(g);
+            let raw = parse_path_points(path.attribute("d").unwrap());
+            let pts: Vec<(f64, f64)> = raw.iter().map(|p| (p.0 + ox, p.1 + oy)).collect();
+            let first = pts[0];
+            let last = pts[pts.len() - 1];
+            if externals.iter().any(|r| point_in_rect(first, *r, 1.0))
+                || externals.iter().any(|r| point_in_rect(last, *r, 1.0))
+            {
+                out.push(pts);
+            }
+        }
+        out
+    }
+
+    fn count_border_crossings(points: &[(f64, f64)], (x, y, w, h): Rectf) -> usize {
+        let border = [
+            ((x, y), (x + w, y)),
+            ((x + w, y), (x + w, y + h)),
+            ((x + w, y + h), (x, y + h)),
+            ((x, y + h), (x, y)),
+        ];
+        let mut count = 0;
+        for seg in points.windows(2) {
+            for edge in &border {
+                if segments_cross((seg[0], seg[1]), *edge) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn no_external_box_intersects_the_frame_deny_wildcards_stay_inside_and_external_edges_cross_once()
+     {
+        let mut any_external_seen = false;
+        let mut any_edge_seen = false;
+        let mut violations: Vec<String> = Vec::new();
+
+        for fixture in [
+            "tests/fixtures/externals.ply.yaml",
+            "../../vetting/003-trading-system.ply.yaml",
+        ] {
+            let yaml = std::fs::read_to_string(fixture).unwrap();
+            let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let svg = render_svg(&doc).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let xml = roxmltree::Document::parse(&svg).unwrap();
+
+            let frame = frame_rect(&xml);
+            let externals = external_rects(&xml);
+            if !externals.is_empty() {
+                any_external_seen = true;
+            }
+
+            // Clause 1: no external box intersects the frame.
+            for ext in &externals {
+                if rects_overlap(*ext, frame, 0.5) {
+                    violations.push(format!(
+                        "{fixture}: external box {ext:?} intersects the frame {frame:?}"
+                    ));
+                }
+            }
+
+            // Clause 2: every deny `*` node stays inside the frame.
+            for any in any_node_rects(&xml) {
+                let (ax, ay, aw, ah) = any;
+                let inside = ax >= frame.0 - 0.5
+                    && ay >= frame.1 - 0.5
+                    && ax + aw <= frame.0 + frame.2 + 0.5
+                    && ay + ah <= frame.1 + frame.3 + 0.5;
+                if !inside {
+                    violations.push(format!(
+                        "{fixture}: deny wildcard node {any:?} does not stay inside the frame \
+                         {frame:?}"
+                    ));
+                }
+            }
+
+            // Clause 3: every edge with an external endpoint crosses the
+            // frame border exactly once.
+            for path in external_touching_edge_paths(&xml, &externals) {
+                any_edge_seen = true;
+                let crossings = count_border_crossings(&path, frame);
+                if crossings != 1 {
+                    violations.push(format!(
+                        "{fixture}: external-touching edge {path:?} crosses the frame border \
+                         {crossings} times, expected exactly 1"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            any_external_seen,
+            "no fixture drew any external box — this test would pass vacuously"
+        );
+        assert!(
+            any_edge_seen,
+            "no fixture drew any external-touching edge — this test would pass vacuously"
+        );
+        assert!(
+            violations.is_empty(),
+            "frame-crossing invariant violated:\n{}",
+            violations.join("\n")
         );
     }
 }

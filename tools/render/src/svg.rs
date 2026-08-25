@@ -8,12 +8,12 @@
 
 use crate::layout;
 use indexmap::IndexMap;
-use ply_check::{Diagnostic, Target as FindingTarget, run_checks};
-use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
-use ply_model::{
-    Check, Component, Deny, Document, Edge, EdgeKind, FnClaim, InheritedChecks, Mode,
+use ply_core::check::{Diagnostic, Target as FindingTarget, run_checks};
+use ply_core::model::{
+    Check, Component, Deny, Document, Edge, EdgeKind, External, FnClaim, InheritedChecks, Mode,
     component_default_checks, effective_checks, parse_check, parse_deny, parse_edge,
 };
+use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -104,12 +104,34 @@ const ANY_R: f64 = 14.0;
 /// `except` label on the other).
 const ANY_GAP: f64 = 16.0;
 
+// ---- §7.1 externals (docs/plans/external-elements.md) ---------------------
+//
+// An external draws as a solid-bordered, unfilled, anchor-less, badge-less
+// box OUTSIDE the workspace frame — the absence of the anchor subtitle line
+// every component box carries is itself a quiet secondary cue. One text
+// line (its name) is all the box shows; the descriptive `note:` lives in
+// the tooltip only.
+
+/// Height of an external box: top/bottom padding plus one text line — no
+/// anchor line, no badge row, no fn chips (§4: "no anchor subtitle, no
+/// badges, no chips").
+const EXTERNAL_BOX_H: f64 = PAD * 2.0 + LINE_H;
+/// Vertical gap between the frame's own bottom edge and the external band
+/// below it, and between externals sharing that band and the canvas edge —
+/// generous enough that the frame border (bolder now, §4.2 point 3) reads
+/// as a boundary the externals sit clearly outside of, not a stray line.
+const EXTERNAL_BAND_GAP: f64 = 28.0;
+/// Horizontal gap between externals sharing the band, left to right in
+/// `externals:` declaration order (the placement side/order is a renderer
+/// judgment the proposal leaves free, §7 of the plan).
+const EXTERNAL_GAP: f64 = NODESEP;
+
 /// Every `class` this renderer emits must have a rule here. SVG's initial
 /// paint is `fill: black; stroke: none`, so an unstyled shape is a solid black
 /// box — a missing rule is invisible output, not a cosmetic slip.
 /// `tests/render.rs::every_painted_element_resolves_a_style_rule` enforces it.
 pub const STYLE: &str = "\
-.workspace-frame{fill:#fbfbfd;stroke:#c8ccd4}\
+.workspace-frame{fill:#fbfbfd;stroke:#c8ccd4;stroke-width:2.5}\
 .workspace-title{fill:#6b7280}\
 .component-box{stroke:#3b4252;stroke-width:1.5}\
 .hollow-box{stroke-dasharray:6 4}\
@@ -145,6 +167,7 @@ pub const STYLE: &str = "\
 .deny-except{fill:#8f2f2c;font-size:10px;text-anchor:middle}\
 .any-node circle{fill:#eceef2;stroke:#9aa2b1}\
 .any-label{fill:#4b5563;text-anchor:middle}\
+.external-box{fill:none;stroke:#3b4252;stroke-width:1.5}\
 #arrow path{fill:#3b4252}\
 ";
 
@@ -159,6 +182,7 @@ pub const STYLE: &str = "\
 pub const FINDING_STYLE: &str = "\
 .fn-chip-box-finding{fill:#fdecec;stroke:#c9534f;stroke-width:2.5}\
 .component-box-finding{stroke:#c9534f;stroke-width:3}\
+.external-box-finding{fill:#fdecec;stroke:#c9534f;stroke-width:3}\
 .edge-line-finding{fill:none;stroke:#c9534f;stroke-width:3}\
 .deny-line-finding{fill:none;stroke:#c9534f;stroke-width:3}\
 .unresolved-pin-finding circle,.registry-pin-finding circle{fill:#fdecec;stroke:#c9534f;stroke-width:2.5}\
@@ -259,6 +283,7 @@ fn title(text: &str) -> String {
 struct FindingsIndex {
     by_fn: HashMap<(String, String), Vec<usize>>,
     by_component: HashMap<String, Vec<usize>>,
+    by_external: HashMap<String, Vec<usize>>,
     by_edge: HashMap<usize, Vec<usize>>,
     by_deny: HashMap<usize, Vec<usize>>,
     by_unresolved: HashMap<u64, Vec<usize>>,
@@ -278,6 +303,9 @@ fn build_findings_index(findings: &[Diagnostic]) -> FindingsIndex {
                 .push(i),
             FindingTarget::Component(path) => {
                 idx.by_component.entry(path.clone()).or_default().push(i)
+            }
+            FindingTarget::External(name) => {
+                idx.by_external.entry(name.clone()).or_default().push(i)
             }
             FindingTarget::EdgeIndex(e) => idx.by_edge.entry(*e).or_default().push(i),
             FindingTarget::DenyIndex(d) => idx.by_deny.entry(*d).or_default().push(i),
@@ -331,6 +359,9 @@ impl<'a> FindingCtx<'a> {
     }
     fn component_findings(&self, component_path: &str) -> Vec<&'a Diagnostic> {
         self.mark_and_collect(self.index.by_component.get(component_path))
+    }
+    fn external_findings(&self, name: &str) -> Vec<&'a Diagnostic> {
+        self.mark_and_collect(self.index.by_external.get(name))
     }
     fn edge_findings(&self, edge_index: usize) -> Vec<&'a Diagnostic> {
         self.mark_and_collect(self.index.by_edge.get(&edge_index))
@@ -475,8 +506,8 @@ fn fn_declared_ceiling(checks: &[String]) -> Evidence {
 /// `inherited` is the §5.1 checks default `comp` itself inherited from
 /// further up (`None` at the document root, or wherever no ancestor ever
 /// declared one) — each fn's ceiling is computed from its *effective* list
-/// (`ply_model::effective_checks`), and each nested component inherits
-/// `comp`'s own default in turn (`ply_model::component_default_checks`).
+/// (`ply_core::model::effective_checks`), and each nested component inherits
+/// `comp`'s own default in turn (`ply_core::model::component_default_checks`).
 fn component_verdict_node<'a>(
     name: &'a str,
     comp: &'a Component,
@@ -1168,6 +1199,18 @@ struct ComponentBox {
     /// leaf name -> rect, relative to this box's own local origin. Used by
     /// the caller to translate into absolute canvas coordinates for edges.
     positions: Vec<(String, Rect)>,
+    /// docs/plans/external-elements.md: `"{qualified}::{fn_name}"` -> rect,
+    /// relative to this box's own local origin — a fn chip's own drawn
+    /// position, needed only to draw a derived `entry:` edge from the exact
+    /// chip rather than its whole component box. Unlike `positions` (which
+    /// carries bare leaf names an ancestor must re-prefix), these keys are
+    /// already fully qualified at the point they're recorded, so every
+    /// ancestor forwards them unchanged (coordinate offset only) — see this
+    /// field's construction in `render_fn_chip`'s caller. Always empty from
+    /// `render_collapsed_component`: a folded box draws no chips at all: the
+    /// caller redirects to the collapsed box itself instead (mirroring how a
+    /// regular edge into a collapsed descendant already reattaches, §7.1).
+    fn_positions: Vec<(String, Rect)>,
 }
 
 /// Everything the recursive component walk threads unchanged through every
@@ -1377,6 +1420,7 @@ fn render_collapsed_component(
         height: box_h,
         svg,
         positions: Vec::new(),
+        fn_positions: Vec::new(),
     }
 }
 
@@ -1533,6 +1577,7 @@ fn render_component<'a>(
     let mut y = PAD + header_h;
     let mut body = String::new();
     let mut positions: Vec<(String, Rect)> = Vec::new();
+    let mut fn_positions: Vec<(String, Rect)> = Vec::new();
 
     if badge_row_h > 0.0 {
         let mut bx = PAD;
@@ -1597,6 +1642,17 @@ fn render_component<'a>(
                         },
                     ));
                 }
+                for (n, r) in &cbox.fn_positions {
+                    fn_positions.push((
+                        n.clone(),
+                        Rect {
+                            x: cx + r.x,
+                            y: cy + r.y,
+                            w: r.w,
+                            h: r.h,
+                        },
+                    ));
+                }
             }
             y += layered.content_h + GAP;
         }
@@ -1623,15 +1679,38 @@ fn render_component<'a>(
                         },
                     ));
                 }
+                for (n, r) in cbox.fn_positions {
+                    fn_positions.push((
+                        n,
+                        Rect {
+                            x: PAD + r.x,
+                            y: y + r.y,
+                            w: r.w,
+                            h: r.h,
+                        },
+                    ));
+                }
                 y += cbox.height + GAP;
             }
         }
     }
 
     // fn claims are not edge/deny endpoints, so unlike nested components,
-    // their names are not recorded in `positions`.
-    for (_, chip) in chips {
+    // their names are not recorded in `positions` — but `entry:`'s derived
+    // edge (docs/plans/external-elements.md) needs the exact chip rect, so
+    // it is recorded here, fully qualified (`{qualified}::{fn_name}`), in
+    // `fn_positions`.
+    for (fname, chip) in chips {
         body.push_str(&wrap_translate(&chip.svg, PAD, y));
+        fn_positions.push((
+            format!("{qualified}::{fname}"),
+            Rect {
+                x: PAD,
+                y,
+                w: chip.width,
+                h: chip.height,
+            },
+        ));
         y += chip.height + GAP;
     }
 
@@ -1710,7 +1789,255 @@ fn render_component<'a>(
         height: box_h,
         svg,
         positions,
+        fn_positions,
     }
+}
+
+/// docs/plans/external-elements.md §4: "⟨name⟩ — a system or person
+/// outside this codebase: ⟨note⟩. Ply draws it so the boundary is visible,
+/// but checks nothing about it — every arrow touching it is a declaration,
+/// not a verified fact." Exact wording, golden-tested like all user-facing
+/// text (§3's own line: "the tooltip must carry its own gloss").
+fn external_tooltip_line(name: &str, ext: &External) -> String {
+    format!(
+        "{name} — a system or person outside this codebase: {}. Ply draws it so the boundary \
+         is visible, but checks nothing about it — every arrow touching it is a declaration, \
+         not a verified fact.",
+        ext.note
+    )
+}
+
+/// One external, drawn as a solid-bordered, unfilled box — never a node of
+/// the §7 verdict tree, so unlike a component box this carries no ceiling
+/// fill, no `pure` seal, no `strict` notch, no capability badges, no anchor
+/// line: name and nothing else, from local origin `(0,0)`.
+struct ExternalBox {
+    width: f64,
+    height: f64,
+    svg: String,
+}
+
+fn render_external(name: &str, ext: &External, ctx: &FindingCtx) -> ExternalBox {
+    let findings = ctx.external_findings(name);
+    let finding_badge_w = finding_badge_width(&findings);
+    let name_w = text_w(name, NAME_CHAR_W)
+        + if findings.is_empty() {
+            0.0
+        } else {
+            BADGE_GAP + finding_badge_w
+        };
+    let width = name_w + PAD * 2.0;
+    let height = EXTERNAL_BOX_H;
+
+    let mut tip = finding_tooltip_lines(&findings);
+    tip.push(external_tooltip_line(name, ext));
+
+    let box_class = if findings.is_empty() {
+        "external-box"
+    } else {
+        "external-box-finding"
+    };
+    let badge_svg = if findings.is_empty() {
+        String::new()
+    } else {
+        render_finding_badge(width - PAD - finding_badge_w, PAD - 2.0, &findings)
+    };
+    let svg = format!(
+        "<g class=\"external\" data-name=\"{}\">{}<rect class=\"{box_class}\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{height:.1}\" rx=\"6\" /><text class=\"component-name\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>{badge_svg}</g>",
+        esc(name),
+        title(&tip.join("\n")),
+        PAD + LINE_H - 2.0,
+        esc(name)
+    );
+    ExternalBox { width, height, svg }
+}
+
+/// docs/plans/external-elements.md §4: an explicit `~>` edge that happens
+/// to touch an external — the same "declared for the picture; nothing
+/// checks flows in v1" wording every flow edge already carries, plus one
+/// more sentence naming which side is external and why that matters (the
+/// newbie bar: name the unusual thing, say what it means).
+fn external_flow_tooltip(ty_label: &str, from: &str, to: &str, ext_name: &str) -> Vec<String> {
+    vec![format!(
+        "{ty_label} data flows from {from} to {to} — declared for the picture; nothing checks \
+         flows in v1. {ext_name} is outside this codebase, so this arrow is a declaration, \
+         never a verified fact."
+    )]
+}
+
+/// docs/plans/external-elements.md §3/§4: the derived `entry:` arrow's
+/// tooltip — names the fn and lists each `requires` clause now standing as
+/// an environmental assumption (the proposal's own wording for what the
+/// entry-point condition means), or says plainly that there is nothing to
+/// assume yet when the fn has no contract.
+fn entry_edge_tooltip(fn_name: &str, ext_name: &str, requires: &[String]) -> Vec<String> {
+    let mut tip = vec![format!(
+        "entry — {ext_name} can reach {fn_name} from outside this codebase (declared via \
+         \"entry: [{ext_name}]\" on {fn_name})."
+    )];
+    if requires.is_empty() {
+        tip.push(
+            "no requires are declared on this function, so it makes no environmental \
+             assumption yet."
+                .to_string(),
+        );
+    } else {
+        tip.push(
+            "its requires clauses now stand as environmental assumptions: nothing inside this \
+             codebase calls it, so no caller here can discharge them:"
+                .to_string(),
+        );
+        for r in requires {
+            tip.push(format!("requires: {r}"));
+        }
+    }
+    tip.push("Ply never checks this edge — it is declared, not verified.".to_string());
+    tip
+}
+
+/// One `~>` edge or derived `entry:` edge touching an external, routed
+/// around any top-level component it isn't attached to — the same
+/// obstruction-avoiding rail `route_deny_line` already computes for
+/// wildcard deny lines (§7.1 amendment, vetting 003 finding 3), reused
+/// as-is: an external endpoint can sit arbitrarily far (in rank terms) from
+/// its workspace counterpart, exactly the shape that routing exists for.
+/// Unlike a deny wildcard's routing, `obstacle_positions` here is every
+/// component's rect, nested ones included, not top-level only: a nested
+/// endpoint (`ingest.feed`) sits behind unrelated *siblings* under the same
+/// ancestor (`ingest.ring`, drawn between `feed` and anything below it) that
+/// a top-level-only obstruction set would never see and route straight
+/// through — `exclude` names only the endpoint's own rect and its
+/// immediate top-level ancestor, so a real sibling is never mistakenly
+/// excluded along with it. Always dashed — the `~>`/`entry:` "declared,
+/// not machine-checked" form (§4's restated dash-channel meaning) — and
+/// always crosses the frame border exactly once, since the route only
+/// detours *inside* the frame (every obstruction it steps around is a real
+/// workspace component) before a final straight run to the external,
+/// strictly outside it.
+/// The route only: split out of the drawing step (below) so every
+/// external edge's geometry can be computed *before* any of their labels
+/// are placed — label placement needs to see every sibling external
+/// edge's line, not just boxes, to avoid the exact defect this pair of
+/// functions replaces (vetting 003's coordinator review, third round:
+/// `RawFrame`'s label was struck by the separately-routed `entry` edge's
+/// line, not by its own — a per-edge, draw-as-you-go placement can never
+/// see a sibling that hasn't been drawn yet).
+fn compute_external_edge_route(
+    workspace_rect: Rect,
+    workspace_ancestor_rect: Rect,
+    external_rect: Rect,
+    lane: (f64, f64),
+    obstacle_positions: &IndexMap<String, Rect>,
+) -> Vec<(f64, f64)> {
+    // Parallel lanes for two or more edges sharing the same (workspace
+    // component, external) pair (vetting 002 finding 4's rule, extended
+    // here) — otherwise a flow out, a flow back, and a derived `entry:` all
+    // land on the same border point and their labels stack unreadably.
+    let from = offset_along_border(
+        workspace_rect,
+        workspace_rect.border_toward((external_rect.cx(), external_rect.cy())),
+        lane,
+    );
+    let to = offset_along_border(
+        external_rect,
+        external_rect.border_toward((workspace_rect.cx(), workspace_rect.cy())),
+        lane,
+    );
+    let exclude = [workspace_rect, workspace_ancestor_rect];
+    route_around_to_external(from, to, &exclude, obstacle_positions)
+}
+
+/// Draws one already-routed external/`entry:` edge, placing its label
+/// clear of every real box *and* every drawn line handed in via `avoid_
+/// lines` — every regular top-level edge, every deny line, and every
+/// sibling external edge's own route, all computed before this is ever
+/// called (see `compute_external_edge_route`'s doc comment and this
+/// function's caller in `render_svg_with_options`). Always dashed — the
+/// `~>`/`entry:` "declared, not machine-checked" form (§4's restated
+/// dash-channel meaning) — and always crosses the frame border exactly
+/// once, since the route only detours *inside* the frame before a final
+/// straight run to the external, strictly outside it.
+#[allow(clippy::too_many_arguments)]
+fn draw_external_edge(
+    class: &str,
+    label: &str,
+    route: &[(f64, f64)],
+    obstacle_positions: &IndexMap<String, Rect>,
+    avoid_lines: &[Vec<(f64, f64)>],
+    tooltip_lines: &[String],
+    findings: &[&Diagnostic],
+    out: &mut String,
+) {
+    let (seg_a, seg_b) = longest_segment(route);
+    let (mx, my) = ((seg_a.0 + seg_b.0) / 2.0, (seg_a.1 + seg_b.1) / 2.0);
+    let (dx, dy) = (seg_b.0 - seg_a.0, seg_b.1 - seg_a.1);
+    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+    let (px, py) = (-dy / len, dx / len);
+    let clear = LABEL_SIDE_GAP + text_w(label, NAME_CHAR_W) / 2.0;
+    // Same escalating clearance search normal flow-edge labels already use
+    // (`render_svg_with_options`'s own label placement): the natural side
+    // first, then the mirrored side, at growing multiples, keeping the
+    // first that lands clear of every real box *and every drawn line*
+    // (vetting 003's "same clearance family", extended a second time: the
+    // first extension was box-vs-box only, the coordinator's review found
+    // the same gap for lines). A *perpendicular* escalation alone isn't
+    // enough here, though: two external edges sharing the same margin
+    // corridor can run roughly perpendicular to each other (one edge's
+    // long vertical run, another's long horizontal run, crossing near
+    // where both want their label) — every purely-perpendicular offset
+    // from the midpoint then stays on the crossing line's far side no
+    // matter how far it escalates, since it never moves *along* its own
+    // line to get past the crossing. So this also tries a few anchor
+    // points along the segment itself (still midpoint first, matching the
+    // un-escalated default everywhere else), not only the one at its
+    // center.
+    let at = |t: f64, mult: f64, s: f64| {
+        let (bx, by) = (seg_a.0 + dx * t, seg_a.1 + dy * t);
+        (bx + px * clear * mult * s, by + py * clear * mult * s)
+    };
+    let (lx, ly) = [0.5, 0.3, 0.7, 0.15, 0.85]
+        .into_iter()
+        .flat_map(|t| {
+            [1.0, 1.5, 2.0, 2.5, 3.0]
+                .into_iter()
+                .flat_map(move |mult| [(t, mult, 1.0), (t, mult, -1.0)])
+        })
+        .map(|(t, mult, s)| at(t, mult, s))
+        .find(|&pos| {
+            !label_clashes_with_any_box(pos, label, obstacle_positions)
+                && !label_clashes_with_any_line(pos, label, avoid_lines)
+        })
+        .unwrap_or_else(|| at(0.5, 1.0, 1.0));
+
+    let line_class = if findings.is_empty() {
+        "edge-line"
+    } else {
+        "edge-line-finding"
+    };
+    let mut tip = finding_tooltip_lines(findings);
+    tip.extend(tooltip_lines.iter().cloned());
+    let badge_svg = if findings.is_empty() {
+        String::new()
+    } else {
+        render_finding_badge(mx + 6.0, my - FINDING_BADGE_H - 2.0, findings)
+    };
+    let path_d = route
+        .iter()
+        .enumerate()
+        .map(|(i, (x, y))| {
+            if i == 0 {
+                format!("M {x:.1} {y:.1}")
+            } else {
+                format!("L {x:.1} {y:.1}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    out.push_str(&format!(
+        "<g class=\"{class}\">{tip_html}<path class=\"{line_class}\" stroke-dasharray=\"6 4\" d=\"{path_d}\" marker-end=\"url(#arrow)\" /><text class=\"edge-label\" x=\"{lx:.1}\" y=\"{ly:.1}\">{}</text>{badge_svg}</g>",
+        esc(label),
+        tip_html = title(&tip.join("\n"))
+    ));
 }
 
 fn any_node_svg(x: f64, y: f64) -> String {
@@ -1800,6 +2127,64 @@ fn label_clashes_with_any_box(
     positions
         .values()
         .any(|r| lx0 < r.x + r.w && lx1 > r.x && ly0 < r.y + r.h && ly1 > r.y)
+}
+
+/// Does the segment `p0`-`p1` cross the *interior* of `rect`, shrunk inward
+/// by `shrink` on every side so a segment merely touching the boundary —
+/// the ordinary case for a line legitimately ending at a box's edge — does
+/// not count? Standard slab (Liang-Barsky-style) clip. Deliberately
+/// duplicated rather than shared with the equivalent test-side helper
+/// (`tools/render/tests/render.rs`'s own `segment_crosses_interior`):
+/// production code and the test oracle that checks its output must stay
+/// independent, or a bug in one silently launders the other.
+fn segment_crosses_rect_interior(p0: (f64, f64), p1: (f64, f64), rect: Rect, shrink: f64) -> bool {
+    let (xmin, xmax) = (rect.x + shrink, rect.x + rect.w - shrink);
+    let (ymin, ymax) = (rect.y + shrink, rect.y + rect.h - shrink);
+    if xmin >= xmax || ymin >= ymax {
+        return false; // box too small to have a meaningful interior
+    }
+    let mut t_enter = 0.0_f64;
+    let mut t_exit = 1.0_f64;
+    for &(p, d, lo, hi) in &[
+        (p0.0, p1.0 - p0.0, xmin, xmax),
+        (p0.1, p1.1 - p0.1, ymin, ymax),
+    ] {
+        if d.abs() < 1e-9 {
+            if p < lo || p > hi {
+                return false;
+            }
+        } else {
+            let (ta, tb) = ((lo - p) / d, (hi - p) / d);
+            let (ta, tb) = if ta < tb { (ta, tb) } else { (tb, ta) };
+            t_enter = t_enter.max(ta);
+            t_exit = t_exit.min(tb);
+            if t_enter > t_exit {
+                return false;
+            }
+        }
+    }
+    t_enter < t_exit - 1e-9
+}
+
+/// A label struck by any of `lines` — the escalating placement search's
+/// second clearance check (the first, `label_clashes_with_any_box`, only
+/// ever checked boxes; vetting 003's coordinator review, third round,
+/// found that gap for lines). Same worst-case label rect
+/// `label_clashes_with_any_box` uses (middle-anchored, `NAME_CHAR_W`-wide,
+/// a fixed 14px tall), checked against every real segment of every line
+/// handed in, not just the two lines' endpoints.
+fn label_clashes_with_any_line(pos: (f64, f64), text: &str, lines: &[Vec<(f64, f64)>]) -> bool {
+    let half_w = text_w(text, NAME_CHAR_W) / 2.0;
+    let rect = Rect {
+        x: pos.0 - half_w,
+        y: pos.1 - 11.0,
+        w: half_w * 2.0,
+        h: 14.0,
+    };
+    lines.iter().any(|pts| {
+        pts.windows(2)
+            .any(|seg| segment_crosses_rect_interior(seg[0], seg[1], rect, 1.0))
+    })
 }
 
 /// The stable entry point every existing caller uses: fully expanded,
@@ -1972,6 +2357,12 @@ pub fn render_svg_with_options(
     // unique across the whole merged tree; `leaf_index` (built below) is
     // what makes that uniqueness check possible.
     let mut positions: IndexMap<String, Rect> = IndexMap::new();
+    // docs/plans/external-elements.md: a derived `entry:` edge needs the
+    // exact fn-chip rect, not just its component's box. Keys are already
+    // fully qualified (`ComponentBox::fn_positions`'s own doc comment), so
+    // this loop only offsets — it never re-prefixes the way `positions`
+    // does for nested components above.
+    let mut positions_of_fns: IndexMap<String, Rect> = IndexMap::new();
     for (name, cbox) in &top {
         let (rel_x, rel_y) = layered.positions[name];
         let x = content_left + rel_x;
@@ -1985,6 +2376,14 @@ pub fn render_svg_with_options(
         });
         for (n, r) in &cbox.positions {
             positions.entry(format!("{name}.{n}")).or_insert(Rect {
+                x: x + r.x,
+                y: y + r.y,
+                w: r.w,
+                h: r.h,
+            });
+        }
+        for (n, r) in &cbox.fn_positions {
+            positions_of_fns.entry(n.clone()).or_insert(Rect {
                 x: x + r.x,
                 y: y + r.y,
                 w: r.w,
@@ -2021,6 +2420,77 @@ pub fn render_svg_with_options(
         }
     }
     let leaf_index = leaf_index_of(&positions);
+
+    // docs/plans/external-elements.md: `entry: [name, ...]` on a fn claim
+    // derives a drawn crossing edge — "derived drawings are established
+    // practice" (the ceiling fill is computed the same way). A name that
+    // doesn't resolve to a declared external is skipped, same philosophy as
+    // any other unresolvable endpoint (`ply-check`'s E0209 already flags it
+    // as a document error; this renderer draws exactly what resolves).
+    struct PendingEntryEdge {
+        fn_qualified: String,
+        fn_name: String,
+        workspace_rect: Rect,
+        ext_name: String,
+        requires: Vec<String>,
+    }
+    fn collect_entry_edges(
+        qualified: &str,
+        comp: &Component,
+        externals: &IndexMap<String, External>,
+        positions_of_fns: &IndexMap<String, Rect>,
+        positions: &IndexMap<String, Rect>,
+        effective: &HashMap<String, String>,
+        out: &mut Vec<PendingEntryEdge>,
+    ) {
+        for (fname, fc) in &comp.fns {
+            for ext_name in &fc.entry {
+                if !externals.contains_key(ext_name) {
+                    continue;
+                }
+                let key = format!("{qualified}::{fname}");
+                let rect = positions_of_fns.get(&key).copied().or_else(|| {
+                    let redirected = effective
+                        .get(qualified)
+                        .cloned()
+                        .unwrap_or_else(|| qualified.to_string());
+                    positions.get(&redirected).copied()
+                });
+                if let Some(rect) = rect {
+                    out.push(PendingEntryEdge {
+                        fn_qualified: qualified.to_string(),
+                        fn_name: fname.clone(),
+                        workspace_rect: rect,
+                        ext_name: ext_name.clone(),
+                        requires: fc.requires.clone(),
+                    });
+                }
+            }
+        }
+        for (cname, child) in &comp.components {
+            collect_entry_edges(
+                &format!("{qualified}.{cname}"),
+                child,
+                externals,
+                positions_of_fns,
+                positions,
+                effective,
+                out,
+            );
+        }
+    }
+    let mut pending_entry_edges: Vec<PendingEntryEdge> = Vec::new();
+    for (name, c) in &doc.components {
+        collect_entry_edges(
+            name,
+            c,
+            &doc.externals,
+            &positions_of_fns,
+            &positions,
+            &effective,
+            &mut pending_entry_edges,
+        );
+    }
 
     let frame_w = content_left + layered.content_w + extra_right + FRAME_PAD;
     let frame_h = content_top + layered.content_h + FRAME_PAD;
@@ -2071,9 +2541,60 @@ pub fn render_svg_with_options(
         // finding's `EdgeIndex` target actually names.
         edge_index: usize,
     }
+    // docs/plans/external-elements.md: a `~>` edge with exactly one external
+    // endpoint — the sole legal external-edge shape (a call edge or a deny
+    // pattern naming one is `ply-check`'s E0207; `external ~> external` is
+    // E0208; either way there is nothing to draw, and it is simply skipped
+    // below, same as any other edge `resolve()` can't place). Collected
+    // separately because it needs obstruction-avoiding routing to the
+    // external band outside the frame, not the plain two-point line the
+    // rest of `resolved_edges` draws.
+    struct PendingExternalFlow {
+        workspace_q: String,
+        workspace_rect: Rect,
+        ext_name: String,
+        ty_label: String,
+        from_raw: String,
+        to_raw: String,
+        edge_index: usize,
+    }
+    let mut pending_external_flows: Vec<PendingExternalFlow> = Vec::new();
+
     let mut resolved_edges: Vec<ResolvedEdge> = Vec::new();
     for (edge_index, e) in doc.edges.iter().enumerate() {
         let Ok(edge) = parse_edge(e) else { continue };
+        let from_is_ext = doc.externals.contains_key(&edge.from);
+        let to_is_ext = doc.externals.contains_key(&edge.to);
+        if from_is_ext || to_is_ext {
+            if let (EdgeKind::Flow(ty), true) = (&edge.kind, from_is_ext != to_is_ext) {
+                let (workspace_token, ext_name) = if to_is_ext {
+                    (&edge.from, edge.to.clone())
+                } else {
+                    (&edge.to, edge.from.clone())
+                };
+                if let Some((workspace_q, workspace_rect)) =
+                    resolve(workspace_token, &positions, &leaf_index)?
+                {
+                    let workspace_q = effective.get(&workspace_q).cloned().unwrap_or(workspace_q);
+                    let workspace_rect = *positions.get(&workspace_q).unwrap_or(&workspace_rect);
+                    pending_external_flows.push(PendingExternalFlow {
+                        workspace_q,
+                        workspace_rect,
+                        ext_name,
+                        ty_label: ty.clone(),
+                        from_raw: edge.from.clone(),
+                        to_raw: edge.to.clone(),
+                        edge_index,
+                    });
+                }
+            }
+            // A call edge, a deny-adjacent shape, or `external ~> external`
+            // touching an external is never drawn — `ply-check` already
+            // flags it (E0207/E0208), and this renderer draws exactly what
+            // resolves, nothing more (same philosophy `resolve()`'s own doc
+            // comment states for any other unresolvable endpoint).
+            continue;
+        }
         let Some((from_q, from_rect)) = resolve(&edge.from, &positions, &leaf_index)? else {
             continue;
         };
@@ -2128,6 +2649,16 @@ pub fn render_svg_with_options(
     }
     let mut pair_seen: IndexMap<(String, String), usize> = IndexMap::new();
     let mut edges_svg = String::new();
+    // Every regular top-level edge's own line, captured as it's computed —
+    // used only so a *later*-drawn construct's label (deny lines, then
+    // externals, both rendered after this loop) can check itself against
+    // lines that already exist by the time it's placed. Regular edges'
+    // own labels are placed in this same loop, before deny/external lines
+    // exist, so they cannot benefit from this list themselves — a real,
+    // separate, pre-existing gap (§ "the coverage gap, round two" in
+    // docs/external-elements-adoption.md), not something this collector
+    // fixes.
+    let mut lines_drawn_so_far: Vec<Vec<(f64, f64)>> = Vec::new();
     for re in &resolved_edges {
         let key = pair_key(&re.from_q, &re.to_q);
         let total = pair_total[&key];
@@ -2213,6 +2744,7 @@ pub fn render_svg_with_options(
             (0.0, 0.0) // unused: EdgeKind::Call never renders a label
         };
 
+        lines_drawn_so_far.push(vec![(fx, fy), (tx, ty)]);
         let findings = ctx.edge_findings(re.edge_index);
         render_edge(
             &re.edge,
@@ -2270,6 +2802,7 @@ pub fn render_svg_with_options(
             &ctx,
             &mut any_columns,
             &mut deny_svg,
+            &mut lines_drawn_so_far,
         )?;
     }
 
@@ -2294,7 +2827,15 @@ pub fn render_svg_with_options(
         (String::new(), 0.0)
     };
 
-    let width = frame_w.max(title_min_w);
+    // `frame_content_*`: the workspace frame's OWN size — everything above
+    // this line (§7.1's declarative content, plus any tall deny wildcard
+    // stack or finding-count title widening it) still fully determines it,
+    // unchanged from before externals existed. Below, the external band
+    // (docs/plans/external-elements.md) may grow the *canvas* further, but
+    // never the frame itself — the frame stays exactly "the workspace",
+    // and externals draw strictly outside it (§4's extended "inside the
+    // frame = part of the system").
+    let frame_content_w = frame_w.max(title_min_w);
     // A tall stack of wildcard any-nodes (several `*` rules anchoring in
     // one margin column, `place_clear` pushing each below the last) can
     // run past the box layout's bottom edge; the canvas and frame grow so
@@ -2306,7 +2847,195 @@ pub fn render_svg_with_options(
         .fold(f64::MIN, |a, &y| a.max(y))
         + ANY_R
         + FRAME_PAD;
-    let height = frame_h.max(deny_bottom);
+    let frame_content_h = frame_h.max(deny_bottom);
+
+    // ---- externals: band outside the frame, and their edges -------------
+    // docs/plans/external-elements.md: externals stack left to right, in
+    // declaration order, in one band below the frame's bottom edge —
+    // "outside the frame" is what the proposal fixes; this placement is the
+    // renderer's own judgment call (§7 of the plan says so explicitly). A
+    // document with none renders exactly as before: every variable below is
+    // `0.0`/empty on that path, so `frame_content_*` alone decides the
+    // canvas, byte-identical to pre-externals output.
+    let external_boxes: Vec<(String, ExternalBox)> = doc
+        .externals
+        .iter()
+        .map(|(name, ext)| (name.clone(), render_external(name, ext, &ctx)))
+        .collect();
+    let external_band_w: f64 = external_boxes.iter().map(|(_, b)| b.width).sum::<f64>()
+        + EXTERNAL_GAP * external_boxes.len().saturating_sub(1) as f64;
+    let external_band_x = ((frame_content_w - external_band_w) / 2.0).max(0.0);
+    let external_band_y = frame_content_h + EXTERNAL_BAND_GAP;
+
+    let mut external_svg = String::new();
+    let mut external_positions: IndexMap<String, Rect> = IndexMap::new();
+    let mut ex = external_band_x;
+    for (name, ebox) in &external_boxes {
+        external_svg.push_str(&wrap_translate(&ebox.svg, ex, external_band_y));
+        external_positions.insert(
+            name.clone(),
+            Rect {
+                x: ex,
+                y: external_band_y,
+                w: ebox.width,
+                h: ebox.height,
+            },
+        );
+        ex += ebox.width + EXTERNAL_GAP;
+    }
+
+    // Every explicit `~>` edge and derived `entry:` edge touching an
+    // external, routed around any component it isn't attached to — nested
+    // ones included (`render_external_edge`'s own doc comment: unlike the
+    // deny wildcard routing, `positions` itself is the obstacle set here,
+    // not filtered to top-level).
+    struct ExternalEdgeSpec {
+        class: &'static str,
+        label: String,
+        workspace_rect: Rect,
+        ancestor_rect: Rect,
+        ancestor_name: String,
+        ext_name: String,
+        tooltip: Vec<String>,
+    }
+    let mut specs: Vec<(ExternalEdgeSpec, Vec<&Diagnostic>)> = Vec::new();
+    for pf in &pending_external_flows {
+        if !external_positions.contains_key(&pf.ext_name) {
+            continue;
+        }
+        let ancestor_name = pf
+            .workspace_q
+            .split('.')
+            .next()
+            .unwrap_or(&pf.workspace_q)
+            .to_string();
+        let ancestor_rect = positions
+            .get(&ancestor_name)
+            .copied()
+            .unwrap_or(pf.workspace_rect);
+        let tip = external_flow_tooltip(&pf.ty_label, &pf.from_raw, &pf.to_raw, &pf.ext_name);
+        let findings = ctx.edge_findings(pf.edge_index);
+        specs.push((
+            ExternalEdgeSpec {
+                class: "edge-flow",
+                label: pf.ty_label.clone(),
+                workspace_rect: pf.workspace_rect,
+                ancestor_rect,
+                ancestor_name,
+                ext_name: pf.ext_name.clone(),
+                tooltip: tip,
+            },
+            findings,
+        ));
+    }
+    for pe in &pending_entry_edges {
+        if !external_positions.contains_key(&pe.ext_name) {
+            continue;
+        }
+        let ancestor_name = pe
+            .fn_qualified
+            .split('.')
+            .next()
+            .unwrap_or(&pe.fn_qualified)
+            .to_string();
+        let ancestor_rect = positions
+            .get(&ancestor_name)
+            .copied()
+            .unwrap_or(pe.workspace_rect);
+        let tip = entry_edge_tooltip(&pe.fn_name, &pe.ext_name, &pe.requires);
+        specs.push((
+            ExternalEdgeSpec {
+                class: "edge-entry",
+                label: "entry".to_string(),
+                workspace_rect: pe.workspace_rect,
+                ancestor_rect,
+                ancestor_name,
+                ext_name: pe.ext_name.clone(),
+                tooltip: tip,
+            },
+            Vec::new(),
+        ));
+    }
+
+    // Parallel lanes (vetting 002 finding 4's rule): two or more edges
+    // between the same (top-level workspace component, external) pair —
+    // an egress flow, its return flow, and a derived `entry:` are exactly
+    // this shape in vetting 003 — fan out instead of coinciding.
+    let mut pair_total: IndexMap<(String, String), usize> = IndexMap::new();
+    for (spec, _) in &specs {
+        *pair_total
+            .entry((spec.ancestor_name.clone(), spec.ext_name.clone()))
+            .or_insert(0) += 1;
+    }
+    let mut pair_seen: IndexMap<(String, String), usize> = IndexMap::new();
+    let mut external_edges_svg = String::new();
+    // Pass 1: every external/`entry:` edge's route, computed before any of
+    // their labels are placed — a label needs to see every *sibling*
+    // external edge's line too, not just boxes and what regular edges/deny
+    // rules already drew (`lines_drawn_so_far`), and a sibling's route
+    // doesn't exist until this pass runs (`compute_external_edge_route`'s
+    // own doc comment explains why the old draw-as-you-go order missed
+    // this — vetting 003's coordinator review, third round).
+    let mut routes: Vec<Vec<(f64, f64)>> = Vec::with_capacity(specs.len());
+    for (spec, _) in &specs {
+        let key = (spec.ancestor_name.clone(), spec.ext_name.clone());
+        let total = pair_total[&key];
+        let idx_slot = pair_seen.entry(key).or_insert(0);
+        let idx = *idx_slot;
+        *idx_slot += 1;
+        let lane_mag = lane_offset(idx, total, LANE_GAP);
+
+        let ext_rect = external_positions[&spec.ext_name];
+        let (dx, dy) = (
+            ext_rect.cx() - spec.workspace_rect.cx(),
+            ext_rect.cy() - spec.workspace_rect.cy(),
+        );
+        let len = (dx * dx + dy * dy).sqrt().max(1.0);
+        let (px, py) = (-dy / len, dx / len);
+        let lane = (px * lane_mag, py * lane_mag);
+
+        routes.push(compute_external_edge_route(
+            spec.workspace_rect,
+            spec.ancestor_rect,
+            ext_rect,
+            lane,
+            &positions,
+        ));
+    }
+    // Pass 2: draw every edge and place every label, each checked against
+    // boxes, every regular/deny line already drawn, and every sibling
+    // external route from pass 1 (this edge's own included — a label must
+    // sit clear of its own line too).
+    let avoid_lines: Vec<Vec<(f64, f64)>> = lines_drawn_so_far
+        .iter()
+        .cloned()
+        .chain(routes.iter().cloned())
+        .collect();
+    for ((spec, findings), route) in specs.iter().zip(routes.iter()) {
+        draw_external_edge(
+            spec.class,
+            &spec.label,
+            route,
+            &positions,
+            &avoid_lines,
+            &spec.tooltip,
+            findings,
+            &mut external_edges_svg,
+        );
+    }
+
+    // A document with no externals renders exactly as before: `width`/
+    // `height` collapse to `frame_content_*` alone, byte-identical to
+    // pre-externals output (`default_output_is_unchanged_without_flags`
+    // pins this for every vetting fixture that predates this feature).
+    let (width, height) = if external_boxes.is_empty() {
+        (frame_content_w, frame_content_h)
+    } else {
+        (
+            frame_content_w.max(external_band_x + external_band_w + FRAME_PAD),
+            external_band_y + EXTERNAL_BOX_H + FRAME_PAD,
+        )
+    };
 
     // A clean document (no findings at all) gets exactly `STYLE`, unchanged
     // — see `FINDING_STYLE`'s doc comment for why this is conditional
@@ -2340,10 +3069,10 @@ pub fn render_svg_with_options(
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\">{workspace_tip}</rect>\
          <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text>\
          {title_extra}\
-         {deny_svg}{registry_svg}{body}{edges_svg}\
+         {deny_svg}{registry_svg}{body}{edges_svg}{external_edges_svg}{external_svg}\
          </svg>",
-        frame_inner_w = width - 2.0,
-        frame_inner_h = height - 2.0,
+        frame_inner_w = frame_content_w - 2.0,
+        frame_inner_h = frame_content_h - 2.0,
     ))
 }
 
@@ -2545,6 +3274,142 @@ fn route_deny_line(
     ]
 }
 
+/// Like [`route_deny_line`], for the one shape its own two design
+/// assumptions get wrong: routing to an external.
+///
+/// **Wrong assumption 1 (fixed by this function's existence): rail choice.**
+/// `route_deny_line` picks whichever rail (top or bottom of the combined
+/// obstruction span) is closer to the *midpoint* of `from`/`to` — sound
+/// when either end could plausibly sit on either side, true for a deny
+/// rule's wildcard margin node, but not here. Every external sits strictly
+/// below the frame (§4's "outside the frame" placement), so `to` (always
+/// the external side — see `render_external_edge`'s callers) is always the
+/// endpoint that must be approached cleanly, and it is always below every
+/// obstacle a workspace component can be. This function always chooses the
+/// bottom rail, never comparing to a midpoint, which keeps the rail — and
+/// therefore the whole final approach to `to` — below every obstacle's own
+/// bottom edge: the last leg can never re-enter one on the way down.
+///
+/// **Wrong assumption 2 (fixed by this function's own first version being
+/// found insufficient, not fixed at design time): "the first leg, straight
+/// out from `from` at its own height, is always clear."** `route_deny_line`
+/// earns that for free because its `from` is always a wildcard margin node —
+/// genuinely off to the side, so a horizontal sweep toward the combined
+/// obstruction span never crosses anything on the way *to* that span. An
+/// external edge's `from` is an ordinary workspace component's own border,
+/// which can sit *inside* the horizontal range other obstacles occupy
+/// (vetting 003, `--collapse ingest`: `venue ~> ingest.feed`'s `from` sits
+/// on `ingest`'s own bottom border, x≈564 — squarely between `strategy`
+/// (x≈691) and the rest of the diagram — so a first version of this
+/// function that always swept sideways at `from`'s own height, the same way
+/// `route_deny_line` does, drew straight through `strategy` and its nested
+/// `signals` chip; `--collapse gateway` hit the same shape against `pnl`).
+/// Neither was caught until the invariant test itself was extended to sweep
+/// `--collapse <name>` for every top-level component, not just "default"
+/// and "--depth 1" — see `no_drawn_element_intersects_a_box_it_is_not_
+/// inside`'s own doc comment for why that gap existed. Fixed by trying a
+/// straight vertical run at `from`'s own X first (`vertical_run_is_clear`)
+/// and only detouring sideways — to whichever edge of the combined
+/// obstruction span is nearer — when that straight run would actually cross
+/// something. The symmetric case never arises for `to`: once *any* point of
+/// the route reaches the rail (below every obstacle's bottom edge by
+/// construction), everything further down — a straight run to `to`, at any
+/// X — is safe regardless, so `to`'s own leg needs no such check.
+///
+/// Known remaining gap, same *kind* as the one named in `route_deny_line`'s
+/// own doc comment: the sideways detour leg used when the straight-down
+/// check fails is itself an unchecked horizontal sweep, so a third
+/// obstacle positioned to block *that* specific leg would reproduce this
+/// same class of bug one level deeper. Not observed on any fixture in this
+/// repo (the full `--collapse <name>` sweep, one render per top-level
+/// component per fixture, is clean) — recorded honestly rather than
+/// papered over with an unbounded fixed-point solver this project doesn't
+/// need yet.
+fn route_around_to_external(
+    from: (f64, f64),
+    to: (f64, f64),
+    exclude: &[Rect],
+    obstacle_positions: &IndexMap<String, Rect>,
+) -> Vec<(f64, f64)> {
+    const CLEARANCE: f64 = 12.0;
+    let (y0, y1) = (from.1.min(to.1), from.1.max(to.1));
+    // Filtered by Y-overlap against the *full* vertical travel range only —
+    // deliberately not also by X-overlap against `from`/`to`'s own narrow
+    // bounding box the way `route_deny_line` filters (that box only ever
+    // spans one rank there; an external edge routinely spans the whole
+    // frame top to bottom). A narrower X filter here already burned once:
+    // it cleared `ring` (near the top) by widening the corridor just far
+    // enough for `ring` alone, then reused that same X for the entire
+    // vertical run — including far enough down to clip `pnl`, a box the
+    // narrow filter never even saw because `pnl` doesn't overlap `ring`'s
+    // rank at all. Any component whose row the route merely passes *by*
+    // must count, not just the ones near its own two endpoints.
+    let obstructions: Vec<Rect> = obstacle_positions
+        .values()
+        .copied()
+        .filter(|r| !exclude.contains(r) && r.y < y1 + 1.0 && r.y + r.h > y0 - 1.0)
+        .collect();
+    if obstructions.is_empty() {
+        return vec![from, to];
+    }
+    let span_x0 = obstructions
+        .iter()
+        .map(|r| r.x)
+        .fold(f64::INFINITY, f64::min)
+        - CLEARANCE;
+    let span_x1 = obstructions
+        .iter()
+        .map(|r| r.x + r.w)
+        .fold(f64::NEG_INFINITY, f64::max)
+        + CLEARANCE;
+    let rail_y = obstructions
+        .iter()
+        .map(|r| r.y + r.h)
+        .fold(f64::NEG_INFINITY, f64::max)
+        + CLEARANCE;
+
+    // Prefer a straight vertical run at `from`'s own X; only detour to
+    // whichever combined-span edge is nearer when that straight run would
+    // actually cross an obstacle (wrong assumption 2 above).
+    let from_x = if vertical_run_is_clear(from.0, from.1, rail_y, &obstructions) {
+        from.0
+    } else if (from.0 - span_x0).abs() <= (from.0 - span_x1).abs() {
+        span_x0
+    } else {
+        span_x1
+    };
+
+    let mut route = vec![from];
+    if (from_x - from.0).abs() > 0.01 {
+        route.push((from_x, from.1));
+    }
+    route.push((from_x, rail_y));
+    // The rail run itself is safe at any X (it is, by construction, below
+    // every obstacle's bottom edge), and so is the final descent from it to
+    // `to` (also by construction — see wrong assumption 2's doc comment on
+    // why `to` needs no symmetric check) — so the route can go straight to
+    // `to`'s own X on the rail and down from there, no `exit_x` detour
+    // needed on this side.
+    if (to.0 - from_x).abs() > 0.01 {
+        route.push((to.0, rail_y));
+    }
+    route.push(to);
+    route
+}
+
+/// Is a vertical run from `(x, y_a)` to `(x, y_b)` clear of every obstacle's
+/// *interior* — touching an edge is fine, only actually crossing counts, so
+/// this deliberately shrinks each obstacle inward by a pixel rather than
+/// testing its exact boundary. Used by [`route_around_to_external`] to
+/// decide whether `from`'s own X is safe to descend at directly, or needs a
+/// sideways detour first.
+fn vertical_run_is_clear(x: f64, y_a: f64, y_b: f64, obstructions: &[Rect]) -> bool {
+    let (ylo, yhi) = (y_a.min(y_b), y_a.max(y_b));
+    !obstructions
+        .iter()
+        .any(|r| x > r.x + 1.0 && x < r.x + r.w - 1.0 && ylo < r.y + r.h - 1.0 && yhi > r.y + 1.0)
+}
+
 /// The longest straight segment of a (possibly routed) path — where the
 /// deny bar's "denied" tick is drawn, so it always lands on open canvas
 /// rather than risking a short, obstruction-hugging segment right at
@@ -2565,6 +3430,7 @@ fn longest_segment(points: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
 /// rule that names it draws its own pseudo-node, anchored near whichever
 /// side did resolve to a real component (or staggered by rule index, as a
 /// last resort, if neither side resolved).
+#[allow(clippy::too_many_arguments)]
 fn render_deny(
     index: usize,
     orig_index: usize,
@@ -2573,6 +3439,7 @@ fn render_deny(
     ctx: &FindingCtx,
     columns: &mut AnyColumns,
     out: &mut String,
+    out_lines: &mut Vec<Vec<(f64, f64)>>,
 ) -> Result<(), RenderError> {
     let DenyLayout {
         positions,
@@ -2645,6 +3512,11 @@ fn render_deny(
     } else {
         vec![(fx, fy), (tx, ty)]
     };
+    // Recorded so a *later*-drawn label (externals, always rendered last)
+    // can check itself against this deny line too — see the matching
+    // collector for regular top-level edges, `lines_drawn_so_far`, in
+    // `render_svg_with_options`.
+    out_lines.push(route.clone());
 
     let (bar_a, bar_b) = longest_segment(&route);
     let mx = (bar_a.0 + bar_b.0) / 2.0;

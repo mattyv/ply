@@ -1,0 +1,1 @@
+E0201: `ply: 2` names a version of the ply.yaml format this build of Ply does not speak. This build reads version 1. The format changes only through Ply releases, so either upgrade Ply or set `ply: 1`.

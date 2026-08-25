@@ -1,0 +1,1 @@
+E0201: "network" is not a capability Ply knows. The ones it knows are: `net`, `fs`, `db`, `time`, `rand`, `proc`, `unsafe`. A name outside that set is almost always a typo, and Ply refuses it rather than quietly enforcing nothing. Found at `components.pricing.uses[1]` in ply.yaml.

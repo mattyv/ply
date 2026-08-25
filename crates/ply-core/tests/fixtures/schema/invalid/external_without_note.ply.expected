@@ -1,0 +1,1 @@
+E0201: an external needs its `note:` line, and this one has none. What this outside party is, in a sentence. Required: a bare name tells a newbie nothing. Found at `externals.venue` in ply.yaml.

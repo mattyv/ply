@@ -1,0 +1,42 @@
+ply: 1
+
+# Vetting 004. One document, read by two tools on purpose:
+#   * `cargo ply verify <this crate dir>` reads it as the crate's own
+#     `ply.yaml` (crates/ply-core/src/config.rs — the M3 subset: it takes
+#     `components.*.anchor` and `components.*.fns.*.{checks,examples}` and
+#     silently ignores every other key);
+#   * `ply-check` / `ply-render` read the same file in the full §5 grammar.
+# Nothing here is duplicated between the two, which is the point.
+
+components:
+  # The two-year-old module. No claims: it is unclaimed, and saying so is
+  # the honest description of an unannotated legacy module.
+  ledger:
+    anchor: ledger
+
+  # The new feature, written inside §5.4b's fragment from line one.
+  withdrawal:
+    anchor: withdrawal
+    pure: true
+    fns:
+      fee_cents:
+        checks: [bounded(2)]
+      total_debit_cents:
+        checks: [bounded(2)]
+      # The boundary: fragment-clean signature, body that calls `ledger`.
+      tier_fee_cents:
+        checks: [bounded(2)]
+      # The same boundary, reached through the fuzz tier instead.
+      approve_withdrawal:
+        checks: [fuzz(256), test]
+        examples:
+          - "approve_withdrawal(1000, 5000, 3) == true"
+          - "approve_withdrawal(5000, 5000, 0) == false"
+      # The shell: the function that actually touches the legacy ledger.
+      # Claimed deliberately, to see what Ply says about a signature the
+      # fragment cannot reach.
+      withdraw:
+        checks: [bounded(2)]
+
+edges:
+  - withdrawal -> ledger

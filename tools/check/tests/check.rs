@@ -1,16 +1,19 @@
 //! `ply-check`'s document-local rules (The-Ply-Spec.md §5.1a, §5.1, §5.6) — the
 //! subset of `cargo ply check` that needs no anchored Rust code.
 
-use ply_check::{Target, run_checks};
-use ply_model::parse_document;
+use ply_core::check::{Target, run_checks};
+use ply_core::model::parse_document;
 
-fn diagnostics_for(path: &str) -> Vec<ply_check::Diagnostic> {
+fn diagnostics_for(path: &str) -> Vec<ply_core::check::Diagnostic> {
     let yaml = std::fs::read_to_string(path).unwrap();
     let doc = parse_document(&yaml).expect("fixture should parse");
     run_checks(&doc)
 }
 
-const KNOWN_CODES: &[&str] = &["E0203", "E0205", "E0206", "E0304", "E0504", "W0409"];
+const KNOWN_CODES: &[&str] = &[
+    "E0202", "E0203", "E0205", "E0206", "E0207", "E0208", "E0209", "E0304", "E0504", "W0409",
+    "W0410",
+];
 
 /// The `ply-render` fixtures render cleanly, which already proves they parse
 /// and resolve; this asserts they are *also* free of every document-local
@@ -25,6 +28,10 @@ fn clean_render_fixtures_produce_no_diagnostics() {
         // checks or inherits a *valid* ancestor default, so nothing about
         // resolving the inheritance itself should raise a diagnostic.
         "../render/tests/fixtures/checks_inheritance.ply.yaml",
+        // docs/plans/external-elements.md: a well-formed external, named by
+        // both flow edges and an `entry:`.
+        "../render/tests/fixtures/externals.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
     ] {
         let diags = diagnostics_for(path);
         assert!(diags.is_empty(), "{path} should be clean, got: {diags:?}");
@@ -340,6 +347,14 @@ fn every_diagnostic_carries_a_known_spec_code() {
         "tests/fixtures/mutate_inherited_default_is_broken.ply.yaml",
         "tests/fixtures/mutate_own_list_ignores_inherited_test.ply.yaml",
         "../render/tests/fixtures/checks_inheritance.ply.yaml",
+        "tests/fixtures/external_in_call_edge.ply.yaml",
+        "tests/fixtures/external_in_deny.ply.yaml",
+        "tests/fixtures/external_to_external.ply.yaml",
+        "tests/fixtures/entry_names_unknown_external.ply.yaml",
+        "tests/fixtures/external_declared_unused.ply.yaml",
+        "tests/fixtures/external_duplicates_component.ply.yaml",
+        "tests/fixtures/clean_external.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
     ] {
         for d in diagnostics_for(path) {
             assert!(

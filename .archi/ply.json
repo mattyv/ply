@@ -2490,9 +2490,9 @@
         "nodes": [
           {
             "id": "model",
-            "label": "ply-model",
+            "label": "ply_core::model",
             "files": [
-              "tools/model/src/lib.rs"
+              "crates/ply-core/src/model.rs"
             ],
             "group": "built",
             "x": 40,
@@ -2500,9 +2500,9 @@
           },
           {
             "id": "check",
-            "label": "ply-check",
+            "label": "ply_core::check",
             "files": [
-              "tools/check/src/lib.rs",
+              "crates/ply-core/src/check.rs",
               "tools/check/src/main.rs"
             ],
             "group": "built",
@@ -2673,7 +2673,7 @@
           "check": [
             {
               "id": "c1",
-              "text": "Document-local validator: E0203/E0205/E0206/E0304/E0504 plus W0409 (redundant parent-child edge). W-codes warn and exit 0; E-codes fail. Messages are plain-language and exact-string tested.",
+              "text": "Document-local validator: E0203/E0205/E0206/E0304/E0504 plus W0409 (redundant parent-child edge). W-codes warn and exit 0; E-codes fail. Messages are plain-language and exact-string tested. Promoted into the product in Phase 1a (2026-08-25) together with the model: both now live in crates/ply-core and are what `cargo ply check` runs. `tools/check` is the binary and its CLI contract only, and it depends on ply-core by path.",
               "ts": 1787478425319
             }
           ],
@@ -2694,7 +2694,7 @@
           "__diagram__": [
             {
               "id": "d1",
-              "text": "Current state of the repo as of 2026-08-23: four Rust crates that exist and run, versus the cargo ply router that does not. Green-marked nodes are planned, not built.",
+              "text": "Current state of the tooling as of 2026-08-23, with one 2026-08-25 correction: the model and the document-local rules were promoted into crates/ply-core (Phase 1a), so the two leftmost boxes are product modules the tooling consumes rather than crates of their own. The `cargo ply` box is stale in the other direction -- verify and check both exist now -- and redrawing this diagram against the product is a separate job.",
               "ts": 1787478425319
             }
           ]

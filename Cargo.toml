@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "tests/e2e"]
+# tools/ is its own workspace (spec-validation tooling, predates the product).
+# tests/spike and tests/fixtures are each their own throwaway/per-fixture cargo
+# projects (each carries its own `[workspace]` root marker) and must never be
+# absorbed into the product workspace.
+exclude = ["tools", "tests/spike", "tests/fixtures"]
+
+[workspace.package]
+edition = "2024"
+publish = false

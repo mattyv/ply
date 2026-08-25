@@ -1,0 +1,14 @@
+[workspace]
+# Empty table: marks this crate as its own workspace root, same convention as
+# tests/spike/fixture/Cargo.toml -- keeps this throwaway spike crate out of
+# tools/Cargo.toml's workspace (which lists members explicitly) and out of
+# any ancestor workspace.
+
+[package]
+name = "ply-verus-diff-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ply-kernel = { path = "../../../../tools/kernel" }

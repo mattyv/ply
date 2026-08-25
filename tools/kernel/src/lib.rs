@@ -5,7 +5,7 @@
 //! calls this split out explicitly ("verdicts, statuses, and fingerprints
 //! need anchored code and are out of scope for this crate"); this crate is
 //! that carve-out, kept dependency-free so its four standing invariants
-//! (below) can be checked exhaustively and, once Kani is installed, proved.
+//! (below) can be checked exhaustively and proved.
 //!
 //! ## Scope
 //!
@@ -25,6 +25,107 @@
 //! readings for two of them (own-evidence-for-containers, and
 //! conditional/assumptions pairing) that the amendment has since settled --
 //! see the doc comments on [`NodeKind`] and [`VerdictNode::conditional`].
+//!
+//! ## Where the four standing obligations are proved
+//!
+//! CLAUDE.md's four standing obligations -- aggregation never reports
+//! evidence stronger than the weakest child; `conditional` never disappears
+//! without its assumptions being discharged; a `violation` anywhere always
+//! reaches the root; no rule sequence assigns one node two different
+//! verdicts -- have two pieces of evidence behind them, and **neither is a
+//! Kani proof** (see the historical note below for why there are no Kani
+//! harnesses in this file):
+//!
+//! - **`tests/enumeration.rs`** checks all four against an independent
+//!   oracle at *every node* of *every* tree in a bounded corpus -- 991,389
+//!   trees, ~2.3s under `cargo test --release`. Exhaustive within its stated
+//!   bound over tree shape and node kind; *representative*, not exhaustive,
+//!   over status and assumption payloads. `docs/kernel-honesty-cleanups.md`
+//!   is where that payload reduction is argued rather than asserted, and
+//!   where the one combination it still does not reach is named.
+//! - **`tests/spike/verus/`** proves all four **unbounded, by structural
+//!   induction, in ~2 seconds** -- every tree of every size, not just the
+//!   ones small enough to enumerate. Read that claim exactly as stated: Verus
+//!   proved a faithful *shadow* of these rules (children as `Seq<Node>`,
+//!   assumptions as an abstract `Set<int>`), never this file's literal
+//!   source. What binds the shadow back to this crate is a differential test
+//!   that runs the real `ply_kernel::aggregate` and a plain-Rust
+//!   transcription of the shadow over thousands of generated trees and
+//!   compares them at every node. So the chain is "proved for the shadow,
+//!   and the shadow matches production across a large generated corpus" --
+//!   strictly weaker than "this source is proved", and
+//!   `tests/spike/verus/FINDINGS.md` says so at length. Do not shorten it to
+//!   "the kernel is proved."
+//!
+//! ### Historical note: the three Kani harnesses this file used to carry
+//!
+//! Until 2026-08-25 this file ended in a `#[cfg(kani)] mod kani_proofs` with
+//! three `#[kani::proof]` harnesses for the same four obligations, driven by
+//! a hand-rolled depth-2, <=2-children symbolic tree shim. **None of them
+//! ever returned a verdict.** They are deleted rather than left gated,
+//! because keeping them would have this tool contradicting its own published
+//! advice: The-Ply-Spec.md §5.4b now names **recursive or self-referential
+//! types (`Vec<Self>`, `Box<Self>` -- any tree or linked structure)** an
+//! explicit v1 exclusion, and Ply's rule for an excluded shape is to *refuse*
+//! it with a named status, never to route it to an engine that will burn
+//! minutes and time out. `VerdictNode` is exactly that shape. The
+//! investigation is worth keeping even though the code is not:
+//!
+//! 1. **First stall: `BTreeSet<StatusKind>`.** The original three harnesses
+//!    ran past an hour with *no* verdict at all. Bisecting to single
+//!    operations found the cause: a single `Claimable` leaf with an
+//!    always-empty `statuses` and no recursion verified in ~1.1s (2942
+//!    checks, 0 failures), but the same leaf built through a shim that
+//!    *might* insert one concrete status -- gated by one symbolic `bool` --
+//!    did not complete in over 2 minutes, and a root `Container` with exactly
+//!    one `Claimable` child did not complete in over 5. CBMC's own trace said
+//!    why: it unwound `<BTreeMap<K,V,A> as Clone>::clone::clone_subtree` on
+//!    every `aggregate_raw` call, because nothing tells it the set only ever
+//!    holds 0 or 1 element -- it unwinds the *generic* B-tree algorithm
+//!    regardless of actual content. `--unwind 2`/`--unwind 3`, `--object-bits
+//!    8` vs. the default 16, and the `kissat` solver in place of `cadical`
+//!    were all tried and made no material difference: the stall is in CBMC's
+//!    symbolic execution and slicing, not in SAT solving.
+//! 2. **The fix that worked, and still stands.** [`StatusSet`] -- a `u8`
+//!    bitmask -- replaced `BTreeSet<StatusKind>` on both node types. `Copy`,
+//!    no heap, no generic collection algorithm to unwind. That is a
+//!    behaviour-preserving representation change, not a semantic one, and it
+//!    remains the right representation for its own sake: the enumeration got
+//!    *faster* (~8.8s -> ~5.2s at the time) purely from dropping the B-tree
+//!    allocations. It also changed the Kani outcome materially -- all three
+//!    harnesses began *terminating* with a definitive verdict instead of
+//!    hanging.
+//! 3. **Second stall: the bottleneck moved one field over.** The verdict
+//!    they terminated with was `VERIFICATION:- FAILED (CBMC timed out)`, all
+//!    three, at exactly the 300s `--harness-timeout` (Kani 0.67.0 / CBMC
+//!    6.8.0, `--unwind 3`, ~5:03 wall each). The new trace stalled inside
+//!    `core::slice::sort::shared::pivot::median3_rec::<String, ...>` and
+//!    repeated `memcmp` unwinding on `String` -- i.e. `aggregate_raw`'s
+//!    `c.sort(); c.dedup();` running the *generic* `Vec<String>` sort on
+//!    every conditional node, regardless of how little the shim actually put
+//!    there. Same shape of problem as (1), one field over, on
+//!    [`VerdictNode::conditional`].
+//! 4. **Why the (2) fix was not repeated for `conditional`.** Unlike
+//!    `StatusKind`'s fixed variants, an assumption is free-form text a reader
+//!    has to be able to read back (D5). Encoding it as, say, a count would
+//!    change what the production type *means* -- and therefore what a passing
+//!    proof would mean -- to make a verifier happy. That is the "design smell
+//!    to raise, not route around" case, and reshaping the kernel to suit the
+//!    verifier was refused on evidence as well as principle.
+//! 5. **Why it was never going to work, established afterwards.**
+//!    `tests/spike/scale/SCALE-FINDINGS.md` measured the general case rather
+//!    than this instance: a **3-node** tree produced 64,147 verification
+//!    conditions after ~104s of symbolic execution alone and did not finish
+//!    in 180s, with the unwind bound demonstrably in effect. Recursion is
+//!    outside Kani's measured reach in principle, not by tuning -- so the
+//!    stall would simply have moved to the next unbounded field. That finding
+//!    is what §5.4b's exclusion was written from.
+//! 6. **Where the obligations went instead.** `tests/spike/verus/` -- see
+//!    above. Deductive induction over an unbounded tree, ~2s, all four,
+//!    against a shadow bound to this crate by a differential test.
+//!
+//! The deleted harness bodies are in this file's git history if the exact
+//! shim is ever wanted again.
 
 /// The-Ply-Spec.md D6 / §7: "The evidence order compares the six kinds" --
 /// `violation < unclaimed < tested < fuzzed < bounded < proved`. Declaration
@@ -38,11 +139,6 @@
 /// parameter-aware tie-break, if ever wanted, is a model-layer concern built
 /// on top of this order, not a change to it.
 ///
-/// `#[cfg_attr(kani, derive(kani::Arbitrary))]` mirrors The-Ply-Spec.md D2's own
-/// idiom (attributes that vanish under plain cargo and activate only under
-/// `cargo kani`) so the Kani harnesses below can draw real `Evidence` values
-/// via `kani::any()` instead of a hand-rolled index-to-variant mapping.
-#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Evidence {
     Violation,
@@ -62,7 +158,6 @@ pub enum Evidence {
 /// `Container` value simply has no `Evidence` payload to set, so there is no
 /// representable state for "a component claims its own verdict" to be
 /// mistakenly read as one -- the compiler rules it out, not a convention.
-#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
     /// A claimable item (a fn claim, in the real model) with its own
@@ -85,33 +180,48 @@ pub enum StatusKind {
     EngineMissing,
     Timeout,
     Inconclusive,
+    /// The debt half of `conditional` (§5.5, D6): the verdict rests on an
+    /// assumed contract and nothing has yet checked that contract against
+    /// the real body. Added 2026-08-25, when the adversarial review of the
+    /// post-004 fixes found `verify` emitting this status while D6 and §0
+    /// still defined neither it nor a home for it -- the vocabulary here
+    /// mirrors §0's glossary row, so it moves when that row moves.
+    OwedEvidence,
 }
 
 /// Declaration-order table of every [`StatusKind`] variant, used by
 /// [`StatusSet::iter`] to walk set bits back into values and by tests that
-/// want "all six" without hand-maintaining a second list.
-const ALL_STATUS_KINDS: [StatusKind; 6] = [
+/// want them all without hand-maintaining a second list.
+const ALL_STATUS_KINDS: [StatusKind; 7] = [
     StatusKind::Stale,
     StatusKind::WeakSpec,
     StatusKind::Unsupported,
     StatusKind::EngineMissing,
     StatusKind::Timeout,
     StatusKind::Inconclusive,
+    StatusKind::OwedEvidence,
 ];
 
 /// A set of [`StatusKind`] flags, stored as a `u8` bitmask (one bit per
-/// variant; 6 variants fit in 6 of the 8 bits) instead of
+/// variant; 7 variants fit in 7 of the 8 bits) instead of
 /// `std::collections::BTreeSet<StatusKind>`.
 ///
-/// This exists to remove a Kani/CBMC symbolic-execution stall documented in
-/// the `kani_proofs` module doc comment below: `aggregate_raw` clones and
+/// This started as the fix for a Kani/CBMC symbolic-execution stall (see the
+/// crate doc comment's historical note, item 1): `aggregate_raw` clones and
 /// extends a node's `statuses` on every recursive call, and CBMC does not
 /// know a `BTreeSet` only ever holds 0 or 1 element here -- it symbolically
 /// unwinds the *generic* B-tree `clone_subtree`/insert algorithm regardless,
-/// which is what stalled every harness. A bitmask has no such algorithm to
-/// unwind: `insert`/`contains`/`union` are single machine-word bitwise ops,
-/// `Clone` is `Copy` (no allocation, no loop), and there is nothing generic
-/// for CBMC to walk.
+/// which is what stalled every harness. The harnesses are gone; the bitmask
+/// stays on its own merits. It has no such algorithm to unwind:
+/// `insert`/`contains`/`union` are single machine-word bitwise ops, `Clone`
+/// is `Copy` (no allocation, no loop), and nothing generic for anyone to walk
+/// -- which is also why it dropped the enumeration's runtime by a third when
+/// it landed.
+///
+/// Those same bitwise ops are what make the enumeration's status reduction
+/// defensible: the fold over a subtree is a per-bit `OR`, so no bit's fate
+/// depends on any other bit's. `docs/kernel-honesty-cleanups.md` makes that
+/// argument properly.
 ///
 /// Semantically this is still exactly a set of `StatusKind`: no duplicates
 /// (a bit is either set or not), unioned via bitwise OR (order-independent,
@@ -355,6 +465,43 @@ mod tests {
         }
     }
 
+    /// The status vocabulary here mirrors §0's glossary row, and a name the
+    /// spec defines must have a representation. `owed-evidence` did not: the
+    /// tool emitted it from 2026-08-25, §5.5 called it an open item, and
+    /// neither D6's list nor §0's glossary nor this set had it at all
+    /// (adversarial review of the post-004 fixes, D6). This walks every
+    /// variant through the bitset, so a variant added to the vocabulary
+    /// without a bit -- or a bit that collides with another -- fails here
+    /// rather than silently dropping a flag out of an aggregation.
+    #[test]
+    fn every_status_in_the_glossary_round_trips_through_the_bitset() {
+        for kind in ALL_STATUS_KINDS {
+            let mut set = StatusSet::new();
+            set.insert(kind);
+            assert!(
+                set.contains(kind),
+                "{kind:?} did not survive its own insert"
+            );
+            assert_eq!(set.len(), 1, "{kind:?} set more than one bit");
+            assert_eq!(
+                set.iter().collect::<Vec<_>>(),
+                vec![kind],
+                "{kind:?} came back as something else"
+            );
+        }
+        let mut all = StatusSet::new();
+        all.extend(ALL_STATUS_KINDS);
+        assert_eq!(
+            all.len(),
+            ALL_STATUS_KINDS.len(),
+            "two variants share a bit, so one of them is invisible in every aggregation"
+        );
+        assert!(
+            all.contains(StatusKind::OwedEvidence),
+            "the debt half of `conditional` (§5.5, D6) is part of the vocabulary"
+        );
+    }
+
     #[test]
     fn evidence_order_matches_d6() {
         assert!(Evidence::Violation < Evidence::Unclaimed);
@@ -431,271 +578,5 @@ mod tests {
             agg.conditional,
             Some(vec!["parser::parse fuzzed(256)".to_string()])
         );
-    }
-}
-
-/// Kani proof harnesses for the same four standing obligations, using
-/// `kani::any()`-generated symbolic trees. Entirely `#[cfg(kani)]`-gated:
-/// under plain `cargo build`/`cargo test` this module does not exist at all
-/// (the `kani` crate is not a Cargo dependency -- `cargo kani` supplies it as
-/// a compiler-provided pseudo-crate, per The-Ply-Spec.md D9's "engines run as
-/// subprocesses ... never linked as libraries"), so there is nothing here
-/// for plain cargo to fail to compile.
-///
-/// ## Status: `statuses` fixed the original stall; `conditional` is now the
-/// ## same problem one field over, and none of these three still verifies
-///
-/// **This is the second investigation of this module**, after the first
-/// (below, condensed) found that `VerdictNode::statuses:
-/// BTreeSet<StatusKind>` was the cause: CBMC does not know a shim only ever
-/// puts 0 or 1 element into a `BTreeSet`, so `node.statuses.clone()` /
-/// `.extend()` in `aggregate_raw` made it symbolically unwind the *generic*
-/// B-tree `clone_subtree` algorithm on every recursive call, regardless of
-/// actual content. Fix: `statuses` (on both `VerdictNode` and
-/// `AggregatedNode`) is now [`StatusSet`], a `u8` bitmask -- `Copy`, no
-/// heap, no generic collection algorithm to unwind; `insert`/`contains`/
-/// `union` are single bitwise ops. This is a behavior-preserving
-/// representation change, not a semantic one: `tests/enumeration.rs`'s
-/// 991,389-tree oracle comparison (unmodified in what it asserts) stays
-/// green, all six unit tests stay green, and the enumeration run got
-/// *faster* (~8.8s -> ~5.2s on this machine) purely from dropping the
-/// B-tree allocations.
-///
-/// That fix changed the outcome materially: all three harnesses below now
-/// **terminate** with a definitive CBMC verdict instead of hanging with no
-/// result at all. Measured just now, Kani 0.67.0 / CBMC 6.8.0, `--unwind 3
-/// --harness-timeout 300s` (`-Z unstable-options`), one run per harness:
-///
-/// | harness | verdict | wall time |
-/// |---|---|---|
-/// | `proof_worst_of_evidence` | `VERIFICATION:- FAILED` (CBMC timed out) | 5:03 |
-/// | `proof_conditional_carries_its_assumptions` | `VERIFICATION:- FAILED` (CBMC timed out) | 5:03 |
-/// | `proof_aggregate_is_deterministic` | `VERIFICATION:- FAILED` (CBMC timed out) | 5:03 |
-///
-/// None of the three *verifies* -- each one now runs to exactly the
-/// `--harness-timeout` bound and reports "CBMC timed out", which is a real,
-/// reproducible verdict rather than an indefinite hang, but it is still not
-/// a proof. **The trace shows the bottleneck moved, not disappeared**: with
-/// `statuses` no longer a `BTreeSet`, the CBMC trace for all three now
-/// stalls inside `core::slice::sort::shared::pivot::median3_rec::<String,
-/// ...>` and repeated `memcmp` unwinding on `std::string::String` -- i.e.
-/// `aggregate_raw`'s `if let Some(c) = &mut conditional { c.sort();
-/// c.dedup(); }`, which runs the *generic* `Vec<String>`/`String` sort and
-/// dedup algorithm on every node with a conditional, unconditional of how
-/// much content the shim actually put there. This is the exact same shape
-/// of problem `statuses` had -- a generic-collection algorithm CBMC must
-/// symbolically unwind regardless of the shim's real content -- just on
-/// `VerdictNode::conditional: Option<Vec<String>>` instead of `statuses`.
-///
-/// This time the fix is not repeated: unlike `StatusKind` (6 fixed
-/// variants, naturally a bitmask), `conditional`'s payload is free-form
-/// assumption text (`"parser::parse fuzzed(256)"`-shaped strings The-Ply-Spec.md D5
-/// requires callers to be able to read back) -- there is no fixed-width
-/// encoding that preserves that without becoming exactly the kind of
-/// content-lossy placeholder CLAUDE.md's "never weaken a harness to make it
-/// pass" (and, more fundamentally, the newbie-bar rule that a status's
-/// explanation must be real text, not a count) rules out. Swapping it for
-/// e.g. an assumption *count* was the "next-cheapest representation"
-/// suggested going in, but was not applied here: it would change what the
-/// production type -- and therefore what a passing proof -- actually means,
-/// not just what the shim exercises, since `aggregate_raw`'s own
-/// `merge_conditional`/`sort`/`dedup` runs against the real field either
-/// way. That is exactly the "design smell to raise, not route around" the
-/// project's own working notes call for.
-///
-/// What *is* proved today, exhaustively rather than symbolically, is
-/// `tests/enumeration.rs`: all four standing obligations hold over 991,389
-/// concretely-enumerated small trees in ~5.2s under plain `cargo test`. The
-/// harnesses below are kept -- not deleted, not weakened to something that
-/// would pass trivially -- as an accurate, `#[kani::unwind]`-documented
-/// statement of what a symbolic proof of the real `aggregate` would need to
-/// check; they simply do not terminate (within the bound above) against
-/// this kernel's `conditional` type with this Kani/CBMC version today.
-/// Reproduce with, e.g.:
-/// `cargo kani -Z unstable-options --harness proof_worst_of_evidence --unwind 3 --harness-timeout 300s`.
-///
-/// What to try next, not attempted here because it needs its own careful
-/// review of what it does to the actual verified property: Kani function
-/// stubbing (`-Z stubbing`, `#[kani::stub(...)]`) to replace
-/// `Vec<String>`/`String`'s sort, dedup, and comparison with a
-/// semantically-equivalent bounded implementation *for the duration of the
-/// proof only*, leaving the production `conditional: Option<Vec<String>>`
-/// field exactly as-is. That is a proof-harness-local change (same spirit
-/// as the existing `SymTree`/`SymLeaf` shim), not a production-type change,
-/// so it does not carry the content-loss problem the count idea above does
-/// -- but it has not been attempted or measured, so no claim is made about
-/// whether it would actually terminate.
-///
-/// ### First investigation (superseded above, kept for the record)
-///
-/// The original stall (all three harnesses run past an hour with **no**
-/// verdict, not even a timeout) was root-caused to `VerdictNode::statuses:
-/// BTreeSet<StatusKind>` by bisecting to single operations: a single
-/// `Claimable` leaf with an always-empty `statuses` and no recursion
-/// verified in ~1.1s (2942 checks, 0 failures); the same leaf built through
-/// `SymLeaf::into_node` (which may insert one concrete `StatusKind::Stale`,
-/// gated by one symbolic `bool`) did not complete in over 2 minutes; a root
-/// `Container` with exactly one `Claimable` child and no statuses/
-/// conditional at all did not complete in over 5 minutes. `--unwind 3`'s
-/// own trace showed why: CBMC unwound `<BTreeMap<K,V,A> as
-/// Clone>::clone::clone_subtree` on every `aggregate_raw` call regardless
-/// of actual set size. `--unwind 2`/`--unwind 3`, `--object-bits 8` vs. the
-/// default 16, and the `kissat` solver in place of `cadical` were all tried
-/// and made no material difference (the stall is in CBMC's own symbolic
-/// execution/slicing, not SAT solving). See the module's git history for
-/// the full original write-up; the `StatusSet` section above is now the
-/// current, accurate status.
-#[cfg(kani)]
-mod kani_proofs {
-    use super::*;
-
-    /// A depth-2, <=2-children symbolic tree shim. Kani's bounded model
-    /// checking needs a finite, non-recursive shape to draw `kani::any()`
-    /// values for -- the real `VerdictNode` is recursive through
-    /// `Vec<VerdictNode>`, which has no bound Kani can symbolically unroll
-    /// without one being imposed externally. `build` converts this shim into
-    /// a real `VerdictNode`, so every proof below still calls the actual
-    /// production `aggregate`, never a re-implementation of it.
-    #[derive(kani::Arbitrary, Clone, Copy)]
-    struct SymLeaf {
-        kind: NodeKind,
-        conditional: bool,
-        other_status: bool,
-    }
-
-    impl SymLeaf {
-        fn own_evidence(&self) -> Option<Evidence> {
-            match self.kind {
-                NodeKind::Claimable(e) => Some(e),
-                NodeKind::Container => None,
-            }
-        }
-
-        fn into_node(self, children: Vec<VerdictNode>) -> VerdictNode {
-            let mut statuses = StatusSet::new();
-            if self.other_status {
-                statuses.insert(StatusKind::Stale);
-            }
-            let conditional = if self.conditional {
-                Some(vec!["kani-symbolic-assumption".to_string()])
-            } else {
-                None
-            };
-            VerdictNode {
-                kind: self.kind,
-                statuses,
-                conditional,
-                children,
-            }
-        }
-    }
-
-    #[derive(kani::Arbitrary, Clone, Copy)]
-    struct SymTree {
-        root: SymLeaf,
-        has_child_a: bool,
-        child_a: SymLeaf,
-        has_child_b: bool,
-        child_b: SymLeaf,
-    }
-
-    impl SymTree {
-        fn build(self) -> VerdictNode {
-            let mut children = Vec::new();
-            if self.has_child_a {
-                children.push(self.child_a.into_node(Vec::new()));
-            }
-            if self.has_child_b {
-                children.push(self.child_b.into_node(Vec::new()));
-            }
-            self.root.into_node(children)
-        }
-
-        /// The min over claimable-only own-evidence across root + present
-        /// children, `None` if none of them is claimable -- computed
-        /// directly from the symbolic fields, not by calling `aggregate`.
-        fn expected_claimable_min(&self) -> Option<Evidence> {
-            let mut acc = self.root.own_evidence();
-            if self.has_child_a {
-                acc = match (acc, self.child_a.own_evidence()) {
-                    (None, x) => x,
-                    (x, None) => x,
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                };
-            }
-            if self.has_child_b {
-                acc = match (acc, self.child_b.own_evidence()) {
-                    (None, x) => x,
-                    (x, None) => x,
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                };
-            }
-            acc
-        }
-    }
-
-    /// Standing obligation 1 (as reworded by The-Ply-Spec.md §7's amendment):
-    /// worst-of never reports evidence stronger than the weakest claimable
-    /// node in the subtree, and reports exactly `Unclaimed` when there is
-    /// none. Standing obligation 3 (violation-reaches-root) is the case of
-    /// this where the weakest claimable node is a `Violation`.
-    ///
-    /// `unwind(3)`: the only loop this proof's own shape controls is
-    /// `aggregate_raw`'s `for child in &node.children`, over `SymTree`'s at
-    /// most 2 children -- 2 iterations plus 1 exit check needs unwind >= 3.
-    /// This is the minimal *sound* bound for that loop; it does not by
-    /// itself make the harness terminate (see the module doc comment --
-    /// the stall is inside `BTreeSet<StatusKind>`'s own internal unwinding,
-    /// governed by the same global bound, whose required depth for
-    /// this proof's data is not established because no run has completed).
-    #[kani::unwind(3)]
-    #[kani::proof]
-    fn proof_worst_of_evidence() {
-        let t: SymTree = kani::any();
-        let expected = t.expected_claimable_min().unwrap_or(Evidence::Unclaimed);
-
-        let agg = aggregate(&t.build());
-        assert_eq!(agg.evidence, expected);
-
-        let any_violation = t.root.own_evidence() == Some(Evidence::Violation)
-            || (t.has_child_a && t.child_a.own_evidence() == Some(Evidence::Violation))
-            || (t.has_child_b && t.child_b.own_evidence() == Some(Evidence::Violation));
-        if any_violation {
-            assert_eq!(agg.evidence, Evidence::Violation);
-        }
-    }
-
-    /// Standing obligation 2: `conditional` never disappears without its
-    /// assumptions.
-    ///
-    /// `unwind(3)`: see `proof_worst_of_evidence` -- same `SymTree` shape,
-    /// same bound, same caveat that this does not make it terminate.
-    #[kani::unwind(3)]
-    #[kani::proof]
-    fn proof_conditional_carries_its_assumptions() {
-        let t: SymTree = kani::any();
-        let any_conditional = t.root.conditional
-            || (t.has_child_a && t.child_a.conditional)
-            || (t.has_child_b && t.child_b.conditional);
-
-        let agg = aggregate(&t.build());
-        assert_eq!(agg.conditional.is_some(), any_conditional);
-        if any_conditional {
-            assert!(!agg.conditional.unwrap().is_empty());
-        }
-    }
-
-    /// Standing obligation 4: aggregating the same tree twice yields
-    /// identical results.
-    ///
-    /// `unwind(3)`: see `proof_worst_of_evidence` -- same `SymTree` shape,
-    /// same bound, same caveat that this does not make it terminate.
-    #[kani::unwind(3)]
-    #[kani::proof]
-    fn proof_aggregate_is_deterministic() {
-        let t: SymTree = kani::any();
-        let a = aggregate(&t.build());
-        let b = aggregate(&t.build());
-        assert_eq!(a, b);
     }
 }

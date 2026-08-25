@@ -1,0 +1,11 @@
+# The exact endpoints of §5.1a rule 4's ranges, which a regex is easy to get
+# wrong at: fuzz(1), fuzz(1000000), bounded(1), bounded(64).
+ply: 1
+components:
+  edges_of_the_range:
+    anchor: app
+    fns:
+      a: { checks: [fuzz(1)] }
+      b: { checks: [fuzz(1000000)] }
+      c: { checks: [bounded(1)] }
+      d: { checks: [bounded(64)] }

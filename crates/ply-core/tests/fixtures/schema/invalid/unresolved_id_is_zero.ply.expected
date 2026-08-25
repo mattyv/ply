@@ -1,0 +1,1 @@
+E0201: `id: 0` is not a usable number for an open decision: ids start at 1, and 0 reads as "unset" everywhere else the number is shown. Give this entry its own positive number. Found at `unresolved[0].id` in ply.yaml.

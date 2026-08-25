@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  mutatetier:
+    anchor: ply_fixture_mutatetier
+    fns:
+      lonely:
+        checks: [mutate]

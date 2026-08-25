@@ -19,7 +19,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let doc = match ply_model::parse_document(&yaml) {
+    let doc = match ply_core::model::parse_document(&yaml) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("error: {path} did not parse as ply.yaml: {e}");
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let diagnostics = ply_check::run_checks(&doc);
+    let diagnostics = ply_core::check::run_checks(&doc);
     for d in &diagnostics {
         println!("{d}");
     }
@@ -35,7 +35,10 @@ fn main() -> ExitCode {
     // §5.3: `W`-severity findings are reported but don't fail the run on
     // their own — only an `E`-severity (or other non-advisory) diagnostic
     // does. An empty list is vacuously "all advisory".
-    if diagnostics.iter().all(ply_check::Diagnostic::is_advisory) {
+    if diagnostics
+        .iter()
+        .all(ply_core::check::Diagnostic::is_advisory)
+    {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

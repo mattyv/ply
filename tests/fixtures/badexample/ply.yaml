@@ -1,0 +1,17 @@
+ply: 1
+
+# The second `examples` entry compares a `u32` against a string literal. It
+# parses as a Rust expression (§5.4a: examples are arbitrary Rust `==`
+# expressions, so nothing type-checks them before codegen) but cannot
+# compile, so the generated harness crate fails to build and *no* case of
+# either check ever runs. Ply must say so (X0901, a tool error), never
+# report `fuzzed(64)`/`tested` -- the 2026-08-24 M4 review's D1.
+components:
+  badexample:
+    anchor: ply_fixture_badexample
+    fns:
+      add_small:
+        checks: [fuzz(64), test]
+        examples:
+          - "add_small(2, 3) == 5"
+          - "add_small(0, 0) == \"zero\""

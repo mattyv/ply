@@ -1,0 +1,20 @@
+[package]
+name = "ply-cli"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "cargo-ply: the Ply CLI (verify, --json)."
+
+[[bin]]
+name = "cargo-ply"
+path = "src/main.rs"
+
+[dependencies]
+ply-core = { path = "../ply-core" }
+clap = { version = "4", features = ["derive"] }
+indexmap = "2"
+serde_json = "1"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"

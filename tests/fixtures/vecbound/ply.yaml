@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  vecbound:
+    anchor: ply_fixture_vecbound
+    fns:
+      vec_sum:
+        checks: [bounded(8)]

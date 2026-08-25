@@ -1,0 +1,3 @@
+ply: 1
+profiles:
+  hot_path: [no_panics, no_allocation]

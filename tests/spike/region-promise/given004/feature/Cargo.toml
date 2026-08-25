@@ -1,0 +1,26 @@
+[workspace]
+# Empty table: its own workspace root, like the legacy crate beside it and
+# like every fixture under tests/fixtures. `cargo ply verify` also appends
+# its generated harness crate to this table when a `fuzz`/`test`/`mutate`
+# check runs (crates/ply-core/src/harness_crate.rs::ensure_workspace_member).
+
+[package]
+name = "havoc-given004-withdrawal"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "withdrawal"
+path = "src/lib.rs"
+
+[dependencies]
+ledger = { package = "havoc-given004-ledger", path = "../legacy" }
+
+[features]
+# Row `withdraw`: a harness that cannot be built. Gated so it does not break
+# the crate for every other row; run.sh turns it on for that one row.
+withdraw_row = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
