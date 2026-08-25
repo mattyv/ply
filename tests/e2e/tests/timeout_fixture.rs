@@ -45,4 +45,48 @@ fn timeout_is_reported_as_timeout_never_as_violation() {
 
     // No cex test should ever be generated for a timeout.
     assert!(!fixture.path().join("src/ply_generated_cex.rs").exists());
+
+    // §1's absence-of-evidence principle, §6's exit table (2026-08-25):
+    // this run checked nothing. Until now it exited 0, because `K0601` is a
+    // warning and §6's table had no row for "checked nothing" -- which is
+    // how vetting 004's 7m13s run of two evidence-free claims came back
+    // green in CI.
+    assert_eq!(
+        run.exit_code,
+        Some(1),
+        "a run whose only check timed out has no evidence in it, and must not exit 0: {}",
+        run.json
+    );
+}
+
+/// `--fail-on=error` is §6's documented opt-out: it restores the older,
+/// looser behaviour for a codebase mid-adoption where absences are expected
+/// and tracked elsewhere. It must be an opt-out and nothing else -- if it
+/// changed anything besides the pass/fail line, it would be a third mode
+/// nobody asked for.
+#[test]
+fn fail_on_error_is_the_documented_opt_out_from_the_new_default() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("timeout");
+
+    let output = std::process::Command::new(&cargo_ply)
+        .args([
+            "verify",
+            fixture.path().to_str().unwrap(),
+            "--json",
+            "--engine-timeout",
+            "30",
+            "--fail-on",
+            "error",
+        ])
+        .output()
+        .expect("spawning cargo-ply verify --fail-on error");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["root"]["verdict"], "timeout", "envelope: {json}");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "`--fail-on=error` relaxes the default back to error-severity only: {stdout}"
+    );
 }

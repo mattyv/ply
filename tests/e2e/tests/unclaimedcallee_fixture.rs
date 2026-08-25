@@ -53,4 +53,11 @@ fn a_callee_with_no_contract_is_refused_by_name_never_silently_inlined() {
         !fixture.path().join("src/ply_generated.rs").exists(),
         "the refusal must happen before harness codegen, not after a Kani run"
     );
+
+    assert_eq!(
+        run.exit_code,
+        Some(1),
+        "absence of evidence fails the run by default (§1, §6): {}",
+        run.json
+    );
 }

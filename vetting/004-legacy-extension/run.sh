@@ -110,6 +110,11 @@ s4() { # the control: identical fn, legacy call replaced by an in-fragment match
 }
 
 s5() { # §5.4's ply.yaml-declared contracts, on the unclaimed legacy callee
+  # Budget raised from 120s to 600s on 2026-08-25, when D5's second branch
+  # started assuming this contract instead of dropping it: the stubbed proof
+  # needs ~202s of Kani verification time (measured, docs/post-004-fixes.md),
+  # so at 120s the stage reported `timeout` and said nothing about the
+  # assumption. The original 120s run is quoted in that document.
   echo "=== s5: a requires/ensures declared for the legacy callee in ply.yaml ==="
   local w; w=$(fresh s5); apply_overflow_fix "$w"; keep_only_fn "$w" tier_fee_cents
   python3 - "$w/feature/ply.yaml" <<'PY'
@@ -128,7 +133,7 @@ t = t.replace("""  ledger:
 open(p, "w").write(t)
 PY
   sed -n '/ledger:/,/^$/p' "$w/feature/ply.yaml"
-  ( cd "$w/feature" && time "$CARGO_PLY" verify . --engine-timeout 120 --json )
+  ( cd "$w/feature" && time "$CARGO_PLY" verify . --engine-timeout 600 --json )
   echo "verify exit: $?"
 }
 
