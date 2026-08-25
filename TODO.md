@@ -39,7 +39,7 @@
       proof verifies (94.6s, 85 checks) and a violation in the same configuration yields
       a witness — at ~12-14% *lower* cost than the candidate (107.7s, 110 checks).
       Evidence, fixtures and a reproducing `run.sh`: `tests/spike/kani-pin/FINDINGS.md`.
-      Commit hash added in the follow-up commit.
+      Commit `82555a9`.
 - [ ] **KNOWN GAP, raised by the spike, no Kani version fixes it.** §5.5 can produce a
       violation that no test of the real code can reproduce: the counterexample's third
       value is the *stub's* invented return, and the real callee never returns it. Written
