@@ -741,9 +741,9 @@ In a codebase that is mostly legacy, `conditional` is the *normal* state, not an
 Two practical notes. Proofs that stand on a promise are much slower than proofs that
 stand on real code — the promise hands the solver a symbolic value where the body
 returned one of four concrete ones — which is why the default budget has a 300s floor
-when a stub is involved. The run above took about two minutes. And the human-readable
-output prints the verdict plus this diagnostic; the `conditional` and `owed-evidence`
-statuses themselves appear as a `statuses` list in `--json`.
+when a stub is involved. The run above took about two minutes. And the node's own line in the
+terminal carries `[assumed, evidence owed]` beside its verdict, with the diagnostic
+below it and the same two facts in `--json` as a `statuses` list — see section 7.
 
 ### Seeing and settling the debt
 
@@ -841,6 +841,26 @@ they are different kinds of fact, and they travel upward as flags:
 | `inconclusive` | A check ran and settled nothing. |
 | `weak-spec` | A `mutate` run planted bugs your checks did not catch. |
 | `stale` | The code changed since the evidence was recorded. (Needs `ply.lock`; not produced yet.) |
+
+### What the terminal shows
+
+`verify` prints one line per node, and a node carrying either of the first two statuses
+above says so on that line:
+
+```
+workspace — bounded(2)  [assumed, evidence owed]
+  billing — bounded(2)  [assumed, evidence owed]
+    tiered_fee — bounded(2)  [assumed, evidence owed]
+
+  [assumed]        this result rests on a promise Ply was handed and did not check — if the promise is wrong, the result is wrong with it
+  [evidence owed]  nothing has run the real code against that promise yet; the lines below name it and say what would settle it
+```
+
+The marks travel upward the way the statuses do, so a qualified result deep in the tree
+is visible at the root without expanding anything — the same job the corner markers do
+on the diagram. The two lines explaining them are printed only when the tree actually
+carries a mark. `--json` has carried this all along, in `statuses`; the terminal did
+not, so a result standing on an unchecked promise printed as a bare pass.
 
 The distinction worth internalising is between three answers that look similar and are
 not: **checked and fine** (`tested`/`fuzzed`/`bounded`/`proved`), **checked nothing**

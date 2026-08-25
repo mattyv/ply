@@ -157,14 +157,90 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn print_human(envelope: &ply_core::diag::Envelope) {
-    fn walk(node: &ply_core::diag::Node, depth: usize) {
-        println!("{}{} — {}", "  ".repeat(depth), node.id, node.verdict);
+/// The marks a node line carries beside its verdict.
+///
+/// §7.1 gives statuses their own visual channel — corner markers on the
+/// node, never a change to the fill, because a status is a different kind
+/// of fact from a verdict (D6). The terminal had no such channel: a result
+/// resting on a promise nobody had checked printed as a bare pass, exactly
+/// like one resting on checked code. The qualifier and the debt were in the
+/// JSON envelope and in the diagnostic prose underneath, and missing from
+/// the one line most people read.
+///
+/// Plain words, not codes (CLAUDE.md's newbie bar): `conditional` and
+/// `owed-evidence` are Ply's names for these facts, and neither means
+/// anything to a reader who has not read the spec.
+fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
+    let mut marks = Vec::new();
+    if node.statuses.iter().any(|s| s == "conditional") {
+        marks.push("assumed");
+    }
+    if node.statuses.iter().any(|s| s == "owed-evidence") {
+        marks.push("evidence owed");
+    }
+    marks
+}
+
+/// What each mark means, printed once beneath the tree and only when the
+/// tree actually carries it. A mark a reader cannot decode is decoration.
+const MARK_GLOSS: [(&str, &str); 2] = [
+    (
+        "assumed",
+        "this result rests on a promise Ply was handed and did not check — if the promise is \
+         wrong, the result is wrong with it",
+    ),
+    (
+        "evidence owed",
+        "nothing has run the real code against that promise yet; the lines below name it and say \
+         what would settle it",
+    ),
+];
+
+/// The §7 tree as a person reads it in a terminal, with the status marks
+/// and — when any appear — what they mean.
+fn tree_report(envelope: &ply_core::diag::Envelope) -> String {
+    fn walk(node: &ply_core::diag::Node, depth: usize, out: &mut String, seen: &mut Vec<&str>) {
+        let marks = node_marks(node);
+        let suffix = if marks.is_empty() {
+            String::new()
+        } else {
+            for m in &marks {
+                if !seen.contains(m) {
+                    seen.push(m);
+                }
+            }
+            format!("  [{}]", marks.join(", "))
+        };
+        out.push_str(&format!(
+            "{}{} — {}{suffix}\n",
+            "  ".repeat(depth),
+            node.id,
+            node.verdict
+        ));
         for child in &node.children {
-            walk(child, depth + 1);
+            walk(child, depth + 1, out, seen);
         }
     }
-    walk(&envelope.root, 0);
+    let mut out = String::new();
+    let mut seen: Vec<&str> = Vec::new();
+    walk(&envelope.root, 0, &mut out, &mut seen);
+    if !seen.is_empty() {
+        out.push('\n');
+        for (mark, gloss) in MARK_GLOSS {
+            if seen.contains(&mark) {
+                let label = format!("[{mark}]");
+                out.push_str(&format!("  {label:<17}{gloss}\n"));
+            }
+        }
+        // The diagnostics come next, and they are paragraphs. Without this
+        // the gloss and the first diagnostic run together into one block.
+        out.push('\n');
+    }
+    out
+}
+
+fn print_human(envelope: &ply_core::diag::Envelope) {
+    print!("{}", tree_report(envelope));
     for d in &envelope.diagnostics {
         println!("[{}] {} — {}", d.code, d.node_id, d.title);
     }
@@ -339,6 +415,44 @@ mod tests {
             ),
             2
         );
+    }
+
+    /// §7.1 gives statuses their own visual channel: on the diagram they
+    /// are corner markers beside the fill, not a weaker fill. The terminal
+    /// is the surface most people actually read, and it had no channel for
+    /// them at all -- a result standing on a promise nobody checked printed
+    /// as a bare pass, identical to one standing on checked code. The
+    /// qualifier and the debt were in the JSON and in the diagnostic prose,
+    /// and absent from the one line a person scans.
+    #[test]
+    fn a_result_resting_on_an_unchecked_promise_says_so_on_the_node_line() {
+        let envelope = envelope_with_statuses(&["bounded(2)"], &["conditional", "owed-evidence"]);
+        let report = tree_report(&envelope);
+        assert!(
+            report.contains("  f — bounded(2)  [assumed, evidence owed]"),
+            "the node line must carry both marks: {report}"
+        );
+        assert!(
+            report.contains(
+                "  [assumed]        this result rests on a promise Ply was handed and did not \
+                 check — if the promise is wrong, the result is wrong with it"
+            ),
+            "a marker nobody can read is not a report: {report}"
+        );
+        assert!(
+            report.contains(
+                "  [evidence owed]  nothing has run the real code against that promise yet"
+            ),
+            "{report}"
+        );
+    }
+
+    /// A run with nothing to qualify prints exactly what it printed before:
+    /// no markers, and no explanation of markers that are not there.
+    #[test]
+    fn a_plain_result_prints_no_marker_and_no_legend() {
+        let report = tree_report(&envelope(&["bounded(2)"]));
+        assert_eq!(report, "workspace — bounded(2)\n  f — bounded(2)\n");
     }
 
     /// The statuses that are *not* absences must keep exiting 0, or the rule

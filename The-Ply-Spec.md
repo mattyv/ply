@@ -1161,6 +1161,20 @@ mid-adoption where absences are expected and tracked elsewhere. Choosing it is a
 statement that this run's green means less than the default's, which is why it has to be
 typed.
 
+**The printed tree carries statuses, not only verdicts (2026-08-25).** §7.1 gives
+statuses their own visual channel on the diagram — corner markers beside the fill, never
+a change to the fill, because a status is a different kind of fact (D6). The terminal had
+no such channel: a node whose verdict rested on an assumed contract printed as a bare
+`bounded(2)`, indistinguishable from one standing on checked code, with the qualifier
+reachable only in `--json` or in the diagnostic paragraph below the tree. The most-read
+surface was the one where the assumption was invisible, which defeats the point of §5.5.
+A node's line now ends with `[assumed]` where it carries `conditional` and
+`[evidence owed]` where it carries `owed-evidence` — plain words, not the D6 names, per
+CLAUDE.md's newbie bar — and the sentence explaining each is printed once beneath the
+tree, only when the tree carries that mark. The marks travel upward exactly as the
+statuses do, so a qualified leaf is legible at the root without expanding anything: the
+job the corner marker does on the diagram.
+
 Housekeeping: Ply owns everything under `target/ply/` and every generated test whose name
 starts with `ply_cex_`; `verify` deletes generated artifacts whose claims no longer
 exist.

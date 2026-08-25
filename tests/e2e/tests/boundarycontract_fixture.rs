@@ -99,3 +99,37 @@ fn a_declared_contract_for_an_unclaimed_callee_earns_a_conditional_verdict() {
         "generated harness:\n{generated}"
     );
 }
+
+/// The terminal is the surface most people read, and it showed none of
+/// this: the run above prints its verdict qualifier and its debt in the
+/// JSON envelope and in the diagnostic paragraph, and the node line itself
+/// used to read as a bare pass -- indistinguishable from a result standing
+/// on code somebody actually checked (§7.1 gives statuses their own visual
+/// channel; the terminal had none).
+#[test]
+fn the_terminal_shows_the_assumption_on_the_node_line_itself() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("boundarycontract");
+
+    let out = std::process::Command::new(&cargo_ply)
+        .args(["verify", fixture.path().to_str().unwrap()])
+        .output()
+        .expect("spawning cargo-ply verify");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    assert!(
+        stdout.contains("    tiered_fee — bounded(2)  [assumed, evidence owed]"),
+        "the claim's own line must carry the marks: {stdout}"
+    );
+    assert!(
+        stdout.contains("workspace — bounded(2)  [assumed, evidence owed]"),
+        "and so must the root -- the trust story must be visible without expanding \
+         anything: {stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "  [assumed]        this result rests on a promise Ply was handed and did not check"
+        ),
+        "the marks must carry their own meaning for a reader who has never seen Ply: {stdout}"
+    );
+}
