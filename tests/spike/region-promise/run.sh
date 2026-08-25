@@ -117,6 +117,11 @@ tight() {
   done
 }
 
+t3() { banner "t3 -- gross_cents at B1-tight, on the same widened scratch copy r3 uses"
+       local w; w=$(freshnat t3)
+       python3 "$HERE/widen_n1.py" "$w/feature/src/lib.rs" || return 2
+       kani "$w/feature" ply_region_gross_cents t-gross_cents --features tight; }
+
 # ======================================= the per-callee column (spec 5.5 br. 2)
 percallee() {
   banner "p4..p8 -- the route that already works: one clause per callee, from
@@ -176,7 +181,7 @@ x3() {
 version
 hashes
 rows=("$@")
-[ ${#rows[@]} -eq 0 ] && rows=(r1 r2 r3 r4 r5 r6 r7 r8 tight percallee x1 x2 x3)
+[ ${#rows[@]} -eq 0 ] && rows=(r1 r2 r3 r4 r5 r6 r7 r8 t3 tight percallee x1 x2 x3)
 for r in "${rows[@]}"; do "$r"; done
 echo
 echo "Done. Logs in $OUT. See FINDINGS.md."
