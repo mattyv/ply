@@ -39,6 +39,19 @@ pub enum RustType {
     I32,
     I64,
     Bool,
+    /// `char` -- §5.4b lists it with the integers as "cheap
+    /// unconditionally"; measured 2026-08-25, see docs/post-004-fixes.md.
+    Char,
+    /// `Option<T>` of a supported type -- §5.4b, same measured tier.
+    Option(Box<RustType>),
+    /// `Result<T, E>` of supported types -- §5.4b, same measured tier.
+    Result(Box<RustType>, Box<RustType>),
+    /// `[T; N]` -- §5.4b's **preferred** bounded shape ("generated
+    /// harnesses should reach for it first"), cheap with no unwind
+    /// annotation because the bound is a compile-time constant. Absent from
+    /// the implementation until 2026-08-25, which is why vetting 004's
+    /// fragment-first rate-card idiom came back `Unsupported("[u32 ; 4]")`.
+    Array(Box<RustType>, u32),
     /// `Vec<u8>` -- the only collection shape the Kani path builds.
     VecU8,
     /// `Vec<T>` for a scalar `T` other than `u8` -- fuzz-only (Kani's
@@ -70,25 +83,40 @@ impl RustType {
         )
     }
 
+    /// A type both `kani::any()` and proptest's `any()` build directly with
+    /// no construction loop: the scalars plus `char`.
+    pub fn is_leaf(&self) -> bool {
+        self.is_scalar() || matches!(self, RustType::Char)
+    }
+
+    /// `Option`/`Result`/`[T; N]` all the way down to leaves. Separated from
+    /// `is_leaf` because these carry no unwind cost (an array's length is a
+    /// compile-time constant, an `Option` is a two-way branch) while `Vec`
+    /// does -- that asymmetry is §5.4b's, measured, not a guess.
+    pub fn is_composite_constructible(&self) -> bool {
+        match self {
+            RustType::Option(inner) | RustType::Array(inner, _) => {
+                inner.is_leaf() || inner.is_composite_constructible()
+            }
+            RustType::Result(ok, err) => {
+                (ok.is_leaf() || ok.is_composite_constructible())
+                    && (err.is_leaf() || err.is_composite_constructible())
+            }
+            _ => false,
+        }
+    }
+
     /// The narrower gate: can Ply's *Kani* codegen build this type at all?
     /// (Renamed from the M3 slice's `is_supported` now that a second,
     /// broader gate -- `is_fuzz_supported` -- exists; every M3 call site is
     /// updated to this name, behaviour unchanged for every type M3 knew
     /// about.)
     pub fn is_bounded_supported(&self) -> bool {
-        matches!(
-            self,
-            RustType::U8
-                | RustType::U16
-                | RustType::U32
-                | RustType::U64
-                | RustType::I8
-                | RustType::I16
-                | RustType::I32
-                | RustType::I64
-                | RustType::Bool
-                | RustType::VecU8
-        )
+        match self {
+            RustType::VecU8 => true,
+            RustType::Vec(_) | RustType::BTreeSet(_) | RustType::Unsupported(_) => false,
+            other => other.is_leaf() || other.is_composite_constructible(),
+        }
     }
 
     /// The M4 gate: can the *fuzz* (proptest) codegen build this type?
@@ -98,7 +126,7 @@ impl RustType {
         match self {
             RustType::Vec(inner) | RustType::BTreeSet(inner) => inner.is_scalar(),
             RustType::Unsupported(_) => false,
-            other => other.is_bounded_supported() || other.is_scalar(),
+            other => other.is_bounded_supported(),
         }
     }
 
@@ -119,6 +147,22 @@ impl RustType {
         })
     }
 
+    /// The full type source text, for `let x: <ty> = kani::any();` and for
+    /// proptest's `any::<<ty>>()`. `None` for the shapes built by a
+    /// dedicated codegen path instead (`Vec`, `BTreeSet`) and for
+    /// `Unsupported`.
+    pub fn rust_name(&self) -> Option<String> {
+        Some(match self {
+            RustType::Char => "char".to_string(),
+            RustType::Option(inner) => format!("Option<{}>", inner.rust_name()?),
+            RustType::Result(ok, err) => {
+                format!("Result<{}, {}>", ok.rust_name()?, err.rust_name()?)
+            }
+            RustType::Array(inner, n) => format!("[{}; {}]", inner.rust_name()?, n),
+            other => other.scalar_rust_name()?.to_string(),
+        })
+    }
+
     /// Byte width Kani's concrete-playback encodes this scalar as
     /// (little-endian on the pinned toolchain's target -- measured, see
     /// docs/m3-slice-findings.md).
@@ -128,7 +172,14 @@ impl RustType {
             RustType::U16 | RustType::I16 => Some(2),
             RustType::U32 | RustType::I32 => Some(4),
             RustType::U64 | RustType::I64 => Some(8),
-            RustType::VecU8
+            // No witness decoder yet for these -- a violation on one is
+            // reported honestly as a tool error rather than with an
+            // invented input (see `verify::run_bounded_check`).
+            RustType::Char
+            | RustType::Option(_)
+            | RustType::Result(..)
+            | RustType::Array(..)
+            | RustType::VecU8
             | RustType::Vec(_)
             | RustType::BTreeSet(_)
             | RustType::Unsupported(_) => None,
@@ -136,13 +187,89 @@ impl RustType {
     }
 }
 
-fn rust_type_from_syn(ty: &Type) -> RustType {
+/// Type aliases declared at the top level of the file being read
+/// (`type AccountId = u64;`). §5.4b says nothing about aliases because they
+/// are transparent in Rust -- but the extractor matched on the *written*
+/// name, so `account: ledger::AccountId` came back
+/// `Unsupported("ledger :: AccountId")` and one line of ordinary Rust moved
+/// a function out of the checkable set (vetting 004 finding 5).
+pub type AliasMap = std::collections::BTreeMap<String, Type>;
+
+/// Depth cap for alias chasing: a cyclic `type A = B; type B = A;` does not
+/// compile, but this reader is not a compiler and must not hang on one.
+const MAX_ALIAS_DEPTH: usize = 8;
+
+fn rust_type_from_syn(ty: &Type, aliases: &AliasMap) -> RustType {
+    rust_type_from_syn_at(ty, aliases, 0)
+}
+
+fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustType {
     match ty {
+        Type::Array(arr) => {
+            let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(n),
+                ..
+            }) = &arr.len
+            else {
+                return RustType::Unsupported(ty.to_token_stream().to_string());
+            };
+            let Ok(n) = n.base10_parse::<u32>() else {
+                return RustType::Unsupported(ty.to_token_stream().to_string());
+            };
+            let elem = rust_type_from_syn_at(&arr.elem, aliases, depth);
+            if elem.is_leaf() || elem.is_composite_constructible() {
+                RustType::Array(Box::new(elem), n)
+            } else {
+                RustType::Unsupported(ty.to_token_stream().to_string())
+            }
+        }
         Type::Path(tp) => {
             let Some(seg) = tp.path.segments.last() else {
                 return RustType::Unsupported(ty.to_token_stream().to_string());
             };
+            // An alias resolves to whatever it names, by its last segment
+            // (`ledger::AccountId` and `AccountId` are the same alias).
+            if depth < MAX_ALIAS_DEPTH
+                && seg.arguments.is_empty()
+                && let Some(aliased) = aliases.get(&seg.ident.to_string())
+            {
+                return rust_type_from_syn_at(aliased, aliases, depth + 1);
+            }
             match seg.ident.to_string().as_str() {
+                "char" => RustType::Char,
+                "Option" => {
+                    if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments
+                        && let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first()
+                    {
+                        let inner = rust_type_from_syn_at(inner_ty, aliases, depth);
+                        if inner.is_leaf() || inner.is_composite_constructible() {
+                            return RustType::Option(Box::new(inner));
+                        }
+                    }
+                    RustType::Unsupported(ty.to_token_stream().to_string())
+                }
+                "Result" => {
+                    if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
+                        let args: Vec<&Type> = ab
+                            .args
+                            .iter()
+                            .filter_map(|a| match a {
+                                syn::GenericArgument::Type(t) => Some(t),
+                                _ => None,
+                            })
+                            .collect();
+                        if args.len() == 2 {
+                            let ok = rust_type_from_syn_at(args[0], aliases, depth);
+                            let err = rust_type_from_syn_at(args[1], aliases, depth);
+                            let usable =
+                                |r: &RustType| r.is_leaf() || r.is_composite_constructible();
+                            if usable(&ok) && usable(&err) {
+                                return RustType::Result(Box::new(ok), Box::new(err));
+                            }
+                        }
+                    }
+                    RustType::Unsupported(ty.to_token_stream().to_string())
+                }
                 "u8" => RustType::U8,
                 "u16" => RustType::U16,
                 "u32" => RustType::U32,
@@ -161,7 +288,7 @@ fn rust_type_from_syn(ty: &Type) -> RustType {
                         {
                             return RustType::VecU8;
                         }
-                        let inner = rust_type_from_syn(inner_ty);
+                        let inner = rust_type_from_syn_at(inner_ty, aliases, depth);
                         if inner.is_scalar() {
                             return RustType::Vec(Box::new(inner));
                         }
@@ -175,7 +302,7 @@ fn rust_type_from_syn(ty: &Type) -> RustType {
                     if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments
                         && let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first()
                     {
-                        let inner = rust_type_from_syn(inner_ty);
+                        let inner = rust_type_from_syn_at(inner_ty, aliases, depth);
                         if inner.is_scalar() {
                             return RustType::BTreeSet(Box::new(inner));
                         }
@@ -185,9 +312,22 @@ fn rust_type_from_syn(ty: &Type) -> RustType {
                 _ => RustType::Unsupported(ty.to_token_stream().to_string()),
             }
         }
-        Type::Reference(r) => rust_type_from_syn(&r.elem),
+        Type::Reference(r) => rust_type_from_syn_at(&r.elem, aliases, depth),
         other => RustType::Unsupported(other.to_token_stream().to_string()),
     }
+}
+
+/// Collects top-level `type X = T;` items from a parsed file.
+pub fn alias_map(file: &syn::File) -> AliasMap {
+    let mut out = AliasMap::new();
+    for item in &file.items {
+        if let syn::Item::Type(ty) = item
+            && ty.generics.params.is_empty()
+        {
+            out.insert(ty.ident.to_string(), (*ty.ty).clone());
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -249,11 +389,12 @@ pub fn discover_fn(src_path: &Path, fn_name: &str) -> Result<ContractFn> {
         .with_context(|| format!("reading source at {}", src_path.display()))?;
     let file = syn::parse_file(&src)
         .with_context(|| format!("parsing source at {}", src_path.display()))?;
+    let aliases = alias_map(&file);
     for item in &file.items {
         if let syn::Item::Fn(f) = item
             && f.sig.ident == fn_name
         {
-            return build_contract_fn(f);
+            return build_contract_fn(f, &aliases);
         }
     }
     bail!(
@@ -276,7 +417,7 @@ fn tidy_contract_text(s: &str) -> String {
         .replace(" ()", "()")
 }
 
-fn build_contract_fn(f: &ItemFn) -> Result<ContractFn> {
+fn build_contract_fn(f: &ItemFn, aliases: &AliasMap) -> Result<ContractFn> {
     let name = f.sig.ident.to_string();
     let mut params = Vec::new();
     for arg in &f.sig.inputs {
@@ -293,7 +434,7 @@ fn build_contract_fn(f: &ItemFn) -> Result<ContractFn> {
         };
         params.push(Param {
             name: pname,
-            ty: rust_type_from_syn(inner_ty),
+            ty: rust_type_from_syn(inner_ty, aliases),
             by_ref,
         });
     }
@@ -494,7 +635,7 @@ pub fn generate_proof_module(
                 ));
             }
             other => {
-                let ty_name = other.scalar_rust_name().expect("checked supported above");
+                let ty_name = other.rust_name().expect("checked supported above");
                 lets.push_str(&format!(
                     "    let {name}: {ty} = kani::any();\n",
                     name = p.name,
@@ -714,6 +855,114 @@ pub fn vec_sum(v: &Vec<u8>) -> u32 { 0 }
         );
         assert!(cf.is_bounded_supported());
         assert!(cf.is_fuzz_supported());
+    }
+
+    // -- 2026-08-25: the fragment widened to §5.4b's own list ------------
+    //
+    // Until this landed, `rust_type_from_syn` had no `Type::Array` arm and
+    // no alias resolution, and knew nothing of `char`, `Option` or
+    // `Result` -- so §5.4b's *preferred* bounded shape came back
+    // `Unsupported("[u32 ; 4]")` and `type AccountId = u64` moved a
+    // function out of the checkable set (vetting 004 finding 5). Costs
+    // measured, not assumed: each shape verifies in 0.03-0.06s of Kani
+    // time on a trivial body (docs/post-004-fixes.md).
+
+    #[test]
+    fn a_fixed_size_array_is_the_preferred_bounded_shape_not_an_unsupported_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::requires(amount_cents <= 100_000_000 && tier < 4)]
+#[ply::ensures(|result| *result <= amount_cents)]
+pub fn carded_fee_cents(amount_cents: u32, tier: u8, card_bps: [u32; 4]) -> u32 { 0 }
+"#,
+        );
+        let cf = discover_fn(&path, "carded_fee_cents").unwrap();
+        assert_eq!(
+            cf.params[2].ty,
+            RustType::Array(Box::new(RustType::U32), 4),
+            "§5.4b calls a fixed-size array v1's preferred bounded shape"
+        );
+        assert!(cf.is_bounded_supported());
+        assert!(cf.is_fuzz_supported());
+        let harness_out = generate_proof_module(&cf, 2, &[]).unwrap();
+        assert!(
+            harness_out
+                .module_source
+                .contains("let card_bps: [u32; 4] = kani::any();"),
+            "{}",
+            harness_out.module_source
+        );
+        assert!(
+            harness_out.unwind.is_none(),
+            "an array's length is a compile-time constant -- no unwind annotation, unlike `Vec`"
+        );
+    }
+
+    #[test]
+    fn char_option_and_result_are_in_the_fragment() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::ensures(|result| *result >= 0)]
+pub fn classify(c: char, hint: Option<u32>, parsed: Result<u32, u8>) -> i32 { 0 }
+"#,
+        );
+        let cf = discover_fn(&path, "classify").unwrap();
+        assert_eq!(cf.params[0].ty, RustType::Char);
+        assert_eq!(cf.params[1].ty, RustType::Option(Box::new(RustType::U32)));
+        assert_eq!(
+            cf.params[2].ty,
+            RustType::Result(Box::new(RustType::U32), Box::new(RustType::U8))
+        );
+        assert!(
+            cf.is_bounded_supported(),
+            "§5.4b lists all three as cheap unconditionally"
+        );
+    }
+
+    #[test]
+    fn a_type_alias_resolves_to_what_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+pub type AccountId = u64;
+pub type Bps = u32;
+#[ply::ensures(|result| *result >= 0)]
+pub fn owed(account: AccountId, rate: Bps) -> i64 { 0 }
+"#,
+        );
+        let cf = discover_fn(&path, "owed").unwrap();
+        assert_eq!(
+            cf.params[0].ty,
+            RustType::U64,
+            "an alias is transparent in Rust, and one line of it must not move a fn out of the \
+             checkable set (vetting 004 finding 5)"
+        );
+        assert_eq!(cf.params[1].ty, RustType::U32);
+        assert!(cf.is_bounded_supported());
+    }
+
+    #[test]
+    fn an_array_of_a_shape_kani_cannot_build_is_still_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+use std::collections::BTreeSet;
+#[ply::ensures(|result| *result >= 0)]
+pub fn f(x: [BTreeSet<u8>; 2]) -> i32 { 0 }
+"#,
+        );
+        let cf = discover_fn(&path, "f").unwrap();
+        assert!(
+            matches!(cf.params[0].ty, RustType::Unsupported(_)),
+            "widening the fragment must not widen it past what the engines build: {:?}",
+            cf.params[0].ty
+        );
     }
 
     #[test]

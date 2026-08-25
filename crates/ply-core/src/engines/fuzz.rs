@@ -368,7 +368,17 @@ pub fn decode_marker_fields(
             RustType::Vec(inner) if inner.as_ref() == &RustType::U8 => {
                 WitnessValue::VecU8(parse_u8_list(raw)?)
             }
-            RustType::Vec(_) | RustType::BTreeSet(_) | RustType::Unsupported(_) => return None,
+            // The 2026-08-25 fragment widening: `char`, `Option`, `Result`
+            // and `[T; N]` reach the engines, but `WitnessValue` has no way
+            // to spell them as a literal, so a failure on one is reported
+            // witness-only (`W0541`) rather than with an invented input.
+            RustType::Char
+            | RustType::Option(_)
+            | RustType::Result(..)
+            | RustType::Array(..)
+            | RustType::Vec(_)
+            | RustType::BTreeSet(_)
+            | RustType::Unsupported(_) => return None,
         };
         out.push(value);
     }

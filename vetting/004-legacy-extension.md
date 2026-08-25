@@ -246,6 +246,14 @@ not a convenience flag in this particular thesis.
 
 ## Findings
 
+> **Follow-up, 2026-08-25.** Findings 1, 2, 4, 5 and 7 have since been acted on —
+> `docs/post-004-fixes.md` records what changed, with literal before/after output from the
+> `run.sh` stages quoted below. Everything in this document is preserved as the run it
+> was: the outputs here are the ones measured on 2026-08-24, not what `run.sh` produces
+> today. Two stage budgets were raised in `run.sh` as part of those fixes (s5 and s7,
+> annotated in place). Findings 3, 6, 8, 9 and 10 remain open.
+
+
 1. **A run in which nothing was checked exits 0.** `run.sh s2` — the scenario after the
    overflow fix — ends with `tier_fee_cents` and `total_debit_cents` both `timeout`, the
    root verdict `timeout`, and:

@@ -1208,6 +1208,12 @@ it, or fail with `X0901` attaching the raw output for debugging.
 - Verdict tree with worst-of, status propagation, and open items; `--depth`/`--focus`;
   `audit` completed (escapes + assumptions + derived); `skill` generation embedding the
   schema; `--only-changed`.
+- **Partly landed early, 2026-08-25** (docs/post-004-fixes.md): D5's third branch and its
+  `ply.yaml`-declared-contract sibling, `conditional`/`owed-evidence` propagating upward
+  as statuses, and §8's `assumptions` array — brought forward because vetting 004 showed
+  the boundary *is* the product for the fragment-first thesis. Still M5's own work:
+  callees-first scheduling (so D5's first branch, `stub_verified`, can fire at all),
+  `audit`/`worklist`, `--depth`/`--focus`, `--only-changed`.
 - Accept: a nested fixture where one weak leaf drags down the root verdict and a
   `conditional` mid-tree node propagates as a status; tree JSON golden; skill file
   golden.

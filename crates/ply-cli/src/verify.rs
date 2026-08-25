@@ -1153,13 +1153,19 @@ fn run_bounded_check(
     }
     if witness_path.exists() {
         let stored: Vec<Vec<u8>> = serde_json::from_str(&std::fs::read_to_string(&witness_path)?)?;
-        let values = kani::decode_witness(&stored, &cf.params, bound_k)?;
-        let rendered = contract_rt::render_cex_test(cf, &values, &check_label, "K0502", 1)?;
-        let module_source = contract_rt::wrap_test_module(&[RenderedTest {
-            test_name: rendered.test_name,
-            source: rendered.source,
-        }]);
-        harness::write_generated_test(src_dir, lib_path, &module_source)?;
+        // A parameter shape with no witness decoder yet (`char`,
+        // `Option`, `Result`, `[T; N]` -- all reachable by the engines
+        // since 2026-08-25, none of them spellable as a `WitnessValue`)
+        // leaves nothing to re-render. That is a missing renderer, never a
+        // reason to fail the whole run.
+        if let Ok(values) = kani::decode_witness(&stored, &cf.params, bound_k) {
+            let rendered = contract_rt::render_cex_test(cf, &values, &check_label, "K0502", 1)?;
+            let module_source = contract_rt::wrap_test_module(&[RenderedTest {
+                test_name: rendered.test_name,
+                source: rendered.source,
+            }]);
+            harness::write_generated_test(src_dir, lib_path, &module_source)?;
+        }
     }
 
     match outcome {
@@ -1245,7 +1251,49 @@ fn run_bounded_check(
             raw_output,
         } => {
             let _ = raw_output;
-            let values = kani::decode_witness(&witness_bytes, &cf.params, bound_k)?;
+            let values = match kani::decode_witness(&witness_bytes, &cf.params, bound_k) {
+                Ok(values) => values,
+                Err(e) => {
+                    // §5.4c's MUST: never a `violation` Ply cannot show the
+                    // input for. Kani really did falsify the claim, but the
+                    // witness is in a shape this decoder cannot read yet, so
+                    // the honest report is a tool error naming the shape.
+                    let unreadable: Vec<String> = cf
+                        .params
+                        .iter()
+                        .filter(|p| p.ty.scalar_byte_width().is_none())
+                        .map(|p| format!("`{}: {}`", p.name, p.ty.rust_name().unwrap_or_default()))
+                        .collect();
+                    let d = Diagnostic {
+                        code: "X0901".into(),
+                        severity: "error".into(),
+                        phase: "verify".into(),
+                        engine: "kani".into(),
+                        check: check_label,
+                        node_id: node_id.into(),
+                        title: format!(
+                            "Kani found an input for which `{fn_name}` breaks its contract, but Ply \
+                             cannot yet read that input back for parameter(s) {list}: it has no \
+                             decoder for how Kani encodes those types. So there is a real failure \
+                             here and no counterexample to show you, which is reported as a tool \
+                             error rather than as a violation Ply cannot evidence ({e}). (X0901)",
+                            list = unreadable.join(", ")
+                        ),
+                        primary_span: None,
+                        counterexample: None,
+                        fixes: vec![Fix {
+                            title: format!(
+                                "re-run `{fn_name}` under `fuzz(256)` -- the fuzz tier prints its own \
+                                 failing input, so it can show you the case Kani found"
+                            ),
+                            edits: vec![],
+                        }],
+                        assumptions: vec![],
+                        open_item: Some("tool_error".into()),
+                    };
+                    return Ok(("tool_error".into(), vec![], vec![d]));
+                }
+            };
             let rendered = contract_rt::render_cex_test(cf, &values, &check_label, "K0502", 1)?;
             let test_file = harness::write_generated_test(
                 src_dir,

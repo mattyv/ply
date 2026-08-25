@@ -1,5 +1,83 @@
 # TODO
 
+## Post-004 fixes — landed 2026-08-25
+
+Closes the five items `docs/review-post-004-strategy.md` sequenced after vetting 004.
+Full write-up with literal before/after output, red-first failure messages and measured
+costs: `docs/post-004-fixes.md`. Four commits, one per item plus item 1's spec-and-code.
+
+- [x] **Finding 2 / D5's third branch — the boundary rule.** §5.5 rewritten (three-way
+      split, three honesty conditions, and its own stated limits); §2's D5 row amended.
+      Built: a `bounded` check whose fn calls a callee no contract describes refuses to
+      descend and names it (`W0512`), 004's `run.sh s3` going from `timeout` after
+      **11m23.094s** to a named refusal in **0m0.005s**. With a contract declared in
+      `ply.yaml`, the callee is stubbed (`#[kani::stub]`, cross-crate, real) and the
+      caller earns `bounded(2)` + statuses `["conditional", "owed-evidence"]` + `W0511`
+      listing the assumption — 004's `run.sh s5`, **3m15.9s** wall at a 600s budget.
+      Commit `2cf09c2`.
+- [x] **Finding 7, `anchor:` half.** A component anchored at another crate is a boundary
+      component: contracts read, `checks` not run here (`W0303`), no node. A fn entry
+      declaring only `requires`/`ensures` is a boundary contract declaration, not a claim.
+      Commit `2cf09c2`.
+- [x] **Finding 1 — a run that checked nothing exits 0.** §1 gains the
+      absence-of-evidence principle; §6's exit table gains the missing row and
+      `--fail-on=warn|evidence|error` (default `evidence`, `error` the documented
+      opt-out). Exit codes 2 and 3 are returned for the first time. Commit `d73558f`.
+- [x] **Finding 4 — `fuzzed(n)` is not reproducible**, and the escalation the review
+      added to it. Seed derived per fn, recorded in the §8 envelope as
+      `evidence: { engine, seed, cases }`, `--seed <hex>` replays; proptest's own
+      persisted-failure replay switched off. `run.sh s8`: six identical `fuzzed(256)`,
+      where it used to split 3/3. And a panicking body now earns a `violation` carrying
+      proptest's own shrunk input instead of `X0901` — the class of real bug that could
+      not be reported at any seed. Commit `c8e231b`.
+- [x] **Finding 7, `ensures:` half.** `config::validate_keys` enforces §5.1a rule 1 on the
+      verify path (`E0204`, location, nearest key) against the **whole** §5 key
+      vocabulary, so the keys `verify` ignores are still accepted. §5.1a amended to say
+      the rule binds every reader of the file, and so does its converse. Commit `23e8f67`.
+- [x] **Finding 5 — the implemented fragment is narrower than §5.4b.** `char`,
+      `Option<T>`, `Result<T,E>`, `[T; N]` and top-level type aliases are in. Measured
+      first (Kani `Verification Time`, trivial bodies): 0.028s `u32`, 0.064s `char`,
+      0.036s `Option<u32>`, 0.040s `Result<u32,u8>`, 0.036s `[u32; 4]`, 0.041s
+      `[u32; 16]`, 0.028s alias. No unwind annotation for an array — its bound is a
+      compile-time constant.
+- [ ] **KNOWN GAP — D5's *first* branch is still not implemented.** A callee that passed
+      its own Kani proof this run is inlined, not `stub_verified`, because callees-first
+      scheduling (ADR-0003's "entire soundness guarantee", living unlinked in
+      `tools/schedule`) is not promoted into the product. Concretely: 004's
+      `total_debit_cents` still times out at 120s with `fee_cents` inlined. The review
+      sequences this as the next tranche.
+- [ ] **KNOWN GAP — §5.5's rule does not reach `std`/`core`/registry callees.** It fires
+      for callees Ply resolves (the caller's own file, or a path dependency's
+      `src/lib.rs`). A call into a crate whose source Ply cannot read is left alone, so a
+      `bounded` verdict can still include a body Ply never examined — just never a
+      first-party one. Stated in §5.5, not left to be discovered.
+- [ ] **KNOWN GAP — a boundary assumption is reported as owed, and nothing exercises it.**
+      §5.5 says an unexercised assumption is owed evidence and that `audit`/`worklist`
+      list it. The `owed-evidence` status and `W0511` are built; `cargo ply audit` and
+      `cargo ply worklist` are **not built**, and fuzz-checking a declared contract
+      against the real legacy body is not built either.
+- [ ] **KNOWN GAP — `ply.yaml` `requires`/`ensures` are still not ANDed into the fn's own
+      check** (§5.4 says they are). They are read, and used for §5.5's boundary
+      assumption; `W0510` now says out loud which of the two a user is getting.
+- [ ] **KNOWN GAP — no witness decoder for the newly admitted shapes.** `char`,
+      `Option`, `Result` and `[T; N]` reach the engines, but `WitnessValue` cannot spell
+      them, so a Kani violation on one is reported `X0901`/`tool_error` naming the
+      parameter (never a witness-free `violation`) and a fuzz violation lands on the
+      existing `W0541` witness-only path.
+- [ ] **NOT DONE, deliberately deferred**: cross-crate type-alias resolution (004's
+      `withdraw` takes `ledger::AccountId`; resolving it changes nothing, because the
+      `&mut ledger::Ledger` beside it keeps the fn `unsupported` either way), structs of
+      scalars, `--only-changed`, `cargo ply check`, `schema/ply.schema.json`, and the
+      renderer's earned-vs-declared split (finding 8).
+- [ ] **Rendered cex test for a panicking body fails with the function's own panic**, not
+      the contract message, because the call sits outside the test's `catch_unwind`.
+      §9's cex-oracle clause "failure output states the contract" therefore does not hold
+      for that shape; the contract is named in the generated test's comment. The oracle
+      test itself (`clamp_oracle.rs`) is unaffected and green.
+- [ ] **`run.sh` budgets raised, annotated in place**: s5 120s → 600s (the stubbed proof
+      needs ~202s of Kani time), s7 120s → 600s (arrays are cheap, this fn's body is not).
+      Both original runs are quoted in `docs/post-004-fixes.md`.
+
 ## Vetting 004 — legacy boundary, fragment-first — landed 2026-08-24
 
 The first vetting scenario designed inside §5.4b's fragment from line one, and the first
@@ -22,25 +100,25 @@ under `vetting/004-legacy-extension/`; SVG committed. Nothing in `crates/`, `too
       `crates/` at all.
 - [x] `--only-changed` and `cargo ply check` confirmed **absent** (§6 specifies both);
       recorded as findings, not built.
-- [ ] **Finding 1 — a run that checked nothing exits 0.** `K0601 timeout` is warning
+- [x] **Finding 1 — a run that checked nothing exits 0.** CLOSED 2026-08-25 (`d73558f`). `K0601 timeout` is warning
       severity, `--fail-on` is unimplemented, so a run whose root verdict is `timeout` is
       CI-green. Proposal in the write-up: absence of evidence fails by default.
-- [ ] **Finding 2 — D5 has no branch for an *unclaimed* callee.** Both its branches assume
+- [x] **Finding 2 — D5 has no branch for an *unclaimed* callee.** CLOSED 2026-08-25 (`2cf09c2`). Both its branches assume
       the callee has a contract. Needs an explicit third rule, and the diagnostic must name
       the callee that was descended into (K0601 today names only the caller).
 - [ ] **Finding 3 — checkability is about bodies, and §5.4b gates on types.**
       `total_debit_cents` (no legacy contact at all) also timed out at 120s in the same run
       where `fee_cents` passed.
-- [ ] **Finding 4 — `fuzzed(n)` is not reproducible.** Six fresh runs of the *same*
+- [x] **Finding 4 — `fuzzed(n)` is not reproducible.** CLOSED 2026-08-25 (`c8e231b`), with the panic-witness escalation. Six fresh runs of the *same*
       unfixed source: 3 × `fuzzed(256)`, 3 × `tool_error` (X0901, the real panic). Seed is
       entropy-derived (`Config { cases, ..default() }`) and recorded nowhere; exit code
       flips with it. The §8 envelope needs the seed, and a `--seed`/lockfile replay.
-- [ ] **Finding 5 — the implemented fragment is narrower than §5.4b.** `[u32; 4]` (the
+- [x] **Finding 5 — the implemented fragment is narrower than §5.4b.** CLOSED 2026-08-25 for arrays, aliases, `char`, `Option`, `Result`; structs of scalars still open. `[u32; 4]` (the
       spec's own *preferred* bounded shape) is `Unsupported`; so is a `type X = u64` alias.
       No `Type::Array` arm and no alias resolution in `rust_type_from_syn`.
 - [ ] **Finding 6 — V0505's fix names a mechanism that does not exist** ("add a
       `pure`-marked generator hook"): no `#[ply::pure]` macro, no ply.yaml key.
-- [ ] **Finding 7 — `verify` is single-crate**: `anchor:` is parsed and never used, every
+- [x] **Finding 7 — `verify` is single-crate** — CLOSED 2026-08-25 for both halves (`anchor:` consumed in `2cf09c2`, `E0204` parity in `23e8f67`); multi-crate *verification* is still out of scope.: `anchor:` is parsed and never used, every
       component's fns are looked for in one `src/lib.rs`, and ply.yaml `requires`/`ensures`
       are silently dropped (unknown serde fields) while `ply-check` on the same file
       enforces `additionalProperties: false`.

@@ -117,6 +117,14 @@ fn strategy_expr(ty: &RustType) -> Result<String> {
                 strategy_expr(inner)?
             )
         }
+        // `char`, `Option<T>`, `Result<T, E>` and `[T; N]` all have
+        // proptest `Arbitrary` impls, so their strategy is just `any()`.
+        // No small-magnitude bias here: the interesting values of these
+        // shapes are the variants and the element pattern, not the size.
+        RustType::Char | RustType::Option(_) | RustType::Result(..) | RustType::Array(..) => {
+            let name = ty.rust_name().expect("composite has a rust name");
+            format!("proptest::prelude::any::<{name}>()")
+        }
         RustType::Unsupported(t) => {
             bail!("cannot build a fuzz strategy for unsupported type `{t}`")
         }
@@ -130,6 +138,11 @@ fn strategy_expr(ty: &RustType) -> Result<String> {
 /// decoder's split-on-comma is exact) for `Vec`/`BTreeSet`.
 fn marker_display_expr(ty: &RustType, var: &str) -> String {
     match ty {
+        // No `Display` impl for any of these; `Debug` is what a reader of
+        // the diagnostic wants to see anyway (`Some(3)`, `'x'`, `[1, 2]`).
+        RustType::Char | RustType::Option(_) | RustType::Result(..) | RustType::Array(..) => {
+            format!("format!(\"{{:?}}\", {var})")
+        }
         RustType::Vec(_) | RustType::VecU8 | RustType::BTreeSet(_) => format!(
             "{{ let mut __ply_s = String::from(\"[\"); \
              for (__ply_i, __ply_e) in {var}.iter().enumerate() {{ \
@@ -371,6 +384,32 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
                 format!("std::collections::BTreeSet::from([0{n}, 1{n}, 2{n}])"),
             ]
         }
+        RustType::Char => vec![
+            "'a'".to_string(),
+            "'0'".to_string(),
+            "'\\u{10FFFF}'".to_string(),
+        ],
+        RustType::Option(inner) => {
+            let mut out = vec!["None".to_string()];
+            for lit in boundary_literals(inner) {
+                out.push(format!("Some({lit})"));
+            }
+            out
+        }
+        RustType::Result(ok, err) => {
+            let mut out = Vec::new();
+            for lit in boundary_literals(ok) {
+                out.push(format!("Ok({lit})"));
+            }
+            for lit in boundary_literals(err) {
+                out.push(format!("Err({lit})"));
+            }
+            out
+        }
+        RustType::Array(inner, n) => boundary_literals(inner)
+            .into_iter()
+            .map(|lit| format!("[{lit}; {n}]"))
+            .collect(),
         RustType::Unsupported(_) => vec![],
     }
 }

@@ -1,0 +1,12 @@
+ply: 1
+
+# The array parameter is the whole point: §5.4b names `[T; N]` v1's
+# preferred bounded shape, and it carries no `#[kani::unwind(..)]` because
+# its length is a compile-time constant. `Bps` exercises alias resolution
+# in the same signature.
+components:
+  arraycard:
+    anchor: ply_fixture_arraycard
+    fns:
+      carded_fee_cents:
+        checks: [bounded(2)]

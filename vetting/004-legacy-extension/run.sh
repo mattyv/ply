@@ -149,6 +149,11 @@ s6() { # §6 surface: does `check` exist, does `--only-changed` exist
 }
 
 s7() { # §5.4b's *preferred* bounded shape: a fixed-size array parameter
+  # Budget raised from 120s to 600s on 2026-08-25, when arrays entered the
+  # implemented fragment: the *shape* is cheap (0.036s to construct,
+  # measured -- docs/post-004-fixes.md), but this fn's body is the same
+  # widened multiply-then-divide that costs `fee_cents` its time. The
+  # original 120s run recorded `V0505` and never reached an engine.
   echo "=== s7: a fixed-size array parameter — §5.4b's preferred bounded shape ==="
   local w; w=$(fresh s7); apply_overflow_fix "$w"
   cat >> "$w/feature/src/lib.rs" <<'RS'
@@ -170,7 +175,7 @@ head, rest = t.split("    fns:\n", 1)
 _, tail = rest.split("\nedges:", 1)
 open(p, "w").write(head + "    fns:\n      carded_fee_cents:\n        checks: [bounded(2)]\n\nedges:" + tail)
 PY
-  ( cd "$w/feature" && time "$CARGO_PLY" verify . --engine-timeout 120 --json )
+  ( cd "$w/feature" && time "$CARGO_PLY" verify . --engine-timeout 600 --json )
   echo "verify exit: $?"
 }
 
