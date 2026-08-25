@@ -91,6 +91,23 @@ scoped to `test`/`fuzz` (D12), so **`bounded` can never earn `·spec-strong` —
 proof of a vacuous contract is a green nothing.** The evidence story is therefore two
 axes, rung and spec-strength, not one ladder.
 
+**A run succeeds only if every claim earned its declared evidence.** `timeout`,
+`unsupported`, `tool_error`, `unclaimed`, and `engine-missing` are absences of evidence,
+and absence of evidence fails the run by default — `--fail-on` exists to relax that,
+never to enable it. And every verdict, passing or failing, must name the evidence that
+produced it concretely enough to reproduce it: a fuzz verdict carries its seed and case
+count the way a violation carries its witness.
+
+This is stated here, beside the evidence rules, because it is a *principle* and its
+absence was not an implementation slip. Until 2026-08-25 the exit-code table in §6 had
+rows for clean, violations, tool error and missing engine, and no row for "checked
+nothing" — so `exit_code_for` faithfully returned 0 for vetting 004's run in which two of
+five claims produced no evidence at all and one of those was the function the scenario
+existed to test (`vetting/004-legacy-extension.md`, finding 1: root verdict `timeout`,
+7m13s, exit 0). A tool whose green CI run can contain zero evidence cannot be trusted
+about anything, including its own future fixes; a green nothing is the one failure this
+project cannot ship.
+
 Ply's job: one schema for claims, one router to engines, one JSON result schema, one
 worklist. The engines already exist and others maintain them. **We build glue and UX,
 never solvers.** A session that finds itself implementing SMT encoding, model checking, or
@@ -104,7 +121,7 @@ proof search has gone off-spec — stop.
 | D2 | Contracts are written as **`#[ply::requires(...)]` / `#[ply::ensures(...)]`** attributes on the function. The `ply-attrs` macro re-emits the original function unchanged, adding `#[cfg_attr(kani, kani::requires(...))]` (and the ensures equivalent). Under plain cargo the attributes vanish; under `cargo kani` they instrument **the real function** — never a copy. Proof harnesses are generated into a `cfg(kani)`-gated module inside the target crate so they see private items. Pre-existing `#[cfg_attr(kani, kani::requires(...))]` attributes are harvested and merged by conjunction. | Kani's `proof_for_contract` verifies the function the attributes annotate; contracts on a generated copy would verify a different symbol. `cfg_attr` keeps bare `cargo build` working (D1) but not *warning-clean* on its own: every `#[cfg_attr(kani, ...)]`/`#[cfg(kani)]` triggers `unexpected_cfgs` under bare cargo unless the instrumented crate also carries `[lints.rust] unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }` (M0 finding, confirmed again by the M3 slice's fixtures, each of which carries this line by hand). Automating that one-line insertion into a consuming crate's `Cargo.toml` the first time `cargo ply verify` instruments it is a natural near-term enhancement, not yet built: this M3 slice's fixtures all set it manually and `verify` does not currently check for or offer it. The in-crate module mechanism (generated file + one module declaration, or an equivalent include) is settled by the M0 spike; the fallback is verifying `pub` items only from a sibling harness crate — with reduced coverage for private-field invariant types (what smart constructors produce): a sibling crate can never supply `kani::Arbitrary` for them (field visibility, and the orphan rule), so witnesses must come from `pub` constructors plus `kani::assume` — verified to work (ADR-0003, item 3b), but capped at pub-reachable states and hand-written per type; only a type with no `pub` construction path is walled off entirely. |
 | D3 | Architecture claims, checks, capabilities, ownership, profiles, and the unresolved registry live in **`ply.yaml`**, validated against a normative JSON Schema (§5). | These claims are cross-cutting and have no natural attribute location. YAML plus a schema needs no parser of our own, and agents emit YAML reliably. The schema, not prose, is the formal definition. |
 | D4 | Architecture enforcement has two tiers. **Crate-level dependency rules** (from `cargo metadata`, which is exact) are errors and default-deny between declared components. **Item-level rules** (calls, capabilities, ownership — from syn, which is approximate) are warnings by default; a component opts into item-level errors with `strict: true`. | Default-deny is only honest over facts that are sound. Crate dependency data is sound today; syn-derived call data is not (no name resolution, no macro expansion). Advisory-until-strict gives teeth without theater. |
-| D5 | Verification is modular and evidence-honest. Kani's `stub_verified(g)` is used only when `g` itself passed a Kani contract proof this run — in the same crate, or via the caller-local re-proof below. **Kani does not enforce this and cannot: it checks only that a `#[proof_for_contract]` harness *exists* for the stub target, never that it ran or passed (ADR-0003, item 4 — a caller reported clean SUCCESS while assuming a deliberately falsified callee contract; Kani's RFC-0009 promises pass-gating, but 0.67.0 observably runs harnesses in arbitrary order and never retracts a caller's verdict when its callee's harness fails in the same invocation). Ply's scheduler — callees proved first, the caller credited only if those proofs passed — is therefore the entire soundness guarantee; an implementation that relaxes it is unsound and nothing downstream will notice.** Cross-crate callees are supported after all, by declaring a caller-local `proof_for_contract` for the remote `pub` item (ADR-0003, item 5; verified against the real linked body — a mutated callee body fails the caller-local proof); there is no cross-crate proof caching, so each consumer re-proves. Any weaker case — callee merely fuzzed or tested, a cross-crate callee that cannot be re-proved caller-locally (not `pub`, or its witnesses unconstructible per D2), cycle in the call graph — verifies the caller against an *assumed* contract and marks the verdict **`conditional`**, listing the assumptions. A conditional verdict never reads as plain `bounded`. | Stubbing is a soundness claim; fuzzing does not license it. Kani proof harnesses are crate-local, so cross-crate means caller-local re-verification of the real linked body, never reuse of the callee crate's proof. Never inline a contracted callee's body. |
+| D5 | Verification is modular and evidence-honest. Kani's `stub_verified(g)` is used only when `g` itself passed a Kani contract proof this run — in the same crate, or via the caller-local re-proof below. **Kani does not enforce this and cannot: it checks only that a `#[proof_for_contract]` harness *exists* for the stub target, never that it ran or passed (ADR-0003, item 4 — a caller reported clean SUCCESS while assuming a deliberately falsified callee contract; Kani's RFC-0009 promises pass-gating, but 0.67.0 observably runs harnesses in arbitrary order and never retracts a caller's verdict when its callee's harness fails in the same invocation). Ply's scheduler — callees proved first, the caller credited only if those proofs passed — is therefore the entire soundness guarantee; an implementation that relaxes it is unsound and nothing downstream will notice.** Cross-crate callees are supported after all, by declaring a caller-local `proof_for_contract` for the remote `pub` item (ADR-0003, item 5; verified against the real linked body — a mutated callee body fails the caller-local proof); there is no cross-crate proof caching, so each consumer re-proves. Any weaker case — callee merely fuzzed or tested, a cross-crate callee that cannot be re-proved caller-locally (not `pub`, or its witnesses unconstructible per D2), cycle in the call graph — verifies the caller against an *assumed* contract and marks the verdict **`conditional`**, listing the assumptions. A conditional verdict never reads as plain `bounded`. **A callee with no declared contract at all — the case every unannotated legacy module falls into — is a third branch, added 2026-08-25 after vetting 004: Ply refuses to descend into it, the caller's `bounded` check earns no evidence, and the diagnostic names the callee (§5.5).** | Stubbing is a soundness claim; fuzzing does not license it. Kani proof harnesses are crate-local, so cross-crate means caller-local re-verification of the real linked body, never reuse of the callee crate's proof. Never inline a contracted callee's body. |
 | D6 | Verdicts aggregate upward as **worst-of** over the evidence order `violation < unclaimed < tested < fuzzed < bounded < proved`. Statuses (`conditional`, `stale`, `weak-spec`, `unsupported`, `engine-missing`, `timeout`, `inconclusive`) do not sit in that order; they propagate upward as flags and open-item counts alongside it. | A proof in one corner must not hide a merely-tested boundary in another; and a timeout is not a weaker proof, it is a different kind of fact. |
 | D7 | Every counterexample is stored as **Kani witness data** (the exact input bytes, engine-version-bound — input storage, not a reproduction: Kani's playback replays the function body only and never re-evaluates contract closures, so an `ensures` violation replays green) and, whenever the inputs can be rendered as stable Rust source, additionally as an ordinary `#[test]` that **asserts the postcondition explicitly** and therefore fails under plain `cargo test` — the only red artifact, and D7's repair target. The assertion is rendered overflow-safe (widened/checked arithmetic), so it fails by stating the contract, never by re-triggering an incidental panic inside the check. When rendering fails, the diagnostic says so (`W0541`) — inputs are never fabricated. | Playback is exact but body-only (ADR-0003 caveat 3); the portable test is the agent-friendly repair target and carries the red-test promise alone. Implemented and verified end-to-end in M3 (docs/m3-slice-findings.md): the `clamp` fixture's rendered `#[test]` fails before a contract fix and passes after, on the pinned Kani 0.67.0. |
 | D8 | `synth` mode (the model writes the function body) is orchestration over the check pipeline: prompt assembly, a retry loop, and marking the output as derived. It ships last and adds no checking machinery. | Thin by design. |
@@ -646,13 +663,73 @@ trust. Re-attestation is a human act too: `accept` does not clear it.
 ### 5.5 Modular composition (D5)
 
 Verification runs callees-before-callers over the call graph. To verify fn `f` that calls
-contracted fn `g`:
+fn `g`, the split is on **what `g` offers**, in three branches — the first two keyed on
+the evidence behind `g`'s contract, the third on there being no contract to key on:
 
 - `g` passed its own Kani contract proof this run, and `g` is in the same crate →
   generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict.
-- Anything else — `g` merely fuzzed or tested, `g` in another crate, `f` and `g` in a
-  cycle → verify `f` assuming `g`'s contract, and mark `f`'s verdict `conditional`
-  (`W0511`), listing each assumed contract.
+- Anything else *that still has a declared contract* — `g` merely fuzzed or tested, `g` in
+  another crate, `f` and `g` in a cycle, or `g` carrying no verification at all but a
+  contract declared for it in `ply.yaml` (§5.4's external-spec route) → verify `f`
+  assuming `g`'s contract, stub `g` out of the proof, and mark `f`'s verdict
+  `conditional` (`W0511`), listing each assumed contract.
+- **No contract is declared for `g` anywhere** — not inline, not in `ply.yaml` → Ply
+  **refuses to descend into `g`'s body**. `f`'s `bounded` check earns no evidence:
+  verdict `unclaimed`, diagnostic `W0512`, and the run fails by default (§1's
+  absence-of-evidence principle, §6's exit table).
+
+**The third branch is where all legacy code lands** (vetting 004, 2026-08-25). The first
+two branches both presuppose a contract; a two-year-old module has none, so before this
+branch existed no rule applied at all and the outcome was whatever the engine did with
+the inlined body — measured on 004's `tier_fee_cents`: `timeout` at a 120s budget and
+again at 600s (11m23s wall clock), against `bounded(2)` in 1m20s for the identical
+function with the boundary call removed. The refusal is decided from the call graph
+(D11's extractor) before any engine starts, so it costs milliseconds rather than the
+whole budget.
+
+Three honesty conditions attach to the branch, and they are what make it a rule rather
+than a shortcut:
+
+1. **The diagnostic names the callee that was not descended into**, and where it is
+   called — never only the caller. A verdict that says "`tier_fee_cents` could not be
+   checked" and never mentions `ledger::fees::bps_for_tier` tells a reader nothing they
+   can act on (§8's non-result rule). `W0512`'s `fixes` offer the two real options:
+   declare a contract for the callee, or drop the check to `fuzz(n)`, which crosses the
+   boundary by simply running the code.
+2. **Ply never inlines an unclaimed body into a caller's proof.** Descending is not the
+   more honest option, only the slower one: it either exhausts the budget and reports
+   nothing, or it proves the caller *against a body nobody claimed*, yielding a `bounded`
+   verdict whose meaning silently includes code no contract vouches for.
+3. **An assumed boundary contract is owed evidence until something exercises it.** A
+   contract declared in `ply.yaml` for an unclaimed callee is trusted, and trust that is
+   never checked is green paint. The assumption is auditable (`cargo ply audit`'s trust
+   surface), stale-able (D14), and — the part that makes it better than trust — checkable
+   by the cheap tier: `fuzz` has no trouble crossing the boundary, so a declared contract
+   on a legacy callee can be fuzz-checked against the real legacy body. Until it is, the
+   caller's node carries the `owed-evidence` open item, and `audit` and `worklist` list
+   it as owed. `conditional` is the *normal* state of a legacy-extension codebase, so it
+   must read as routine and legible rather than as an alarm — the annotation carries the
+   trust story, and a user who learns to skip it has lost it.
+
+**What this rule reaches, and what it does not.** It applies to `bounded` only: Kani
+descends into a callee's real body, so a caller's proof silently acquires that body's
+meaning, while proptest merely *runs* the callee — which is why the fuzz tier crosses a
+legacy boundary happily and needs none of this. Within `bounded`, the split is decided
+for the callees Ply's extractor can resolve: a free-function call naming a `fn` in the
+caller's own file, or in the `src/lib.rs` of a **path dependency** declared in the
+crate's `Cargo.toml`. Method calls on a receiver (`x.min(10_000)`, `v.len()`) are not
+call sites for this rule — they are overwhelmingly `std`, and flagging them would fire on
+every ordinary line of Rust while telling a user nothing they could act on. Calls into
+`std`, `core`, or a registry crate resolve to no source Ply can read: they are
+*unresolved*, outside this rule's reach in v1, and Kani still descends into them. That is
+a real gap and it is stated here rather than left to be discovered — a `bounded` verdict
+can still include a body Ply never examined, just never a first-party one.
+
+A `ply.yaml` fn entry that declares `requires`/`ensures` and asks for no `checks` is a
+**boundary contract declaration**, not a claim: it exists so callers can assume something
+about that function. It contributes an assumption and earns no node of its own, in this
+crate or another — reporting it as an `unclaimed` claim would say the opposite of what
+was written.
 
 The verdict tree shows each verdict's assumption chain; `conditional` propagates upward as a
 status (D6). Cross-crate `stub_verified` (Kani's wrapper/double-stub workaround) is out
@@ -730,8 +807,23 @@ always overrides the default, for every check kind, exactly as before. The defau
 is **not exercised by any e2e test**: every fixture passes `--engine-timeout` explicitly,
 so only a unit test on the formula covers it (recorded in TODO.md).
 
-Exit codes: 0 clean, 1 violations or failures, 2 tool error, 3 missing engine for an
-explicitly requested check.
+Exit codes: 0 clean, 1 violations or failures — **including a run in which any node's
+verdict is an absence of evidence** (`timeout`, `unsupported`, `tool_error`, `unclaimed`,
+`engine-missing`) — 2 tool error, 3 missing engine for an explicitly requested check.
+
+**`--fail-on` relaxes that default; it never enables it.** Three values, from strictest to
+loosest:
+
+| `--fail-on` | the run fails when |
+|---|---|
+| `warn` | any diagnostic of warning severity or worse was emitted — including the ones that sit beside a real verdict (`W0502` weak spec, `W0503` narrow spread) |
+| `evidence` (default) | any node's verdict is an absence of evidence, or any error-severity diagnostic was emitted |
+| `error` | only an error-severity diagnostic was emitted (a violation, an unresolvable anchor, a tool error) |
+
+`error` is the pre-2026-08-25 behaviour, kept as the documented opt-out for a codebase
+mid-adoption where absences are expected and tracked elsewhere. Choosing it is a
+statement that this run's green means less than the default's, which is why it has to be
+typed.
 
 Housekeeping: Ply owns everything under `target/ply/` and every generated test whose name
 starts with `ply_cex_`; `verify` deletes generated artifacts whose claims no longer

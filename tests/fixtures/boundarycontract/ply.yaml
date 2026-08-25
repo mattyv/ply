@@ -1,0 +1,17 @@
+ply: 1
+
+# §5.4's external-spec route, used for what §5.5's second branch needs it
+# for: giving an unclaimed callee a contract without touching its source.
+# `legacy_rate` declares `ensures` and no `checks` -- it is a boundary
+# contract declaration, not a verification target, so it earns no node of
+# its own. `tiered_fee` is then provable against the promise instead of the
+# body, and its verdict says so: `bounded(2)` with status `conditional`.
+components:
+  boundarycontract:
+    anchor: ply_fixture_boundarycontract
+    fns:
+      legacy_rate:
+        ensures:
+          - "|result| *result <= 10_000"
+      tiered_fee:
+        checks: [bounded(2)]

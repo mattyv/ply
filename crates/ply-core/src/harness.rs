@@ -210,6 +210,9 @@ pub struct ContractFn {
     /// parameter is conventionally named `result`, matching Kani's own
     /// `kani::ensures` shape) plus its source text for diagnostics.
     pub ensures: Option<(ExprClosure, String)>,
+    /// Every free-function call in the body, in source order (§5.5's D5
+    /// split is decided from these, before any engine runs).
+    pub calls: Vec<crate::callgraph::CallSite>,
 }
 
 impl ContractFn {
@@ -324,7 +327,115 @@ fn build_contract_fn(f: &ItemFn) -> Result<ContractFn> {
         params,
         requires,
         ensures,
+        calls: crate::callgraph::call_sites(f),
     })
+}
+
+/// One callee stubbed out of a proof under D5's second branch (§5.5): its
+/// contract is *declared* (in `ply.yaml`) but nothing has verified it, so
+/// Ply replaces the callee with a function that returns an arbitrary value
+/// constrained by the declared `ensures`, and asserts the declared
+/// `requires` at the call. That is the whole content of "assume the
+/// contract": the caller is proved against the promise, never against the
+/// body -- which is what makes the resulting verdict `conditional` rather
+/// than `bounded` full stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StubSpec {
+    /// The callee path exactly as the caller writes it -- also
+    /// `#[kani::stub(..)]`'s first argument.
+    pub callee_path: String,
+    /// `(name, type source)` in declaration order, taken from the callee's
+    /// real signature so the stub is signature-compatible (Kani checks).
+    pub params: Vec<(String, String)>,
+    pub return_type: String,
+    pub requires: Vec<String>,
+    pub ensures: Vec<String>,
+}
+
+impl StubSpec {
+    /// A deterministic Rust identifier for the generated stub fn.
+    pub fn stub_fn_name(&self) -> String {
+        format!("ply_stub_{}", self.callee_path.replace("::", "_"))
+    }
+
+    /// The one-line description of the assumption this stub encodes, for
+    /// `W0511` and the §8 `assumptions` list.
+    pub fn assumption_text(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        for r in &self.requires {
+            parts.push(format!("requires {r}"));
+        }
+        for e in &self.ensures {
+            parts.push(format!("ensures {e}"));
+        }
+        if parts.is_empty() {
+            format!("`{}` (contract declared with no clauses)", self.callee_path)
+        } else {
+            format!("`{}`: {}", self.callee_path, parts.join(", "))
+        }
+    }
+
+    fn render(&self) -> Result<String> {
+        let params: Vec<String> = self
+            .params
+            .iter()
+            .map(|(n, ty)| format!("{n}: {ty}"))
+            .collect();
+        let mut body = String::new();
+        for r in &self.requires {
+            let expr: Expr = syn::parse_str(r).with_context(|| {
+                format!(
+                    "E0501: could not parse the `requires` declared for `{}` as an expression: {r}",
+                    self.callee_path
+                )
+            })?;
+            let text = expr.to_token_stream().to_string();
+            body.push_str(&format!(
+                "    kani::assert({text}, \"the caller must satisfy the contract declared for `{path}`\");\n",
+                path = self.callee_path
+            ));
+        }
+        body.push_str(&format!(
+            "    let __ply_result: {ret} = kani::any();\n",
+            ret = self.return_type
+        ));
+        for e in &self.ensures {
+            let closure: ExprClosure = syn::parse_str(e).with_context(|| {
+                format!(
+                    "E0501: the `ensures` declared for `{}` must be a `|result| expr` closure, got: {e}",
+                    self.callee_path
+                )
+            })?;
+            // The closure parameter needs an explicit type: applied to a
+            // reference with nothing else to infer from, rustc reports
+            // "type annotations needed" and the harness never compiles.
+            let mut inputs = closure.inputs.iter();
+            let pat = match inputs.next() {
+                Some(p) => p.to_token_stream().to_string(),
+                None => bail!(
+                    "E0501: the `ensures` declared for `{}` takes no parameter -- it must be a \
+                     `|result| expr` closure",
+                    self.callee_path
+                ),
+            };
+            let cbody = closure.body.to_token_stream().to_string();
+            body.push_str(&format!(
+                "    kani::assume((|{pat}: &{ret}| {cbody})(&__ply_result));\n",
+                ret = self.return_type
+            ));
+        }
+        body.push_str("    __ply_result\n");
+        Ok(format!(
+            "#[cfg(kani)]\n\
+             #[allow(dead_code, unused_variables)]\n\
+             fn {name}({params}) -> {ret} {{\n\
+             {body}}}\n",
+            name = self.stub_fn_name(),
+            params = params.join(", "),
+            ret = self.return_type,
+            body = body,
+        ))
+    }
 }
 
 /// The generated Kani proof module for one `ContractFn`.
@@ -337,6 +448,10 @@ pub struct GeneratedHarness {
     /// `Vec`-typed parameter is present. `None` means no Vec parameter and
     /// therefore no unwind annotation was needed.
     pub unwind: Option<u32>,
+    /// The callees this harness stubbed under §5.5's second branch, in the
+    /// order they appear in the proof's attributes. Non-empty means the run
+    /// needs Kani's `-Z stubbing` and the verdict is `conditional`.
+    pub stubbed: Vec<StubSpec>,
 }
 
 /// Generates the `#[kani::proof_for_contract]` harness for `cf`, sized by
@@ -346,7 +461,11 @@ pub struct GeneratedHarness {
 /// measured (not inferred) for exactly this manual-indexed-loop-consumption
 /// shape in docs/m3-slice-findings.md. Without it, Kani's default unwind
 /// inference times out at every length, including 1.
-pub fn generate_proof_module(cf: &ContractFn, bound_k: u32) -> Result<GeneratedHarness> {
+pub fn generate_proof_module(
+    cf: &ContractFn,
+    bound_k: u32,
+    stubs: &[StubSpec],
+) -> Result<GeneratedHarness> {
     if !cf.is_bounded_supported() {
         let bad: Vec<String> = cf
             .params
@@ -395,14 +514,28 @@ pub fn generate_proof_module(cf: &ContractFn, bound_k: u32) -> Result<GeneratedH
         .map(|n| format!("#[kani::unwind({n})]\n"))
         .unwrap_or_default();
 
+    let mut stub_defs = String::new();
+    let mut stub_attrs = String::new();
+    for s in stubs {
+        stub_defs.push_str(&s.render()?);
+        stub_defs.push('\n');
+        stub_attrs.push_str(&format!(
+            "#[kani::stub({path}, {name})]\n",
+            path = s.callee_path,
+            name = s.stub_fn_name()
+        ));
+    }
+
     let proof_fn_name = format!("ply_proof_{}", cf.name);
     let module_source = format!(
         "//! Generated by Ply -- do not edit. Kani proof harness for `{fname}`\n\
          //! (check bounded({k})). See The-Ply-Spec.md D2 and §5.4b.\n\
          #[cfg(kani)]\n\
          use super::*;\n\n\
+         {stub_defs}\
          #[cfg(kani)]\n\
          #[kani::proof_for_contract({fname})]\n\
+         {stub_attrs}\
          {unwind_attr}\
          fn {proof_fn_name}() {{\n\
          {lets}\
@@ -410,6 +543,8 @@ pub fn generate_proof_module(cf: &ContractFn, bound_k: u32) -> Result<GeneratedH
          }}\n",
         fname = cf.name,
         k = bound_k,
+        stub_defs = stub_defs,
+        stub_attrs = stub_attrs,
         unwind_attr = unwind_attr,
         proof_fn_name = proof_fn_name,
         lets = lets,
@@ -420,6 +555,7 @@ pub fn generate_proof_module(cf: &ContractFn, bound_k: u32) -> Result<GeneratedH
         module_source,
         proof_fn_path: format!("ply_generated::{proof_fn_name}"),
         unwind,
+        stubbed: stubs.to_vec(),
     })
 }
 
@@ -627,7 +763,7 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
 "#,
         );
         let cf = discover_fn(&path, "clamp").unwrap();
-        let harness_out = generate_proof_module(&cf, 2).unwrap();
+        let harness_out = generate_proof_module(&cf, 2, &[]).unwrap();
         assert!(
             harness_out.unwind.is_none(),
             "scalar-only fn must not get an unwind annotation"
@@ -652,7 +788,7 @@ pub fn vec_sum(v: &Vec<u8>) -> u32 { 0 }
 "#,
         );
         let cf = discover_fn(&path, "vec_sum").unwrap();
-        let harness_out = generate_proof_module(&cf, 8).unwrap();
+        let harness_out = generate_proof_module(&cf, 8, &[]).unwrap();
         assert_eq!(
             harness_out.unwind,
             Some(9),

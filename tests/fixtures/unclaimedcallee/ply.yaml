@@ -1,0 +1,13 @@
+ply: 1
+
+# D5's third branch (§5.5): `tiered_fee` claims `bounded(2)` and calls
+# `legacy_rate`, which no contract anywhere describes. Ply must refuse to
+# descend into `legacy_rate`, name it in the diagnostic, and earn no
+# evidence for `tiered_fee` -- never a `bounded(2)` whose meaning silently
+# includes a body nobody claimed.
+components:
+  unclaimedcallee:
+    anchor: ply_fixture_unclaimedcallee
+    fns:
+      tiered_fee:
+        checks: [bounded(2)]

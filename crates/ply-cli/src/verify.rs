@@ -10,13 +10,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use ply_core::callgraph::{CalleeStatus, DeclaredContract, Resolver};
 use ply_core::config::{self, Check, FnClaim};
 use ply_core::contract_rt::{self, RenderedTest};
-use ply_core::diag::{Counterexample, Diagnostic, Envelope, Fix, Node};
+use ply_core::diag::{Assumption, Counterexample, Diagnostic, Envelope, Fix, Node};
 use ply_core::engines::fuzz as fuzz_engine;
 use ply_core::engines::kani::{self, KaniOutcome, KaniRunConfig};
 use ply_core::engines::mutants::{self, MutantsRunConfig, MutantsRunOutcome};
-use ply_core::harness::{self, ContractFn};
+use ply_core::harness::{self, ContractFn, StubSpec};
 use ply_core::harness_crate;
 
 pub const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -91,14 +92,62 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         claim: &'a FnClaim,
         cf: ContractFn,
         checks: Vec<Check>,
+        boundary: BoundaryPlan,
     }
     let mut plans: Vec<Plan> = Vec::new();
     let mut early_nodes_by_component: BTreeMap<&str, Vec<Node>> = BTreeMap::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
+    // `anchor:` is finally consumed (vetting 004 finding 7: it was parsed
+    // and ignored, so *every* component's fns were looked for in this
+    // crate's own `src/lib.rs` -- which is why a claim written against a
+    // dependency died with a misleading `E0301`). A component whose anchor
+    // names another crate is a **boundary component**: Ply does not verify
+    // its fns from here, it reads the contracts they declare (§5.5).
+    let local_anchors = local_anchor_names(crate_dir);
+    let is_local = |anchor: &str| -> bool {
+        local_anchors.is_empty() || local_anchors.contains(&anchor.replace('-', "_"))
+    };
+
+    // §5.4's external-spec route, read for the first time on the verify
+    // path: a `requires:`/`ensures:` entry declares a contract for a fn,
+    // keyed by the path a caller writes.
+    let mut declared: BTreeMap<String, DeclaredContract> = BTreeMap::new();
+    for comp in file.components.values() {
+        for (fn_key, claim) in &comp.fns {
+            if claim.requires.is_empty() && claim.ensures.is_empty() {
+                continue;
+            }
+            let path = if is_local(&comp.anchor) {
+                fn_key.clone()
+            } else {
+                format!("{}::{}", comp.anchor, fn_key)
+            };
+            declared.insert(
+                path.clone(),
+                DeclaredContract {
+                    path,
+                    requires: claim.requires.clone(),
+                    ensures: claim.ensures.clone(),
+                },
+            );
+        }
+    }
+    let lib_src = std::fs::read_to_string(&lib_path).unwrap_or_default();
+    let mut resolver = Resolver::new(&lib_src, crate_dir, declared)?;
+
     for (comp_name, comp) in &file.components {
         for (fn_name, claim) in &comp.fns {
             let node_id = format!("{comp_name}::{fn_name}");
+            if !is_local(&comp.anchor) {
+                // A boundary component. Its contracts are already in
+                // `declared`; its `checks` cannot run from here, and saying
+                // so is the honest report (`verify` is single-crate).
+                if !claim.checks.is_empty() {
+                    diagnostics.push(cross_crate_claim_diag(&node_id, fn_name, &comp.anchor));
+                }
+                continue;
+            }
             let cf = match harness::discover_fn(&lib_path, fn_name) {
                 Ok(cf) => cf,
                 Err(e) => {
@@ -119,6 +168,20 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             let explicit = claim
                 .parsed_checks()
                 .with_context(|| format!("parsing checks for {node_id}"))?;
+            // A `ply.yaml` entry that declares a contract and asks for no
+            // checks is a **boundary contract declaration** (§5.5): it
+            // exists so callers can assume something about this fn, not so
+            // this fn gets verified. It contributes an assumption, not a
+            // node -- reporting it as an `unclaimed` claim would say the
+            // opposite of what the user wrote.
+            let declares_contract = !claim.requires.is_empty() || !claim.ensures.is_empty();
+            if declares_contract && explicit.is_empty() && !cf.has_contract() {
+                continue;
+            }
+            if declares_contract {
+                diagnostics.push(declared_contract_not_anded_diag(&node_id, fn_name));
+            }
+
             let checks = if !explicit.is_empty() {
                 explicit
             } else {
@@ -148,6 +211,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                             edits: vec![],
                         },
                     ],
+                    assumptions: vec![],
                     open_item: Some("mutate_without_kill_signal".into()),
                 });
                 early_nodes_by_component
@@ -175,12 +239,22 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 continue;
             }
 
+            // §5.5's three-way split, decided from the call graph before
+            // any engine starts. Only `bounded` needs it: Kani descends into
+            // callee bodies, proptest simply runs them.
+            let boundary = if checks.iter().any(|c| matches!(c, Check::Bounded(_))) {
+                boundary_plan(&mut resolver, &cf)
+            } else {
+                BoundaryPlan::default()
+            };
+
             plans.push(Plan {
                 node_id,
                 fn_name,
                 claim,
                 cf,
                 checks,
+                boundary,
             });
         }
     }
@@ -265,6 +339,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             plan.fn_name,
             &plan.cf,
             &plan.checks,
+            &plan.boundary,
             harness_info.as_ref(),
             opts,
         )?;
@@ -279,7 +354,11 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             id: comp_name.to_string(),
             kind: "component".into(),
             verdict: worst_of(&fn_nodes),
-            statuses: vec![],
+            // D6: statuses are not in the evidence order -- they propagate
+            // upward as flags beside the verdict. A `conditional` leaf must
+            // still be visible from the root, or the trust story stops at
+            // the fn nobody expanded.
+            statuses: union_statuses(&fn_nodes),
             children: fn_nodes,
         });
     }
@@ -288,7 +367,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         id: "workspace".into(),
         kind: "workspace".into(),
         verdict: worst_of(&components),
-        statuses: vec![],
+        statuses: union_statuses(&components),
         children: components,
     };
 
@@ -317,6 +396,320 @@ fn default_checks_for(cf: &ContractFn) -> Vec<Check> {
         vec![Check::Fuzz(256)]
     } else {
         vec![]
+    }
+}
+
+/// The names this crate answers to in an `anchor:` (§5.1): its `[lib] name`
+/// and its package name, both normalised to Rust identifier spelling. Empty
+/// when there is no readable `Cargo.toml`, in which case every component is
+/// treated as local -- the pre-2026-08-25 behaviour, kept as the fallback so
+/// a missing manifest degrades rather than mis-reports.
+fn local_anchor_names(crate_dir: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(crate_dir.join("Cargo.toml")) else {
+        return vec![];
+    };
+    match harness_crate::read_crate_names(&text) {
+        Ok(names) => vec![
+            names.lib_ident.replace('-', "_"),
+            names.package_name.replace('-', "_"),
+        ],
+        Err(_) => vec![],
+    }
+}
+
+/// What §5.5's split found in one function's body: callees nothing
+/// describes (the third branch -- refuse to descend) and callees whose
+/// declared contract will be assumed and stubbed (the second branch).
+#[derive(Default)]
+pub struct BoundaryPlan {
+    /// `(callee path, where it is called)` for every callee no contract
+    /// describes.
+    unclaimed: Vec<(String, String)>,
+    stubs: Vec<StubSpec>,
+    /// Callees whose contract is declared but whose return type Ply's
+    /// codegen cannot build a `kani::any()` for -- reported, never silently
+    /// treated as either stubbed or unclaimed.
+    unstubbable: Vec<(String, String)>,
+}
+
+fn boundary_plan(resolver: &mut Resolver, cf: &ContractFn) -> BoundaryPlan {
+    let mut plan = BoundaryPlan::default();
+    for site in &cf.calls {
+        match resolver.classify(site).status {
+            CalleeStatus::Contracted | CalleeStatus::Unresolved => {}
+            CalleeStatus::Unclaimed => {
+                if !plan.unclaimed.iter().any(|(p, _)| p == &site.path) {
+                    plan.unclaimed.push((site.path.clone(), site.where_text()));
+                }
+            }
+            CalleeStatus::Assumed {
+                contract,
+                signature,
+            } => {
+                if plan.stubs.iter().any(|s| s.callee_path == site.path) {
+                    continue;
+                }
+                match signature.return_type {
+                    Some(ret) => plan.stubs.push(StubSpec {
+                        callee_path: site.path.clone(),
+                        params: signature.params,
+                        return_type: ret,
+                        requires: contract.requires,
+                        ensures: contract.ensures,
+                    }),
+                    None => plan
+                        .unstubbable
+                        .push((site.path.clone(), site.where_text())),
+                }
+            }
+        }
+    }
+    plan
+}
+
+/// D5's third branch (§5.5): the caller's `bounded` check earns nothing,
+/// and the diagnostic names the callee -- which is the whole point. Before
+/// this rule, vetting 004's boundary function reported `timeout` after
+/// 11m23s with a title that mentioned only the caller, so nothing told the
+/// reader the cost came from across a boundary, let alone which call it was.
+fn unclaimed_callee_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    unclaimed: &[(String, String)],
+) -> Diagnostic {
+    let named: Vec<String> = unclaimed
+        .iter()
+        .map(|(p, w)| format!("`{p}` (called at {w})"))
+        .collect();
+    let list = named.join(", ");
+    let first = &unclaimed[0].0;
+    Diagnostic {
+        code: "W0512".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "Ply did not check `{fn_name}`: proving it would mean descending into {list}, and no \
+             contract anywhere describes what that code promises -- not on the function itself, and \
+             not in ply.yaml. A `bounded` proof reasons about a function's callees through their \
+             contracts, so a callee with no contract leaves nothing to reason with. Ply refuses to \
+             descend instead: pulling the real body into the proof either exhausts the time budget \
+             and reports nothing, or produces a `bounded` verdict whose meaning quietly includes \
+             code nobody vouched for. So this check earned no evidence at all -- the verdict is \
+             `unclaimed`, never `{check_label}`, and never a violation. (W0512, §5.5)"
+        ),
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![
+            Fix {
+                title: format!(
+                    "declare a contract for `{first}` in ply.yaml -- a `requires:`/`ensures:` entry \
+                     under its component's `fns:`. Ply then assumes that contract, replaces the \
+                     callee with it inside the proof, and marks `{fn_name}`'s verdict `conditional`, \
+                     listing what was assumed"
+                ),
+                edits: vec![],
+            },
+            Fix {
+                title: format!(
+                    "swap `{check_label}` for `fuzz(256)` on `{fn_name}` -- the fuzz tier runs the \
+                     real callee instead of reasoning about it, so it crosses this boundary without \
+                     needing any contract (weaker evidence, but evidence)"
+                ),
+                edits: vec![],
+            },
+        ],
+        assumptions: vec![],
+        open_item: Some("unclaimed_callee".into()),
+    }
+}
+
+/// D5's second branch (§5.5) reached through a `ply.yaml`-declared contract:
+/// the verdict is real evidence *about the contract*, and the assumption is
+/// owed evidence until something exercises it against the real body.
+fn conditional_verdict_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    stubs: &[StubSpec],
+) -> Diagnostic {
+    let assumed: Vec<String> = stubs.iter().map(|s| s.assumption_text()).collect();
+    let list = assumed.join("; ");
+    let first = &stubs[0].callee_path;
+    Diagnostic {
+        code: "W0511".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "kani".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` earned {check_label}, but conditionally: the proof used the contract \
+             declared in ply.yaml for each callee it crosses into, instead of that callee's real \
+             body. Assumed: {list}. That is what `conditional` means here -- the result holds if \
+             those promises do. Nothing has checked them against the real code yet, so each one is \
+             owed evidence rather than settled: an assumed contract nobody exercises is green paint. \
+             (W0511, §5.5)"
+        ),
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![
+            Fix {
+                title: format!(
+                    "claim `{first}` with `fuzz(256)` against the same contract -- the fuzz tier runs \
+                     the real body, so it turns this assumption into a measured fact without asking \
+                     Kani to descend into code it cannot finish"
+                ),
+                edits: vec![],
+            },
+            Fix {
+                title: format!(
+                    "or pass what `{first}` returns into `{fn_name}` as a parameter, so the value is \
+                     the caller's own data and no assumption is needed at all"
+                ),
+                edits: vec![],
+            },
+        ],
+        assumptions: stubs
+            .iter()
+            .map(|s| Assumption {
+                kind: "assumed_contract".into(),
+                fn_path: s.callee_path.clone(),
+                verdict: "unclaimed".into(),
+                contract: s.assumption_text(),
+            })
+            .collect(),
+        open_item: Some("owed_evidence".into()),
+    }
+}
+
+/// `verify` resolves every claim against one crate's `src/lib.rs`. A claim
+/// whose component anchors elsewhere is not checked here, and that is said
+/// rather than reported as a missing function (which is what happened before
+/// `anchor:` was consumed -- vetting 004 s5's misleading `E0301`).
+fn cross_crate_claim_diag(node_id: &str, fn_name: &str, anchor: &str) -> Diagnostic {
+    Diagnostic {
+        code: "W0303".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` is claimed under a component anchored at `{anchor}`, which is not the crate \
+             this run is verifying, and `cargo ply verify` checks one crate at a time. Its `checks:` \
+             were not run and no verdict is reported for it. Any `requires:`/`ensures:` this entry \
+             declares is still read: that is how a callee outside this crate gets a contract Ply can \
+             assume at the boundary (§5.5). (W0303)"
+        ),
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![
+            Fix {
+                title: format!(
+                    "run `cargo ply verify` against the crate `{anchor}` itself to check its own \
+                     claims there"
+                ),
+                edits: vec![],
+            },
+            Fix {
+                title: format!(
+                    "or drop `checks:` from this entry and keep only `requires:`/`ensures:`, if its \
+                     purpose is to give `{fn_name}` a contract for callers in this crate to assume"
+                ),
+                edits: vec![],
+            },
+        ],
+        assumptions: vec![],
+        open_item: Some("not_verified_here".into()),
+    }
+}
+
+/// A callee whose declared contract cannot be turned into a stub, because
+/// Ply's codegen has no way to build an arbitrary value of what it returns.
+fn unstubbable_callee_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    unstubbable: &[(String, String)],
+) -> Diagnostic {
+    let named: Vec<String> = unstubbable
+        .iter()
+        .map(|(p, w)| format!("`{p}` (called at {w})"))
+        .collect();
+    Diagnostic {
+        code: "W0512".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` calls {list}, which ply.yaml declares a contract for -- but that callee \
+             returns nothing (`-> ()`), so there is no returned value for the declared `ensures` to \
+             constrain and nothing for Ply to stand in for it with. The assumption cannot be \
+             encoded, so this check earned no evidence: the verdict is `unclaimed`, never \
+             `{check_label}`. (W0512, §5.5)",
+            list = named.join(", ")
+        ),
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![Fix {
+            title: format!(
+                "swap `{check_label}` for `fuzz(256)` on `{fn_name}` -- the fuzz tier runs the real \
+                 callee rather than standing in for it"
+            ),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: Some("unclaimed_callee".into()),
+    }
+}
+
+/// Union of every status on a set of child nodes, sorted and deduplicated
+/// (D6: statuses propagate upward as flags, not as evidence).
+fn union_statuses(children: &[Node]) -> Vec<String> {
+    let mut out: Vec<String> = children
+        .iter()
+        .flat_map(|c| c.statuses.iter().cloned())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// §5.4 says `ply.yaml` `requires`/`ensures` "are ANDed in" to a fn's own
+/// contract. That merge is not implemented (it needs the contract to reach
+/// harness codegen as an expression, not a string). What *is* implemented is
+/// the boundary use (§5.5): callers assume it. Saying which of the two a
+/// user is getting beats letting them assume the other -- the silent drop
+/// this replaces is vetting 004 finding 7.
+fn declared_contract_not_anded_diag(node_id: &str, fn_name: &str) -> Diagnostic {
+    Diagnostic {
+        code: "W0510".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "the `requires:`/`ensures:` declared for `{fn_name}` in ply.yaml is used where §5.5              needs it -- callers of `{fn_name}` may assume it at a boundary -- but it is **not**              yet ANDed into `{fn_name}`'s own checks, which §5.4 says it should be. So this run              checked `{fn_name}` against its inline `#[ply::requires]`/`#[ply::ensures]` only.              (W0510)"
+        ),
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![Fix {
+            title: format!(
+                "move the clause onto `{fn_name}` itself as `#[ply::requires(..)]`/\
+                 `#[ply::ensures(..)]` if you want this run to check it -- inline attributes are \
+                 the canonical contract source (D2)"
+            ),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: Some("declared_contract_not_merged".into()),
     }
 }
 
@@ -384,6 +777,7 @@ fn run_fn_checks(
     fn_name: &str,
     cf: &ContractFn,
     checks: &[Check],
+    boundary: &BoundaryPlan,
     harness_info: Option<&(String, String)>,
     opts: &VerifyOptions,
 ) -> Result<(Node, Vec<Diagnostic>)> {
@@ -394,10 +788,11 @@ fn run_fn_checks(
     for check in checks {
         match check {
             Check::Bounded(k) => {
-                let (label, mut d) = run_bounded_check(
-                    cf, src_dir, lib_path, crate_dir, node_id, fn_name, *k, opts,
+                let (label, mut s, mut d) = run_bounded_check(
+                    cf, src_dir, lib_path, crate_dir, node_id, fn_name, *k, boundary, opts,
                 )?;
                 labels.push(label);
+                statuses.append(&mut s);
                 diagnostics.append(&mut d);
             }
             Check::Prove => {
@@ -432,6 +827,7 @@ fn run_fn_checks(
                             edits: vec![],
                         },
                     ],
+                    assumptions: vec![],
                     open_item: Some("engine_missing".into()),
                 });
                 labels.push("engine-missing".into());
@@ -486,6 +882,7 @@ fn run_fn_checks(
                         edits: vec![],
                     },
                 ],
+                assumptions: vec![],
                 open_item: Some("no_contract_to_check".into()),
             });
             labels.push("unsupported".into());
@@ -551,6 +948,7 @@ fn run_fn_checks(
                         edits: vec![],
                     },
                 ],
+                assumptions: vec![],
                 open_item: Some("mutate_skipped_no_baseline".into()),
             });
         }
@@ -585,6 +983,7 @@ fn unresolved_anchor_diag(
         primary_span: None,
         counterexample: None,
         fixes: vec![],
+        assumptions: vec![],
         open_item: Some("unresolvable_anchor".into()),
     }
 }
@@ -631,6 +1030,7 @@ fn unsupported_shape_diag(node_id: &str, fn_name: &str, cf: &ContractFn) -> Diag
         primary_span: None,
         counterexample: None,
         fixes,
+        assumptions: vec![],
         open_item: Some("unsupported_signature".into()),
     }
 }
@@ -644,18 +1044,48 @@ fn run_bounded_check(
     node_id: &str,
     fn_name: &str,
     bound_k: u32,
+    boundary: &BoundaryPlan,
     opts: &VerifyOptions,
-) -> Result<(String, Vec<Diagnostic>)> {
+) -> Result<(String, Vec<String>, Vec<Diagnostic>)> {
     let check_label = format!("bounded({bound_k})");
 
     if !cf.is_bounded_supported() {
         return Ok((
             "unsupported".into(),
+            vec![],
             vec![unsupported_shape_diag(node_id, fn_name, cf)],
         ));
     }
 
-    let generated = harness::generate_proof_module(cf, bound_k)?;
+    // §5.5's third branch, decided before any engine starts: a callee no
+    // contract describes is not descended into, and the refusal costs
+    // milliseconds rather than the whole budget.
+    if !boundary.unclaimed.is_empty() {
+        return Ok((
+            "unclaimed".into(),
+            vec![],
+            vec![unclaimed_callee_diag(
+                node_id,
+                fn_name,
+                &check_label,
+                &boundary.unclaimed,
+            )],
+        ));
+    }
+    if !boundary.unstubbable.is_empty() {
+        return Ok((
+            "unclaimed".into(),
+            vec![],
+            vec![unstubbable_callee_diag(
+                node_id,
+                fn_name,
+                &check_label,
+                &boundary.unstubbable,
+            )],
+        ));
+    }
+
+    let generated = harness::generate_proof_module(cf, bound_k, &boundary.stubs)?;
     harness::write_generated_module(src_dir, lib_path, &generated.module_source)?;
 
     let engine_timeout_secs = opts
@@ -666,6 +1096,7 @@ fn run_bounded_check(
         crate_dir: crate_dir.to_path_buf(),
         harness_path: generated.proof_fn_path.clone(),
         engine_timeout_secs,
+        enable_stubbing: !generated.stubbed.is_empty(),
     };
     let outcome = kani::run(&run_cfg)?;
 
@@ -694,7 +1125,23 @@ fn run_bounded_check(
     }
 
     match outcome {
-        KaniOutcome::Verified => Ok((check_label, vec![])),
+        KaniOutcome::Verified => {
+            if generated.stubbed.is_empty() {
+                Ok((check_label, vec![], vec![]))
+            } else {
+                // §5.5's second branch: real evidence, resting on a
+                // declared assumption. `conditional` is a status (D6), not
+                // a weaker rung -- the verdict stays `bounded(k)` and the
+                // assumption travels beside it.
+                let d =
+                    conditional_verdict_diag(node_id, fn_name, &check_label, &generated.stubbed);
+                Ok((
+                    check_label,
+                    vec!["conditional".into(), "owed-evidence".into()],
+                    vec![d],
+                ))
+            }
+        }
         KaniOutcome::Timeout { raw_output } => {
             let _ = raw_output;
             let d = Diagnostic {
@@ -732,9 +1179,10 @@ fn run_bounded_check(
                         edits: vec![],
                     },
                 ],
+                assumptions: vec![],
                 open_item: Some("timeout".into()),
             };
-            Ok(("timeout".into(), vec![d]))
+            Ok(("timeout".into(), vec![], vec![d]))
         }
         KaniOutcome::ToolError { reason, raw_output } => {
             let _ = raw_output;
@@ -749,9 +1197,10 @@ fn run_bounded_check(
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![],
+                assumptions: vec![],
                 open_item: Some("tool_error".into()),
             };
-            Ok(("tool_error".into(), vec![d]))
+            Ok(("tool_error".into(), vec![], vec![d]))
         }
         KaniOutcome::Violation {
             witness_bytes,
@@ -805,9 +1254,10 @@ fn run_bounded_check(
                     ),
                 }),
                 fixes: vec![],
+                assumptions: vec![],
                 open_item: None,
             };
-            Ok(("violation".into(), vec![d]))
+            Ok(("violation".into(), vec![], vec![d]))
         }
     }
 }
@@ -895,6 +1345,7 @@ fn run_fuzz_and_test_checks(
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![Fix { title: "lower fuzz(n)'s case count, or raise --engine-timeout".into(), edits: vec![] }],
+                assumptions: vec![],
                 open_item: Some("timeout".into()),
             });
             fuzz_label = Some("timeout".into());
@@ -959,6 +1410,7 @@ fn run_fuzz_and_test_checks(
                         edits: vec![],
                     },
                 ],
+                assumptions: vec![],
                 open_item: Some("no_cases_ran".into()),
             });
             fuzz_label = Some("unclaimed".into());
@@ -994,6 +1446,7 @@ fn run_fuzz_and_test_checks(
                             edits: vec![],
                         },
                     ],
+                    assumptions: vec![],
                     open_item: Some("high_rejection_rate".into()),
                 });
             }
@@ -1038,6 +1491,7 @@ fn run_fuzz_and_test_checks(
                         edits: vec![],
                     },
                 ],
+                assumptions: vec![],
                 open_item: Some("timeout".into()),
             });
             test_label = Some("timeout".into());
@@ -1059,6 +1513,7 @@ fn run_fuzz_and_test_checks(
                 primary_span: None,
                 counterexample: None,
                 fixes: vec![],
+                assumptions: vec![],
                 open_item: None,
             });
             test_label = Some("violation".into());
@@ -1121,6 +1576,7 @@ fn harness_did_not_run_diag(
                 edits: vec![],
             },
         ],
+        assumptions: vec![],
         open_item: Some("tool_error".into()),
     }
 }
@@ -1182,6 +1638,7 @@ fn render_fuzz_violation(
                         edits: vec![],
                     },
                 ],
+                assumptions: vec![],
                 open_item: Some("tool_error".into()),
             },
         ));
@@ -1240,6 +1697,7 @@ fn render_fuzz_violation(
                         ),
                     }),
                     fixes: vec![],
+                    assumptions: vec![],
                     open_item: None,
                 },
             ))
@@ -1277,6 +1735,7 @@ fn render_fuzz_violation(
                         cargo_test: None,
                     }),
                     fixes: vec![],
+                    assumptions: vec![],
                     open_item: Some("inputs_unrenderable".into()),
                 },
             ))
@@ -1353,6 +1812,7 @@ fn run_mutate_check(
                     title: "cargo install cargo-mutants --locked".into(),
                     edits: vec![],
                 }],
+                assumptions: vec![],
                 open_item: Some("engine_missing".into()),
             }],
         ));
@@ -1416,6 +1876,7 @@ fn run_mutate_check(
                                 edits: vec![],
                             },
                         ],
+                        assumptions: vec![],
                         open_item: Some("no_mutants".into()),
                     }],
                 ))
@@ -1449,6 +1910,7 @@ fn run_mutate_check(
                             ),
                             edits: vec![],
                         }],
+                        assumptions: vec![],
                         open_item: Some("weak_spec".into()),
                     }],
                 ))
@@ -1491,6 +1953,7 @@ fn run_mutate_check(
                             edits: vec![],
                         },
                     ],
+                    assumptions: vec![],
                     open_item: Some("timeout".into()),
                 }],
             ))
@@ -1512,6 +1975,7 @@ fn run_mutate_check(
                     primary_span: None,
                     counterexample: None,
                     fixes: vec![],
+                    assumptions: vec![],
                     open_item: Some("tool_error".into()),
                 }],
             ))

@@ -67,6 +67,17 @@ impl Check {
 pub struct FnClaim {
     #[serde(default)]
     pub checks: Vec<String>,
+    /// §5.4's external-spec route: "`requires`/`ensures` entries in
+    /// `ply.yaml` are ANDed in, for teams that prefer external specs."
+    /// Read by the verify path since 2026-08-25 -- before that serde
+    /// silently dropped both keys (vetting 004 finding 7), so a team
+    /// declaring a contract for an unclaimed callee got no contract and no
+    /// warning. They are also the mechanism D5's second branch needs to
+    /// admit a legacy callee's assumption at all (§5.5).
+    #[serde(default)]
+    pub requires: Vec<String>,
+    #[serde(default)]
+    pub ensures: Vec<String>,
     /// §5.4a: "examples entries are exempt -- they are arbitrary Rust `==`
     /// expressions, compiled as plain `#[test]`s and never translated for
     /// an engine." Raw strings; parsed at codegen time (`fuzz_gen`).

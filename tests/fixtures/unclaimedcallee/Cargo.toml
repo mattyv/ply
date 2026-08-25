@@ -1,0 +1,20 @@
+[workspace]
+# Empty table: this fixture is its own workspace root, per tests/spike's
+# convention -- it must never be swept into the product workspace (each
+# fixture is its own cargo project, per The-Ply-Spec.md §4) or into tools/.
+
+[package]
+name = "ply-fixture-unclaimedcallee"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ply_fixture_unclaimedcallee"
+path = "src/lib.rs"
+
+[dependencies]
+ply = { package = "ply-attrs", path = "../../../crates/ply-attrs" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

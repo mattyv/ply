@@ -51,6 +51,22 @@ pub struct Edit {
     pub insert: String,
 }
 
+/// One assumption a verdict rests on (§8's `assumptions` array). Today the
+/// only kind is `assumed_contract`: D5's second branch (§5.5) stubbed a
+/// callee out of a proof and trusted its declared contract instead of its
+/// body. `verdict` is what the callee itself earned -- `unclaimed` for a
+/// legacy callee nothing has checked, which is exactly the case that makes
+/// the assumption *owed evidence* rather than settled.
+#[derive(Debug, Clone, Serialize)]
+pub struct Assumption {
+    pub kind: String,
+    #[serde(rename = "fn")]
+    pub fn_path: String,
+    pub verdict: String,
+    /// The contract text being assumed, as declared.
+    pub contract: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Diagnostic {
     pub code: String,
@@ -70,6 +86,10 @@ pub struct Diagnostic {
     /// alone.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub fixes: Vec<Fix>,
+    /// §8's `assumptions` array -- present only on a verdict that rests on
+    /// one (D5's second branch, §5.5). Empty for every other diagnostic.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub assumptions: Vec<Assumption>,
     pub open_item: Option<String>,
 }
 

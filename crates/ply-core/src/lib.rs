@@ -1,3 +1,4 @@
+pub mod callgraph;
 pub mod config;
 pub mod contract_rt;
 pub mod diag;

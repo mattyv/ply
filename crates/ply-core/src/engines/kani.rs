@@ -51,6 +51,12 @@ pub struct KaniRunConfig {
     pub crate_dir: std::path::PathBuf,
     pub harness_path: String,
     pub engine_timeout_secs: u32,
+    /// Whether this harness carries `#[kani::stub(..)]` attributes (D5's
+    /// second branch, §5.5). Kani rejects the attribute outright without
+    /// `-Z stubbing` ("Using the stub attribute requires activating the
+    /// unstable `stubbing` feature"), so the flag is passed exactly when a
+    /// stub is present rather than always.
+    pub enable_stubbing: bool,
 }
 
 /// Runs `cargo kani` against one harness and classifies the result. Always
@@ -59,16 +65,21 @@ pub struct KaniRunConfig {
 /// witness on failure.
 pub fn run(cfg: &KaniRunConfig) -> Result<KaniOutcome> {
     let timeout_arg = format!("{}s", cfg.engine_timeout_secs);
-    let output = Command::new("cargo")
-        .current_dir(&cfg.crate_dir)
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(&cfg.crate_dir).args([
+        "kani",
+        "-Z",
+        "function-contracts",
+        "-Z",
+        "unstable-options",
+        "-Z",
+        "concrete-playback",
+    ]);
+    if cfg.enable_stubbing {
+        cmd.args(["-Z", "stubbing"]);
+    }
+    let output = cmd
         .args([
-            "kani",
-            "-Z",
-            "function-contracts",
-            "-Z",
-            "unstable-options",
-            "-Z",
-            "concrete-playback",
             "--harness-timeout",
             &timeout_arg,
             "--exact",
