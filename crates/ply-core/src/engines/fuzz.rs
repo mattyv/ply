@@ -180,6 +180,100 @@ fn split_top_level_semicolons(s: &str) -> Vec<&str> {
     out
 }
 
+/// Recovers the shrunk failing input from **proptest's own** failure report.
+///
+/// Ply's generated harness prints its `PLY_FUZZED_CEX` marker only from the
+/// postcondition arm, so a body that *panics* never reaches it -- and until
+/// 2026-08-25 the adapter then reported `X0901`/`tool_error`, which meant a
+/// genuine crash bug could never be called a `violation` at any seed
+/// (docs/review-post-004-strategy.md's correction to vetting 004's finding
+/// 4). proptest itself catches the panic, shrinks, and prints the minimal
+/// input in its own report -- `Test failed: <why>.\nminimal failing input:
+/// <pretty Debug>` -- which the adapter was discarding. This reads it back.
+///
+/// Returns one text per value in call order (a single value, or the members
+/// of proptest's tuple), or `None` when the report has no such line, so the
+/// caller still reports `X0901` rather than inventing a witness.
+pub fn parse_proptest_minimal_input(combined: &str) -> Option<Vec<String>> {
+    const MARKER: &str = "minimal failing input: ";
+    let start = combined.rfind(MARKER)? + MARKER.len();
+    let mut text = String::new();
+    for line in combined[start..].lines() {
+        let t = line.trim();
+        // proptest prints with `{:#?}`, so a tuple or collection spans
+        // several lines; libtest's own trailer is where it stops.
+        if t.starts_with("note:")
+            || t.starts_with("stack backtrace")
+            || t.starts_with("test ")
+            || t == "failures:"
+            || t.starts_with("error")
+        {
+            break;
+        }
+        text.push_str(t);
+        if !text.is_empty() && is_balanced(&text) {
+            break;
+        }
+    }
+    let text = normalise_debug(&text);
+    if text.is_empty() {
+        return None;
+    }
+    Some(if text.starts_with('(') && text.ends_with(')') {
+        let inner = &text[1..text.len() - 1];
+        split_top_level(inner, ',')
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        vec![text]
+    })
+}
+
+fn is_balanced(s: &str) -> bool {
+    let mut depth = 0i32;
+    for c in s.chars() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
+/// `{:#?}` leaves a trailing comma before every closing bracket once the
+/// newlines are gone (`(1,2,)`), which every downstream parser here would
+/// otherwise read as an extra, empty value.
+fn normalise_debug(s: &str) -> String {
+    let mut out = s.trim().to_string();
+    while out.contains(",)") || out.contains(",]") || out.contains(",}") {
+        out = out.replace(",)", ")").replace(",]", "]").replace(",}", "}");
+    }
+    out
+}
+
+/// Splits on `sep` at bracket depth 0.
+fn split_top_level(s: &str, sep: char) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            c if c == sep && depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
 /// Parses the `PLY_FUZZ_HIGH_REJECT|<fn>|<detail>` marker (§5.4c: "a
 /// warning when the rejection rate is high"), if present.
 pub fn parse_high_reject_marker(combined: &str) -> Option<(String, String)> {
@@ -380,6 +474,42 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("xs".to_string(), "[-1,2,3]".to_string());
         assert!(decode_marker_fields(&fields, &params).is_none());
+    }
+
+    /// Real shape of proptest 1.11's own report for a body that panics --
+    /// the case Ply used to discard, reporting `X0901`/`tool_error` for a
+    /// genuine crash bug (docs/review-post-004-strategy.md's correction to
+    /// vetting 004's finding 4).
+    #[test]
+    fn recovers_proptests_own_shrunk_input_for_a_single_scalar() {
+        let combined = "\nrunning 1 test\nthread 'halves_harness::ply_fuzz_halves' panicked at target/ply/fuzz/x/src/lib.rs:20:13:\nproptest found a failing case for `halves`: Test failed: halves() only accepts even numbers.\nminimal failing input: 1\nnote: run with `RUST_BACKTRACE=1` for a backtrace\ntest halves_harness::ply_fuzz_halves ... FAILED\n";
+        assert_eq!(
+            parse_proptest_minimal_input(combined),
+            Some(vec!["1".to_string()])
+        );
+    }
+
+    #[test]
+    fn recovers_a_multi_parameter_shrunk_input_from_proptests_pretty_debug() {
+        let combined = "proptest found a failing case for `f`: Test failed: boom.\nminimal failing input: (\n    3589630,\n    9568,\n)\nnote: run with `RUST_BACKTRACE=1`\n";
+        assert_eq!(
+            parse_proptest_minimal_input(combined),
+            Some(vec!["3589630".to_string(), "9568".to_string()])
+        );
+    }
+
+    #[test]
+    fn recovers_a_vec_shaped_shrunk_input() {
+        let combined = "minimal failing input: [\n    1,\n    2,\n]\nnote: x\n";
+        assert_eq!(
+            parse_proptest_minimal_input(combined),
+            Some(vec!["[1,2]".to_string()])
+        );
+    }
+
+    #[test]
+    fn output_with_no_proptest_report_recovers_nothing_rather_than_inventing_it() {
+        assert_eq!(parse_proptest_minimal_input("nothing here\n"), None);
     }
 
     #[test]

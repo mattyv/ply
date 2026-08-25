@@ -93,12 +93,31 @@ pub struct Diagnostic {
     pub open_item: Option<String>,
 }
 
+/// How a node's verdict was produced, concretely enough to reproduce it
+/// (§1, 2026-08-25). A fuzz verdict carries its seed and case count the way
+/// a violation carries its witness: without it, a `fuzzed(256)` names no
+/// run anyone can repeat, and the run that missed a bug is indistinguishable
+/// from the run that could not have found one.
+#[derive(Debug, Clone, Serialize)]
+pub struct Evidence {
+    pub engine: String,
+    /// The proptest RNG seed, as 64 hex characters -- replay with
+    /// `cargo ply verify <path> --seed <hex>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<String>,
+    /// Cases the engine was asked for and reached.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cases: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Node {
     pub id: String,
     pub kind: String,
     pub verdict: String,
     pub statuses: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Evidence>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Node>,
 }

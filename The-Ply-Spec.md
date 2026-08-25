@@ -610,9 +610,31 @@ is enough, and §5.4a exempts those entries from the contract subset, so nothing
 them earlier). Per §8, the adapter reports `X0901` carrying the compiler's own first
 error, for **every** check in that harness, and the node's verdict is `tool_error`: never
 a pass, because no evidence exists, and never a `violation`, because there is no witness.
-The same rule covers a failure whose witness cannot be recovered — a body that panics
-before its postcondition is evaluated leaves the harness with nothing to record, and
-`X0901`/`tool_error` is the honest report, not a witness-free `violation`.
+The same rule covers a failure whose witness cannot be recovered at all: `X0901`/
+`tool_error` is the honest report, never a witness-free `violation`. **What counts as
+"cannot be recovered" narrowed on 2026-08-25.** A body that panics before its
+postcondition is evaluated does escape Ply's own marker — but proptest catches that
+panic, shrinks it, and prints the minimal failing input in its own report, which the
+adapter must read rather than discard. So a panicking body earns a `violation` carrying
+that shrunk input. Until it did, the fuzz tier's only two answers for a genuine crash bug
+were "all green" and "Ply's harness had a problem" — a whole class of real defect that
+could not be reported at any seed (docs/review-post-004-strategy.md's correction to
+vetting 004's finding 4). `tool_error` remains for the case where neither source yields an
+input.
+
+**A `fuzz(n)` verdict names the run that produced it (2026-08-25).** The generated
+harness's RNG is built from a seed Ply chooses and records — in the §8 envelope, on the
+node whose verdict it produced — never from entropy, and proptest's own persisted-failure
+replay is switched off so the run depends on nothing but that seed. `--seed <hex>` replays
+a recorded run exactly. When no seed is given, one is derived from the function's own name
+and contract text, so identical source always replays identically while two functions in
+one run do not share a draw sequence. Vetting 004's finding 4 is what this closes: six
+runs of identical source split three-and-three between a clean pass and a real panic, the
+run that found the bug unreplayable and the run that missed it indistinguishable from a
+real pass. **It buys replay and auditability, not detection power** — 256 uniform samples
+that miss an overflow beginning at ~29% of the input range still miss it, now reliably.
+The reliability story for this tier is the seed *plus* `mutate`'s kill signal, never the
+seed alone: a seeded coin flip is still a coin flip.
 
 **An abandoned fuzz run earns no verdict (2026-08-24 M4 review, D4).** When `requires`
 rejects so much of the generated input space that proptest hits its own global-reject
@@ -778,7 +800,9 @@ cargo ply skill              # (re)generate docs/PLY.skill.md from schema + diag
 
 Global flags: `--json` (schema §8, the agent surface — every command supports it),
 `--engine-timeout=<s>` (shape-aware default, not a flat number — see below),
-`--only-changed` (scope to the git diff), `--fail-on=warn|error`.
+`--only-changed` (scope to the git diff), `--fail-on=warn|evidence|error` (default
+`evidence`, see the exit codes below), `--seed=<hex>` (replay a recorded `fuzz(n)` run —
+§5.4c).
 
 **The engine-timeout default is shape-aware, not a flat number (M4 correction).** A flat
 60s default (this section's own earlier text) does not fit every §5.4b-supported shape:
@@ -993,6 +1017,11 @@ the boundary is simply not this codebase's to specify).
 Every command emits one envelope:
 `{ "command": "...", "ply_version": "...", "root": <node tree §7>, "diagnostics": [<Diagnostic>...] }`.
 Stability rule: additive changes only after M3; the goldens in tests/ui are the contract.
+
+A node whose verdict came from a sampling engine additionally carries
+`evidence: { "engine": "proptest", "seed": "<64 hex chars>", "cases": 256 }` — §1's
+requirement that every verdict name what produced it concretely enough to reproduce it.
+`cargo ply verify <path> --seed <hex>` replays that exact run.
 
 One Diagnostic schema for all engines:
 

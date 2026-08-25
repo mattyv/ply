@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use ply_core::callgraph::{CalleeStatus, DeclaredContract, Resolver};
 use ply_core::config::{self, Check, FnClaim};
 use ply_core::contract_rt::{self, RenderedTest};
-use ply_core::diag::{Assumption, Counterexample, Diagnostic, Envelope, Fix, Node};
+use ply_core::diag::{Assumption, Counterexample, Diagnostic, Envelope, Evidence, Fix, Node};
 use ply_core::engines::fuzz as fuzz_engine;
 use ply_core::engines::kani::{self, KaniOutcome, KaniRunConfig};
 use ply_core::engines::mutants::{self, MutantsRunConfig, MutantsRunOutcome};
@@ -28,6 +28,12 @@ pub struct VerifyOptions {
     /// `default_engine_timeout_secs`). An explicit value is always honored
     /// as-is, for every check kind.
     pub engine_timeout_secs: Option<u32>,
+    /// `--seed`: the proptest RNG seed every `fuzz(n)` check in this run
+    /// uses, replaying a recorded run exactly. `None` derives one per fn
+    /// from its own name and contract text (`fuzz_gen::derive_seed`), which
+    /// is still deterministic for identical source -- the property vetting
+    /// 004's finding 4 showed missing.
+    pub seed: Option<[u8; 32]>,
 }
 
 /// The engine-timeout default (Task 0 of the M4 brief): §6 used to say a
@@ -93,6 +99,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         cf: ContractFn,
         checks: Vec<Check>,
         boundary: BoundaryPlan,
+        seed: [u8; 32],
     }
     let mut plans: Vec<Plan> = Vec::new();
     let mut early_nodes_by_component: BTreeMap<&str, Vec<Node>> = BTreeMap::new();
@@ -248,6 +255,20 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 BoundaryPlan::default()
             };
 
+            // §1: "every verdict, passing or failing, must name the
+            // evidence that produced it concretely enough to reproduce it".
+            // For a fuzz verdict that is the seed, and it is derived from
+            // the fn's own contract so identical source always replays
+            // identically (`--seed` overrides).
+            let contract_text = format!(
+                "{}|{}",
+                cf.requires.as_ref().map(|(_, s)| s.as_str()).unwrap_or(""),
+                cf.ensures.as_ref().map(|(_, s)| s.as_str()).unwrap_or(""),
+            );
+            let seed = opts
+                .seed
+                .unwrap_or_else(|| ply_core::fuzz_gen::derive_seed(fn_name, &contract_text));
+
             plans.push(Plan {
                 node_id,
                 fn_name,
@@ -255,6 +276,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 cf,
                 checks,
                 boundary,
+                seed,
             });
         }
     }
@@ -294,7 +316,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             }
             let mut bodies = Vec::new();
             if let Some(n) = has_fuzz
-                && let Ok(body) = ply_core::fuzz_gen::generate_fuzz_test(&plan.cf, n)
+                && let Ok(body) = ply_core::fuzz_gen::generate_fuzz_test(&plan.cf, n, &plan.seed)
             {
                 bodies.push(body);
             }
@@ -340,6 +362,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             &plan.cf,
             &plan.checks,
             &plan.boundary,
+            &plan.seed,
             harness_info.as_ref(),
             opts,
         )?;
@@ -359,6 +382,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             // still be visible from the root, or the trust story stops at
             // the fn nobody expanded.
             statuses: union_statuses(&fn_nodes),
+            evidence: None,
             children: fn_nodes,
         });
     }
@@ -368,6 +392,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         kind: "workspace".into(),
         verdict: worst_of(&components),
         statuses: union_statuses(&components),
+        evidence: None,
         children: components,
     };
 
@@ -778,6 +803,7 @@ fn run_fn_checks(
     cf: &ContractFn,
     checks: &[Check],
     boundary: &BoundaryPlan,
+    seed: &[u8; 32],
     harness_info: Option<&(String, String)>,
     opts: &VerifyOptions,
 ) -> Result<(Node, Vec<Diagnostic>)> {
@@ -897,6 +923,7 @@ fn run_fn_checks(
                 fn_name,
                 wants_fuzz,
                 wants_test,
+                seed,
                 opts,
             )?;
             diagnostics.append(&mut d);
@@ -954,12 +981,23 @@ fn run_fn_checks(
         }
     }
 
+    // The fuzz tier's verdict names the run that produced it (§1): seed
+    // plus the case count actually asked for. Without it, `fuzzed(256)`
+    // describes a run nobody can repeat, and the run that missed a bug is
+    // indistinguishable from one that could not have found it.
+    let evidence = wants_fuzz.map(|n| Evidence {
+        engine: "proptest".into(),
+        seed: Some(ply_core::fuzz_gen::seed_hex(seed)),
+        cases: Some(n),
+    });
+
     Ok((
         Node {
             id: fn_name.to_string(),
             kind: "fn".into(),
             verdict,
             statuses,
+            evidence,
             children: vec![],
         },
         diagnostics,
@@ -1273,6 +1311,7 @@ fn run_fuzz_and_test_checks(
     fn_name: &str,
     wants_fuzz: Option<u32>,
     wants_test: bool,
+    seed: &[u8; 32],
     opts: &VerifyOptions,
 ) -> Result<(Option<String>, Option<String>, Vec<Diagnostic>)> {
     let timeout = opts
@@ -1362,6 +1401,7 @@ fn run_fuzz_and_test_checks(
                 fn_name,
                 &check_label,
                 harness_pkg,
+                &ply_core::fuzz_gen::seed_hex(seed),
                 src_dir,
                 lib_path,
             )?;
@@ -1592,6 +1632,7 @@ fn render_fuzz_violation(
     fn_name: &str,
     check_label: &str,
     harness_pkg: &str,
+    seed_hex: &str,
     src_dir: &Path,
     lib_path: &Path,
 ) -> Result<(String, Diagnostic)> {
@@ -1600,7 +1641,28 @@ fn render_fuzz_violation(
         .as_ref()
         .map(|(_, t)| t.clone())
         .unwrap_or_default();
-    let Some((_, fields)) = fuzz_engine::parse_fuzz_marker(combined_output) else {
+    // Two places a failing input can come from, and Ply reads both before
+    // giving up (2026-08-25). Ply's own `PLY_FUZZED_CEX` marker prints only
+    // from the postcondition arm, so a body that *panics* never reaches it
+    // -- but proptest catches that panic, shrinks it, and prints the minimal
+    // input in its own report, which this adapter used to discard. Reading
+    // only the first meant a genuine crash bug could never be reported as a
+    // `violation` at any seed: the two available answers were "all green"
+    // and "Ply's harness had a problem".
+    let from_panic = fuzz_engine::parse_fuzz_marker(combined_output).is_none();
+    let recovered = match fuzz_engine::parse_fuzz_marker(combined_output) {
+        Some((_, fields)) => Some(fields),
+        None => fuzz_engine::parse_proptest_minimal_input(combined_output)
+            .filter(|values| values.len() == cf.params.len())
+            .map(|values| {
+                cf.params
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .zip(values)
+                    .collect::<BTreeMap<String, String>>()
+            }),
+    };
+    let Some(fields) = recovered else {
         return Ok((
             "tool_error".to_string(),
             Diagnostic {
@@ -1611,13 +1673,11 @@ fn render_fuzz_violation(
                 check: check_label.into(),
                 node_id: node_id.into(),
                 title: format!(
-                    "proptest reported a failing case for `{fn_name}`, but Ply could not find the line \
-                     its own generated harness prints to record the failing input -- so there is no \
-                     counterexample to show you. The commonest cause is `{fn_name}` itself panicking \
-                     (an overflow, an `unwrap`, an explicit `panic!`) before its postcondition was ever \
-                     checked: Ply records the input only once it has a returned value to compare \
-                     against. This is reported as a tool error, not as a violation -- Ply never reports \
-                     a broken promise it cannot show you the input for. (X0901)"
+                    "proptest reported a failing case for `{fn_name}`, but Ply could not recover the \
+                     failing input from the run -- neither from the line its own generated harness \
+                     prints, nor from proptest's own `minimal failing input:` report -- so there is no \
+                     counterexample to show you. This is reported as a tool error, not as a violation: \
+                     Ply never reports a broken promise it cannot show you the input for. (X0901)"
                 ),
                 primary_span: None,
                 counterexample: None,
@@ -1676,17 +1736,29 @@ fn render_fuzz_violation(
                     engine: "proptest".into(),
                     check: check_label.into(),
                     node_id: node_id.into(),
-                    title: format!(
-                        "`{fn_name}` breaks its own postcondition `{contract_text}` for at least one input -- \
+                    title: if from_panic {
+                        format!(
+                            "`{fn_name}` does not return at all for this input -- it panicked before its \
+                             postcondition `{contract_text}` could even be evaluated. proptest shrank the \
+                             failing case to the smallest input that still crashes, and it is below. A \
+                             function that panics inside its own declared precondition has broken its \
+                             promise as surely as one that returns a wrong answer, so this is a \
+                             violation, with a witness. (P0502)"
+                        )
+                    } else {
+                        format!(
+                            "`{fn_name}` breaks its own postcondition `{contract_text}` for at least one input -- \
                      proptest shrank a failing case to this minimal example. (P0502)"
-                    ),
+                        )
+                    },
                     primary_span: None,
                     counterexample: Some(Counterexample {
                         inputs,
                         kani_witness: Some(format!(
-                            "captured from proptest shrinking on harness `{fn_name}_harness::ply_fuzz_{fn_name}` \
-                         (field named `kani_witness` for §8 schema stability; this witness is proptest-, \
-                         not Kani-, sourced -- see docs/m4-findings.md)"
+                            "captured from proptest shrinking on harness `{fn_name}_harness::ply_fuzz_{fn_name}`, \
+                         replayable with `--seed {seed_hex}` (field named `kani_witness` for §8 schema \
+                         stability; this witness is proptest-, not Kani-, sourced -- see \
+                         docs/m4-findings.md)"
                         )),
                         cargo_test: Some(
                             test_file
@@ -1721,7 +1793,7 @@ fn render_fuzz_violation(
                     check: check_label.into(),
                     node_id: node_id.into(),
                     title: format!(
-                        "`{fn_name}` breaks its own postcondition `{contract_text}` for at least one input, \
+                        "`{fn_name}` fails its own contract `{contract_text}` for at least one input, \
                      and proptest shrank that input down to the smallest one that still fails. Ply \
                      cannot turn it into a runnable Rust test, though: it has no way yet to spell a \
                      `BTreeSet`, or a `Vec` of anything but `u8`, as a literal value. The failing input \
@@ -1999,6 +2071,7 @@ fn leaf_node(node_id: &str, verdict: &str) -> Node {
         kind: "fn".into(),
         verdict: verdict.to_string(),
         statuses: vec![],
+        evidence: None,
         children: vec![],
     }
 }
@@ -2105,6 +2178,7 @@ mod tests {
                 kind: "fn".into(),
                 verdict: "bounded(2)".into(),
                 statuses: vec![],
+                evidence: None,
                 children: vec![],
             },
             Node {
@@ -2112,6 +2186,7 @@ mod tests {
                 kind: "fn".into(),
                 verdict: "tested".into(),
                 statuses: vec![],
+                evidence: None,
                 children: vec![],
             },
         ];

@@ -39,6 +39,12 @@ enum Commands {
         /// fails. `warn` is stricter still: any warning fails too.
         #[arg(long, value_enum, default_value_t = FailOn::Evidence)]
         fail_on: FailOn,
+        /// Replay a recorded `fuzz(n)` run exactly: 64 hex characters, as
+        /// printed in the §8 envelope's `evidence.seed`. Omit and each fn's
+        /// seed is derived from its own name and contract text, which is
+        /// still identical run to run for identical source (§5.4c).
+        #[arg(long)]
+        seed: Option<String>,
     },
 }
 
@@ -71,9 +77,26 @@ fn main() -> anyhow::Result<()> {
             path,
             engine_timeout,
             fail_on,
+            seed,
         } => {
+            let seed = match seed {
+                Some(text) => match ply_core::fuzz_gen::seed_from_hex(&text) {
+                    Some(bytes) => Some(bytes),
+                    // Refused, never padded into a different run: a `--seed`
+                    // that silently ran something else would be worse than
+                    // no `--seed` at all.
+                    None => anyhow::bail!(
+                        "`--seed` takes the 64 hexadecimal characters printed as `evidence.seed` \
+                         in a previous run's JSON envelope; `{text}` is not that. Run \
+                         `cargo ply verify <path> --json` and copy the seed from the node whose \
+                         run you want to replay."
+                    ),
+                },
+                None => None,
+            };
             let opts = VerifyOptions {
                 engine_timeout_secs: engine_timeout,
+                seed,
             };
             let envelope = verify::verify_crate(&path, &opts)?;
             if cli.json {
@@ -170,6 +193,7 @@ mod tests {
                 kind: "fn".into(),
                 verdict: (*v).into(),
                 statuses: vec![],
+                evidence: None,
                 children: vec![],
             })
             .collect();
@@ -181,6 +205,7 @@ mod tests {
                 kind: "workspace".into(),
                 verdict: verdicts.first().copied().unwrap_or("unclaimed").into(),
                 statuses: vec![],
+                evidence: None,
                 children,
             },
             diagnostics: vec![],

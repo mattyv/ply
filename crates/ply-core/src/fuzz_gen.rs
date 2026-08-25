@@ -26,6 +26,66 @@ use syn::Expr;
 
 use crate::harness::{ContractFn, RustType};
 
+/// The seed a `fuzz(n)` run uses, derived from the function it checks
+/// (2026-08-25). Until now the generated harness built its runner with
+/// `Config { cases, ..default() }`, whose RNG is seeded from entropy and
+/// recorded nowhere: vetting 004's finding 4 measured six runs of identical
+/// source splitting 3-3 between a clean pass and the real panic, with the
+/// run that found the bug unreplayable and the run that missed it
+/// indistinguishable from a real pass.
+///
+/// Deriving it from the fn's name and contract text rather than from a
+/// constant means two functions in one run do not sample the same draw
+/// sequence, and a changed contract gets a fresh one -- while identical
+/// source always replays identically, which is the property the fix is for.
+/// `--seed` overrides it for a run.
+///
+/// **This buys replay and auditability, not detection power.** A seeded
+/// coin flip is still a coin flip: 256 uniform samples that miss an overflow
+/// beginning at ~29% of the input range still miss it, every time, now
+/// reproducibly. The reliability story for the fuzz tier is seed plus
+/// `mutate`'s kill signal, never the seed alone.
+pub fn derive_seed(fn_name: &str, contract_text: &str) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for (i, chunk) in out.chunks_mut(8).enumerate() {
+        // FNV-1a over the same input with a different per-chunk salt: a
+        // stable, dependency-free hash (nothing here needs to resist an
+        // adversary, only entropy).
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        for b in fn_name
+            .as_bytes()
+            .iter()
+            .chain(b"\x1f")
+            .chain(contract_text.as_bytes())
+        {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+        chunk.copy_from_slice(&h.to_le_bytes());
+    }
+    out
+}
+
+/// The seed as it appears in the §8 envelope and in `--seed`.
+pub fn seed_hex(seed: &[u8; 32]) -> String {
+    seed.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Parses a `--seed` value back into 32 bytes. Returns `None` for anything
+/// that is not exactly 64 hex characters, so a mistyped seed is refused
+/// rather than silently padded into a different run.
+pub fn seed_from_hex(text: &str) -> Option<[u8; 32]> {
+    let text = text.trim();
+    if text.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
 /// One proptest strategy expression for `ty`, biased toward small magnitudes
 /// (§10 M4: "ints biased small"). `Unsupported` must never reach here --
 /// callers gate on `RustType::is_fuzz_supported` first.
@@ -133,7 +193,7 @@ fn call_args(cf: &ContractFn) -> Vec<String> {
 /// Returns just the `#[test] fn ply_fuzz_{fn}() { ... }` item text -- the
 /// caller assembles it into the per-fn `mod {fn}_harness { ... }` alongside
 /// the example/direct-case tests.
-pub fn generate_fuzz_test(cf: &ContractFn, cases: u32) -> Result<String> {
+pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Result<String> {
     let Some((_closure, _)) = &cf.ensures else {
         bail!(
             "fuzz check requires an #[ply::ensures] clause on `{}` to check against",
@@ -155,6 +215,14 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32) -> Result<String> {
     }
 
     let pattern = value_pattern(cf);
+    let seed_literal = format!(
+        "[{}]",
+        seed.iter()
+            .map(|b| format!("{b}u8"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let seed_hex = seed_hex(seed);
     let strategy = combined_strategy_expr(cf)?;
     let args = call_args(cf).join(", ");
     let fname = &cf.name;
@@ -196,8 +264,11 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32) -> Result<String> {
     Ok(format!(
         "    #[test]\n\
          \x20\x20\x20\x20fn ply_fuzz_{fname}() {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20let mut __ply_runner = proptest::test_runner::TestRunner::new(\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::Config {{ cases: {cases}, ..proptest::test_runner::Config::default() }},\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_SEED|{fname}|{seed_hex}\");\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let mut __ply_runner = proptest::test_runner::TestRunner::new_with_rng(\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::Config {{ cases: {cases}, failure_persistence: None, ..proptest::test_runner::Config::default() }},\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::TestRng::from_seed(\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::RngAlgorithm::ChaCha, &{seed_literal}),\n\
          \x20\x20\x20\x20\x20\x20\x20\x20);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rejected = std::cell::Cell::new(0u32);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_total = std::cell::Cell::new(0u32);\n\
@@ -401,13 +472,62 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
 "#,
             "clamp",
         );
-        let body = generate_fuzz_test(&cf, 256).unwrap();
+        let body = generate_fuzz_test(&cf, 256, &derive_seed("clamp", "")).unwrap();
         assert!(body.contains("fn ply_fuzz_clamp()"));
         assert!(body.contains("cases: 256"));
         assert!(body.contains("PLY_FUZZED_CEX|clamp|"));
-        assert!(body.contains("TestRunner::new"));
+        assert!(body.contains("TestRunner::new_with_rng"));
     }
 
+    /// vetting 004 finding 4: the same source gave a different verdict on
+    /// six of six runs because the runner's RNG came from entropy. The
+    /// generated harness must pin its seed, and the same input must always
+    /// derive the same one.
+    #[test]
+    fn the_generated_harness_pins_a_seed_and_the_same_source_derives_the_same_one() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == x)]
+pub fn clamp(x: u32) -> u32 { x.min(100) }
+"#,
+            "clamp",
+        );
+        let seed = derive_seed("clamp", "|result|*result == x");
+        let body = generate_fuzz_test(&cf, 256, &seed).unwrap();
+        assert!(
+            body.contains("TestRng::from_seed"),
+            "the runner must be built from a recorded seed, never from entropy:\n{body}"
+        );
+        assert!(
+            body.contains("failure_persistence: None"),
+            "proptest's own persisted-failure replay is a second source of run-to-run \
+             difference, and must be off for the run to be reproducible from the seed alone:\n{body}"
+        );
+        assert_eq!(
+            derive_seed("clamp", "|result|*result == x"),
+            seed,
+            "identical source must always derive an identical seed"
+        );
+        assert_ne!(
+            derive_seed("clamp", "|result|*result >= x"),
+            seed,
+            "a changed contract gets its own draw sequence"
+        );
+        assert_ne!(
+            derive_seed("other", "|result|*result == x"),
+            seed,
+            "two fns in one run must not sample the same sequence"
+        );
+    }
+
+    #[test]
+    fn a_seed_round_trips_through_its_hex_form_and_a_malformed_one_is_refused() {
+        let seed = derive_seed("f", "c");
+        assert_eq!(seed_from_hex(&seed_hex(&seed)), Some(seed));
+        assert_eq!(seed_hex(&seed).len(), 64);
+        assert_eq!(seed_from_hex("abc"), None);
+        assert_eq!(seed_from_hex(&"z".repeat(64)), None);
+    }
     #[test]
     fn btree_set_param_builds_a_strategy_without_panicking() {
         let cf = discover(
@@ -418,7 +538,7 @@ pub fn count(xs: &BTreeSet<u8>) -> u32 { xs.len() as u32 }
 "#,
             "count",
         );
-        let body = generate_fuzz_test(&cf, 64).unwrap();
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("count", "")).unwrap();
         assert!(body.contains("btree_set"));
         assert!(
             body.contains("&xs"),
@@ -436,7 +556,7 @@ pub fn safe_increment(x: u32) -> u32 { x + 1 }
 "#,
             "safe_increment",
         );
-        let body = generate_fuzz_test(&cf, 256).unwrap();
+        let body = generate_fuzz_test(&cf, 256, &derive_seed("clamp", "")).unwrap();
         assert!(body.contains("TestCaseError::reject"));
         assert!(
             body.contains("x < u32 :: MAX")
