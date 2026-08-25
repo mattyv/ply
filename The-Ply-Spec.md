@@ -766,6 +766,12 @@ signature passes the §5.4b gate; `[fuzz(256)]` when it has a contract whose sha
 excludes; none otherwise. A flat `[bounded(2)]` default would route most contracted
 functions in ordinary Rust into `unsupported` or a multi-minute timeout.
 
+The default is resolved in one place for every consumer —
+`ply_core::model::{effective_checks, component_default_checks}` — so `check`, `verify`
+and the renderer cannot disagree about which list governs a fn. `verify` read a fn's own
+list and nothing else until 2026-08-25, which made a component's declared default a line
+`check` resolved and `verify` silently ignored: one document, two answers.
+
 **That default fires only where no checks list is written at all.** `checks: []` is a
 written list, an empty one, and it means what it reads as: check nothing here. Nothing
 runs, the verdict is `unclaimed`, and `W0515` says so in a sentence rather than leaving a

@@ -1,0 +1,17 @@
+ply: 1
+
+components:
+  outer:
+    anchor: ply_fixture_componentdefault
+    # The default for every fn in scope, this component's own and any
+    # nested component's that declares none of its own (§5.1).
+    checks: [fuzz(64)]
+    fns:
+      takes_the_default: {}
+      writes_its_own:
+        checks: [bounded(2)]
+    components:
+      inner:
+        anchor: ply_fixture_componentdefault
+        fns:
+          nested_takes_the_default: {}

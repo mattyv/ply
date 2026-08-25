@@ -20,7 +20,9 @@ use ply_core::engines::kani::{self, KaniOutcome, KaniRunConfig};
 use ply_core::engines::mutants::{self, MutantsRunConfig, MutantsRunOutcome};
 use ply_core::harness::{self, ContractFn, StubSpec};
 use ply_core::harness_crate;
-use ply_core::model::{Check, FnClaim};
+use ply_core::model::{
+    Check, Component, FnClaim, InheritedChecks, component_default_checks, effective_checks,
+};
 use ply_core::promise::{ClauseKind, ClauseVerdict, HarnessAnswer, PromiseFinding, PromisePlan};
 
 use crate::shared::{self, declared_contracts, local_anchor_names, sorted_by_key};
@@ -166,14 +168,21 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     // sorted, and the goldens in tests/e2e pin that. Sorting here keeps the
     // envelope byte-identical across the promotion instead of quietly
     // reordering every multi-fn run.
-    for (comp_name, comp) in flatten_components(&file) {
+    for (comp_name, comp, inherited) in flatten_components(&file) {
         for (fn_name, claim) in sorted_by_key(&comp.fns) {
             let node_id = format!("{comp_name}::{fn_name}");
+            // §5.1: the list that actually governs this fn — its own if it
+            // wrote one (an empty one included, §5.4c), else the nearest
+            // ancestor component's default, else nothing written anywhere.
+            // `verify` used to read the fn's own list and nothing else, so a
+            // component default was resolved by `check` and silently ignored
+            // here: one document, two answers about which check runs.
+            let governing = effective_checks(claim, inherited);
             if !is_local(&comp.anchor) {
                 // A boundary component. Its contracts are already in
                 // `declared`; its `checks` cannot run from here, and saying
                 // so is the honest report (`verify` is single-crate).
-                if claim.checks.as_deref().is_some_and(|c| !c.is_empty()) {
+                if governing.is_some_and(|c| !c.is_empty()) {
                     diagnostics.push(cross_crate_claim_diag(
                         &node_id,
                         fn_name,
@@ -200,7 +209,11 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 }
             };
 
-            let explicit = config::parsed_checks(claim)
+            let explicit = governing
+                .unwrap_or(&[])
+                .iter()
+                .map(|c| config::parse_check_string(c))
+                .collect::<Result<Vec<Check>>>()
                 .with_context(|| format!("parsing checks for {node_id}"))?;
             // A `ply.yaml` entry that declares a contract and asks for no
             // checks is a **boundary contract declaration** (§5.5): it
@@ -222,7 +235,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             // as *no* list -- which is what "is the list empty?" does -- put
             // the shape-aware default back and proved the function anyway,
             // silently doing the opposite of what the document said.
-            let declared_empty = claim.checks.as_deref().is_some_and(|c| c.is_empty());
+            let declared_empty = governing.is_some_and(|c| c.is_empty());
             let checks = if !explicit.is_empty() {
                 explicit
             } else if declared_empty {
@@ -274,7 +287,15 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     // The author asked for nothing, so nothing ran -- and
                     // that is said out loud rather than left as a node
                     // nobody expands.
-                    diagnostics.push(empty_checks_diag(&node_id, fn_name, &cf));
+                    // Whose empty list it is: the fn's own, or a component
+                    // default it inherited. Saying "`f` has an empty
+                    // `checks:` list" about a fn whose entry has no such
+                    // line would send a reader looking at the wrong line.
+                    let from = match claim.checks {
+                        Some(_) => None,
+                        None => inherited.map(|d| d.from_component),
+                    };
+                    diagnostics.push(empty_checks_diag(&node_id, fn_name, &cf, from));
                     early_nodes_by_component
                         .entry(comp_name.clone())
                         .or_default()
@@ -460,8 +481,9 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
 }
 
 /// Every component in the document, depth first, each paired with its
-/// qualified name (`billing`, `ingest.book`) — parents before their
-/// children, siblings in name order at every level.
+/// qualified name (`billing`, `ingest.book`) and the §5.1 checks default in
+/// force for the fns inside it — parents before their children, siblings in
+/// name order at every level.
 ///
 /// `verify` used to iterate the top level of this tree only, so a claim
 /// written inside a nested component produced no node, no diagnostic and no
@@ -469,22 +491,35 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
 /// reported the same claim as pointing at real code. The two commands
 /// disagreed about which claims exist, and the disagreement was silent —
 /// the worst shape a gap can take (§1).
+///
+/// The inherited default is carried down the same walk, from the same
+/// shared resolution `check` and the renderer use
+/// (`ply_core::model::component_default_checks`), so the three cannot
+/// disagree about which list governs a fn.
 fn flatten_components(
     doc: &ply_core::model::Document,
-) -> Vec<(String, &ply_core::model::Component)> {
+) -> Vec<(
+    String,
+    &ply_core::model::Component,
+    Option<InheritedChecks<'_>>,
+)> {
+    type Row<'a> = (String, &'a Component, Option<InheritedChecks<'a>>);
     fn walk<'a>(
         path: String,
-        comp: &'a ply_core::model::Component,
-        out: &mut Vec<(String, &'a ply_core::model::Component)>,
+        leaf: &'a str,
+        comp: &'a Component,
+        inherited: Option<InheritedChecks<'a>>,
+        out: &mut Vec<Row<'a>>,
     ) {
+        let below = component_default_checks(leaf, comp, inherited);
         for (child, nested) in sorted_by_key(&comp.components) {
-            walk(format!("{path}.{child}"), nested, out);
+            walk(format!("{path}.{child}"), child, nested, below, out);
         }
-        out.push((path, comp));
+        out.push((path, comp, below));
     }
     let mut out = Vec::new();
     for (name, comp) in sorted_by_key(&doc.components) {
-        walk(name.clone(), comp, &mut out);
+        walk(name.clone(), name, comp, None, &mut out);
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
@@ -827,8 +862,20 @@ fn check_spelling(c: &Check) -> String {
 /// It names the default the author gave up, when there is one: the whole
 /// trap was that an empty list used to *be* that default, so a reader who
 /// wanted it needs to know how to ask for it back.
-fn empty_checks_diag(node_id: &str, fn_name: &str, cf: &ContractFn) -> Diagnostic {
+fn empty_checks_diag(
+    node_id: &str,
+    fn_name: &str,
+    cf: &ContractFn,
+    from_component: Option<&str>,
+) -> Diagnostic {
     let default: Vec<String> = default_checks_for(cf).iter().map(check_spelling).collect();
+    let whose = match from_component {
+        Some(c) => format!(
+            "`{fn_name}` writes no `checks:` of its own and the component `{c}` declares an empty \
+             list as the default for everything inside it, so"
+        ),
+        None => format!("`{fn_name}` has an empty `checks:` list, so"),
+    };
     let default_note = if default.is_empty() {
         String::new()
     } else {
@@ -846,20 +893,26 @@ fn empty_checks_diag(node_id: &str, fn_name: &str, cf: &ContractFn) -> Diagnosti
         check: "".into(),
         node_id: node_id.into(),
         title: format!(
-            "`{fn_name}` has an empty `checks:` list, so nothing was run against it and it earned \
-             no evidence: an empty list means \"check nothing\", not \"use the default\". \
-             {default_note}Write the checks you want to run it; leave the list empty to record a \
-             function you have deliberately not checked, and its verdict stays `unclaimed` — \
-             Ply's word for \"nothing was checked here\". (W0515, §5.4c)"
+            "{whose} nothing was run against it and it earned no evidence: an empty list means \
+             \"check nothing\", not \"use the default\". {default_note}Write the checks you \
+             want to run it; leave the list empty to record a function you have deliberately not \
+             checked, and its verdict stays `unclaimed` — Ply's word for \"nothing was checked \
+             here\". (W0515, §5.4c)"
         ),
         pointer: None,
         primary_span: None,
         counterexample: None,
         fixes: vec![Fix {
-            title: format!(
-                "delete the `checks: []` line from `{fn_name}` to take the default Ply picks from \
-                 its shape"
-            ),
+            title: match from_component {
+                Some(c) => format!(
+                    "give `{fn_name}` a `checks:` list of its own, or delete the empty one on \
+                     component `{c}`"
+                ),
+                None => format!(
+                    "delete the `checks: []` line from `{fn_name}` to take the default Ply picks \
+                     from its shape"
+                ),
+            },
             edits: vec![],
         }],
         assumptions: vec![],
@@ -2843,6 +2896,31 @@ fn unused(_p: &PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An empty list inherited from a component default is not the fn's
+    /// own line, and the sentence must not send a reader to a line that is
+    /// not there.
+    #[test]
+    fn an_inherited_empty_list_names_the_component_that_declared_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(
+            &path,
+            "#[ply::ensures(|result| *result == x)]\npub fn quote(x: u32) -> u32 { x }\n",
+        )
+        .unwrap();
+        let cf = ply_core::harness::discover_fn(&path, "quote").unwrap();
+        let d = empty_checks_diag("pricing::quote", "quote", &cf, Some("pricing"));
+        assert!(
+            d.title.starts_with(
+                "`quote` writes no `checks:` of its own and the component `pricing` declares an \
+                 empty list as the default for everything inside it, so nothing was run against \
+                 it"
+            ),
+            "{}",
+            d.title
+        );
+    }
 
     /// The ordinary way a nested component is written is an anchor naming a
     /// module of the crate being verified. Calling that "not the crate this

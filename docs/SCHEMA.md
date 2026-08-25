@@ -1266,7 +1266,6 @@ Collected in one place, so nothing here has to be discovered at minute eleven.
 - `check_with` is parsed and unused; generic functions are unsupported shapes.
 - `ply.yaml` `requires`/`ensures` are not merged into the described function's own check
   (`W0510`). They work as boundary promises for callers.
-- Component-level default `checks:` are honoured by `check` and ignored by `verify`.
 - `old()` works on both checking paths, over values the function reads. The mutating
   shape it exists for — a parameter the function writes back through — is refused as an
   unsupported signature, by name, rather than attempted.
