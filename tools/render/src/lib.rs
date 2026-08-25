@@ -1,6 +1,7 @@
 /// Re-exported so existing call sites (`ply_render::model::...`) and tests
-/// keep working unchanged now that the model lives in its own crate, shared
-/// with `ply-check`.
-pub use ply_model as model;
+/// keep working unchanged. The model itself lives in the product
+/// (`ply_core::model`) since Phase 1a -- this renderer consumes it rather
+/// than owning a second copy of the `ply.yaml` grammar.
+pub use ply_core::model;
 mod layout;
 pub mod svg;

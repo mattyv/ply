@@ -1,10 +1,16 @@
 //! The `ply.yaml` serde model (The-Ply-Spec.md §5) plus the three embedded
 //! micro-syntaxes: check strings, edge strings, and deny strings (§5, items 1-3).
 //!
-//! Shared by `ply-render` (SVG drawing) and `ply-check` (document-local
-//! validation). This is deliberately a read-only subset: only the
-//! declarative constructs, not verify data — verdicts, statuses, and
-//! fingerprints need anchored code and are out of scope for this crate.
+//! This is the product's model layer (§4's `model/` row). It was written
+//! first in `tools/model`, for the spec-validation tooling, while
+//! `ply-core` carried a hand-rolled four-struct subset of the same format —
+//! two readers disagreeing about one document, which is exactly the defect
+//! §5.1a rule 1 was amended to name. Phase 1a promoted this one and deleted
+//! the subset; `tools/render` and `tools/check` now consume it from here.
+//!
+//! Order is preserved (`IndexMap`, not `BTreeMap`): the renderer lays
+//! components out in the order the author declared them, so a document's
+//! reading order and its picture agree.
 
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -189,6 +195,17 @@ impl std::error::Error for ParseError {}
 
 pub fn parse_document(yaml: &str) -> Result<Document, ParseError> {
     serde_yaml_ng::from_str(yaml).map_err(|e| ParseError(e.to_string()))
+}
+
+impl FnClaim {
+    /// This claim's own literal `checks:` strings, parsed. An entry that
+    /// fails the micro-syntax is `E0203` (§5.1a rule 4); the returned string
+    /// is the plain-language reason, which the caller prefixes with the
+    /// code. Inheritance is NOT applied here — call [`effective_checks`]
+    /// first when the governing list is what you want.
+    pub fn parsed_checks(&self) -> Result<Vec<Check>, String> {
+        self.checks.iter().map(|s| parse_check(s)).collect()
+    }
 }
 
 /// §5 item 1 / §5.1a rule 4: `test | fuzz(N)? | bounded(K)? | prove | mutate`.

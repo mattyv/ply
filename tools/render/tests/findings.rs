@@ -56,7 +56,7 @@ fn every_finding_is_visibly_flagged_or_counted_at_the_title() {
             .unwrap_or_else(|e| panic!("{fixture}: could not read fixture: {e}"));
         let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{fixture} should parse: {e}"));
 
-        let findings = ply_check::run_checks(&doc);
+        let findings = ply_core::check::run_checks(&doc);
         assert!(
             !findings.is_empty(),
             "{fixture}: expected at least one finding — fixture no longer exercises this test"
@@ -194,7 +194,7 @@ fn a_clean_document_gets_no_finding_markup_at_all() {
         let yaml = std::fs::read_to_string(fixture).unwrap();
         let doc = parse_document(&yaml).expect("fixture should parse");
         assert!(
-            ply_check::run_checks(&doc).is_empty(),
+            ply_core::check::run_checks(&doc).is_empty(),
             "{fixture}: expected to be clean; this test's premise (no findings) is now false"
         );
         let svg = render_svg(&doc).expect("fixture should render");

@@ -897,7 +897,7 @@ mod declared_ceiling {
     /// contribute nothing). Deliberately re-derived here from `parse_check`,
     /// not imported from the renderer, so this is a real second opinion
     /// rather than the same code asserting against itself — the effective
-    /// list itself comes from `ply_model::effective_checks`, the single
+    /// list itself comes from `ply_core::model::effective_checks`, the single
     /// shared resolution of §5.1's component-default inheritance rule that
     /// both `ply-check` and this renderer must agree with (re-deriving that
     /// resolution independently here would just be a second copy of the

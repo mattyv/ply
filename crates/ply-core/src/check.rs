@@ -1,13 +1,21 @@
 //! Document-local `ply.yaml` validation (The-Ply-Spec.md §5.1a, §5.1, §5.6) — the
-//! subset of `cargo ply check` (§6) that needs no anchored Rust code:
-//! unknown fields, schema shape, and required fields are already rejected
-//! by `ply_model::parse_document`'s strict serde parse (nothing to
-//! duplicate here). This crate only flags constructs that parse cleanly but
-//! still violate The-Ply-Spec.md. Anchor resolution, staleness, and the
-//! architecture rules (§5.2, §5.3) need real code behind the anchors and
-//! are out of scope.
+//! rules `cargo ply check` can settle from the document alone, with no
+//! anchored Rust code in front of it: unknown fields, schema shape, and
+//! required fields are already rejected by [`crate::config::load`]
+//! (`E0201`/`E0204`) and by [`crate::model::parse_document`]'s strict serde
+//! parse, so nothing here duplicates them. This module only flags
+//! constructs that parse cleanly but still violate The-Ply-Spec.md.
+//!
+//! Anchor resolution (§5.2) lives in `crate::anchors`, which needs the real
+//! source behind each anchor; staleness needs `ply.lock` (D14) and the
+//! architecture tier (§5.3) needs the crate and call graphs. Neither is
+//! implemented yet, and `cargo ply check` says so in its own output rather
+//! than letting a clean run read as full coverage.
+//!
+//! Promoted from `tools/check` in Phase 1a, wording and targets unchanged:
+//! `tools/check`'s binary and `tools/render` now consume it from here.
 
-use ply_model::{
+use crate::model::{
     Check, Component, Document, Edge, EdgeKind, InheritedChecks, component_default_checks,
     effective_checks, parse_check, parse_deny, parse_edge,
 };
@@ -115,26 +123,39 @@ fn check_mutate_rule(
     target: &Target,
     out: &mut Vec<Diagnostic>,
 ) {
-    let mut has_mutate = false;
-    let mut has_test_or_fuzz = false;
-    for c in checks {
-        match parse_check(c) {
-            Ok(Check::Mutate) => has_mutate = true,
-            Ok(Check::Test) | Ok(Check::Fuzz(_)) => has_test_or_fuzz = true,
-            _ => {}
-        }
-    }
-    if has_mutate && !has_test_or_fuzz {
+    let parsed: Vec<Check> = checks.iter().filter_map(|c| parse_check(c).ok()).collect();
+    if mutate_lacks_kill_signal(&parsed) {
         out.push(diag(
             "E0504",
-            format!(
-                "mutate has nothing to catch its planted bugs: add a test or fuzz check \
-                 beside it — mutation testing works by deliberately breaking the code and \
-                 checking those checks notice ({location})"
-            ),
+            mutate_kill_signal_message(location),
             target.clone(),
         ));
     }
+}
+
+/// D12's own MUST, as a predicate over an already-parsed checks list:
+/// `mutate` needs a `test` or `fuzz` entry in the *same* list, because
+/// mutation testing has no kill signal of its own. `false` when `mutate` is
+/// simply absent.
+///
+/// Shared with the verify path so one rule, in one wording, governs both
+/// commands — before Phase 1a each had its own copy and its own sentence.
+pub fn mutate_lacks_kill_signal(checks: &[Check]) -> bool {
+    checks.iter().any(|c| matches!(c, Check::Mutate))
+        && !checks
+            .iter()
+            .any(|c| matches!(c, Check::Test | Check::Fuzz(_)))
+}
+
+/// The one `E0504` sentence, for whichever command is reporting it.
+/// `location` names where the offending list is (`fn slot`, `component
+/// audit`, `fn verify, checks inherited from component audit`).
+pub fn mutate_kill_signal_message(location: &str) -> String {
+    format!(
+        "mutate has nothing to catch its planted bugs: add a test or fuzz check beside it — \
+         mutation testing works by deliberately breaking the code and checking those checks \
+         notice ({location})"
+    )
 }
 
 /// Walks one component (and its nested components), running every

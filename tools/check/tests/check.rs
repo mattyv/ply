@@ -1,10 +1,10 @@
 //! `ply-check`'s document-local rules (The-Ply-Spec.md §5.1a, §5.1, §5.6) — the
 //! subset of `cargo ply check` that needs no anchored Rust code.
 
-use ply_check::{Target, run_checks};
-use ply_model::parse_document;
+use ply_core::check::{Target, run_checks};
+use ply_core::model::parse_document;
 
-fn diagnostics_for(path: &str) -> Vec<ply_check::Diagnostic> {
+fn diagnostics_for(path: &str) -> Vec<ply_core::check::Diagnostic> {
     let yaml = std::fs::read_to_string(path).unwrap();
     let doc = parse_document(&yaml).expect("fixture should parse");
     run_checks(&doc)

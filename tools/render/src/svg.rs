@@ -8,12 +8,12 @@
 
 use crate::layout;
 use indexmap::IndexMap;
-use ply_check::{Diagnostic, Target as FindingTarget, run_checks};
-use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
-use ply_model::{
+use ply_core::check::{Diagnostic, Target as FindingTarget, run_checks};
+use ply_core::model::{
     Check, Component, Deny, Document, Edge, EdgeKind, External, FnClaim, InheritedChecks, Mode,
     component_default_checks, effective_checks, parse_check, parse_deny, parse_edge,
 };
+use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -506,8 +506,8 @@ fn fn_declared_ceiling(checks: &[String]) -> Evidence {
 /// `inherited` is the §5.1 checks default `comp` itself inherited from
 /// further up (`None` at the document root, or wherever no ancestor ever
 /// declared one) — each fn's ceiling is computed from its *effective* list
-/// (`ply_model::effective_checks`), and each nested component inherits
-/// `comp`'s own default in turn (`ply_model::component_default_checks`).
+/// (`ply_core::model::effective_checks`), and each nested component inherits
+/// `comp`'s own default in turn (`ply_core::model::component_default_checks`).
 fn component_verdict_node<'a>(
     name: &'a str,
     comp: &'a Component,

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use ply_core::callgraph::{CalleeStatus, DeclaredContract, Resolver};
-use ply_core::config::{self, Check, FnClaim};
+use ply_core::config;
 use ply_core::contract_rt::{self, RenderedTest};
 use ply_core::diag::{Assumption, Counterexample, Diagnostic, Envelope, Evidence, Fix, Node};
 use ply_core::engines::fuzz as fuzz_engine;
@@ -19,6 +19,7 @@ use ply_core::engines::kani::{self, KaniOutcome, KaniRunConfig};
 use ply_core::engines::mutants::{self, MutantsRunConfig, MutantsRunOutcome};
 use ply_core::harness::{self, ContractFn, StubSpec};
 use ply_core::harness_crate;
+use ply_core::model::{Check, FnClaim};
 
 pub const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -111,6 +112,14 @@ fn default_secondary_engine_timeout_secs() -> u32 {
 
 /// Runs `verify` over every fn claim declared in `<crate_dir>/ply.yaml`,
 /// against the source at `<crate_dir>/src/lib.rs`. Returns the §8 envelope.
+/// The entries of an order-preserving map, in key order. See the note at
+/// its use site: `verify`'s output order is sorted by name, and stays so.
+fn sorted_by_key<V>(map: &indexmap::IndexMap<String, V>) -> Vec<(&String, &V)> {
+    let mut entries: Vec<(&String, &V)> = map.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    entries
+}
+
 pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> {
     let yaml_path = crate_dir.join("ply.yaml");
     let file = config::load(&yaml_path)?;
@@ -149,8 +158,8 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     // path: a `requires:`/`ensures:` entry declares a contract for a fn,
     // keyed by the path a caller writes.
     let mut declared: BTreeMap<String, DeclaredContract> = BTreeMap::new();
-    for comp in file.components.values() {
-        for (fn_key, claim) in &comp.fns {
+    for (_, comp) in sorted_by_key(&file.components) {
+        for (fn_key, claim) in sorted_by_key(&comp.fns) {
             if claim.requires.is_empty() && claim.ensures.is_empty() {
                 continue;
             }
@@ -172,8 +181,14 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     let lib_src = std::fs::read_to_string(&lib_path).unwrap_or_default();
     let mut resolver = Resolver::new(&lib_src, crate_dir, declared)?;
 
-    for (comp_name, comp) in &file.components {
-        for (fn_name, claim) in &comp.fns {
+    // Name order, not declaration order. The promoted model preserves the
+    // order the author wrote (the renderer lays boxes out that way); `verify`
+    // read a `BTreeMap` before Phase 1a, so its node and diagnostic order was
+    // sorted, and the goldens in tests/e2e pin that. Sorting here keeps the
+    // envelope byte-identical across the promotion instead of quietly
+    // reordering every multi-fn run.
+    for (comp_name, comp) in sorted_by_key(&file.components) {
+        for (fn_name, claim) in sorted_by_key(&comp.fns) {
             let node_id = format!("{comp_name}::{fn_name}");
             if !is_local(&comp.anchor) {
                 // A boundary component. Its contracts are already in
@@ -201,8 +216,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 }
             };
 
-            let explicit = claim
-                .parsed_checks()
+            let explicit = config::parsed_checks(claim)
                 .with_context(|| format!("parsing checks for {node_id}"))?;
             // A `ply.yaml` entry that declares a contract and asks for no
             // checks is a **boundary contract declaration** (§5.5): it
@@ -224,11 +238,15 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 default_checks_for(&cf)
             };
 
-            if let Err(e) = config::validate_mutate_has_kill_signal(&checks) {
-                let msg = e.to_string();
-                let code = msg.split(':').next().unwrap_or("E0504").trim().to_string();
+            // D12's E0504, from the one rule both commands share
+            // (`ply_core::check`). Before Phase 1a `verify` carried its own
+            // copy and its own sentence, and recovered the code by splitting
+            // the message on its first colon -- so the wording and the code
+            // were coupled by accident.
+            if ply_core::check::mutate_lacks_kill_signal(&checks) {
+                let msg = ply_core::check::mutate_kill_signal_message(&format!("fn {fn_name}"));
                 diagnostics.push(Diagnostic {
-                    code,
+                    code: "E0504".into(),
                     severity: "error".into(),
                     phase: "verify".into(),
                     engine: "ply".into(),
