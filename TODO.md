@@ -2,6 +2,18 @@
 
 ## Agreed with the maintainer, not yet started
 
+- [ ] **D7 for stubbed crossings — `W0541 stub_substituted`** (planned
+      2026-08-25, `docs/plans/d7-stub-failures.md`). The Kani-pin spike proved a
+      stub-caused failure has no faithful plain-Rust reproduction, on any engine version:
+      the rendered test calls the real callee, which never returns the stub's invented
+      value, so it is emitted **green** (that test is in `tests/fixtures/boundarycontract`
+      right now and passes). D7's unqualified red-test promise is corrected in the spec
+      today. Build: a third `W0541` reason, the fabricated value + admitting clause in the
+      diagnostic, a `fixes` entry proposing the tightening, and *stop emitting the passing
+      `ply_cex_*` test* — a green reproduction that reproduces nothing is worse than none.
+      Refused by name: rendering the test against a rewritten body, which would go red for
+      a program the user does not run.
+
 - [ ] **Trusted boundary declared in `ply.yaml`** (maintainer's idea, 2026-08-25) — the
       coarse-grained sibling of §5.5's per-callee rule: declare a region taken as given,
       rather than writing a contract per legacy function a new feature happens to touch.
