@@ -1,5 +1,44 @@
 # TODO
 
+## Phase 1a — landed 2026-08-25
+
+Full write-up with verbatim red-first failures: `docs/phase-1a.md`.
+
+- [x] **The `ply.yaml` model lives once, in the product** (`ceb52aa`). `tools/model` and
+      `tools/check`'s library became `ply_core::{model,check}`; the hand-rolled subset in
+      `config.rs` is deleted, closing that file's own `TODO(M1)` ("promote one, delete the
+      other"). `tools/render` and `tools/check`'s binary consume them by path dependency.
+      Behaviour-preserving: 169 passed / 0 failed on the full suite, committed SVGs
+      byte-identical, fmt and clippy clean in both workspaces.
+- [x] **`schema/ply.schema.json` exists and is normative** (`c8528ce`) — §5/D3 have called
+      it that since the spec was written while the file did not exist. Load-bearing, not
+      decorative: the `E0204` key vocabulary and required-field list are read out of it at
+      runtime and six Rust constants that duplicated them are gone. It now rejects things
+      the product silently accepted: non-snake_case names (§5.1a rule 2 was enforced by
+      nothing), unknown capabilities and bans, `unresolved` id 0 — and, found by the
+      schema-vs-parser invariant test rather than by design, `fuzz(0256)`/`fuzz(+5)`, which
+      the parser had inherited from `u32::from_str`. All 49 existing documents still pass.
+- [x] **`cargo ply check`** (`5212cfa`) — schema + anchor tiers, `--json`, exit 0/1/2,
+      **0.074s with no engine installed**. It reports what it did NOT check
+      (`coverage.not_checked`) and says plainly that every node reading `unclaimed` means
+      this command gathered no evidence, not that the code is unverified.
+
+- [ ] `check`'s staleness tier — blocked on `ply.lock` (Phase 1c); its absence is currently
+      declared in `coverage.not_checked`.
+- [ ] `check`'s architecture tier — M2, same.
+- [ ] JSON-pointer → (line, col) index for `E0201`/`E0204` (§5). The pointer ships; the line
+      does not, and §5 now says a guessed line is worse than none.
+- [ ] Multi-file `ply.yaml` discovery and merge (§5) — and with it, `E0202` across files,
+      currently unreachable.
+- [ ] Wire `--fail-on` / `--only-changed` to `check` once a tier exists they can mean
+      something for.
+- [ ] `check` should accept a loose `*.ply.yaml` path, so `tools/check`'s binary can retire.
+- [ ] `.archi/ply.json`'s "Tooling Today" diagram still shows `cargo ply` as not built —
+      stale since M3, not since this phase.
+- [ ] KNOWN GAP, deliberate: `discover_fn` sees only top-level fns in `src/lib.rs`. `check`
+      inherits the limit so it never passes an anchor `verify` would fail; the diagnostic
+      now says which of the two failures you hit, which makes the limit visible.
+
 ## Agreed with the maintainer, not yet started
 
 - [ ] **D7 for stubbed crossings — `W0541 stub_substituted`** (planned
