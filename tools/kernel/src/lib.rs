@@ -85,22 +85,30 @@ pub enum StatusKind {
     EngineMissing,
     Timeout,
     Inconclusive,
+    /// The debt half of `conditional` (§5.5, D6): the verdict rests on an
+    /// assumed contract and nothing has yet checked that contract against
+    /// the real body. Added 2026-08-25, when the adversarial review of the
+    /// post-004 fixes found `verify` emitting this status while D6 and §0
+    /// still defined neither it nor a home for it -- the vocabulary here
+    /// mirrors §0's glossary row, so it moves when that row moves.
+    OwedEvidence,
 }
 
 /// Declaration-order table of every [`StatusKind`] variant, used by
 /// [`StatusSet::iter`] to walk set bits back into values and by tests that
-/// want "all six" without hand-maintaining a second list.
-const ALL_STATUS_KINDS: [StatusKind; 6] = [
+/// want them all without hand-maintaining a second list.
+const ALL_STATUS_KINDS: [StatusKind; 7] = [
     StatusKind::Stale,
     StatusKind::WeakSpec,
     StatusKind::Unsupported,
     StatusKind::EngineMissing,
     StatusKind::Timeout,
     StatusKind::Inconclusive,
+    StatusKind::OwedEvidence,
 ];
 
 /// A set of [`StatusKind`] flags, stored as a `u8` bitmask (one bit per
-/// variant; 6 variants fit in 6 of the 8 bits) instead of
+/// variant; 7 variants fit in 7 of the 8 bits) instead of
 /// `std::collections::BTreeSet<StatusKind>`.
 ///
 /// This exists to remove a Kani/CBMC symbolic-execution stall documented in
@@ -353,6 +361,43 @@ mod tests {
             conditional: None,
             children: Vec::new(),
         }
+    }
+
+    /// The status vocabulary here mirrors §0's glossary row, and a name the
+    /// spec defines must have a representation. `owed-evidence` did not: the
+    /// tool emitted it from 2026-08-25, §5.5 called it an open item, and
+    /// neither D6's list nor §0's glossary nor this set had it at all
+    /// (adversarial review of the post-004 fixes, D6). This walks every
+    /// variant through the bitset, so a variant added to the vocabulary
+    /// without a bit -- or a bit that collides with another -- fails here
+    /// rather than silently dropping a flag out of an aggregation.
+    #[test]
+    fn every_status_in_the_glossary_round_trips_through_the_bitset() {
+        for kind in ALL_STATUS_KINDS {
+            let mut set = StatusSet::new();
+            set.insert(kind);
+            assert!(
+                set.contains(kind),
+                "{kind:?} did not survive its own insert"
+            );
+            assert_eq!(set.len(), 1, "{kind:?} set more than one bit");
+            assert_eq!(
+                set.iter().collect::<Vec<_>>(),
+                vec![kind],
+                "{kind:?} came back as something else"
+            );
+        }
+        let mut all = StatusSet::new();
+        all.extend(ALL_STATUS_KINDS);
+        assert_eq!(
+            all.len(),
+            ALL_STATUS_KINDS.len(),
+            "two variants share a bit, so one of them is invisible in every aggregation"
+        );
+        assert!(
+            all.contains(StatusKind::OwedEvidence),
+            "the debt half of `conditional` (§5.5, D6) is part of the vocabulary"
+        );
     }
 
     #[test]

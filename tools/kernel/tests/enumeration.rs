@@ -16,7 +16,7 @@
 //! sit in [the evidence] order" and all propagate the same way (union
 //! upward, count upward) *except* `conditional`, which alone carries an
 //! extra assumptions-list obligation (D5, standing obligation 2). So one
-//! stand-in "another status" (mapped to `Stale`) represents the other five
+//! stand-in "another status" (mapped to `Stale`) represents the other six
 //! kinds (`Stale`/`WeakSpec`/`Unsupported`/`EngineMissing`/`Timeout`/
 //! `Inconclusive`), which fold identically under union+count; a node
 //! carrying two flags at once is deliberately left out of this
