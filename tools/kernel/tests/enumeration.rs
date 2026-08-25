@@ -4,31 +4,14 @@
 //! walk the real output, fail on the first handful of counterexamples, print
 //! the offending tree so the failure names the actual defect.
 //!
-//! ## The enumeration bound (stated per the task brief)
+//! ## What is enumerated, and what is only represented
 //!
-//! Every tree with **1 to 4 total nodes**, **depth <= 3**, **<= 3 children
-//! per node**, where each node's own (kind, statuses, conditional) is drawn
-//! from a 21-option representative config space: 7 [`NodeKind`] shapes (6
-//! `Claimable` evidence levels + `Container`) x 3 representative status
-//! shapes (no status, conditional, another status).
-//!
-//! The status reduction is deliberate: The-Ply-Spec.md D6/§7 says statuses "do not
-//! sit in [the evidence] order" and all propagate the same way (union
-//! upward, count upward) *except* `conditional`, which alone carries an
-//! extra assumptions-list obligation (D5, standing obligation 2). So one
-//! stand-in "another status" (mapped to `Stale`) represents the other six
-//! kinds (`Stale`/`WeakSpec`/`Unsupported`/`EngineMissing`/`Timeout`/
-//! `Inconclusive`), which fold identically under union+count; a node
-//! carrying two flags at once is deliberately left out of this
-//! representative set -- the union/count fold is checked per flag
-//! independently, and every multi-node tree in this corpus already
-//! exercises combining two *different* flags across two *different* nodes.
-//!
-//! The `NodeKind` dimension is what The-Ply-Spec.md §7's amendment added: a
-//! `Container` config carries no evidence of its own by construction, so
-//! this corpus now covers both "claimable node with real evidence" and
-//! "container with none" at every position in every enumerated shape,
-//! including containers with zero, one, or several claimable descendants.
+//! **Exhaustive over shape.** Every tree with **1 to 4 total nodes**, **depth
+//! <= 3**, **<= 3 children per node**, each node's own (kind, status shape)
+//! drawn independently from a 21-option space: 7 [`NodeKind`] shapes (6
+//! `Claimable` evidence levels + `Container`) x 3 status shapes (no status,
+//! conditional, flagged). 991,389 trees. Nothing is sampled and nothing is
+//! skipped -- for those bounds this dimension really is every case.
 //!
 //! Capping *total node count* at 4 (rather than letting every one of <=3
 //! children independently be a full <=3-children subtree at every one of 3
@@ -41,11 +24,45 @@
 //! structural extremes that matter for these invariants: a depth-3 chain
 //! (root -> child -> grandchild -> great-grandchild, exercising multi-level
 //! fold-through) and a width-3 branch (root with 3 leaf children, exercising
-//! fold-across-siblings), while keeping the corpus at roughly 991K trees --
-//! verified below to run in seconds even in an unoptimized debug build.
+//! fold-across-siblings).
+//!
+//! The `NodeKind` dimension is what The-Ply-Spec.md §7's amendment added: a
+//! `Container` config carries no evidence of its own by construction, so
+//! this corpus covers both "claimable node with real evidence" and
+//! "container with none" at every position in every enumerated shape,
+//! including containers with zero, one, or several claimable descendants.
+//!
+//! **Representative over payload.** Which *concrete* flags a flagged node
+//! carries, and which *concrete* text a conditional node's assumption list
+//! holds, are not enumerated -- they are chosen by the node's pre-order
+//! position, cycling with period 2 (`decorate_by_position`). So the corpus
+//! contains 3 of the 7 [`StatusKind`]s and 2 assumption texts, not all of
+//! them and not all strings.
+//!
+//! That is a real reduction, and calling the result "exhaustive" without
+//! arguing it would be overclaiming by quotient. The argument -- per-bit
+//! uniformity of [`StatusSet`], and how far content-independence of the
+//! assumption merge does and does not hold -- is written out in
+//! **`docs/kernel-honesty-cleanups.md`**, together with the mutation runs
+//! that measure it and the one payload combination this corpus still does
+//! not reach (a single node carrying both a status flag and a conditional).
+//! It lives there rather than here because it runs to a couple of pages with
+//! an evidence table, and burying that above the code would put the test
+//! itself past where anyone scrolls. Read it before widening or narrowing
+//! the payload cycles below: it is what licenses the word "exhaustive"
+//! anywhere near this file.
+//!
+//! Until 2026-08-25 the payloads were *one* status kind and *one* assumption
+//! text, and the header asserted that reduction was safe rather than arguing
+//! it. It was not safe: three separate one-line breakages of the real kernel
+//! -- dropping `sort()`, dropping half the list in `merge_conditional`, and
+//! keeping only the first non-empty status set in the upward union -- all
+//! left this test green. The period-2 cycles are what kill them, at the same
+//! 991,389 trees and the same runtime.
 use ply_kernel::{
     AggregatedNode, Evidence, NodeKind, StatusKind, StatusSet, VerdictNode, aggregate,
 };
+use std::collections::BTreeSet;
 
 const ALL_EVIDENCE: [Evidence; 6] = [
     Evidence::Violation,
@@ -59,11 +76,35 @@ const ALL_EVIDENCE: [Evidence; 6] = [
 const MAX_NODES: usize = 4;
 const MAX_DEPTH: u32 = 3;
 const MAX_CHILDREN: usize = 3;
-/// Every conditional node in this corpus carries this exact assumption
-/// text, so the expected aggregated assumptions list is always either
-/// `None` or exactly `Some([ASSUMED_CONTRACT])` -- a crisp oracle, not just
-/// "non-empty".
-const ASSUMED_CONTRACT: &str = "assumed contract";
+
+/// The two assumption texts a `StatusShape::Conditional` node can carry,
+/// selected by the node's pre-order position (see `decorate_by_position`).
+///
+/// Two, not one, because with a single text every merge is a merge of equal
+/// values: `merge_conditional`'s "keep both lists" arm and `sort()` are both
+/// unobservable, and mutating either away leaves this test green (measured
+/// -- see docs/kernel-honesty-cleanups.md). Two texts make the union, the
+/// dedup, and the sort each observable.
+///
+/// They are deliberately in *descending* lexicographic order, so a node at
+/// an even position followed by one at an odd position produces
+/// `["zeta ...", "alpha ..."]` before sorting -- concatenation order and
+/// sorted order disagree, which is what makes a missing `sort()` visible.
+const ASSUMED_CONTRACTS: [&str; 2] = ["zeta: assumed contract", "alpha: assumed contract"];
+
+/// The two status-flag sets a `StatusShape::Other` node can carry, selected
+/// by the node's pre-order position (see `decorate_by_position`).
+///
+/// The second is a *pair* so that some node in the corpus carries two flags
+/// at once: without it no node ever contributes more than one open item, and
+/// The-Ply-Spec.md §7's own sentence -- "a node carrying two statuses
+/// contributes 2" -- is never exercised. Distinct kinds across the two
+/// entries are what make the upward union combine two different bits rather
+/// than re-union the same one.
+const FLAG_SETS: [&[StatusKind]; 2] = [
+    &[StatusKind::Stale],
+    &[StatusKind::WeakSpec, StatusKind::Timeout],
+];
 
 #[derive(Clone, Copy)]
 enum StatusShape {
@@ -101,13 +142,17 @@ fn all_configs() -> Vec<Config> {
 }
 
 impl Config {
+    /// Builds the node with a *placeholder* payload: the right shape (no
+    /// flags / conditional / flagged), with the concrete flag set and
+    /// assumption text filled in afterwards by `decorate_by_position`, which
+    /// needs the node's position in the finished tree to choose them.
     fn node(&self, children: Vec<VerdictNode>) -> VerdictNode {
         let mut statuses = StatusSet::new();
         let conditional = match self.status {
             StatusShape::None => None,
-            StatusShape::Conditional => Some(vec![ASSUMED_CONTRACT.to_string()]),
+            StatusShape::Conditional => Some(Vec::new()),
             StatusShape::Other => {
-                statuses.insert(StatusKind::Stale);
+                statuses.insert(PLACEHOLDER_FLAG);
                 None
             }
         };
@@ -117,6 +162,50 @@ impl Config {
             conditional,
             children,
         }
+    }
+}
+
+/// Marks a `StatusShape::Other` node before `decorate_by_position` replaces
+/// it with the real flag set for that position. Any variant would do; it
+/// never survives into an enumerated tree.
+const PLACEHOLDER_FLAG: StatusKind = StatusKind::Stale;
+
+/// Walks a finished tree in pre-order and gives each flagged or conditional
+/// node the payload for its position: flag set `FLAG_SETS[i % 2]`,
+/// assumption text `ASSUMED_CONTRACTS[i % 2]`, for pre-order index `i`.
+///
+/// Position, not config, chooses the payload because doing it the other way
+/// -- adding "two flags" and "the other assumption" as further `Config`
+/// variants -- multiplies the config space, and the corpus grows as
+/// (configs)^(nodes). This pass leaves the tree count at exactly 991,389.
+///
+/// The trade it makes: each (shape, position) pair gets exactly one payload,
+/// so payloads are represented rather than enumerated. A period of 2 over
+/// trees of up to 4 nodes is enough to reach what the fold actually needs to
+/// be seen doing -- both same-payload pairs (positions 0 and 2) and
+/// different-payload pairs (0 and 1), in parent-with-child and
+/// sibling-with-sibling roles. What it still cannot reach is listed under
+/// "What the reduction still does not cover" in
+/// docs/kernel-honesty-cleanups.md.
+fn decorate_by_position(node: &mut VerdictNode, next_index: &mut usize) {
+    let i = *next_index;
+    *next_index += 1;
+
+    if !node.statuses.is_empty() {
+        let mut statuses = StatusSet::new();
+        for &flag in FLAG_SETS[i % FLAG_SETS.len()] {
+            statuses.insert(flag);
+        }
+        node.statuses = statuses;
+    }
+    if node.conditional.is_some() {
+        node.conditional = Some(vec![
+            ASSUMED_CONTRACTS[i % ASSUMED_CONTRACTS.len()].to_string(),
+        ]);
+    }
+
+    for child in &mut node.children {
+        decorate_by_position(child, next_index);
     }
 }
 
@@ -214,16 +303,39 @@ fn naive_has_conditional(node: &VerdictNode) -> bool {
     node.conditional.is_some() || node.children.iter().any(naive_has_conditional)
 }
 
-fn naive_statuses_union(node: &VerdictNode) -> StatusSet {
-    let mut s = node.statuses;
+/// Every assumption text anywhere in the subtree, collected into a std
+/// `BTreeSet` -- which sorts and deduplicates by a completely different
+/// mechanism than `aggregate_raw`'s `Vec::extend` + `sort` + `dedup`. That
+/// is the point: the oracle must not reach the same answer by running the
+/// same code.
+fn naive_assumptions<'a>(node: &'a VerdictNode, out: &mut BTreeSet<&'a str>) {
+    if let Some(assumptions) = &node.conditional {
+        out.extend(assumptions.iter().map(String::as_str));
+    }
     for c in &node.children {
-        s.extend(naive_statuses_union(c).iter());
+        naive_assumptions(c, out);
+    }
+}
+
+/// The union of every status flag in the subtree, as a std `BTreeSet` rather
+/// than a [`StatusSet`]. Same reason as `naive_assumptions`: computing the
+/// union with `StatusSet`'s own bitwise `extend` would make the oracle share
+/// the implementation's set algebra, so a bug in that algebra would agree
+/// with itself and pass. `StatusSet::iter` is still shared -- the oracle can
+/// only read a node's flags through it -- and that residue is covered by
+/// `every_status_in_the_glossary_round_trips_through_the_bitset` in the
+/// crate's own unit tests.
+fn naive_statuses_union(node: &VerdictNode) -> BTreeSet<StatusKind> {
+    let mut s: BTreeSet<StatusKind> = node.statuses.iter().collect();
+    for c in &node.children {
+        s.extend(naive_statuses_union(c));
     }
     s
 }
 
 fn naive_open_items(node: &VerdictNode) -> usize {
-    let own = node.statuses.len() + if node.conditional.is_some() { 1 } else { 0 };
+    let own_flags = node.statuses.iter().count();
+    let own = own_flags + if node.conditional.is_some() { 1 } else { 0 };
     own + node.children.iter().map(naive_open_items).sum::<usize>()
 }
 
@@ -242,9 +354,10 @@ fn check_subtree(node: &VerdictNode, agg: &AggregatedNode, offending: &mut Vec<S
         ));
     }
 
-    let expects_conditional = naive_has_conditional(node);
-    let expected_conditional: Option<Vec<String>> = if expects_conditional {
-        Some(vec![ASSUMED_CONTRACT.to_string()])
+    let expected_conditional: Option<Vec<String>> = if naive_has_conditional(node) {
+        let mut assumptions = BTreeSet::new();
+        naive_assumptions(node, &mut assumptions);
+        Some(assumptions.into_iter().map(str::to_string).collect())
     } else {
         None
     };
@@ -256,7 +369,7 @@ fn check_subtree(node: &VerdictNode, agg: &AggregatedNode, offending: &mut Vec<S
     }
 
     let expected_statuses = naive_statuses_union(node);
-    if agg.statuses != expected_statuses {
+    if agg.statuses.iter().collect::<BTreeSet<_>>() != expected_statuses {
         offending.push(format!(
             "statuses union mismatch: expected {expected_statuses:?}, got {:?}, for subtree {node:#?}",
             agg.statuses
@@ -285,12 +398,15 @@ fn check_subtree(node: &VerdictNode, agg: &AggregatedNode, offending: &mut Vec<S
 #[test]
 fn aggregate_matches_naive_oracle_over_every_small_tree() {
     let configs = all_configs();
-    let trees = all_trees(MAX_NODES, &configs);
+    let mut trees = all_trees(MAX_NODES, &configs);
     assert_eq!(
         trees.len(),
         991_389,
         "enumeration bound changed shape -- update this crate's doc comments too if intentional"
     );
+    for tree in &mut trees {
+        decorate_by_position(tree, &mut 0);
+    }
 
     let mut offending: Vec<String> = Vec::new();
     for tree in &trees {
