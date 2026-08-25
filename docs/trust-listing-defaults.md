@@ -201,11 +201,15 @@ are those failures. Eight tests added in all — the four above, plus exact-stri
 the advice that names where a callee's check was written, for an inherited empty list, for
 the two spellings of "check nothing", and for a caller that asks for no checks at all.
 
-Suites: **263 passed / 0 failed** in the product workspace (`cargo test --workspace`, 257
-before this change and another session's work landed alongside it), **118 passed / 0
-failed** in `tools` (`cd tools && cargo test --release`, unchanged — the renderer already
-resolved inheritance). `cargo fmt --check` and `cargo clippy --all-targets` clean in both
-workspaces.
+Suites: **265 passed / 0 failed** in the product workspace (`cargo test --workspace`, 257
+before this change), **118 passed / 0 failed** in `tools` (`cd tools && cargo test
+--release`, unchanged — the renderer already resolved inheritance). `cargo fmt --check`
+and `cargo clippy --all-targets` clean in both workspaces.
+
+Both were run against this commit in a clean worktree rather than in the working tree: a
+second session is editing `ply-core` and `verify` alongside this work, and its in-flight
+change to a shared type had the working tree not compiling while these numbers were being
+taken. Nothing in that change is in this commit, and nothing in this commit is in it.
 
 ## Documents corrected
 
