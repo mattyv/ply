@@ -270,6 +270,16 @@ pub(crate) struct AssumedContract {
     /// What the callee's own `ply.yaml` entry asks for, if it has one — the
     /// difference between "add a check" and "run the one you declared".
     pub callee_checks: Vec<String>,
+    /// The crate the callee's `ply.yaml` entry is anchored to, when that is
+    /// **not** the crate this command is standing in.
+    ///
+    /// It is the difference between advice a reader can act on and advice
+    /// that sends them in a circle: `cargo ply verify` checks one crate at
+    /// a time, so a `checks:` entry written for a function in another crate
+    /// is read for its promise and declined for its checks (`W0303`).
+    /// Telling somebody to add that check without saying where to run it is
+    /// telling them to do something this tool will refuse.
+    pub callee_anchor: Option<String>,
     pub where_text: String,
 }
 
@@ -329,12 +339,14 @@ pub(crate) fn assumed_contracts(
                 && signature.return_type.is_some()
                 && seen.insert(canonical_path.clone())
             {
+                let (checks, anchor) = callee_entry(doc, &canonical_path, local_anchors);
                 found.push(AssumedContract {
                     caller_node_id: c.node_id(),
                     caller_fn: c.fn_name.clone(),
                     callee: canonical_path.clone(),
                     contract: contract_text(&contract.requires, &contract.ensures),
-                    callee_checks: callee_checks(doc, &canonical_path, local_anchors),
+                    callee_checks: checks,
+                    callee_anchor: anchor,
                     where_text: site.where_text(),
                 });
             }
@@ -359,19 +371,32 @@ pub(crate) fn contract_text(requires: &[String], ensures: &[String]) -> String {
     }
 }
 
-/// The checks a `ply.yaml` entry declares for the callee at `path`, if it
-/// has an entry at all. The path is the one a caller writes, so a boundary
-/// component's fn is matched by `<anchor>::<fn>` (§5.5).
-fn callee_checks(doc: &Document, path: &str, local_anchors: &[String]) -> Vec<String> {
-    let mut found = Vec::new();
+/// The callee's own `ply.yaml` entry, as far as advice needs it: the checks
+/// it declares, and the crate it is anchored to when that is not this one.
+/// The path is the one a caller writes, so a boundary component's fn is
+/// matched by `<anchor>::<fn>` (§5.5).
+fn callee_entry(
+    doc: &Document,
+    path: &str,
+    local_anchors: &[String],
+) -> (Vec<String>, Option<String>) {
+    let mut found = (Vec::new(), None);
     walk_fn_claims(doc, |c| {
-        let key = if is_local(local_anchors, c.anchor) {
+        let local = is_local(local_anchors, c.anchor);
+        let key = if local {
             c.fn_name.clone()
         } else {
             format!("{}::{}", c.anchor, c.fn_name)
         };
         if key == path {
-            found = c.claim.checks.clone().unwrap_or_default();
+            found = (
+                c.claim.checks.clone().unwrap_or_default(),
+                if local {
+                    None
+                } else {
+                    Some(c.anchor.to_string())
+                },
+            );
         }
     });
     found

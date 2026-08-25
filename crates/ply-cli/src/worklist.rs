@@ -286,15 +286,35 @@ fn registry_item(id: u64, note: &str, node_id: &str) -> OpenItem {
 
 fn owed_evidence_item(a: &shared::AssumedContract) -> OpenItem {
     let (caller, callee, contract) = (&a.caller_fn, &a.callee, &a.contract);
-    let discharge = match a.callee_checks.first() {
-        Some(check) => format!(
+    let discharge = match (a.callee_checks.first(), a.callee_anchor.as_deref()) {
+        (Some(check), None) => format!(
             "Its `ply.yaml` entry already asks for `{check}`: run `cargo ply verify` and the \
              promise is measured against the real body."
         ),
-        None => format!(
+        // `cargo ply verify` checks one crate at a time, so a check
+        // declared for a function in another package is read for its
+        // promise and declined for its checks (`W0303`). Advice that does
+        // not say where to run it is advice this tool will refuse.
+        (Some(check), Some(anchor)) => format!(
+            "Its `ply.yaml` entry already asks for `{check}` — run `cargo ply verify` inside the \
+             `{anchor}` crate, where that function lives, and the promise is measured against the \
+             real body. This run checks one crate at a time, so from here that entry's promise is \
+             read and its checks are skipped."
+        ),
+        (None, None) => format!(
             "To close it, add `checks: [fuzz(256)]` to its `ply.yaml` entry — fuzzing crosses a \
              legacy boundary by simply calling the code, so it tests the promise against the real \
              `{callee}`."
+        ),
+        (None, Some(anchor)) => format!(
+            "To close it, add `checks: [fuzz(256)]` to its `ply.yaml` entry and run `cargo ply \
+             verify` inside the `{anchor}` crate, which is where that function lives — fuzzing \
+             crosses a legacy boundary by simply calling the code, so it tests the promise \
+             against the real `{callee}`. Adding the check changes nothing in this crate: \
+             `cargo ply verify` checks one crate at a time and will decline to run it from here. \
+             If you would rather not leave this crate, pass what `{callee}` returns into \
+             `{caller}` as a parameter instead: the value becomes the caller's own data and there \
+             is no promise left to owe."
         ),
     };
     OpenItem {
@@ -587,6 +607,71 @@ mod tests {
                 .detail
                 .contains("add `checks: [fuzz(256)]` to its `ply.yaml` entry"),
             "{}",
+            owed[0].detail
+        );
+    }
+
+    /// The same assumption across a crate boundary, which is the case
+    /// §5.5's second branch exists for: the callee is old code in another
+    /// package. Advice that stops at "add a check to its entry" is advice
+    /// `cargo ply verify`, run from here, then declines (`W0303`) -- each
+    /// command right on its own, the pair of them a circle. It has to say
+    /// where that check can actually be run.
+    #[test]
+    fn advice_for_a_callee_in_another_package_says_where_that_advice_has_to_be_run() {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = root.path().join("ledger");
+        std::fs::create_dir_all(ledger.join("src")).unwrap();
+        std::fs::write(
+            ledger.join("src/lib.rs"),
+            "pub mod fees {\n    pub fn bps_for_tier(tier: u8) -> u32 { if tier == 0 { 150 } else { 90 } }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ledger.join("Cargo.toml"),
+            "[package]\nname = \"ledger\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let demo = root.path().join("demo");
+        std::fs::create_dir_all(demo.join("src")).unwrap();
+        std::fs::write(
+            demo.join("src/lib.rs"),
+            "#[ply::requires(amount <= 100)]\n\
+             #[ply::ensures(|result| *result <= amount)]\n\
+             pub fn tiered_fee(amount: u32, tier: u8) -> u32 { ledger::fees::bps_for_tier(tier).min(amount) }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            demo.join("ply.yaml"),
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      tiered_fee:\n        checks: [bounded(2)]\n  ledger:\n    anchor: ledger\n    fns:\n      fees::bps_for_tier:\n        ensures:\n          - \"|result| *result <= 10_000\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            demo.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nledger = { path = \"../ledger\" }\n",
+        )
+        .unwrap();
+
+        let report = worklist_crate(&demo).unwrap();
+        let owed: Vec<_> = items(&report)
+            .into_iter()
+            .filter(|i| i.kind == "owed_evidence")
+            .collect();
+        assert_eq!(owed.len(), 1, "{owed:#?}");
+        assert!(
+            owed[0]
+                .detail
+                .contains("run `cargo ply verify` inside the `ledger` crate"),
+            "the advice has to name the package that check would have to be run in: {}",
+            owed[0].detail
+        );
+        assert!(
+            owed[0].detail.contains(
+                "pass what `ledger::fees::bps_for_tier` returns into \
+                                     `tiered_fee` as a parameter"
+            ),
+            "and it should offer the route that needs no second crate at all: {}",
             owed[0].detail
         );
     }

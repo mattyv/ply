@@ -359,17 +359,7 @@ fn fn_claim_checks(doc: &ply_core::model::Document, name: &str) -> Option<Vec<St
 
 fn assumed_contract_item(a: &shared::AssumedContract) -> TrustItem {
     let (caller, callee, contract) = (&a.caller_fn, &a.callee, &a.contract);
-    let discharge = match a.callee_checks.first() {
-        Some(check) => format!(
-            "Its `ply.yaml` entry already asks for `{check}`, which runs the real body against \
-             the promise: `cargo ply verify` is what settles it."
-        ),
-        None => format!(
-            "To settle it, add `checks: [fuzz(256)]` to its `ply.yaml` entry — fuzzing crosses a \
-             legacy boundary by simply calling the code, so it tests the promise against the real \
-             `{callee}`."
-        ),
-    };
+    let discharge = discharge_advice(a);
     TrustItem {
         kind: "assumed_contract".into(),
         subject: callee.clone(),
@@ -383,6 +373,46 @@ fn assumed_contract_item(a: &shared::AssumedContract) -> TrustItem {
              `conditional`. If the promise is wrong, the verdict is wrong with it. Nothing has run \
              `{callee}` against that promise yet, and that is what `owed-evidence` means here. \
              {discharge} (§5.5)"
+        ),
+    }
+}
+
+/// How to settle this assumption — said so that it can be acted on from
+/// where the reader is standing.
+///
+/// `cargo ply verify` checks one crate at a time. When the callee's entry
+/// belongs to another package, a `checks:` on it is read for its promise
+/// and declined for its checks (`W0303`), so advice that stops at "add a
+/// check to its entry" is advice this tool will refuse: the reader follows
+/// it, watches it be declined, and is no further forward. Both the package
+/// to run it in and the route that needs no second crate go on the line.
+fn discharge_advice(a: &shared::AssumedContract) -> String {
+    let (caller, callee) = (&a.caller_fn, &a.callee);
+    match (a.callee_checks.first(), a.callee_anchor.as_deref()) {
+        (Some(check), None) => format!(
+            "Its `ply.yaml` entry already asks for `{check}`, which runs the real body against \
+             the promise: `cargo ply verify` is what settles it."
+        ),
+        (Some(check), Some(anchor)) => format!(
+            "Its `ply.yaml` entry already asks for `{check}`, which runs the real body against \
+             the promise — but only where that function lives: run `cargo ply verify` inside the \
+             `{anchor}` crate. This run checks one crate at a time, so from here that entry's \
+             promise is read and its checks are skipped."
+        ),
+        (None, None) => format!(
+            "To settle it, add `checks: [fuzz(256)]` to its `ply.yaml` entry — fuzzing crosses a \
+             legacy boundary by simply calling the code, so it tests the promise against the real \
+             `{callee}`."
+        ),
+        (None, Some(anchor)) => format!(
+            "To settle it, add `checks: [fuzz(256)]` to its `ply.yaml` entry and run `cargo ply \
+             verify` inside the `{anchor}` crate, which is where that function lives — fuzzing \
+             crosses a legacy boundary by simply calling the code, so it tests the promise \
+             against the real `{callee}`. Adding the check changes nothing in this crate: \
+             `cargo ply verify` checks one crate at a time and will decline to run it from here. \
+             If you would rather not leave this crate, pass what `{callee}` returns into \
+             `{caller}` as a parameter instead: the value becomes the caller's own data and there \
+             is no promise left to owe."
         ),
     }
 }
@@ -746,6 +776,92 @@ mod tests {
                 .contains("add `checks: [fuzz(256)]` to its `ply.yaml` entry"),
             "an owed item that does not say how to discharge it is a nag, not a worklist: {}",
             item.detail
+        );
+    }
+
+    /// §5.5's second branch across a crate boundary -- which is the case
+    /// it exists for: the callee is two-year-old code in another package.
+    const CROSS_CRATE_LIB: &str = "#[ply::requires(amount <= 100)]\n\
+         #[ply::ensures(|result| *result <= amount)]\n\
+         pub fn tiered_fee(amount: u32, tier: u8) -> u32 { ledger::fees::bps_for_tier(tier).min(amount) }\n";
+    const CROSS_CRATE_YAML: &str = "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      tiered_fee:\n        checks: [bounded(2)]\n  ledger:\n    anchor: ledger\n    fns:\n      fees::bps_for_tier:\n        ensures:\n          - \"|result| *result <= 10_000\"\n";
+
+    /// The two-crate layout §5.5's boundary case actually has: the crate
+    /// being audited, and a path dependency holding the legacy callee.
+    /// Returns the tempdir (kept alive by the caller) and the crate to run
+    /// in.
+    fn crate_with_legacy_dependency(yaml: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = root.path().join("ledger");
+        std::fs::create_dir_all(ledger.join("src")).unwrap();
+        std::fs::write(
+            ledger.join("src/lib.rs"),
+            "pub mod fees {\n    pub fn bps_for_tier(tier: u8) -> u32 { if tier == 0 { 150 } else { 90 } }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ledger.join("Cargo.toml"),
+            "[package]\nname = \"ledger\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+
+        let demo = root.path().join("demo");
+        std::fs::create_dir_all(demo.join("src")).unwrap();
+        std::fs::write(demo.join("src/lib.rs"), CROSS_CRATE_LIB).unwrap();
+        std::fs::write(demo.join("ply.yaml"), yaml).unwrap();
+        std::fs::write(
+            demo.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nledger = { path = \"../ledger\" }\n",
+        )
+        .unwrap();
+        (root, demo)
+    }
+
+    /// Two commands, each right on its own, sending a reader in a circle:
+    /// this one says "add a check to that function's entry", and `verify`,
+    /// run where the reader is standing, then refuses to run it because it
+    /// checks one crate at a time (`W0303`). Advice a user cannot act on
+    /// from where they are is worse than no advice: they follow it, watch
+    /// it be declined, and learn nothing about what to do instead.
+    #[test]
+    fn advice_for_a_callee_in_another_package_says_where_that_advice_has_to_be_run() {
+        let (_root, demo) = crate_with_legacy_dependency(CROSS_CRATE_YAML);
+        let report = audit_crate(&demo).unwrap();
+        let item = only(&report, "assumed_contract");
+        assert_eq!(item.subject, "ledger::fees::bps_for_tier");
+        assert!(
+            item.detail
+                .contains("run `cargo ply verify` inside the `ledger` crate"),
+            "the advice has to name the package the suggested check would have to be run in, or \
+             it sends the reader to a command that will decline it: {}",
+            item.detail
+        );
+        assert!(
+            item.detail.contains(
+                "pass what `ledger::fees::bps_for_tier` returns into `tiered_fee` as a parameter"
+            ),
+            "and it should offer the route that needs no second crate at all: {}",
+            item.detail
+        );
+
+        // The same crate boundary, with the check already written down. It
+        // still does not run from here, so saying "`cargo ply verify` is
+        // what settles it" would be the same circle one step further along.
+        let already = CROSS_CRATE_YAML.replace(
+            "      fees::bps_for_tier:\n        ensures:",
+            "      fees::bps_for_tier:\n        checks: [fuzz(256)]\n        ensures:",
+        );
+        let (_root2, demo2) = crate_with_legacy_dependency(&already);
+        let report2 = audit_crate(&demo2).unwrap();
+        let item2 = only(&report2, "assumed_contract");
+        assert!(
+            item2
+                .detail
+                .contains("run `cargo ply verify` inside the `ledger` crate"),
+            "a check already declared for a function in another package still only runs where \
+             that function lives: {}",
+            item2.detail
         );
     }
 
