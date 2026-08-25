@@ -737,24 +737,60 @@ than a shortcut:
    surface), stale-able (D14), and — the part that makes it better than trust — checkable
    by the cheap tier: `fuzz` has no trouble crossing the boundary, so a declared contract
    on a legacy callee can be fuzz-checked against the real legacy body. Until it is, the
-   caller's node carries the `owed-evidence` open item, and `audit` and `worklist` list
-   it as owed. `conditional` is the *normal* state of a legacy-extension codebase, so it
+   caller's node carries the `owed-evidence` status, and `audit` and `worklist` will list
+   it as owed **(M5 — neither command is built yet, §10)**. `conditional` is the *normal*
+   state of a legacy-extension codebase, so it
    must read as routine and legible rather than as an alarm — the annotation carries the
    trust story, and a user who learns to skip it has lost it.
 
 **What this rule reaches, and what it does not.** It applies to `bounded` only: Kani
 descends into a callee's real body, so a caller's proof silently acquires that body's
 meaning, while proptest merely *runs* the callee — which is why the fuzz tier crosses a
-legacy boundary happily and needs none of this. Within `bounded`, the split is decided
-for the callees Ply's extractor can resolve: a free-function call naming a `fn` in the
-caller's own file, or in the `src/lib.rs` of a **path dependency** declared in the
-crate's `Cargo.toml`. Method calls on a receiver (`x.min(10_000)`, `v.len()`) are not
-call sites for this rule — they are overwhelmingly `std`, and flagging them would fire on
-every ordinary line of Rust while telling a user nothing they could act on. Calls into
-`std`, `core`, or a registry crate resolve to no source Ply can read: they are
-*unresolved*, outside this rule's reach in v1, and Kani still descends into them. That is
-a real gap and it is stated here rather than left to be discovered — a `bounded` verdict
-can still include a body Ply never examined, just never a first-party one.
+legacy boundary happily and needs none of this. Method calls on a receiver
+(`x.min(10_000)`, `v.len()`) are not call sites for this rule — they are overwhelmingly
+`std`, and flagging them would fire on every ordinary line of Rust while telling a user
+nothing they could act on.
+
+Within `bounded`, the rule keys on **what the callee is, never on how the call is
+spelled**. That sentence is load-bearing, and it was false as written until 2026-08-25:
+the resolver read only the caller's own top-level `fn` items, so `use rates::legacy_rate;`
+plus a bare-name call classified *unresolved* — and unresolved meant descend. One `use`
+line converted the refusal into a clean `bounded(2)`, zero diagnostics, exit 0, over an
+unclaimed first-party body (adversarial review of the post-004 fixes, D1). Resolution
+therefore follows the crate's own structure: `use` declarations including renames
+(`as`), nested groups (`use a::{b, c::d}`) and globs; inline `mod`s; file modules
+(`mod foo;` → `foo.rs` or `foo/mod.rs`); re-exports at the entry of each file; and the
+same walk again inside the `src/lib.rs` of a **path dependency** declared in the crate's
+`Cargo.toml`.
+
+Resolution has three outcomes, not two, and the third is what keeps the rule honest:
+
+- **Resolved** → the three-way split above decides it.
+- **Outside the workspace** — `std`, `core`, a registry crate — no source Ply can read,
+  and none it should expect to. These are left alone and Kani still descends into them.
+  **This is a real gap**, stated here rather than left to be discovered: a `bounded`
+  verdict can still include a body Ply never examined.
+- **Opaque**: Ply followed the path into first-party source and could not read it — a
+  `mod` whose file is missing or unparseable, a path dependency whose `src/lib.rs` will
+  not open, or a bare name that could only have come from a glob import of one of those.
+  Not being able to look is not the same as there being nothing there, so this **refuses**
+  (`W0513`, verdict `unclaimed`) rather than descending. A glob Ply *can* see through is
+  resolved exactly like a named import; a glob into a crate outside the workspace
+  (`use std::cmp::*;`) is left alone like any other call into it.
+
+One convention is deliberate: a bare name beginning with a capital is treated as a type
+or enum-variant constructor (`Some(x)`, `Ok(v)`, `Wrapper(t)`), not a free function, and
+never triggers the glob refusal. Firing the boundary rule on `Some(x)` would tell a
+reader nothing they could act on — the same reason method calls are not call sites here.
+
+Two first-party gaps remain open, and are recorded in TODO.md rather than papered over:
+(a) the rule inspects the **claimed function's own body**, so a caller that calls a
+*contracted* callee `g` still acquires whatever `g` itself calls — until D5's first
+branch (`stub_verified`) lands, `g` is inlined rather than stubbed, and an unclaimed
+callee one level below `g` travels into the caller's proof unnamed; (b) calls Ply's
+reader cannot see at all — generated by a macro, routed through a `#[path = "..."]`
+module attribute, or made through a function pointer or trait method — are not call
+sites for it.
 
 A `ply.yaml` fn entry that declares `requires`/`ensures` and asks for no `checks` is a
 **boundary contract declaration**, not a claim: it exists so callers can assume something

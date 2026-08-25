@@ -1,0 +1,13 @@
+ply: 1
+
+# D5's third branch (§5.5), reached through an ordinary `use` import.
+# `tiered_fee` claims `bounded(2)` and calls two functions no contract
+# anywhere describes -- one imported plainly, one imported under a rename.
+# Ply must refuse to descend into both and name both, exactly as it does for
+# the qualified spelling in `tests/fixtures/unclaimedcallee`.
+components:
+  useimport:
+    anchor: ply_fixture_useimport
+    fns:
+      tiered_fee:
+        checks: [bounded(2)]

@@ -9,11 +9,24 @@
 //! The rule §5.5 states is keyed on what the callee offers, so this module
 //! answers exactly two questions about each call site in a contracted body:
 //! *can Ply see the callee at all*, and *does any contract describe it*.
-//! Resolution reaches two places and no further: top-level `fn` items in
-//! the caller's own file, and top-level (or `mod`-nested) `fn` items in a
-//! **path dependency's** `src/lib.rs`. A call into `std`, `core`, or a
-//! registry crate is `Unresolved` — outside this rule's reach in v1, and
-//! said so in §5.5 rather than left for a user to discover.
+//!
+//! Resolution follows the crate's own first-party structure: `use`
+//! declarations (renames, nested groups and globs included), inline `mod`s,
+//! file modules (`mod foo;` → `foo.rs` / `foo/mod.rs`), and the same walk
+//! again inside a **path dependency's** `src/lib.rs`. A call whose path
+//! leads out of the workspace — `std`, `core`, a registry crate — is
+//! `Unresolved`: outside this rule's reach in v1, stated in §5.5 rather
+//! than left for a user to discover.
+//!
+//! The two are not the same answer, and conflating them was a fail-open bug
+//! (adversarial review of the post-004 fixes, D1, 2026-08-25): before
+//! `use` declarations were read, `use rates::legacy_rate;` plus a bare-name
+//! call classified `Unresolved`, and `Unresolved` meant *descend*, so the
+//! most idiomatic spelling in Rust silently bought a clean `bounded(2)` over
+//! an unclaimed body. The rule this module now holds to is one sentence:
+//! **Ply descends only into a callee it resolved, or one that lies outside
+//! the workspace entirely. First-party source Ply was pointed at and could
+//! not read is refused (`Opaque`), never assumed harmless.**
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -103,9 +116,19 @@ pub enum CalleeStatus {
     /// Resolved, and nothing anywhere describes it: §5.5's third branch.
     /// Ply refuses to descend.
     Unclaimed,
-    /// Ply cannot see this callee's source at all (`std`, `core`, a
-    /// registry crate). Outside this rule's reach in v1 — recorded in §5.5,
-    /// not silently treated as claimed.
+    /// Ply was pointed at first-party source and could not read it: a
+    /// `mod` whose file is missing, a path dependency whose `src/lib.rs`
+    /// will not open or parse, or a bare name that could only have come
+    /// from a glob import of one of those. The call is inside the
+    /// workspace, so §5.5's reason for leaving `std` alone does not apply
+    /// — and "I could not look" is not "there is nothing there", so this
+    /// refuses rather than descends (§1's absence-of-evidence principle).
+    /// The payload is the plain-language reason, for the diagnostic.
+    Opaque(String),
+    /// The call leads out of the workspace entirely (`std`, `core`, a
+    /// registry crate) — no source Ply can read, and none it should expect
+    /// to. Outside this rule's reach in v1: recorded in §5.5, not silently
+    /// treated as claimed.
     Unresolved,
 }
 
@@ -126,14 +149,42 @@ pub struct ResolvedCall {
 }
 
 /// Everything resolution needs that is not the call itself: the caller's
-/// own file, the crate directory (for path-dependency lookup), and the
-/// contracts `ply.yaml` declares.
+/// own file, the crate directory (for path-dependency and file-module
+/// lookup), and the contracts `ply.yaml` declares.
 pub struct Resolver {
-    local: syn::File,
+    local: SourceFile,
     crate_dir: PathBuf,
     declared: BTreeMap<String, DeclaredContract>,
-    dep_sources: BTreeMap<String, syn::File>,
+    /// Parsed-file cache, keyed by path on disk. A `None` value records
+    /// "Ply tried and could not read this", which is a different fact from
+    /// "not cached yet" and must not be retried into a different answer.
+    files: BTreeMap<PathBuf, Option<SourceFile>>,
+    /// `[dependencies]` key → its crate root, or `None` when the key names
+    /// no *path* dependency (a registry crate, or nothing at all).
+    dep_roots: BTreeMap<String, Option<SourceFile>>,
 }
+
+/// One parsed source file plus the directory its own `mod x;` children are
+/// looked for in: `src/` for `src/lib.rs`, `src/rates/` for `src/rates.rs`.
+#[derive(Clone)]
+struct SourceFile {
+    ast: std::rc::Rc<syn::File>,
+    dir: PathBuf,
+}
+
+/// What one path lookup found. `Opaque` is the branch that keeps the rule
+/// honest: it means Ply followed the path into first-party source and could
+/// not read it, which is neither "found" nor "outside the workspace".
+enum Resolution {
+    Found(Box<syn::ItemFn>),
+    Opaque(String),
+    NotFound,
+}
+
+/// How deep the resolver will follow module nesting and import chains
+/// before giving up. This reader is not a compiler: a cycle a real crate
+/// could not contain must still terminate here.
+const MAX_DEPTH: usize = 8;
 
 impl Resolver {
     /// `lib_src` is the caller's own file source; `declared` is keyed by the
@@ -144,10 +195,14 @@ impl Resolver {
         declared: BTreeMap<String, DeclaredContract>,
     ) -> anyhow::Result<Resolver> {
         Ok(Resolver {
-            local: syn::parse_file(lib_src)?,
+            local: SourceFile {
+                ast: std::rc::Rc::new(syn::parse_file(lib_src)?),
+                dir: crate_dir.join("src"),
+            },
             crate_dir: crate_dir.to_path_buf(),
             declared,
-            dep_sources: BTreeMap::new(),
+            files: BTreeMap::new(),
+            dep_roots: BTreeMap::new(),
         })
     }
 
@@ -160,24 +215,18 @@ impl Resolver {
     }
 
     fn status_of(&mut self, path: &str) -> CalleeStatus {
-        let segments: Vec<&str> = path.split("::").collect();
-        let found = if segments.len() == 1 {
-            find_fn(&self.local, &segments)
-        } else {
-            match self.dep_file(segments[0]) {
-                Some(file) => find_fn(file, &segments[1..]),
-                // A multi-segment path may still be local
-                // (`self::helper`, an inline `mod`): try the caller's own
-                // file before giving up.
-                None => find_fn(&self.local, &segments),
-            }
-        };
-        let Some(f) = found else {
-            return CalleeStatus::Unresolved;
+        let segments: Vec<String> = path.split("::").map(|s| s.to_string()).collect();
+        let f = match self.resolve_path(&segments) {
+            Resolution::Found(f) => *f,
+            Resolution::Opaque(reason) => return CalleeStatus::Opaque(reason),
+            Resolution::NotFound => return CalleeStatus::Unresolved,
         };
         if has_inline_contract(&f) {
             return CalleeStatus::Contracted;
         }
+        // Keyed on the path *as the caller spells it*: that is the string a
+        // user writes in ply.yaml, and matching anything else would ask them
+        // to guess at Ply's internal renaming.
         match self.declared.get(path) {
             Some(contract) => CalleeStatus::Assumed {
                 contract: contract.clone(),
@@ -187,22 +236,301 @@ impl Resolver {
         }
     }
 
-    /// Parses (once) the `src/lib.rs` of the path dependency registered
-    /// under `dep_name` in the crate's `Cargo.toml`. `dep_name` is the key
-    /// in `[dependencies]`, which is also the first segment a caller writes
-    /// — including when the key renames the package
-    /// (`ledger = { package = "ply-vetting-004-ledger", path = "../legacy" }`).
-    fn dep_file(&mut self, dep_name: &str) -> Option<&syn::File> {
-        if !self.dep_sources.contains_key(dep_name) {
-            let cargo_toml = std::fs::read_to_string(self.crate_dir.join("Cargo.toml")).ok()?;
-            let rel = path_dependency(&cargo_toml, dep_name)?;
-            let lib = self.crate_dir.join(rel).join("src/lib.rs");
-            let src = std::fs::read_to_string(lib).ok()?;
-            let parsed = syn::parse_file(&src).ok()?;
-            self.dep_sources.insert(dep_name.to_string(), parsed);
+    fn resolve_path(&mut self, raw: &[String]) -> Resolution {
+        let segs = expand_imports(&import_map(&self.local.ast), &strip_prefixes(raw));
+        if segs.is_empty() {
+            return Resolution::NotFound;
         }
-        self.dep_sources.get(dep_name)
+        if segs.len() >= 2 {
+            match self.dep_root(&segs[0]) {
+                Some(Some(root)) => return self.resolve_in_file(&root, &segs[1..], 0),
+                Some(None) => {
+                    return Resolution::Opaque(format!(
+                        "`{}` is a path dependency of this crate, but Ply could not read its \
+                         `src/lib.rs`",
+                        segs[0]
+                    ));
+                }
+                None => {}
+            }
+        }
+        let local = self.local.clone();
+        let found = self.resolve_in_file(&local, &segs, 0);
+        // A bare name that resolved nowhere may still have been brought into
+        // scope by a glob. Names starting with a capital are Rust's
+        // convention for a type or enum variant (`Some(x)`, `Ok(v)`,
+        // `Wrapper(t)`) rather than a free function, and are left alone:
+        // firing the boundary rule on `Some(x)` would tell a reader nothing
+        // they could act on, which is the same reason method calls are not
+        // call sites for this rule.
+        if matches!(found, Resolution::NotFound) && segs.len() == 1 && !starts_uppercase(&segs[0]) {
+            return self.resolve_through_globs(&segs[0]);
+        }
+        found
     }
+
+    /// Walks one file for `segments`, following that file's own imports
+    /// (which is how a re-export `pub use fees::bps_for_tier;` resolves),
+    /// its inline `mod`s, and its file modules.
+    fn resolve_in_file(
+        &mut self,
+        file: &SourceFile,
+        segments: &[String],
+        depth: usize,
+    ) -> Resolution {
+        if depth > MAX_DEPTH {
+            return Resolution::NotFound;
+        }
+        let segs = expand_imports(&import_map(&file.ast), &strip_prefixes(segments));
+        let Some((head, rest)) = segs.split_first() else {
+            return Resolution::NotFound;
+        };
+        if rest.is_empty() {
+            return match top_level_fn(&file.ast.items, head) {
+                Some(f) => Resolution::Found(Box::new(f)),
+                None => Resolution::NotFound,
+            };
+        }
+        // An inline `mod`: its items are right here.
+        for item in &file.ast.items {
+            if let syn::Item::Mod(m) = item
+                && m.ident == head.as_str()
+            {
+                return match &m.content {
+                    Some((_, inner)) => {
+                        let nested = SourceFile {
+                            ast: std::rc::Rc::new(syn::File {
+                                shebang: None,
+                                attrs: vec![],
+                                items: inner.clone(),
+                            }),
+                            dir: file.dir.join(head),
+                        };
+                        self.resolve_in_file(&nested, rest, depth + 1)
+                    }
+                    // `mod foo;` — first-party code in another file.
+                    None => match self.module_file(&file.dir, head) {
+                        Some(sf) => self.resolve_in_file(&sf, rest, depth + 1),
+                        None => Resolution::Opaque(format!(
+                            "`{head}` is a module of this crate, but Ply could not read its source \
+                             (it looked for `{head}.rs` and `{head}/mod.rs`)"
+                        )),
+                    },
+                };
+            }
+        }
+        Resolution::NotFound
+    }
+
+    /// The deliberate rule for glob imports (`use rates::*;`). A glob whose
+    /// source Ply *can* read is resolved exactly like a named import — the
+    /// name is either in there or it is not. A glob into first-party source
+    /// Ply cannot read leaves the bare name genuinely ambiguous, and an
+    /// ambiguity inside the workspace is refused, never descended into. A
+    /// glob into a crate outside the workspace (`use std::cmp::*;`) is left
+    /// alone, for the same reason every other `std` call is: §5.5 says that
+    /// gap out loud rather than pretending to have closed it.
+    fn resolve_through_globs(&mut self, name: &str) -> Resolution {
+        let prefixes = glob_prefixes(&self.local.ast);
+        let mut opaque: Option<String> = None;
+        for prefix in prefixes {
+            let mut segs = prefix.clone();
+            segs.push(name.to_string());
+            let segs = strip_prefixes(&segs);
+            if segs.len() < 2 {
+                continue;
+            }
+            let r = match self.dep_root(&segs[0]) {
+                Some(Some(root)) => self.resolve_in_file(&root, &segs[1..], 0),
+                Some(None) => Resolution::Opaque(format!(
+                    "`{}` is a path dependency of this crate, but Ply could not read its \
+                     `src/lib.rs`",
+                    segs[0]
+                )),
+                None => {
+                    let local = self.local.clone();
+                    self.resolve_in_file(&local, &segs, 0)
+                }
+            };
+            match r {
+                Resolution::Found(f) => return Resolution::Found(f),
+                Resolution::Opaque(reason) => {
+                    opaque.get_or_insert(format!(
+                        "it may come from `use {}::*`, and {reason}",
+                        prefix.join("::")
+                    ));
+                }
+                Resolution::NotFound => {}
+            }
+        }
+        match opaque {
+            Some(reason) => Resolution::Opaque(reason),
+            None => Resolution::NotFound,
+        }
+    }
+
+    /// `Some(Some(root))` = a path dependency Ply read; `Some(None)` = a path
+    /// dependency it could not read; `None` = not a path dependency at all
+    /// (a registry crate, or not a dependency).
+    fn dep_root(&mut self, dep_name: &str) -> Option<Option<SourceFile>> {
+        if let Some(cached) = self.dep_roots.get(dep_name) {
+            return Some(cached.clone());
+        }
+        let cargo_toml = std::fs::read_to_string(self.crate_dir.join("Cargo.toml")).ok()?;
+        let rel = path_dependency(&cargo_toml, dep_name)?;
+        let dep_src = self.crate_dir.join(rel).join("src");
+        let root = self.read_file(&dep_src.join("lib.rs"), &dep_src);
+        self.dep_roots.insert(dep_name.to_string(), root.clone());
+        Some(root)
+    }
+
+    /// `mod foo;` in a file living in `dir`: `dir/foo.rs`, else
+    /// `dir/foo/mod.rs`. Both are Rust's own conventions; a `#[path = ..]`
+    /// attribute is not followed, and a module Ply cannot open is `Opaque`
+    /// rather than silently absent.
+    fn module_file(&mut self, dir: &Path, name: &str) -> Option<SourceFile> {
+        let flat = dir.join(format!("{name}.rs"));
+        if let Some(sf) = self.read_file(&flat, &dir.join(name)) {
+            return Some(sf);
+        }
+        let nested_dir = dir.join(name);
+        self.read_file(&nested_dir.join("mod.rs"), &nested_dir)
+    }
+
+    fn read_file(&mut self, path: &Path, child_dir: &Path) -> Option<SourceFile> {
+        if let Some(cached) = self.files.get(path) {
+            return cached.clone();
+        }
+        let parsed = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|src| syn::parse_file(&src).ok())
+            .map(|ast| SourceFile {
+                ast: std::rc::Rc::new(ast),
+                dir: child_dir.to_path_buf(),
+            });
+        self.files.insert(path.to_path_buf(), parsed.clone());
+        parsed
+    }
+}
+
+/// `self::f` and `crate::f` name the caller's own crate root; neither adds
+/// anything to resolve.
+fn strip_prefixes(segments: &[String]) -> Vec<String> {
+    segments
+        .iter()
+        .skip_while(|s| s.as_str() == "self" || s.as_str() == "crate")
+        .cloned()
+        .collect()
+}
+
+fn starts_uppercase(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_uppercase())
+}
+
+fn top_level_fn(items: &[syn::Item], name: &str) -> Option<syn::ItemFn> {
+    items.iter().find_map(|item| match item {
+        syn::Item::Fn(f) if f.sig.ident == name => Some(f.clone()),
+        _ => None,
+    })
+}
+
+/// Every name a file's `use` declarations bind, mapped to the path they
+/// bind it to: `use rates::legacy_rate;` → `legacy_rate` → `rates,
+/// legacy_rate`; `use a::{b, c::d as e};` → `b` → `a,b` and `e` → `a,c,d`.
+/// Globs bind no name and are collected separately (`glob_prefixes`).
+fn import_map(file: &syn::File) -> BTreeMap<String, Vec<String>> {
+    let mut out = BTreeMap::new();
+    for item in &file.items {
+        if let syn::Item::Use(u) = item {
+            walk_use_tree(&u.tree, &mut Vec::new(), &mut out);
+        }
+    }
+    out
+}
+
+fn walk_use_tree(
+    tree: &syn::UseTree,
+    prefix: &mut Vec<String>,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    match tree {
+        syn::UseTree::Path(p) => {
+            prefix.push(p.ident.to_string());
+            walk_use_tree(&p.tree, prefix, out);
+            prefix.pop();
+        }
+        syn::UseTree::Name(n) => {
+            let mut full = prefix.clone();
+            full.push(n.ident.to_string());
+            out.insert(n.ident.to_string(), full);
+        }
+        syn::UseTree::Rename(r) => {
+            let mut full = prefix.clone();
+            full.push(r.ident.to_string());
+            // Keyed on the *local* name: `cap_bps as capped` is called
+            // `capped` at the call site, and that is the only spelling a
+            // reader of the body ever sees.
+            out.insert(r.rename.to_string(), full);
+        }
+        syn::UseTree::Group(g) => {
+            for item in &g.items {
+                walk_use_tree(item, prefix, out);
+            }
+        }
+        syn::UseTree::Glob(_) => {}
+    }
+}
+
+/// The prefix of every `use ...::*;` in a file.
+fn glob_prefixes(file: &syn::File) -> Vec<Vec<String>> {
+    fn walk(tree: &syn::UseTree, prefix: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+        match tree {
+            syn::UseTree::Path(p) => {
+                prefix.push(p.ident.to_string());
+                walk(&p.tree, prefix, out);
+                prefix.pop();
+            }
+            syn::UseTree::Group(g) => {
+                for item in &g.items {
+                    walk(item, prefix, out);
+                }
+            }
+            syn::UseTree::Glob(_) => out.push(prefix.clone()),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for item in &file.items {
+        if let syn::Item::Use(u) = item {
+            walk(&u.tree, &mut Vec::new(), &mut out);
+        }
+    }
+    out
+}
+
+/// Rewrites a path's first segment through the imports in scope, repeatedly
+/// (`use a::b;` plus `use b::c;` makes `c` mean `a::b::c`), stopping as soon
+/// as nothing changes or the chain gets implausibly long.
+fn expand_imports(imports: &BTreeMap<String, Vec<String>>, segments: &[String]) -> Vec<String> {
+    let mut segs = segments.to_vec();
+    for _ in 0..MAX_DEPTH {
+        let Some((head, rest)) = segs.split_first() else {
+            return segs;
+        };
+        let Some(target) = imports.get(head) else {
+            return segs;
+        };
+        if target == &segs || (target.len() == 1 && &target[0] == head) {
+            return segs;
+        }
+        let mut next = target.clone();
+        next.extend_from_slice(rest);
+        if next == segs {
+            return segs;
+        }
+        segs = next;
+    }
+    segs
 }
 
 /// Finds `path = "..."` for one `[dependencies]` entry, by line scanning —
@@ -255,7 +583,11 @@ fn extract_quoted_value(line: &str, key: &str) -> Option<String> {
 }
 
 /// Walks `mod` items for all but the last segment, then looks for a
-/// top-level `fn` with the last segment's name.
+/// top-level `fn` with the last segment's name. Test-only since the
+/// resolver gained real module/import following: production resolution
+/// goes through `Resolver::resolve_in_file`, which also reads file modules
+/// and `use` declarations and can answer `Opaque`.
+#[cfg(test)]
 fn find_fn(file: &syn::File, segments: &[&str]) -> Option<syn::ItemFn> {
     fn walk(items: &[syn::Item], segments: &[&str]) -> Option<syn::ItemFn> {
         let (head, rest) = segments.split_first()?;
@@ -401,6 +733,165 @@ pub fn helper(tier: u8) -> u32 { 150 }
             }
             other => panic!("expected Assumed, got {other:?}"),
         }
+    }
+
+    // --- the `use`-import hole (adversarial review of the post-004 fixes,
+    // D1): the boundary rule keys on what a callee *is*, never on how the
+    // call is spelled. Every spelling below resolved to `Unresolved` before
+    // 2026-08-25, and `Unresolved` meant descend.
+
+    #[test]
+    fn a_use_imported_callee_is_classified_exactly_like_a_qualified_one() {
+        let src = r#"
+mod rates {
+    pub fn legacy_rate(tier: u8) -> u32 { 150 }
+}
+use rates::legacy_rate;
+pub fn caller(t: u8) -> u32 { legacy_rate(t) }
+"#;
+        let mut r = Resolver::new(src, Path::new("."), BTreeMap::new()).unwrap();
+        assert_eq!(
+            r.status_of("legacy_rate"),
+            CalleeStatus::Unclaimed,
+            "`use rates::legacy_rate;` plus a bare-name call is the most ordinary spelling in \
+             Rust, and it must not buy a descent into an unclaimed body"
+        );
+    }
+
+    #[test]
+    fn a_renamed_import_is_followed_to_the_function_it_names() {
+        let src = r#"
+mod rates {
+    pub fn cap_bps(b: u32) -> u32 { b }
+}
+use rates::cap_bps as capped;
+pub fn caller(b: u32) -> u32 { capped(b) }
+"#;
+        let mut r = Resolver::new(src, Path::new("."), BTreeMap::new()).unwrap();
+        assert_eq!(r.status_of("capped"), CalleeStatus::Unclaimed);
+    }
+
+    #[test]
+    fn a_nested_use_group_binds_every_name_it_lists() {
+        let src = r#"
+mod rates {
+    pub fn a() -> u32 { 1 }
+    pub mod inner { pub fn b() -> u32 { 2 } }
+}
+use rates::{a, inner::b as bee};
+pub fn caller() -> u32 { a() + bee() }
+"#;
+        let mut r = Resolver::new(src, Path::new("."), BTreeMap::new()).unwrap();
+        assert_eq!(r.status_of("a"), CalleeStatus::Unclaimed);
+        assert_eq!(r.status_of("bee"), CalleeStatus::Unclaimed);
+    }
+
+    #[test]
+    fn an_imported_module_prefix_is_followed_too() {
+        // `use ledger::fees;` then `fees::bps_for_tier(..)`: the head
+        // segment is the import, not the fn.
+        let src = r#"
+mod ledger { pub mod fees { pub fn bps_for_tier(t: u8) -> u32 { 150 } } }
+use ledger::fees;
+pub fn caller(t: u8) -> u32 { fees::bps_for_tier(t) }
+"#;
+        let mut r = Resolver::new(src, Path::new("."), BTreeMap::new()).unwrap();
+        assert_eq!(r.status_of("fees::bps_for_tier"), CalleeStatus::Unclaimed);
+    }
+
+    #[test]
+    fn a_glob_ply_can_see_through_is_resolved_exactly_like_a_named_import() {
+        let src = r#"
+mod rates { pub fn legacy_rate(t: u8) -> u32 { 150 } }
+use rates::*;
+pub fn caller(t: u8) -> u32 { legacy_rate(t) }
+"#;
+        let mut r = Resolver::new(src, Path::new("."), BTreeMap::new()).unwrap();
+        assert_eq!(
+            r.status_of("legacy_rate"),
+            CalleeStatus::Unclaimed,
+            "the name is either in the glob's module or it is not, and Ply can read this one"
+        );
+    }
+
+    #[test]
+    fn a_glob_over_a_module_ply_cannot_read_refuses_rather_than_descends() {
+        // `mod legacy;` with no file behind it: first-party code Ply was
+        // pointed at and could not open. The bare name might be from there,
+        // and "I could not look" is not "there is nothing there".
+        let src = r#"
+mod legacy;
+use legacy::*;
+pub fn caller(t: u8) -> u32 { legacy_rate(t) }
+"#;
+        let mut r = Resolver::new(src, Path::new("/nonexistent"), BTreeMap::new()).unwrap();
+        match r.status_of("legacy_rate") {
+            CalleeStatus::Opaque(reason) => {
+                assert!(
+                    reason.contains("legacy"),
+                    "the reason must name the module a reader has to go look at: {reason}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_glob_over_a_crate_outside_the_workspace_is_left_alone() {
+        // `use std::cmp::*;` is the same gap §5.5 already states for every
+        // other `std` call. Refusing here would fire on ordinary Rust and
+        // tell the reader nothing they could act on.
+        let src = r#"
+use std::cmp::*;
+pub fn caller(a: u32, b: u32) -> u32 { max(a, b) }
+"#;
+        let mut r = Resolver::new(src, Path::new("."), BTreeMap::new()).unwrap();
+        assert_eq!(r.status_of("max"), CalleeStatus::Unresolved);
+    }
+
+    #[test]
+    fn a_tuple_variant_constructor_is_not_a_boundary_call() {
+        // `Some(x)`/`Ok(v)` are `ExprCall`s with a one-segment path. Under a
+        // glob Ply cannot see through they would otherwise become refusals,
+        // on every ordinary line of Rust.
+        let src = r#"
+mod legacy;
+use legacy::*;
+pub fn caller(x: u32) -> Option<u32> { Some(x) }
+"#;
+        let mut r = Resolver::new(src, Path::new("/nonexistent"), BTreeMap::new()).unwrap();
+        assert_eq!(r.status_of("Some"), CalleeStatus::Unresolved);
+    }
+
+    #[test]
+    fn a_file_module_ply_cannot_read_is_refused_never_silently_skipped() {
+        let src = r#"
+mod legacy;
+pub fn caller(t: u8) -> u32 { legacy::legacy_rate(t) }
+"#;
+        let mut r = Resolver::new(src, Path::new("/nonexistent"), BTreeMap::new()).unwrap();
+        assert!(
+            matches!(r.status_of("legacy::legacy_rate"), CalleeStatus::Opaque(_)),
+            "a module of this crate that Ply could not open is not the same fact as a call into std"
+        );
+    }
+
+    #[test]
+    fn a_file_module_on_disk_is_read_and_its_fn_classified() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/rates.rs"),
+            "pub fn legacy_rate(t: u8) -> u32 { 150 }\n",
+        )
+        .unwrap();
+        let src = r#"
+mod rates;
+use rates::legacy_rate;
+pub fn caller(t: u8) -> u32 { legacy_rate(t) }
+"#;
+        let mut r = Resolver::new(src, dir.path(), BTreeMap::new()).unwrap();
+        assert_eq!(r.status_of("legacy_rate"), CalleeStatus::Unclaimed);
     }
 
     #[test]

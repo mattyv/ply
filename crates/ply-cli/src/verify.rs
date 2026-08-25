@@ -455,13 +455,32 @@ pub struct BoundaryPlan {
     /// codegen cannot build a `kani::any()` for -- reported, never silently
     /// treated as either stubbed or unclaimed.
     unstubbable: Vec<(String, String)>,
+    /// `(callee path, where it is called, why Ply could not read it)` for
+    /// every callee inside this workspace whose source Ply was pointed at
+    /// and could not open. Not the same fact as "no contract describes it",
+    /// so not the same diagnostic.
+    opaque: Vec<(String, String, String)>,
 }
 
 fn boundary_plan(resolver: &mut Resolver, cf: &ContractFn) -> BoundaryPlan {
     let mut plan = BoundaryPlan::default();
     for site in &cf.calls {
         match resolver.classify(site).status {
+            // `Unresolved` means the call leads out of the workspace --
+            // `std`, `core`, a registry crate -- which §5.5 states as this
+            // rule's gap rather than pretending to have closed. It is the
+            // one status that still licenses a descent, and it is now the
+            // only one that can: before 2026-08-25 it also covered every
+            // first-party callee Ply merely failed to look up (the review's
+            // D1), so a `use` import bought a clean proof over an unclaimed
+            // body.
             CalleeStatus::Contracted | CalleeStatus::Unresolved => {}
+            CalleeStatus::Opaque(reason) => {
+                if !plan.opaque.iter().any(|(p, _, _)| p == &site.path) {
+                    plan.opaque
+                        .push((site.path.clone(), site.where_text(), reason));
+                }
+            }
             CalleeStatus::Unclaimed => {
                 if !plan.unclaimed.iter().any(|(p, _)| p == &site.path) {
                     plan.unclaimed.push((site.path.clone(), site.where_text()));
@@ -549,6 +568,63 @@ fn unclaimed_callee_diag(
         ],
         assumptions: vec![],
         open_item: Some("unclaimed_callee".into()),
+    }
+}
+
+/// The other way §5.5's third branch is reached: not "nothing describes this
+/// callee" but "Ply could not read this callee at all", for code that is
+/// inside the workspace and so ought to be readable. Kept a separate code
+/// from `W0512` because the two say different things and offer different
+/// repairs -- a `W0512` whose words claimed no contract existed, for a
+/// callee Ply never even opened, would be false in exactly the way the M4
+/// review's D7 was.
+fn unreadable_callee_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    opaque: &[(String, String, String)],
+) -> Diagnostic {
+    let named: Vec<String> = opaque
+        .iter()
+        .map(|(p, w, why)| format!("`{p}` (called at {w}) -- {why}"))
+        .collect();
+    Diagnostic {
+        code: "W0513".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "Ply did not check `{fn_name}`: proving it would mean descending into {list}. A \
+             `bounded` proof takes on the meaning of every body it descends into, so descending \
+             into a body Ply never read would produce a verdict that quietly covers code Ply \
+             cannot show you. Not being able to look is not the same as there being nothing there, \
+             so Ply refuses instead of assuming: this check earned no evidence at all -- the \
+             verdict is `unclaimed`, never `{check_label}`. (W0513, §5.5)",
+            list = named.join(", ")
+        ),
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![
+            Fix {
+                title: "check that the module file is where Rust expects it -- Ply follows `mod \
+                        foo;` to `foo.rs` or `foo/mod.rs` beside the file that declares it, and \
+                        follows no `#[path = \"...\"]` attribute"
+                    .to_string(),
+                edits: vec![],
+            },
+            Fix {
+                title: format!(
+                    "swap `{check_label}` for `fuzz(256)` on `{fn_name}` -- the fuzz tier runs the \
+                     real callee instead of reasoning about it, so it needs no source Ply can read \
+                     (weaker evidence, but evidence)"
+                ),
+                edits: vec![],
+            },
+        ],
+        assumptions: vec![],
+        open_item: Some("unreadable_callee".into()),
     }
 }
 
@@ -1111,6 +1187,18 @@ fn run_bounded_check(
                 fn_name,
                 &check_label,
                 &boundary.unclaimed,
+            )],
+        ));
+    }
+    if !boundary.opaque.is_empty() {
+        return Ok((
+            "unclaimed".into(),
+            vec![],
+            vec![unreadable_callee_diag(
+                node_id,
+                fn_name,
+                &check_label,
+                &boundary.opaque,
             )],
         ));
     }

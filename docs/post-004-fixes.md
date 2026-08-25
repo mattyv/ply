@@ -149,9 +149,18 @@ file, or in a **path dependency's** `src/lib.rs` (walking inline `mod`s, which i
 `ledger::fees::bps_for_tier` is found). Method calls on a receiver are not call sites for
 this rule — flagging `x.min(10_000)` and `v.len()` would fire on every ordinary line of
 Rust. Calls into `std`, `core`, or a registry crate resolve to no source Ply can read and
-are left alone, so a `bounded` verdict can still include a body Ply never examined, just
-never a first-party one. **This is a real gap**, stated in the spec rather than left to be
-found.
+are left alone, so a `bounded` verdict can still include a body Ply never examined.
+**This is a real gap**, stated in the spec rather than left to be found.
+
+> **RETRACTED 2026-08-25** (adversarial review, D1; closed in
+> `docs/post-004-review-closure.md`). This paragraph ended "just never a first-party
+> one", and that was false when written: the resolver never read `use` declarations, so
+> `use rates::legacy_rate;` plus a bare-name call classified *unresolved* -- and
+> unresolved meant descend. The most idiomatic spelling in Rust bought a clean
+> `bounded(2)`, zero diagnostics, exit 0, over an unclaimed first-party body. The
+> resolver now follows `use` declarations (renames, groups, globs), inline and file
+> modules and re-exports, and refuses (`W0513`) any first-party source it was pointed at
+> and could not read. The gap that remains is stated in §5.5's own limits.
 
 **Also landed here, because branch 2 could not work without it**: `anchor:` is consumed
 (a component anchored elsewhere is a boundary component — contracts read, `checks` not
@@ -497,7 +506,11 @@ Everything in this section is on TODO.md with the same wording.
   needs callees-first scheduling, which lives unlinked in `tools/schedule`. 004's
   `total_debit_cents` still times out at 120s with `fee_cents` inlined.
 - **§5.5's rule does not reach `std`/`core`/registry callees.** A `bounded` verdict can
-  still include a body Ply never examined — just never a first-party one.
+  still include a body Ply never examined. (The trailing clause "just never a first-party
+  one" was retracted 2026-08-25 -- see the review's D1 and
+  `docs/post-004-review-closure.md`. The `use`-import hole it hid is closed; two narrower
+  first-party gaps -- transitive callees, and calls Ply's reader cannot see -- are stated
+  in §5.5 and on TODO.md.)
 - **Nothing exercises a boundary assumption.** `owed-evidence` and `W0511` are built;
   `cargo ply audit` and `cargo ply worklist`, which §5.5 says list it, are **not built**,
   and fuzz-checking a declared contract against the real legacy body is not built.
