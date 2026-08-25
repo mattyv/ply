@@ -216,11 +216,17 @@ impl Record {
         self.results.insert(node_id.to_string(), entry);
     }
 
-    /// Drops every entry for a claim the document no longer contains, so a
-    /// deleted claim does not leave a result behind that nothing can ever
-    /// invalidate (§6's housekeeping rule).
-    pub fn retain_claims(&mut self, live: &std::collections::BTreeSet<String>) {
-        self.results.retain(|id, _| live.contains(id));
+    /// Drops every entry except the ones this run reused or earned.
+    ///
+    /// Three things go at once: a claim somebody deleted from the document,
+    /// a claim whose function no longer resolves, and a claim this run
+    /// checked and got no evidence for. None of them can ever be reused --
+    /// their fingerprints cannot match -- so keeping them would only leave a
+    /// committed file showing a verdict the last run did not produce, which
+    /// is the "remembered opinion" this whole design refuses (§6's
+    /// housekeeping rule, §5.2a's honesty rule).
+    pub fn retain_claims(&mut self, kept: &std::collections::BTreeSet<String>) {
+        self.results.retain(|id, _| kept.contains(id));
     }
 }
 
@@ -460,6 +466,9 @@ mod tests {
         );
     }
 
+    /// Everything this run did not reuse and did not earn goes, whether it
+    /// left the document, stopped resolving, or simply produced no evidence
+    /// this time.
     #[test]
     fn a_claim_the_document_no_longer_contains_is_dropped() {
         let mut record = Record::new("0.1.0");

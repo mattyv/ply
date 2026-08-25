@@ -326,10 +326,13 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     let record_path = crate_dir.join("ply.lock");
     let mut record = record::load(&record_path, PLY_VERSION)?;
     let toolchain = Toolchain::probe(crate_dir);
-    // Every claim the document contains, however it ends up -- so a result
-    // recorded for a claim somebody deleted is dropped rather than left
-    // behind where nothing can ever invalidate it.
-    let mut live_claims: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Every claim this run either reused or earned. Everything else is
+    // dropped from the record at the end: a claim somebody deleted, one
+    // whose function no longer resolves, one this run checked and got no
+    // evidence for. What survives is exactly what this run stands behind,
+    // so a reviewer reading the committed file is never looking at a verdict
+    // the last run did not produce.
+    let mut kept_claims: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     // Name order, not declaration order. The promoted model preserves the
     // order the author wrote (the renderer lays boxes out that way); `verify`
@@ -340,7 +343,6 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     for (comp_name, comp, inherited) in flatten_components(&file) {
         for (fn_name, claim) in sorted_by_key(&comp.fns) {
             let node_id = format!("{comp_name}::{fn_name}");
-            live_claims.insert(node_id.clone());
             // §5.1: the list that actually governs this fn — its own if it
             // wrote one (an empty one included, §5.4c), else the nearest
             // ancestor component's default, else nothing written anywhere.
@@ -652,6 +654,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         // reused `conditional` verdict whose assumption paragraph went
         // missing would be a worse report than no reuse at all.
         if let Some(entry) = reused {
+            kept_claims.insert(plan.node_id.clone());
             diagnostics.extend(entry.diagnostics.iter().cloned());
             component_nodes
                 .entry(plan.component_path.clone())
@@ -684,6 +687,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         // timeout or any other absence is never stored, so nothing that
         // failed can ever be carried forward (§5.2a).
         if earned_evidence(&node, &fn_diags) {
+            kept_claims.insert(plan.node_id.clone());
             record.record(
                 &plan.node_id,
                 RecordEntry {
@@ -694,11 +698,6 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     diagnostics: fn_diags.clone(),
                 },
             );
-        } else {
-            // An earlier run's result for this claim would be about inputs
-            // that no longer produce it, and this run has nothing to put in
-            // its place.
-            record.results.remove(&plan.node_id);
         }
         diagnostics.append(&mut fn_diags);
         component_nodes
@@ -707,7 +706,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             .push(node);
     }
 
-    record.retain_claims(&live_claims);
+    record.retain_claims(&kept_claims);
     record::save(&record_path, &record)?;
 
     // The tree the document declares, with each claim's node under the
@@ -3208,6 +3207,110 @@ mod tests {
             "{}",
             d.title
         );
+    }
+
+    fn node_with(verdict: &str, statuses: &[&str]) -> Node {
+        Node {
+            id: "f".into(),
+            kind: "fn".into(),
+            verdict: verdict.into(),
+            statuses: statuses.iter().map(|s| (*s).to_string()).collect(),
+            reused: false,
+            evidence: None,
+            children: vec![],
+        }
+    }
+
+    fn diag_with_severity(severity: &str) -> Diagnostic {
+        Diagnostic {
+            code: "E0000".into(),
+            severity: severity.into(),
+            phase: "verify".into(),
+            engine: "ply".into(),
+            check: "bounded(2)".into(),
+            node_id: "c::f".into(),
+            title: "t".into(),
+            pointer: None,
+            primary_span: None,
+            counterexample: None,
+            fixes: vec![],
+            assumptions: vec![],
+            open_item: None,
+        }
+    }
+
+    /// §5.2a: only a result that earned evidence is recorded, so nothing
+    /// that failed can ever be carried forward into a later run. Written as
+    /// one table because the interesting cases are the ones nobody thinks
+    /// to list -- an absence recorded as a *status* beside a real verdict,
+    /// and a violation, which is a real result and still must not be stored.
+    #[test]
+    fn only_a_result_that_earned_evidence_is_recorded() {
+        let cases: [(Node, Vec<Diagnostic>, bool, &str); 9] = [
+            (
+                node_with("bounded(2)", &[]),
+                vec![],
+                true,
+                "a clean proof is the case reuse exists for",
+            ),
+            (
+                node_with("bounded(2)", &["conditional", "owed-evidence"]),
+                vec![diag_with_severity("warning")],
+                true,
+                "a result resting on a declared promise is real evidence about that promise, \
+                 and the most expensive kind to re-earn",
+            ),
+            (
+                node_with("fuzzed(256)", &["weak-spec"]),
+                vec![diag_with_severity("warning")],
+                true,
+                "a weak spec is a finding beside real evidence, not an absence of it",
+            ),
+            (
+                node_with("violation", &[]),
+                vec![diag_with_severity("error")],
+                false,
+                "a violation is a real result whose whole value is the witness beside it -- \
+                 never carried forward as a bare verdict",
+            ),
+            (
+                node_with("violation", &[]),
+                vec![],
+                false,
+                "and never stored even if nothing else flagged it -- the rule is the verdict, \
+                 not the diagnostic that usually accompanies it",
+            ),
+            (
+                node_with("timeout", &[]),
+                vec![],
+                false,
+                "an exhausted engine learned nothing; storing that would report `nothing was \
+                 checked` without having looked",
+            ),
+            (
+                node_with("fuzzed(64)", &["engine-missing"]),
+                vec![],
+                false,
+                "an absence recorded as a status is an absence (§1: a name, not a slot)",
+            ),
+            (node_with("unclaimed", &[]), vec![], false, "nothing ran"),
+            (
+                node_with("bounded(2)", &[]),
+                vec![diag_with_severity("error")],
+                false,
+                "an error-severity finding beside a verdict means the run did not stand behind \
+                 it either",
+            ),
+        ];
+        for (node, diags, expected, why) in cases {
+            assert_eq!(
+                earned_evidence(&node, &diags),
+                expected,
+                "{why} (verdict `{}`, statuses {:?})",
+                node.verdict,
+                node.statuses
+            );
+        }
     }
 
     /// The ordinary way a nested component is written is an anchor naming a
