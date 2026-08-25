@@ -7,7 +7,8 @@
 //! headline shape can actually *catch* a bug, not just pass cleanly. (2)
 //! `W0541`'s wording is true for the case that triggers it -- it used to
 //! tell a user whose type is `BTreeSet<u8>` that the problem was types
-//! "other than u8". (3) Shrinking is load-bearing: the bug fires for any
+//! "other than u8", and then (2026-08-25) to tell a user with any of the
+//! newly admitted shapes about `BTreeSet`s and `Vec`s they do not have. (3) Shrinking is load-bearing: the bug fires for any
 //! set containing 3, so an unshrunk witness would be some larger set, and
 //! only real shrinking reports `[3]`.
 
@@ -51,11 +52,12 @@ fn a_violation_on_a_btreeset_is_reported_witness_only_with_the_shrunk_input() {
 
     let title = diag["title"].as_str().unwrap();
     assert!(
-        title.contains(
-            "no way yet to spell a `BTreeSet`, or a `Vec` of anything but `u8`, as a literal value"
-        ),
-        "the diagnostic must be true for the type that triggered it -- this fires for every \
-         `BTreeSet`, `BTreeSet<u8>` included (newbie bar, exact wording): {title}"
+        title.contains("no way yet to write parameter(s) `xs: BTreeSet<u8>` back out as a literal"),
+        "the diagnostic must be true for the type that triggered it, and say which parameter \
+         blocked the rendering -- it once told a user whose type is `BTreeSet<u8>` that the \
+         problem was types \"other than u8\", and after the 2026-08-25 fragment widening it told \
+         a user with a `[u32; 4]` about `BTreeSet`s they do not have (newbie bar, exact \
+         wording): {title}"
     );
     assert!(
         title.contains("`|result|*result == xs.len() as u32`"),

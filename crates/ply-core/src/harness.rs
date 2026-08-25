@@ -163,6 +163,43 @@ impl RustType {
         })
     }
 
+    /// A human-facing spelling of this type, for diagnostics. Unlike
+    /// [`RustType::rust_name`] this is total: every shape gets one, because
+    /// a diagnostic that names a parameter and then omits its type ("Ply
+    /// cannot spell `xs: `") is worse than one that never named it. Kept
+    /// separate from `rust_name` on purpose -- that one answers "can codegen
+    /// write this type into generated source", which is a different
+    /// question with a legitimate `None`.
+    pub fn display_name(&self) -> String {
+        match self {
+            RustType::Char => "char".to_string(),
+            RustType::Option(inner) => format!("Option<{}>", inner.display_name()),
+            RustType::Result(ok, err) => {
+                format!("Result<{}, {}>", ok.display_name(), err.display_name())
+            }
+            RustType::Array(inner, n) => format!("[{}; {}]", inner.display_name(), n),
+            RustType::VecU8 => "Vec<u8>".to_string(),
+            RustType::Vec(inner) => format!("Vec<{}>", inner.display_name()),
+            RustType::BTreeSet(inner) => format!("BTreeSet<{}>", inner.display_name()),
+            // The source text as the user wrote it: for a shape Ply does not
+            // model, the words they typed are the only spelling that helps.
+            RustType::Unsupported(src) => src.clone(),
+            other => other.scalar_rust_name().unwrap_or("?").to_string(),
+        }
+    }
+
+    /// Can a failing input of this type be written back out as a Rust
+    /// literal? That is what turns a witness into the runnable `#[test]`
+    /// D7 calls the repair target; when it cannot be, `W0541` says so and
+    /// reports the engine's own rendering instead of inventing one.
+    pub fn is_witness_renderable(&self) -> bool {
+        match self {
+            RustType::VecU8 => true,
+            RustType::Vec(inner) => inner.as_ref() == &RustType::U8,
+            _ => self.scalar_byte_width().is_some(),
+        }
+    }
+
     /// Byte width Kani's concrete-playback encodes this scalar as
     /// (little-endian on the pinned toolchain's target -- measured, see
     /// docs/m3-slice-findings.md).

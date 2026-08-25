@@ -1354,7 +1354,13 @@ fn run_bounded_check(
                         .params
                         .iter()
                         .filter(|p| p.ty.scalar_byte_width().is_none())
-                        .map(|p| format!("`{}: {}`", p.name, p.ty.rust_name().unwrap_or_default()))
+                        // `display_name`, never `rust_name`: the latter is
+                        // `None` for exactly the shapes that reach this
+                        // branch, and `unwrap_or_default` printed "`xs: `" --
+                        // a message that names a parameter and then omits the
+                        // type the reader needs (same defect class as D4 of
+                        // the 2026-08-25 review, one diagnostic over).
+                        .map(|p| format!("`{}: {}`", p.name, p.ty.display_name()))
                         .collect();
                     let d = Diagnostic {
                         code: "X0901".into(),
@@ -1932,14 +1938,7 @@ fn render_fuzz_violation(
                     engine: "proptest".into(),
                     check: check_label.into(),
                     node_id: node_id.into(),
-                    title: format!(
-                        "`{fn_name}` fails its own contract `{contract_text}` for at least one input, \
-                     and proptest shrank that input down to the smallest one that still fails. Ply \
-                     cannot turn it into a runnable Rust test, though: it has no way yet to spell a \
-                     `BTreeSet`, or a `Vec` of anything but `u8`, as a literal value. The failing input \
-                     is recorded below exactly as the engine reported it -- Ply never invents one. \
-                     (W0541, reason: inputs_unrenderable)"
-                    ),
+                    title: unrenderable_inputs_title(fn_name, &contract_text, &cf.params),
                     primary_span: None,
                     counterexample: Some(Counterexample {
                         inputs,
@@ -1953,6 +1952,44 @@ fn render_fuzz_violation(
             ))
         }
     }
+}
+
+/// `W0541`'s words. Extracted and made shape-aware 2026-08-25 (adversarial
+/// review of the post-004 fixes, D4): the message used to say Ply "has no way
+/// yet to spell a `BTreeSet`, or a `Vec` of anything but `u8`, as a literal
+/// value", which was true for the only shape that could reach it when it was
+/// written and false the moment `char`, `Option`, `Result` and `[T; N]`
+/// entered the fragment without witness decoders. That is exactly the defect
+/// class the M4 review's D7 closed once already -- a diagnostic whose words
+/// are false for the case in front of the reader -- so this names the
+/// parameters and types that actually blocked the rendering, the way the Kani
+/// side's `X0901` already does.
+fn unrenderable_inputs_title(
+    fn_name: &str,
+    contract_text: &str,
+    params: &[harness::Param],
+) -> String {
+    let blocked: Vec<String> = params
+        .iter()
+        .filter(|p| !p.ty.is_witness_renderable())
+        .map(|p| format!("`{}: {}`", p.name, p.ty.display_name()))
+        .collect();
+    // The fallback covers the one case the filter cannot explain: every
+    // parameter is renderable in principle and the engine's own text still
+    // would not parse back. Saying "that input" is vague, but a vague true
+    // sentence beats a precise false one.
+    let what = if blocked.is_empty() {
+        "that input".to_string()
+    } else {
+        format!("parameter(s) {}", blocked.join(", "))
+    };
+    format!(
+        "`{fn_name}` fails its own contract `{contract_text}` for at least one input, and proptest \
+         shrank that input down to the smallest one that still fails. Ply cannot turn it into a \
+         runnable Rust test, though: it has no way yet to write {what} back out as a literal value \
+         in Rust source. The failing input is recorded below exactly as the engine reported it -- \
+         Ply never invents one. (W0541, reason: inputs_unrenderable)"
+    )
 }
 
 /// The whole-run wall-clock cap for one `mutate` invocation (2026-08-24 M4
@@ -2325,6 +2362,57 @@ mod tests {
         apply_mutate_outcome(&mut verdict, &mut statuses, MutateOutcome::WeakSpec);
         assert_eq!(verdict, "fuzzed(64)");
         assert_eq!(statuses, vec!["weak-spec".to_string()]);
+    }
+
+    fn param(name: &str, ty: ply_core::harness::RustType) -> harness::Param {
+        harness::Param {
+            name: name.into(),
+            ty,
+            by_ref: false,
+        }
+    }
+
+    /// The wording must be true for the shape in front of the reader. This
+    /// is the M4 review's D7 defect class, and `W0541` reintroduced it for
+    /// every shape the 2026-08-25 fragment widening admitted.
+    #[test]
+    fn w0541_names_the_parameter_and_type_that_blocked_the_rendering() {
+        use ply_core::harness::RustType;
+        let title = unrenderable_inputs_title(
+            "carded_fee",
+            "|result| *result <= 10_000",
+            &[
+                param("amount_cents", RustType::U32),
+                param("card_bps", RustType::Array(Box::new(RustType::U32), 4)),
+            ],
+        );
+        assert!(
+            title.contains("parameter(s) `card_bps: [u32; 4]`"),
+            "the array is what Ply cannot spell, and the message must say so: {title}"
+        );
+        assert!(
+            !title.contains("amount_cents"),
+            "a `u32` renders fine -- naming it would send the reader after the wrong parameter: \
+             {title}"
+        );
+        assert!(
+            !title.contains("BTreeSet"),
+            "and it must not describe a type this function does not have: {title}"
+        );
+    }
+
+    #[test]
+    fn w0541_still_names_the_btreeset_case_it_was_written_for() {
+        use ply_core::harness::RustType;
+        let title = unrenderable_inputs_title(
+            "count",
+            "|result| *result == xs.len() as u32",
+            &[param("xs", RustType::BTreeSet(Box::new(RustType::U8)))],
+        );
+        assert!(
+            title.contains("parameter(s) `xs: BTreeSet<u8>`"),
+            "including the `BTreeSet<u8>` spelling the M4 review's D7 fixed once already: {title}"
+        );
     }
 
     #[test]
