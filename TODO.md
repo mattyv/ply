@@ -1,5 +1,32 @@
 # TODO
 
+## Agreed with the maintainer, not yet started
+
+- [ ] **Bump the Kani pin — a D13-shaped spike, not a fork.** The trusted-boundary idea
+      and D5's assumed-contract path both want `#[kani::stub]`, and
+      `docs/kani-docs-sweep.md` records two blockers at the pinned 0.67.0: stubbing and
+      `--concrete-playback` are mutually exclusive (so a stubbed failure yields no
+      witness, and §8 forbids a witness-free `violation`), and `#[kani::stub]` on a
+      *contracted* callee does not compile (Kani #4591). The same sweep records that
+      **both are lifted on Kani `main`** — stub annotations become per-harness and
+      "Stubbing is compatible with `--concrete-playback`". So the question is whether to
+      move the pin, not whether to patch the engine: a fork would put every D14
+      fingerprint on a build only we have, and §1 says we build glue, never solvers.
+      Spike it against a newer Kani; if it still fails, file upstream (we already cite
+      #4294/#4295/#4591), do not fork.
+- [ ] **Trusted boundary declared in `ply.yaml`** (maintainer's idea, 2026-08-25) — the
+      coarse-grained sibling of §5.5's per-callee rule: declare a region taken as given,
+      rather than writing a contract per legacy function a new feature happens to touch.
+      Fills a real hole in §7.2's taxonomy — *our code, checkable in principle,
+      deliberately not checked* — which is distinct from an `external` (someone else's
+      system, permanently). Three conditions agreed up front, all learned the hard way
+      here: it must never read as evidence (crossing one marks the caller `conditional`,
+      never clean, or trusting the whole tree goes green); it must be counted on the
+      audit surface so the trusted region is under pressure to shrink; and it must draw,
+      per §7.1's gate. Carry `trusted`'s own lesson: it shipped with no staleness and an
+      attestation would have outlived the code it vouched for. Proposal first, gate,
+      then adopt — the sequence that worked for external elements.
+
 ## Post-004 review closure — landed 2026-08-25
 
 Disposition of every finding in `docs/review-post-004-fixes.md`, with the red-first
