@@ -721,7 +721,11 @@ fn declared_contract_not_anded_diag(node_id: &str, fn_name: &str) -> Diagnostic 
         check: "".into(),
         node_id: node_id.into(),
         title: format!(
-            "the `requires:`/`ensures:` declared for `{fn_name}` in ply.yaml is used where §5.5              needs it -- callers of `{fn_name}` may assume it at a boundary -- but it is **not**              yet ANDed into `{fn_name}`'s own checks, which §5.4 says it should be. So this run              checked `{fn_name}` against its inline `#[ply::requires]`/`#[ply::ensures]` only.              (W0510)"
+            "the `requires:`/`ensures:` declared for `{fn_name}` in ply.yaml is used where §5.5 \
+             needs it -- callers of `{fn_name}` may assume it at a boundary -- but it is **not** \
+             yet ANDed into `{fn_name}`'s own checks, which §5.4 says it should be. So this run \
+             checked `{fn_name}` against its inline `#[ply::requires]`/`#[ply::ensures]` only. \
+             (W0510)"
         ),
         primary_span: None,
         counterexample: None,
