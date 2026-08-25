@@ -218,6 +218,25 @@ pub enum Check {
     Mutate,
 }
 
+/// The count inside `fuzz(...)`/`bounded(...)`, in exactly the form
+/// `schema/ply.schema.json` declares: digits only, no sign, no surrounding
+/// spaces, no leading zeros. `Some(0)` is returned for a literal `0` so the
+/// caller can say "must be between 1 and N" rather than "not a number" —
+/// a zero is a range mistake, not a typing mistake.
+///
+/// Rust's own `u32::from_str` is looser than this (it takes `+5` and
+/// `0256`), which is how the parser and the schema disagreed until
+/// 2026-08-25. The schema is normative, so the parser narrowed to match it.
+fn canonical_count(inner: &str) -> Option<u32> {
+    if inner.is_empty() || !inner.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if inner.len() > 1 && inner.starts_with('0') {
+        return None;
+    }
+    inner.parse().ok()
+}
+
 pub fn parse_check(s: &str) -> Result<Check, String> {
     let s = s.trim();
     match s {
@@ -227,10 +246,13 @@ pub fn parse_check(s: &str) -> Result<Check, String> {
         _ => {}
     }
     if let Some(inner) = s.strip_prefix("fuzz(").and_then(|r| r.strip_suffix(')')) {
-        let n: u32 = inner
-            .trim()
-            .parse()
-            .map_err(|_| format!("invalid fuzz(N) count in {s:?}"))?;
+        let n = canonical_count(inner).ok_or_else(|| {
+            format!(
+                "{s:?} is not a valid check: the part in brackets is how many random inputs \
+                 get tried, and it has to be a plain whole number written in digits, like \
+                 fuzz(256)"
+            )
+        })?;
         if !(1..=1_000_000).contains(&n) {
             return Err(format!(
                 "{s:?} is not a valid check: the number is how many random inputs get tried, \
@@ -240,10 +262,13 @@ pub fn parse_check(s: &str) -> Result<Check, String> {
         return Ok(Check::Fuzz(n));
     }
     if let Some(inner) = s.strip_prefix("bounded(").and_then(|r| r.strip_suffix(')')) {
-        let k: u32 = inner
-            .trim()
-            .parse()
-            .map_err(|_| format!("invalid bounded(K) count in {s:?}"))?;
+        let k = canonical_count(inner).ok_or_else(|| {
+            format!(
+                "{s:?} is not a valid check: the part in brackets is how many times loops are \
+                 unrolled during the proof, and it has to be a plain whole number written in \
+                 digits, like bounded(3)"
+            )
+        })?;
         if !(1..=64).contains(&k) {
             return Err(format!(
                 "{s:?} is not a valid check: the number is how many times loops are unrolled \

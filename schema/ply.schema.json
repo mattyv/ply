@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ply.dev/schema/ply.schema.json",
+  "title": "the top level of a ply.yaml document",
+  "description": "The normative definition of ply.yaml (The-Ply-Spec.md §5; §5 is this file's prose rendering, and any divergence is a bug in §5). Ply embeds this file in the binary and never reads a schema from the target workspace: editing an on-disk copy changes nothing at runtime. The shipped copy exists as read-only reference and for IDE tooling. Two constraints are stated here declaratively and enforced at runtime by hand-written code -- the check-string pattern (by ply_core::model::parse_check) and the code-path pattern (by ply_core::check::is_valid_path_form) -- and each is held to this file by an invariant test that walks a corpus and fails on the first disagreement (crates/ply-core/tests/schema.rs).",
+  "type": "object",
+  "required": ["ply"],
+  "additionalProperties": false,
+  "properties": {
+    "ply": {
+      "description": "Schema version. The grammar evolves only through Ply releases and this field; a value this build does not speak is E0201.",
+      "const": 1
+    },
+    "components": {
+      "description": "The component tree. A component name is unique across ALL merged files (E0202); nested names are qualified by their parent, so only siblings can collide.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "$ref": "#/$defs/component" }
+    },
+    "externals": {
+      "description": "Named outside parties -- systems or people this codebase talks to but Ply can never verify. Top-level only: an external has no interior and cannot nest. Shares the component reference namespace (§5.1a rule 6).",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "$ref": "#/$defs/external" }
+    },
+    "edges": {
+      "description": "Edge strings (§5 item 2): \"a -> b\" declares that component a may call component b; \"a ~> b : path::Type\" declares a data flow. Deliberately carries no pattern: the language is not regular enough to state twice without one copy lying, so the parser (ply_core::model::parse_edge) is the single definition and a malformed edge is E0203, which names the expected form.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "deny": {
+      "description": "Deny strings (§5 item 3): \"PAT -> PAT [except C1, C2]\" where PAT is an identifier or *. Carries no pattern, for the same reason as `edges`; a malformed rule is E0203.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "profiles": {
+      "description": "Named sets of bans a component may opt into via `profile:`.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/ban" }
+      }
+    },
+    "unresolved": {
+      "description": "Registry entries for open decisions with no code anchor. Ids are unique across the whole merged workspace, registry and fn entries together (E0205).",
+      "type": "array",
+      "items": { "$ref": "#/$defs/unresolved_entry" }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "description": "§5.1a rule 2: component, external and profile names are snake_case ASCII.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "code_path": {
+      "description": "§5.1a rule 3: a plain segment path, where a segment may also be a type name in Type::method position. No generics, no trait-qualified paths, no lifetimes -- anything else is E0304, naming the construct.",
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$"
+    },
+    "check_string": {
+      "description": "§5 item 1 and §5.1a rule 4: test | fuzz(N) | bounded(K) | prove | mutate, with 1 <= N <= 1000000 and 1 <= K <= 64. Out of range, or any other form, is E0203.",
+      "type": "string",
+      "pattern": "^(?:test|prove|mutate|fuzz\\((?:[1-9][0-9]{0,5}|1000000)\\)|bounded\\((?:[1-9]|[1-5][0-9]|6[0-4])\\))$"
+    },
+    "capability": {
+      "description": "§5.1: the capabilities a component may declare it uses.",
+      "type": "string",
+      "enum": ["net", "fs", "db", "time", "rand", "proc", "unsafe"]
+    },
+    "ban": {
+      "description": "§5.1: the bans a profile may impose.",
+      "type": "string",
+      "enum": [
+        "no_unsafe",
+        "no_trait_objects",
+        "no_interior_mut",
+        "no_panics",
+        "no_async",
+        "exhaustive_match"
+      ]
+    },
+    "component": {
+      "title": "a component",
+      "type": "object",
+      "required": ["anchor"],
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "description": "The crate or crate::module::path this component is. Every component anchors to real code; an unresolvable anchor is E0301.",
+          "$ref": "#/$defs/code_path"
+        },
+        "pure": {
+          "description": "No capabilities at all.",
+          "type": "boolean",
+          "default": false
+        },
+        "strict": {
+          "description": "Item-level architecture violations become errors rather than warnings (D4).",
+          "type": "boolean",
+          "default": false
+        },
+        "uses": {
+          "description": "The capabilities this component is allowed to use.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/capability" }
+        },
+        "owns": {
+          "description": "Types only this component may mutate.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "profile": {
+          "description": "Names a declared profile whose bans apply to this component.",
+          "$ref": "#/$defs/identifier"
+        },
+        "checks": {
+          "description": "Default checks for every fn in scope that declares none of its own. A fn's own non-empty list replaces this entirely -- there is no merge.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/check_string" }
+        },
+        "components": {
+          "description": "Nested components, same shape.",
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/identifier" },
+          "additionalProperties": { "$ref": "#/$defs/component" }
+        },
+        "fns": {
+          "description": "Fn claims, keyed by path relative to the anchor. Impl methods use Type::method.",
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/code_path" },
+          "additionalProperties": { "$ref": "#/$defs/fn_claim" }
+        }
+      }
+    },
+    "external": {
+      "title": "an external",
+      "description": "A name plus a sentence -- there is nothing else to declare, because an external carries no verdict, no ceiling, no checks, and is not a node of the §7 verdict tree.",
+      "type": "object",
+      "required": ["note"],
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "description": "What this outside party is, in a sentence. Required: a bare name tells a newbie nothing.",
+          "type": "string"
+        }
+      }
+    },
+    "fn_claim": {
+      "title": "a fn claim",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "description": "The checks that govern this fn. `mutate` needs a `test` or `fuzz` entry in this same list, else E0504.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/check_string" }
+        },
+        "mode": {
+          "description": "check (default) verifies the body you wrote; synth (M6) writes the body from the contract.",
+          "type": "string",
+          "enum": ["check", "synth"],
+          "default": "check"
+        },
+        "requires": {
+          "description": "Precondition expressions, ANDed with any inline #[ply::requires] attributes.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "ensures": {
+          "description": "Postcondition expressions, ANDed with any inline #[ply::ensures] attributes.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "examples": {
+          "description": "Rust `==` expressions, compiled as plain #[test]s and never translated for an engine.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "check_with": {
+          "description": "Concrete types for generic parameters (§5.4b), keyed by parameter name.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "trusted": {
+          "description": "Externally-attested claims (§5.4d): believed on the strength of named evidence, never machine-checked by Ply.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/trusted_claim" }
+        },
+        "unresolved": {
+          "description": "Open decisions attached to this fn.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/unresolved_entry" }
+        },
+        "entry": {
+          "description": "Names of the externals that can reach this fn. Each must resolve to a declared external, else E0209.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" }
+        }
+      }
+    },
+    "trusted_claim": {
+      "title": "a `trusted` entry",
+      "type": "object",
+      "required": ["claim", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "claim": {
+          "description": "What is being asserted.",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "What attests it -- a named artifact a reviewer can go and read.",
+          "type": "string"
+        }
+      }
+    },
+    "unresolved_entry": {
+      "title": "an `unresolved` entry",
+      "type": "object",
+      "required": ["id", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "§5.1a rule 5: a positive integer, unique across the whole merged workspace. A duplicate is E0205.",
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "note": {
+          "description": "The open decision, in a sentence.",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

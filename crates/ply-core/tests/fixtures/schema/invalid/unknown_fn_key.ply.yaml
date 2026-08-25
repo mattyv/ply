@@ -1,0 +1,8 @@
+ply: 1
+components:
+  withdrawal:
+    anchor: withdrawal
+    fns:
+      fee_cents:
+        ensure:
+          - "|result| *result <= amount_cents"

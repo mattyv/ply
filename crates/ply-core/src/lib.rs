@@ -8,3 +8,4 @@ pub mod fuzz_gen;
 pub mod harness;
 pub mod harness_crate;
 pub mod model;
+pub mod schema;

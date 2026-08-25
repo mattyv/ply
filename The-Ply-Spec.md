@@ -248,6 +248,22 @@ on-disk copy changes nothing at runtime — the shipped file exists as read-only
 and for IDE tooling. The grammar evolves only through Ply releases and the `ply:`
 version field.
 
+**The file exists as of 2026-08-25 (Phase 1a), and this paragraph describes what it
+does rather than what it should.** For most of this project's life the sentence above
+was false: there was no `schema/ply.schema.json`, and the key vocabulary lived as Rust
+constants in two places. It is now load-bearing in the way "normative" has to mean
+something: `ply-core` embeds it with `include_str!`, and the accepted-key set every
+reader enforces (`E0204`) is read out of the schema's `properties` at runtime, so
+deleting a key there changes what Ply accepts. Two constraints are declared in the
+schema as regexes and enforced at runtime by hand-written matchers instead — the
+check-string form (`parse_check`) and the code-path form (`is_valid_path_form`), so the
+shipping binary carries no regex engine — and each is held to the schema by an invariant
+test that walks a corpus and fails on the first string the two disagree about
+(`crates/ply-core/tests/schema.rs`). That test is what caught the first real divergence:
+`fuzz(0256)` and `fuzz(+5)` were accepted by the parser (Rust's `u32::from_str` takes
+both) and refused by the schema. The parser narrowed to the schema, not the other way
+round. `cargo ply skill` does not exist yet, so the clause about it remains a plan.
+
 Everything is declarative data. The only embedded syntaxes are:
 1. **check strings** — `test | fuzz(N)? | bounded(K)? | prove | mutate`.
    Schema-validated by regex, parsed in ply-core.
@@ -318,7 +334,12 @@ unresolved:                      # registry entries with no code anchor
 Schema violations produce `E0201` diagnostics carrying the JSON-pointer path and source
 line. Line mapping: serde derive builds the model; a second lightweight pass over a
 position-marked YAML parse builds a JSON-pointer → (line, col) index used only for
-diagnostics. Duplicate component names across merged files → `E0202` (nested names are
+diagnostics. **The pointer is implemented; the source line is not** (2026-08-25): every
+`E0201`/`E0204` carries an exact JSON pointer, and the human sentence says where in the
+dotted form a reader scans a YAML file in (`components.pricing.fns.quote.ensure`), but
+the position-marked pass does not exist, so no diagnostic carries a line number. A
+guessed line is worse than none — it sends a reader to the wrong place with full
+confidence — so none is emitted. Duplicate component names across merged files → `E0202` (nested names are
 qualified by their parent, so only siblings can collide). A string that passes the schema
 regex but fails the real micro-syntax parser → `E0203`, stating the expected form.
 `mutate` without a `test` or `fuzz` entry in the same checks list → `E0504`.
@@ -361,7 +382,10 @@ The schema must encode all of the following; the goldens (§9) pin them.
    `verify`, `check` and `render`, and a reader that refuses the keys it ignores breaks
    that outright.
 2. **Identifiers.** Component and profile names match `[a-z][a-z0-9_]*` (snake_case,
-   ASCII). In edge and deny strings, tokens are separated by one or more spaces; the
+   ASCII) — and external names too, since they share the namespace (rule 6). Enforced at
+   load time since 2026-08-25; a name outside the pattern is `E0201`. Before that the
+   rule was stated here and checked by nothing, so `components: { Pricing: ... }` loaded
+   silently. In edge and deny strings, tokens are separated by one or more spaces; the
    parser accepts any run of whitespace and the canonical form uses single spaces.
 3. **Code paths.** Anchors and fn keys are plain segment paths: `IDENT(::IDENT)*`, where
    a segment may also be a type name in `Type::method` position. No generics, no
@@ -1201,6 +1225,12 @@ it, or fail with `X0901` attaching the raw output for debugging.
   recorded honestly as NOT RUN, not skipped silently.
 - **Schema goldens**: `schema/ply.schema.json` is golden-tested; a fixture set of valid
   and invalid `ply.yaml` documents pins validation behavior and E0201 pointer paths.
+  Implemented in `crates/ply-core/tests/fixtures/schema/` — each invalid document is
+  filed beside a `.expected` golden holding the exact diagnostics it must produce, and
+  the valid ones must produce none and load. Three further tests hold the schema to the
+  code rather than to itself: every schema object with a fixed key vocabulary sets
+  `additionalProperties: false`, every key the schema declares is a key the serde model
+  actually reads, and the two regex/matcher pairs agree over a corpus.
 - **Extraction differential**: property-test call-graph extraction against a naive
   AST-walk reference on generated fixture modules; any disagreement is a bug. Assert
   resolution coverage (D11) on fixtures with known-unresolvable sites.

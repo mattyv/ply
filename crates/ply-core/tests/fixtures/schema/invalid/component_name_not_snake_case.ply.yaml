@@ -1,0 +1,6 @@
+ply: 1
+components:
+  Pricing:
+    anchor: app::pricing
+  db-raw:
+    anchor: app::db_raw

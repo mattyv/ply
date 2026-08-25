@@ -86,7 +86,7 @@ fn diag(code: &'static str, message: String, target: Target) -> Diagnostic {
 /// `IDENT(::IDENT)*`, where a segment may also be a type name in
 /// `Type::method` position. No generics, no trait-qualified paths, no
 /// lifetimes — anything else is `E0304 unsupported path form`.
-fn is_valid_path_form(s: &str) -> bool {
+pub fn is_valid_path_form(s: &str) -> bool {
     !s.is_empty()
         && s.split("::").all(|seg| {
             let mut chars = seg.chars();

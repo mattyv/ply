@@ -1,0 +1,1 @@
+E0201: "no_allocation" is not a ban Ply knows. The ones it knows are: `no_unsafe`, `no_trait_objects`, `no_interior_mut`, `no_panics`, `no_async`, `exhaustive_match`. A name outside that set is almost always a typo, and Ply refuses it rather than quietly enforcing nothing. Found at `profiles.hot_path[1]` in ply.yaml.

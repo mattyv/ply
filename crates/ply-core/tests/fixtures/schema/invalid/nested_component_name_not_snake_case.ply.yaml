@@ -1,0 +1,7 @@
+ply: 1
+components:
+  pricing:
+    anchor: app::pricing
+    components:
+      Curves:
+        anchor: app::pricing::curves

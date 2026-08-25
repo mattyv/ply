@@ -17,3 +17,7 @@ anyhow = "1"
 
 [dev-dependencies]
 tempfile = "3"
+# Test-only: the shipping binary carries no regex engine. The schema's
+# patterns are enforced by hand-written matchers, and these tests are what
+# hold those matchers to the schema.
+regex = "1"

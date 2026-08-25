@@ -1,0 +1,5 @@
+ply: 1
+externals:
+  venue:
+    note: "the exchange"
+    notes: "a second one"

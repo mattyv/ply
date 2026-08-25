@@ -1,0 +1,4 @@
+ply: 2
+components:
+  pricing:
+    anchor: app::pricing

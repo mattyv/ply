@@ -1,0 +1,5 @@
+ply: 1
+components:
+  pricing:
+    anchor: app::pricing
+    uses: [time, network]
