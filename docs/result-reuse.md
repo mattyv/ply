@@ -3,6 +3,24 @@
 *2026-08-25. Written against the build in this repository; every output below is copied
 from a real run rather than reconstructed.*
 
+> **Retraction, added the same day.** An adversarial review of this work
+> (`docs/review-result-reuse.md`) found the central claim below — "the fingerprint covers
+> everything the answer depended on" — **false as built**, with live reproductions. The
+> hash covered the checked function's own tokens and the promises declared for the callees
+> a proof replaces, and nothing else the check *runs*: edit a helper a sampled function
+> calls, or a contracted callee a proof descends into, or a worked example a `test` check
+> asserts, and the recorded pass was carried forward in under 100ms over code a cold run
+> reports as a violation. That is this project's own worst failure — a green result over
+> code nobody checked — and it is mine, not the design's: the design says to hash what the
+> answer depended on, and I hashed less than that.
+>
+> Everything else in this page stands: the mechanism, the honesty rule, the removals, the
+> demonstrations, and the version-invalidation argument. The completeness claim does not,
+> and the `[reused]` legend printed to users repeats it. A fix is in flight in a parallel
+> session (`crates/ply-core/src/reach.rs`: the set of first-party bodies a check can reach,
+> with a whole-crate fallback whenever the walk cannot be bounded). **This page, the
+> specification, the schema page and that legend all have to move with it.**
+
 Ply used to re-pay full engine cost on every run. A crate whose proofs took four minutes
 took four minutes again on a branch that touched a README, and a diff never showed that a
 claim had been checked at all. The specification's answer to that was a committed record
