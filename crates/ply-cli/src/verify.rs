@@ -126,6 +126,11 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     // even get this far (unresolvable anchor) is finished right here.
     struct Plan<'a> {
         node_id: String,
+        /// The qualified name of the component that declares this claim —
+        /// `billing`, or `ingest.book`. Carried rather than recovered from
+        /// `node_id`, which cannot be split back apart: a fn key may itself
+        /// contain `::` (`rates::legacy_rate`).
+        component_path: String,
         fn_name: &'a str,
         claim: &'a FnClaim,
         cf: ContractFn,
@@ -134,7 +139,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         seed: [u8; 32],
     }
     let mut plans: Vec<Plan> = Vec::new();
-    let mut early_nodes_by_component: BTreeMap<&str, Vec<Node>> = BTreeMap::new();
+    let mut early_nodes_by_component: BTreeMap<String, Vec<Node>> = BTreeMap::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     // `anchor:` is finally consumed (vetting 004 finding 7: it was parsed
@@ -161,7 +166,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     // sorted, and the goldens in tests/e2e pin that. Sorting here keeps the
     // envelope byte-identical across the promotion instead of quietly
     // reordering every multi-fn run.
-    for (comp_name, comp) in sorted_by_key(&file.components) {
+    for (comp_name, comp) in flatten_components(&file) {
         for (fn_name, claim) in sorted_by_key(&comp.fns) {
             let node_id = format!("{comp_name}::{fn_name}");
             if !is_local(&comp.anchor) {
@@ -169,7 +174,12 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 // `declared`; its `checks` cannot run from here, and saying
                 // so is the honest report (`verify` is single-crate).
                 if !claim.checks.is_empty() {
-                    diagnostics.push(cross_crate_claim_diag(&node_id, fn_name, &comp.anchor));
+                    diagnostics.push(cross_crate_claim_diag(
+                        &node_id,
+                        fn_name,
+                        &comp.anchor,
+                        &local_anchors,
+                    ));
                 }
                 continue;
             }
@@ -183,7 +193,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                         &e.to_string(),
                     ));
                     early_nodes_by_component
-                        .entry(comp_name)
+                        .entry(comp_name.clone())
                         .or_default()
                         .push(leaf_node(&node_id, "unclaimed"));
                     continue;
@@ -244,7 +254,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     open_item: Some("mutate_without_kill_signal".into()),
                 });
                 early_nodes_by_component
-                    .entry(comp_name)
+                    .entry(comp_name.clone())
                     .or_default()
                     .push(leaf_node(&node_id, "unclaimed"));
                 continue;
@@ -256,12 +266,12 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 if cf.has_contract() {
                     diagnostics.push(unsupported_shape_diag(&node_id, fn_name, &cf));
                     early_nodes_by_component
-                        .entry(comp_name)
+                        .entry(comp_name.clone())
                         .or_default()
                         .push(leaf_node(&node_id, "unsupported"));
                 } else {
                     early_nodes_by_component
-                        .entry(comp_name)
+                        .entry(comp_name.clone())
                         .or_default()
                         .push(leaf_node(&node_id, "unclaimed"));
                 }
@@ -293,6 +303,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
 
             plans.push(Plan {
                 node_id,
+                component_path: comp_name.clone(),
                 fn_name,
                 claim,
                 cf,
@@ -373,7 +384,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     }
 
     // Pass 3: run each fn's checks and assemble its verdict + diagnostics.
-    let mut component_nodes: BTreeMap<&str, Vec<Node>> = early_nodes_by_component;
+    let mut component_nodes: BTreeMap<String, Vec<Node>> = early_nodes_by_component;
     for plan in &plans {
         let (node, mut fn_diags) = run_fn_checks(
             &plan.node_id,
@@ -389,24 +400,23 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             opts,
         )?;
         diagnostics.append(&mut fn_diags);
-        let comp_name: &str = plan.node_id.split("::").next().unwrap_or("");
-        component_nodes.entry(comp_name).or_default().push(node);
+        component_nodes
+            .entry(plan.component_path.clone())
+            .or_default()
+            .push(node);
     }
 
+    // The tree the document declares, with each claim's node under the
+    // component that declares it however deep that is (§5.1's nested
+    // `components:`, §7's containment tree). A component that produced no
+    // node at all -- no claim of its own, none in its subtree -- is left
+    // out rather than drawn empty, which is the shape `verify` has always
+    // reported for a component whose claims are checked elsewhere.
     let mut components: Vec<Node> = Vec::new();
-    for (comp_name, fn_nodes) in component_nodes {
-        components.push(Node {
-            id: comp_name.to_string(),
-            kind: "component".into(),
-            verdict: worst_of(&fn_nodes),
-            // D6: statuses are not in the evidence order -- they propagate
-            // upward as flags beside the verdict. A `conditional` leaf must
-            // still be visible from the root, or the trust story stops at
-            // the fn nobody expanded.
-            statuses: union_statuses(&fn_nodes),
-            evidence: None,
-            children: fn_nodes,
-        });
+    for (name, comp) in sorted_by_key(&file.components) {
+        if let Some(node) = component_node(name, comp, &mut component_nodes) {
+            components.push(node);
+        }
     }
 
     let root = Node {
@@ -426,6 +436,68 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         coverage: None,
         trust_surface: None,
         open_items: None,
+    })
+}
+
+/// Every component in the document, depth first, each paired with its
+/// qualified name (`billing`, `ingest.book`) — parents before their
+/// children, siblings in name order at every level.
+///
+/// `verify` used to iterate the top level of this tree only, so a claim
+/// written inside a nested component produced no node, no diagnostic and no
+/// mention at all, while `cargo ply check` walked the whole tree and
+/// reported the same claim as pointing at real code. The two commands
+/// disagreed about which claims exist, and the disagreement was silent —
+/// the worst shape a gap can take (§1).
+fn flatten_components(
+    doc: &ply_core::model::Document,
+) -> Vec<(String, &ply_core::model::Component)> {
+    fn walk<'a>(
+        path: String,
+        comp: &'a ply_core::model::Component,
+        out: &mut Vec<(String, &'a ply_core::model::Component)>,
+    ) {
+        for (child, nested) in sorted_by_key(&comp.components) {
+            walk(format!("{path}.{child}"), nested, out);
+        }
+        out.push((path, comp));
+    }
+    let mut out = Vec::new();
+    for (name, comp) in sorted_by_key(&doc.components) {
+        walk(name.clone(), comp, &mut out);
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// One component's §7 node: its own claims' nodes, then a node per nested
+/// component that has anything to report. `None` when nothing in the whole
+/// subtree produced a node.
+fn component_node(
+    path: &str,
+    comp: &ply_core::model::Component,
+    fn_nodes: &mut BTreeMap<String, Vec<Node>>,
+) -> Option<Node> {
+    let mut children: Vec<Node> = fn_nodes.remove(path).unwrap_or_default();
+    for (child, nested) in sorted_by_key(&comp.components) {
+        if let Some(node) = component_node(&format!("{path}.{child}"), nested, fn_nodes) {
+            children.push(node);
+        }
+    }
+    if children.is_empty() {
+        return None;
+    }
+    Some(Node {
+        id: path.to_string(),
+        kind: "component".into(),
+        verdict: worst_of(&children),
+        // D6: statuses are not in the evidence order -- they propagate
+        // upward as flags beside the verdict. A `conditional` leaf must
+        // still be visible from the root, or the trust story stops at
+        // the fn nobody expanded.
+        statuses: union_statuses(&children),
+        evidence: None,
+        children,
     })
 }
 
@@ -721,7 +793,44 @@ fn conditional_verdict_diag(
 /// whose component anchors elsewhere is not checked here, and that is said
 /// rather than reported as a missing function (which is what happened before
 /// `anchor:` was consumed -- vetting 004 s5's misleading `E0301`).
-fn cross_crate_claim_diag(node_id: &str, fn_name: &str, anchor: &str) -> Diagnostic {
+///
+/// Two different things land here and they need two different sentences.
+/// An anchor naming another crate is the case this diagnostic was written
+/// for. An anchor naming a *module inside this crate* -- `ingest::book`
+/// while verifying `ingest`, the ordinary way a nested component is
+/// written -- is not another crate at all, and saying so would send a
+/// reader looking for a crate that does not exist. What is true of it is
+/// narrower and fixable: `verify` reads a fn key as a path from the crate
+/// root, so it cannot resolve a key written relative to a module.
+fn cross_crate_claim_diag(
+    node_id: &str,
+    fn_name: &str,
+    anchor: &str,
+    local_anchors: &[String],
+) -> Diagnostic {
+    let (crate_name, module_path) = match anchor.split_once("::") {
+        Some((root, rest)) => (root.replace('-', "_"), Some(rest)),
+        None => (anchor.replace('-', "_"), None),
+    };
+    let inside_this_crate =
+        module_path.is_some() && !local_anchors.is_empty() && local_anchors.contains(&crate_name);
+    let title = match module_path {
+        Some(module) if inside_this_crate => format!(
+            "`{fn_name}` is claimed under a component anchored at `{anchor}`, which is a module \
+             inside this crate rather than the crate itself. `cargo ply verify` reads a function \
+             key as a path from the crate root, so it has no way to resolve a key written relative \
+             to a module: this entry's `checks:` were not run and no verdict is reported for it. \
+             Move the claim to a component anchored at `{crate_name}` and spell the key from the \
+             crate root -- `{module}::{fn_name}` -- and it will run. (W0303, §5.2)"
+        ),
+        _ => format!(
+            "`{fn_name}` is claimed under a component anchored at `{anchor}`, which is not the crate \
+             this run is verifying, and `cargo ply verify` checks one crate at a time. Its `checks:` \
+             were not run and no verdict is reported for it. Any `requires:`/`ensures:` this entry \
+             declares is still read: that is how a callee outside this crate gets a contract Ply can \
+             assume at the boundary (§5.5). (W0303)"
+        ),
+    };
     Diagnostic {
         code: "W0303".into(),
         severity: "warning".into(),
@@ -729,32 +838,47 @@ fn cross_crate_claim_diag(node_id: &str, fn_name: &str, anchor: &str) -> Diagnos
         engine: "ply".into(),
         check: "".into(),
         node_id: node_id.into(),
-        title: format!(
-            "`{fn_name}` is claimed under a component anchored at `{anchor}`, which is not the crate \
-             this run is verifying, and `cargo ply verify` checks one crate at a time. Its `checks:` \
-             were not run and no verdict is reported for it. Any `requires:`/`ensures:` this entry \
-             declares is still read: that is how a callee outside this crate gets a contract Ply can \
-             assume at the boundary (§5.5). (W0303)"
-        ),
+        title,
         pointer: None,
         primary_span: None,
         counterexample: None,
-        fixes: vec![
-            Fix {
-                title: format!(
-                    "run `cargo ply verify` against the crate `{anchor}` itself to check its own \
-                     claims there"
-                ),
-                edits: vec![],
-            },
-            Fix {
-                title: format!(
-                    "or drop `checks:` from this entry and keep only `requires:`/`ensures:`, if its \
-                     purpose is to give `{fn_name}` a contract for callers in this crate to assume"
-                ),
-                edits: vec![],
-            },
-        ],
+        fixes: if inside_this_crate {
+            let module = module_path.unwrap_or_default();
+            vec![
+                Fix {
+                    title: format!(
+                        "move `{fn_name}` to a component anchored at `{crate_name}`, keyed \
+                         `{module}::{fn_name}`"
+                    ),
+                    edits: vec![],
+                },
+                Fix {
+                    title: format!(
+                        "or drop `checks:` from this entry and keep only `requires:`/`ensures:`, if \
+                         its purpose is to give `{fn_name}` a contract for its callers to assume"
+                    ),
+                    edits: vec![],
+                },
+            ]
+        } else {
+            vec![
+                Fix {
+                    title: format!(
+                        "run `cargo ply verify` against the crate `{anchor}` itself to check its own \
+                         claims there"
+                    ),
+                    edits: vec![],
+                },
+                Fix {
+                    title: format!(
+                        "or drop `checks:` from this entry and keep only `requires:`/`ensures:`, if \
+                         its purpose is to give `{fn_name}` a contract for callers in this crate to \
+                         assume"
+                    ),
+                    edits: vec![],
+                },
+            ]
+        },
         assumptions: vec![],
         open_item: Some("not_verified_here".into()),
     }
@@ -2641,6 +2765,55 @@ fn unused(_p: &PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ordinary way a nested component is written is an anchor naming a
+    /// module of the crate being verified. Calling that "not the crate this
+    /// run is verifying" is false, and sends a reader hunting for a crate
+    /// that does not exist -- so it gets its own sentence, and the sentence
+    /// says what to write instead.
+    #[test]
+    fn a_claim_under_a_module_anchor_is_told_it_is_a_module_not_another_crate() {
+        let d = cross_crate_claim_diag(
+            "ingest.book::OrderBook::apply",
+            "OrderBook::apply",
+            "ingest::book",
+            &["ingest".to_string()],
+        );
+        assert_eq!(
+            d.title,
+            "`OrderBook::apply` is claimed under a component anchored at `ingest::book`, which is \
+             a module inside this crate rather than the crate itself. `cargo ply verify` reads a \
+             function key as a path from the crate root, so it has no way to resolve a key written \
+             relative to a module: this entry's `checks:` were not run and no verdict is reported \
+             for it. Move the claim to a component anchored at `ingest` and spell the key from the \
+             crate root -- `book::OrderBook::apply` -- and it will run. (W0303, §5.2)"
+        );
+        assert_eq!(
+            d.fixes[0].title,
+            "move `OrderBook::apply` to a component anchored at `ingest`, keyed \
+             `book::OrderBook::apply`"
+        );
+    }
+
+    /// An anchor that really does name another crate keeps the sentence
+    /// written for it.
+    #[test]
+    fn a_claim_under_another_crates_anchor_still_says_another_crate() {
+        let d = cross_crate_claim_diag(
+            "ledger::post",
+            "post",
+            "ledger",
+            &["ingest".to_string(), "ingest".to_string()],
+        );
+        assert_eq!(
+            d.title,
+            "`post` is claimed under a component anchored at `ledger`, which is not the crate this \
+             run is verifying, and `cargo ply verify` checks one crate at a time. Its `checks:` \
+             were not run and no verdict is reported for it. Any `requires:`/`ensures:` this entry \
+             declares is still read: that is how a callee outside this crate gets a contract Ply \
+             can assume at the boundary (§5.5). (W0303)"
+        );
+    }
 
     #[test]
     fn engine_timeout_scales_only_for_vec_shaped_harnesses() {

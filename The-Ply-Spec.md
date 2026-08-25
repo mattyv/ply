@@ -431,6 +431,21 @@ spellings — a claim written `rates::legacy_rate`, a call written `legacy_rate`
 same set, for the same reason it always was: a suggestion naming something resolution
 would then refuse is worse than no suggestion.
 
+**Every claim in the document is read, at every depth (2026-08-25).** Components nest
+(§5.1), and `verify` iterated the top level of that tree only: a claim written inside a
+nested component earned no node, no diagnostic and no mention of any kind, while `check`
+walked the whole tree and reported the same claim as pointing at real code. The document
+looked correct and the claim never ran. Both commands now walk the whole tree, and both
+name a claim the same way — the component's qualified name and the fn key,
+`ingest.book::OrderBook::apply`.
+
+What both commands can *resolve* stays narrower than what the grammar can express: a fn
+key is read as a path from the crate root, so a claim under a component anchored at a
+module of this crate (`anchor: ingest::book` while verifying `ingest`) cannot be resolved
+from the key as written. It is reported as not run (`W0303`) with the crate-root spelling
+that would run — `book::OrderBook::apply`, under a component anchored at `ingest` — and
+never as a missing function. Anchor-relative key resolution is not built.
+
 One case stays closed, and it is not a limit of the walk. Ply's generated harness is a
 module at the crate root, so a **private** item below the root is a name that harness
 cannot write. Such a claim is refused with `E0301` naming the actual obstacle — the

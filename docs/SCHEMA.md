@@ -277,6 +277,17 @@ they into it, without any declared edge — that is the same relationship as one
 calling another inside a single module. Writing an edge between a component and its own
 descendant is redundant, and Ply says so (`W0409`).
 
+Both commands read the whole tree. A claim written inside a nested component is
+validated by `check`, run by `verify`, and named the same way by both —
+`ingest.feed::Feed::pump`, the component's dotted name and the function key.
+
+One limit sits with nesting, and it is about `anchor:` rather than about depth. A
+function key is read as a path from the **crate root**, so `verify` can only run claims
+under a component anchored at the crate itself. A component anchored at a module —
+`anchor: ingest::book`, while you are checking the crate `ingest` — has its claims
+reported and not run (`W0303`), and the message names the spelling that would run: move
+the claim under the crate-anchored component and key it `book::OrderBook::apply`.
+
 ### What a component buys you today
 
 Honestly: less than the file suggests. `anchor:` is load-bearing — it decides which
@@ -1183,7 +1194,7 @@ on something stable. These are the ones this build emits.
 |---|---|
 | `E0301` | A claim points at a function Ply cannot find — or one it found and cannot verify from, because the function or a module above it is private. The message says which. |
 | `E0304` | An anchor or function key is not a plain path. |
-| `W0303` | This claim's component is anchored to another crate, so its checks did not run here. |
+| `W0303` | This claim's component is anchored somewhere this run cannot check from — another crate, or a module of this one — so its checks did not run. The message says which, and what would run. |
 
 **Running the checks**
 
@@ -1244,8 +1255,9 @@ Collected in one place, so nothing here has to be discovered at minute eleven.
   it fails later, in the compiler or the engine.
 - A boundary promise that cannot be satisfied makes the caller's proof pass vacuously,
   and nothing detects that.
-- `verify` reads function claims from top-level components only; claims nested inside a
-  child component are not run.
+- A claim under a component anchored at a *module* (`anchor: ingest::book`) cannot be
+  run: function keys are read as paths from the crate root, not relative to the anchor.
+  Such a claim is reported (`W0303`) with the crate-root spelling that would run.
 - A boundary promise is matched by the callee's path as written, so a dependency renamed
   in `Cargo.toml` (`ledger = { package = "real-name", … }`) will not match. It fails
   loudly — you get the refusal for an unclaimed callee — rather than quietly.

@@ -1,0 +1,15 @@
+ply: 1
+
+# The claim lives one level down, in `outer.inner`. Both components anchor
+# at this crate: `verify` reads a fn key as a path from the crate root, so a
+# component anchored at a *module* is a boundary component whose claims are
+# reported, not run (W0303).
+components:
+  outer:
+    anchor: ply_fixture_nestedclaim
+    components:
+      inner:
+        anchor: ply_fixture_nestedclaim
+        fns:
+          safe_increment:
+            checks: [bounded(2)]
