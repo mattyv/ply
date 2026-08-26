@@ -1,0 +1,20 @@
+ply: 1
+
+# `bad_examples_fn`'s second `examples:` entry does not type-check, so its
+# generated harness module fails to compile -- and both fns share one
+# generated harness crate (§5.4c). Before the misattribution fix, that one
+# compile failure was reported against `good_fn` too, quoting a compiler
+# error about a variable `good_fn` never had. `good_fn` must earn its own
+# `fuzzed(32)` verdict here; only `bad_examples_fn` may report a tool error,
+# and only against itself.
+components:
+  sharedharness:
+    anchor: ply_fixture_sharedharness
+    fns:
+      good_fn:
+        checks: [fuzz(32)]
+      bad_examples_fn:
+        checks: [fuzz(32), test]
+        examples:
+          - "bad_examples_fn(2, 3) == 5"
+          - "bad_examples_fn(0, 0) == \"zero\""

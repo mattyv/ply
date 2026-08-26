@@ -684,7 +684,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 .iter()
                 .any(|c| matches!(c, Check::Fuzz(_) | Check::Test | Check::Mutate))
     });
-    let mut harness_info: Option<(String, String)> = None; // (harness_package, target_lib_ident)
+    let mut harness_info: Option<HarnessInfo> = None;
     if needs_harness {
         let cargo_toml_path = crate_dir.join("Cargo.toml");
         let cargo_toml_text = std::fs::read_to_string(&cargo_toml_path)
@@ -696,7 +696,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         let harness_dir = crate_dir.join(&harness_rel);
         harness_crate::write_harness_cargo_toml(&harness_dir, &harness_pkg, &target_names)?;
 
-        let mut fn_modules = Vec::new();
+        let mut modules: Vec<harness_crate::HarnessModule> = Vec::new();
         for (plan, reused) in plans.iter().zip(&reused) {
             if reused.is_some() {
                 continue;
@@ -718,9 +718,10 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             {
                 bodies.push(body);
             }
-            // A build failure here (missing #[ply::ensures], etc.) is
-            // reported as a diagnostic in pass 3; no body means nothing
-            // to run for the fuzz half.
+            // A build failure here (missing #[ply::ensures], a postcondition
+            // that reads a moved parameter, etc.) is reported as a
+            // diagnostic in pass 3; no body means nothing to run for the
+            // fuzz half.
             if has_test {
                 for (i, example) in plan.claim.examples.iter().enumerate() {
                     if let Ok(body) = ply_core::fuzz_gen::generate_example_test(
@@ -737,15 +738,89 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 }
             }
             if !bodies.is_empty() {
-                fn_modules.push(ply_core::fuzz_gen::wrap_fn_harness_module(
-                    &plan.cf,
-                    &target_names.lib_ident,
-                    &bodies,
-                ));
+                modules.push(harness_crate::HarnessModule {
+                    fn_ident: plan.cf.ident(),
+                    source: ply_core::fuzz_gen::wrap_fn_harness_module(
+                        &plan.cf,
+                        &target_names.lib_ident,
+                        &bodies,
+                    ),
+                });
             }
         }
-        harness_crate::write_harness_lib_rs(&harness_dir, &fn_modules)?;
-        harness_info = Some((harness_pkg, target_names.lib_ident));
+
+        // The misattribution fix. Before this, one broken function's
+        // generated module took the *entire* harness crate's compile down
+        // with it, and every other claim sharing the crate -- however
+        // correct -- reported the same tool error, quoting the same
+        // compiler message about a variable it does not have (§9: "a
+        // defect found by review enters the suite as a fixture of its own
+        // shape").
+        //
+        // The fix compiles the shared crate once (`--no-run`: never
+        // executing a single case, only checking it builds). A failure's
+        // compiler errors are mapped back to the one generated module each
+        // came from by the line its own `--> ` span names (each module's
+        // line range is known exactly, since Ply itself just wrote the
+        // file) -- so a build with two independently broken functions is
+        // resolved in one extra compile, not one per claim, and not a
+        // bisection search. Broken module(s) are then dropped and the
+        // remainder rebuilt, so every innocent claim still gets to run for
+        // real and earn its own verdict. Bounded, not looped forever: a
+        // build that keeps finding new attributable breakage is vanishingly
+        // unlikely (rustc reports independent errors together), but nothing
+        // here should spin.
+        const MAX_BUILD_ATTEMPTS: u32 = 4;
+        let mut broken: BTreeMap<String, String> = BTreeMap::new();
+        let mut unattributed_cause: Option<String> = None;
+        let timeout = opts
+            .engine_timeout_secs
+            .unwrap_or_else(default_secondary_engine_timeout_secs);
+        let mut attempt: u32 = 0;
+        loop {
+            let (_, spans) = harness_crate::write_harness_lib_rs(&harness_dir, &modules)?;
+            if modules.is_empty() {
+                break;
+            }
+            let check = fuzz_engine::check_harness_builds(crate_dir, &harness_pkg, timeout)?;
+            if check.build_ok || check.timed_out {
+                break;
+            }
+            let lib_suffix = format!("{harness_rel}/src/lib.rs");
+            let errors = fuzz_engine::build_errors_with_lines(&check.combined_output, &lib_suffix);
+            let attributed = fuzz_engine::attribute_build_errors(&errors, &spans);
+            if attributed.is_empty() {
+                // No error the compiler reported carries a span Ply can
+                // place inside any known module -- §1: an honest "Ply
+                // could not tell which" beats guessing and blaming a
+                // function that might be entirely innocent.
+                unattributed_cause = Some(
+                    fuzz_engine::first_build_error(&check.combined_output)
+                        .unwrap_or_else(|| "the compiler gave no specific error line".to_string()),
+                );
+                break;
+            }
+            for (ident, cause) in attributed {
+                broken.entry(ident).or_insert(cause);
+            }
+            modules.retain(|m| !broken.contains_key(&m.fn_ident));
+            attempt += 1;
+            if attempt >= MAX_BUILD_ATTEMPTS && !modules.is_empty() {
+                unattributed_cause = Some(
+                    "Ply kept finding new compile failures in this crate's generated harness \
+                     even after removing every function it could pin one to, and gave up \
+                     rather than loop forever"
+                        .to_string(),
+                );
+                break;
+            }
+        }
+
+        harness_info = Some(HarnessInfo {
+            package: harness_pkg,
+            broken,
+            unattributed_cause,
+        });
     }
 
     // D5's ordering (§5.5): "within a crate, verify claimed functions
@@ -858,6 +933,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             &plans[idx].boundary,
             &plans[idx].seed,
             harness_info.as_ref(),
+            !plans[idx].claim.examples.is_empty(),
             opts,
         )?;
         if node.verdict.starts_with("bounded(")
@@ -2108,6 +2184,27 @@ fn combine_fn_check_verdicts(labels: &[String]) -> String {
         .unwrap_or_else(|| "unclaimed".into())
 }
 
+/// What Pass 2's shared-harness build established for the crate, once
+/// (misattribution fix): whether it needed rebuilding to isolate a broken
+/// function's own compile failure from its crate-mates, and what it could
+/// and could not pin down.
+struct HarnessInfo {
+    package: String,
+    /// `ContractFn::ident()` -> the specific compiler error attributed to
+    /// exactly that function's own generated module. A fn in this map never
+    /// runs its harness test at all (its module was dropped from the crate
+    /// before the build that finally succeeded) -- it is reported as a
+    /// tool error against itself, never against the fns it shared a crate
+    /// with.
+    broken: BTreeMap<String, String>,
+    /// Set only when the crate's harness still would not build and Ply
+    /// could not place the failure inside any specific function's module --
+    /// every claim that still needed this harness must say so honestly
+    /// (§1) rather than either reporting a clean pass on an unbuilt harness
+    /// or guessing which one function is at fault.
+    unattributed_cause: Option<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_fn_checks(
     node_id: &str,
@@ -2119,7 +2216,8 @@ fn run_fn_checks(
     checks: &[Check],
     boundary: &BoundaryPlan,
     seed: &[u8; 32],
-    harness_info: Option<&(String, String)>,
+    harness_info: Option<&HarnessInfo>,
+    has_examples: bool,
     opts: &VerifyOptions,
 ) -> Result<(Node, Vec<Diagnostic>)> {
     let mut diagnostics = Vec::new();
@@ -2241,35 +2339,93 @@ fn run_fn_checks(
                 open_item: Some("no_contract_to_check".into()),
             });
             labels.push("unsupported".into());
-        } else if let Some((harness_pkg, _)) = harness_info {
-            let mut run = run_fuzz_and_test_checks(
-                cf,
-                src_dir,
-                lib_path,
-                crate_dir,
-                harness_pkg,
-                node_id,
-                fn_name,
-                wants_fuzz,
-                wants_test,
-                seed,
-                opts,
-            )?;
-            diagnostics.append(&mut run.diagnostics);
-            if let Some(l) = run.fuzz_label {
-                labels.push(l);
-            }
-            if let Some(l) = run.test_label {
-                labels.push(l);
-            }
-            // §1: a verdict names the evidence that produced it. Only a run
-            // that happened has any to name.
-            if run.fuzz_ran && wants_fuzz.is_some() {
-                fuzz_evidence = Some(Evidence {
-                    engine: "proptest".into(),
-                    seed: Some(ply_core::fuzz_gen::seed_hex(seed)),
-                    cases: run.fuzz_cases_reached,
-                });
+        } else if let Some(p) = ply_core::fuzz_gen::moved_param_read_in_ensures(cf) {
+            // §5.4a: `old(param)` reads a by-value parameter's *entry*
+            // value; nothing outside `old()` can read it after the call,
+            // because it has been moved into it. Refused by name rather
+            // than handed to codegen, which would emit a harness that
+            // cannot compile (`error[E0382]: borrow of moved value`).
+            diagnostics.push(moved_param_diag(node_id, fn_name, p));
+            labels.push("unsupported".into());
+        } else if let Some(info) = harness_info {
+            let ident = cf.ident();
+            if let Some(cause) = info.broken.get(&ident) {
+                // Misattribution fix: this exact function's own generated
+                // code is what the compiler pointed at, so it alone is
+                // reported broken -- its harness test never even runs
+                // (the module was dropped before the crate's remaining
+                // fns were built), and no crate-mate's verdict is touched.
+                if let Some(n) = wants_fuzz {
+                    diagnostics.push(harness_did_not_run_diag(
+                        node_id,
+                        fn_name,
+                        &format!("fuzz({n})"),
+                        &info.package,
+                        Some(cause.as_str()),
+                        has_examples,
+                    ));
+                    labels.push("tool_error".into());
+                }
+                if wants_test {
+                    diagnostics.push(harness_did_not_run_diag(
+                        node_id,
+                        fn_name,
+                        "test",
+                        &info.package,
+                        Some(cause.as_str()),
+                        has_examples,
+                    ));
+                    labels.push("tool_error".into());
+                }
+            } else if let Some(cause) = &info.unattributed_cause {
+                // Ply could not isolate the failure to a specific function
+                // -- honestly reported against everyone still waiting on
+                // this harness, never pinned to one that might be
+                // innocent (§1).
+                if let Some(n) = wants_fuzz {
+                    diagnostics.push(harness_unattributed_diag(
+                        node_id,
+                        fn_name,
+                        &format!("fuzz({n})"),
+                        cause,
+                    ));
+                    labels.push("tool_error".into());
+                }
+                if wants_test {
+                    diagnostics.push(harness_unattributed_diag(node_id, fn_name, "test", cause));
+                    labels.push("tool_error".into());
+                }
+            } else {
+                let mut run = run_fuzz_and_test_checks(
+                    cf,
+                    src_dir,
+                    lib_path,
+                    crate_dir,
+                    &info.package,
+                    node_id,
+                    fn_name,
+                    wants_fuzz,
+                    wants_test,
+                    seed,
+                    has_examples,
+                    opts,
+                )?;
+                diagnostics.append(&mut run.diagnostics);
+                if let Some(l) = run.fuzz_label {
+                    labels.push(l);
+                }
+                if let Some(l) = run.test_label {
+                    labels.push(l);
+                }
+                // §1: a verdict names the evidence that produced it. Only a
+                // run that happened has any to name.
+                if run.fuzz_ran && wants_fuzz.is_some() {
+                    fuzz_evidence = Some(Evidence {
+                        engine: "proptest".into(),
+                        seed: Some(ply_core::fuzz_gen::seed_hex(seed)),
+                        cases: run.fuzz_cases_reached,
+                    });
+                }
             }
         }
     }
@@ -2282,9 +2438,9 @@ fn run_fn_checks(
     // past a failing baseline.
     if checks.iter().any(|c| matches!(c, Check::Mutate)) {
         if rank(&verdict) > 4 {
-            if let Some((harness_pkg, _)) = harness_info {
+            if let Some(info) = harness_info {
                 let (outcome, mut d) =
-                    run_mutate_check(crate_dir, harness_pkg, node_id, fn_name, checks, opts)?;
+                    run_mutate_check(crate_dir, &info.package, node_id, fn_name, checks, opts)?;
                 diagnostics.append(&mut d);
                 apply_mutate_outcome(&mut verdict, &mut statuses, outcome);
             }
@@ -3018,6 +3174,7 @@ fn run_fuzz_and_test_checks(
     wants_fuzz: Option<u32>,
     wants_test: bool,
     seed: &[u8; 32],
+    has_examples: bool,
     opts: &VerifyOptions,
 ) -> Result<HarnessRun> {
     let timeout = opts
@@ -3052,6 +3209,7 @@ fn run_fuzz_and_test_checks(
                 &format!("fuzz({n})"),
                 harness_pkg,
                 cause.as_deref(),
+                has_examples,
             ));
         }
         if wants_test {
@@ -3061,6 +3219,7 @@ fn run_fuzz_and_test_checks(
                 "test",
                 harness_pkg,
                 cause.as_deref(),
+                has_examples,
             ));
         }
         return Ok(HarnessRun {
@@ -3293,20 +3452,58 @@ fn run_fuzz_and_test_checks(
 
 /// The `X0901` a check earns when its generated harness never ran a single
 /// case (2026-08-24 M4 review, D1). Written to the newbie bar: what
-/// happened, what it means for the verdict, what most likely caused it, and
-/// the compiler's own words -- then concrete `fixes`, per §8's non-result
-/// rule ("a non-result is still feedback").
+/// happened, what it means for the verdict, and the compiler's own words --
+/// then concrete `fixes`, per §8's non-result rule ("a non-result is still
+/// feedback").
+///
+/// `has_examples` gates the one sentence that names a *specific* likely
+/// cause: an `examples:` entry that does not type-check is a real, common
+/// way to break this build, but only when `{fn_name}` actually declares any
+/// -- stating it as "the usual cause" regardless used to run even on a
+/// crate with no `examples:` entries at all, which is a cause Ply never
+/// established (misattribution fix, 2026-08-26).
 fn harness_did_not_run_diag(
     node_id: &str,
     fn_name: &str,
     check_label: &str,
     harness_pkg: &str,
     cause: Option<&str>,
+    has_examples: bool,
 ) -> Diagnostic {
     let compiler_says = match cause {
         Some(c) => format!(" The compiler's own first error was: {c}."),
         None => String::new(),
     };
+    let examples_hint = if has_examples {
+        format!(
+            " `{fn_name}` declares `examples:` entries in ply.yaml, which compile exactly as \
+             written -- they are ordinary Rust `==` expressions, never type-checked before \
+             codegen -- so a wrong type or a typo there is one thing worth checking first."
+        )
+    } else {
+        String::new()
+    };
+    let mut fixes = vec![Fix {
+        title: format!(
+            "see the full compiler output by running `cargo test -p {harness_pkg} --lib \
+             {fn_name}_harness::` from the crate root (Ply regenerates that harness crate on \
+             every run, so editing it is never the fix)"
+        ),
+        edits: vec![],
+    }];
+    if has_examples {
+        fixes.insert(
+            0,
+            Fix {
+                title: format!(
+                    "check every `examples:` entry for `{fn_name}` in ply.yaml -- each one must \
+                     compile as a Rust expression against `{fn_name}`'s real parameter and return \
+                     types"
+                ),
+                edits: vec![],
+            },
+        );
+    }
     Diagnostic {
         code: "X0901".into(),
         severity: "error".into(),
@@ -3318,10 +3515,79 @@ fn harness_did_not_run_diag(
             "`{fn_name}`'s `{check_label}` check ran zero cases: the test harness Ply generates for it \
              failed to compile, so nothing was checked at all. This is reported as a tool error -- \
              never as a pass, because no evidence was gathered, and never as a violation, because \
-             there is no failing input to show.{compiler_says} The usual cause is an `examples:` \
-             entry in ply.yaml that does not type-check against `{fn_name}`'s real signature: Ply \
-             compiles those entries exactly as written (they are ordinary Rust `==` expressions), so \
-             a wrong type or a typo first shows up here. (X0901)"
+             there is no failing input to show.{compiler_says}{examples_hint} (X0901)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes,
+        assumptions: vec![],
+        open_item: Some("tool_error".into()),
+    }
+}
+
+/// The honest fallback (misattribution fix): the shared harness crate would
+/// not build, and Ply could not place the failure inside any one function's
+/// own generated module -- so it says that plainly, against every claim
+/// still waiting on the harness, rather than pinning the blame on one
+/// function that might be entirely innocent.
+fn harness_unattributed_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    cause: &str,
+) -> Diagnostic {
+    Diagnostic {
+        code: "X0901".into(),
+        severity: "error".into(),
+        phase: "verify".into(),
+        engine: "proptest".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}`'s `{check_label}` check ran zero cases: the generated test harness this \
+             crate's checks share failed to compile, so nothing in it ran -- including \
+             `{fn_name}`'s own tests, even though Ply could not tell whether `{fn_name}`'s own \
+             generated code is what broke it. Rather than guess and blame a function that might \
+             be completely fine, Ply reports every function still waiting on this harness as a \
+             tool error. The compiler's own first error was: {cause}. (X0901)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![Fix {
+            title: "run `cargo build --tests` in the crate root to see the full compiler output, \
+                    then fix whichever function it names -- every other claim in this crate will \
+                    be checked again once the harness builds"
+                .to_string(),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: Some("tool_error".into()),
+    }
+}
+
+/// §5.4a: `old(param)` reads a by-value parameter's *entry* value; nothing
+/// outside `old()` can read it after the call, because a non-`Copy`
+/// parameter taken by value has been moved into it. Refused by name
+/// (`V0506`) rather than hand it to codegen, which would emit a harness
+/// that cannot compile (`error[E0382]: borrow of moved value`).
+fn moved_param_diag(node_id: &str, fn_name: &str, p: &Param) -> Diagnostic {
+    let ty = p.ty.display_name();
+    let pname = &p.name;
+    Diagnostic {
+        code: "V0506".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}`'s postcondition reads `{pname}` after `{pname}` has already been moved \
+             into the call: `{pname}: {ty}` is passed by value, so once `{fn_name}({pname})` \
+             returns, the original `{pname}` no longer exists for the postcondition to read. Ply \
+             refuses to generate a test for this rather than write code that cannot compile. \
+             (V0506)"
         ),
         pointer: None,
         primary_span: None,
@@ -3329,22 +3595,22 @@ fn harness_did_not_run_diag(
         fixes: vec![
             Fix {
                 title: format!(
-                    "check every `examples:` entry for `{fn_name}` in ply.yaml -- each one must compile \
-                     as a Rust expression against `{fn_name}`'s real parameter and return types"
+                    "wrap the read in `old({pname})` if the postcondition means `{pname}`'s value \
+                     before the call -- `old(expr)` is captured before `{fn_name}` runs, while \
+                     `{pname}` still exists"
                 ),
                 edits: vec![],
             },
             Fix {
                 title: format!(
-                    "see the full compiler output by running `cargo test -p {harness_pkg} --lib \
-                     {fn_name}_harness::` from the crate root (Ply regenerates that harness crate on \
-                     every run, so editing it is never the fix)"
+                    "or change `{pname}`'s type to a reference (`&{ty}`) if `{fn_name}` only needs \
+                     to read it, not own it -- a borrowed parameter is still there after the call"
                 ),
                 edits: vec![],
             },
         ],
         assumptions: vec![],
-        open_item: Some("tool_error".into()),
+        open_item: Some("unsupported".into()),
     }
 }
 

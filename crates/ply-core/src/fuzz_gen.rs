@@ -20,11 +20,14 @@
 //! no literal form this renderer can write, so the caller reports that case
 //! as a witness-only violation (`W0541`), never a fabricated input.
 
+use std::collections::BTreeSet;
+
 use anyhow::{Result, bail};
 use quote::ToTokens;
 use syn::Expr;
+use syn::visit::Visit;
 
-use crate::harness::{ContractFn, RustType};
+use crate::harness::{ContractFn, Param, RustType};
 
 /// The seed a `fuzz(n)` run uses, derived from the function it checks
 /// (2026-08-25). Until now the generated harness built its runner with
@@ -194,6 +197,81 @@ fn call_args(cf: &ContractFn) -> Vec<String> {
         .collect()
 }
 
+/// True for a type that *moves* when passed by value -- so a parameter of
+/// this type, taken by value (not `&`), no longer exists once the call it
+/// was passed to returns. The scalars, `bool` and `char` are `Copy`; so is
+/// `Option`/`Result`/`[T; N]` of an inner type that is itself `Copy`
+/// (mirrored recursively, matching `derive(Copy)`'s own rule).
+fn moves_on_by_value_call(ty: &RustType) -> bool {
+    match ty {
+        RustType::VecU8 | RustType::Vec(_) | RustType::BTreeSet(_) => true,
+        RustType::Option(inner) => moves_on_by_value_call(inner),
+        RustType::Result(ok, err) => moves_on_by_value_call(ok) || moves_on_by_value_call(err),
+        RustType::Array(inner, _) => moves_on_by_value_call(inner),
+        RustType::Unsupported(_) => false,
+        _ => false,
+    }
+}
+
+/// The first bare reference to a name in `moved_names`, found anywhere in
+/// `expr`. Used only after `old(...)` has already been rewritten out of the
+/// tree (`contract_rt::lift_entry_values`), so a legitimate `old(v)` read --
+/// which evaluates before the call, on the value that still exists -- has
+/// already become `__ply_old_0` and cannot match; whatever is left really
+/// would be a read of `v` *after* it was moved into the call.
+fn find_moved_param_read(expr: &Expr, moved_names: &BTreeSet<&str>) -> Option<String> {
+    struct Finder<'a> {
+        moved: &'a BTreeSet<&'a str>,
+        found: Option<String>,
+    }
+    impl<'a> Visit<'a> for Finder<'a> {
+        fn visit_expr_path(&mut self, node: &'a syn::ExprPath) {
+            if self.found.is_some() {
+                return;
+            }
+            if let Some(ident) = node.path.get_ident()
+                && self.moved.contains(ident.to_string().as_str())
+            {
+                self.found = Some(ident.to_string());
+                return;
+            }
+            syn::visit::visit_expr_path(self, node);
+        }
+    }
+    let mut finder = Finder {
+        moved: moved_names,
+        found: None,
+    };
+    finder.visit_expr(expr);
+    finder.found
+}
+
+/// The parameter, if any, that `cf`'s postcondition reads *after* it has
+/// already been moved into the call: a by-value (non-`&`), non-`Copy`
+/// parameter no longer exists once `fname(...)` returns, so a generated
+/// harness that reads it there is `error[E0382]: borrow of moved value` --
+/// not a bug in the generated code, but a contract shape Ply cannot render
+/// at all. `old(param)` is exempt on purpose: it captures `param`'s value
+/// *before* the call (`contract_rt::lift_entry_values` already rewrites
+/// every `old(...)` occurrence into its own pre-call binding, so what
+/// reaches this function's scan is exactly what is left over -- a bare read
+/// with no `old()` around it, which can only mean after the call).
+pub fn moved_param_read_in_ensures(cf: &ContractFn) -> Option<&Param> {
+    let (closure, _) = cf.ensures.as_ref()?;
+    let moved_names: BTreeSet<&str> = cf
+        .params
+        .iter()
+        .filter(|p| !p.by_ref && moves_on_by_value_call(&p.ty))
+        .map(|p| p.name.as_str())
+        .collect();
+    if moved_names.is_empty() {
+        return None;
+    }
+    let (checked_body, _) = crate::contract_rt::lift_entry_values(&closure.body);
+    let found_name = find_moved_param_read(&checked_body, &moved_names)?;
+    cf.params.iter().find(|p| p.name == found_name)
+}
+
 /// Generates the `ply_fuzz_{fn}` proptest-driven test: `cases` runs of the
 /// combined strategy, `requires` as a rejection filter (§5.4c), the
 /// `ensures` clause checked in `catch_unwind` (never crashing the whole
@@ -224,6 +302,28 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
             "V0505: `{}` has parameter(s) the fuzz codegen cannot build inputs for: {}",
             cf.name,
             bad.join(", ")
+        );
+    }
+    // Refused by name rather than handed to codegen (defense in depth --
+    // `run_fn_checks` in ply-cli checks this first and never reaches here
+    // for this shape; this bail exists so a caller that skipped that check
+    // gets a loud error instead of a harness that cannot compile).
+    if let Some(p) = moved_param_read_in_ensures(cf) {
+        bail!(
+            "V0506: `{}`'s postcondition reads `{}` after `{}` has already been moved into the \
+             call -- `{}: {}` is passed by value, so it no longer exists once `{}` returns. Wrap \
+             the read in `old({})` to capture its value before the call, or take `{}` by \
+             reference (`&{}`) if `{}` only needs to read it.",
+            cf.name,
+            p.name,
+            p.name,
+            p.name,
+            p.ty.display_name(),
+            cf.name,
+            p.name,
+            p.name,
+            p.ty.display_name(),
+            p.name
         );
     }
 
@@ -443,6 +543,9 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
     if !cf.is_fuzz_supported() {
         return String::new();
     }
+    if moved_param_read_in_ensures(cf).is_some() {
+        return String::new();
+    }
     let literal_sets: Vec<Vec<String>> =
         cf.params.iter().map(|p| boundary_literals(&p.ty)).collect();
     if literal_sets.iter().any(|s| s.is_empty()) {
@@ -620,6 +723,91 @@ pub fn safe_increment(x: u32) -> u32 { x + 1 }
                 || body.contains("x<u32::MAX")
                 || body.contains("x < u32::MAX")
         );
+    }
+
+    /// Defect B: `v: Vec<u8>` is passed by value, so it has been moved into
+    /// the call by the time the postcondition reads `v.len()` -- the exact
+    /// shape a compile failure the task's repro used. Before the refusal
+    /// existed, this reached codegen and produced a harness with
+    /// `error[E0382]: borrow of moved value: `v``.
+    #[test]
+    fn a_postcondition_reading_a_moved_by_value_vec_is_refused_by_name() {
+        let cf = discover(
+            r#"
+#[ply::requires(v.len() <= 4)]
+#[ply::ensures(|result| *result as usize >= v.len())]
+pub fn vector(v: Vec<u8>) -> u32 { v.len() as u32 }
+"#,
+            "vector",
+        );
+        let refused = moved_param_read_in_ensures(&cf);
+        assert_eq!(
+            refused.map(|p| p.name.as_str()),
+            Some("v"),
+            "the moved parameter must be named, not merely detected"
+        );
+        let err = generate_fuzz_test(&cf, 32, &derive_seed("vector", "")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("V0506"), "{msg}");
+        assert!(
+            msg.contains("moved"),
+            "the message must say what actually goes wrong: {msg}"
+        );
+        assert!(
+            generate_direct_contract_cases(&cf).is_empty(),
+            "the `test` tier's direct cases must refuse the same shape, not just `fuzz`"
+        );
+    }
+
+    /// The construct `old()` exists for: reading a by-value parameter's
+    /// *entry* value is fine, because `old(v)` is captured before the call,
+    /// while `v` still exists.
+    #[test]
+    fn old_of_a_moved_by_value_param_is_not_refused() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result as usize == old(v).len())]
+pub fn consume(v: Vec<u8>) -> u32 { v.len() as u32 }
+"#,
+            "consume",
+        );
+        assert!(
+            moved_param_read_in_ensures(&cf).is_none(),
+            "old(v) reads the entry value, before the move -- it must not be refused"
+        );
+        assert!(generate_fuzz_test(&cf, 32, &derive_seed("consume", "")).is_ok());
+    }
+
+    /// A by-*reference* parameter is only ever borrowed for the call, never
+    /// moved -- reading it afterward in the postcondition is completely
+    /// ordinary and must never be refused, even though its underlying type
+    /// (`Vec<u8>`) would move if taken by value.
+    #[test]
+    fn a_by_reference_vec_param_is_never_refused() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result as usize >= v.len())]
+pub fn vector_ref(v: &Vec<u8>) -> u32 { v.len() as u32 }
+"#,
+            "vector_ref",
+        );
+        assert!(moved_param_read_in_ensures(&cf).is_none());
+    }
+
+    /// A `Copy` scalar parameter read after the call is completely ordinary
+    /// (this is `oldvalue`'s own `bump` shape without `old()`, and every
+    /// M3/M4 fixture that reads a plain `x: u32` post-call): it was copied
+    /// into the call, so the original is untouched.
+    #[test]
+    fn a_copy_scalar_param_read_after_the_call_is_never_refused() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result >= x)]
+pub fn scalar(x: u32) -> u32 { x + 1 }
+"#,
+            "scalar",
+        );
+        assert!(moved_param_read_in_ensures(&cf).is_none());
     }
 
     #[test]

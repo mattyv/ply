@@ -1,0 +1,10 @@
+ply: 1
+
+components:
+  twogood:
+    anchor: ply_fixture_twogood
+    fns:
+      increment:
+        checks: [fuzz(32)]
+      add_small:
+        checks: [fuzz(32), test]
