@@ -107,6 +107,46 @@ The review that forced it: `docs/review-result-reuse.md`.
 
 ## Agreed with the maintainer, not yet started
 
+- [x] **DECIDED 2026-08-26: the architecture verdict is code, never a model.** The
+      question was raised and settled: since the architecture tier is *approximate* by
+      nature — warnings by default, an escape hatch that takes a written reason — would a
+      model be the better enforcer? No. Approximate and nondeterministic are different
+      properties: a source-reading checker is wrong in the same places every run and can
+      enumerate what it could not see, while a model is wrong in different places each run
+      and cannot. Full argument, including two repairs to the reasoning that reached the
+      right answer for partly wrong reasons: `docs/review-architecture-enforcement.md`
+      (`b32deba`).
+
+      What that review changed about the plan, and what to actually do when this starts:
+
+      - **Crate tier first.** Cargo already knows the dependency graph exactly. Cheap,
+        sound, errors rather than warnings. Then turn it on this repository immediately —
+        self-hosting is the point, not a follow-up.
+      - **Measure before committing to depth.** A rough count says ~60% of this
+        workspace's own call sites are method calls, the shape a source reader handles
+        worst. Turn that estimate into a real number first; it decides how much
+        function-level checking is worth building at all.
+      - **The hand-run spike is rejected as designed** — circular (a model drafts the
+        description it then checks itself against), and unscoreable. Replaced with seeded
+        violations, including one behind dynamic dispatch, measured against ground truth.
+      - **The unexhausted middle rung**: a real type-resolving backend sits between
+        reading source and asking a model, and the extractor was made swappable for
+        exactly that. "Source reader or model" was a false choice.
+      - **A model's place is upstream only** — drafting the architecture description,
+        triaging call sites the reader could not place, proposing where an exception is
+        warranted. Propose, never decide. Anything it proposes gets confirmed
+        mechanically (the span exists, the item exists, the name matches) before it is
+        ever reported.
+      - **KNOWN RISK, recorded because it fails quietly**: "propose, never decide"
+        collapses the moment proposals are rubber-stamped. A model-drafted architecture
+        description that someone skims and approves is architecture-as-vibes laundered
+        through a deterministic checker. The rule that goldens are reviewed rather than
+        blind-accepted has to reach it.
+      - **Not an exception to the thesis.** A model rung has no oracle, and `strict: true`
+        means this tier is designed to gate merges — so "it's only warnings" is not a
+        defence available here.
+
+
 - [ ] **D7 for stubbed crossings — `W0541 stub_substituted`** (planned
       2026-08-25, `docs/plans/d7-stub-failures.md`). The Kani-pin spike proved a
       stub-caused failure has no faithful plain-Rust reproduction, on any engine version:
