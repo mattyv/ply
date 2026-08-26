@@ -946,19 +946,61 @@ attestation can only be renewed by the person who made it.
 
 ### 5.5 Modular composition (D5)
 
-Verification runs callees-before-callers over the call graph. To verify fn `f` that calls
-fn `g`, the split is on **what `g` offers**, in three branches — the first two keyed on
-the evidence behind `g`'s contract, the third on there being no contract to key on:
+Verification runs callees-before-callers over the call graph: within a crate, claimed
+functions are ordered topologically by their call edges, callees before callers, ties
+(equal-rank items — no dependency between them either way) broken by node id so the
+order is deterministic and a re-run cannot flap a golden. **A cycle cannot be ordered.**
+`f` and `g` calling each other (directly, or through any chain back to one another) is
+not a failure of the ordering, it is the fact the second branch below exists to catch:
+every claim in a cycle falls back to it, for every same-crate contracted callee it
+reaches, because the one thing branch one needs — this claim's callees already verified
+— cannot be established for a claim with no place in the order (built 2026-08-26).
+
+To verify fn `f` that calls fn `g`, the split is on **what `g` offers**, in three
+branches — the first two keyed on the evidence behind `g`'s contract, the third on there
+being no contract to key on:
 
 - `g` passed its own Kani contract proof this run, and `g` is in the same crate →
-  generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict.
+  generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict: `f` is not
+  marked `conditional` for `g` and owes no evidence for it. **A reused result counts as
+  proved**, not merely as a shortcut: since commit c650e55 the record's fingerprint
+  covers the code a check actually runs, not just the checked function's own lines, so a
+  matching stored `bounded(k)` for `g` is exactly as sound a foundation as one earned
+  fresh this run — the honesty condition that reuse feature exists to make true. What
+  does *not* qualify: a `g` whose own verdict is itself `conditional` (standing on a
+  further assumption) is never treated as proved here, or the debt it carries would be
+  laundered out of view the moment something stubs it out — this branch requires `g`
+  clean all the way down, not merely `bounded`-shaped.
+  **The bound this branch reports is capped at the weakest link.** `f`'s own proof holds
+  only *given* `g` meets its contract, and that was only established to `g`'s own depth —
+  so if `f` is declared at `bounded(5)` but stands on a `g` proved only to `bounded(2)`,
+  the honest composed verdict is `bounded(2)`, never `f`'s own declared number. Reporting
+  the deeper one would be exactly the "evidence stronger than what it rests on" overclaim
+  §1 exists to refuse. **A clean verdict is not a standalone one**: `f`'s tree entry
+  still names every same-crate proof it stood on and the bound each earned (`W0517`,
+  `info` severity — nothing here is wrong or owed, only worth recording) so a reader
+  never mistakes "not conditional" for "proved in isolation".
 - Anything else *that still has a declared contract* — `g` merely fuzzed or tested, `g` in
   another crate, `f` and `g` in a cycle, or `g` carrying no verification at all but a
   contract declared for it in `ply.yaml` (§5.4's external-spec route) → verify `f`
   assuming `g`'s contract, stub `g` out of the proof, and mark `f`'s verdict
   `conditional` (`W0511`), listing each assumed contract. The contract has to *say*
   something first: a promise nothing can satisfy, or one true of every value, is caught
-  before the proof runs (`E0502`/`E0503`, below).
+  before the proof runs (`E0502`/`E0503`, below). **A same-crate contracted `g` reached
+  through this branch is stubbed with `#[kani::stub_verified(g)]` too, mechanically
+  identical to the first branch** — Kani's plain `#[kani::stub]` cannot target a function
+  that carries its own contract at all (Kani issue #4591: a compile error, "Failed to
+  find contract closure", killing the whole crate; reproduced against both the pinned
+  toolchain and Kani's own `main` in `tests/spike/kani-pin`, and again directly against
+  this feature 2026-08-26). What tells the two branches apart is never anything Kani
+  checks — its own existence gate for `stub_verified` is purely syntactic either way
+  (`tests/spike/FINDINGS.md` item 4: it "works, but is unenforced" — no check that the
+  named proof harness ever ran or passed) — it is entirely Ply's own bookkeeping: whether
+  the ordering above actually established `g` clean this run. A callee still reached
+  through `ply.yaml`'s external-spec route (no inline contract at all) keeps the older,
+  hand-built stand-in function and plain `#[kani::stub]`, which works fine there — Kani's
+  limitation is specifically about stubbing a target that itself carries `#[kani::requires]`/
+  `#[kani::ensures]`, and a boundary-contract callee never does.
 - **No contract is declared for `g` anywhere** — not inline, not in `ply.yaml` → Ply
   **refuses to descend into `g`'s body**. `f`'s `bounded` check earns no evidence:
   verdict `unclaimed`, diagnostic `W0512`, and the run fails by default (§1's
@@ -988,9 +1030,14 @@ than a shortcut:
    nobody claimed*, yielding a `bounded` verdict whose meaning silently includes code no
    contract vouches for. The qualifier is exact and not decorative: this condition holds
    for the call sites this rule inspects, which are the ones written in the function being
-   checked. An unclaimed callee *below a contracted callee* is a gap that stays open until
-   D5's first branch stubs the contracted one — see this section's limits below, where it
-   is stated rather than implied.
+   checked. An unclaimed callee *below a contracted callee* `g` was a gap that stayed open
+   until D5's first branch landed (2026-08-26, closed for either of its branches): a
+   same-crate `g` is now always stubbed, never inlined, whichever branch reached it, so
+   whatever `g` itself calls never travels into the caller's proof at all. **Still open**:
+   a contracted `g` reached through a path dependency (a different crate) is still
+   inlined exactly as before — cross-crate `stub_verified` is out of scope for v1 (below),
+   so this gap survives there specifically. See this section's limits below for what else
+   is still open.
 3. **An assumed boundary contract is owed evidence until something exercises it.** A
    contract declared in `ply.yaml` for an unclaimed callee is trusted, and trust that is
    never checked is green paint. The assumption is auditable (`cargo ply audit`'s trust
@@ -1049,14 +1096,12 @@ or enum-variant constructor (`Some(x)`, `Ok(v)`, `Wrapper(t)`), not a free funct
 never triggers the glob refusal. Firing the boundary rule on `Some(x)` would tell a
 reader nothing they could act on — the same reason method calls are not call sites here.
 
-Two first-party gaps remain open, and are recorded in TODO.md rather than papered over:
-(a) the rule inspects the **claimed function's own body**, so a caller that calls a
-*contracted* callee `g` still acquires whatever `g` itself calls — until D5's first
-branch (`stub_verified`) lands, `g` is inlined rather than stubbed, and an unclaimed
-callee one level below `g` travels into the caller's proof unnamed; (b) calls Ply's
-reader cannot see at all — generated by a macro, routed through a `#[path = "..."]`
+One first-party gap remains open (recorded in TODO.md rather than papered over): calls
+Ply's reader cannot see at all — generated by a macro, routed through a `#[path = "..."]`
 module attribute, or made through a function pointer or trait method — are not call
-sites for it.
+sites for it. The gap this used to name for a same-crate contracted callee `g` (`g`
+inlined rather than stubbed, so an unclaimed callee one level below it travelled into the
+caller's proof unnamed) closed 2026-08-26 when D5's first branch landed — see above.
 
 A `ply.yaml` fn entry that declares `requires`/`ensures` and asks for no `checks` is a
 **boundary contract declaration**, not a claim: it exists so callers can assume something
@@ -1108,8 +1153,49 @@ does not look at a verified function's own inline `#[ply::ensures]`, where a wea
 the `mutate` tier's question (`W0502`) rather than this one's.
 
 The verdict tree shows each verdict's assumption chain; `conditional` propagates upward as a
-status (D6). Cross-crate `stub_verified` (Kani's wrapper/double-stub workaround) is out
-of scope for v1.
+status (D6).
+
+**§5.5's limits**, gathered in one place rather than left scattered across the section
+they were each stated in:
+
+- **Cross-crate `stub_verified` is out of scope for v1.** A callee reached through a path
+  dependency is left exactly as before this feature (full descent, Kani inlines its real
+  body) even when it carries its own contract — neither branch one nor branch two's
+  same-crate `stub_verified` mechanism applies across a crate boundary. `tests/spike`'s
+  own item 5 found a sound *workaround* (a caller-local `#[kani::proof_for_contract]`
+  naming the remote `pub` function by qualified path), but it needs a second harness
+  declared per consuming crate with no cross-crate proof caching, and D5 does not
+  generate it automatically. Decide whether a later milestone does.
+- **A call outside the workspace** (`std`, `core`, a registry crate) is left alone and
+  Kani still descends into it — stated above, repeated here because it is the same shape
+  of gap: a `bounded` verdict can still include a body Ply never examined.
+- **A call Ply's reader cannot see at all** — generated by a macro, routed through a
+  `#[path = "..."]` module attribute, or made through a function pointer or trait method —
+  is not a call site for this rule at all, in either direction: such a call is neither
+  refused (branch three) nor stubbed (branches one and two), because Ply never extracted
+  it from the body to begin with.
+- **Branch one requires `g` clean, never merely `bounded`-shaped.** A `g` whose own
+  verdict carries `conditional` — because it, in turn, stands on a further assumption —
+  never qualifies as proved here, however deep its own declared bound. This is a
+  deliberate, conservative reading of "passed its own Kani contract proof": composing
+  branch one across more than one hop of assumption is a real question (does `f`
+  inherit `g`'s own owed-evidence debt, transitively, and how is that shown on `f`'s
+  node?) that this design does not answer. Recorded as a known gap rather than guessed
+  at — see TODO.md.
+- **The cycle fallback is decided per claim, not per edge.** A claim inside an
+  unorderable cycle falls back to branch two for *every* same-crate contracted callee it
+  reaches, including ones outside the cycle that could, in principle, still have been
+  ordered relative to it. The coarser rule is what §5.5's own ordering text states and
+  what this section's own test suite pins; a finer per-edge version is a possible
+  future refinement, not a defect in what shipped.
+- **The stub-verified mechanism's own soundness rests entirely on Ply's scheduler, never
+  on Kani.** `tests/spike/FINDINGS.md` item 4 found Kani's own compile-time check for
+  `#[kani::stub_verified]` purely syntactic — it confirms *some* `#[kani::proof_for_contract]`
+  harness exists for the named target, never that the harness ran, or passed, in this
+  invocation or any other. Every honesty condition above (ordering, "clean not merely
+  bounded-shaped", the reused-record rule) exists because of this: if Ply's own ordering
+  or its "clean" gate were ever wrong, nothing downstream — not Kani, not CBMC — would
+  notice or refuse.
 
 ### 5.6 Underspecification
 

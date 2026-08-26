@@ -1,5 +1,80 @@
 # TODO
 
+## D5's first branch lands: `stub_verified` — 2026-08-26
+
+Full write-up of both red-first passes (the feature, then the reuse gap an adversarial
+review found in it) belongs beside this entry's own literal failures, recorded here
+since no separate doc was asked for this session.
+
+- [x] **`stub_verified` works, mechanically, against the generated harnesses.** Confirmed
+      by direct reproduction against real `cargo kani` runs (not just unit tests): a
+      caller stubbing a callee proved clean this run verifies in a fraction of a second
+      via `#[kani::stub_verified]` plus a never-run "existence" harness satisfying
+      Kani's purely-syntactic existence check (`tests/spike/FINDINGS.md` item 4 --
+      confirmed again here, not just cited). §5.5's opening claim ("verification runs
+      callees-before-callers") is real now: a topological order over the call graph,
+      ties broken by node id, cycles falling back to the second branch.
+- [x] **Ordering** (`callgraph`/`verify.rs`): claimed functions with a `bounded` check
+      are ordered callees-before-callers; a cycle (mutual recursion, direct or
+      transitive) cannot be ordered and every claim in it falls back to D5's second
+      branch, `conditional`, exactly as before this feature -- not an error, not a hang
+      (`stubverifiedcycle` fixture).
+- [x] **The bound composes to the weaker of the two, never the caller's own declared
+      one** (`stubverifiedminbound` fixture) -- the anti-overclaim test, and the one that
+      matters most.
+- [x] **A real Kani limitation found and worked around, not papered over**: plain
+      `#[kani::stub]` cannot target a function that itself carries a contract (issue
+      #4591, "Failed to find contract closure" -- a compile error killing the whole
+      crate, reproduced here against this feature after `tests/spike/kani-pin` found it
+      for a different case). Both of D5's branches, when reached through a same-crate
+      contracted callee, therefore use `#[kani::stub_verified]` mechanically; what marks
+      one `conditional` and not the other is entirely Ply's own bookkeeping (did the
+      ordering above establish the callee clean this run), never anything Kani checks.
+- [x] **A second defect, found by adversarial review of this feature and not by any
+      test already in the suite**: the composed bound depends on a callee's *earned*
+      verdict, and nothing hashed it. Editing only a callee's declared `checks:` (its
+      bound going from `bounded(5)` down to `bounded(2)`, no source touched anywhere)
+      correctly re-earned the callee's own record while the caller's record -- and its
+      now-stale deeper bound -- went untouched. Closed by adding `verified_bounds` to
+      `FingerprintInputs` (`record.rs`, new `INPUT_GROUPS` entry "the callees it stands
+      on") and by *deferring* a bounded-eligible claim's reuse lookup until its
+      fingerprint is finalised in dependency order, rather than deciding it from the
+      Pass-1 fingerprint before that composition is known. Pinned permanently:
+      `stubverifiedstalebound` fixture, red-first against the isolated defect, green
+      with the fix restored.
+- [x] **The same restructuring incidentally fixed a second, independent bug the review
+      also caught**: an earlier version of the ordered pass decided "reused" before
+      ordering and then unconditionally re-ran every bounded-eligible claim's engine
+      regardless, wasting the exact cost reuse exists to avoid and writing a proof
+      module for a claim the envelope reported `reused: true` -- caught by
+      `resultreuse_fixture` going from 5/7 to 7/7 once the ordered pass was made to
+      consult the reuse decision instead of ignoring it.
+- [x] The missing "§5.5's limits" subsection §5.5 already pointed at ("see this
+      section's limits below") now exists, gathering: cross-crate `stub_verified` (out
+      of scope for v1, unchanged), a call outside the workspace, a call Ply's reader
+      cannot see, branch one requiring a callee *clean* (never merely `bounded`-shaped
+      -- a conservative, stated restriction on composing across more than one hop of
+      assumption), the cycle fallback being decided per claim rather than per edge, and
+      the whole mechanism's soundness resting entirely on Ply's own scheduler, never on
+      Kani (`tests/spike/FINDINGS.md` item 4, restated where a reader of this rule would
+      need it).
+- [x] Fixtures: `stubverified`, `stubverifiedminbound`, `stubverifiedcycle`,
+      `stubverifiedfuzzedcallee`, `stubverifiedstalebound` (`tests/fixtures/`), each
+      with its own e2e test under `tests/e2e/tests/`. `cargo test --workspace`: 313
+      passed, 0 failed, fmt and clippy clean.
+- [ ] KNOWN GAP, deliberate: a claim declaring **both** `bounded` and `fuzz`/`test` in
+      the same `checks:` list is bounded-eligible (needs the ordered pass) but its
+      fuzz/test portion needs the harness crate built in the *unchanged*, earlier pass
+      that the ordered pass's own reuse decision now runs after. No current fixture
+      declares such a mixed list, so this has not bitten anything real, but it is not
+      solved either -- recorded here rather than discovered later.
+- [ ] KNOWN GAP, stated in §5.5's new limits paragraph: branch one requires a callee's
+      own verdict to be clean (never `conditional`) before this claim can stand on it.
+      Composing branch one across more than one hop of assumption -- does a claim
+      resting on a clean callee that itself rested on a clean callee inherit anything
+      the second hop assumed, transitively -- is a real question this design declines
+      to answer rather than guesses at.
+
 ## Phase 1a — landed 2026-08-25
 
 Full write-up with verbatim red-first failures: `docs/phase-1a.md`.

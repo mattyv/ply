@@ -143,9 +143,13 @@ fn plan_ensures(s: &StubSpec, plan: &mut PromisePlan) {
     }
     let ret = &s.return_type;
     let mut applied = Vec::new();
+    let mut named = std::collections::BTreeSet::new();
     for e in &s.ensures {
         match apply_ensures(e, ret) {
-            Ok(expr) => applied.push((e.clone(), expr)),
+            Ok(expr) => {
+                named.extend(identifiers_in(e));
+                applied.push((e.clone(), expr));
+            }
             Err(reason) => {
                 plan.not_checked.push(NotChecked {
                     callee: s.callee_path.clone(),
@@ -156,8 +160,46 @@ fn plan_ensures(s: &StubSpec, plan: &mut PromisePlan) {
             }
         }
     }
+    // An `ensures` closure can name the callee's own parameters directly
+    // (`|result| *result == x + 1`), not only `result` -- an entirely
+    // ordinary Kani contract, since `x` is in scope for real inside the
+    // callee's own body. This probe evaluates the closure standalone, so
+    // anything it names besides `result` needs its own binding here or the
+    // generated harness fails to compile with an undefined-variable error
+    // (found running D5's first branch against a real inline contract,
+    // 2026-08-26). Only the params a clause actually names are bound --
+    // `plan_requires` needs every param regardless, since a `requires` has
+    // no other source for them, but binding one here that no clause
+    // mentions would fail this probe on a parameter shape the clause never
+    // touches (a callee taking an otherwise-unsupported type whose
+    // `ensures` only ever names `result` must still be checkable).
+    let referenced: Vec<(String, String)> = s
+        .params
+        .iter()
+        .filter(|(name, _)| named.contains(name))
+        .cloned()
+        .collect();
+    let param_bindings = match params_binding(&referenced) {
+        Ok(b) => b,
+        Err(reason) => {
+            plan.not_checked.push(NotChecked {
+                callee: s.callee_path.clone(),
+                kind: ClauseKind::Ensures,
+                reason,
+            });
+            return;
+        }
+    };
     let ident = ident_of(&s.callee_path);
-    let binding = format!("    let __ply_result: {ret} = kani::any();\n");
+    let binding = format!(
+        "{}    let __ply_result: {ret} = kani::any();\n",
+        param_bindings.text
+    );
+    let domain = if param_bindings.domain.is_empty() {
+        ret.clone()
+    } else {
+        format!("{}, {ret}", param_bindings.domain.join(", "))
+    };
 
     let conjunction: Vec<String> = applied.iter().map(|(_, a)| a.clone()).collect();
     let clause_text: Vec<String> = applied.iter().map(|(t, _)| t.clone()).collect();
@@ -167,7 +209,7 @@ fn plan_ensures(s: &StubSpec, plan: &mut PromisePlan) {
         kind: ClauseKind::Ensures,
         question: Question::Satisfiable,
         clause: clause_text.join(" && "),
-        domain: ret.clone(),
+        domain: domain.clone(),
         source: render(
             &format!("ply_promise_sat_{ident}_ensures"),
             &binding,
@@ -181,7 +223,7 @@ fn plan_ensures(s: &StubSpec, plan: &mut PromisePlan) {
             kind: ClauseKind::Ensures,
             question: Question::Violable,
             clause: text.clone(),
-            domain: ret.clone(),
+            domain: domain.clone(),
             source: render(
                 &format!("ply_promise_taut_{ident}_ensures_{i:02}"),
                 &binding,
@@ -189,6 +231,42 @@ fn plan_ensures(s: &StubSpec, plan: &mut PromisePlan) {
             ),
         });
     }
+}
+
+/// The `kani::any()` bindings a probe needs for a callee's own parameters
+/// (shared by `plan_ensures` and `plan_requires`), plus the same list
+/// rendered for a diagnostic's `domain`. `Err` names the parameter and type
+/// Ply's codegen has no `kani::any()` for, same wording either caller used
+/// alone before this was shared.
+struct ParamBindings {
+    text: String,
+    domain: Vec<String>,
+}
+
+fn params_binding(params: &[(String, String)]) -> Result<ParamBindings, String> {
+    let mut text = String::new();
+    let mut domain = Vec::new();
+    for (name, ty_src) in params {
+        match crate::harness::rust_type_from_source(ty_src).and_then(|t| {
+            t.is_bounded_supported()
+                .then(|| t.rust_name())
+                .flatten()
+                .map(|n| (t, n))
+        }) {
+            Some((_, rust_name)) => {
+                text.push_str(&format!("    let {name}: {rust_name} = kani::any();\n"));
+                domain.push(format!("{name}: {rust_name}"));
+            }
+            None => {
+                return Err(format!(
+                    "its parameter `{name}` has type `{ty_src}`, and Ply's bounded codegen \
+                     cannot build an arbitrary value of that type, so there is nothing to \
+                     range the question over"
+                ));
+            }
+        }
+    }
+    Ok(ParamBindings { text, domain })
 }
 
 fn plan_requires(s: &StubSpec, plan: &mut PromisePlan) {
@@ -200,33 +278,19 @@ fn plan_requires(s: &StubSpec, plan: &mut PromisePlan) {
     // guarantee that it can: the stub receives its parameters, it does not
     // invent them. A parameter type Ply's codegen has no `kani::any()` for
     // is reported as unchecked rather than guessed at.
-    let mut binding = String::new();
-    let mut domain = Vec::new();
-    for (name, ty_src) in &s.params {
-        match crate::harness::rust_type_from_source(ty_src).and_then(|t| {
-            t.is_bounded_supported()
-                .then(|| t.rust_name())
-                .flatten()
-                .map(|n| (t, n))
-        }) {
-            Some((_, rust_name)) => {
-                binding.push_str(&format!("    let {name}: {rust_name} = kani::any();\n"));
-                domain.push(format!("{name}: {rust_name}"));
-            }
-            None => {
-                plan.not_checked.push(NotChecked {
-                    callee: s.callee_path.clone(),
-                    kind: ClauseKind::Requires,
-                    reason: format!(
-                        "its parameter `{name}` has type `{ty_src}`, and Ply's bounded codegen \
-                         cannot build an arbitrary value of that type, so there is nothing to \
-                         range the question over"
-                    ),
-                });
-                return;
-            }
+    let param_bindings = match params_binding(&s.params) {
+        Ok(b) => b,
+        Err(reason) => {
+            plan.not_checked.push(NotChecked {
+                callee: s.callee_path.clone(),
+                kind: ClauseKind::Requires,
+                reason,
+            });
+            return;
         }
-    }
+    };
+    let binding = param_bindings.text;
+    let domain = param_bindings.domain;
     let mut exprs = Vec::new();
     for r in &s.requires {
         match syn::parse_str::<Expr>(r) {
@@ -295,6 +359,31 @@ fn apply_ensures(clause: &str, ret: &str) -> Result<String, String> {
         pat = pat.to_token_stream(),
         body = closure.body.to_token_stream()
     ))
+}
+
+/// Every bare identifier an `ensures` clause's *body* names (never its own
+/// `|result|` binder) -- narrow, syntactic, not full name resolution:
+/// good enough to decide which of the callee's own parameters this specific
+/// clause needs bound, the same "read the shape this codebase's fixtures
+/// actually use" bar `tidy_contract_text` documents for itself. Malformed
+/// input yields an empty set rather than an error -- `apply_ensures` above
+/// is what reports a clause Ply cannot parse at all.
+fn identifiers_in(clause: &str) -> std::collections::BTreeSet<String> {
+    struct Collector(std::collections::BTreeSet<String>);
+    impl<'ast> syn::visit::Visit<'ast> for Collector {
+        fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
+            if let Some(id) = node.path.get_ident() {
+                self.0.insert(id.to_string());
+            }
+            syn::visit::visit_expr_path(self, node);
+        }
+    }
+    let Ok(closure) = syn::parse_str::<ExprClosure>(clause) else {
+        return Default::default();
+    };
+    let mut c = Collector(Default::default());
+    syn::visit::visit_expr(&mut c, &closure.body);
+    c.0
 }
 
 fn render(fn_name: &str, binding: &str, condition: &str) -> String {
@@ -433,6 +522,7 @@ mod tests {
             return_type: "u32".into(),
             requires: requires.iter().map(|s| s.to_string()).collect(),
             ensures: ensures.iter().map(|s| s.to_string()).collect(),
+            kind: crate::harness::StubKind::Assumed,
         }
     }
 

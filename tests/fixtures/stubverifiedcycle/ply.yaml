@@ -1,0 +1,14 @@
+ply: 1
+
+# `f` and `g` call each other -- a cycle the callees-before-callers order
+# cannot place either function in, so D5's second branch covers both: each
+# assumes the other's declared contract, stubbed rather than descended
+# into, and stays `conditional` with `owed-evidence`.
+components:
+  stubverifiedcycle:
+    anchor: ply_fixture_stubverifiedcycle
+    fns:
+      g:
+        checks: [bounded(2)]
+      f:
+        checks: [bounded(2)]

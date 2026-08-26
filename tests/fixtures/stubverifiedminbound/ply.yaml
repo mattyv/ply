@@ -1,0 +1,13 @@
+ply: 1
+
+# `g` is proved to bounded(2); `f` declares the deeper bounded(5) but calls
+# `g` (D5's first branch). The honest composed verdict for `f` is
+# bounded(2) -- the weaker of the two, never `f`'s own declared bound.
+components:
+  stubverifiedminbound:
+    anchor: ply_fixture_stubverifiedminbound
+    fns:
+      g:
+        checks: [bounded(2)]
+      f:
+        checks: [bounded(5)]

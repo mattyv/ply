@@ -599,7 +599,12 @@ fn tidy_contract_text(s: &str) -> String {
         .replace("old (", "old(")
 }
 
-fn build_contract_fn(f: &ItemFn, aliases: &AliasMap, path: &str) -> Result<ContractFn> {
+/// `pub` so D5's first branch (§5.5) can parse a same-crate callee's own
+/// inline contract the same way any claimed fn's is parsed -- the one
+/// difference between a fn `verify` checks directly and one reached only as
+/// another claim's callee is which caller asked, never how the source is
+/// read.
+pub fn build_contract_fn(f: &ItemFn, aliases: &AliasMap, path: &str) -> Result<ContractFn> {
     let name = f.sig.ident.to_string();
     let mut params = Vec::new();
     for arg in &f.sig.inputs {
@@ -666,20 +671,86 @@ fn build_contract_fn(f: &ItemFn, aliases: &AliasMap, path: &str) -> Result<Contr
 /// contract": the caller is proved against the promise, never against the
 /// body -- which is what makes the resulting verdict `conditional` rather
 /// than `bounded` full stop.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Which mechanism a stub renders -- and, for a same-crate contracted
+/// callee, which of D5's two branches (§5.5) Ply's own ordering decided.
+///
+/// Two *mechanisms*, not two branches: `Assumed` is for a callee that
+/// carries **no** inline contract of its own (§5.5's second branch reached
+/// through a `ply.yaml`-declared contract, D2's boundary-contract route) --
+/// Kani's plain `#[kani::stub]` works directly there. `Contracted` is for a
+/// same-crate callee that **does** carry its own inline `#[ply::requires]`/
+/// `#[ply::ensures]`: Kani's plain `#[kani::stub]` cannot target a
+/// contracted function at all (Kani issue #4591, reproduced against both
+/// the pinned toolchain and Kani `main`, `tests/spike/kani-pin`'s blocker
+/// 2, and again directly against this feature 2026-08-26 -- "Failed to
+/// find contract closure" is a **compile** error, killing the whole
+/// crate), so `#[kani::stub_verified]` plus a never-run "existence" harness
+/// is the *only* mechanism Kani offers for such a target, and both of D5's
+/// branches use it identically. What tells them apart is `bound`: `Some(k)`
+/// only when Ply's own ordering established this run that the callee
+/// earned a clean `bounded(k)` (branch one -- not `conditional`, owes
+/// nothing, composes the caller's bound to `min`); `None` when it could
+/// not (a cycle, or the callee's own check did not come back clean this
+/// run) -- branch two, exactly as `conditional` always meant, mechanically
+/// indistinguishable to Kani (`stub_verified`'s own check is purely
+/// syntactic either way, tests/spike's finding 1 -- Ply's scheduler is the
+/// entire soundness argument, never Kani's).
+#[derive(Debug, Clone)]
+pub enum StubKind {
+    /// No inline contract on the callee -- a hand-built stand-in function
+    /// plus plain `#[kani::stub]`. The caller's verdict is `conditional`
+    /// (`W0511`) and the assumption is owed evidence.
+    Assumed,
+    /// A same-crate callee carrying its own inline contract. `params` are
+    /// its own normalised parameters, needed only to render the never-run
+    /// "existence" harness `render_existence` emits alongside --
+    /// `#[kani::stub_verified]` requires *some*
+    /// `#[kani::proof_for_contract(g)]` harness to be present in the
+    /// compiled crate, and checks nothing about whether it ran or passed.
+    Contracted {
+        bound: Option<u32>,
+        params: Vec<Param>,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct StubSpec {
     /// The callee path exactly as the caller writes it -- also
     /// `#[kani::stub(..)]`'s first argument.
     pub callee_path: String,
     /// `(name, type source)` in declaration order, taken from the callee's
-    /// real signature so the stub is signature-compatible (Kani checks).
+    /// real signature so a rendered stand-in fn is signature-compatible
+    /// (Kani checks) -- populated for both branches, since `crate::promise`
+    /// ranges a `requires` probe over these regardless of `kind`. Not what
+    /// `render_existence()` uses for its own `kani::any()` bindings, though:
+    /// those need the *dereferenced* type (`Contracted::params`, already
+    /// normalised), while this field keeps the raw, possibly-referenced
+    /// text a stand-in function's own signature needs.
     pub params: Vec<(String, String)>,
     pub return_type: String,
     pub requires: Vec<String>,
     pub ensures: Vec<String>,
+    pub kind: StubKind,
 }
 
 impl StubSpec {
+    /// True for D5's second branch (§5.5): the caller is `conditional` and
+    /// owes evidence for this callee. False only for `Contracted { bound:
+    /// Some(_), .. }` (branch one) -- real evidence the caller does not owe
+    /// anything for.
+    pub fn is_assumed(&self) -> bool {
+        !matches!(self.kind, StubKind::Contracted { bound: Some(_), .. })
+    }
+
+    /// The `bounded(k)` this callee's own proof earned this run, when this
+    /// stub is D5's first branch (§5.5) -- `None` for `Assumed` and for a
+    /// `Contracted` stub that fell back to branch two.
+    pub fn verified_bound(&self) -> Option<u32> {
+        match &self.kind {
+            StubKind::Contracted { bound, .. } => *bound,
+            StubKind::Assumed => None,
+        }
+    }
     /// A deterministic Rust identifier for the generated stub fn.
     pub fn stub_fn_name(&self) -> String {
         format!("ply_stub_{}", self.callee_path.replace("::", "_"))
@@ -763,6 +834,39 @@ impl StubSpec {
             body = body,
         ))
     }
+
+    /// A `StubKind::Contracted` stub (§5.5): a harness that calls the real
+    /// callee with symbolic arguments and carries
+    /// `#[kani::proof_for_contract(..)]` for it, so that Kani's
+    /// compile-time existence check for `#[kani::stub_verified]` is
+    /// satisfied. Never named in `--harness`, so it never actually runs
+    /// here -- for a branch-one stub, the callee's own separate run
+    /// earlier this pass (or a still-valid record, D5's honesty condition
+    /// 3 above) is what actually proved it; for a branch-two stub (a
+    /// cycle, or the callee's own check did not come back clean this run)
+    /// nothing did, and that is exactly why the caller stays `conditional`
+    /// -- Kani's own check here cannot tell the two apart, only Ply's
+    /// bookkeeping can. `params` is the callee's own normalised signature
+    /// (not `self.params`, which is `Assumed`'s raw, possibly-referenced
+    /// text -- see the field's own doc comment).
+    fn render_existence(&self, params: &[Param]) -> String {
+        let (lets, call_args) = render_kani_args(params, 1);
+        let name = format!(
+            "ply_verified_exists_{}",
+            self.callee_path.replace("::", "_")
+        );
+        format!(
+            "#[cfg(kani)]\n\
+             #[allow(dead_code, unused_variables)]\n\
+             #[kani::proof_for_contract({path})]\n\
+             fn {name}() {{\n\
+             {lets}\
+             \x20\x20\x20\x20{path}({args});\n\
+             }}\n",
+            path = self.callee_path,
+            args = call_args.join(", "),
+        )
+    }
 }
 
 /// The generated Kani proof module for one `ContractFn`.
@@ -775,9 +879,11 @@ pub struct GeneratedHarness {
     /// `Vec`-typed parameter is present. `None` means no Vec parameter and
     /// therefore no unwind annotation was needed.
     pub unwind: Option<u32>,
-    /// The callees this harness stubbed under §5.5's second branch, in the
+    /// Every callee this harness stubbed, either branch (§5.5), in the
     /// order they appear in the proof's attributes. Non-empty means the run
-    /// needs Kani's `-Z stubbing` and the verdict is `conditional`.
+    /// needs Kani's `-Z stubbing`; the verdict is `conditional` only if any
+    /// entry is `StubKind::Assumed` (`is_assumed()`) -- a callee stubbed
+    /// `Verified` is real evidence the caller does not owe anything for.
     pub stubbed: Vec<StubSpec>,
     /// The promise-content probes generated beside the proof: one harness
     /// per question Ply asks about each declared clause (§5.5, `crate::promise`).
@@ -793,30 +899,18 @@ pub struct GeneratedHarness {
 /// measured (not inferred) for exactly this manual-indexed-loop-consumption
 /// shape in docs/m3-slice-findings.md. Without it, Kani's default unwind
 /// inference times out at every length, including 1.
-pub fn generate_proof_module(
-    cf: &ContractFn,
-    bound_k: u32,
-    stubs: &[StubSpec],
-) -> Result<GeneratedHarness> {
-    if !cf.is_bounded_supported() {
-        let bad: Vec<String> = cf
-            .params
-            .iter()
-            .filter(|p| !p.ty.is_bounded_supported())
-            .map(|p| format!("{}: {:?}", p.name, p.ty))
-            .collect();
-        bail!(
-            "V0505: unsupported parameter type(s) for `{}`: {}",
-            cf.name,
-            bad.join(", ")
-        );
-    }
-
+/// Builds `kani::any()` (or `kani::vec::any_vec`) bindings for `params` at
+/// `bound_k`, plus the call-site arguments (`&x` for a by-ref param) --
+/// the one place this shape is built, shared between a claimed fn's own
+/// proof and D5's first branch (§5.5): the never-run "existence" harness
+/// that stands in for a `#[kani::stub_verified]` target's own
+/// `#[kani::proof_for_contract]` requirement (tests/spike's finding 1 --
+/// Kani's check is purely that such a harness is present in the same
+/// compiled crate, never that it ran or passed here).
+fn render_kani_args(params: &[Param], bound_k: u32) -> (String, Vec<String>) {
     let mut lets = String::new();
     let mut call_args = Vec::new();
-    let has_vec = cf.has_vec_param();
-
-    for p in &cf.params {
+    for p in params {
         match &p.ty {
             RustType::VecU8 => {
                 lets.push_str(&format!(
@@ -840,6 +934,30 @@ pub fn generate_proof_module(
             p.name.clone()
         });
     }
+    (lets, call_args)
+}
+
+pub fn generate_proof_module(
+    cf: &ContractFn,
+    bound_k: u32,
+    stubs: &[StubSpec],
+) -> Result<GeneratedHarness> {
+    if !cf.is_bounded_supported() {
+        let bad: Vec<String> = cf
+            .params
+            .iter()
+            .filter(|p| !p.ty.is_bounded_supported())
+            .map(|p| format!("{}: {:?}", p.name, p.ty))
+            .collect();
+        bail!(
+            "V0505: unsupported parameter type(s) for `{}`: {}",
+            cf.name,
+            bad.join(", ")
+        );
+    }
+
+    let has_vec = cf.has_vec_param();
+    let (lets, call_args) = render_kani_args(&cf.params, bound_k);
 
     let unwind = if has_vec { Some(bound_k + 1) } else { None };
     let unwind_attr = unwind
@@ -850,13 +968,25 @@ pub fn generate_proof_module(
     let mut stub_defs = String::new();
     let mut stub_attrs = String::new();
     for s in stubs {
-        stub_defs.push_str(&s.render()?);
-        stub_defs.push('\n');
-        stub_attrs.push_str(&format!(
-            "#[kani::stub({path}, {name})]\n",
-            path = s.callee_path,
-            name = s.stub_fn_name()
-        ));
+        match &s.kind {
+            StubKind::Assumed => {
+                stub_defs.push_str(&s.render()?);
+                stub_defs.push('\n');
+                stub_attrs.push_str(&format!(
+                    "#[kani::stub({path}, {name})]\n",
+                    path = s.callee_path,
+                    name = s.stub_fn_name()
+                ));
+            }
+            StubKind::Contracted { params, .. } => {
+                stub_defs.push_str(&s.render_existence(params));
+                stub_defs.push('\n');
+                stub_attrs.push_str(&format!(
+                    "#[kani::stub_verified({path})]\n",
+                    path = s.callee_path
+                ));
+            }
+        }
     }
 
     let proof_fn_name = format!("ply_proof_{}", cf.ident());

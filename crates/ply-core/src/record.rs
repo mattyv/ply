@@ -16,6 +16,17 @@
 //! supplies the missing input; `reach`'s own module comment states the one
 //! limit it cannot pass, and §5.2a states it to users.
 //!
+//! **A second input was missing, found 2026-08-26.** D5's first branch
+//! (§5.5) lets a caller's proof stand on a same-crate callee's own earned
+//! `bounded(k)`, composing to the weaker of the two bounds. Composing
+//! against a number is depending on that number, and nothing hashed it: a
+//! caller's record stayed unchanged when the callee's *declared checks*
+//! moved in `ply.yaml` (no source touched anywhere), so editing a callee
+//! from `bounded(5)` down to `bounded(2)` re-earned the callee's own record
+//! correctly while the caller kept reporting its stale `bounded(5)` --
+//! `[reused]`, standing on a callee this same run had just proved only to
+//! depth 2. `verified_bounds` is the fixed input.
+//!
 //! **The honesty rule is the whole design.** A stored verdict that reaches a
 //! reader without being re-hashed is a remembered opinion, and it can drift
 //! from the code silently for as long as nobody re-blesses it. A stored
@@ -98,6 +109,20 @@ pub struct FingerprintInputs {
     pub declared_ensures: Vec<String>,
     /// The promises assumed for the callees this claim crosses into.
     pub assumed: Vec<AssumedPromise>,
+    /// D5's first branch (§5.5): the same-crate callees this claim stands
+    /// on rather than assumes, each with the `bounded(k)` it earned *this
+    /// run* -- `(canonical path, k)`. Added 2026-08-26 after a review found
+    /// the gap it closes: composing a caller's bound against a callee's
+    /// earned depth is new evidence this claim's result depends on, and
+    /// before this field existed nothing hashed it. Editing only the
+    /// callee's *declared checks* in `ply.yaml` (`bounded(5)` down to
+    /// `bounded(2)`) with no source touched anywhere re-earns the callee's
+    /// own record correctly, but left the caller's record fingerprint
+    /// unchanged -- so the caller kept reporting its old, deeper composed
+    /// bound over a callee this same run had just proved shallower. That is
+    /// the exact overclaim §5.5's bound-composition rule exists to refuse,
+    /// arriving through the record instead of through composition.
+    pub verified_bounds: Vec<(String, u32)>,
     /// The worked examples a `test` check compiles into assertions. Editing
     /// one changes what the check asserts, so it changes the result.
     pub examples: Vec<String>,
@@ -137,13 +162,14 @@ pub struct FingerprintInputs {
 /// hashed on its own, so a run that could not carry a result forward can
 /// say **which** of them moved instead of silently re-paying engine cost
 /// (§5.2a).
-pub const INPUT_GROUPS: [&str; 11] = [
+pub const INPUT_GROUPS: [&str; 12] = [
     "which claim this is",
     "the function's own source",
     "its contract",
     "the code it runs",
     "the worked examples it asserts",
     "the promises it assumes",
+    "the callees it stands on",
     "the checks that ran",
     "the engines behind them",
     "the compiler and the build target",
@@ -208,6 +234,12 @@ impl FingerprintInputs {
                         put("assumed-ensures", e);
                     }
                     put("assumed-signature", &a.signature);
+                }
+            }
+            "the callees it stands on" => {
+                for (path, k) in &self.verified_bounds {
+                    put("verified-callee", path);
+                    put("verified-bound", &k.to_string());
                 }
             }
             "the checks that ran" => {
@@ -513,6 +545,7 @@ mod tests {
                 ensures: vec!["|result| *result <= 10_000".into()],
                 signature: "(tier: u8) -> u32".into(),
             }],
+            verified_bounds: vec![("g".into(), 5)],
             examples: vec!["tiered_fee(1) == 1".into()],
             code_scope: "reached".into(),
             code: vec![(
@@ -583,6 +616,14 @@ mod tests {
                 Box::new(|i: &mut FingerprintInputs| {
                     i.assumed[0].signature = "(tier: u8) -> u64".into()
                 }),
+            ),
+            (
+                "the bound a stub_verified callee earned",
+                Box::new(|i: &mut FingerprintInputs| i.verified_bounds[0].1 = 2),
+            ),
+            (
+                "which callee a stub_verified dependency is for",
+                Box::new(|i: &mut FingerprintInputs| i.verified_bounds[0].0 = "h".into()),
             ),
             (
                 "the worked examples a `test` check asserts",

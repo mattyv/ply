@@ -1,0 +1,14 @@
+ply: 1
+
+# D5's first branch (§5.5): `g` is claimed and proved in this same crate, so
+# `f`'s call to it stubs `g` with its own proof (`#[kani::stub_verified]`)
+# rather than assuming its contract. `f`'s verdict is `bounded(2)` with no
+# `conditional`/`owed-evidence` status.
+components:
+  stubverified:
+    anchor: ply_fixture_stubverified
+    fns:
+      g:
+        checks: [bounded(2)]
+      f:
+        checks: [bounded(2)]
