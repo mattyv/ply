@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use ply_core::callgraph::{CalleeStatus, Resolver};
+use ply_core::callgraph::{CalleeStatus, Resolution, Resolver};
 use ply_core::config;
 use ply_core::contract_rt::{self, RenderedTest};
 use ply_core::diag::{Assumption, Counterexample, Diagnostic, Envelope, Evidence, Fix, Node};
@@ -18,7 +18,7 @@ use ply_core::engines::fuzz as fuzz_engine;
 use ply_core::engines::kani::ProbeOutcome;
 use ply_core::engines::kani::{self, KaniOutcome, KaniRunConfig};
 use ply_core::engines::mutants::{self, MutantsRunConfig, MutantsRunOutcome};
-use ply_core::harness::{self, ContractFn, StubSpec};
+use ply_core::harness::{self, ContractFn, Param, StubKind, StubSpec};
 use ply_core::harness_crate;
 use ply_core::model::{
     Check, Component, FnClaim, InheritedChecks, component_default_checks, effective_checks,
@@ -734,9 +734,98 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         harness_info = Some((harness_pkg, target_names.lib_ident));
     }
 
-    // Pass 3: run each fn's checks and assemble its verdict + diagnostics.
+    // D5's ordering (§5.5): "within a crate, verify claimed functions
+    // callees-before-callers". Only claims with a `bounded` check need it --
+    // `boundary.contracted` is empty for every other kind, since only
+    // `bounded` ever descends into a callee's body at all. A callee whose
+    // own result is *reused* needs no ordering: its verdict is already
+    // known, seeded here before any fresh run happens (§5.5's honesty
+    // condition 3 above, made sound by commit c650e55's fingerprint fix) --
+    // and only a *clean* one counts, never a `conditional` one standing on
+    // its own assumption, or branch one would launder that debt out of the
+    // caller's view.
+    let mut known_bounded: BTreeMap<String, u32> = BTreeMap::new();
+    for (plan, r) in plans.iter().zip(&reused) {
+        if let Some(entry) = r
+            && plan.checks.iter().any(|c| matches!(c, Check::Bounded(_)))
+            && !entry.statuses.iter().any(|s| s == "conditional")
+            && let Some(k) = parse_bound(&entry.verdict)
+        {
+            known_bounded.insert(plan.cf.path.clone(), k);
+        }
+    }
+    // Nodes of the ordering graph: claims that will run fresh this pass and
+    // could themselves become a clean `bounded(k)` a caller might stand on.
+    // A callee outside this set (reused, not bounded-eligible, or not
+    // claimed at all) never needs waiting for -- its answer, if any, is
+    // already in `known_bounded` or never will be.
+    let path_to_idx: BTreeMap<String, usize> = plans
+        .iter()
+        .enumerate()
+        .filter(|(i, p)| reused[*i].is_none() && p.checks.iter().any(|c| matches!(c, Check::Bounded(_))))
+        .map(|(i, p)| (p.cf.path.clone(), i))
+        .collect();
+    let mut edges: BTreeMap<usize, std::collections::BTreeSet<usize>> = BTreeMap::new();
+    for &f_idx in path_to_idx.values() {
+        for cc in &plans[f_idx].boundary.contracted {
+            if let Some(&g_idx) = path_to_idx.get(&cc.canonical_path)
+                && g_idx != f_idx
+            {
+                edges.entry(g_idx).or_default().insert(f_idx);
+            }
+        }
+    }
+    let node_ids: Vec<String> = plans.iter().map(|p| p.node_id.clone()).collect();
+    let (topo_order, cyclic) = topological_order(&node_ids, &edges);
+    // Processing order: callees before callers among the orderable
+    // bounded-eligible claims, then the ones a cycle left unorderable (D5's
+    // second branch covers every one of their contracted-callee edges, so
+    // their own place relative to each other cannot matter), then every
+    // other fresh claim in the order Pass 1 already produced -- fuzz/test/
+    // mutate claims and unsupported/unclaimed ones never consult
+    // `known_bounded` at all, so nothing about their order is load-bearing.
+    let mut processing_order: Vec<usize> = topo_order;
+    processing_order.extend(
+        path_to_idx
+            .values()
+            .copied()
+            .filter(|i| cyclic.contains(i)),
+    );
+    let ordered: std::collections::BTreeSet<usize> = processing_order.iter().copied().collect();
+    processing_order.extend((0..plans.len()).filter(|i| reused[*i].is_none() && !ordered.contains(i)));
+
+    // Pass 3: run each fn's checks and assemble its verdict + diagnostics,
+    // in `processing_order` so a caller's D5 decision can see its own
+    // callees' fresh verdicts -- then present in Pass 1's original
+    // (name-sorted) order below, so execution order never leaks into the
+    // tree's own layout.
+    let mut results: Vec<Option<(Node, Vec<Diagnostic>)>> = (0..plans.len()).map(|_| None).collect();
+    for idx in processing_order {
+        resolve_contracted_calls(&mut plans[idx].boundary, cyclic.contains(&idx), &known_bounded);
+        let (node, fn_diags) = run_fn_checks(
+            &plans[idx].node_id,
+            &src_dir,
+            &lib_path,
+            crate_dir,
+            plans[idx].fn_name,
+            &plans[idx].cf,
+            &plans[idx].checks,
+            &plans[idx].boundary,
+            &plans[idx].seed,
+            harness_info.as_ref(),
+            opts,
+        )?;
+        if node.verdict.starts_with("bounded(")
+            && !node.statuses.iter().any(|s| s == "conditional")
+            && let Some(k) = parse_bound(&node.verdict)
+        {
+            known_bounded.insert(plans[idx].cf.path.clone(), k);
+        }
+        results[idx] = Some((node, fn_diags));
+    }
+
     let mut component_nodes: BTreeMap<String, Vec<Node>> = early_nodes_by_component;
-    for (plan, reused) in plans.iter().zip(&reused) {
+    for (idx, (plan, reused)) in plans.iter().zip(&reused).enumerate() {
         // Carried forward, and said so on the node: everything the recorded
         // run reported about this claim, re-emitted as it was, because a
         // reused `conditional` verdict whose assumption paragraph went
@@ -758,19 +847,9 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 });
             continue;
         }
-        let (node, mut fn_diags) = run_fn_checks(
-            &plan.node_id,
-            &src_dir,
-            &lib_path,
-            crate_dir,
-            plan.fn_name,
-            &plan.cf,
-            &plan.checks,
-            &plan.boundary,
-            &plan.seed,
-            harness_info.as_ref(),
-            opts,
-        )?;
+        let (node, mut fn_diags) = results[idx]
+            .take()
+            .expect("every fresh plan was processed above");
         // Recorded only when this run earned evidence: a violation, a
         // timeout or any other absence is never stored, so nothing that
         // failed can ever be carried forward (§5.2a).
@@ -964,9 +1043,36 @@ pub(crate) fn default_checks_for(cf: &ContractFn) -> Vec<Check> {
     }
 }
 
+/// A same-crate callee whose own inline `#[ply::requires]`/`#[ply::ensures]`
+/// makes it D5's territory (§5.5) -- resolved once (`boundary_plan`, before
+/// anything runs), decided later once every claim in this run has an
+/// ordering (`resolve_contracted_calls`): a `StubKind::Contracted` either
+/// way, `bound: Some(k)` when the callee earned a clean `bounded(k)` this
+/// run and is not part of an unorderable cycle with this caller (branch
+/// one), `bound: None` otherwise (branch two).
+struct ContractedCall {
+    /// The callee's own crate-root canonical path -- what a claimed fn's
+    /// own `cf.path` is compared against to ask "did THIS run prove it".
+    canonical_path: String,
+    /// The callee's own normalised parameters -- what the never-run
+    /// existence harness `StubKind::Contracted` renders needs to call it
+    /// with symbolic arguments (Kani's plain `#[kani::stub]` cannot target
+    /// a contracted function at all, so this is the only mechanism either
+    /// of D5's branches can use for one -- see `StubKind`'s own doc).
+    params: Vec<Param>,
+    /// Best-effort raw return-type text, for `crate::promise`'s `ensures`
+    /// probe (which needs a type to bind `__ply_result` at) -- `None`
+    /// (rendered as `"()"`) when the callee returns nothing.
+    raw_return: Option<String>,
+    requires: Vec<String>,
+    ensures: Vec<String>,
+}
+
 /// What §5.5's split found in one function's body: callees nothing
-/// describes (the third branch -- refuse to descend) and callees whose
-/// declared contract will be assumed and stubbed (the second branch).
+/// describes (the third branch -- refuse to descend), callees whose
+/// declared contract will be assumed and stubbed (the second branch), and
+/// same-crate contracted callees whose branch is not yet decided
+/// (`contracted`, D5's first two branches).
 #[derive(Default)]
 pub struct BoundaryPlan {
     /// `(callee path, where it is called)` for every callee no contract
@@ -982,6 +1088,20 @@ pub struct BoundaryPlan {
     /// and could not open. Not the same fact as "no contract describes it",
     /// so not the same diagnostic.
     opaque: Vec<(String, String, String)>,
+    /// Same-crate callees carrying their own inline contract, one entry per
+    /// distinct callee, deduplicated by canonical path. Decided into
+    /// `stubs`/`unstubbable` once ordering is known (see
+    /// `contracted_calls_for_claim`); empty for a call whose only
+    /// same-crate contracted callees are none (nothing to decide) and for
+    /// any callee reached through a path dependency (cross-crate
+    /// `stub_verified` is out of scope for v1, §5.5).
+    contracted: Vec<ContractedCall>,
+    /// D5's first branch, once decided: the same-crate callees this claim
+    /// stands on rather than owes evidence for, each with the `bounded(k)`
+    /// it earned this run -- carried so the caller's own bound composes as
+    /// `min(k_caller, k)` (§5.5) and so the tree can still show the
+    /// dependency even though the caller is not `conditional` for it.
+    verified: Vec<(String, u32)>,
 }
 
 fn boundary_plan(resolver: &mut Resolver, cf: &ContractFn) -> BoundaryPlan {
@@ -996,7 +1116,40 @@ fn boundary_plan(resolver: &mut Resolver, cf: &ContractFn) -> BoundaryPlan {
             // first-party callee Ply merely failed to look up (the review's
             // D1), so a `use` import bought a clean proof over an unclaimed
             // body.
-            CalleeStatus::Contracted | CalleeStatus::Unresolved => {}
+            CalleeStatus::Unresolved => {}
+            // D5's first two branches (§5.5): resolved again here (`classify`
+            // only says "this site's callee carries its own contract", not
+            // which callee or what it says) to get everything a later
+            // decision needs. Cross-crate is out of scope for v1: a callee
+            // reached through a path dependency is left exactly as before
+            // (full descent), never added here.
+            CalleeStatus::Contracted => {
+                if let Resolution::Found(found) = resolver.lookup_fn(&site.path)
+                    && found.local
+                    && found.unnameable.is_none()
+                {
+                    let canonical = found.canonical.clone();
+                    if !plan.contracted.iter().any(|c| c.canonical_path == canonical)
+                        && let Ok(callee_cf) = harness::build_contract_fn(
+                            &found.item,
+                            &harness::alias_map(&found.file),
+                            &canonical,
+                        )
+                    {
+                        let raw_return = ply_core::callgraph::signature_of(&found.item).return_type;
+                        plan.contracted.push(ContractedCall {
+                            canonical_path: canonical,
+                            params: callee_cf.params,
+                            raw_return,
+                            requires: callee_cf
+                                .requires
+                                .map(|(_, t)| vec![t])
+                                .unwrap_or_default(),
+                            ensures: callee_cf.ensures.map(|(_, t)| vec![t]).unwrap_or_default(),
+                        });
+                    }
+                }
+            }
             CalleeStatus::Opaque(reason) => {
                 if !plan.opaque.iter().any(|(p, _, _)| p == &site.path) {
                     plan.opaque
@@ -1023,6 +1176,7 @@ fn boundary_plan(resolver: &mut Resolver, cf: &ContractFn) -> BoundaryPlan {
                         return_type: ret,
                         requires: contract.requires,
                         ensures: contract.ensures,
+                        kind: StubKind::Assumed,
                     }),
                     None => plan.unstubbable.push((canonical_path, site.where_text())),
                 }
@@ -1030,6 +1184,115 @@ fn boundary_plan(resolver: &mut Resolver, cf: &ContractFn) -> BoundaryPlan {
         }
     }
     plan
+}
+
+/// Decides D5's first-vs-second branch (§5.5) for every same-crate
+/// contracted callee this claim's body reaches, once ordering says whether
+/// the answer is known: `is_cyclic` is true when this claim could not be
+/// placed before its own bounded-eligible callees (an unorderable cycle,
+/// §5.5's "`f` and `g` in a cycle" case -- every claim in one falls back to
+/// branch two, for every edge, not only the ones inside the cycle, since
+/// this claim's own place in the run's ordering is exactly what branch one
+/// needs and a cyclic claim has none). `known_bounded` maps a callee's own
+/// canonical path to the `bounded(k)` it earned *this run* (freshly, or
+/// carried forward from a still-valid record, commit c650e55) -- present
+/// only for a callee whose own verdict was clean (never `conditional`,
+/// since standing on an already-assumed proof would launder that debt out
+/// of view, §5.5).
+///
+/// Drains `boundary.contracted` into `boundary.stubs` (either `StubKind`)
+/// (every entry becomes a `StubKind::Contracted` -- Kani's plain
+/// `#[kani::stub]` cannot target a contracted function at all, so there is
+/// no `unstubbable` outcome here the way D5's second branch through a
+/// `ply.yaml`-declared contract has), and fills `boundary.verified` with
+/// what branch one decided, for the caller to report and compose its own
+/// bound against.
+fn resolve_contracted_calls(
+    boundary: &mut BoundaryPlan,
+    is_cyclic: bool,
+    known_bounded: &BTreeMap<String, u32>,
+) {
+    for cc in std::mem::take(&mut boundary.contracted) {
+        let bound = if is_cyclic {
+            None
+        } else {
+            known_bounded.get(&cc.canonical_path).copied()
+        };
+        if let Some(k) = bound {
+            boundary.verified.push((cc.canonical_path.clone(), k));
+        }
+        // Best-effort raw text for `crate::promise`'s own `requires` probe,
+        // which re-parses this back into a type (`Ok` exactly when the
+        // shape is one Ply's codegen can build a `kani::any()` for --
+        // already guaranteed for a branch-one callee, since that is what
+        // earned it its own `bounded(k)`; not guaranteed for branch two,
+        // whose promise probe is then reported `W0514` "not checked" the
+        // same as any other unsupported shape, never guessed at).
+        let params: Vec<(String, String)> = cc
+            .params
+            .iter()
+            .map(|p| {
+                (
+                    p.name.clone(),
+                    p.ty.rust_name().unwrap_or_else(|| format!("{:?}", p.ty)),
+                )
+            })
+            .collect();
+        boundary.stubs.push(StubSpec {
+            callee_path: cc.canonical_path,
+            params,
+            return_type: cc.raw_return.unwrap_or_else(|| "()".into()),
+            requires: cc.requires,
+            ensures: cc.ensures,
+            kind: StubKind::Contracted {
+                bound,
+                params: cc.params,
+            },
+        });
+    }
+}
+
+/// Topological order (Kahn's algorithm, deterministic: ties break on node
+/// id, never on `Vec` insertion order) over the call graph restricted to
+/// this run's bounded-eligible, not-yet-known claims (§5.5's "within a
+/// crate, verify claimed functions callees-before-callers"). Returns the
+/// orderable claims callees-first, and separately the ones a cycle left
+/// unorderable -- "a cycle cannot be ordered" is not a failure of this
+/// function, it is the fact D5's second branch exists to catch.
+fn topological_order(
+    node_ids: &[String],
+    edges: &BTreeMap<usize, std::collections::BTreeSet<usize>>,
+) -> (Vec<usize>, std::collections::BTreeSet<usize>) {
+    use std::collections::BTreeSet;
+    let n = node_ids.len();
+    let mut indegree: Vec<usize> = vec![0; n];
+    for succs in edges.values() {
+        for &j in succs {
+            indegree[j] += 1;
+        }
+    }
+    let mut ready: BTreeSet<(String, usize)> = (0..n)
+        .filter(|&i| indegree[i] == 0)
+        .map(|i| (node_ids[i].clone(), i))
+        .collect();
+    let mut order = Vec::new();
+    let mut placed = vec![false; n];
+    while let Some(&(ref id, i)) = ready.iter().next() {
+        let id = id.clone();
+        ready.remove(&(id, i));
+        order.push(i);
+        placed[i] = true;
+        if let Some(succs) = edges.get(&i) {
+            for &j in succs {
+                indegree[j] -= 1;
+                if indegree[j] == 0 {
+                    ready.insert((node_ids[j].clone(), j));
+                }
+            }
+        }
+    }
+    let cyclic: BTreeSet<usize> = (0..n).filter(|&i| !placed[i]).collect();
+    (order, cyclic)
 }
 
 /// D5's third branch (§5.5): the caller's `bounded` check earns nothing,
@@ -1151,6 +1414,56 @@ fn unreadable_callee_diag(
     }
 }
 
+/// D5's first branch (§5.5): the claim is not `conditional` and owes no
+/// evidence, but a clean verdict is not a standalone one -- it still rests
+/// on another function's own proof, and that dependency has to be visible
+/// somewhere a reader can see it rather than silently dropped. `W0517` is
+/// `info`, not a warning: nothing here is owed, wrong, or worth a second
+/// look, only worth naming.
+fn verified_dependency_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    verified: &[(String, u32)],
+) -> Diagnostic {
+    let named: Vec<String> = verified
+        .iter()
+        .map(|(path, k)| format!("`{path}` (bounded({k}) this run)"))
+        .collect();
+    let list = named.join(", ");
+    Diagnostic {
+        code: "W0517".into(),
+        severity: "info".into(),
+        phase: "verify".into(),
+        engine: "kani".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` earned {check_label} by standing on another function's own proof \
+             instead of re-checking its body: {list}. That is real evidence, not a promise -- \
+             Ply proved the callee itself this run (or found a still-valid earlier proof of it), \
+             so `{fn_name}` is not marked `conditional` and owes nothing for it. But the callee's \
+             own proof only went as deep as its own bound, so `{fn_name}`'s reported bound is \
+             capped at the weakest of the two rather than its own declared one -- reporting more \
+             would be claiming a depth nothing actually checked. (W0517, §5.5)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: verified
+            .iter()
+            .map(|(path, k)| Assumption {
+                kind: "verified_dependency".into(),
+                fn_path: path.clone(),
+                verdict: format!("bounded({k})"),
+                contract: String::new(),
+            })
+            .collect(),
+        open_item: None,
+    }
+}
+
 /// D5's second branch (§5.5) reached through a `ply.yaml`-declared contract:
 /// the verdict is real evidence *about the contract*, and the assumption is
 /// owed evidence until something exercises it against the real body.
@@ -1241,6 +1554,17 @@ fn check_spelling(c: &Check) -> String {
         Check::Prove => "prove".into(),
         Check::Mutate => "mutate".into(),
     }
+}
+
+/// The `k` out of a `bounded(k)` verdict string, or `None` for any other
+/// verdict (`fuzzed(256)`, `timeout`, a `conditional bounded(k)`'s own
+/// string is still `"bounded(k)"` -- callers filter on the `conditional`
+/// status separately, this only ever reads the number).
+fn parse_bound(verdict: &str) -> Option<u32> {
+    verdict
+        .strip_prefix("bounded(")
+        .and_then(|r| r.strip_suffix(')'))
+        .and_then(|n| n.parse().ok())
 }
 
 /// §5.4c: a claim whose `checks:` list is written and empty asked for
@@ -2129,6 +2453,17 @@ fn run_bounded_check(
         ));
     }
 
+    // D5's first branch (§5.5): "never report evidence stronger than the
+    // weakest thing it rests on". `f`'s own proof only holds *given* each
+    // stub-verified callee's contract, and that was only established to the
+    // depth its own proof earned -- so the honest bound this claim can
+    // report is capped there, never left at its own declared `bound_k`.
+    let composed_k = boundary
+        .verified
+        .iter()
+        .map(|(_, k)| *k)
+        .fold(bound_k, u32::min);
+
     let generated = harness::generate_proof_module(cf, bound_k, &boundary.stubs)?;
     harness::write_generated_module(src_dir, lib_path, &generated.module_source)?;
 
@@ -2195,26 +2530,51 @@ fn run_bounded_check(
         }
     }
 
+    // Only D5's second branch (`Assumed`) costs a symbolic value in place of
+    // the real callee and owes evidence -- `Verified` (branch one) is real
+    // evidence the caller does not owe anything for, so it must not be
+    // named as the cost of a timeout, or counted toward `conditional`.
+    let assumed: Vec<StubSpec> = generated
+        .stubbed
+        .iter()
+        .filter(|s| s.is_assumed())
+        .cloned()
+        .collect();
+
     match outcome {
         KaniOutcome::Verified => {
-            if generated.stubbed.is_empty() {
-                Ok((check_label, vec![], vec![]))
+            let composed_label = format!("bounded({composed_k})");
+            let mut ds = Vec::new();
+            // D5's first branch: real evidence, and the caller is not
+            // conditional for it -- but a clean verdict is not a standalone
+            // one, so the dependency still has to appear somewhere a reader
+            // can see it (§5.5).
+            if !boundary.verified.is_empty() {
+                ds.push(verified_dependency_diag(
+                    node_id,
+                    fn_name,
+                    &composed_label,
+                    &boundary.verified,
+                ));
+            }
+            if assumed.is_empty() {
+                Ok((composed_label, vec![], ds))
             } else {
                 // §5.5's second branch: real evidence, resting on a
                 // declared assumption. `conditional` is a status (D6), not
                 // a weaker rung -- the verdict stays `bounded(k)` and the
                 // assumption travels beside it.
-                let d = conditional_verdict_diag(
+                ds.push(conditional_verdict_diag(
                     node_id,
                     fn_name,
-                    &check_label,
-                    &generated.stubbed,
+                    &composed_label,
+                    &assumed,
                     &promise_findings,
-                );
+                ));
                 Ok((
-                    check_label,
+                    composed_label,
                     vec!["conditional".into(), "owed-evidence".into()],
-                    vec![d],
+                    ds,
                 ))
             }
         }
@@ -2227,7 +2587,7 @@ fn run_bounded_check(
                 engine: "kani".into(),
                 check: check_label,
                 node_id: node_id.into(),
-                title: kani_timeout_title(fn_name, engine_timeout_secs, &generated.stubbed),
+                title: kani_timeout_title(fn_name, engine_timeout_secs, &assumed),
                 pointer: None,
                 primary_span: None,
                 counterexample: None,
@@ -3539,6 +3899,7 @@ mod tests {
             return_type: "u32".into(),
             requires: vec![],
             ensures: vec!["|result| *result <= 10_000".into()],
+            kind: StubKind::Assumed,
         };
         let title = kani_timeout_title("tier_fee_cents", 300, std::slice::from_ref(&stub));
         assert!(

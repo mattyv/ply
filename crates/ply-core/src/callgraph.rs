@@ -817,7 +817,12 @@ fn has_inline_contract(f: &syn::ItemFn) -> bool {
     })
 }
 
-fn signature_of(f: &syn::ItemFn) -> CalleeSignature {
+/// Raw signature text (params keep any `&`, unlike `harness::ContractFn`'s
+/// normalised `Param`), for a stub whose signature must match the callee's
+/// own (Kani checks a stub's signature against its target). `pub` so D5's
+/// first branch (§5.5) can build a same-crate `Assumed` fallback the same
+/// way `Assumed`'s own `CalleeStatus` variant does.
+pub fn signature_of(f: &syn::ItemFn) -> CalleeSignature {
     let mut params = Vec::new();
     for arg in &f.sig.inputs {
         if let syn::FnArg::Typed(pt) = arg {
