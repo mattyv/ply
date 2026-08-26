@@ -133,6 +133,41 @@ impl RustType {
         }
     }
 
+    /// Whether a `bounded` proof over this type is a proof over its
+    /// *entire* value space -- the domain-coverage condition D5's first
+    /// branch (§5.5) needs, found missing by adversarial review 2026-08-25.
+    /// A scalar's `kani::any()` ranges over every value the type can hold,
+    /// so a callee's `bounded(k)` proof over one already covers whatever a
+    /// caller could ever pass; standing on it costs nothing. `VecU8` is the
+    /// opposite: its harness only ever builds vectors up to the declared
+    /// bound `k`, so the callee's contract is established for lengths
+    /// `<= k` and nothing longer -- a caller that passes a longer vector
+    /// gets the contract assumed on an input the proof never covered.
+    /// Reproduced: a callee honouring its promise only up to length 2, a
+    /// caller always passing length 3, composed to a false clean
+    /// `bounded(2)` while the real function broke its promise on every
+    /// input.
+    ///
+    /// `[T; N]` is excluded here too, conservatively rather than by
+    /// argument: its length is fixed by the type itself, so a caller
+    /// cannot pass a differently-sized array at all, which arguably leaves
+    /// no containment gap to begin with -- but proving that is exactly the
+    /// containment argument this gate exists to avoid needing yet, so it
+    /// is narrowed into branch two along with the genuine collection
+    /// shapes rather than carved out on unverified reasoning.
+    pub fn is_full_domain(&self) -> bool {
+        match self {
+            RustType::VecU8
+            | RustType::Vec(_)
+            | RustType::BTreeSet(_)
+            | RustType::Array(_, _)
+            | RustType::Unsupported(_) => false,
+            RustType::Option(inner) => inner.is_full_domain(),
+            RustType::Result(ok, err) => ok.is_full_domain() && err.is_full_domain(),
+            _ => true,
+        }
+    }
+
     /// The M4 gate: can the *fuzz* (proptest) codegen build this type?
     /// Strictly broader than `is_bounded_supported` -- every Kani-supported
     /// shape is fuzz-supported too, plus `Vec`/`BTreeSet` of any scalar.
@@ -964,7 +999,16 @@ pub fn generate_proof_module(
         .map(|n| format!("#[kani::unwind({n})]\n"))
         .unwrap_or_default();
 
-    let promise = crate::promise::plan(stubs);
+    // D5's second branch's own callees only -- a `StubKind::Contracted`
+    // proved this run stands on real evidence, so its inline contract is
+    // not an assumption to interrogate for vacuity at all (§5.5: "does not
+    // look at a verified function's own inline `#[ply::ensures]`"). Before
+    // this filter existed the gate ran on branch one's callees too, so a
+    // trivially-true `ensures` on a *proved* callee failed the whole run
+    // with an `E0503` naming a promise that was never assumed (adversarial
+    // review, 2026-08-26).
+    let assumed_only: Vec<StubSpec> = stubs.iter().filter(|s| s.is_assumed()).cloned().collect();
+    let promise = crate::promise::plan(&assumed_only);
     let mut stub_defs = String::new();
     let mut stub_attrs = String::new();
     for s in stubs {

@@ -590,12 +590,21 @@ honest version of that mistake is caught: a stored verdict must be one the check
 recorded beside it could actually have earned (`fuzz` can never yield `proved`), and one
 that could not is refused with `W0516`, said out loud, and the claim checked again. One
 exception, added with D5's first branch (§5.5, 2026-08-26): a `bounded(k)` check earns
-not only `bounded(k)` but any `bounded(j)` with `j <= k` -- composing against a callee's
-own shallower proof is a real, declared possibility now, not tampering, and `W0516`
-learning this the hard way (a caller standing on a proved callee was refused as
-"impossible" and silently re-verified from scratch on every single subsequent run, until
-this was found and fixed) is why this sentence names the exception rather than leaving it
-implicit.
+not only `bounded(k)` but any `bounded(j)` genuinely composed against a shallower
+same-crate proof — and the exact value that composition must equal is pinned, not
+merely bounded above. **The rule is equality against a computed number, never `j <= k`
+on its own**: the expected value is `min(k, the shallowest bound among every callee
+this claim stands on)`, read from the fingerprint's twelfth input (`verified_bounds`),
+and a stored verdict must match that number exactly. A same-day widening of this rule
+to "any `j <= k`" was itself found unsound by a second adversarial review (2026-08-26):
+it accepted a hand-edited `bounded(4)` for a claim whose real composed value was
+`bounded(2)`, because `4 <= 5` (the claim's own declared bound) was the only thing the
+looser rule checked — a tampered record that widened, rather than merely stayed within
+the declaration, slipped through. `W0516` learning the first version of this the hard
+way (a caller standing on a proved callee was refused as "impossible" and silently
+re-verified from scratch on every single subsequent run, until that was found and
+fixed) is why this sentence names the exception rather than leaving it implicit; the
+second finding is why the exception is equality, not a ceiling.
 
 **A result that could not be carried forward says which input moved.** When a claim has a
 recorded result whose fingerprint no longer matches, `verify` names it and names the
@@ -993,6 +1002,20 @@ being no contract to key on:
   still names every same-crate proof it stood on and the bound each earned (`W0517`,
   `info` severity — nothing here is wrong or owed, only worth recording) so a reader
   never mistakes "not conditional" for "proved in isolation".
+  **Branch one requires `g`'s own proof to cover `g`'s whole parameter domain, not
+  merely the caller's specific argument** (added 2026-08-26, adversarial review): a
+  `bounded(k)` proof over a length-indexed parameter — `Vec<u8>`, a slice, `BTreeSet`,
+  an array — only ever builds values up to length `k`, so it says nothing about a
+  caller passing a longer one. Composing against it anyway is the overclaim §1 exists
+  to refuse in its purest form: reproduced live, a callee proved only over vectors of
+  length ≤ 2 returns a value breaking its own postcondition at length 3, and a caller
+  always passing length 3 still composed to a clean `bounded(2)`, exit 0. A callee with
+  any such parameter is therefore never eligible for branch one, whatever its own
+  verdict — it falls back to branch two exactly like a cycle or an unclean callee does.
+  This is narrowed, not proved: a fixed-size `[T; N]` array is conservatively excluded
+  too, even though its size is part of the type and an argument-containment argument
+  might one day admit it — that argument is not made here (`RustType::is_full_domain`,
+  `crates/ply-core/src/harness.rs`).
   **`f`'s own record depends on what it composed against, not only on `g`'s source.**
   §5.2a's fingerprint gained a twelfth input for exactly this branch: the same-crate
   callees a claim stands on, each with the bound it earned (`verified_bounds`,
@@ -1005,10 +1028,15 @@ being no contract to key on:
   only ever produce `bounded(k)` verbatim, so a caller's *genuinely* composed
   `bounded(j)` for `j < k` looked exactly like tampering and was refused, silently
   re-verified from scratch, on every run after the one that earned it — `f` paid full
-  engine cost forever, not once. `bounded(k)` now earns any `bounded(j)` with `j <= k`
-  (§5.2a states the exception); a reused `g` supplies its bound the same way a freshly
-  proved one does, since either way it is `g`'s own recorded, re-hashed verdict that
-  answers the question.
+  engine cost forever, not once. A same-day widening of that fix — accepting any
+  `bounded(j)` with `j <= k` — was itself found unsound by a second adversarial review:
+  a hand-edited `bounded(4)` for a claim whose real composed value was `bounded(2)`
+  passed, because it still sat under `f`'s own declared `bounded(5)`. The rule now
+  pins the exact value the composition must equal — `min(f`'s declared bound, the
+  shallowest bound among every callee it stands on`)` — and requires equality against
+  that number, not merely a ceiling (§5.2a states it in full); a reused `g` supplies
+  its bound the same way a freshly proved one does, since either way it is `g`'s own
+  recorded, re-hashed verdict that answers the question.
 - Anything else *that still has a declared contract* — `g` merely fuzzed or tested, `g` in
   another crate, `f` and `g` in a cycle, or `g` carrying no verification at all but a
   contract declared for it in `ply.yaml` (§5.4's external-spec route) → verify `f`
@@ -1061,8 +1089,14 @@ than a shortcut:
    for the call sites this rule inspects, which are the ones written in the function being
    checked. An unclaimed callee *below a contracted callee* `g` was a gap that stayed open
    until D5's first branch landed (2026-08-26, closed for either of its branches): a
-   same-crate `g` is now always stubbed, never inlined, whichever branch reached it, so
-   whatever `g` itself calls never travels into the caller's proof at all. **Still open**:
+   same-crate `g` is now always either stubbed or refused, never inlined, whichever
+   branch reached it, so whatever `g` itself calls never travels into the caller's
+   proof at all. **"Refused" is not a hedge**: a same-crate contracted `g` whose exact
+   shape Ply cannot build a stand-in for — a tuple-pattern parameter, a `self`
+   parameter, an unparseable contract attribute — used to fall through this rule
+   silently (no stub, no refusal, no diagnostic, `g`'s real body inlined) until an
+   adversarial review found it 2026-08-26; it is refused by name now (`W0512`), the
+   same way an unclaimed callee already was. **Still open**:
    a contracted `g` reached through a path dependency (a different crate) is still
    inlined exactly as before — cross-crate `stub_verified` is out of scope for v1 (below),
    so this gap survives there specifically. See this section's limits below for what else
@@ -1084,6 +1118,19 @@ than a shortcut:
    state of a legacy-extension codebase, so it
    must read as routine and legible rather than as an alarm — the annotation carries the
    trust story, and a user who learns to skip it has lost it.
+   **This condition covers branch two's *inline*-contracted callees too, not only its
+   `ply.yaml`-declared route** — found not to, by adversarial review, 2026-08-26: both
+   commands read only the declared-contract map, so a same-crate callee assumed through
+   its own `#[ply::requires]`/`#[ply::ensures]` (this branch, reached whenever that
+   callee is not itself an independently bounded-checked claim) reported `conditional`/
+   `owed-evidence` correctly at `verify` time while `audit`'s trust surface and
+   `worklist`'s count both stayed silent about it — this honesty condition not holding
+   for a whole class of assumption. Fixed the same day, narrowly: listed whenever the
+   callee carries no `bounded` check anywhere in the document. **Known gap, not solved
+   here**: a same-crate callee that *is* claimed `bounded` elsewhere but still lands on
+   branch two at `verify` time (inside a cycle, or behind an unclean run) needs the same
+   ordering computation `verify` itself does to tell "stood on" from "assumed" — these
+   two listing commands do not attempt that and under-report exactly that case.
 
 **What this rule reaches, and what it does not.** It applies to `bounded` only: Kani
 descends into a callee's real body, so a caller's proof silently acquires that body's
@@ -1149,6 +1196,13 @@ alone with no function body anywhere in the harness: **can any value satisfy it*
 **can any value break it**. Both are answered exhaustively over the value space (CBMC
 solves them symbolically, not by sampling), and each costs well under a second once the
 crate is compiled — measured 2026-08-25.
+**This gate is about branch two's clauses, never branch one's** (made explicit
+2026-08-26, after an adversarial review found the gate firing on branch one too): a
+callee proved clean this run (`stub_verified`, branch one) is not standing on an
+assumption at all — its inline contract is real evidence, established by its own
+passing proof, not a promise this run is trusting sight-unseen. Interrogating it for
+vacuity is asking the wrong question of the wrong branch, so the gate now runs only
+over the clauses branch two actually assumes.
 
 - **Unsatisfiable** — no value satisfies it. Ply hands the clause to the engine as an
   assumption, so the caller's proof holds *vacuously* and anything at all is provable
@@ -1187,6 +1241,21 @@ status (D6).
 **§5.5's limits**, gathered in one place rather than left scattered across the section
 they were each stated in:
 
+- **Branch one excludes a callee with any length-indexed parameter** — `Vec<u8>`, a
+  slice, `BTreeSet`, an array — because its own `bounded(k)` proof only ever covers
+  values up to length `k`, not the type's full value space, and a caller's argument is
+  never checked against that limit. Stated in full above, where the branch is defined;
+  gathered here because it is a domain-coverage gap, the same shape as the others in
+  this list. Narrowed rather than solved: excluding every non-full-domain type is
+  conservative (a fixed-size array is excluded too, though its bound is arguably part
+  of its type), because no argument-containment check exists yet to admit any of them
+  safely. Adding one is future work, not a defect in what shipped.
+- **Ply cannot build a stand-in for every same-crate contracted callee's exact shape**
+  — a tuple-pattern parameter, a `self` parameter, a contract attribute Ply cannot
+  parse. Before 2026-08-26 this fell through silently: no stub, no refusal, no
+  diagnostic, and Kani inlined the callee's real body — contradicting this section's
+  own "always stubbed, never inlined" condition. Refused now (`W0512`) exactly like an
+  unclaimed callee is, naming the callee and why Ply could not build its stand-in.
 - **Cross-crate `stub_verified` is out of scope for v1.** A callee reached through a path
   dependency is left exactly as before this feature (full descent, Kani inlines its real
   body) even when it carries its own contract — neither branch one nor branch two's

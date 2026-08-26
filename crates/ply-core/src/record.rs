@@ -376,7 +376,13 @@ impl Record {
     /// read an entry without presenting both: the honesty rule is enforced
     /// by the shape of this function, not by remembering to call a checker
     /// first.
-    pub fn matching(&self, node_id: &str, fingerprint: &str, checks: &[String]) -> Match<'_> {
+    pub fn matching(
+        &self,
+        node_id: &str,
+        fingerprint: &str,
+        checks: &[String],
+        verified_bounds: &[(String, u32)],
+    ) -> Match<'_> {
         let Some(entry) = self
             .results
             .get(node_id)
@@ -384,7 +390,7 @@ impl Record {
         else {
             return Match::Miss;
         };
-        if !verdict_is_earnable(&entry.verdict, checks) {
+        if !verdict_is_earnable(&entry.verdict, checks, verified_bounds) {
             return Match::Impossible(format!(
                 "The recorded result for `{node_id}` says `{}`, and the checks recorded beside it \
                  ({}) cannot produce that answer. A result file Ply wrote never contains this, so \
@@ -473,7 +479,18 @@ fn bounded_k(s: &str) -> Option<u32> {
     s.strip_prefix("bounded(")?.strip_suffix(')')?.parse().ok()
 }
 
-pub fn verdict_is_earnable(verdict: &str, checks: &[String]) -> bool {
+/// `verified_bounds` is the *lookup-time* fingerprint's own D5 dependency
+/// list (`FingerprintInputs::verified_bounds`) -- by the time this is
+/// called the fingerprint has already matched (`matching`, above), which
+/// pins those bounds to exactly the ones the stored verdict was earned
+/// under. That makes the honestly-earnable value for a `bounded(k)` check
+/// *computable*, not merely bounded above: `min(k, min of verified_bounds)`,
+/// and nothing else.
+pub fn verdict_is_earnable(
+    verdict: &str,
+    checks: &[String],
+    verified_bounds: &[(String, u32)],
+) -> bool {
     let (base, decorated) = match verdict.strip_suffix(SPEC_STRONG) {
         Some(base) => (base, true),
         None => (verdict, false),
@@ -484,17 +501,31 @@ pub fn verdict_is_earnable(verdict: &str, checks: &[String]) -> bool {
     // A `bounded(k)` check is a *declared upper bound*, not a fixed exact
     // one -- D5's first branch (§5.5) can compose a claim's own proof down
     // to a shallower bound than `k`, when the callee it stands on was only
-    // proved that far this run. So `bounded(k)` earns any `bounded(j)` with
-    // `j <= k`, never a `j` deeper than what was declared. Found by
-    // adversarial review 2026-08-26: before this, a claim declaring
+    // proved that far this run. Found by adversarial review 2026-08-26,
+    // twice: first, that before this exception existed a claim declaring
     // `bounded(5)` that composed to a genuinely-earned `bounded(2)` was
     // refused as `W0516` "impossible" on every single subsequent run --
     // this integrity check, written before D5's first branch existed,
     // still assumed a `bounded(k)` check could only ever produce `bounded(k)`
     // verbatim, so a real composed result looked identical to a hand-edited
-    // one and was silently re-earned from scratch forever.
+    // one and was silently re-earned from scratch forever. Second, that
+    // the first fix for that (accepting *any* `bounded(j)` with `j <= k`)
+    // was a needless superset: the honestly-earnable `j` is not a range,
+    // it is one computed number, `min(k, min of verified_bounds)`, and the
+    // review demonstrated a hand-edited `bounded(4)` sailing through the
+    // wider check on a claim that had actually composed to `bounded(2)`.
+    // Equality against the computed value is what an "impossible" check
+    // means; a range was the easy version, not the true one.
     if let Some(j) = bounded_k(base) {
-        return checks.iter().any(|c| bounded_k(c).is_some_and(|k| j <= k));
+        let declared = checks.iter().filter_map(|c| bounded_k(c)).max();
+        let Some(declared) = declared else {
+            return false;
+        };
+        let expected = verified_bounds
+            .iter()
+            .map(|(_, k)| *k)
+            .fold(declared, u32::min);
+        return j == expected;
     }
     earnable_verdicts(checks).contains(base)
 }
@@ -780,12 +811,12 @@ mod tests {
         );
         let checks = vec!["bounded(2)".to_string()];
         assert!(matches!(
-            record.matching("billing::tiered_fee", "aaaa", &checks),
+            record.matching("billing::tiered_fee", "aaaa", &checks, &[]),
             Match::Hit(_)
         ));
         assert!(
             matches!(
-                record.matching("billing::tiered_fee", "bbbb", &checks),
+                record.matching("billing::tiered_fee", "bbbb", &checks, &[]),
                 Match::Miss
             ),
             "a stored result must never be handed back against inputs that no longer match it"
@@ -839,7 +870,7 @@ mod tests {
         );
         save(&path, &record).unwrap();
         let back = load(&path, "0.1.0").unwrap();
-        let Match::Hit(entry) = back.matching("a::f", "h", &["fuzz(256)".to_string()]) else {
+        let Match::Hit(entry) = back.matching("a::f", "h", &["fuzz(256)".to_string()], &[]) else {
             panic!("round trip")
         };
         assert_eq!(entry.verdict, "fuzzed(256)");
@@ -854,34 +885,39 @@ mod tests {
     #[test]
     fn a_verdict_the_recorded_checks_could_never_earn_is_not_earnable() {
         let fuzz = vec!["fuzz(64)".to_string()];
-        assert!(verdict_is_earnable("fuzzed(64)", &fuzz));
+        assert!(verdict_is_earnable("fuzzed(64)", &fuzz, &[]));
         assert!(
-            !verdict_is_earnable("proved", &fuzz),
+            !verdict_is_earnable("proved", &fuzz, &[]),
             "sampling cannot mint the strongest verdict Ply has"
         );
-        assert!(!verdict_is_earnable("bounded(2)", &fuzz), "nor a proof");
         assert!(
-            !verdict_is_earnable("fuzzed(256)", &fuzz),
+            !verdict_is_earnable("bounded(2)", &fuzz, &[]),
+            "nor a proof"
+        );
+        assert!(
+            !verdict_is_earnable("fuzzed(256)", &fuzz, &[]),
             "nor more cases than the check asked for"
         );
         assert!(verdict_is_earnable(
             "bounded(2)",
-            &["bounded(2)".to_string()]
+            &["bounded(2)".to_string()],
+            &[]
         ));
-        assert!(verdict_is_earnable("tested", &["test".to_string()]));
+        assert!(verdict_is_earnable("tested", &["test".to_string()], &[]));
         assert!(
-            !verdict_is_earnable("proved", &["prove".to_string()]),
+            !verdict_is_earnable("proved", &["prove".to_string()], &[]),
             "`prove` has no engine behind it, so it earns nothing at all"
         );
         assert!(
             verdict_is_earnable(
                 "fuzzed(64)\u{00b7}spec-strong",
-                &["fuzz(64)".to_string(), "mutate".to_string()]
+                &["fuzz(64)".to_string(), "mutate".to_string()],
+                &[]
             ),
             "the one decoration a stored verdict may carry"
         );
         assert!(
-            !verdict_is_earnable("fuzzed(64)\u{00b7}spec-strong", &fuzz),
+            !verdict_is_earnable("fuzzed(64)\u{00b7}spec-strong", &fuzz, &[]),
             "and only when `mutate` actually ran"
         );
     }
@@ -896,25 +932,49 @@ mod tests {
     /// every single subsequent run (adversarial review, 2026-08-26) --
     /// caught by `stubverifiedstalebound_fixture`, not by anything already
     /// in this file.
+    ///
+    /// **The earnable value is exactly one number, never a range** (a
+    /// second adversarial pass, same day): the first fix here accepted any
+    /// `bounded(j)` with `j <= k`, which let a hand-edited `bounded(4)`
+    /// through on a claim that had actually composed to `bounded(2)` --
+    /// self-contradicting the very envelope it shipped in (`W0517` on the
+    /// same node still said "capped ... at bounded(2)"). Equality against
+    /// `min(declared, min(verified_bounds))` is the honest value; passing
+    /// `verified_bounds` in is what makes it computable at lookup time
+    /// rather than merely bounded above.
     #[test]
-    fn a_bounded_check_earns_its_own_number_or_anything_shallower_never_deeper() {
+    fn a_bounded_check_earns_exactly_the_computed_value_never_a_range() {
         let bounded5 = vec!["bounded(5)".to_string()];
         assert!(
-            verdict_is_earnable("bounded(5)", &bounded5),
+            verdict_is_earnable("bounded(5)", &bounded5, &[]),
             "the ordinary case: a claim's own declared bound, uncomposed"
         );
         assert!(
-            verdict_is_earnable("bounded(2)", &bounded5),
+            verdict_is_earnable("bounded(2)", &bounded5, &[("g".to_string(), 2)]),
             "D5's first branch composing against a callee proved only to depth 2"
         );
         assert!(
-            verdict_is_earnable("bounded(1)", &bounded5),
-            "any shallower bound, not only the one exercised so far"
+            !verdict_is_earnable("bounded(4)", &bounded5, &[("g".to_string(), 2)]),
+            "the exact tamper the review demonstrated: a stored bound deeper than what \
+             the recorded dependency actually composed to, even though 4 <= 5"
         );
         assert!(
-            !verdict_is_earnable("bounded(6)", &bounded5),
+            !verdict_is_earnable("bounded(1)", &bounded5, &[("g".to_string(), 2)]),
+            "shallower than the computed value is just as much a lie in the other \
+             direction -- not merely a conservative one"
+        );
+        assert!(
+            !verdict_is_earnable("bounded(6)", &bounded5, &[]),
             "never a bound deeper than what was declared -- that really would be a \
              hand-edited or otherwise impossible record"
+        );
+        assert!(
+            verdict_is_earnable(
+                "bounded(2)",
+                &bounded5,
+                &[("g".to_string(), 4), ("h".to_string(), 2)]
+            ),
+            "the minimum over every stood-on callee, not just the first one"
         );
     }
 
@@ -1005,7 +1065,10 @@ mod tests {
         )
         .unwrap();
         let record = load(&path, "0.1.0").unwrap();
-        assert!(matches!(record.matching("a::f", "h", &[]), Match::Miss));
+        assert!(matches!(
+            record.matching("a::f", "h", &[], &[]),
+            Match::Miss
+        ));
     }
 
     /// A run that reused everything must leave the working tree exactly as

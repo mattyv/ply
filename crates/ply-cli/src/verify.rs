@@ -985,7 +985,12 @@ fn lookup_record(
     widened_because: &Option<String>,
 ) -> Option<RecordEntry> {
     let fingerprint = record::fingerprint(inputs);
-    match record.matching(node_id, &fingerprint, check_spellings) {
+    match record.matching(
+        node_id,
+        &fingerprint,
+        check_spellings,
+        &inputs.verified_bounds,
+    ) {
         Match::Hit(entry) => Some(entry.clone()),
         Match::Impossible(sentence) => {
             diagnostics.push(impossible_record_diag(node_id, sentence));
@@ -1181,6 +1186,18 @@ pub struct BoundaryPlan {
     /// any callee reached through a path dependency (cross-crate
     /// `stub_verified` is out of scope for v1, §5.5).
     contracted: Vec<ContractedCall>,
+    /// `(canonical path, where it is called, why Ply could not build a
+    /// stub for it)` for a same-crate contracted callee the stub builder
+    /// cannot handle at all -- a `self` parameter, a non-identifier
+    /// parameter pattern, a private module, or a contract attribute Ply
+    /// cannot parse. Found by adversarial review, 2026-08-26: every one of
+    /// these used to fall through silently (no stub, no refusal, no
+    /// diagnostic), so Kani inlined the callee's real body and anything
+    /// unclaimed beneath it travelled into the caller's proof unnamed --
+    /// the exact outcome §5.5's second honesty condition says can no
+    /// longer happen. Refused here the same way `unstubbable` already
+    /// refuses a `()`-returning boundary-contract callee.
+    unstubbable_contracted: Vec<(String, String, String)>,
     /// D5's first branch, once decided: the same-crate callees this claim
     /// stands on rather than owes evidence for, each with the `bounded(k)`
     /// it earned this run -- carried so the caller's own bound composes as
@@ -1209,29 +1226,79 @@ fn boundary_plan(resolver: &mut Resolver, cf: &ContractFn) -> BoundaryPlan {
             // reached through a path dependency is left exactly as before
             // (full descent), never added here.
             CalleeStatus::Contracted => {
-                if let Resolution::Found(found) = resolver.lookup_fn(&site.path)
-                    && found.local
-                    && found.unnameable.is_none()
-                {
-                    let canonical = found.canonical.clone();
-                    if !plan
-                        .contracted
-                        .iter()
-                        .any(|c| c.canonical_path == canonical)
-                        && let Ok(callee_cf) = harness::build_contract_fn(
-                            &found.item,
-                            &harness::alias_map(&found.file),
-                            &canonical,
-                        )
-                    {
-                        let raw_return = ply_core::callgraph::signature_of(&found.item).return_type;
-                        plan.contracted.push(ContractedCall {
-                            canonical_path: canonical,
-                            params: callee_cf.params,
-                            raw_return,
-                            requires: callee_cf.requires.map(|(_, t)| vec![t]).unwrap_or_default(),
-                            ensures: callee_cf.ensures.map(|(_, t)| vec![t]).unwrap_or_default(),
-                        });
+                let already_known = |plan: &BoundaryPlan, path: &str| {
+                    plan.contracted.iter().any(|c| c.canonical_path == path)
+                        || plan
+                            .unstubbable_contracted
+                            .iter()
+                            .any(|(p, _, _)| p == path)
+                };
+                match resolver.lookup_fn(&site.path) {
+                    Resolution::Found(found) if !found.local => {
+                        // Cross-crate `stub_verified` is out of scope for
+                        // v1 (§5.5): left exactly as before this feature,
+                        // full descent -- a stated exception, not a silent
+                        // fallthrough.
+                    }
+                    Resolution::Found(found) => {
+                        let canonical = found.canonical.clone();
+                        if already_known(&plan, &canonical) {
+                            // already decided (stubbed or refused) by an
+                            // earlier call site to the same callee
+                        } else if let Some(reason) = &found.unnameable {
+                            plan.unstubbable_contracted.push((
+                                canonical,
+                                site.where_text(),
+                                reason.clone(),
+                            ));
+                        } else {
+                            match harness::build_contract_fn(
+                                &found.item,
+                                &harness::alias_map(&found.file),
+                                &canonical,
+                            ) {
+                                Ok(callee_cf) => {
+                                    let raw_return =
+                                        ply_core::callgraph::signature_of(&found.item).return_type;
+                                    plan.contracted.push(ContractedCall {
+                                        canonical_path: canonical,
+                                        params: callee_cf.params,
+                                        raw_return,
+                                        requires: callee_cf
+                                            .requires
+                                            .map(|(_, t)| vec![t])
+                                            .unwrap_or_default(),
+                                        ensures: callee_cf
+                                            .ensures
+                                            .map(|(_, t)| vec![t])
+                                            .unwrap_or_default(),
+                                    });
+                                }
+                                Err(e) => {
+                                    plan.unstubbable_contracted.push((
+                                        canonical,
+                                        site.where_text(),
+                                        e.to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    // `classify` already resolved this site as `Contracted`,
+                    // so neither of these should be reachable in practice --
+                    // but "cannot happen" is exactly the reasoning that let
+                    // the fallthrough above go silent for two review
+                    // cycles, so both refuse rather than assume.
+                    Resolution::Opaque(reason) => {
+                        if !plan.opaque.iter().any(|(p, _, _)| p == &site.path) {
+                            plan.opaque
+                                .push((site.path.clone(), site.where_text(), reason));
+                        }
+                    }
+                    Resolution::NotFound => {
+                        if !plan.unclaimed.iter().any(|(p, _)| p == &site.path) {
+                            plan.unclaimed.push((site.path.clone(), site.where_text()));
+                        }
                     }
                 }
             }
@@ -1298,7 +1365,17 @@ fn resolve_contracted_calls(
     known_bounded: &BTreeMap<String, u32>,
 ) {
     for cc in std::mem::take(&mut boundary.contracted) {
-        let bound = if is_cyclic {
+        // D1 (adversarial review, 2026-08-26): branch one is sound only
+        // when the callee's own proof already covers its *entire* argument
+        // space -- otherwise a caller can pass a value outside the domain
+        // that proof established (a longer `Vec` than the callee's own
+        // bound ever built), getting the contract assumed on an input it
+        // was never checked against. A callee with any non-full-domain
+        // parameter is therefore never eligible for branch one, however
+        // clean its own verdict is this run -- it falls back to branch two
+        // exactly like a cycle or an unclean callee does.
+        let domain_covered = cc.params.iter().all(|p| p.ty.is_full_domain());
+        let bound = if is_cyclic || !domain_covered {
             None
         } else {
             known_bounded.get(&cc.canonical_path).copied()
@@ -1607,7 +1684,9 @@ fn conditional_verdict_diag(
         node_id: node_id.into(),
         title: format!(
             "`{fn_name}` earned {check_label}, but conditionally: the proof used the contract \
-             declared in ply.yaml for each callee it crosses into, instead of that callee's real \
+             declared for each callee it crosses into (in ply.yaml for a legacy callee, inline on \
+             the callee itself for a same-crate one this run could not stand fully on), instead of \
+             that callee's real \
              body. Assumed: {list}. That is what `conditional` means here -- the result holds if \
              those promises do. Nothing has checked them against the real code yet, so each one is \
              owed evidence rather than settled: an assumed contract nobody exercises is green paint.\
@@ -1660,8 +1739,18 @@ fn check_spelling(c: &Check) -> String {
 /// The `k` out of a `bounded(k)` verdict string, or `None` for any other
 /// verdict (`fuzzed(256)`, `timeout`, a `conditional bounded(k)`'s own
 /// string is still `"bounded(k)"` -- callers filter on the `conditional`
-/// status separately, this only ever reads the number).
+/// status separately, this only ever reads the number). Strips a trailing
+/// `\u{00b7}spec-strong` decoration first: `apply_mutate_outcome` appends it
+/// in place to a fully-passing claim's verdict string, and before this a
+/// callee that *strengthened* its own evidence with `mutate` silently
+/// vanished from every caller's `known_bounded` -- the one place D5's first
+/// branch parses this string, both at reuse time and fresh (adversarial
+/// review, 2026-08-26), and neither is the check that owns the decoration
+/// (`record::verdict_is_earnable` already strips it for the same reason).
 fn parse_bound(verdict: &str) -> Option<u32> {
+    let verdict = verdict
+        .strip_suffix("\u{00b7}spec-strong")
+        .unwrap_or(verdict);
     verdict
         .strip_prefix("bounded(")
         .and_then(|r| r.strip_suffix(')'))
@@ -1862,6 +1951,51 @@ fn unstubbable_callee_diag(
             title: format!(
                 "swap `{check_label}` for `fuzz(256)` on `{fn_name}` -- the fuzz tier runs the real \
                  callee rather than standing in for it"
+            ),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: Some("unclaimed_callee".into()),
+    }
+}
+
+/// A same-crate contracted callee (§5.5's first two branches) whose stub
+/// Ply's codegen cannot build at all -- a `self` parameter, a
+/// non-identifier parameter pattern, a private module, or a contract
+/// attribute Ply cannot parse. Found by adversarial review, 2026-08-26: this
+/// used to fall through silently and let Kani inline the callee's real body
+/// -- and everything unclaimed beneath it -- which is exactly what §5.5's
+/// second honesty condition says a same-crate contracted callee can no
+/// longer do, whichever branch reaches it. Refusing here, by name, is what
+/// keeps that sentence true.
+fn unbuildable_contracted_stub_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    unstubbable: &[(String, String, String)],
+) -> Diagnostic {
+    let named: Vec<String> = unstubbable
+        .iter()
+        .map(|(p, w, why)| format!("`{p}` (called at {w}): {why}"))
+        .collect();
+    let first = &unstubbable[0].0;
+    Diagnostic {
+        code: "W0512".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` calls {list} -- that callee carries its own contract, so §5.5's first              two branches would normally stand on it or assume it, but Ply cannot build a              stand-in for its exact shape. Descending into its real body instead would silently              give this proof the meaning of code nobody vouched for, which §5.5 refuses -- so              this check earned no evidence: the verdict is `unclaimed`, never `{check_label}`.              (W0512, §5.5)",
+            list = named.join(", ")
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![Fix {
+            title: format!(
+                "swap `{check_label}` for `fuzz(256)` on `{fn_name}` -- the fuzz tier runs the real                  callee rather than standing in for it, so it never needs a stub of `{first}` at all"
             ),
             edits: vec![],
         }],
@@ -2290,7 +2424,7 @@ fn unsatisfiable_promise_diag(
         check: check_label.into(),
         node_id: node_id.into(),
         title: format!(
-            "Ply did not check `{fn_name}`: the promise declared in ply.yaml for `{callee}` \
+            "Ply did not check `{fn_name}`: the promise declared for `{callee}` \
              cannot be true of anything. {what}. A proof that assumes something impossible proves \
              everything -- it would have come back green for `{fn_name}` whatever `{fn_name}` \
              actually does, and that green would have meant nothing. So Ply did not run it: this \
@@ -2333,7 +2467,7 @@ fn trivial_promise_diag(
     let domain = &f.domain;
     let title = match f.kind {
         ClauseKind::Ensures => format!(
-            "The promise declared in ply.yaml for `{callee}` says nothing: `{clause}` is true of \
+            "The promise declared for `{callee}` says nothing: `{clause}` is true of \
              every `{domain}`, and `{domain}` is what `{callee}` returns. Ply searched for a \
              value that would break it and there is none. Inside the proof of `{fn_name}` that \
              clause constrained nothing: `{callee}` was replaced by an arbitrary `{domain}`, so \
@@ -2342,7 +2476,7 @@ fn trivial_promise_diag(
              meant to state a real property of `{callee}`, this one does not. (E0503, §5.5)"
         ),
         ClauseKind::Requires => format!(
-            "The promise declared in ply.yaml for `{callee}` says nothing: `{clause}` is true for \
+            "The promise declared for `{callee}` says nothing: `{clause}` is true for \
              every value of its arguments ({domain}). Ply searched for a combination that would \
              break it and there is none. A `requires:` entry is what a caller must establish \
              before calling, so this one asks `{fn_name}` for nothing at all while still being \
@@ -2550,6 +2684,18 @@ fn run_bounded_check(
                 fn_name,
                 &check_label,
                 &boundary.unstubbable,
+            )],
+        ));
+    }
+    if !boundary.unstubbable_contracted.is_empty() {
+        return Ok((
+            "unclaimed".into(),
+            vec![],
+            vec![unbuildable_contracted_stub_diag(
+                node_id,
+                fn_name,
+                &check_label,
+                &boundary.unstubbable_contracted,
             )],
         ));
     }
@@ -3768,6 +3914,18 @@ fn unused(_p: &PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D6 (adversarial review, 2026-08-26): a `·spec-strong`-decorated verdict
+    /// must still parse to its bound, or a mutation-tested callee silently
+    /// drops out of `known_bounded` and every caller standing on it falls
+    /// back to branch two with no explanation.
+    #[test]
+    fn a_spec_strong_decorated_bound_still_parses_to_its_number() {
+        assert_eq!(parse_bound("bounded(2)\u{00b7}spec-strong"), Some(2));
+        assert_eq!(parse_bound("bounded(2)"), Some(2));
+        assert_eq!(parse_bound("fuzzed(64)\u{00b7}spec-strong"), None);
+        assert_eq!(parse_bound("violation"), None);
+    }
 
     /// An empty list inherited from a component default is not the fn's
     /// own line, and the sentence must not send a reader to a line that is

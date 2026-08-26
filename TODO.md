@@ -98,6 +98,108 @@ since no separate doc was asked for this session.
       the second hop assumed, transitively -- is a real question this design declines
       to answer rather than guesses at.
 
+## Third adversarial review of D5's first branch — 2026-08-26
+
+`docs/review-callees-first.md`, three BLOCKING findings (D1, D2, D3) plus three
+non-blocking-but-real ones (D4, D5, D6). Every fix red-first, with the literal failure
+text captured before the fix went back in.
+
+- [x] **D1 (BLOCKING) — branch one composed against a callee whose own proof did not
+      cover the caller's argument.** A `bounded(k)` proof over a length-indexed
+      parameter (`Vec<u8>`, a slice, `BTreeSet`, an array) only ever builds values up to
+      length `k`, not the type's full value space -- composing a caller's bound against
+      it assumes the callee's contract holds on arguments its own proof never touched.
+      Reproduced live: a callee proved only over vectors of length <= 2 returns a value
+      breaking its own postcondition at length 3; a caller always passing length 3
+      composed to a clean `bounded(2)`, exit 0, false. Red-first (`stubverifiedveclen`
+      fixture, domain gate disabled): `f` came back `"verdict":"bounded(2)"`,
+      `"statuses":[]` -- no `conditional`, no `owed-evidence`, the exact false-clean
+      shape the review named. Fixed with `RustType::is_full_domain()`
+      (`crates/ply-core/src/harness.rs`): a callee with any non-full-domain parameter is
+      excluded from branch one, whatever its own verdict, falling back to branch two
+      exactly like a cycle does. **Narrowed, not proved**: a fixed-size `[T; N]` array is
+      excluded too, conservatively, even though its size is part of the type and an
+      argument-containment argument might one day admit it safely -- that argument is
+      not made here. Green: `f` composes to `bounded(2)` with `conditional`/
+      `owed-evidence`, `W0511` present, no `W0517`, exit 0.
+- [x] **D2 (BLOCKING) — a same-crate contracted callee Ply cannot build a stub for was
+      silently inlined.** A tuple-pattern parameter, a `self` parameter, or an
+      unparseable contract attribute made `build_contract_fn` fail for the callee, and
+      the `if let ... && ...` chain deciding D5's first two branches had no `else`: the
+      failure fell through with no stub, no refusal, no diagnostic, contradicting this
+      commit's own "always stubbed, never inlined" claim. Red-first (`stubverifiedtuparg`
+      fixture, the new refusal gate disabled): `f` came back a real, freshly-computed
+      `"verdict":"bounded(2)"` in 32.55s -- Kani had genuinely compiled and inlined `g`'s
+      real tuple-pattern body, exactly the silent inlining the review named. Fixed: the
+      match rewritten with every arm explicit, a new `unstubbable_contracted` field on
+      `BoundaryPlan`, and a new diagnostic (`W0512`, `unbuildable_contracted_stub_diag`)
+      naming the callee and why its stand-in could not be built. Green: `g` and `f` both
+      report `unclaimed`, `W0512` names `g`, exit 1.
+- [x] **D3 (BLOCKING) — the widened tamper check accepted a hand-edited overclaim.**
+      Round 2's fix for the stale-bound defect widened `W0516`'s "is this verdict
+      earnable" check to accept any `bounded(j)` with `j <= k` for a claim declared
+      `bounded(k)` -- necessary, because branch one can genuinely compose to a shallower
+      `j`. But the review showed this was a strict superset of what composition can
+      produce: a hand-edited `bounded(4)` for a claim that had actually composed to
+      `bounded(2)` passed, because `4 <= 5` (the claim's own declared bound) was the only
+      thing checked. Red-first (`stubverifiedtamperedbound` fixture: run once, hand-edit
+      the stored `bounded(2)` to `bounded(4)`, re-run against the pre-fix "any `j <= k`"
+      rule): the tampered `bounded(4)` was silently accepted, no `W0516`, exactly the
+      overclaim the review reproduced. Fixed (`record.rs`'s `verdict_is_earnable`): the
+      expected value is now pinned exactly, `min(declared_k, min(the bound each
+      stood-on callee earned))`, read from `verified_bounds`, and a stored verdict must
+      equal that number, never merely sit under it. Green: the tampered record is
+      refused, `W0516` present, re-verified to the honest `bounded(2)`, exit 0.
+- [x] **D4 (non-blocking, real) — `audit`/`worklist` never saw an inline-contracted
+      assumption.** Both commands read only the `ply.yaml`-declared boundary-contract
+      route; a same-crate callee assumed through its own inline `#[ply::requires]`/
+      `#[ply::ensures]` (branch two, reached whenever that callee is not itself an
+      independently bounded-checked claim) reported `conditional`/`owed-evidence`
+      correctly at `verify` time while `audit`'s trust surface and `worklist`'s count
+      both stayed silent -- §5.5's own honesty condition 3 not holding for this class.
+      Red-first (`stubverifiedinlineaudit` fixture, the new listing arm disabled): both
+      commands reported "(0)" -- zero assumed contracts, zero owed evidence -- for a
+      callee `verify` itself marks conditional. Fixed in `shared.rs`'s
+      `assumed_contracts`, narrowly: listed whenever the callee carries no `bounded`
+      check anywhere in the document. **Known gap, not solved**: a same-crate callee
+      that *is* claimed `bounded` elsewhere but still lands on branch two at `verify`
+      time (a cycle, or an unclean run) needs the same ordering computation `verify`
+      does to tell "stood on" from "assumed" -- this listing does not attempt that and
+      under-reports exactly that case. Green: both commands report "(1)", naming the
+      callee, the caller, and the promise text.
+- [x] **D5 (non-blocking, real) — the vacuity gate fired on a proved callee's inline
+      contract.** §5.5's emptiness/vacuity check (E0502/E0503) exists to interrogate
+      branch two's *assumed* clauses; it was running over every stub's contract
+      regardless of branch, including a callee proved clean this run (branch one), whose
+      inline contract is real evidence rather than a promise being trusted sight-unseen.
+      Fixed by filtering the stub list fed to the vacuity gate to assumed-only
+      (`is_assumed()`) before it runs. A second, smaller wording defect went with it:
+      diagnostic text in this area said a contract was "declared in ply.yaml" in
+      contexts where it could just as easily be an inline `#[ply::requires]`/
+      `#[ply::ensures]` on the callee itself -- corrected in `W0511`'s
+      `conditional_verdict_diag` and the three E0502/E0503 title strings to describe the
+      contract neutrally rather than naming the wrong source.
+- [x] **D6 (non-blocking, real) — a mutation-decorated verdict broke bound parsing.**
+      `parse_bound` (`verify.rs`, feeds the `known_bounded` map branch one composes
+      against) matched only a bare `bounded(k)` string; a `·spec-strong`-decorated
+      verdict failed to parse, silently dropping that claim out of `known_bounded` and
+      its callers to branch two. Fixed by stripping the `·spec-strong` suffix before
+      parsing, matching the same handling `record.rs`'s `verdict_is_earnable` already
+      had for the identical shape.
+- [x] Fixtures added, each with its own permanent e2e test:
+      `stubverifiedveclen` (D1, the reviewer's length-indexed-parameter shape, entered
+      the suite permanently as required), `stubverifiedtuparg` (D2, a tuple-pattern
+      parameter), `stubverifiedtamperedbound` (D3, a live hand-edit-and-reverify
+      reproduction), `stubverifiedinlineaudit` (D4, `audit` + `worklist`). All four
+      confirmed red-first against the isolated defect and green with the fix restored,
+      including a red-first pass over D3's own live e2e reproduction (hand-editing
+      `ply.lock` and re-running against the pre-fix "any `j <= k`" rule accepted the
+      tampered `bounded(4)`; the fix refuses it and re-earns `bounded(2)`). D6 also
+      carries its own unit test (`parse_bound`, spec-strong-decorated input).
+      `cargo test --workspace`: 321 passed, 0 failed, 0 ignored, across 50 test
+      binaries; `cargo fmt --all` made no changes; `cargo clippy --workspace
+      --all-targets -- -D warnings` clean.
+
 ## Phase 1a — landed 2026-08-25
 
 Full write-up with verbatim red-first failures: `docs/phase-1a.md`.

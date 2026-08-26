@@ -1,0 +1,16 @@
+ply: 1
+
+# `g` carries its own inline contract (§5.5's D5 route) but is never
+# independently claimed with a `bounded` check anywhere in this file, so
+# `f`'s claim always stands on it as an *assumption*, never a proof --
+# D5's second branch, every run. Before D4's fix, `audit`'s and
+# `worklist`'s trust-listing code only ever looked at ply.yaml-declared
+# boundary contracts for this list, so a same-crate inline-contracted
+# callee like this one was invisible to both commands even though `verify`
+# itself correctly reported `f` as `conditional`/`owed-evidence` for it.
+components:
+  stubverifiedinlineaudit:
+    anchor: ply_fixture_stubverifiedinlineaudit
+    fns:
+      f:
+        checks: [bounded(2)]
