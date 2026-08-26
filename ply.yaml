@@ -27,6 +27,13 @@ ply: 1
 # refactor would create by moving a diagnostic's wording into core's caller.
 
 components:
+  # The end-to-end suite. It carries no dependency on any of the three crates
+  # below, and that is the rule rather than an accident: it drives the real
+  # built binary the way a user does. The day it links the library directly it
+  # stops testing what ships, and the checker will say so -- there is no edge
+  # from `e2e` to anything, so any such dependency is a violation.
+  e2e:
+    anchor: ply_e2e
   attrs:
     anchor: ply_attrs
   core:
