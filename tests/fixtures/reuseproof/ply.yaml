@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  reuseproof:
+    anchor: ply_fixture_reuseproof
+    fns:
+      outer:
+        checks: [bounded(2)]

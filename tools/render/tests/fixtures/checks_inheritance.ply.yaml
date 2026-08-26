@@ -1,11 +1,14 @@
 ply: 1
+# "No checks of its own" is written by leaving the key out entirely.
+# `checks: []` is a written, empty list -- it means "check nothing here" and
+# inherits nothing (§5.4c), which is a different shape from the one this
+# fixture exercises.
 components:
   pricing:
     anchor: app::pricing
     checks: [bounded(2)]
     fns:
-      quote:
-        checks: []
+      quote: {}
       book:
         checks: [test]
     components:
@@ -13,10 +16,8 @@ components:
         anchor: app::pricing::curves
         checks: [fuzz(64)]
         fns:
-          discount:
-            checks: []
+          discount: {}
       greeks:
         anchor: app::pricing::greeks
         fns:
-          delta:
-            checks: []
+          delta: {}

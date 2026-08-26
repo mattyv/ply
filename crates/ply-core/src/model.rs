@@ -53,8 +53,11 @@ pub struct Component {
     pub owns: Vec<String>,
     #[serde(default)]
     pub profile: Option<String>,
+    /// §5.1's "optional default checks for all fns in scope". `None` is *no
+    /// list written*; `Some([])` is an empty list written on purpose, which
+    /// means "check nothing" and is not the same statement (§5.4c).
     #[serde(default)]
-    pub checks: Vec<String>,
+    pub checks: Option<Vec<String>>,
     #[serde(default)]
     pub components: IndexMap<String, Component>,
     #[serde(default)]
@@ -82,8 +85,14 @@ pub enum Mode {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FnClaim {
+    /// This claim's own `checks:`. **`None` and `Some([])` are different
+    /// statements** and Ply keeps them apart (§5.4c): no list at all leaves
+    /// the choice to the nearest component default, or failing that to the
+    /// shape-aware default; an empty list is the author saying "check
+    /// nothing here", and nothing runs. Reading them as one was a silent
+    /// way of proving a function whose document said not to.
     #[serde(default)]
-    pub checks: Vec<String>,
+    pub checks: Option<Vec<String>>,
     #[serde(default)]
     pub mode: Mode,
     #[serde(default)]
@@ -118,48 +127,50 @@ pub struct InheritedChecks<'a> {
     pub checks: &'a [String],
 }
 
-/// §5.1: the checks list that actually governs one fn.
+/// §5.1: the checks list that actually governs one fn, or `None` when the
+/// document declares no list for it anywhere.
 ///
-/// A fn's own non-empty `checks` wins *entirely* — there is no merge with
-/// anything declared above it. In particular, D12's "`mutate` requires a
+/// A fn's own `checks` wins *entirely* — there is no merge with anything
+/// declared above it, and **an empty list is a list**: `checks: []` says
+/// "check nothing here" and overrides an ancestor default the same way a
+/// full list does (§5.4c). In particular, D12's "`mutate` requires a
 /// `test`/`fuzz` entry in the same list" is checked against this effective
 /// list: an inherited `[test]` does not save a fn-level `[mutate]]` that
 /// declares no `test`/`fuzz` of its own, because the fn's own list replaces
 /// the inherited one rather than joining it.
 ///
 /// A fn with no `checks` of its own inherits `inherited` — the nearest
-/// ancestor component's own non-empty `checks` (its own component first,
+/// ancestor component's own declared `checks` (its own component first,
 /// then that component's parent, and so on up, see
-/// [`component_default_checks`]) — or nothing at all if no ancestor ever
-/// declared one, in which case the fn stays unclaimed exactly as it always
-/// has.
+/// [`component_default_checks`]). `None` means no ancestor ever declared
+/// one either, which is the only case a caller may fill in with a default
+/// of its own: an empty *declared* list is an answer, not an absence.
 pub fn effective_checks<'a>(
     fc: &'a FnClaim,
     inherited: Option<InheritedChecks<'a>>,
-) -> &'a [String] {
-    if !fc.checks.is_empty() {
-        &fc.checks
-    } else {
-        inherited.map_or(&[], |d| d.checks)
+) -> Option<&'a [String]> {
+    match fc.checks.as_deref() {
+        Some(own) => Some(own),
+        None => inherited.map(|d| d.checks),
     }
 }
 
 /// The default that `comp`'s own fns — and any descendant component that
 /// declares none of its own — inherit: `comp`'s own `checks`, tagged with
-/// its `name`, if non-empty; otherwise whatever `comp` itself inherited from
-/// further up (which may itself be `None`, all the way to the root).
+/// its `name`, if it declared any list at all (an empty one included);
+/// otherwise whatever `comp` itself inherited from further up (which may
+/// itself be `None`, all the way to the root).
 pub fn component_default_checks<'a>(
     name: &'a str,
     comp: &'a Component,
     inherited: Option<InheritedChecks<'a>>,
 ) -> Option<InheritedChecks<'a>> {
-    if comp.checks.is_empty() {
-        inherited
-    } else {
-        Some(InheritedChecks {
+    match comp.checks.as_deref() {
+        Some(checks) => Some(InheritedChecks {
             from_component: name,
-            checks: &comp.checks,
-        })
+            checks,
+        }),
+        None => inherited,
     }
 }
 
@@ -204,7 +215,11 @@ impl FnClaim {
     /// code. Inheritance is NOT applied here — call [`effective_checks`]
     /// first when the governing list is what you want.
     pub fn parsed_checks(&self) -> Result<Vec<Check>, String> {
-        self.checks.iter().map(|s| parse_check(s)).collect()
+        self.checks
+            .iter()
+            .flatten()
+            .map(|s| parse_check(s))
+            .collect()
     }
 }
 
@@ -535,10 +550,38 @@ mod tests {
         assert!(d.except.is_empty());
     }
 
-    /// §5.1 checks inheritance: a fn with no `checks` of its own inherits
-    /// the nearest ancestor component's non-empty default.
+    /// §5.1 checks inheritance: a fn that writes no `checks:` key at all
+    /// inherits the nearest ancestor component's default.
     #[test]
     fn fn_with_no_checks_inherits_the_component_default() {
+        let doc = parse_document(
+            r#"
+ply: 1
+components:
+  pricing:
+    anchor: app::pricing
+    checks: [bounded(2)]
+    fns:
+      quote: {}
+"#,
+        )
+        .unwrap();
+        let pricing = &doc.components["pricing"];
+        let default = component_default_checks("pricing", pricing, None);
+        let fc = &pricing.fns["quote"];
+        assert_eq!(
+            effective_checks(fc, default),
+            Some(["bounded(2)".to_string()].as_slice())
+        );
+    }
+
+    /// §5.4c: `checks: []` is a *written* list. It says "check nothing
+    /// here", and it overrides an ancestor default exactly the way a full
+    /// list does — which is the whole difference between the two spellings.
+    /// Reading them as one is how a function whose document said not to
+    /// check it got proved anyway.
+    #[test]
+    fn an_empty_checks_list_overrides_the_component_default_and_asks_for_nothing() {
         let doc = parse_document(
             r#"
 ply: 1
@@ -557,7 +600,9 @@ components:
         let fc = &pricing.fns["quote"];
         assert_eq!(
             effective_checks(fc, default),
-            &["bounded(2)".to_string()][..]
+            Some([].as_slice()),
+            "an empty list is an answer -- `Some([])` -- and never the absence a caller may \
+             fill in with a default of its own"
         );
     }
 
@@ -581,13 +626,18 @@ components:
         let pricing = &doc.components["pricing"];
         let default = component_default_checks("pricing", pricing, None);
         let fc = &pricing.fns["quote"];
-        assert_eq!(effective_checks(fc, default), &["test".to_string()][..]);
+        assert_eq!(
+            effective_checks(fc, default),
+            Some(["test".to_string()].as_slice())
+        );
     }
 
-    /// A fn with no checks and no ancestor default anywhere in the chain
-    /// stays unclaimed (empty effective list).
+    /// A fn that writes no checks and has no ancestor default anywhere in
+    /// the chain has no declared list at all — `None`, the one case a
+    /// caller may answer with a default of its own (§5.4c's shape-aware
+    /// routing).
     #[test]
-    fn fn_with_no_checks_and_no_ancestor_default_stays_unclaimed() {
+    fn fn_with_no_checks_and_no_ancestor_default_has_no_declared_list() {
         let doc = parse_document(
             r#"
 ply: 1
@@ -595,15 +645,14 @@ components:
   pricing:
     anchor: app::pricing
     fns:
-      quote:
-        checks: []
+      quote: {}
 "#,
         )
         .unwrap();
         let pricing = &doc.components["pricing"];
         let default = component_default_checks("pricing", pricing, None);
         let fc = &pricing.fns["quote"];
-        assert!(effective_checks(fc, default).is_empty());
+        assert_eq!(effective_checks(fc, default), None);
     }
 
     /// Nesting: a grandchild fn with no checks and no default of its own
@@ -622,8 +671,7 @@ components:
       curves:
         anchor: app::pricing::curves
         fns:
-          discount:
-            checks: []
+          discount: {}
 "#,
         )
         .unwrap();
@@ -634,7 +682,7 @@ components:
         let fc = &curves.fns["discount"];
         assert_eq!(
             effective_checks(fc, curves_default),
-            &["bounded(2)".to_string()][..]
+            Some(["bounded(2)".to_string()].as_slice())
         );
     }
 
@@ -742,8 +790,7 @@ components:
         anchor: app::pricing::curves
         checks: [fuzz(64)]
         fns:
-          discount:
-            checks: []
+          discount: {}
 "#,
         )
         .unwrap();
@@ -754,7 +801,7 @@ components:
         let fc = &curves.fns["discount"];
         assert_eq!(
             effective_checks(fc, curves_default),
-            &["fuzz(64)".to_string()][..]
+            Some(["fuzz(64)".to_string()].as_slice())
         );
     }
 }

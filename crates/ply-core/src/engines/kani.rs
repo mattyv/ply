@@ -59,6 +59,49 @@ pub struct KaniRunConfig {
     pub enable_stubbing: bool,
 }
 
+/// The `-Z` set every `cargo kani` invocation here carries. These are
+/// compilation inputs: they decide what the run even attempts, so a proof
+/// earned under one set is not evidence about another.
+///
+/// One function rather than a literal at the call site, because a *second*
+/// consumer reads it: the fingerprint a result is recorded under (§5.2a)
+/// names the engine's flags, and if this list could change without that
+/// string changing, results earned under the old flags would be reused
+/// under the new ones. The list is pinned by an exact test below, so a
+/// change to it is reviewed rather than incidental.
+pub fn unstable_flags(enable_stubbing: bool) -> Vec<&'static str> {
+    let mut flags = vec![
+        "-Z",
+        "function-contracts",
+        "-Z",
+        "unstable-options",
+        "-Z",
+        "concrete-playback",
+    ];
+    if enable_stubbing {
+        flags.push("-Z");
+        flags.push("stubbing");
+    }
+    flags
+}
+
+/// What this machine's Kani calls itself, for the record a result is stored
+/// under (§5.2a): a proof earned under one engine version is not evidence
+/// about another. `None` when `cargo kani` is not installed or will not
+/// answer -- a `bounded` check then earns no evidence at all, so nothing is
+/// recorded and nothing can be reused.
+pub fn version() -> Option<String> {
+    let out = Command::new("cargo")
+        .args(["kani", "--version"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
+
 /// Runs `cargo kani` against one harness and classifies the result. Always
 /// requests concrete playback (`-Z concrete-playback --concrete-playback
 /// print`) -- cheap on success (nothing to print) and the only source of a
@@ -74,18 +117,8 @@ pub fn run(cfg: &KaniRunConfig) -> Result<KaniOutcome> {
 fn invoke(cfg: &KaniRunConfig) -> Result<String> {
     let timeout_arg = format!("{}s", cfg.engine_timeout_secs);
     let mut cmd = Command::new("cargo");
-    cmd.current_dir(&cfg.crate_dir).args([
-        "kani",
-        "-Z",
-        "function-contracts",
-        "-Z",
-        "unstable-options",
-        "-Z",
-        "concrete-playback",
-    ]);
-    if cfg.enable_stubbing {
-        cmd.args(["-Z", "stubbing"]);
-    }
+    cmd.current_dir(&cfg.crate_dir).arg("kani");
+    cmd.args(unstable_flags(cfg.enable_stubbing));
     let output = cmd
         .args([
             "--harness-timeout",
@@ -382,6 +415,31 @@ pub fn run_playback(
 mod tests {
     use super::*;
     use crate::harness::{Param, RustType};
+
+    /// Exact, because these flags are recorded as part of what a stored
+    /// result stood on (§5.2a). Changing them changes what a `bounded`
+    /// verdict means, so the change has to be typed here too -- and every
+    /// result earned under the old set stops matching, which is the point.
+    #[test]
+    fn the_unstable_flag_set_is_pinned_because_a_result_is_recorded_under_it() {
+        assert_eq!(
+            unstable_flags(false),
+            [
+                "-Z",
+                "function-contracts",
+                "-Z",
+                "unstable-options",
+                "-Z",
+                "concrete-playback"
+            ]
+        );
+        assert_eq!(
+            unstable_flags(true).last(),
+            Some(&"stubbing"),
+            "a stubbed proof replaces a callee with its promise, which is a different \
+             obligation from the same proof without it"
+        );
+    }
 
     #[test]
     fn recognizes_clean_success() {

@@ -49,15 +49,15 @@ const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What `audit` cannot look at, in the words a user needs to know what this
 /// list leaves out. Exact strings, tested as such: the honesty of a short
 /// trust surface is carried entirely by these five sentences.
-const STALENESS_GAP: &str = "NOT CHECKED. §5.4d says a `trusted` entry goes stale when the code \
-     it vouches for changes, and that `audit` then lists it as owed re-attestation. That \
-     comparison needs the fingerprint in `ply.lock` — a file this version of Ply does not write \
-     yet. So every attestation above is listed with no staleness state at all, and one signed off \
-     against a function that has since been rewritten looks exactly like one signed off this \
-     morning.";
+const ATTESTATION_GAP: &str = "NOT CHECKED. §5.4d says an attestation stops covering an item \
+     once that item changes, and that `audit` then lists it as owed re-attestation. Ply does \
+     record a hash of what it checks, but only for claims it checked itself — an attestation is a \
+     person's word, nothing runs for it, and no hash of the item it vouches for is kept. So every \
+     attestation above is listed with no coverage state at all, and one signed off against a \
+     function that has since been rewritten looks exactly like one signed off this morning.";
 const DISCHARGE_GAP: &str = "NOT CHECKED. An assumed contract stops being owed once something \
-     runs the real callee against the promise. Ply keeps no record of past runs until `ply.lock` \
-     exists, and this command starts no engines, so every assumption above is reported as owed — \
+     runs the real callee against the promise. This command starts no engines and does not read \
+     the results `cargo ply verify` records, so every assumption above is reported as owed — \
      including one whose callee declares a check that has been passing for months. `cargo ply \
      verify` is what exercises it.";
 const HELPER_GAP: &str = "NOT CHECKED. §5.4a says a helper used in a contract that does not \
@@ -198,6 +198,7 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
                     // and finding nothing.
                     trust_surface: None,
                     open_items: None,
+                    not_carried_forward: vec![],
                 },
                 document,
             });
@@ -340,18 +341,37 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
             coverage: Some(coverage),
             trust_surface: Some(items),
             open_items: None,
+            not_carried_forward: vec![],
         },
         document,
     })
 }
 
-/// The checks declared for a fn by name alone, for a helper that may or may
-/// not be claimed anywhere.
-fn fn_claim_checks(doc: &ply_core::model::Document, name: &str) -> Option<Vec<String>> {
+/// What the document asks for on a fn named by name alone, for a helper
+/// that may or may not be claimed anywhere: `None` when no entry names it,
+/// otherwise the checks that govern it and the component they were written
+/// on when they were not written on the entry itself.
+///
+/// Resolved through the one shared §5.1 resolution (`FnClaimRef::
+/// governing_checks`), so a helper that takes its checks from its component
+/// is not reported as one nothing checks.
+fn fn_claim_checks(
+    doc: &ply_core::model::Document,
+    name: &str,
+) -> Option<(Vec<String>, Option<String>)> {
     let mut found = None;
     walk_fn_claims(doc, |c| {
         if c.fn_name == name {
-            found = Some(c.claim.checks.clone());
+            let governing = c.governing_checks();
+            found = Some((
+                governing
+                    .as_ref()
+                    .map(|g| g.checks.to_vec())
+                    .unwrap_or_default(),
+                governing
+                    .as_ref()
+                    .and_then(|g| g.from_component.map(str::to_string)),
+            ));
         }
     });
     found
@@ -359,17 +379,7 @@ fn fn_claim_checks(doc: &ply_core::model::Document, name: &str) -> Option<Vec<St
 
 fn assumed_contract_item(a: &shared::AssumedContract) -> TrustItem {
     let (caller, callee, contract) = (&a.caller_fn, &a.callee, &a.contract);
-    let discharge = match a.callee_checks.first() {
-        Some(check) => format!(
-            "Its `ply.yaml` entry already asks for `{check}`, which runs the real body against \
-             the promise: `cargo ply verify` is what settles it."
-        ),
-        None => format!(
-            "To settle it, add `checks: [fuzz(256)]` to its `ply.yaml` entry — fuzzing crosses a \
-             legacy boundary by simply calling the code, so it tests the promise against the real \
-             `{callee}`."
-        ),
-    };
+    let discharge = discharge_advice(a);
     TrustItem {
         kind: "assumed_contract".into(),
         subject: callee.clone(),
@@ -383,6 +393,59 @@ fn assumed_contract_item(a: &shared::AssumedContract) -> TrustItem {
              `conditional`. If the promise is wrong, the verdict is wrong with it. Nothing has run \
              `{callee}` against that promise yet, and that is what `owed-evidence` means here. \
              {discharge} (§5.5)"
+        ),
+    }
+}
+
+/// How to settle this assumption — said so that it can be acted on from
+/// where the reader is standing.
+///
+/// `cargo ply verify` checks one crate at a time. When the callee's entry
+/// belongs to another package, a `checks:` on it is read for its promise
+/// and declined for its checks (`W0303`), so advice that stops at "add a
+/// check to its entry" is advice this tool will refuse: the reader follows
+/// it, watches it be declined, and is no further forward. Both the package
+/// to run it in and the route that needs no second crate go on the line.
+fn discharge_advice(a: &shared::AssumedContract) -> String {
+    let (caller, callee) = (&a.caller_fn, &a.callee);
+    // Where the check the callee already has was written. A default
+    // declared on its component governs it exactly as a line on the entry
+    // would (§5.1), but telling a reader to look at "its entry" for a line
+    // that is one level up sends them hunting.
+    let asks = |check: &String| match a.callee_checks_from.as_deref() {
+        None => format!("Its `ply.yaml` entry already asks for `{check}`"),
+        Some(from) => format!(
+            "Its `ply.yaml` entry already asks for `{check}` — the default the component \
+             `{from}` sets for everything inside it"
+        ),
+    };
+    match (a.callee_checks.first(), a.callee_anchor.as_deref()) {
+        (Some(check), None) => format!(
+            "{}, which runs the real body against the promise: `cargo ply verify` is what \
+             settles it.",
+            asks(check)
+        ),
+        (Some(check), Some(anchor)) => format!(
+            "{}, which runs the real body against the promise — but only where that function \
+             lives: run `cargo ply verify` inside the `{anchor}` crate. This run checks one \
+             crate at a time, so from here that entry's promise is read and its checks are \
+             skipped.",
+            asks(check)
+        ),
+        (None, None) => format!(
+            "To settle it, add `checks: [fuzz(256)]` to its `ply.yaml` entry — fuzzing crosses a \
+             legacy boundary by simply calling the code, so it tests the promise against the real \
+             `{callee}`."
+        ),
+        (None, Some(anchor)) => format!(
+            "To settle it, add `checks: [fuzz(256)]` to its `ply.yaml` entry and run `cargo ply \
+             verify` inside the `{anchor}` crate, which is where that function lives — fuzzing \
+             crosses a legacy boundary by simply calling the code, so it tests the promise \
+             against the real `{callee}`. Adding the check changes nothing in this crate: \
+             `cargo ply verify` checks one crate at a time and will decline to run it from here. \
+             If you would rather not leave this crate, pass what `{callee}` returns into \
+             `{caller}` as a parameter instead: the value becomes the caller's own data and there \
+             is no promise left to owe."
         ),
     }
 }
@@ -428,7 +491,7 @@ fn trusted_claim_item(node_id: &str, fn_name: &str, claim: &str, evidence: &str)
              lives outside Ply does not render indistinguishably green beside one Ply proved. \
              Whether the code it vouches for has changed since somebody signed it off is not known \
              in this run — see what this command could not look at, below. Re-attestation is a \
-             human act; `cargo ply accept` does not clear it. (§5.4d)"
+             human act, and nothing in Ply clears it. (§5.4d)"
         ),
     }
 }
@@ -437,18 +500,28 @@ fn contract_helper_item(
     node_id: &str,
     caller: &str,
     helper: &str,
-    claimed: Option<Vec<String>>,
+    claimed: Option<(Vec<String>, Option<String>)>,
 ) -> TrustItem {
     let standing = match claimed {
         None => {
             format!("`{helper}` carries no claim of its own in `ply.yaml`, so nothing checks it.")
         }
-        Some(checks) if checks.is_empty() => format!(
+        Some((checks, None)) if checks.is_empty() => format!(
             "`{helper}` has a `ply.yaml` entry that asks for no checks, so nothing checks it."
         ),
-        Some(checks) => format!(
+        Some((checks, Some(from))) if checks.is_empty() => format!(
+            "`{helper}` writes no checks of its own, and the component `{from}` declares an empty \
+             list as the default for everything inside it, so nothing checks it."
+        ),
+        Some((checks, None)) => format!(
             "`{helper}` carries its own claim (`checks: [{}]`); whether that check passes is not \
              something this command knows.",
+            checks.join(", ")
+        ),
+        Some((checks, Some(from))) => format!(
+            "`{helper}` is checked with `{}`, which the component `{from}` declares as the \
+             default for everything inside it; whether that check passes is not something this \
+             command knows.",
             checks.join(", ")
         ),
     };
@@ -593,8 +666,8 @@ fn plural(n: usize, noun: &str) -> String {
 fn gaps() -> Vec<Tier> {
     vec![
         Tier {
-            tier: "trusted-claim staleness".into(),
-            detail: STALENESS_GAP.into(),
+            tier: "attestation coverage".into(),
+            detail: ATTESTATION_GAP.into(),
         },
         Tier {
             tier: "assumption discharge".into(),
@@ -749,6 +822,92 @@ mod tests {
         );
     }
 
+    /// §5.5's second branch across a crate boundary -- which is the case
+    /// it exists for: the callee is two-year-old code in another package.
+    const CROSS_CRATE_LIB: &str = "#[ply::requires(amount <= 100)]\n\
+         #[ply::ensures(|result| *result <= amount)]\n\
+         pub fn tiered_fee(amount: u32, tier: u8) -> u32 { ledger::fees::bps_for_tier(tier).min(amount) }\n";
+    const CROSS_CRATE_YAML: &str = "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      tiered_fee:\n        checks: [bounded(2)]\n  ledger:\n    anchor: ledger\n    fns:\n      fees::bps_for_tier:\n        ensures:\n          - \"|result| *result <= 10_000\"\n";
+
+    /// The two-crate layout §5.5's boundary case actually has: the crate
+    /// being audited, and a path dependency holding the legacy callee.
+    /// Returns the tempdir (kept alive by the caller) and the crate to run
+    /// in.
+    fn crate_with_legacy_dependency(yaml: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = root.path().join("ledger");
+        std::fs::create_dir_all(ledger.join("src")).unwrap();
+        std::fs::write(
+            ledger.join("src/lib.rs"),
+            "pub mod fees {\n    pub fn bps_for_tier(tier: u8) -> u32 { if tier == 0 { 150 } else { 90 } }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ledger.join("Cargo.toml"),
+            "[package]\nname = \"ledger\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+
+        let demo = root.path().join("demo");
+        std::fs::create_dir_all(demo.join("src")).unwrap();
+        std::fs::write(demo.join("src/lib.rs"), CROSS_CRATE_LIB).unwrap();
+        std::fs::write(demo.join("ply.yaml"), yaml).unwrap();
+        std::fs::write(
+            demo.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nledger = { path = \"../ledger\" }\n",
+        )
+        .unwrap();
+        (root, demo)
+    }
+
+    /// Two commands, each right on its own, sending a reader in a circle:
+    /// this one says "add a check to that function's entry", and `verify`,
+    /// run where the reader is standing, then refuses to run it because it
+    /// checks one crate at a time (`W0303`). Advice a user cannot act on
+    /// from where they are is worse than no advice: they follow it, watch
+    /// it be declined, and learn nothing about what to do instead.
+    #[test]
+    fn advice_for_a_callee_in_another_package_says_where_that_advice_has_to_be_run() {
+        let (_root, demo) = crate_with_legacy_dependency(CROSS_CRATE_YAML);
+        let report = audit_crate(&demo).unwrap();
+        let item = only(&report, "assumed_contract");
+        assert_eq!(item.subject, "ledger::fees::bps_for_tier");
+        assert!(
+            item.detail
+                .contains("run `cargo ply verify` inside the `ledger` crate"),
+            "the advice has to name the package the suggested check would have to be run in, or \
+             it sends the reader to a command that will decline it: {}",
+            item.detail
+        );
+        assert!(
+            item.detail.contains(
+                "pass what `ledger::fees::bps_for_tier` returns into `tiered_fee` as a parameter"
+            ),
+            "and it should offer the route that needs no second crate at all: {}",
+            item.detail
+        );
+
+        // The same crate boundary, with the check already written down. It
+        // still does not run from here, so saying "`cargo ply verify` is
+        // what settles it" would be the same circle one step further along.
+        let already = CROSS_CRATE_YAML.replace(
+            "      fees::bps_for_tier:\n        ensures:",
+            "      fees::bps_for_tier:\n        checks: [fuzz(256)]\n        ensures:",
+        );
+        let (_root2, demo2) = crate_with_legacy_dependency(&already);
+        let report2 = audit_crate(&demo2).unwrap();
+        let item2 = only(&report2, "assumed_contract");
+        assert!(
+            item2
+                .detail
+                .contains("run `cargo ply verify` inside the `ledger` crate"),
+            "a check already declared for a function in another package still only runs where \
+             that function lives: {}",
+            item2.detail
+        );
+    }
+
     /// The same assumption, on a callee whose entry already asks for the
     /// cheap check that would discharge it. The advice must change with the
     /// facts: telling a user to add a check they already added is how a
@@ -772,8 +931,125 @@ mod tests {
         );
     }
 
+    /// §5.1: a component's `checks:` is the default for every fn inside
+    /// it, and a trust listing has to read it through the same resolution
+    /// `check` and `verify` use. This document asks for `fuzz(64)` on
+    /// everything in `demo`; fuzzing crosses a legacy boundary by calling
+    /// the real code (§5.5), so `tiered_fee` assumes nothing about
+    /// `legacy_rate` and there is nothing here to list. Reading the fn's
+    /// own (absent) list instead put the shape-aware `bounded(2)` back and
+    /// printed an assumption `verify` never makes.
+    #[test]
+    fn a_component_default_that_asks_for_fuzzing_leaves_nothing_assumed() {
+        let yaml = "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: [fuzz(64)]\n    fns:\n      legacy_rate:\n        checks: []\n        ensures:\n          - \"|result| *result <= 10_000\"\n      tiered_fee: {}\n";
+        let dir = crate_with(BOUNDARY_LIB, yaml);
+        let report = audit_crate(dir.path()).unwrap();
+        assert!(
+            !item_kinds(&report).contains(&"assumed_contract"),
+            "`tiered_fee` inherits `fuzz(64)` from its component, and fuzzing runs the real \
+             `legacy_rate` -- nothing is assumed here, so nothing may be listed as assumed: {:#?}",
+            report.envelope.trust_surface
+        );
+    }
+
+    /// The same resolution's other rule, reaching these two commands for
+    /// the first time: **an empty list is a list** (§5.4c). A caller that
+    /// writes `checks: []` is checked by nothing, so it proves nothing, so
+    /// it assumes nothing — and there is no trust surface to list. Reading
+    /// the list for emptiness rather than for presence put the shape-aware
+    /// `bounded(2)` back and listed the assumption that proof would have
+    /// made.
+    #[test]
+    fn a_caller_that_asks_for_no_checks_at_all_leaves_nothing_assumed() {
+        let yaml = BOUNDARY_YAML.replace(
+            "      tiered_fee:\n        checks: [bounded(2)]\n",
+            "      tiered_fee:\n        checks: []\n",
+        );
+        let dir = crate_with(BOUNDARY_LIB, &yaml);
+        let report = audit_crate(dir.path()).unwrap();
+        assert!(
+            !item_kinds(&report).contains(&"assumed_contract"),
+            "nothing checks `tiered_fee`, so nothing of its rests on `legacy_rate`'s promise: \
+             {:#?}",
+            report.envelope.trust_surface
+        );
+    }
+
+    /// The same resolution the other way round, and one level down: the
+    /// helper a contract calls writes no `checks:` of its own and sits in a
+    /// nested component, so what runs against it is the default declared
+    /// above. Reading only its own line said "nothing checks it" about a fn
+    /// this document does check.
+    #[test]
+    fn a_helper_that_inherits_its_checks_is_not_reported_as_unchecked() {
+        let dir = crate_with(
+            "pub fn bps_ok(bps: u32) -> bool { bps <= 10_000 }\n\
+             #[ply::requires(bps_ok(bps))]\n\
+             pub fn fee(bps: u32) -> u32 { bps }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: [test]\n    fns:\n      fee: {}\n    components:\n      helpers:\n        anchor: demo\n        fns:\n          bps_ok: {}\n",
+        );
+        let report = audit_crate(dir.path()).unwrap();
+        let item = only(&report, "contract_helper");
+        assert!(
+            item.detail.contains(
+                "`bps_ok` is checked with `test`, which the component `demo` declares as the \
+                 default for everything inside it"
+            ),
+            "a helper that inherits its checks is checked, and saying otherwise overstates what \
+             this contract rests on: {}",
+            item.detail
+        );
+    }
+
+    /// A fn's own `checks:` still wins entirely over the default above it,
+    /// and the advice for settling a promise has to point at the line that
+    /// carries the check: "its entry already asks for `fuzz(256)`" sends a
+    /// reader to a line that is one level up from where they will look.
+    #[test]
+    fn advice_says_where_a_callee_takes_its_check_from_when_it_is_not_its_own_line() {
+        let yaml = "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: [fuzz(256)]\n    fns:\n      legacy_rate:\n        ensures:\n          - \"|result| *result <= 10_000\"\n      tiered_fee:\n        checks: [bounded(2)]\n";
+        let dir = crate_with(BOUNDARY_LIB, yaml);
+        let report = audit_crate(dir.path()).unwrap();
+        let item = only(&report, "assumed_contract");
+        assert!(
+            item.detail.contains(
+                "Its `ply.yaml` entry already asks for `fuzz(256)` — the default the component \
+                 `demo` sets for everything inside it, which runs the real body against the \
+                 promise: `cargo ply verify` is what settles it."
+            ),
+            "{}",
+            item.detail
+        );
+    }
+
+    /// An inherited *empty* default: the component says "check nothing" for
+    /// everything inside it (§5.4c). Nothing checks the helper, which is
+    /// what the old sentence said — but the `checks:` line a reader would
+    /// go looking for is on the component, not on the entry, so the
+    /// sentence has to say which one it is.
+    #[test]
+    fn a_helper_under_an_empty_component_default_names_the_component_that_declared_it() {
+        let dir = crate_with(
+            "pub fn bps_ok(bps: u32) -> bool { bps <= 10_000 }\n\
+             #[ply::requires(bps_ok(bps))]\n\
+             pub fn fee(bps: u32) -> u32 { bps }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: []\n    fns:\n      fee: {}\n      bps_ok: {}\n",
+        );
+        let report = audit_crate(dir.path()).unwrap();
+        let item = only(&report, "contract_helper");
+        assert!(
+            item.detail.contains(
+                "`bps_ok` writes no checks of its own, and the component `demo` declares an empty \
+                 list as the default for everything inside it, so nothing checks it."
+            ),
+            "{}",
+            item.detail
+        );
+    }
+
     /// §5.4d: a trusted claim is a human's word, listed with the evidence
-    /// they cited. Its staleness state is the part Ply cannot supply yet,
+    /// they cited. Whether it still covers the item is the part Ply cannot
+    /// supply yet,
     /// and saying "not known" is the difference between an honest list and
     /// one that implies every attestation is current.
     #[test]
@@ -1026,15 +1302,14 @@ mod tests {
         assert_eq!(
             names,
             [
-                "trusted-claim staleness",
+                "attestation coverage",
                 "assumption discharge",
                 "helper evidence",
                 "unreadable call sites",
                 "architecture bans"
             ]
         );
-        assert_eq!(cov.not_checked[0].detail, STALENESS_GAP);
-        assert!(STALENESS_GAP.contains("ply.lock"));
+        assert_eq!(cov.not_checked[0].detail, ATTESTATION_GAP);
         assert_eq!(cov.not_checked[1].detail, DISCHARGE_GAP);
         assert_eq!(cov.not_checked[2].detail, HELPER_GAP);
         assert_eq!(cov.not_checked[3].detail, CALL_SITE_GAP);

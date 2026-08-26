@@ -42,9 +42,13 @@ fn a_clean_run_exits_zero_and_still_says_what_it_did_not_check() {
         stdout.contains("What this command did NOT check:"),
         "{stdout}"
     );
-    assert!(stdout.contains("staleness"), "{stdout}");
-    assert!(stdout.contains("ply.lock"), "{stdout}");
     assert!(stdout.contains("architecture"), "{stdout}");
+    assert!(
+        !stdout.contains("staleness"),
+        "there is no staleness tier to report: a recorded result is settled by re-hashing it \
+         when `verify` uses it, so no command has a \"might be out of date\" state to warn \
+         about: {stdout}"
+    );
     assert!(
         stdout.contains("runs no engines, so it produces no verdicts"),
         "a command that checked nothing about the code must not read like one that did: \
@@ -69,7 +73,7 @@ fn json_is_the_section_8_envelope_with_the_coverage_block() {
         .iter()
         .map(|t| t["tier"].as_str().unwrap())
         .collect();
-    assert_eq!(tiers, ["staleness", "architecture"]);
+    assert_eq!(tiers, ["architecture"]);
 }
 
 /// §5.2's MUST, through the real binary: a renamed function breaks the

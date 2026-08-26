@@ -518,7 +518,9 @@ fn component_verdict_node<'a>(
         .fns
         .values()
         .map(|fc| VerdictNode {
-            kind: NodeKind::Claimable(fn_declared_ceiling(effective_checks(fc, this_default))),
+            kind: NodeKind::Claimable(fn_declared_ceiling(
+                effective_checks(fc, this_default).unwrap_or(&[]),
+            )),
             statuses: ply_kernel::StatusSet::new(),
             conditional: None,
             children: Vec::new(),
@@ -934,11 +936,12 @@ fn render_fn_chip(
     // has neither). Every downstream read of "this fn's checks" — the
     // glyph row, the tooltip prose, the declared-ceiling fill computed
     // elsewhere — goes through this, not `fc.checks` directly.
-    let effective = effective_checks(fc, inherited);
-    // `inherited` only ever carries a *non-empty* list (`component_default_
-    // checks` never constructs one otherwise), so this fn's own list being
-    // empty is exactly when `effective` came from that ancestor default.
-    let is_inherited = fc.checks.is_empty() && inherited.is_some();
+    let effective = effective_checks(fc, inherited).unwrap_or(&[]);
+    // A fn that wrote no `checks:` line at all is exactly the one whose
+    // effective list came from an ancestor default. A fn that wrote
+    // `checks: []` wrote a list -- an empty one, meaning "check nothing"
+    // (§5.4c) -- and inherits nothing.
+    let is_inherited = fc.checks.is_none() && inherited.is_some();
     let glyphs = checks_glyph_row(effective);
     let note = check_with_note(&fc.check_with);
     let has_shield = !fc.trusted.is_empty();

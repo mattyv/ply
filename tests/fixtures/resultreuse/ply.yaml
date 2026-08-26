@@ -1,0 +1,20 @@
+ply: 1
+
+# `legacy_rate` declares a promise and no checks: it is a boundary contract
+# declaration (§5.5), not a verification target. `total` is provable against
+# that promise instead of the body, so its verdict rests on something Ply was
+# handed rather than something it checked -- and editing the promise has to
+# re-run it (§5.2a).
+components:
+  resultreuse:
+    anchor: ply_fixture_resultreuse
+    fns:
+      legacy_rate:
+        ensures:
+          - "|result| *result <= 10_000"
+      safe_increment:
+        checks: [bounded(2)]
+      total:
+        checks: [bounded(2)]
+      widen:
+        checks: [fuzz(64)]

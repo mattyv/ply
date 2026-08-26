@@ -61,9 +61,15 @@ fn mutate_without_test_or_fuzz_is_e0504() {
 /// §5.1 checks inheritance: a fn with no `checks` of its own inherits an
 /// ancestor component's default (§5.1's "optional default checks for all
 /// fns in scope"). `E0504` must be evaluated against that *effective* list,
-/// not the fn's own (empty) one — otherwise a broken component default
+/// not the fn's own (absent) one — otherwise a broken component default
 /// (`checks: [mutate]` with no `test`/`fuzz` beside it) silently reaches
 /// every inheriting fn with no warning at all.
+///
+/// "No checks of its own" is written by leaving the key out. The fixture
+/// used to spell it `checks: []`, which since 2026-08-25 is a written,
+/// empty list meaning "check nothing here" — it overrides the default
+/// rather than inheriting it (§5.4c), so this fn would correctly have no
+/// effective list to break at all.
 #[test]
 fn mutate_in_an_inherited_default_is_e0504_on_the_inheriting_fn() {
     let diags = diagnostics_for("tests/fixtures/mutate_inherited_default_is_broken.ply.yaml");

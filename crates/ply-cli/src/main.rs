@@ -7,6 +7,13 @@ mod worklist;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
+// The absence vocabulary (§1: "an absence is a name, not a slot") lives in
+// ply-core, because a second consumer now reads it -- the rule that decides
+// whether a result may be recorded and reused at all (§5.2a records only
+// results that earned evidence). Two copies of one vocabulary is how the
+// next absence gets missed by one of them, which is the exact shape of the
+// defect that put this rule here.
+use ply_core::diag::is_absence;
 use verify::VerifyOptions;
 
 /// cargo-ply -- the Ply CLI. This M3 thin slice implements only `verify`
@@ -157,41 +164,174 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn print_human(envelope: &ply_core::diag::Envelope) {
-    fn walk(node: &ply_core::diag::Node, depth: usize) {
-        println!("{}{} — {}", "  ".repeat(depth), node.id, node.verdict);
-        for child in &node.children {
-            walk(child, depth + 1);
-        }
+/// The marks a node line carries beside its verdict.
+///
+/// §7.1 gives statuses their own visual channel — corner markers on the
+/// node, never a change to the fill, because a status is a different kind
+/// of fact from a verdict (D6). The terminal had no such channel: a result
+/// resting on a promise nobody had checked printed as a bare pass, exactly
+/// like one resting on checked code. The qualifier and the debt were in the
+/// JSON envelope and in the diagnostic prose underneath, and missing from
+/// the one line most people read.
+///
+/// Plain words, not codes (CLAUDE.md's newbie bar): `conditional` and
+/// `owed-evidence` are Ply's names for these facts, and neither means
+/// anything to a reader who has not read the spec.
+fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
+    let mut marks = Vec::new();
+    if node.statuses.iter().any(|s| s == "conditional") {
+        marks.push("assumed");
     }
-    walk(&envelope.root, 0);
-    for d in &envelope.diagnostics {
-        println!("[{}] {} — {}", d.code, d.node_id, d.title);
+    if node.statuses.iter().any(|s| s == "owed-evidence") {
+        marks.push("evidence owed");
+    }
+    // Last, and from its own field rather than from `statuses`: reuse is
+    // not a qualifier on the evidence (D6), it is a fact about when the run
+    // happened. A person reading `bounded(2)` should be able to tell
+    // whether that happened just now or was carried forward from an earlier
+    // run whose inputs still hash the same (§5.2a).
+    if node.reused {
+        marks.push("reused");
+    }
+    marks
+}
+
+/// What each mark means, printed once beneath the tree and only when the
+/// tree actually carries it. A mark a reader cannot decode is decoration.
+const MARK_GLOSS: [(&str, &str); 3] = [
+    (
+        "assumed",
+        "this result rests on a promise Ply was handed and did not check — if the promise is \
+         wrong, the result is wrong with it",
+    ),
+    (
+        "evidence owed",
+        "nothing has run the real code against that promise yet; the lines below name it and say \
+         what would settle it",
+    ),
+    (
+        "reused",
+        "this result was not re-run: an earlier run recorded it, and every input Ply hashes still \
+         hashes the same — the function's own source, the code it calls, the promises it assumes, \
+         the examples it checks, the checks themselves, the engines, the compiler and target, the \
+         crate's features, the resolved versions of its dependencies, and Ply's own version",
+    ),
+];
+
+/// `a`, `a and b`, `a, b and c` — a list a person reads, not a debug print.
+fn join_plainly(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
-/// A name that reports no evidence (§1): the engine was exhausted, the shape
-/// was out of reach, the tool broke, nothing was claimed, no engine existed,
-/// or a check ran and settled nothing. None of them is a claim about the
-/// code; all of them used to exit 0.
-///
-/// **An absence is a name, not a slot** (adversarial review of the post-004
-/// fixes, D2). The same names appear in two places in a §8 node -- as its
-/// `verdict`, and as a `status` beside it (D6) -- and they mean the same
-/// thing in both. The first version of this rule enumerated verdict strings
-/// only, which was complete over the verdicts the tool can emit and blind to
-/// every absence encoded as a status: a `mutate` check whose engine was
-/// missing reported `inconclusive` beside an untouched `fuzzed(64)` verdict
-/// and exited 0, against §1's own principle and §6's exit-3 row. Adding one
-/// more verdict string would have left the next status-shaped absence open,
-/// so the rule reads both fields against one vocabulary instead.
-fn is_absence(name: &str) -> bool {
-    name == "timeout"
-        || name == "unclaimed"
-        || name == "engine-missing"
-        || name == "inconclusive"
-        || name.starts_with("unsupported")
-        || name.starts_with("tool_error")
+/// The §7 tree as a person reads it in a terminal, with the status marks
+/// and — when any appear — what they mean.
+fn tree_report(envelope: &ply_core::diag::Envelope) -> String {
+    fn walk(node: &ply_core::diag::Node, depth: usize, out: &mut String, seen: &mut Vec<&str>) {
+        let marks = node_marks(node);
+        let suffix = if marks.is_empty() {
+            String::new()
+        } else {
+            for m in &marks {
+                if !seen.contains(m) {
+                    seen.push(m);
+                }
+            }
+            format!("  [{}]", marks.join(", "))
+        };
+        out.push_str(&format!(
+            "{}{} — {}{suffix}\n",
+            "  ".repeat(depth),
+            node.id,
+            node.verdict
+        ));
+        for child in &node.children {
+            walk(child, depth + 1, out, seen);
+        }
+    }
+    let mut out = String::new();
+    let mut seen: Vec<&str> = Vec::new();
+    walk(&envelope.root, 0, &mut out, &mut seen);
+    if !seen.is_empty() {
+        out.push('\n');
+        for (mark, gloss) in MARK_GLOSS {
+            if seen.contains(&mark) {
+                let label = format!("[{mark}]");
+                out.push_str(&format!("  {label:<17}{gloss}\n"));
+            }
+        }
+        // The diagnostics come next, and they are paragraphs. Without this
+        // the gloss and the first diagnostic run together into one block.
+        out.push('\n');
+    }
+    // A claim that *had* a recorded result and could not use it. Saying
+    // which input moved is the difference between "it re-proved everything
+    // and I do not know why" and one line naming the compiler that updated
+    // under you (§5.2a).
+    if !envelope.not_carried_forward.is_empty() {
+        out.push_str(
+            "  Checked again rather than carried forward from an earlier run, because what \
+             each one depended on has changed:\n",
+        );
+        for item in &envelope.not_carried_forward {
+            out.push_str(&format!(
+                "    {} — {} changed since that result was recorded\n",
+                item.node_id,
+                join_plainly(&item.because)
+            ));
+        }
+        // Under the coarse mode "the code it runs" above means the whole
+        // crate, so those lines can fire for an edit in a function the claim
+        // never calls. Left unexplained that reads as Ply re-running for no
+        // reason. The reason is a property of the crate rather than of any
+        // one claim, so it is said once however many claims it displaced --
+        // the same paragraph twenty times is noise, not explanation.
+        let mut said: Vec<&str> = Vec::new();
+        for item in &envelope.not_carried_forward {
+            let Some(why) = item.widened_because.as_deref() else {
+                continue;
+            };
+            if said.contains(&why) {
+                continue;
+            }
+            said.push(why);
+            let (claims, plural) = claims_sharing(&envelope.not_carried_forward, why);
+            let (calls, they, them) = if plural {
+                ("call", "they", "them")
+            } else {
+                ("calls", "it", "it")
+            };
+            out.push_str(&format!(
+                "\n  For {claims}, \"the code it runs\" means every line of the crate, not \
+                 only the functions {they} {calls}, because {why}. So any edit in that crate \
+                 re-runs {them}, even an edit in code {they} never {calls}.\n"
+            ));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The claims one widening reason displaced, named rather than counted:
+/// "for `billing::total`" beats "for 1 claim", and a person scanning the
+/// list above wants to match them up.
+fn claims_sharing(items: &[ply_core::diag::NotCarriedForward], why: &str) -> (String, bool) {
+    let names: Vec<String> = items
+        .iter()
+        .filter(|i| i.widened_because.as_deref() == Some(why))
+        .map(|i| format!("`{}`", i.node_id))
+        .collect();
+    (join_plainly(&names), names.len() > 1)
+}
+
+fn print_human(envelope: &ply_core::diag::Envelope) {
+    print!("{}", tree_report(envelope));
+    for d in &envelope.diagnostics {
+        println!("[{}] {} — {}", d.code, d.node_id, d.title);
+    }
 }
 
 /// Every absence a node carries, in either field, over the whole tree.
@@ -261,6 +401,7 @@ mod tests {
                 kind: "fn".into(),
                 verdict: (*v).into(),
                 statuses: statuses.iter().map(|s| (*s).to_string()).collect(),
+                reused: false,
                 evidence: None,
                 children: vec![],
             })
@@ -273,6 +414,7 @@ mod tests {
                 kind: "workspace".into(),
                 verdict: verdicts.first().copied().unwrap_or("unclaimed").into(),
                 statuses: vec![],
+                reused: false,
                 evidence: None,
                 children,
             },
@@ -280,6 +422,7 @@ mod tests {
             coverage: None,
             trust_surface: None,
             open_items: None,
+            not_carried_forward: vec![],
         }
     }
 
@@ -341,6 +484,44 @@ mod tests {
         );
     }
 
+    /// §7.1 gives statuses their own visual channel: on the diagram they
+    /// are corner markers beside the fill, not a weaker fill. The terminal
+    /// is the surface most people actually read, and it had no channel for
+    /// them at all -- a result standing on a promise nobody checked printed
+    /// as a bare pass, identical to one standing on checked code. The
+    /// qualifier and the debt were in the JSON and in the diagnostic prose,
+    /// and absent from the one line a person scans.
+    #[test]
+    fn a_result_resting_on_an_unchecked_promise_says_so_on_the_node_line() {
+        let envelope = envelope_with_statuses(&["bounded(2)"], &["conditional", "owed-evidence"]);
+        let report = tree_report(&envelope);
+        assert!(
+            report.contains("  f — bounded(2)  [assumed, evidence owed]"),
+            "the node line must carry both marks: {report}"
+        );
+        assert!(
+            report.contains(
+                "  [assumed]        this result rests on a promise Ply was handed and did not \
+                 check — if the promise is wrong, the result is wrong with it"
+            ),
+            "a marker nobody can read is not a report: {report}"
+        );
+        assert!(
+            report.contains(
+                "  [evidence owed]  nothing has run the real code against that promise yet"
+            ),
+            "{report}"
+        );
+    }
+
+    /// A run with nothing to qualify prints exactly what it printed before:
+    /// no markers, and no explanation of markers that are not there.
+    #[test]
+    fn a_plain_result_prints_no_marker_and_no_legend() {
+        let report = tree_report(&envelope(&["bounded(2)"]));
+        assert_eq!(report, "workspace — bounded(2)\n  f — bounded(2)\n");
+    }
+
     /// The statuses that are *not* absences must keep exiting 0, or the rule
     /// has turned into "any status fails", which would fail every legacy
     /// codebase §5.5 exists to serve on its very first `conditional` run.
@@ -350,7 +531,7 @@ mod tests {
             exit_code_for(
                 &envelope_with_statuses(
                     &["bounded(2)"],
-                    &["conditional", "owed-evidence", "weak-spec", "stale"]
+                    &["conditional", "owed-evidence", "weak-spec"]
                 ),
                 FailOn::Evidence
             ),

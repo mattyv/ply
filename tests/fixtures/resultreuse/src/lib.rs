@@ -1,0 +1,45 @@
+//! Fixture for The-Ply-Spec.md §5.2a: a result is recorded beside a hash of
+//! what it depended on, and re-earned the moment any of that moves.
+//!
+//! Note what is *not* here, and see `reusehelper` for it: no claim in this
+//! crate calls an ordinary local helper. That absence is why the record's
+//! largest defect survived 284 green tests.
+//!
+//! Two claims, because the record has to be able to reuse one and re-run the
+//! other in the same run:
+//!
+//! - `safe_increment` stands on its own body alone. Editing it must re-run
+//!   it and nothing else.
+//! - `total` crosses into `legacy_rate`, which carries no contract of its
+//!   own: ply.yaml declares one, so the proof stands on the promise rather
+//!   than the body (§5.5). Editing that promise must re-run `total`, whose
+//!   own source did not change at all.
+
+/// The boundary callee: no `ply::` attributes, exactly like old code. Its
+/// promise lives in ply.yaml.
+pub fn legacy_rate(tier: u8) -> u32 {
+    if tier == 0 { 150 } else { 90 }
+}
+
+/// Stands on its own body. Nothing it calls, nothing assumed.
+#[ply::requires(x < u32::MAX)]
+#[ply::ensures(|result| *result == x + 1)]
+pub fn safe_increment(x: u32) -> u32 {
+    x + 1
+}
+
+/// Checked by sampling rather than by proof: the generated test crate is a
+/// different route through `verify` from the proof module, and a run that
+/// reuses every sampled result must not write that crate at all.
+#[ply::requires(x <= 1_000)]
+#[ply::ensures(|result| *result >= x)]
+pub fn widen(x: u32) -> u32 {
+    x * 2
+}
+
+/// Stands on the promise declared for `legacy_rate`, not on its body.
+#[ply::requires(amount <= 1_000)]
+#[ply::ensures(|result| *result <= 11_000)]
+pub fn total(amount: u32, tier: u8) -> u32 {
+    amount + legacy_rate(tier)
+}

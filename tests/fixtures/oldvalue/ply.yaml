@@ -1,0 +1,15 @@
+ply: 1
+
+# `bump` reads its parameter's entry value with `old(...)`; the generated
+# proptest harness has to read that value before the call. `bump_in_place`
+# takes a parameter it writes back through, which neither engine can build
+# an input for -- it must be reported as an unsupported shape, never
+# attempted (§5.4b, V0505).
+components:
+  oldvalue:
+    anchor: ply_fixture_oldvalue
+    fns:
+      bump:
+        checks: [test, fuzz(64)]
+      bump_in_place:
+        checks: [fuzz(64)]

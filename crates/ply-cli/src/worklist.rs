@@ -1,5 +1,4 @@
-//! `cargo ply worklist` (§6): "unresolved markers + weak specs (W0502) +
-//! stale claims (W0302)".
+//! `cargo ply worklist` (§6): "unresolved markers + weak specs (W0502)".
 //!
 //! **What is owed, and expected to close.** That is the whole difference
 //! from `cargo ply audit`, and it is a line worth keeping sharp: `audit`
@@ -10,10 +9,10 @@
 //! would pressure a user into deleting an honest declaration; it appears on
 //! `audit` and nowhere here.
 //!
-//! Two of §6's three tiers do not exist yet, and this command says so
-//! rather than letting a short list read as a short backlog: a weak spec is
-//! a finding from a `mutate` run, and a stale claim needs the fingerprint
-//! in `ply.lock` (Phase 1c). What it does list is:
+//! One of §6's tiers does not exist yet, and this command says so rather
+//! than letting a short list read as a short backlog: a weak spec is a
+//! finding from a `mutate` run, and this command starts no engines and does
+//! not read what an earlier run recorded. What it does list is:
 //!
 //! - **unresolved markers** (§5.6) — `ply::unresolved!` in the code and the
 //!   `ply.yaml` registry, merged by id, each with its span, its enclosing
@@ -44,13 +43,9 @@ const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// needs to know what a short list is not telling them. Exact strings.
 const WEAK_SPEC_GAP: &str = "NOT CHECKED. `W0502` is a finding from a `mutate` run: \
      cargo-mutants changes the code, the checks run again, and a mutant that survives means the \
-     spec was too weak to notice. That is engine work, and this command starts none. Ply keeps no \
-     record of previous runs either, until `ply.lock` exists (Phase 1c) — so a weak spec found \
-     this morning is not on this list. `cargo ply verify` reports it in the run that finds it.";
-const STALE_CLAIM_GAP: &str = "NOT CHECKED. A claim is stale when the function it describes has \
-     changed since its evidence was recorded, and that comparison needs the fingerprint in \
-     `ply.lock` — a file this version of Ply does not write yet (Phase 1c). No `W0302` can be \
-     reported here, so nothing on this list means your evidence is current.";
+     spec was too weak to notice. That is engine work, and this command starts none. It does not \
+     read the results `cargo ply verify` records either — so a weak spec found this morning is \
+     not on this list. `cargo ply verify` reports it in the run that finds it.";
 const CHECK_CAP_GAP: &str = "NOT ENFORCED. §5.6 caps a function containing an unresolved marker \
      at check `test`, with `W0521`. Ply does not apply that cap yet: `cargo ply verify` still \
      runs whatever the claim asks for, against a body that panics when it reaches the marker. The \
@@ -122,6 +117,7 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
                     trust_surface: None,
                     // Absent, not empty: this run never got to look.
                     open_items: None,
+                    not_carried_forward: vec![],
                 },
                 document,
             });
@@ -134,10 +130,15 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
     // Which fn claims exist, so a marker can say what it caps -- and which
     // registry entries exist, so a marker written in both places is one
     // item rather than two.
-    let mut claimed: Vec<(String, String, Vec<String>)> = Vec::new(); // (fn name, node id, checks)
+    let mut claimed: Vec<ClaimedFn> = Vec::new();
     let mut registry: Vec<(u64, String, String)> = Vec::new(); // (id, note, node id)
     walk_fn_claims(&doc, |c| {
-        claimed.push((c.fn_name.clone(), c.node_id(), c.claim.checks.clone()));
+        let governing = c.governing_checks();
+        claimed.push(ClaimedFn {
+            name: c.fn_name.clone(),
+            node_id: c.node_id(),
+            governing: governing.map(|g| (g.checks.to_vec(), g.from_component.map(str::to_string))),
+        });
         for entry in &c.claim.unresolved {
             registry.push((entry.id, entry.note.clone(), c.node_id()));
         }
@@ -153,7 +154,7 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
         let claim = m
             .enclosing_fn
             .as_ref()
-            .and_then(|f| claimed.iter().find(|(name, _, _)| name == f));
+            .and_then(|f| claimed.iter().find(|c| &c.name == f));
         // The registry's note is the fuller of the two by design (§5.1
         // calls a fn's `unresolved:` "registry links for markers in this
         // fn"), so it wins the merge, and the marker keeps the span.
@@ -205,14 +206,27 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
             coverage: Some(read_coverage(&document, markers, owed)),
             trust_surface: None,
             open_items: Some(items),
+            not_carried_forward: vec![],
         },
         document,
     })
 }
 
+/// One fn claim, as the line under a marker needs it: what it is called,
+/// what it is called in a §7 tree, and the checks that govern it —
+/// resolved through the one shared §5.1 resolution, so a fn that takes its
+/// checks from its component is not reported as declaring none.
+struct ClaimedFn {
+    name: String,
+    node_id: String,
+    /// The governing list and the component it was written on when the fn
+    /// wrote none of its own; `None` when no list is written anywhere.
+    governing: Option<(Vec<String>, Option<String>)>,
+}
+
 fn marker_item(
     m: &ply_core::surface::Marker,
-    claim: Option<&(String, String, Vec<String>)>,
+    claim: Option<&ClaimedFn>,
     note: Option<&str>,
 ) -> OpenItem {
     let id_text = match m.id {
@@ -224,11 +238,27 @@ fn marker_item(
         None => "no note was written with it".to_string(),
     };
     let (node_id, blocking) = match claim {
-        Some((_, node_id, checks)) => {
-            let asks = if checks.is_empty() {
-                "it declares no checks of its own".to_string()
-            } else {
-                format!("it claims `{}`", checks.join(", "))
+        Some(c) => {
+            let node_id = &c.node_id;
+            // §5.1: a fn that writes no `checks:` of its own runs whatever
+            // its component declares for everything inside it. Saying "no
+            // checks of its own" about such a fn is true of the line and
+            // false about the run.
+            let asks = match &c.governing {
+                None => "it declares no checks of its own".to_string(),
+                Some((checks, None)) if checks.is_empty() => {
+                    "its `checks:` list is empty, so nothing runs against it".to_string()
+                }
+                Some((checks, Some(from))) if checks.is_empty() => format!(
+                    "the component `{from}` declares an empty list as the default for everything \
+                     inside it, so nothing runs against it"
+                ),
+                Some((checks, None)) => format!("it claims `{}`", checks.join(", ")),
+                Some((checks, Some(from))) => format!(
+                    "it claims `{}`, the default the component `{from}` sets for everything \
+                     inside it",
+                    checks.join(", ")
+                ),
             };
             (
                 node_id.clone(),
@@ -282,15 +312,35 @@ fn registry_item(id: u64, note: &str, node_id: &str) -> OpenItem {
 
 fn owed_evidence_item(a: &shared::AssumedContract) -> OpenItem {
     let (caller, callee, contract) = (&a.caller_fn, &a.callee, &a.contract);
-    let discharge = match a.callee_checks.first() {
-        Some(check) => format!(
+    let discharge = match (a.callee_checks.first(), a.callee_anchor.as_deref()) {
+        (Some(check), None) => format!(
             "Its `ply.yaml` entry already asks for `{check}`: run `cargo ply verify` and the \
              promise is measured against the real body."
         ),
-        None => format!(
+        // `cargo ply verify` checks one crate at a time, so a check
+        // declared for a function in another package is read for its
+        // promise and declined for its checks (`W0303`). Advice that does
+        // not say where to run it is advice this tool will refuse.
+        (Some(check), Some(anchor)) => format!(
+            "Its `ply.yaml` entry already asks for `{check}` — run `cargo ply verify` inside the \
+             `{anchor}` crate, where that function lives, and the promise is measured against the \
+             real body. This run checks one crate at a time, so from here that entry's promise is \
+             read and its checks are skipped."
+        ),
+        (None, None) => format!(
             "To close it, add `checks: [fuzz(256)]` to its `ply.yaml` entry — fuzzing crosses a \
              legacy boundary by simply calling the code, so it tests the promise against the real \
              `{callee}`."
+        ),
+        (None, Some(anchor)) => format!(
+            "To close it, add `checks: [fuzz(256)]` to its `ply.yaml` entry and run `cargo ply \
+             verify` inside the `{anchor}` crate, which is where that function lives — fuzzing \
+             crosses a legacy boundary by simply calling the code, so it tests the promise \
+             against the real `{callee}`. Adding the check changes nothing in this crate: \
+             `cargo ply verify` checks one crate at a time and will decline to run it from here. \
+             If you would rather not leave this crate, pass what `{callee}` returns into \
+             `{caller}` as a parameter instead: the value becomes the caller's own data and there \
+             is no promise left to owe."
         ),
     };
     OpenItem {
@@ -357,10 +407,6 @@ fn gaps() -> Vec<Tier> {
         Tier {
             tier: "weak specs (W0502)".into(),
             detail: WEAK_SPEC_GAP.into(),
-        },
-        Tier {
-            tier: "stale claims (W0302)".into(),
-            detail: STALE_CLAIM_GAP.into(),
         },
         Tier {
             tier: "check cap (W0521)".into(),
@@ -553,6 +599,77 @@ mod tests {
         );
     }
 
+    /// §5.1: a component's `checks:` is the default for every fn inside
+    /// it, nested components included. The line under a marker says what
+    /// the marker holds up, so it has to name the check that would actually
+    /// run -- reading only the fn's own (absent) list reported "no checks"
+    /// for a fn the document does check.
+    #[test]
+    fn a_marker_in_a_fn_that_inherits_its_checks_names_the_check_that_would_run() {
+        let dir = crate_with(
+            "pub fn discount(pct: u32) -> u32 {\n    \
+             ply::unresolved!(147, \"employee discount undecided\");\n}\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: [bounded(2)]\n    components:\n      pricing:\n        anchor: demo\n        fns:\n          discount: {}\n",
+        );
+        let report = worklist_crate(dir.path()).unwrap();
+        assert_eq!(
+            items(&report)[0].blocking,
+            "§5.6 caps `demo.pricing::discount` at check `test` while this stands; it claims \
+             `bounded(2)`, the default the component `demo` sets for everything inside it."
+        );
+    }
+
+    /// The other half of the same misreading: a fn that inherits `fuzz(64)`
+    /// never has its callee stubbed, because fuzzing crosses a legacy
+    /// boundary by running the real code (§5.5). Nothing is assumed, so
+    /// nothing is owed -- and an open item nobody owes is work invented by
+    /// the tool.
+    #[test]
+    fn a_component_default_that_asks_for_fuzzing_owes_no_evidence() {
+        let dir = crate_with(
+            "pub fn legacy_rate(tier: u8) -> u32 { if tier == 0 { 150 } else { 90 } }\n\
+             #[ply::requires(amount <= 100)]\n\
+             #[ply::ensures(|result| *result <= amount)]\n\
+             pub fn tiered_fee(amount: u32, tier: u8) -> u32 { legacy_rate(tier).min(amount) }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: [fuzz(64)]\n    fns:\n      legacy_rate:\n        checks: []\n        ensures:\n          - \"|result| *result <= 10_000\"\n      tiered_fee: {}\n",
+        );
+        let report = worklist_crate(dir.path()).unwrap();
+        assert!(
+            items(&report).iter().all(|i| i.kind != "owed_evidence"),
+            "{:#?}",
+            items(&report)
+        );
+    }
+
+    /// The two ways a document can say "check nothing" (§5.4c) read
+    /// differently to somebody looking for the line that says it: one is on
+    /// the fn, the other on the component above it.
+    #[test]
+    fn an_empty_checks_list_says_which_line_it_was_written_on() {
+        let lib = "pub fn discount(pct: u32) -> u32 {\n    \
+                   ply::unresolved!(147, \"employee discount undecided\");\n}\n";
+        let own = crate_with(
+            lib,
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      discount:\n        checks: []\n",
+        );
+        assert_eq!(
+            items(&worklist_crate(own.path()).unwrap())[0].blocking,
+            "§5.6 caps `demo::discount` at check `test` while this stands; its `checks:` list is \
+             empty, so nothing runs against it."
+        );
+
+        let inherited = crate_with(
+            lib,
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    checks: []\n    fns:\n      discount: {}\n",
+        );
+        assert_eq!(
+            items(&worklist_crate(inherited.path()).unwrap())[0].blocking,
+            "§5.6 caps `demo::discount` at check `test` while this stands; the component `demo` \
+             declares an empty list as the default for everything inside it, so nothing runs \
+             against it."
+        );
+    }
+
     /// §5.5's honesty condition 3: an assumed contract is *owed evidence*
     /// until something exercises it, and it closes when the cheap tier runs
     /// — which is exactly what an open item is. The assumption itself is
@@ -583,6 +700,71 @@ mod tests {
                 .detail
                 .contains("add `checks: [fuzz(256)]` to its `ply.yaml` entry"),
             "{}",
+            owed[0].detail
+        );
+    }
+
+    /// The same assumption across a crate boundary, which is the case
+    /// §5.5's second branch exists for: the callee is old code in another
+    /// package. Advice that stops at "add a check to its entry" is advice
+    /// `cargo ply verify`, run from here, then declines (`W0303`) -- each
+    /// command right on its own, the pair of them a circle. It has to say
+    /// where that check can actually be run.
+    #[test]
+    fn advice_for_a_callee_in_another_package_says_where_that_advice_has_to_be_run() {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = root.path().join("ledger");
+        std::fs::create_dir_all(ledger.join("src")).unwrap();
+        std::fs::write(
+            ledger.join("src/lib.rs"),
+            "pub mod fees {\n    pub fn bps_for_tier(tier: u8) -> u32 { if tier == 0 { 150 } else { 90 } }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ledger.join("Cargo.toml"),
+            "[package]\nname = \"ledger\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let demo = root.path().join("demo");
+        std::fs::create_dir_all(demo.join("src")).unwrap();
+        std::fs::write(
+            demo.join("src/lib.rs"),
+            "#[ply::requires(amount <= 100)]\n\
+             #[ply::ensures(|result| *result <= amount)]\n\
+             pub fn tiered_fee(amount: u32, tier: u8) -> u32 { ledger::fees::bps_for_tier(tier).min(amount) }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            demo.join("ply.yaml"),
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      tiered_fee:\n        checks: [bounded(2)]\n  ledger:\n    anchor: ledger\n    fns:\n      fees::bps_for_tier:\n        ensures:\n          - \"|result| *result <= 10_000\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            demo.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nledger = { path = \"../ledger\" }\n",
+        )
+        .unwrap();
+
+        let report = worklist_crate(&demo).unwrap();
+        let owed: Vec<_> = items(&report)
+            .into_iter()
+            .filter(|i| i.kind == "owed_evidence")
+            .collect();
+        assert_eq!(owed.len(), 1, "{owed:#?}");
+        assert!(
+            owed[0]
+                .detail
+                .contains("run `cargo ply verify` inside the `ledger` crate"),
+            "the advice has to name the package that check would have to be run in: {}",
+            owed[0].detail
+        );
+        assert!(
+            owed[0].detail.contains(
+                "pass what `ledger::fees::bps_for_tier` returns into \
+                                     `tiered_fee` as a parameter"
+            ),
+            "and it should offer the route that needs no second crate at all: {}",
             owed[0].detail
         );
     }
@@ -618,18 +800,9 @@ mod tests {
         let report = worklist_crate(dir.path()).unwrap();
         let cov = report.envelope.coverage.as_ref().unwrap();
         let names: Vec<&str> = cov.not_checked.iter().map(|t| t.tier.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "weak specs (W0502)",
-                "stale claims (W0302)",
-                "check cap (W0521)"
-            ]
-        );
+        assert_eq!(names, ["weak specs (W0502)", "check cap (W0521)"]);
         assert_eq!(cov.not_checked[0].detail, WEAK_SPEC_GAP);
-        assert_eq!(cov.not_checked[1].detail, STALE_CLAIM_GAP);
-        assert_eq!(cov.not_checked[2].detail, CHECK_CAP_GAP);
-        assert!(STALE_CLAIM_GAP.contains("ply.lock"));
+        assert_eq!(cov.not_checked[1].detail, CHECK_CAP_GAP);
         assert!(WEAK_SPEC_GAP.contains("mutate"));
     }
 

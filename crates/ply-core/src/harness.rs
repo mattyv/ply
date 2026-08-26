@@ -28,7 +28,7 @@ use syn::{Expr, ExprClosure, FnArg, ItemFn, Pat, Type};
 /// default can't express cleanly; the Kani-excluded acceptance shape uses
 /// `BTreeSet` instead (the spec's own alternative: "recursive, or a
 /// `BTreeSet`").
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum RustType {
     U8,
     U16,
@@ -63,6 +63,20 @@ pub enum RustType {
     /// "reaches every signature shape ... §5.4b excludes from `bounded`").
     BTreeSet(Box<RustType>),
     Unsupported(String),
+}
+
+/// Spelled the way the user wrote it, never the way Ply stores it.
+///
+/// Three diagnostics interpolate a parameter's type with `{:?}` -- the
+/// "Ply cannot check this shape" refusals. With the derived `Debug` those
+/// read `card_bps: Unsupported("[u32 ; 4]")`, which asks the reader to know
+/// what an internal enum variant is before they can find out that their
+/// array parameter is the problem. This is the only `Debug` this type ever
+/// needed.
+impl std::fmt::Debug for RustType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.display_name())
+    }
 }
 
 impl RustType {
@@ -242,11 +256,7 @@ const MAX_ALIAS_DEPTH: usize = 8;
 /// is not a Rust type at all.
 pub fn rust_type_from_source(src: &str) -> Option<RustType> {
     let ty: Type = syn::parse_str(src).ok()?;
-    let inner = match &ty {
-        Type::Reference(r) => r.elem.as_ref(),
-        other => other,
-    };
-    Some(rust_type_from_syn(inner, &AliasMap::new()))
+    Some(rust_type_from_syn(&ty, &AliasMap::new()))
 }
 
 fn rust_type_from_syn(ty: &Type, aliases: &AliasMap) -> RustType {
@@ -362,6 +372,21 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                 _ => RustType::Unsupported(ty.to_token_stream().to_string()),
             }
         }
+        // A shared reference is looked through: what matters for building
+        // an arbitrary value is the type behind the `&`, which the harness
+        // owns and lends. A **mutable** reference is not, and the
+        // difference is not cosmetic -- it is a value the function writes
+        // back, which neither engine here can construct or observe (§5.4b
+        // stops at `&T`/`&[T]`). Looking through it recorded a plain `u32`
+        // for a `&mut u32`, and the generated harness then passed a shared
+        // reference where a mutable one was wanted: a compile failure
+        // inside Ply's own generated file, reported to the user as an
+        // internal tool error. Named as unsupported, it is a fact Ply
+        // reports instead (`V0505`).
+        Type::Reference(r) if r.mutability.is_some() => RustType::Unsupported(format!(
+            "&mut {}",
+            rust_type_from_syn_at(&r.elem, aliases, depth).display_name()
+        )),
         Type::Reference(r) => rust_type_from_syn_at(&r.elem, aliases, depth),
         other => RustType::Unsupported(other.to_token_stream().to_string()),
     }
@@ -410,6 +435,13 @@ pub struct ContractFn {
     /// Every free-function call in the body, in source order (§5.5's D5
     /// split is decided from these, before any engine runs).
     pub calls: Vec<crate::callgraph::CallSite>,
+    /// The whole item as tokens, contract attributes included -- what
+    /// §5.2a hashes first when it records this claim's result. A token
+    /// stream and not the raw text on purpose: reformatting a function or
+    /// editing a comment above it changes nothing about what was proved,
+    /// and re-running a four-minute proof for a reflowed line is how a
+    /// record earns a reputation for being wrong.
+    pub source: String,
 }
 
 impl ContractFn {
@@ -561,6 +593,10 @@ fn tidy_contract_text(s: &str) -> String {
         .replace("* ", "*")
         .replace(" . ", ".")
         .replace(" ()", "()")
+        // `old(x)` is one construct, not a call to something called `old`
+        // with a space in it -- and this text is what a diagnostic quotes
+        // back at the reader as "the line you wrote".
+        .replace("old (", "old(")
 }
 
 fn build_contract_fn(f: &ItemFn, aliases: &AliasMap, path: &str) -> Result<ContractFn> {
@@ -574,8 +610,10 @@ fn build_contract_fn(f: &ItemFn, aliases: &AliasMap, path: &str) -> Result<Contr
             Pat::Ident(pi) => pi.ident.to_string(),
             _ => bail!("E0304: unsupported parameter pattern (only plain identifiers)"),
         };
+        // Only a *shared* reference is stripped here; a `&mut` keeps its
+        // whole written type so `rust_type_from_syn` can refuse it by name.
         let (by_ref, inner_ty) = match &*pt.ty {
-            Type::Reference(r) => (true, r.elem.as_ref()),
+            Type::Reference(r) if r.mutability.is_none() => (true, r.elem.as_ref()),
             other => (false, other),
         };
         params.push(Param {
@@ -616,6 +654,7 @@ fn build_contract_fn(f: &ItemFn, aliases: &AliasMap, path: &str) -> Result<Contr
         requires,
         ensures,
         calls: crate::callgraph::call_sites(f),
+        source: f.to_token_stream().to_string(),
     })
 }
 
@@ -1352,6 +1391,45 @@ pub fn vec_sum(v: &Vec<u8>) -> u32 { 0 }
         assert_eq!(cf.params[0].ty, RustType::VecU8);
         assert!(cf.params[0].by_ref);
         assert!(cf.has_vec_param());
+    }
+
+    /// A parameter the function can write back through is the one shape
+    /// `old()` exists for -- and it is not one either engine can check:
+    /// Ply builds every argument itself and hands it in, and §5.4b's
+    /// supported list stops at a shared `&T`. Until 2026-08-25 the reader
+    /// looked straight through the `&mut` and recorded a plain `u32`, so
+    /// codegen produced a harness that passed a shared reference where a
+    /// mutable one was wanted. Under the model checker that surfaced as
+    /// "Ply's Kani adapter could not interpret Kani's output"; under the
+    /// random-input tier as a compiler type error inside Ply's own
+    /// generated file. Both are internal errors about Ply, not answers
+    /// about the user's function. The shape must be refused by name.
+    #[test]
+    fn a_parameter_the_function_writes_back_through_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::ensures(|result| *counter == old(*counter) + 1)]
+pub fn bump_in_place(counter: &mut u32) { *counter += 1; }
+"#,
+        );
+        let cf = discover_fn(&path, "bump_in_place").unwrap();
+        assert_eq!(
+            cf.params[0].ty,
+            RustType::Unsupported("&mut u32".to_string()),
+            "a `&mut` parameter must be recorded as a shape Ply does not build, spelled the way \
+             the user wrote it -- recorded as a plain `u32` it produces a harness that does not \
+             compile"
+        );
+        assert!(
+            !cf.is_bounded_supported(),
+            "the model-checking codegen cannot build a mutable reference"
+        );
+        assert!(
+            !cf.is_fuzz_supported(),
+            "neither can the random-input codegen"
+        );
     }
 
     #[test]

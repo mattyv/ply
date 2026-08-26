@@ -44,7 +44,11 @@ fn the_owed_evidence_on_an_assumed_contract_reaches_the_human_surface() {
         "{stdout}"
     );
     assert!(stdout.contains("weak specs (W0502)"), "{stdout}");
-    assert!(stdout.contains("stale claims (W0302)"), "{stdout}");
+    assert!(
+        !stdout.contains("stale claims"),
+        "a claim is never stale: its recorded result is re-hashed every time it is used, so \
+         there is no backlog of claims to re-confirm: {stdout}"
+    );
 }
 
 /// A fixture with nothing owed must read as "nothing is recorded", never

@@ -9,5 +9,7 @@ pub mod harness;
 pub mod harness_crate;
 pub mod model;
 pub mod promise;
+pub mod reach;
+pub mod record;
 pub mod schema;
 pub mod surface;

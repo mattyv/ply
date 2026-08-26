@@ -1,0 +1,15 @@
+ply: 1
+
+# Both claims are here to show the cost of the coarse mode: editing one of
+# them re-runs the other, because an `impl` block in this crate means Ply
+# cannot tell by reading the source which body a method call lands in
+# (§5.2a). That cost is correct, and it is the reason the run has to say
+# out loud why it widened.
+components:
+  reusewiden:
+    anchor: ply_fixture_reusewiden
+    fns:
+      halved:
+        checks: [fuzz(64)]
+      bumped:
+        checks: [fuzz(64)]

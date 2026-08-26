@@ -1,11 +1,12 @@
-//! `cargo ply check` (§6): "schema + anchors + staleness + architecture.
+//! `cargo ply check` (§6): "schema + anchors + architecture.
 //! Fast, no engines."
 //!
-//! **Two of those four tiers do not exist yet**, and this command says so
-//! in both its surfaces rather than letting a clean run read as full
-//! coverage. Staleness needs `ply.lock` (D14), which Ply does not write;
-//! the architecture tier needs the crate and call graphs (M2). What runs
-//! here is:
+//! **One of those three tiers does not exist yet**, and this command says
+//! so in both its surfaces rather than letting a clean run read as full
+//! coverage: the architecture tier needs the crate and call graphs (M2).
+//! (There is no staleness tier any more: `verify` re-hashes every recorded
+//! result at the moment of use, D14/§5.2a, so there is no recorded-but-
+//! possibly-stale state for this command to report on.) What runs here is:
 //!
 //! - **schema** — the document against `schema/ply.schema.json` (`E0201`,
 //!   `E0204`), then every document-local rule that needs no code behind the
@@ -43,11 +44,6 @@ const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What `check` could not look at, in the words a user needs to know what
 /// their green run did not cover. Exact strings: they are the whole point of
 /// the tier, and they are tested as such.
-const STALENESS_GAP: &str = "NOT CHECKED. Ply compares each claim against a fingerprint of the \
-     code it was last verified against, and that fingerprint lives in `ply.lock` — a file this \
-     version of Ply does not write yet. So a claim whose function has changed since it was \
-     verified is not reported here, and this run says nothing about whether your evidence is \
-     still current.";
 const ARCHITECTURE_GAP: &str = "NOT CHECKED. The `edges:` and `deny:` lines are read and their \
      form is checked, and an edge that is redundant or names an external is reported — but \
      nothing compares them against what your code actually calls. A call that violates a `deny` \
@@ -353,16 +349,10 @@ fn coverage(anchors: Option<AnchorTally>) -> Coverage {
     }
     Coverage {
         checked,
-        not_checked: vec![
-            Tier {
-                tier: "staleness".into(),
-                detail: STALENESS_GAP.into(),
-            },
-            Tier {
-                tier: "architecture".into(),
-                detail: ARCHITECTURE_GAP.into(),
-            },
-        ],
+        not_checked: vec![Tier {
+            tier: "architecture".into(),
+            detail: ARCHITECTURE_GAP.into(),
+        }],
     }
 }
 
@@ -391,6 +381,7 @@ fn envelope(root: Node, diagnostics: Vec<Diagnostic>, coverage: Coverage) -> Env
         coverage: Some(coverage),
         trust_surface: None,
         open_items: None,
+        not_carried_forward: vec![],
     }
 }
 
@@ -589,15 +580,13 @@ mod tests {
     /// strings: a clean run's honesty is entirely carried by these two
     /// sentences, so they are reviewed like the diagnostics are.
     #[test]
-    fn the_report_names_both_tiers_it_does_not_cover() {
+    fn the_report_names_the_tier_it_does_not_cover() {
         let dir = crate_with("pub fn clamp(x: u32) -> u32 { x }\n", CLEAN_YAML);
         let report = check_crate(dir.path()).unwrap();
         let cov = report.envelope.coverage.as_ref().unwrap();
         let names: Vec<&str> = cov.not_checked.iter().map(|t| t.tier.as_str()).collect();
-        assert_eq!(names, ["staleness", "architecture"]);
-        assert_eq!(cov.not_checked[0].detail, STALENESS_GAP);
-        assert_eq!(cov.not_checked[1].detail, ARCHITECTURE_GAP);
-        assert!(STALENESS_GAP.contains("ply.lock"));
+        assert_eq!(names, ["architecture"]);
+        assert_eq!(cov.not_checked[0].detail, ARCHITECTURE_GAP);
         assert!(ARCHITECTURE_GAP.contains("`deny`"));
     }
 

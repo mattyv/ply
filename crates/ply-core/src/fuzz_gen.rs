@@ -257,7 +257,13 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
         None => String::new(),
     };
 
-    let widened = crate::contract_rt::widen(&cf.ensures.as_ref().unwrap().0.body).to_string();
+    // `old(expr)` -- the value `expr` had on entry -- is read into a
+    // binding of its own before the call, which is the only way a harness
+    // built out of ordinary Rust can honour it (§5.4a).
+    let (checked_body, entry_values) =
+        crate::contract_rt::lift_entry_values(&cf.ensures.as_ref().unwrap().0.body);
+    let entry_lets = crate::contract_rt::entry_value_lets(&entry_values, &" ".repeat(12));
+    let widened = crate::contract_rt::widen(&checked_body).to_string();
 
     let marker_fields: Vec<String> = cf
         .params
@@ -294,7 +300,7 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {strategy};\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{pattern}| {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{requires_check}let __ply_call_result = {fname}({args});\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{requires_check}{entry_lets}let __ply_call_result = {fname}({args});\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let result = &__ply_call_result;\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {widened}));\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20match __ply_ok {{\n\
@@ -443,7 +449,9 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
         return String::new();
     }
     let n_cases = literal_sets.iter().map(|s| s.len()).max().unwrap_or(0);
-    let widened = crate::contract_rt::widen(&closure.body).to_string();
+    let (checked_body, entry_values) = crate::contract_rt::lift_entry_values(&closure.body);
+    let entry_lets = crate::contract_rt::entry_value_lets(&entry_values, &" ".repeat(8));
+    let widened = crate::contract_rt::widen(&checked_body).to_string();
     let requires_cond = cf
         .requires
         .as_ref()
@@ -458,21 +466,21 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
         }
         let args = call_args(cf).join(", ");
         let guard = match &requires_cond {
-            Some(cond) => format!("if !({cond}) {{ return; }}\n"),
+            Some(cond) => format!("if !({cond}) {{ return; }}\n        "),
             None => String::new(),
         };
         out.push_str(&format!(
             "    #[test]\n\
              \x20\x20\x20\x20fn ply_direct_{ident}_{case_idx:02}() {{\n\
              {lets}\
-             \x20\x20\x20\x20\x20\x20\x20\x20{guard}\
-             \x20\x20\x20\x20\x20\x20\x20\x20let __ply_call_result = {fname}({args});\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20{guard}{entry_lets}let __ply_call_result = {fname}({args});\n\
              \x20\x20\x20\x20\x20\x20\x20\x20let result = &__ply_call_result;\n\
              \x20\x20\x20\x20\x20\x20\x20\x20assert!({widened}, \"direct contract case for `{label}` broke its postcondition\");\n\
              \x20\x20\x20\x20}}\n",
             fname = cf.name,
             label = cf.path,
             ident = cf.ident(),
+            entry_lets = entry_lets,
         ));
     }
     out
@@ -638,6 +646,67 @@ pub fn safe_increment(x: u32) -> u32 { x + 1 }
              unescaped, the literal closes early and the harness fails to build with a syntax error \
              in Ply's own generated file:\n{body}"
         );
+    }
+
+    /// §5.4a: `old(expr)` is "the value `expr` had on entry", and the spec
+    /// is explicit about how a generated test/fuzz harness must honour it --
+    /// "evaluate `expr` before the call and substitute the snapshot". It did
+    /// not: the clause went into the generated test exactly as written, so
+    /// the harness called a function named `old` that exists nowhere, the
+    /// harness crate failed to compile, and the whole check came back as an
+    /// internal tool error naming a compiler message instead of the clause.
+    #[test]
+    fn a_before_value_in_an_ensures_is_read_before_the_call_not_left_as_a_call_to_old() {
+        let cf = discover(
+            r#"
+#[ply::requires(x < u32::MAX)]
+#[ply::ensures(|result| *result == old(x) + 1)]
+pub fn bump(x: u32) -> u32 { x + 1 }
+"#,
+            "bump",
+        );
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("bump", "")).unwrap();
+        assert!(
+            !body.replace(' ', "").contains("old("),
+            "the generated harness must not call a function named `old` -- there is no such \
+             function, and the harness crate fails to compile with \"cannot find function `old` \
+             in this scope\":\n{body}"
+        );
+        let snapshot = body
+            .find("let __ply_old_0")
+            .expect("the entry value must be read into a binding of its own:\n");
+        let call = body
+            .find("let __ply_call_result")
+            .expect("generated harness always binds the call result");
+        assert!(
+            snapshot < call,
+            "the entry value has to be read *before* the call, or it is not the entry value at \
+             all:\n{body}"
+        );
+    }
+
+    /// The same construct on the `test` tier's generated concrete cases,
+    /// which are compiled into the same harness crate: one of them left as
+    /// a call to `old` breaks the build for every check on the function.
+    #[test]
+    fn a_before_value_is_read_before_the_call_in_generated_concrete_cases_too() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result >= old(x))]
+pub fn bump(x: u32) -> u32 { x.saturating_add(1) }
+"#,
+            "bump",
+        );
+        let cases = generate_direct_contract_cases(&cf);
+        assert!(!cases.is_empty(), "expected generated concrete cases");
+        assert!(
+            !cases.replace(' ', "").contains("old("),
+            "no generated case may call a function named `old` -- one that does breaks the build \
+             for every check on the function:\n{cases}"
+        );
+        let snapshot = cases.find("let __ply_old_0").expect("entry value binding");
+        let call = cases.find("let __ply_call_result").expect("call binding");
+        assert!(snapshot < call, "read the entry value first:\n{cases}");
     }
 
     #[test]

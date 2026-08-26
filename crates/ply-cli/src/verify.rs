@@ -20,8 +20,12 @@ use ply_core::engines::kani::{self, KaniOutcome, KaniRunConfig};
 use ply_core::engines::mutants::{self, MutantsRunConfig, MutantsRunOutcome};
 use ply_core::harness::{self, ContractFn, StubSpec};
 use ply_core::harness_crate;
-use ply_core::model::{Check, FnClaim};
+use ply_core::model::{
+    Check, Component, FnClaim, InheritedChecks, component_default_checks, effective_checks,
+};
 use ply_core::promise::{ClauseKind, ClauseVerdict, HarnessAnswer, PromiseFinding, PromisePlan};
+use ply_core::reach;
+use ply_core::record::{self, AssumedPromise, EngineId, FingerprintInputs, Match, RecordEntry};
 
 use crate::shared::{self, declared_contracts, local_anchor_names, sorted_by_key};
 
@@ -114,6 +118,163 @@ fn default_secondary_engine_timeout_secs() -> u32 {
     60
 }
 
+/// Everything outside the user's source that a result depended on, probed
+/// once per run (§5.2a's inputs 5 and 6).
+///
+struct Toolchain {
+    /// The target triple this run builds for.
+    target: String,
+    /// The compiler behind every engine here. A different rustc is a
+    /// different build of the code that was checked, which is D9's "an old
+    /// success must not bless ... a different toolchain".
+    rustc: String,
+    /// The crate's declared `[features]` table. Ply passes no `--features`,
+    /// so the set that is active is the default set this text defines --
+    /// and a change to the table is a change to what was built.
+    features: String,
+    /// Probed on first use, not at startup: a crate of `fuzz` claims must
+    /// not pay a `cargo kani --version` subprocess, and a machine with no
+    /// Kani installed must not be slower for having none.
+    kani: std::cell::OnceCell<Option<String>>,
+    mutants: std::cell::OnceCell<Option<String>>,
+}
+
+impl Toolchain {
+    fn probe(crate_dir: &Path) -> Toolchain {
+        let (rustc, target) = rustc_identity();
+        Toolchain {
+            target,
+            rustc,
+            features: declared_features(crate_dir),
+            kani: std::cell::OnceCell::new(),
+            mutants: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The engines one claim's checks stand on, in check order. An engine
+    /// that could not be probed is recorded as `not installed`: a check with
+    /// no engine behind it earns no evidence and is never recorded, so this
+    /// value can never end up guarding a stored result.
+    fn engines_for(&self, checks: &[Check], has_stubs: bool) -> Vec<EngineId> {
+        let missing = || "not installed".to_string();
+        let mut out: Vec<EngineId> = Vec::new();
+        for check in checks {
+            let id = match check {
+                Check::Bounded(_) => EngineId {
+                    name: "kani".into(),
+                    version: self
+                        .kani
+                        .get_or_init(kani::version)
+                        .clone()
+                        .unwrap_or_else(missing),
+                    // The flags that shape the obligation, exactly as
+                    // `engines::kani::invoke` passes them. The wall-clock
+                    // budget is deliberately absent (§5.2a).
+                    flags: kani_flags(has_stubs),
+                },
+                Check::Fuzz(_) | Check::Test => EngineId {
+                    name: "proptest".into(),
+                    // The requirement Ply writes into the harness crate it
+                    // generates, which is the version identity Ply itself
+                    // controls. KNOWN GAP: a 1.x release of proptest that
+                    // changes how a strategy draws would keep this string,
+                    // so a record written before it can be reused after it.
+                    version: harness_crate::PROPTEST_REQUIREMENT.to_string(),
+                    flags: String::new(),
+                },
+                Check::Mutate => EngineId {
+                    name: "cargo-mutants".into(),
+                    version: self
+                        .mutants
+                        .get_or_init(mutants::version)
+                        .clone()
+                        .unwrap_or_else(missing),
+                    flags: String::new(),
+                },
+                Check::Prove => EngineId {
+                    name: "verus".into(),
+                    version: missing(),
+                    flags: String::new(),
+                },
+            };
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+}
+
+/// The flags that shape what a `cargo kani` run checks, as one recorded
+/// string. The `-Z` set comes from the adapter itself
+/// (`engines::kani::unstable_flags`) rather than being copied here: a flag
+/// list that could change without this string changing would let a proof
+/// earned under the old flags be reused under the new ones. The constant
+/// tail is the rest of what every invocation passes; the per-run harness
+/// name and the wall-clock budget are deliberately not here (§5.2a).
+fn kani_flags(has_stubs: bool) -> String {
+    format!(
+        "{} --exact --concrete-playback print",
+        kani::unstable_flags(has_stubs).join(" ")
+    )
+}
+
+/// `rustc -vV`, split into the version line and the host triple. Both
+/// `unknown` when rustc will not answer -- which cannot happen in a run
+/// that gets far enough to compile anything.
+///
+/// The safe direction holds where it matters: a record written by a healthy
+/// probe can never be matched by a broken one. It is not unconditional, and
+/// the comment here used to say it was: two runs whose probes both fail
+/// hash the same `unknown`/`unknown` whatever compilers are really behind
+/// them. That needs a broken `rustc -vV` beside a working cargo on both
+/// machines, which is exotic -- but "would only ever make a fingerprint
+/// match less often" was a claim with an exception in it.
+fn rustc_identity() -> (String, String) {
+    let out = std::process::Command::new("rustc").arg("-vV").output();
+    let text = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        _ => return ("unknown".into(), "unknown".into()),
+    };
+    let mut version = "unknown".to_string();
+    let mut host = "unknown".to_string();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("host: ") {
+            host = rest.trim().to_string();
+        } else if line.starts_with("rustc ") {
+            version = line.trim().to_string();
+        }
+    }
+    (version, host)
+}
+
+/// The crate's `[features]` table, verbatim. A hand-rolled section scan
+/// rather than a TOML parse: this text is hashed, never interpreted, so the
+/// only property it needs is that it changes when the table changes.
+fn declared_features(crate_dir: &Path) -> String {
+    let Ok(text) = std::fs::read_to_string(crate_dir.join("Cargo.toml")) else {
+        return "(no manifest)".into();
+    };
+    let mut out = String::new();
+    let mut inside = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            inside = trimmed == "[features]";
+            continue;
+        }
+        if inside && !trimmed.is_empty() && !trimmed.starts_with('#') {
+            out.push_str(trimmed);
+            out.push('\n');
+        }
+    }
+    if out.is_empty() {
+        "(no features declared)".into()
+    } else {
+        out
+    }
+}
+
 pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> {
     let yaml_path = crate_dir.join("ply.yaml");
     let file = config::load(&yaml_path)?;
@@ -126,15 +287,34 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     // even get this far (unresolvable anchor) is finished right here.
     struct Plan<'a> {
         node_id: String,
+        /// The qualified name of the component that declares this claim —
+        /// `billing`, or `ingest.book`. Carried rather than recovered from
+        /// `node_id`, which cannot be split back apart: a fn key may itself
+        /// contain `::` (`rates::legacy_rate`).
+        component_path: String,
         fn_name: &'a str,
         claim: &'a FnClaim,
         cf: ContractFn,
         checks: Vec<Check>,
         boundary: BoundaryPlan,
         seed: [u8; 32],
+        /// Everything this claim's result depends on (§5.2a), hashed
+        /// before anything runs -- one hash answers both questions: may a
+        /// recorded result be reused, and what is a newly earned one
+        /// stored under.
+        inputs: FingerprintInputs,
+        /// Why the call walk was abandoned for this claim, when it was.
+        /// Deliberately *not* a fingerprint input: the scope itself already
+        /// is one, and the reason is derived from the same source, so
+        /// hashing it would only make a reworded sentence invalidate every
+        /// stored result.
+        widened_because: Option<String>,
+        /// The checks as `ply.yaml` spells them, which is what a recorded
+        /// verdict is checked against for possibility before it is trusted.
+        check_spellings: Vec<String>,
     }
     let mut plans: Vec<Plan> = Vec::new();
-    let mut early_nodes_by_component: BTreeMap<&str, Vec<Node>> = BTreeMap::new();
+    let mut early_nodes_by_component: BTreeMap<String, Vec<Node>> = BTreeMap::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     // `anchor:` is finally consumed (vetting 004 finding 7: it was parsed
@@ -155,21 +335,58 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     let lib_src = std::fs::read_to_string(&lib_path).unwrap_or_default();
     let mut resolver = Resolver::new(&lib_src, crate_dir, declared)?;
 
+    // §5.2a: the committed record of what earlier runs earned, and the
+    // toolchain facts every fingerprint in this run is taken over. Loading
+    // the record can fail (a merge conflict in a committed file is the
+    // likely cause) and that is reported rather than swallowed -- silently
+    // continuing would re-pay every proof and tell nobody why.
+    let record_path = crate_dir.join("ply.lock");
+    let mut record = record::load(&record_path, PLY_VERSION)?;
+    let toolchain = Toolchain::probe(crate_dir);
+    // §5.2a's largest input, read once for the whole run: every first-party
+    // source file this crate can reach, and the resolved versions of
+    // everything outside it. A check does not run the claimed function
+    // alone -- it runs whatever that function calls, and a proof descends
+    // into it -- so the bodies reachable from a claim are part of what its
+    // result stood on. Leaving them out is what made a broken helper reuse
+    // a green verdict (adversarial review of result reuse, D1).
+    let first_party = reach::scan_first_party(crate_dir);
+    let deps_at_plan_time = reach::dependency_identity(crate_dir);
+    // Every claim this run either reused or earned. Everything else is
+    // dropped from the record at the end: a claim somebody deleted, one
+    // whose function no longer resolves, one this run checked and got no
+    // evidence for. What survives is exactly what this run stands behind,
+    // so a reviewer reading the committed file is never looking at a verdict
+    // the last run did not produce.
+    let mut kept_claims: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
     // Name order, not declaration order. The promoted model preserves the
     // order the author wrote (the renderer lays boxes out that way); `verify`
     // read a `BTreeMap` before Phase 1a, so its node and diagnostic order was
     // sorted, and the goldens in tests/e2e pin that. Sorting here keeps the
     // envelope byte-identical across the promotion instead of quietly
     // reordering every multi-fn run.
-    for (comp_name, comp) in sorted_by_key(&file.components) {
+    for (comp_name, comp, inherited) in flatten_components(&file) {
         for (fn_name, claim) in sorted_by_key(&comp.fns) {
             let node_id = format!("{comp_name}::{fn_name}");
+            // §5.1: the list that actually governs this fn — its own if it
+            // wrote one (an empty one included, §5.4c), else the nearest
+            // ancestor component's default, else nothing written anywhere.
+            // `verify` used to read the fn's own list and nothing else, so a
+            // component default was resolved by `check` and silently ignored
+            // here: one document, two answers about which check runs.
+            let governing = effective_checks(claim, inherited);
             if !is_local(&comp.anchor) {
                 // A boundary component. Its contracts are already in
                 // `declared`; its `checks` cannot run from here, and saying
                 // so is the honest report (`verify` is single-crate).
-                if !claim.checks.is_empty() {
-                    diagnostics.push(cross_crate_claim_diag(&node_id, fn_name, &comp.anchor));
+                if governing.is_some_and(|c| !c.is_empty()) {
+                    diagnostics.push(cross_crate_claim_diag(
+                        &node_id,
+                        fn_name,
+                        &comp.anchor,
+                        &local_anchors,
+                    ));
                 }
                 continue;
             }
@@ -183,14 +400,18 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                         &e.to_string(),
                     ));
                     early_nodes_by_component
-                        .entry(comp_name)
+                        .entry(comp_name.clone())
                         .or_default()
                         .push(leaf_node(&node_id, "unclaimed"));
                     continue;
                 }
             };
 
-            let explicit = config::parsed_checks(claim)
+            let explicit = governing
+                .unwrap_or(&[])
+                .iter()
+                .map(|c| config::parse_check_string(c))
+                .collect::<Result<Vec<Check>>>()
                 .with_context(|| format!("parsing checks for {node_id}"))?;
             // A `ply.yaml` entry that declares a contract and asks for no
             // checks is a **boundary contract declaration** (§5.5): it
@@ -206,8 +427,17 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 diagnostics.push(declared_contract_not_anded_diag(&node_id, fn_name));
             }
 
+            // §5.4c: **an empty list is a list.** `checks: []` reads to a
+            // person as "do not check this", and it is now what it reads
+            // as: nothing runs, and the claim earns no evidence. Reading it
+            // as *no* list -- which is what "is the list empty?" does -- put
+            // the shape-aware default back and proved the function anyway,
+            // silently doing the opposite of what the document said.
+            let declared_empty = governing.is_some_and(|c| c.is_empty());
             let checks = if !explicit.is_empty() {
                 explicit
+            } else if declared_empty {
+                vec![]
             } else {
                 default_checks_for(&cf)
             };
@@ -244,24 +474,43 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     open_item: Some("mutate_without_kill_signal".into()),
                 });
                 early_nodes_by_component
-                    .entry(comp_name)
+                    .entry(comp_name.clone())
                     .or_default()
                     .push(leaf_node(&node_id, "unclaimed"));
                 continue;
             }
 
             if checks.is_empty() {
+                if declared_empty {
+                    // The author asked for nothing, so nothing ran -- and
+                    // that is said out loud rather than left as a node
+                    // nobody expands.
+                    // Whose empty list it is: the fn's own, or a component
+                    // default it inherited. Saying "`f` has an empty
+                    // `checks:` list" about a fn whose entry has no such
+                    // line would send a reader looking at the wrong line.
+                    let from = match claim.checks {
+                        Some(_) => None,
+                        None => inherited.map(|d| d.from_component),
+                    };
+                    diagnostics.push(empty_checks_diag(&node_id, fn_name, &cf, from));
+                    early_nodes_by_component
+                        .entry(comp_name.clone())
+                        .or_default()
+                        .push(leaf_node(&node_id, "unclaimed"));
+                    continue;
+                }
                 // "none otherwise" (§5.4c): either no contract at all, or a
                 // contract whose shape neither gate can build inputs for.
                 if cf.has_contract() {
                     diagnostics.push(unsupported_shape_diag(&node_id, fn_name, &cf));
                     early_nodes_by_component
-                        .entry(comp_name)
+                        .entry(comp_name.clone())
                         .or_default()
                         .push(leaf_node(&node_id, "unsupported"));
                 } else {
                     early_nodes_by_component
-                        .entry(comp_name)
+                        .entry(comp_name.clone())
                         .or_default()
                         .push(leaf_node(&node_id, "unclaimed"));
                 }
@@ -291,25 +540,135 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 .seed
                 .unwrap_or_else(|| ply_core::fuzz_gen::derive_seed(fn_name, &contract_text));
 
+            // The callees this claim's proof replaces with a promise, and
+            // therefore never looks inside. Only a claim whose every check
+            // is `bounded` gets that: `fuzz`, `test` and `mutate` run the
+            // real body however many promises are declared for it, so for
+            // them the body is part of what the result stood on.
+            let all_bounded = checks.iter().all(|c| matches!(c, Check::Bounded(_)));
+            let stubbed: std::collections::BTreeSet<String> = if all_bounded {
+                boundary
+                    .stubs
+                    .iter()
+                    .map(|s| s.callee_path.clone())
+                    .collect()
+            } else {
+                std::collections::BTreeSet::new()
+            };
+            let code = reach::code_scope(&mut resolver, &first_party, &cf.path, &stubbed);
+            // Taken before `code.units` is moved into the fingerprint below.
+            let widened_because = code.widened_because.clone();
+            let check_spellings: Vec<String> = checks.iter().map(check_spelling).collect();
+
+            let inputs = FingerprintInputs {
+                node_id: node_id.clone(),
+                fn_path: cf.path.clone(),
+                fn_source: cf.source.clone(),
+                inline_requires: cf
+                    .requires
+                    .as_ref()
+                    .map(|(_, t)| t.clone())
+                    .unwrap_or_default(),
+                inline_ensures: cf
+                    .ensures
+                    .as_ref()
+                    .map(|(_, t)| t.clone())
+                    .unwrap_or_default(),
+                declared_requires: claim.requires.clone(),
+                declared_ensures: claim.ensures.clone(),
+                assumed: boundary
+                    .stubs
+                    .iter()
+                    .map(|s| AssumedPromise {
+                        callee: s.callee_path.clone(),
+                        requires: s.requires.clone(),
+                        ensures: s.ensures.clone(),
+                        signature: format!(
+                            "({}) -> {}",
+                            s.params
+                                .iter()
+                                .map(|(n, t)| format!("{n}: {t}"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            s.return_type
+                        ),
+                    })
+                    .collect(),
+                examples: claim.examples.clone(),
+                code_scope: code.scope.to_string(),
+                code: code.units,
+                deps: deps_at_plan_time.clone(),
+                checks: check_spellings.clone(),
+                seed: ply_core::fuzz_gen::seed_hex(&seed),
+                engines: toolchain.engines_for(&checks, !boundary.stubs.is_empty()),
+                target: toolchain.target.clone(),
+                rustc: toolchain.rustc.clone(),
+                features: toolchain.features.clone(),
+                ply_version: PLY_VERSION.to_string(),
+            };
+
             plans.push(Plan {
                 node_id,
+                component_path: comp_name.clone(),
                 fn_name,
                 claim,
                 cf,
                 checks,
                 boundary,
                 seed,
+                inputs,
+                widened_because,
+                check_spellings,
             });
         }
     }
 
+    // §5.2a's honesty rule, in the one place it can be enforced: a recorded
+    // result is looked up *by today's hash*, so no path exists that reaches
+    // a stored verdict without re-deriving what it depended on first.
+    // Why a stored result could not be used, per claim -- the names of the
+    // inputs that moved. A full-price re-run that says nothing about what
+    // changed is the very experience this feature exists to end.
+    let mut not_carried_forward: Vec<ply_core::diag::NotCarriedForward> = Vec::new();
+    let reused: Vec<Option<RecordEntry>> = plans
+        .iter()
+        .map(|p| {
+            let fingerprint = record::fingerprint(&p.inputs);
+            match record.matching(&p.node_id, &fingerprint, &p.check_spellings) {
+                Match::Hit(entry) => Some(entry.clone()),
+                Match::Impossible(sentence) => {
+                    diagnostics.push(impossible_record_diag(&p.node_id, sentence));
+                    None
+                }
+                Match::Miss => {
+                    if let Some(because) = record.displaced_by(&p.node_id, &p.inputs) {
+                        not_carried_forward.push(ply_core::diag::NotCarriedForward {
+                            node_id: p.node_id.clone(),
+                            widened_because: because
+                                .iter()
+                                .any(|b| b == "the code it runs")
+                                .then(|| p.widened_because.clone())
+                                .flatten(),
+                            because,
+                        });
+                    }
+                    None
+                }
+            }
+        })
+        .collect();
+
     // Pass 2: any fn needing fuzz/test/mutate shares one generated harness
     // crate per target crate (§5.4c) -- write it once, fully, before
     // running anything, so mutate's baseline sees every fn's tests.
-    let needs_harness = plans.iter().any(|p| {
-        p.checks
-            .iter()
-            .any(|c| matches!(c, Check::Fuzz(_) | Check::Test | Check::Mutate))
+    // A reused claim runs no engine, so it needs no harness. A crate whose
+    // every fuzz claim is reused therefore writes no harness crate and
+    // compiles nothing at all.
+    let needs_harness = plans.iter().zip(&reused).any(|(p, r)| {
+        r.is_none()
+            && p.checks
+                .iter()
+                .any(|c| matches!(c, Check::Fuzz(_) | Check::Test | Check::Mutate))
     });
     let mut harness_info: Option<(String, String)> = None; // (harness_package, target_lib_ident)
     if needs_harness {
@@ -324,7 +683,10 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         harness_crate::write_harness_cargo_toml(&harness_dir, &harness_pkg, &target_names)?;
 
         let mut fn_modules = Vec::new();
-        for plan in &plans {
+        for (plan, reused) in plans.iter().zip(&reused) {
+            if reused.is_some() {
+                continue;
+            }
             let has_fuzz = plan.checks.iter().find_map(|c| {
                 if let Check::Fuzz(n) = c {
                     Some(*n)
@@ -373,8 +735,29 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     }
 
     // Pass 3: run each fn's checks and assemble its verdict + diagnostics.
-    let mut component_nodes: BTreeMap<&str, Vec<Node>> = early_nodes_by_component;
-    for plan in &plans {
+    let mut component_nodes: BTreeMap<String, Vec<Node>> = early_nodes_by_component;
+    for (plan, reused) in plans.iter().zip(&reused) {
+        // Carried forward, and said so on the node: everything the recorded
+        // run reported about this claim, re-emitted as it was, because a
+        // reused `conditional` verdict whose assumption paragraph went
+        // missing would be a worse report than no reuse at all.
+        if let Some(entry) = reused {
+            kept_claims.insert(plan.node_id.clone());
+            diagnostics.extend(entry.diagnostics.iter().cloned());
+            component_nodes
+                .entry(plan.component_path.clone())
+                .or_default()
+                .push(Node {
+                    id: plan.fn_name.to_string(),
+                    kind: "fn".into(),
+                    verdict: entry.verdict.clone(),
+                    statuses: entry.statuses.clone(),
+                    reused: true,
+                    evidence: entry.evidence.clone(),
+                    children: vec![],
+                });
+            continue;
+        }
         let (node, mut fn_diags) = run_fn_checks(
             &plan.node_id,
             &src_dir,
@@ -388,25 +771,52 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             harness_info.as_ref(),
             opts,
         )?;
+        // Recorded only when this run earned evidence: a violation, a
+        // timeout or any other absence is never stored, so nothing that
+        // failed can ever be carried forward (§5.2a).
+        if earned_evidence(&node, &fn_diags) {
+            kept_claims.insert(plan.node_id.clone());
+            // The dependency versions are read again here, not reused from
+            // plan time: a crate that had never been built has no lockfile
+            // until this run compiled it, and the versions that governed
+            // the run that just happened are the ones the result stood on.
+            // Without this a first run would record a fingerprint no second
+            // run could ever match, and every crate would pay twice.
+            let mut inputs = plan.inputs.clone();
+            inputs.deps = reach::dependency_identity(crate_dir);
+            record.record(
+                &plan.node_id,
+                RecordEntry {
+                    fingerprint: record::fingerprint(&inputs),
+                    verdict: node.verdict.clone(),
+                    statuses: node.statuses.clone(),
+                    evidence: node.evidence.clone(),
+                    diagnostics: fn_diags.clone(),
+                    inputs: inputs.per_group_digests(),
+                },
+            );
+        }
         diagnostics.append(&mut fn_diags);
-        let comp_name: &str = plan.node_id.split("::").next().unwrap_or("");
-        component_nodes.entry(comp_name).or_default().push(node);
+        component_nodes
+            .entry(plan.component_path.clone())
+            .or_default()
+            .push(node);
     }
 
+    record.retain_claims(&kept_claims);
+    record::save(&record_path, &record)?;
+
+    // The tree the document declares, with each claim's node under the
+    // component that declares it however deep that is (§5.1's nested
+    // `components:`, §7's containment tree). A component that produced no
+    // node at all -- no claim of its own, none in its subtree -- is left
+    // out rather than drawn empty, which is the shape `verify` has always
+    // reported for a component whose claims are checked elsewhere.
     let mut components: Vec<Node> = Vec::new();
-    for (comp_name, fn_nodes) in component_nodes {
-        components.push(Node {
-            id: comp_name.to_string(),
-            kind: "component".into(),
-            verdict: worst_of(&fn_nodes),
-            // D6: statuses are not in the evidence order -- they propagate
-            // upward as flags beside the verdict. A `conditional` leaf must
-            // still be visible from the root, or the trust story stops at
-            // the fn nobody expanded.
-            statuses: union_statuses(&fn_nodes),
-            evidence: None,
-            children: fn_nodes,
-        });
+    for (name, comp) in sorted_by_key(&file.components) {
+        if let Some(node) = component_node(name, comp, &mut component_nodes) {
+            components.push(node);
+        }
     }
 
     let root = Node {
@@ -414,6 +824,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         kind: "workspace".into(),
         verdict: worst_of(&components),
         statuses: union_statuses(&components),
+        reused: false,
         evidence: None,
         children: components,
     };
@@ -426,6 +837,110 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         coverage: None,
         trust_surface: None,
         open_items: None,
+        not_carried_forward,
+    })
+}
+
+/// A stored result whose verdict none of its own checks could have earned:
+/// the file was edited by something that is not Ply. Reported, and the
+/// claim checked again -- never used.
+fn impossible_record_diag(node_id: &str, sentence: String) -> Diagnostic {
+    Diagnostic {
+        code: "W0516".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "record".into(),
+        node_id: node_id.into(),
+        title: sentence,
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![Fix {
+            title: "delete `ply.lock` and run `cargo ply verify` again -- the file is rebuilt \
+                    from what this run earns, and nothing is lost but the engine time"
+                .into(),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
+/// Every component in the document, depth first, each paired with its
+/// qualified name (`billing`, `ingest.book`) and the §5.1 checks default in
+/// force for the fns inside it — parents before their children, siblings in
+/// name order at every level.
+///
+/// `verify` used to iterate the top level of this tree only, so a claim
+/// written inside a nested component produced no node, no diagnostic and no
+/// mention at all, while `cargo ply check` walked the whole tree and
+/// reported the same claim as pointing at real code. The two commands
+/// disagreed about which claims exist, and the disagreement was silent —
+/// the worst shape a gap can take (§1).
+///
+/// The inherited default is carried down the same walk, from the same
+/// shared resolution `check` and the renderer use
+/// (`ply_core::model::component_default_checks`), so the three cannot
+/// disagree about which list governs a fn.
+fn flatten_components(
+    doc: &ply_core::model::Document,
+) -> Vec<(
+    String,
+    &ply_core::model::Component,
+    Option<InheritedChecks<'_>>,
+)> {
+    type Row<'a> = (String, &'a Component, Option<InheritedChecks<'a>>);
+    fn walk<'a>(
+        path: String,
+        leaf: &'a str,
+        comp: &'a Component,
+        inherited: Option<InheritedChecks<'a>>,
+        out: &mut Vec<Row<'a>>,
+    ) {
+        let below = component_default_checks(leaf, comp, inherited);
+        for (child, nested) in sorted_by_key(&comp.components) {
+            walk(format!("{path}.{child}"), child, nested, below, out);
+        }
+        out.push((path, comp, below));
+    }
+    let mut out = Vec::new();
+    for (name, comp) in sorted_by_key(&doc.components) {
+        walk(name.clone(), name, comp, None, &mut out);
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// One component's §7 node: its own claims' nodes, then a node per nested
+/// component that has anything to report. `None` when nothing in the whole
+/// subtree produced a node.
+fn component_node(
+    path: &str,
+    comp: &ply_core::model::Component,
+    fn_nodes: &mut BTreeMap<String, Vec<Node>>,
+) -> Option<Node> {
+    let mut children: Vec<Node> = fn_nodes.remove(path).unwrap_or_default();
+    for (child, nested) in sorted_by_key(&comp.components) {
+        if let Some(node) = component_node(&format!("{path}.{child}"), nested, fn_nodes) {
+            children.push(node);
+        }
+    }
+    if children.is_empty() {
+        return None;
+    }
+    Some(Node {
+        id: path.to_string(),
+        kind: "component".into(),
+        verdict: worst_of(&children),
+        // D6: statuses are not in the evidence order -- they propagate
+        reused: false,
+        // upward as flags beside the verdict. A `conditional` leaf must
+        // still be visible from the root, or the trust story stops at
+        // the fn nobody expanded.
+        statuses: union_statuses(&children),
+        evidence: None,
+        children,
     })
 }
 
@@ -717,11 +1232,124 @@ fn conditional_verdict_diag(
     }
 }
 
+/// One check, spelled the way it is written in `ply.yaml`.
+fn check_spelling(c: &Check) -> String {
+    match c {
+        Check::Test => "test".into(),
+        Check::Fuzz(n) => format!("fuzz({n})"),
+        Check::Bounded(k) => format!("bounded({k})"),
+        Check::Prove => "prove".into(),
+        Check::Mutate => "mutate".into(),
+    }
+}
+
+/// §5.4c: a claim whose `checks:` list is written and empty asked for
+/// nothing, and nothing ran. The node reads `unclaimed`; this is the
+/// sentence beside it, because a node nobody expands is not a report.
+///
+/// It names the default the author gave up, when there is one: the whole
+/// trap was that an empty list used to *be* that default, so a reader who
+/// wanted it needs to know how to ask for it back.
+fn empty_checks_diag(
+    node_id: &str,
+    fn_name: &str,
+    cf: &ContractFn,
+    from_component: Option<&str>,
+) -> Diagnostic {
+    let default: Vec<String> = default_checks_for(cf).iter().map(check_spelling).collect();
+    let whose = match from_component {
+        Some(c) => format!(
+            "`{fn_name}` writes no `checks:` of its own and the component `{c}` declares an empty \
+             list as the default for everything inside it, so"
+        ),
+        None => format!("`{fn_name}` has an empty `checks:` list, so"),
+    };
+    let default_note = if default.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Deleting the `checks:` line entirely would run `{}`, the check Ply picks from this \
+             function's shape. ",
+            default.join(", ")
+        )
+    };
+    Diagnostic {
+        code: "W0515".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "{whose} nothing was run against it and it earned no evidence: an empty list means \
+             \"check nothing\", not \"use the default\". {default_note}Write the checks you \
+             want to run it; leave the list empty to record a function you have deliberately not \
+             checked, and its verdict stays `unclaimed` — Ply's word for \"nothing was checked \
+             here\". (W0515, §5.4c)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![Fix {
+            title: match from_component {
+                Some(c) => format!(
+                    "give `{fn_name}` a `checks:` list of its own, or delete the empty one on \
+                     component `{c}`"
+                ),
+                None => format!(
+                    "delete the `checks: []` line from `{fn_name}` to take the default Ply picks \
+                     from its shape"
+                ),
+            },
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: Some("declared_unchecked".into()),
+    }
+}
+
 /// `verify` resolves every claim against one crate's `src/lib.rs`. A claim
 /// whose component anchors elsewhere is not checked here, and that is said
 /// rather than reported as a missing function (which is what happened before
 /// `anchor:` was consumed -- vetting 004 s5's misleading `E0301`).
-fn cross_crate_claim_diag(node_id: &str, fn_name: &str, anchor: &str) -> Diagnostic {
+///
+/// Two different things land here and they need two different sentences.
+/// An anchor naming another crate is the case this diagnostic was written
+/// for. An anchor naming a *module inside this crate* -- `ingest::book`
+/// while verifying `ingest`, the ordinary way a nested component is
+/// written -- is not another crate at all, and saying so would send a
+/// reader looking for a crate that does not exist. What is true of it is
+/// narrower and fixable: `verify` reads a fn key as a path from the crate
+/// root, so it cannot resolve a key written relative to a module.
+fn cross_crate_claim_diag(
+    node_id: &str,
+    fn_name: &str,
+    anchor: &str,
+    local_anchors: &[String],
+) -> Diagnostic {
+    let (crate_name, module_path) = match anchor.split_once("::") {
+        Some((root, rest)) => (root.replace('-', "_"), Some(rest)),
+        None => (anchor.replace('-', "_"), None),
+    };
+    let inside_this_crate =
+        module_path.is_some() && !local_anchors.is_empty() && local_anchors.contains(&crate_name);
+    let title = match module_path {
+        Some(module) if inside_this_crate => format!(
+            "`{fn_name}` is claimed under a component anchored at `{anchor}`, which is a module \
+             inside this crate rather than the crate itself. `cargo ply verify` reads a function \
+             key as a path from the crate root, so it has no way to resolve a key written relative \
+             to a module: this entry's `checks:` were not run and no verdict is reported for it. \
+             Move the claim to a component anchored at `{crate_name}` and spell the key from the \
+             crate root -- `{module}::{fn_name}` -- and it will run. (W0303, §5.2)"
+        ),
+        _ => format!(
+            "`{fn_name}` is claimed under a component anchored at `{anchor}`, which is not the crate \
+             this run is verifying, and `cargo ply verify` checks one crate at a time. Its `checks:` \
+             were not run and no verdict is reported for it. Any `requires:`/`ensures:` this entry \
+             declares is still read: that is how a callee outside this crate gets a contract Ply can \
+             assume at the boundary (§5.5). (W0303)"
+        ),
+    };
     Diagnostic {
         code: "W0303".into(),
         severity: "warning".into(),
@@ -729,32 +1357,47 @@ fn cross_crate_claim_diag(node_id: &str, fn_name: &str, anchor: &str) -> Diagnos
         engine: "ply".into(),
         check: "".into(),
         node_id: node_id.into(),
-        title: format!(
-            "`{fn_name}` is claimed under a component anchored at `{anchor}`, which is not the crate \
-             this run is verifying, and `cargo ply verify` checks one crate at a time. Its `checks:` \
-             were not run and no verdict is reported for it. Any `requires:`/`ensures:` this entry \
-             declares is still read: that is how a callee outside this crate gets a contract Ply can \
-             assume at the boundary (§5.5). (W0303)"
-        ),
+        title,
         pointer: None,
         primary_span: None,
         counterexample: None,
-        fixes: vec![
-            Fix {
-                title: format!(
-                    "run `cargo ply verify` against the crate `{anchor}` itself to check its own \
-                     claims there"
-                ),
-                edits: vec![],
-            },
-            Fix {
-                title: format!(
-                    "or drop `checks:` from this entry and keep only `requires:`/`ensures:`, if its \
-                     purpose is to give `{fn_name}` a contract for callers in this crate to assume"
-                ),
-                edits: vec![],
-            },
-        ],
+        fixes: if inside_this_crate {
+            let module = module_path.unwrap_or_default();
+            vec![
+                Fix {
+                    title: format!(
+                        "move `{fn_name}` to a component anchored at `{crate_name}`, keyed \
+                         `{module}::{fn_name}`"
+                    ),
+                    edits: vec![],
+                },
+                Fix {
+                    title: format!(
+                        "or drop `checks:` from this entry and keep only `requires:`/`ensures:`, if \
+                         its purpose is to give `{fn_name}` a contract for its callers to assume"
+                    ),
+                    edits: vec![],
+                },
+            ]
+        } else {
+            vec![
+                Fix {
+                    title: format!(
+                        "run `cargo ply verify` against the crate `{anchor}` itself to check its own \
+                         claims there"
+                    ),
+                    edits: vec![],
+                },
+                Fix {
+                    title: format!(
+                        "or drop `checks:` from this entry and keep only `requires:`/`ensures:`, if \
+                         its purpose is to give `{fn_name}` a contract for callers in this crate to \
+                         assume"
+                    ),
+                    edits: vec![],
+                },
+            ]
+        },
         assumptions: vec![],
         open_item: Some("not_verified_here".into()),
     }
@@ -1134,6 +1777,7 @@ fn run_fn_checks(
             kind: "fn".into(),
             verdict,
             statuses,
+            reused: false,
             evidence: fuzz_evidence,
             children: vec![],
         },
@@ -2623,6 +3267,27 @@ fn format_value(v: &kani::WitnessValue) -> String {
     }
 }
 
+/// Whether this run earned something worth recording (§5.2a).
+///
+/// Only a result that **earned evidence** is stored. A violation is a real
+/// result and still not stored: its whole value is the witness and the red
+/// test beside it, and those are artifacts on disk that a later run would
+/// have to re-render anyway. Everything else that could be stored here is an
+/// absence — a timeout, a missing engine, a shape Ply cannot build, a
+/// harness that would not compile, a claim that asked for nothing — and
+/// carrying an absence forward would mean reporting "nothing was checked"
+/// without having looked.
+///
+/// The absence vocabulary is `ply_core::diag::is_absence`, the same one the
+/// exit code reads. Two copies of it is how the next absence gets missed by
+/// one of them (§1: an absence is a name, not a slot).
+fn earned_evidence(node: &Node, diagnostics: &[Diagnostic]) -> bool {
+    !ply_core::diag::is_absence(&node.verdict)
+        && node.verdict != "violation"
+        && !node.statuses.iter().any(|s| ply_core::diag::is_absence(s))
+        && !diagnostics.iter().any(|d| d.severity == "error")
+}
+
 fn leaf_node(node_id: &str, verdict: &str) -> Node {
     let fn_part = node_id.rsplit("::").next().unwrap_or(node_id);
     Node {
@@ -2630,6 +3295,7 @@ fn leaf_node(node_id: &str, verdict: &str) -> Node {
         kind: "fn".into(),
         verdict: verdict.to_string(),
         statuses: vec![],
+        reused: false,
         evidence: None,
         children: vec![],
     }
@@ -2641,6 +3307,184 @@ fn unused(_p: &PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An empty list inherited from a component default is not the fn's
+    /// own line, and the sentence must not send a reader to a line that is
+    /// not there.
+    #[test]
+    fn an_inherited_empty_list_names_the_component_that_declared_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(
+            &path,
+            "#[ply::ensures(|result| *result == x)]\npub fn quote(x: u32) -> u32 { x }\n",
+        )
+        .unwrap();
+        let cf = ply_core::harness::discover_fn(&path, "quote").unwrap();
+        let d = empty_checks_diag("pricing::quote", "quote", &cf, Some("pricing"));
+        assert!(
+            d.title.starts_with(
+                "`quote` writes no `checks:` of its own and the component `pricing` declares an \
+                 empty list as the default for everything inside it, so nothing was run against \
+                 it"
+            ),
+            "{}",
+            d.title
+        );
+    }
+
+    fn node_with(verdict: &str, statuses: &[&str]) -> Node {
+        Node {
+            id: "f".into(),
+            kind: "fn".into(),
+            verdict: verdict.into(),
+            statuses: statuses.iter().map(|s| (*s).to_string()).collect(),
+            reused: false,
+            evidence: None,
+            children: vec![],
+        }
+    }
+
+    fn diag_with_severity(severity: &str) -> Diagnostic {
+        Diagnostic {
+            code: "E0000".into(),
+            severity: severity.into(),
+            phase: "verify".into(),
+            engine: "ply".into(),
+            check: "bounded(2)".into(),
+            node_id: "c::f".into(),
+            title: "t".into(),
+            pointer: None,
+            primary_span: None,
+            counterexample: None,
+            fixes: vec![],
+            assumptions: vec![],
+            open_item: None,
+        }
+    }
+
+    /// §5.2a: only a result that earned evidence is recorded, so nothing
+    /// that failed can ever be carried forward into a later run. Written as
+    /// one table because the interesting cases are the ones nobody thinks
+    /// to list -- an absence recorded as a *status* beside a real verdict,
+    /// and a violation, which is a real result and still must not be stored.
+    #[test]
+    fn only_a_result_that_earned_evidence_is_recorded() {
+        let cases: [(Node, Vec<Diagnostic>, bool, &str); 9] = [
+            (
+                node_with("bounded(2)", &[]),
+                vec![],
+                true,
+                "a clean proof is the case reuse exists for",
+            ),
+            (
+                node_with("bounded(2)", &["conditional", "owed-evidence"]),
+                vec![diag_with_severity("warning")],
+                true,
+                "a result resting on a declared promise is real evidence about that promise, \
+                 and the most expensive kind to re-earn",
+            ),
+            (
+                node_with("fuzzed(256)", &["weak-spec"]),
+                vec![diag_with_severity("warning")],
+                true,
+                "a weak spec is a finding beside real evidence, not an absence of it",
+            ),
+            (
+                node_with("violation", &[]),
+                vec![diag_with_severity("error")],
+                false,
+                "a violation is a real result whose whole value is the witness beside it -- \
+                 never carried forward as a bare verdict",
+            ),
+            (
+                node_with("violation", &[]),
+                vec![],
+                false,
+                "and never stored even if nothing else flagged it -- the rule is the verdict, \
+                 not the diagnostic that usually accompanies it",
+            ),
+            (
+                node_with("timeout", &[]),
+                vec![],
+                false,
+                "an exhausted engine learned nothing; storing that would report `nothing was \
+                 checked` without having looked",
+            ),
+            (
+                node_with("fuzzed(64)", &["engine-missing"]),
+                vec![],
+                false,
+                "an absence recorded as a status is an absence (§1: a name, not a slot)",
+            ),
+            (node_with("unclaimed", &[]), vec![], false, "nothing ran"),
+            (
+                node_with("bounded(2)", &[]),
+                vec![diag_with_severity("error")],
+                false,
+                "an error-severity finding beside a verdict means the run did not stand behind \
+                 it either",
+            ),
+        ];
+        for (node, diags, expected, why) in cases {
+            assert_eq!(
+                earned_evidence(&node, &diags),
+                expected,
+                "{why} (verdict `{}`, statuses {:?})",
+                node.verdict,
+                node.statuses
+            );
+        }
+    }
+
+    /// The ordinary way a nested component is written is an anchor naming a
+    /// module of the crate being verified. Calling that "not the crate this
+    /// run is verifying" is false, and sends a reader hunting for a crate
+    /// that does not exist -- so it gets its own sentence, and the sentence
+    /// says what to write instead.
+    #[test]
+    fn a_claim_under_a_module_anchor_is_told_it_is_a_module_not_another_crate() {
+        let d = cross_crate_claim_diag(
+            "ingest.book::OrderBook::apply",
+            "OrderBook::apply",
+            "ingest::book",
+            &["ingest".to_string()],
+        );
+        assert_eq!(
+            d.title,
+            "`OrderBook::apply` is claimed under a component anchored at `ingest::book`, which is \
+             a module inside this crate rather than the crate itself. `cargo ply verify` reads a \
+             function key as a path from the crate root, so it has no way to resolve a key written \
+             relative to a module: this entry's `checks:` were not run and no verdict is reported \
+             for it. Move the claim to a component anchored at `ingest` and spell the key from the \
+             crate root -- `book::OrderBook::apply` -- and it will run. (W0303, §5.2)"
+        );
+        assert_eq!(
+            d.fixes[0].title,
+            "move `OrderBook::apply` to a component anchored at `ingest`, keyed \
+             `book::OrderBook::apply`"
+        );
+    }
+
+    /// An anchor that really does name another crate keeps the sentence
+    /// written for it.
+    #[test]
+    fn a_claim_under_another_crates_anchor_still_says_another_crate() {
+        let d = cross_crate_claim_diag(
+            "ledger::post",
+            "post",
+            "ledger",
+            &["ingest".to_string(), "ingest".to_string()],
+        );
+        assert_eq!(
+            d.title,
+            "`post` is claimed under a component anchored at `ledger`, which is not the crate this \
+             run is verifying, and `cargo ply verify` checks one crate at a time. Its `checks:` \
+             were not run and no verdict is reported for it. Any `requires:`/`ensures:` this entry \
+             declares is still read: that is how a callee outside this crate gets a contract Ply \
+             can assume at the boundary (§5.5). (W0303)"
+        );
+    }
 
     #[test]
     fn engine_timeout_scales_only_for_vec_shaped_harnesses() {
@@ -2852,6 +3696,7 @@ mod tests {
                 kind: "fn".into(),
                 verdict: "bounded(2)".into(),
                 statuses: vec![],
+                reused: false,
                 evidence: None,
                 children: vec![],
             },
@@ -2860,6 +3705,7 @@ mod tests {
                 kind: "fn".into(),
                 verdict: "tested".into(),
                 statuses: vec![],
+                reused: false,
                 evidence: None,
                 children: vec![],
             },

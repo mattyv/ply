@@ -7,16 +7,16 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Span {
     pub file: String,
     pub start: [u32; 2],
     pub end: [u32; 2],
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Counterexample {
     /// Rendered-source values for each parameter, e.g. `{"x": "4294967295u32"}`.
     pub inputs: BTreeMap<String, String>,
@@ -24,11 +24,11 @@ pub struct Counterexample {
     /// reproduction (D7/ADR-0003 caveat 3) -- kept as text describing where
     /// it was captured from, since this slice does not persist a separate
     /// artifact file for it beyond the rendered `#[test]`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kani_witness: Option<String>,
     /// Present only when the inputs rendered as stable Rust source (D7);
     /// else absent and a `W0541` diagnostic explains why.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cargo_test: Option<String>,
 }
 
@@ -38,14 +38,14 @@ pub struct Counterexample {
 /// *what* would help (lower the bound, switch check kind, add a `requires`)
 /// but does not have a concrete source edit to offer -- an empty `edits` is
 /// still a real fix entry, not a placeholder.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fix {
     pub title: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edits: Vec<Edit>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edit {
     pub span: String,
     pub insert: String,
@@ -57,7 +57,7 @@ pub struct Edit {
 /// body. `verdict` is what the callee itself earned -- `unclaimed` for a
 /// legacy callee nothing has checked, which is exactly the case that makes
 /// the assumption *owed evidence* rather than settled.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Assumption {
     pub kind: String,
     #[serde(rename = "fn")]
@@ -67,7 +67,7 @@ pub struct Assumption {
     pub contract: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub code: String,
     pub severity: String,
@@ -76,15 +76,15 @@ pub struct Diagnostic {
     pub check: String,
     pub node_id: String,
     pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_span: Option<Span>,
     /// §5: a schema violation carries "the JSON-pointer path" into the
     /// document — `/components/pricing/fns/quote/ensure`. Present on
     /// `E0201`/`E0204`, absent on everything else, since a diagnostic about
     /// a *function* points at source, not at YAML.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pointer: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub counterexample: Option<Counterexample>,
     /// §8's non-result MUST: `timeout`/`unsupported`/`engine-missing` (and,
     /// per M4, `weak-spec`) SHOULD populate this with the concrete options
@@ -104,12 +104,12 @@ pub struct Diagnostic {
 /// a violation carries its witness: without it, a `fuzzed(256)` names no
 /// run anyone can repeat, and the run that missed a bug is indistinguishable
 /// from the run that could not have found one.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Evidence {
     pub engine: String,
     /// The proptest RNG seed, as 64 hex characters -- replay with
     /// `cargo ply verify <path> --seed <hex>`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<String>,
     /// Cases the engine actually reached -- never the number the checks list
     /// asked for. Absent when the run happened but the count is not the
@@ -118,7 +118,7 @@ pub struct Evidence {
     /// block is absent when no run happened at all (2026-08-25: it used to
     /// be attached whenever `fuzz(n)` was declared, so a harness that never
     /// compiled reported `cases: n` for a run of zero).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cases: Option<u32>,
 }
 
@@ -128,10 +128,46 @@ pub struct Node {
     pub kind: String,
     pub verdict: String,
     pub statuses: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Whether this result was carried forward from an earlier run rather
+    /// than earned in this one (§5.2a). Present only when true, never
+    /// `false`: absent means "this ran just now".
+    ///
+    /// **Not a status** (D6). A status qualifies the evidence — how strong
+    /// it is, what it rests on — and travels upward as a flag. Reuse
+    /// qualifies nothing: it says *when* the run happened. It stays on the
+    /// node that earned it, enters neither the evidence order nor any exit
+    /// code, and can only be set after the node's fingerprint was
+    /// recomputed from today's inputs and matched (`record::Record::matching`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub reused: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Evidence>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Node>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// A name that reports **no evidence** (§1): the engine was exhausted, the
+/// shape was out of reach, the tool broke, nothing was claimed, no engine
+/// existed, or a check ran and settled nothing.
+///
+/// **An absence is a name, not a slot.** The same names appear in two places
+/// in a §8 node — as its `verdict`, and as a `status` beside it (D6) — and
+/// they mean the same thing in both. This vocabulary lives here, in one
+/// place, because two consumers now read it: the exit-code rule in the CLI,
+/// and the rule that decides whether a result may be recorded at all
+/// (§5.2a records only results that earned evidence). Two copies of a
+/// vocabulary is how the next absence gets missed by one of them.
+pub fn is_absence(name: &str) -> bool {
+    name == "timeout"
+        || name == "unclaimed"
+        || name == "engine-missing"
+        || name == "inconclusive"
+        || name.starts_with("unsupported")
+        || name.starts_with("tool_error")
 }
 
 /// One tier of what a command checks, and what that tier found or why it
@@ -144,8 +180,8 @@ pub struct Tier {
 
 /// What this run actually covered, and what it did not.
 ///
-/// §6 lists four tiers for `check` — schema, anchors, staleness,
-/// architecture — and two of them do not exist yet. A command that only
+/// §6 lists three tiers for `check` — schema, anchors, architecture —
+/// and one of them does not exist yet. A command that only
 /// reports findings lets a clean run read as full coverage, which is the
 /// same failure as an absence of evidence reported as a pass (§1). So the
 /// envelope carries the gaps as data, and the human surface prints them.
@@ -189,8 +225,7 @@ pub struct TrustItem {
 }
 
 /// One entry on `cargo ply worklist` (§6): something that is owed and
-/// expected to close — an unresolved marker (§5.6), a weak spec (`W0502`),
-/// a stale claim (`W0302`).
+/// expected to close — an unresolved marker (§5.6), a weak spec (`W0502`).
 ///
 /// The distinction from [`TrustItem`] is the whole design: trust surface is
 /// permanent and listing it must never read as a demand, while an open item
@@ -199,7 +234,7 @@ pub struct TrustItem {
 pub struct OpenItem {
     pub kind: String,
     /// The unresolved id (§5.6), where the item has one.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
     /// The §7 node it sits in — the fn or component, or `ply.yaml` for a
     /// registry entry with no code behind it.
@@ -218,16 +253,44 @@ pub struct Envelope {
     pub ply_version: String,
     pub root: Node,
     pub diagnostics: Vec<Diagnostic>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<Coverage>,
     /// §6's `audit`. Absent on every other command — an empty array means
     /// "this crate rests on nothing Ply can see", which is a different fact
     /// from "this command does not report a trust surface".
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_surface: Option<Vec<TrustItem>>,
     /// §6's `worklist`, with the same absent/empty distinction.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_items: Option<Vec<OpenItem>>,
+    /// Claims that had a recorded result and could not use it, each with
+    /// the names of the inputs that moved (§5.2a). Empty on every command
+    /// but `verify`, and on a `verify` that carried everything forward or
+    /// had nothing recorded to carry.
+    ///
+    /// A full re-run with no explanation is the experience the record
+    /// exists to end, arriving without a reason the moment a compiler or an
+    /// engine updates. This is the reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_carried_forward: Vec<NotCarriedForward>,
+}
+
+/// One claim whose recorded result could not be reused, and why.
+#[derive(Debug, Clone, Serialize)]
+pub struct NotCarriedForward {
+    pub node_id: String,
+    /// The named inputs whose content changed since the result was
+    /// recorded, in plain words ("the code it runs", "the compiler and the
+    /// build target").
+    pub because: Vec<String>,
+    /// Set when Ply could not bound the call walk for this claim and hashed
+    /// every line of the crate instead (§5.2a's coarse mode). Then "the code
+    /// it runs changed" is true of an edit anywhere in the crate, including
+    /// one in a function this claim never calls -- so the run has to name the
+    /// construct that cost it the walk, or the re-run reads as unexplained.
+    /// `None` when the walk was bounded, which is the ordinary case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widened_because: Option<String>,
 }
 
 impl Envelope {
