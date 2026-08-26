@@ -73,7 +73,7 @@ fn json_is_the_section_8_envelope_with_the_coverage_block() {
         .iter()
         .map(|t| t["tier"].as_str().unwrap())
         .collect();
-    assert_eq!(tiers, ["architecture"]);
+    assert_eq!(tiers, ["item-level"]);
 }
 
 /// §5.2's MUST, through the real binary: a renamed function breaks the

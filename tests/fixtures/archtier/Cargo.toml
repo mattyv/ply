@@ -1,0 +1,8 @@
+[workspace]
+# This fixture is a small multi-crate workspace on purpose: The-Ply-Spec.md
+# §5.3's crate tier is about real `cargo metadata` dependencies *between*
+# crates, which a single-crate fixture can never exercise. It is its own
+# workspace root (never swept into the product workspace or into tools/),
+# per tests/spike's convention and The-Ply-Spec.md §4.
+members = ["crate_a", "crate_b", "crate_c"]
+resolver = "2"

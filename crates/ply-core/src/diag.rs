@@ -180,8 +180,9 @@ pub struct Tier {
 
 /// What this run actually covered, and what it did not.
 ///
-/// §6 lists three tiers for `check` — schema, anchors, architecture —
-/// and one of them does not exist yet. A command that only
+/// §6 lists three tiers for `check` — schema, anchors, architecture — and
+/// architecture's own item tier (calls, capabilities, ownership) does not
+/// exist yet, only its crate tier. A command that only
 /// reports findings lets a clean run read as full coverage, which is the
 /// same failure as an absence of evidence reported as a pass (§1). So the
 /// envelope carries the gaps as data, and the human surface prints them.

@@ -1,3 +1,4 @@
+pub mod arch;
 pub mod callgraph;
 pub mod check;
 pub mod config;
