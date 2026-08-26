@@ -1772,6 +1772,35 @@ it, or fail with `X0901` attaching the raw output for debugging.
 
 ## 9. Testing strategy
 
+**A test nobody has watched fail is not evidence.** This is §1's absence-of-evidence
+principle turned on Ply's own suite, and it is stated here because Ply has repeatedly
+failed it. Every test in this repository must be observed red — against the defect it
+names, with a failure message that names that defect and not merely "assertion failed" —
+before it is made green. A test written after the code it checks proves only that the
+test agrees with the code, which is exactly the reasoning Ply refuses to accept from a
+user about their own program.
+
+The evidence for the rule, recorded rather than asserted: D5's first branch (2026-08-26)
+shipped with 315 passing tests and six defects, four of them found by adversarial review
+rather than by the suite. Two of those were nearly dismissed as environment flakiness.
+The worst was a **false clean verdict** — a caller reported `bounded` while standing on a
+callee whose proof never covered the arguments it was actually passed — and the commit
+before it had honestly reported a timeout, so the feature converted an honest absence of
+evidence into evidence. Every fixture its author wrote used scalar parameters; the defect
+needed a length-indexed one. The suite was not weak by accident: it was blind in exactly
+the shape nobody thought to write.
+
+Two consequences follow, and both are requirements:
+
+1. **A defect found by review enters the suite as a fixture of its own shape**, permanently
+   — not as a spot-check on the code path that happened to be wrong. The shape is what was
+   missing; the line was only where it surfaced.
+2. **Green is not a merge argument.** A passing suite is evidence that the shapes it
+   covers still behave; it is never evidence that a feature is correct. Where a feature
+   crosses into a subsystem it was not written against — the record and reuse path is the
+   one that has caught Ply out twice — the crossing gets its own test, or the feature is
+   narrowed until it does not cross.
+
 - **Fixture e2e**: each feature ships a minimal fixture project + `ply.yaml` + expected
   `--json` output as insta goldens. Review goldens like API diffs.
 - **Cex validity oracle**: every rendered `cargo_test` must FAIL under `cargo test` in
