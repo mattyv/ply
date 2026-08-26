@@ -1,0 +1,19 @@
+ply: 1
+
+# Finding 6's own reproduction: `leftside` anchors at `shared`, which two
+# different crates in this workspace both build. `user_r` really depends on
+# `right` (never on `left`), so `user_r -> leftside` must never be reported
+# as a real crossing -- Ply cannot tell which of the two `shared` crates a
+# dependency graph edge means, so this ban must be reported as inert
+# (A0412) rather than guessed at.
+components:
+  leftside:
+    anchor: shared
+  user_l:
+    anchor: archambiguous_user_l
+  user_r:
+    anchor: archambiguous_user_r
+edges:
+  - "user_l -> leftside"
+deny:
+  - "user_r -> leftside"

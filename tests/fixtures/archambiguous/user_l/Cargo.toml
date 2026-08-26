@@ -1,0 +1,12 @@
+[package]
+name = "ply-fixture-archambiguous-user-l"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "archambiguous_user_l"
+path = "src/lib.rs"
+
+[dependencies]
+shared = { package = "ply-fixture-archambiguous-left", path = "../left" }

@@ -165,7 +165,19 @@ pub enum ArchOutcome {
 /// Runs `cargo metadata` in `crate_dir`, classifies every real
 /// cross-component crate dependency against `doc`'s declared components,
 /// edges and deny rules (`ply_core::arch::check_architecture`), and pushes
-/// every finding (`A0401`, `A0405`) onto `diagnostics`.
+/// every finding (`A0401`, `A0405`, and the rest of the `A04xx` family) onto
+/// `diagnostics`.
+///
+/// docs/review-architecture-tier.md, finding 1: when `cargo metadata` itself
+/// fails -- a broken manifest, `cargo` missing from `PATH`, a package
+/// dependency cycle -- this tier did not merely skip a component of the
+/// report, it produced **no error at all**: no diagnostic, no status on any
+/// node, exit 0, with the failure buried as a sentence inside the coverage
+/// report. That is an absence of evidence reported as a pass (§1), so it is
+/// now `A0409`, an error-severity diagnostic -- which is what makes
+/// `CheckReport::exit_code` return 1 for it, the same way any other
+/// error-severity finding does, with no separate exit-code special case
+/// needed.
 fn run_architecture_tier(
     crate_dir: &Path,
     doc: &Document,
@@ -179,7 +191,41 @@ fn run_architecture_tier(
             }
             ArchOutcome::Ran(tally)
         }
-        Err(e) => ArchOutcome::Unavailable(e.to_string()),
+        Err(e) => {
+            diagnostics.push(arch_unavailable_diag(&e.to_string()));
+            ArchOutcome::Unavailable(e.to_string())
+        }
+    }
+}
+
+/// `A0409`: the architecture check could not run at all, because Ply could
+/// not get this crate's real dependency graph. Reproduced
+/// (docs/review-architecture-tier.md, finding 1) three ways: a broken
+/// `Cargo.toml` anywhere in the workspace, `cargo` missing from `PATH`, and
+/// a package dependency cycle -- the last one matters most, because a cycle
+/// is exactly the shape a `ply.yaml` boundary rule is usually written to
+/// prevent, so a run that cannot see the graph at all is the one case where
+/// silence would be most dangerous.
+fn arch_unavailable_diag(reason: &str) -> Diagnostic {
+    Diagnostic {
+        code: "A0409".into(),
+        severity: "error".into(),
+        phase: "check".into(),
+        engine: "ply".into(),
+        check: "architecture".into(),
+        node_id: "ply.yaml".into(),
+        title: format!(
+            "Ply could not check whether one crate in this workspace depends on another across \
+             a boundary this document does not allow, because it could not get the real \
+             dependency graph: {reason} — that is not a clean result, it means this run did not \
+             look. Fix the problem named above, then check again."
+        ),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: Some("architecture_not_checked".into()),
     }
 }
 
@@ -489,22 +535,63 @@ fn anchor_detail(t: &AnchorTally) -> String {
 /// §5.3's crate tier, told as a coverage sentence: how many real crate
 /// dependencies actually cross between two differently-declared
 /// components, and how they were classified.
+///
+/// docs/review-architecture-tier.md, findings 3 and 4:
+/// - **Finding 4** decided: `dev-dependencies`/`build-dependencies` stay
+///   excluded from enforcement (§5.3 is about code that ships, and a test
+///   harness legitimately wires components together in ways the shipped
+///   binary never does) -- but disclosed, so this sentence never again
+///   claims "no crate here depends on another" when one does, just not at
+///   runtime. "at runtime" below is the qualifier that keeps the base
+///   sentence honest even when every real crossing is a dev/build one.
+/// - **Finding 3** adds the denominator: how many crates in this workspace
+///   `cargo metadata` actually reports, and how many of those no declared
+///   component's anchor claims at all -- named, not left for a wildcard
+///   `deny:` to imply it already covers them (`*` only ever means "any
+///   *declared* component").
 fn arch_detail(t: &ArchTally) -> String {
-    if t.cross_component_pairs == 0 {
-        return "No crate here depends on another crate that belongs to a different declared \
-                 component, so there was nothing to check."
-            .into();
-    }
-    let permitted = t.cross_component_pairs - t.violations;
-    let mut s = format!(
-        "{} real crate dependencies cross between two differently-declared components: {} \
-         permitted by a declared edge or by nesting, {} not permitted (reported below).",
-        t.cross_component_pairs, permitted, t.violations
-    );
-    if t.deny_violations > 0 {
+    let mut s = if t.cross_component_pairs == 0 {
+        "No crate here depends on another crate that belongs to a different declared \
+         component at runtime, so there was nothing to check."
+            .to_string()
+    } else {
+        let permitted = t.cross_component_pairs - t.violations;
+        let mut s = format!(
+            "{} real crate dependencies cross between two differently-declared components: {} \
+             permitted by a declared edge or by nesting, {} not permitted (reported below).",
+            t.cross_component_pairs, permitted, t.violations
+        );
+        if t.deny_violations > 0 {
+            s.push_str(&format!(
+                " {} of them also match an explicit `deny:` rule (reported below).",
+                t.deny_violations
+            ));
+        }
+        s
+    };
+
+    if t.dev_or_build_cross_component_pairs > 0 {
+        let plural = if t.dev_or_build_cross_component_pairs == 1 {
+            "crosses"
+        } else {
+            "cross"
+        };
         s.push_str(&format!(
-            " {} of them also match an explicit `deny:` rule (reported below).",
-            t.deny_violations
+            " {} more {plural} a declared boundary only as a test or build dependency \
+             (`dev-dependencies`/`build-dependencies`) — not enforced, because that code never \
+             ships, but named here rather than dropped silently.",
+            t.dev_or_build_cross_component_pairs
+        ));
+    }
+
+    s.push_str(&format!(
+        " {} of {} crates in this workspace belong to a declared component.",
+        t.declared_crate_count, t.workspace_crate_count
+    ));
+    if !t.undeclared_crates.is_empty() {
+        s.push_str(&format!(
+            " Not declared, and so invisible even to a wildcard `deny:` rule: {}.",
+            t.undeclared_crates.join(", ")
         ));
     }
     s
@@ -919,5 +1006,101 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = check_crate(dir.path()).unwrap_err().to_string();
         assert!(err.contains("could not read a ply.yaml at"), "{err}");
+    }
+
+    // ---- Blocker 1 (docs/review-architecture-tier.md, finding 1) ----
+    //
+    // "No problems found in the document" printing, exit 0, while the
+    // architecture tier silently never ran at all -- reproduced here two of
+    // the review's three ways (a broken manifest; a real package
+    // dependency cycle). The third (`cargo` missing from `PATH`) needs a
+    // real subprocess environment to mutate safely and lives in
+    // `tests/e2e/tests/arch_unavailable.rs` instead.
+
+    /// (a) A bad version requirement anywhere in the workspace's manifests
+    /// makes `cargo metadata` fail outright. Before the fix this printed
+    /// "No problems found in the document." and exited 0, with the failure
+    /// buried as a sentence in the coverage report; now it is `A0409`, an
+    /// error-severity diagnostic, so the run fails and the diagnostic is
+    /// what a reader sees first.
+    #[test]
+    fn a_broken_manifest_makes_the_architecture_tier_a0409_not_a_clean_run() {
+        let dir = crate_with("pub fn clamp(x: u32) -> u32 { x }\n", CLEAN_YAML);
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nbogus = \"!!!\"\n",
+        )
+        .unwrap();
+        let report = check_crate(dir.path()).unwrap();
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "A0409")
+            .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
+        assert_eq!(d.severity, "error");
+        assert!(
+            d.title.contains("could not get the real dependency graph"),
+            "{}",
+            d.title
+        );
+        assert_eq!(report.exit_code(), 1, "an unchecked tier must not exit 0");
+    }
+
+    /// A tiny two-crate workspace where each crate depends normally on the
+    /// other -- a real package dependency cycle, which `cargo metadata`
+    /// refuses to produce a graph for at all. This is the review's own
+    /// headline reproduction: the exact shape a `deny:` rule is usually
+    /// written to catch is the one case that made the check stop running
+    /// entirely.
+    fn cycle_workspace() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crate_x\", \"crate_y\"]\nresolver = \"2\"\n",
+        )
+        .unwrap();
+        for (name, dep) in [("crate_x", "crate_y"), ("crate_y", "crate_x")] {
+            let sub = dir.path().join(name);
+            std::fs::create_dir_all(sub.join("src")).unwrap();
+            std::fs::write(sub.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+            std::fs::write(
+                sub.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+                     [dependencies]\n{dep} = {{ path = \"../{dep}\" }}\n"
+                ),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            dir.path().join("ply.yaml"),
+            "ply: 1\ncomponents:\n  x:\n    anchor: crate_x\n  y:\n    anchor: crate_y\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    /// (b, the review's headline case) A real package dependency cycle:
+    /// `cargo metadata` fails outright, so the crate tier cannot run --
+    /// `A0409`, not a clean exit 0.
+    #[test]
+    fn a_package_dependency_cycle_makes_the_architecture_tier_a0409() {
+        let dir = cycle_workspace();
+        let report = check_crate(dir.path()).unwrap();
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "A0409")
+            .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
+        assert_eq!(d.severity, "error");
+        assert!(
+            d.title.contains("cargo metadata") || d.title.contains("cyclic"),
+            "{}",
+            d.title
+        );
+        assert_eq!(report.exit_code(), 1);
     }
 }

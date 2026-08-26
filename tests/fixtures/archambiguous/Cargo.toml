@@ -1,0 +1,11 @@
+[workspace]
+# Finding 6 (docs/review-architecture-tier.md): two different crates in one
+# workspace can legally both build a library called "shared". `left` and
+# `right` do exactly that on purpose; `user_l` depends on `left`, `user_r`
+# depends on `right`, and neither depends on the other. A tier that
+# resolves crate identity by library name alone collapses `left` and
+# `right` into one identity and can misreport a dependency on one as a
+# dependency on the other -- this fixture is the review's own ws8
+# reproduction, permanently in the suite.
+members = ["left", "right", "user_l", "user_r"]
+resolver = "2"

@@ -86,9 +86,20 @@ components:
 /// declared components, and no `->` edge permits it -- `A0401`, naming
 /// both crates, and exit non-zero. `crate_dual` is not declared as a
 /// component in this document at all, so `top`'s equally real dependency
-/// on it is simply out of scope here (an undeclared crate is ignored,
-/// same as an ordinary external dependency) -- this test isolates the one
-/// pair it names.
+/// on it earns no `A0401` of its own -- this test isolates the one pair
+/// `A0401` names.
+///
+/// **`crate_dual` going undiagnosed is not the same claim as `crate_dual`
+/// going unseen.** Until docs/review-architecture-tier.md's finding 3 was
+/// fixed, this test's own comment read "the undeclared `dual` crate must
+/// not also show up" and asserted `diagnostics.len() == 1` as proof of
+/// it -- which quietly promoted finding 3's silence (an undeclared
+/// workspace crate is invisible even to a wildcard `deny:`) to a pinned
+/// requirement. `diagnostics.len() == 1` is still correct -- `crate_dual`
+/// crossing an undeclared boundary is advisory information, not a
+/// violation, so it still earns no diagnostic of its own -- but now for
+/// the right reason, checked below: the coverage line's denominator names
+/// `crate_dual` as undeclared rather than staying silent about it.
 ///
 /// This is the fixture's own checked-in `ply.yaml` verbatim (no
 /// `write_yaml` override needed): the reproduction the task asked for,
@@ -104,7 +115,20 @@ fn a_binary_only_top_crates_dependency_is_a0401_and_exits_nonzero() {
     assert_eq!(
         diagnostics.len(),
         1,
-        "the undeclared `dual` crate must not also show up: {diagnostics:#?}"
+        "crate_dual crossing an undeclared boundary is disclosed via coverage, not diagnosed: \
+         {diagnostics:#?}"
+    );
+    let cov = json["coverage"]["checked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["tier"] == "architecture")
+        .unwrap();
+    let cov_detail = unwrapped(cov["detail"].as_str().unwrap());
+    assert!(
+        cov_detail.contains("archtierbin_dual"),
+        "finding 3: the undeclared crate must be named in the coverage denominator, not silent: \
+         {cov_detail}"
     );
     let d = &diagnostics[0];
     assert_eq!(d["code"], "A0401");
