@@ -225,7 +225,12 @@ Full write-up with verbatim red-first failures: `docs/phase-1a.md`.
 
 - [ ] `check`'s staleness tier — blocked on `ply.lock` (Phase 1c); its absence is currently
       declared in `coverage.not_checked`.
-- [ ] `check`'s architecture tier — M2, same.
+- [x] `check`'s architecture tier — crate level BUILT (`6fac707`), and it reads the real
+      dependency graph rather than guessing. Carries a known defect found by review: it is
+      blind to binary-only crates, so it reports a clean pass on this repo's own violation.
+      Fix in flight. The item level is CANCELLED as specified — see the resolvability
+      measurement (`fed5bf3`): one call site in five is resolvable from source, so that tier
+      would report on a minority of the program and its silence would read as approval.
 - [ ] JSON-pointer → (line, col) index for `E0201`/`E0204` (§5). The pointer ships; the line
       does not, and §5 now says a guessed line is worse than none.
 - [ ] Multi-file `ply.yaml` discovery and merge (§5) — and with it, `E0202` across files,
@@ -562,7 +567,10 @@ costs: `docs/post-004-fixes.md`. Four commits, one per item plus item 1's spec-a
       0.036s `Option<u32>`, 0.040s `Result<u32,u8>`, 0.036s `[u32; 4]`, 0.041s
       `[u32; 16]`, 0.028s alias. No unwind annotation for an array — its bound is a
       compile-time constant. Commit `593cf9a`.
-- [ ] **KNOWN GAP — D5's *first* branch is still not implemented.** A callee that passed
+- [x] **D5's first branch IS implemented** (`5671ab5`, then `dc1e7ed`/`4ca1c9e` closing six
+      defects an adversarial review found — one of them a false clean verdict). Superseded
+      text follows, kept because its concrete example is still the right one. **KNOWN GAP
+      (was) — D5's *first* branch is still not implemented.** A callee that passed
       its own Kani proof this run is inlined, not `stub_verified`, because callees-first
       scheduling (ADR-0003's "entire soundness guarantee", living unlinked in
       `tools/schedule`) is not promoted into the product. Concretely: 004's
@@ -1083,8 +1091,9 @@ wall clock, 72 tests (was 53), zero warnings on `cargo check --workspace --tests
 - [x] Engine-limit diagnostics specced (52222ab) — §8 now requires timeout/unsupported
       to name the cause and populate `fixes`, with the boundary written in: Ply
       proposes, never rewrites. IMPLEMENTATION still owed when the engines are wired.
-- [ ] `schema/ply.schema.json` is called normative in §5/D3 and does not exist —
-      build it or cut the claim.
+- [x] `schema/ply.schema.json` was called normative in §5/D3 while not existing. BUILT
+      (`c8528ce`) and load-bearing: the key vocabulary and required-field list are read from
+      it at runtime. Also recorded at the top of this file under Phase 1a.
 - [ ] Separate declared ceilings from earned verdicts in the type system (both are
       `Evidence` today; only convention keeps them apart).
 - [ ] `trusted` claims are unrestricted prose — no identity, date, commit, scope, or
