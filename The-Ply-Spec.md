@@ -37,7 +37,7 @@ Terms this spec uses without further explanation. Ply-specific terms are marked 
 | component | (Ply) A named architectural unit, declared in `ply.yaml` and anchored to a crate or module. |
 | capability (cap) | (Ply) A coarse effect a component is allowed: `net fs db time rand proc unsafe`. |
 | anchor | (Ply) The real code item (crate, module, or function) a claim attaches to. |
-| fingerprint | (Ply) The recorded hash of what a result depended on: item body, contract text, **the first-party bodies the check runs or descends into** (or all of the crate's source, when Ply cannot bound that set — §5.2a), the worked examples it asserts, the contracts assumed for the callees it crosses into, the checks that ran, engine name + version + flags, active features, target triple, compiler version, the resolved versions of packages outside the workspace, **and Ply's own version**. It is recomputed from today's inputs every time a recorded result is used or shown: it matches, the result is reused; it does not, the check runs again (D14, §5.2a). |
+| fingerprint | (Ply) The recorded hash of what a result depended on: item body, contract text, **the first-party bodies the check runs or descends into** (or all of the crate's source, when Ply cannot bound that set — §5.2a), the worked examples it asserts, the contracts assumed for the callees it crosses into, the same-crate callees it stands on rather than assumes and the bound each earned (D5's first branch, §5.5), the checks that ran, engine name + version + flags, active features, target triple, compiler version, the resolved versions of packages outside the workspace, **and Ply's own version**. It is recomputed from today's inputs every time a recorded result is used or shown: it matches, the result is reused; it does not, the check runs again (D14, §5.2a). |
 | verdict tree | (Ply) The aggregated per-node verdicts for the whole workspace, rendered by `cargo ply tree`. |
 | visual grammar | (Ply) The fixed one-to-one mapping between grammar constructs and visual forms (§7.1). A grammar feature that cannot be drawn is not admitted. |
 | watermark | (Ply) The per-function line where declaration stops and code begins: signature plus contract (§7.2). Below it, Ply verifies but never specifies; the un-specifiable imperative interior is the *floor*. |
@@ -141,7 +141,7 @@ proof search has gone off-spec — stop.
 | D11 | Extraction may be incomplete but never silently so: every call site the extractor cannot resolve is counted and reported (W0412 plus a per-component coverage metric in `check` output). | Visibility is what makes the advisory tier (D4) and any future `strict` opt-in meaningful. |
 | D12 | A function declares a **checks list**, e.g. `checks: [bounded(3), fuzz(256), mutate]`. `mutate` requires a `test` or `fuzz` entry in the same list (else `E0504`) and uses only those as its mutant-kill signal, scoped per function with cargo-mutants' `--re`. | One base check could not express "bounded plus a fuzz-backed mutation tier". Running Kani once per mutant costs minutes per mutant per function; proof-backed mutation needs an opt-in budget, which is out of scope. |
 | D13 | **Spike before build** (milestone M0): every engine-facing detail in this spec is provisional until a hands-on spike, with the pinned Kani version, records in ADR-0003 what actually works — attribute emission, in-crate harness modules, `stub_verified`, playback, input construction. The spec is then amended to match reality. | The engine surface is the highest-risk part of the design; paper decisions there are guesses. |
-| D14 | `ply.lock` (committed) records, per claim, a **fingerprint** beside the result that fingerprint earned: item token-stream hash, merged contract text, **the first-party bodies the check runs or descends into** — or, where a syntactic walk cannot bound that set, the whole of the crate's source (§5.2a) — the worked examples a `test` check asserts, the contracts assumed for the callees it crosses into, the checks that ran, engine name + version + flags, active features, target triple, compiler version, the resolved versions of packages outside the workspace, **and Ply's own version**. `verify` recomputes the fingerprint from today's inputs *before* it uses or shows a recorded result — matches, the result is reused and the run says so on the node; differs, the check runs again and the record is rewritten. **There is no `stale` state and nothing for a human to re-bless**: the hash is the confirmation, and it is checked at every single use. Only a result that earned evidence is recorded, so no failure, timeout or absence is ever carried forward. | Committing the record is what stops CI and the next colleague re-proving what is already proven, and lets a reviewer see in a diff that a claim was checked. Re-hashing at every use is what makes storing verdicts safe at all: a stored verdict a human re-blesses can drift from the code between blessings, and every warning that accumulates faster than it is cleared ends up meaning nothing. **Ply's own version is in the hash because a fix to Ply changes what a result means.** The four defects fixed on 2026-08-25 — a harness that failed to compile earning a confident pass, an ordinary `use` import letting an unvouched-for body into a proof, an unsatisfiable declared promise passing vacuously, a claim inside a nested component skipped in silence — would every one of them have hash-matched perfectly against a record written the day before, because the source had not changed: Ply had. |
+| D14 | `ply.lock` (committed) records, per claim, a **fingerprint** beside the result that fingerprint earned: item token-stream hash, merged contract text, **the first-party bodies the check runs or descends into** — or, where a syntactic walk cannot bound that set, the whole of the crate's source (§5.2a) — the worked examples a `test` check asserts, the contracts assumed for the callees it crosses into, the same-crate callees it stands on rather than assumes and the bound each earned (D5's first branch, §5.5), the checks that ran, engine name + version + flags, active features, target triple, compiler version, the resolved versions of packages outside the workspace, **and Ply's own version**. `verify` recomputes the fingerprint from today's inputs *before* it uses or shows a recorded result — matches, the result is reused and the run says so on the node; differs, the check runs again and the record is rewritten. **There is no `stale` state and nothing for a human to re-bless**: the hash is the confirmation, and it is checked at every single use. Only a result that earned evidence is recorded, so no failure, timeout or absence is ever carried forward. | Committing the record is what stops CI and the next colleague re-proving what is already proven, and lets a reviewer see in a diff that a claim was checked. Re-hashing at every use is what makes storing verdicts safe at all: a stored verdict a human re-blesses can drift from the code between blessings, and every warning that accumulates faster than it is cleared ends up meaning nothing. **Ply's own version is in the hash because a fix to Ply changes what a result means.** The four defects fixed on 2026-08-25 — a harness that failed to compile earning a confident pass, an ordinary `use` import letting an unvouched-for body into a proof, an unsatisfiable declared promise passing vacuously, a claim inside a nested component skipped in silence — would every one of them have hash-matched perfectly against a record written the day before, because the source had not changed: Ply had. |
 
 ## 3. Toolchain
 
@@ -475,21 +475,27 @@ fingerprint of what it was checked against" into a diff a reviewer reads.
    path and the contract text assumed for it (§5.5's second branch). A caller's proof is
    *about* those promises, so a promise edited in `ply.yaml` re-runs every caller resting
    on it;
-6. the checks that were run, as written, plus the `fuzz` seed that drew the cases
+6. **the same-crate callees a claim stands on rather than assumes, and the `bounded(k)`
+   each earned this run** (D5's first branch, §5.5, added 2026-08-26). Composing a
+   caller's bound against a callee's own depth is depending on that number: before this
+   input existed, editing only a callee's declared `checks:` — its bound moving with no
+   source touched anywhere — re-earned the callee's own record correctly while the
+   caller's record, and its now-stale composed bound, went untouched;
+7. the checks that were run, as written, plus the `fuzz` seed that drew the cases
    (§5.4c) — a `--seed` that replays a different run must not match a record written by
    the derived one;
-7. the engine behind each of those checks: name, version, and the flags that shape the
+8. the engine behind each of those checks: name, version, and the flags that shape the
    obligation it discharged;
-8. the build target triple, the compiler that builds for it (D9's "an old success must
+9. the build target triple, the compiler that builds for it (D9's "an old success must
    not bless ... a different toolchain"), and the crate's declared feature table — Ply
    passes no `--features`, so the set that is active is the default set that table
    defines;
-9. the resolved versions of every package outside this workspace that the crate depends
-   on, as the lockfile pins them. A `bounded` proof descends into registry code and every
-   `fuzz`/`test` run executes it, so `cargo update` changes what was checked. Where there
-   is no lockfile, Ply records that fact instead of a version list, and a result recorded
-   with one never matches a run without one;
-10. **Ply's own version.**
+10. the resolved versions of every package outside this workspace that the crate depends
+    on, as the lockfile pins them. A `bounded` proof descends into registry code and every
+    `fuzz`/`test` run executes it, so `cargo update` changes what was checked. Where there
+    is no lockfile, Ply records that fact instead of a version list, and a result recorded
+    with one never matches a run without one;
+11. **Ply's own version.**
 
 **Input 3 is the one that has to be stated carefully, because it cannot always be
 narrow.** A check does not run the claimed function alone: it runs whatever that function
@@ -499,7 +505,7 @@ mentions of a function by name (`map(helper)` never writes `helper(..)` and stil
 body) *and* the functions named inside the claim's own contract expression, which run on
 every generated case — transitively, stopping at a callee replaced by a declared promise
 (whose promise is hashed instead, input 5) and at anything outside the workspace (covered
-by inputs 8 and 9). That walk is syntactic, and a syntactic walk cannot follow a method
+by inputs 9 and 10). That walk is syntactic, and a syntactic walk cannot follow a method
 call, an operator that some `impl` defines, a macro expansion, or a trait method reached
 under another name. So the walk is trusted **only** under conditions that make all of
 those impossible: every item in first-party source is a function, a module, an import, a
@@ -582,7 +588,14 @@ fingerprint guards a stored result against its inputs *moving*, not against some
 editing `ply.lock`. Nothing short of signing could, and signing is out of scope — but the
 honest version of that mistake is caught: a stored verdict must be one the checks
 recorded beside it could actually have earned (`fuzz` can never yield `proved`), and one
-that could not is refused with `W0516`, said out loud, and the claim checked again.
+that could not is refused with `W0516`, said out loud, and the claim checked again. One
+exception, added with D5's first branch (§5.5, 2026-08-26): a `bounded(k)` check earns
+not only `bounded(k)` but any `bounded(j)` with `j <= k` -- composing against a callee's
+own shallower proof is a real, declared possibility now, not tampering, and `W0516`
+learning this the hard way (a caller standing on a proved callee was refused as
+"impossible" and silently re-verified from scratch on every single subsequent run, until
+this was found and fixed) is why this sentence names the exception rather than leaving it
+implicit.
 
 **A result that could not be carried forward says which input moved.** When a claim has a
 recorded result whose fingerprint no longer matches, `verify` names it and names the
@@ -980,6 +993,22 @@ being no contract to key on:
   still names every same-crate proof it stood on and the bound each earned (`W0517`,
   `info` severity — nothing here is wrong or owed, only worth recording) so a reader
   never mistakes "not conditional" for "proved in isolation".
+  **`f`'s own record depends on what it composed against, not only on `g`'s source.**
+  §5.2a's fingerprint gained a twelfth input for exactly this branch: the same-crate
+  callees a claim stands on, each with the bound it earned (`verified_bounds`,
+  2026-08-26, found by adversarial review of this branch before it landed and *again*
+  after, independently, on a second reviewer's own fixture — editing only `g`'s declared
+  `checks:` with no source touched anywhere left `f`'s stored, now-stale deeper bound
+  untouched the first time this was tried). A second, quieter defect went with it and
+  took a separate fix: the record's own "is this a verdict the checks could earn"
+  integrity check (`W0516`) predates this branch and assumed a `bounded(k)` check could
+  only ever produce `bounded(k)` verbatim, so a caller's *genuinely* composed
+  `bounded(j)` for `j < k` looked exactly like tampering and was refused, silently
+  re-verified from scratch, on every run after the one that earned it — `f` paid full
+  engine cost forever, not once. `bounded(k)` now earns any `bounded(j)` with `j <= k`
+  (§5.2a states the exception); a reused `g` supplies its bound the same way a freshly
+  proved one does, since either way it is `g`'s own recorded, re-hashed verdict that
+  answers the question.
 - Anything else *that still has a declared contract* — `g` merely fuzzed or tested, `g` in
   another crate, `f` and `g` in a cycle, or `g` carrying no verification at all but a
   contract declared for it in `ply.yaml` (§5.4's external-spec route) → verify `f`

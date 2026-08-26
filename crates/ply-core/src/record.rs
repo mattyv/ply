@@ -450,13 +450,16 @@ impl Record {
 fn earnable_verdicts(checks: &[String]) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
     for check in checks {
-        if check.starts_with("bounded(") {
-            out.insert(check.clone());
-        } else if let Some(rest) = check.strip_prefix("fuzz(") {
+        if let Some(rest) = check.strip_prefix("fuzz(") {
             out.insert(format!("fuzzed({rest}"));
         } else if check == "test" {
             out.insert("tested".to_string());
         }
+        // `bounded(k)` is handled separately in `verdict_is_earnable`, not
+        // here: it is the one shape a declared check can earn a *weaker*
+        // verdict than its own number under (D5's first branch composing
+        // against a callee's shallower proof, §5.5), so exact-string
+        // membership is the wrong test for it.
     }
     out
 }
@@ -465,6 +468,11 @@ fn earnable_verdicts(checks: &[String]) -> std::collections::BTreeSet<String> {
 /// planted bug. It is the only decoration a stored verdict may carry.
 const SPEC_STRONG: &str = "\u{00b7}spec-strong";
 
+/// The `k` out of a `bounded(k)` string, or `None` for anything else.
+fn bounded_k(s: &str) -> Option<u32> {
+    s.strip_prefix("bounded(")?.strip_suffix(')')?.parse().ok()
+}
+
 pub fn verdict_is_earnable(verdict: &str, checks: &[String]) -> bool {
     let (base, decorated) = match verdict.strip_suffix(SPEC_STRONG) {
         Some(base) => (base, true),
@@ -472,6 +480,21 @@ pub fn verdict_is_earnable(verdict: &str, checks: &[String]) -> bool {
     };
     if decorated && !checks.iter().any(|c| c == "mutate") {
         return false;
+    }
+    // A `bounded(k)` check is a *declared upper bound*, not a fixed exact
+    // one -- D5's first branch (§5.5) can compose a claim's own proof down
+    // to a shallower bound than `k`, when the callee it stands on was only
+    // proved that far this run. So `bounded(k)` earns any `bounded(j)` with
+    // `j <= k`, never a `j` deeper than what was declared. Found by
+    // adversarial review 2026-08-26: before this, a claim declaring
+    // `bounded(5)` that composed to a genuinely-earned `bounded(2)` was
+    // refused as `W0516` "impossible" on every single subsequent run --
+    // this integrity check, written before D5's first branch existed,
+    // still assumed a `bounded(k)` check could only ever produce `bounded(k)`
+    // verbatim, so a real composed result looked identical to a hand-edited
+    // one and was silently re-earned from scratch forever.
+    if let Some(j) = bounded_k(base) {
+        return checks.iter().any(|c| bounded_k(c).is_some_and(|k| j <= k));
     }
     earnable_verdicts(checks).contains(base)
 }
@@ -860,6 +883,38 @@ mod tests {
         assert!(
             !verdict_is_earnable("fuzzed(64)\u{00b7}spec-strong", &fuzz),
             "and only when `mutate` actually ran"
+        );
+    }
+
+    /// The one deliberate exception to "a verdict must match a check
+    /// exactly": D5's first branch (§5.5) can compose a `bounded(k)`
+    /// claim's proof down to a shallower bound than `k`, when the callee it
+    /// stands on was only proved that far this run -- so a claim declaring
+    /// `bounded(5)` earning `bounded(2)` is not tampering, it is exactly
+    /// what standing on a `g` proved only to depth 2 means. Before this was
+    /// recognised, `W0516` refused that genuine result as "impossible" on
+    /// every single subsequent run (adversarial review, 2026-08-26) --
+    /// caught by `stubverifiedstalebound_fixture`, not by anything already
+    /// in this file.
+    #[test]
+    fn a_bounded_check_earns_its_own_number_or_anything_shallower_never_deeper() {
+        let bounded5 = vec!["bounded(5)".to_string()];
+        assert!(
+            verdict_is_earnable("bounded(5)", &bounded5),
+            "the ordinary case: a claim's own declared bound, uncomposed"
+        );
+        assert!(
+            verdict_is_earnable("bounded(2)", &bounded5),
+            "D5's first branch composing against a callee proved only to depth 2"
+        );
+        assert!(
+            verdict_is_earnable("bounded(1)", &bounded5),
+            "any shallower bound, not only the one exercised so far"
+        );
+        assert!(
+            !verdict_is_earnable("bounded(6)", &bounded5),
+            "never a bound deeper than what was declared -- that really would be a \
+             hand-edited or otherwise impossible record"
         );
     }
 

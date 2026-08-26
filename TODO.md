@@ -58,10 +58,33 @@ since no separate doc was asked for this session.
       the whole mechanism's soundness resting entirely on Ply's own scheduler, never on
       Kani (`tests/spike/FINDINGS.md` item 4, restated where a reader of this rule would
       need it).
+- [x] **A third defect, found independently by re-verifying this commit against a
+      fresh fixture rather than trusting the 313 green tests that had just landed**:
+      standing on a proved callee made a caller *permanently* unreusable, not merely
+      briefly stale. The `verified_bounds` fix above closed the stale-number gap, but
+      `record.rs`'s own "is this verdict one the declared checks could earn" integrity
+      check (`W0516`) predates D5's first branch and still assumed a `bounded(k)` check
+      could only ever produce `bounded(k)` verbatim -- so a claim declaring `bounded(5)`
+      that genuinely composed down to `bounded(2)` looked identical to a hand-edited
+      record on every run after the one that earned it, and was silently re-verified
+      from scratch, forever, paying full engine cost each time. Confirmed by direct
+      instrumentation before touching anything (the lookup and stored fingerprints for
+      the caller were byte-identical, including the new "callees it stands on" group --
+      ruling out the first, more obvious suspicion before fixing anything): the actual
+      divergence was `W0516` itself, refusing an exact-fingerprint match because the
+      composed verdict's number differed from the check's own. Fixed by making
+      `bounded(k)` earn any `bounded(j)` with `j <= k`, never only `k` itself, and never
+      a `j` deeper than declared -- the one place a stored verdict is allowed to differ
+      from its own check's number, stated as exactly that in `verdict_is_earnable`.
+      Pinned permanently: `stubverifiedwarmreuse` test (reusing the plain `stubverified`
+      fixture, two runs, nothing edited between them) -- red-first against the isolated
+      defect, green with the fix restored, run three consecutive warm runs by hand
+      first to confirm the fix holds indefinitely and not just once.
 - [x] Fixtures: `stubverified`, `stubverifiedminbound`, `stubverifiedcycle`,
       `stubverifiedfuzzedcallee`, `stubverifiedstalebound` (`tests/fixtures/`), each
-      with its own e2e test under `tests/e2e/tests/`. `cargo test --workspace`: 313
-      passed, 0 failed, fmt and clippy clean.
+      with its own e2e test under `tests/e2e/tests/` (`stubverifiedwarmreuse`'s test
+      reuses the `stubverified` fixture rather than needing its own). `cargo test
+      --workspace`: 315 passed, 0 failed, fmt and clippy clean.
 - [ ] KNOWN GAP, deliberate: a claim declaring **both** `bounded` and `fuzz`/`test` in
       the same `checks:` list is bounded-eligible (needs the ordered pass) but its
       fuzz/test portion needs the harness crate built in the *unchanged*, earlier pass
