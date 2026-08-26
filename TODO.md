@@ -228,7 +228,13 @@ Full write-up with verbatim red-first failures: `docs/phase-1a.md`.
 - [x] `check`'s architecture tier — crate level BUILT (`6fac707`), and it reads the real
       dependency graph rather than guessing. Carries a known defect found by review: it is
       blind to binary-only crates, so it reports a clean pass on this repo's own violation.
-      Fix in flight. The item level is CANCELLED as specified — see the resolvability
+      FIXED (`a4c8675`), verified against this repo in both directions, and the repo now
+      declares and checks its own architecture (`ply.yaml`, committed). A second review
+      then found a blocker that outranks it: a run in which the architecture check could
+      not happen at all — a broken manifest, no cargo, or a dependency cycle — prints "No
+      problems found" and exits 0, so CI goes green on a run that checked nothing. That is
+      the eighth instance of absence-of-evidence reading as success. Reproduced
+      independently; fix dispatched. The item level is CANCELLED as specified — see the resolvability
       measurement (`fed5bf3`): one call site in five is resolvable from source, so that tier
       would report on a minority of the program and its silence would read as approval.
 - [ ] JSON-pointer → (line, col) index for `E0201`/`E0204` (§5). The pointer ships; the line
