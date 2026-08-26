@@ -1,0 +1,9 @@
+[package]
+name = "ply-fixture-archtierbin-lib"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "archtierbin_lib"
+path = "src/lib.rs"

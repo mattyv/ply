@@ -1,0 +1,13 @@
+[workspace]
+# §5.3's crate tier is about real `cargo metadata` dependencies *between*
+# crates, so this needs to be its own small multi-crate workspace, the same
+# reason `tests/fixtures/archtier` is one. What this workspace adds that
+# `archtier` cannot exercise: `crate_top` has no `[lib]` at all -- only a
+# `[[bin]]` -- which is exactly the shape real applications put at the top
+# of a dependency stack (this repo's own `ply-cli` is one), and exactly the
+# shape `lib_target_name` used to silently drop every dependency of.
+# `crate_dual` carries both a `[lib]` and a `[[bin]]`, so a test can pin
+# that a package is identified by its lib name even when a bin name also
+# exists to be confused with it.
+members = ["crate_top", "crate_lib", "crate_dual"]
+resolver = "2"

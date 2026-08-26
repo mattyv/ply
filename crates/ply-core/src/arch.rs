@@ -26,13 +26,17 @@ use serde::Deserialize;
 use crate::model::{Component, Document, EdgeKind, parse_deny, parse_edge};
 
 /// One real dependency `cargo metadata` resolved: the crate `from` links
-/// directly against the crate `to`. Both names are the dependency's own
-/// lib-target identifier — the same spelling a `ply.yaml` anchor uses
+/// directly against the crate `to`. Both names are each crate's identity
+/// per [`crate_identity_name`] — the same spelling a `ply.yaml` anchor uses:
+/// a package with a lib target uses that target's own name
 /// (`ply_fixture_passing`, never the hyphenated package name
-/// `ply-fixture-passing`) — and this is a *normal* (runtime) dependency
-/// only: a `dev-dependencies` or `build-dependencies` entry is test/build
-/// tooling, not code that runs in the shipped crate, so it is not part of
-/// the graph this tier reasons about.
+/// `ply-fixture-passing`); a package with no lib target at all (a pure
+/// `[[bin]]` crate) uses its package name normalised the same way
+/// (`ply-cli` -> `ply_cli`), never its binary target's name (`cargo-ply`).
+/// This is a *normal* (runtime) dependency only: a `dev-dependencies` or
+/// `build-dependencies` entry is test/build tooling, not code that runs in
+/// the shipped crate, so it is not part of the graph this tier reasons
+/// about.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrateDependency {
     pub from: String,
@@ -61,6 +65,12 @@ struct Metadata {
 #[derive(Deserialize)]
 struct MetaPackage {
     id: String,
+    /// The package name Cargo reports (hyphenated form, e.g. `ply-cli`) --
+    /// used only as a fallback identity for a package with no lib target,
+    /// via [`normalized_package_name`]. A package that also has a lib
+    /// target is identified by that instead (`lib_target_name` wins).
+    #[serde(default)]
+    name: String,
     #[serde(default)]
     targets: Vec<MetaTarget>,
 }
@@ -97,8 +107,12 @@ struct MetaDepKind {
 
 /// The lib-target identifier `cargo metadata` reports for a package — the
 /// name a `ply.yaml` anchor would use to mean this crate — or `None` for a
-/// package that carries no library target at all (a pure `[[bin]]` crate),
-/// which an anchor can never name and so can never own.
+/// package that carries no library target at all (a pure `[[bin]]` crate).
+/// `None` here does *not* mean the package has no identity: a bin-only
+/// package is still a crate a component can own (this repo's own
+/// `ply-cli` is one), it is just named by [`normalized_package_name`]
+/// instead — see [`crate_identity_name`], which every caller in this
+/// module uses rather than calling this function directly.
 fn lib_target_name(pkg: &MetaPackage) -> Option<&str> {
     pkg.targets
         .iter()
@@ -113,12 +127,39 @@ fn lib_target_name(pkg: &MetaPackage) -> Option<&str> {
         .map(|t| t.name.as_str())
 }
 
+/// Cargo's own hyphen-to-underscore rule for turning a package name into an
+/// identifier (`ply-cli` -> `ply_cli`) -- the same normalisation Cargo
+/// applies when it derives a default lib/bin identifier from `[package]
+/// name`, so this is not a Ply-invented convention.
+fn normalized_package_name(name: &str) -> String {
+    name.replace('-', "_")
+}
+
+/// The identifier this tier uses to mean one crate — the name a `ply.yaml`
+/// anchor must use to own it. A package with a library target is named by
+/// that (the importable name, which can differ from the package name, as
+/// `tests/fixtures/archtier` deliberately does); a package with no library
+/// target at all — a pure `[[bin]]` crate — is still a crate a component
+/// can own, identified by its own package name, normalised the way Cargo
+/// normalises one. A binary target's own name (`cargo-ply`) is never used:
+/// it names an *output artifact*, not the crate, and a package may carry
+/// several.
+fn crate_identity_name(pkg: &MetaPackage) -> String {
+    match lib_target_name(pkg) {
+        Some(lib_name) => lib_name.to_string(),
+        None => normalized_package_name(&pkg.name),
+    }
+}
+
 /// Runs `cargo metadata --format-version=1` in `crate_dir` and returns
-/// every *normal* (runtime) dependency edge between two crates that each
-/// carry a library target — the real, resolved graph, not merely what a
-/// `Cargo.toml` declares (a `resolve` walk reflects which optional
-/// dependencies actually got activated; a plain read of `dependencies:`
-/// would not).
+/// every *normal* (runtime) dependency edge between two crates each
+/// identified by [`crate_identity_name`] — the real, resolved graph, not
+/// merely what a `Cargo.toml` declares (a `resolve` walk reflects which
+/// optional dependencies actually got activated; a plain read of
+/// `dependencies:` would not). The actual classification (identity
+/// resolution, normal-dependency filtering) is [`graph_from_metadata`], a
+/// pure function kept separate so a test can drive it directly against a
+/// crafted `Metadata` value with no `cargo metadata` process in the loop.
 pub fn crate_dependency_graph(crate_dir: &Path) -> Result<Vec<CrateDependency>, MetadataError> {
     let output = Command::new("cargo")
         .arg("metadata")
@@ -144,18 +185,24 @@ pub fn crate_dependency_graph(crate_dir: &Path) -> Result<Vec<CrateDependency>, 
             crate_dir.display()
         ))
     })?;
+    Ok(graph_from_metadata(&meta))
+}
 
-    let mut lib_name_by_id: HashMap<&str, &str> = HashMap::new();
+/// The pure half of [`crate_dependency_graph`]: every real dependency
+/// edge, both ends named by [`crate_identity_name`] -- so a bin-only
+/// package (no `[lib]` at all) is still identified, by its own normalised
+/// package name, rather than silently having no entry in the id-to-name
+/// map and so dropping every dependency that originates from it.
+fn graph_from_metadata(meta: &Metadata) -> Vec<CrateDependency> {
+    let mut name_by_id: HashMap<&str, String> = HashMap::new();
     for pkg in &meta.packages {
-        if let Some(name) = lib_target_name(pkg) {
-            lib_name_by_id.insert(pkg.id.as_str(), name);
-        }
+        name_by_id.insert(pkg.id.as_str(), crate_identity_name(pkg));
     }
 
     let mut edges = Vec::new();
     if let Some(resolve) = &meta.resolve {
         for node in &resolve.nodes {
-            let Some(&from) = lib_name_by_id.get(node.id.as_str()) else {
+            let Some(from) = name_by_id.get(node.id.as_str()) else {
                 continue;
             };
             for dep in &node.deps {
@@ -164,17 +211,17 @@ pub fn crate_dependency_graph(crate_dir: &Path) -> Result<Vec<CrateDependency>, 
                 if !is_normal {
                     continue;
                 }
-                let Some(&to) = lib_name_by_id.get(dep.pkg.as_str()) else {
+                let Some(to) = name_by_id.get(dep.pkg.as_str()) else {
                     continue;
                 };
                 edges.push(CrateDependency {
-                    from: from.to_string(),
-                    to: to.to_string(),
+                    from: from.clone(),
+                    to: to.clone(),
                 });
             }
         }
     }
-    Ok(edges)
+    edges
 }
 
 /// Resolves crate names (an anchor's segment before its first `::`, or the
@@ -441,6 +488,95 @@ mod tests {
         parse_document(yaml).unwrap()
     }
 
+    fn meta_target(kind: &str, name: &str) -> MetaTarget {
+        MetaTarget {
+            kind: vec![kind.to_string()],
+            name: name.to_string(),
+        }
+    }
+
+    /// A package with both a lib and a bin target is identified by its lib
+    /// name, never its bin name -- `crate_identity_name` (and
+    /// `lib_target_name` underneath it) must not pick whichever target
+    /// happens to be found first, or the last one, but always the lib.
+    #[test]
+    fn crate_identity_prefers_the_lib_target_over_a_bin_target() {
+        let pkg = MetaPackage {
+            id: "id1".into(),
+            name: "ply-fixture-dual".into(),
+            targets: vec![
+                meta_target("bin", "dual-cli"),
+                meta_target("lib", "dual_lib"),
+            ],
+        };
+        assert_eq!(crate_identity_name(&pkg), "dual_lib");
+    }
+
+    /// A package with no lib target at all -- a pure `[[bin]]` crate, the
+    /// exact shape `ply-cli` itself has (`cargo-ply`, `['bin']`) -- is
+    /// still identified: by its own package name, normalised the way
+    /// Cargo normalises one (hyphens to underscores), never by its binary
+    /// target's own name. Before the fix this had no identity at all, so
+    /// every dependency originating from it was silently dropped from the
+    /// graph.
+    #[test]
+    fn crate_identity_falls_back_to_the_normalized_package_name_for_a_bin_only_crate() {
+        let pkg = MetaPackage {
+            id: "id2".into(),
+            name: "ply-cli".into(),
+            targets: vec![meta_target("bin", "cargo-ply")],
+        };
+        assert_eq!(crate_identity_name(&pkg), "ply_cli");
+    }
+
+    /// The regression this whole defect was: `graph_from_metadata` (the
+    /// pure half of `crate_dependency_graph`) must include a real
+    /// dependency whose *source* crate has no lib target at all -- before
+    /// the fix, such a crate had no entry in the id-to-name map, so every
+    /// edge originating from it was silently dropped and the graph came
+    /// back looking clean.
+    #[test]
+    fn graph_from_metadata_includes_a_dependency_from_a_bin_only_crate() {
+        let meta = Metadata {
+            packages: vec![
+                MetaPackage {
+                    id: "top".into(),
+                    name: "ply-cli".into(),
+                    targets: vec![meta_target("bin", "cargo-ply")],
+                },
+                MetaPackage {
+                    id: "core".into(),
+                    name: "ply-core".into(),
+                    targets: vec![meta_target("lib", "ply_core")],
+                },
+            ],
+            resolve: Some(MetaResolve {
+                nodes: vec![
+                    MetaNode {
+                        id: "top".into(),
+                        deps: vec![MetaDep {
+                            pkg: "core".into(),
+                            dep_kinds: vec![],
+                        }],
+                    },
+                    MetaNode {
+                        id: "core".into(),
+                        deps: vec![],
+                    },
+                ],
+            }),
+        };
+        let graph = graph_from_metadata(&meta);
+        assert_eq!(
+            graph,
+            vec![CrateDependency {
+                from: "ply_cli".into(),
+                to: "ply_core".into(),
+            }],
+            "the bin-only crate's own dependency must not be dropped: {graph:?}"
+        );
+    }
+
     /// The invariant this tier exists to guarantee (§5.3/D4: "default-deny
     /// between declared components"): walking the *real* classification
     /// output, every real dependency between two crates owned by different
@@ -450,6 +586,21 @@ mod tests {
     /// silently falling through unclassified, the way
     /// `every_painted_element_resolves_a_style_rule` catches a construct
     /// the renderer forgot to style.
+    ///
+    /// Until 2026-08-26 this test called `index.permitted(...)` for its own
+    /// "expected" side and then compared that to whether `check_architecture`
+    /// (which is itself implemented in terms of `index.permitted`) had
+    /// flagged the pair — both sides were the same logic wearing two hats,
+    /// so a change that broke containment or edge resolution would break
+    /// both sides identically and the test would stay green. §9 as amended
+    /// calls that "a test that cannot fail": it went unnoticed exactly this
+    /// way when containment was disabled in review. The fix is below: the
+    /// expected side is now hand-written from the document's literal
+    /// shape — the crate-to-component mapping and the containment/edge
+    /// facts are spelled out as data in this test, not fetched from
+    /// `ComponentIndex` at all — so a real regression in either mapping or
+    /// containment/edge resolution changes only the code side, and the two
+    /// sides can disagree.
     #[test]
     fn every_cross_component_dependency_is_either_permitted_or_flagged_never_both() {
         let document = doc(r#"
@@ -484,19 +635,42 @@ edges:
         }
 
         let (findings, _tally) = check_architecture(&document, &graph);
-        let index = ComponentIndex::build(&document);
+
+        // The oracle: hand-derived from the YAML literal above, not from
+        // any production type. `crate_x` owns no declared component at
+        // all, so it is simply absent from this map -- exactly mirroring
+        // what §5.3 says an undeclared crate is: out of scope, not a
+        // violation and not a permission.
+        fn expected_component_for_crate(crate_name: &str) -> Option<&'static str> {
+            match crate_name {
+                "crate_a" => Some("a"),
+                "crate_b" => Some("b"),
+                "crate_c" => Some("a.c"),
+                "crate_d" => Some("d"),
+                _ => None,
+            }
+        }
+        // The document declares exactly one nesting line (`a` contains
+        // `a.c`) and exactly one edge (`b -> a`) -- written out here as
+        // plain pairs, independent of `ComponentIndex::is_strict_ancestor`
+        // or `ComponentIndex::permitted`.
+        fn expected_permitted(from_comp: &str, to_comp: &str) -> bool {
+            let is_containment = matches!((from_comp, to_comp), ("a", "a.c") | ("a.c", "a"));
+            let is_declared_edge = (from_comp, to_comp) == ("b", "a");
+            is_containment || is_declared_edge
+        }
 
         for dep in &graph {
             let (Some(from_comp), Some(to_comp)) = (
-                index.crate_owner.get(&dep.from),
-                index.crate_owner.get(&dep.to),
+                expected_component_for_crate(&dep.from),
+                expected_component_for_crate(&dep.to),
             ) else {
                 continue; // crate_x: no declared component, nothing to classify
             };
             if from_comp == to_comp {
                 continue;
             }
-            let is_permitted = index.permitted(&document, from_comp, to_comp);
+            let is_permitted = expected_permitted(from_comp, to_comp);
             let is_flagged = findings
                 .iter()
                 .any(|f| f.code == "A0401" && f.node_id == format!("{from_comp}->{to_comp}"));

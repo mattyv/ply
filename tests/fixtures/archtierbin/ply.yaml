@@ -1,0 +1,7 @@
+ply: 1
+
+components:
+  top:
+    anchor: ply_fixture_archtierbin_top
+  lib:
+    anchor: archtierbin_lib

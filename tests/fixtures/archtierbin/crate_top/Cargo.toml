@@ -1,0 +1,18 @@
+[package]
+name = "ply-fixture-archtierbin-top"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Bin-only on purpose -- no `[lib]` section. `cargo metadata` reports this
+# package's only target as `('archtierbin-top-cli', ['bin'])`, the same
+# shape `ply-cli` really has (`cargo-ply`, `['bin']`). The bin name is
+# deliberately unlike the package name and unlike the `ply.yaml` anchor
+# below, so nothing here can be made to pass by coincidence.
+[[bin]]
+name = "archtierbin-top-cli"
+path = "src/main.rs"
+
+[dependencies]
+archtierbin_lib = { package = "ply-fixture-archtierbin-lib", path = "../crate_lib" }
+archtierbin_dual = { package = "ply-fixture-archtierbin-dual", path = "../crate_dual" }
