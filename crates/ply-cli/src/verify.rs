@@ -2393,18 +2393,35 @@ fn run_fn_checks(
         if !cf.is_fuzz_supported() {
             diagnostics.push(unsupported_shape_diag(node_id, fn_name, cf));
             labels.push("unsupported".into());
-        } else if cf.ensures.is_none() && wants_fuzz.is_some() {
+        } else if cf.ensures.is_none() && (wants_fuzz.is_some() || (wants_test && !has_examples)) {
+            // Widened 2026-08-27 (docs/review-strings-receivers.md finding 1,
+            // "one step milder"): a `test`-only claim with no `#[ply::ensures]`
+            // and no `examples:` entries has nothing at all for `test` to
+            // assert -- `generate_direct_contract_cases` silently produces no
+            // body for exactly this shape (no closure to check against). This
+            // used to fall through, ungated, into harness generation, which
+            // wrote nothing, matched no test, and reported `tested`/held with
+            // zero cases run. Naming it here, before codegen, gives a
+            // specific "no contract to check" diagnostic instead of a bare
+            // "ran zero cases" tool error further downstream.
+            let check_label = if let Some(n) = wants_fuzz {
+                format!("fuzz({n})")
+            } else {
+                "test".into()
+            };
             diagnostics.push(Diagnostic {
                 code: "V0505".into(),
                 severity: "warning".into(),
                 phase: "verify".into(),
                 engine: "proptest".into(),
-                check: format!("fuzz({})", wants_fuzz.unwrap()),
+                check: check_label,
                 node_id: node_id.into(),
                 title: format!(
-                    "`{fn_name}` declares `fuzz` but has no `#[ply::ensures]` -- there is no \
-                     postcondition to check against, so nothing was run. Add an `#[ply::ensures]` \
-                     clause naming what `{fn_name}` promises about its result."
+                    "`{fn_name}` declares `{}` but has no `#[ply::ensures]` and no `examples:` entries -- \
+                     there is nothing to check its result against, so nothing was run. Add an \
+                     `#[ply::ensures]` clause naming what `{fn_name}` promises about its result, or add \
+                     `examples:` entries naming concrete calls to assert.",
+                    if wants_fuzz.is_some() { "fuzz" } else { "test" }
                 ),
                 pointer: None,
                 primary_span: None,
@@ -2418,10 +2435,17 @@ fn run_fn_checks(
                         edits: vec![],
                     },
                     Fix {
-                        title: format!(
-                            "or drop `fuzz` from `{fn_name}`'s checks and declare `test` with `examples:` \
-                             instead, which needs no postcondition"
-                        ),
+                        title: if wants_fuzz.is_some() {
+                            format!(
+                                "or drop `fuzz` from `{fn_name}`'s checks and declare `test` with \
+                                 `examples:` instead, which needs no postcondition"
+                            )
+                        } else {
+                            format!(
+                                "or add `examples:` entries for `{fn_name}` in ply.yaml -- concrete \
+                                 calls asserted directly, which need no `#[ply::ensures]`"
+                            )
+                        },
                         edits: vec![],
                     },
                 ],
@@ -2463,6 +2487,7 @@ fn run_fn_checks(
                         &info.package,
                         Some(cause.as_str()),
                         has_examples,
+                        cf.receiver.is_some(),
                     ));
                     labels.push("tool_error".into());
                 }
@@ -2475,6 +2500,7 @@ fn run_fn_checks(
                         &info.package,
                         Some(cause.as_str()),
                         has_examples,
+                        cf.receiver.is_some(),
                     ));
                     labels.push("tool_error".into());
                 }
@@ -2536,6 +2562,17 @@ fn run_fn_checks(
                     // declared.
                     if cf.has_float_shape() {
                         diagnostics.push(float_sampling_diag(
+                            node_id,
+                            fn_name,
+                            &format!("fuzz({n})"),
+                        ));
+                    }
+                    // The string exclusion's own disclosure, wired in now
+                    // (also-fix, task 2026-08-27): gated identically to the
+                    // float one just above -- a run that actually sampled a
+                    // string, never merely the check being declared.
+                    if cf.has_string_shape() {
+                        diagnostics.push(string_sampling_diag(
                             node_id,
                             fn_name,
                             &format!("fuzz({n})"),
@@ -2982,6 +3019,51 @@ fn bounded_refused_sample_only_diag(
     cf: &ContractFn,
     check_label: &str,
 ) -> Diagnostic {
+    // The receiver case is a *different reason* to refuse, and must say so
+    // (adversarial review, 2026-08-27, "a proof refused on a method blames
+    // a type that is not the problem"): `ContractFn::is_bounded_supported`
+    // refuses every receiver method outright, before it even looks at
+    // params or the return type (see that method's own doc: the
+    // sequence-of-operations approach was only ever scoped to the sampling
+    // tier, and `bounded` on a receiver is an unmeasured Kani harness, not
+    // a type Kani cannot reason about). The code below this branch assumes
+    // the *opposite* -- that anything reaching here was refused for a type
+    // reason -- and when every param and the return type both check out
+    // fine, it fell back to blaming the return type by name, even though
+    // that type is often the cheapest one Kani handles (`u32`, here). This
+    // must never report a real blocker under a false name.
+    if cf.receiver.is_some() {
+        return Diagnostic {
+            code: "V0508".into(),
+            severity: "warning".into(),
+            phase: "verify".into(),
+            engine: "kani".into(),
+            check: check_label.into(),
+            node_id: node_id.into(),
+            title: format!(
+                "Ply did not run `{check_label}` on `{fn_name}`: it needs a value to call it on \
+                 (it takes `&self`/`&mut self`), and `bounded`'s exhaustive search has not been \
+                 extended to receiver methods -- only the sampling tier (`fuzz`/`test`) builds a \
+                 receiver value today. This is not about any parameter or the return type: \
+                 `{fn_name}`'s own types are all fine for `bounded`. Rather than attempt an \
+                 unmeasured Kani harness, Ply reports this honestly as unsupported for \
+                 `{check_label}` specifically -- `{fn_name}` is not unchecked, `fuzz(n)` does \
+                 check it. (V0508)"
+            ),
+            pointer: None,
+            primary_span: None,
+            counterexample: None,
+            fixes: vec![Fix {
+                title: format!(
+                    "replace `{check_label}` with `fuzz(n)` on `{fn_name}` -- it builds its own \
+                     receiver value and will earn a real `fuzzed(n)` verdict"
+                ),
+                edits: vec![],
+            }],
+            assumptions: vec![],
+            open_item: Some("unsupported_signature".into()),
+        };
+    }
     let bad_params: Vec<String> = cf
         .params
         .iter()
@@ -3061,6 +3143,46 @@ fn float_sampling_diag(node_id: &str, fn_name: &str, check_label: &str) -> Diagn
              alarm, not a real bug, so Ply leaves NaN and infinity out of this run. If `{fn_name}` \
              needs to handle NaN or infinity correctly, this run says nothing about that -- it \
              was never asked to. (W0518, §5.4c)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
+/// The string exclusion's own visibility requirement (also-fix, task
+/// 2026-08-27, docs/review-strings-receivers.md: "the string control-
+/// character exclusion is real but never disclosed to the user, while the
+/// float NaN exclusion is"). `ContractFn::has_string_shape` and the
+/// exclusion itself (`harness.rs`'s `RustType::String` doc,
+/// `fuzz_gen::strategy_expr`'s own arm) were already built and tested this
+/// same session; only this CLI-level disclosure was left unwired, recorded
+/// honestly rather than silently shipped as done. `info`, not a warning --
+/// nothing here is wrong or owed, the same reasoning `float_sampling_diag`
+/// uses -- and gated the same way: only a run that actually sampled a
+/// string owes the reader this sentence, never merely declaring the check.
+fn string_sampling_diag(node_id: &str, fn_name: &str, check_label: &str) -> Diagnostic {
+    Diagnostic {
+        code: "W0521".into(),
+        severity: "info".into(),
+        phase: "verify".into(),
+        engine: "proptest".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` was checked using randomly generated text (up to 32 characters). By \
+             default, Ply never generates ASCII or Latin-1 control characters (raw bytes like a \
+             null byte or an escape code, `0x00`-`0x1F` and `0x7F`-`0x9F`) -- the kind of byte \
+             real user-facing text almost never contains, and the kind most likely to trip an \
+             unrelated assumption (a log line, a terminal, a CSV cell) rather than `{fn_name}`'s \
+             own logic, so including them would risk a false alarm rather than a real bug. \
+             Multi-byte Unicode text (accented letters, CJK characters, symbols) is NOT excluded \
+             -- Ply generates it deliberately, since a `String` a real caller holds can already \
+             contain it. If `{fn_name}` needs to handle control characters correctly, this run \
+             says nothing about that -- it was never asked to. (W0521, §5.4c)"
         ),
         pointer: None,
         primary_span: None,
@@ -3679,6 +3801,22 @@ fn run_fuzz_and_test_checks(
     // matched zero of the harness crate's tests). See `harness_module_name`.
     let filter = harness_test_filter(cf);
     let run = fuzz_engine::run_harness_tests(crate_dir, harness_pkg, &filter, timeout)?;
+    let module_prefix = format!("{}::", harness_module_name(cf));
+    // The harness ever having *run* at all is judged from the actual libtest
+    // per-test lines Ply's own module contributed, never from the process
+    // exit code: `cargo test`'s exit code is 0 whenever nothing it was asked
+    // to run failed, and that is also exactly what happens when the filter
+    // matched no test at all -- a receiver method with no worked examples
+    // and no direct-contract cases generates no test module, the filter then
+    // selects nothing, and "0 passed; 0 failed" used to be read as a clean
+    // pass with zero evidence behind it (the eleventh false pass,
+    // docs/review-strings-receivers.md finding 1; §1's absence-of-evidence
+    // rule applies to this check the same as any other). Scoped to this
+    // function's own module prefix, not a raw count of everything cargo
+    // happened to execute, because that count can include another
+    // function's tests too (finding 2's `parse`/`util::parse` collision) --
+    // see `count_tests_executed`'s own doc.
+    let tests_executed = fuzz_engine::count_tests_executed(&run.combined_output, &module_prefix);
 
     let mut diagnostics = Vec::new();
     let fuzz_test_name = harness_fuzz_test_name(cf);
@@ -3686,18 +3824,21 @@ fn run_fuzz_and_test_checks(
     let mut test_label = None;
     let mut fuzz_cases_reached: Option<u32> = None;
 
-    // The harness never ran at all (2026-08-24 M4 review, D1 -- the review's
-    // most serious finding, and this file's own fail-open bug one level up
-    // from the parser one docs/m4-findings.md finding 3 records). A run that
-    // did not succeed, did not time out, and named no failing test executed
-    // zero cases: the commonest cause is a harness crate that failed to
-    // *compile*, which produces no libtest `failures:` block at all. Both
-    // the `fuzz` and the `test` check live in that one crate, so neither
-    // ran. §8: adapters never pass engine output through raw -- they parse
-    // it or fail with `X0901` attaching what the engine said. It is
-    // emphatically not a pass (there is no evidence) and not a violation
-    // (§5.4c MUST: no violation without a witness).
-    if !run.success && !run.timed_out && run.failed_tests.is_empty() {
+    // The harness never ran at all for this fn (2026-08-24 M4 review, D1 --
+    // the review's most serious finding, widened 2026-08-27 to catch the
+    // shape that slipped past it: a run that exits 0 with nothing to show
+    // for it, not just a run that visibly fails to build). The commonest
+    // cause is still a harness crate that failed to *compile*, which
+    // produces no libtest per-test lines at all; the newer cause is a
+    // function whose harness module compiled to nothing (no fuzz/test
+    // bodies were ever generated for it) so the filter matched zero tests
+    // and cargo exited success having done nothing. Both the `fuzz` and the
+    // `test` check live in that one crate, so neither ran. §8: adapters
+    // never pass engine output through raw -- they parse it or fail with
+    // `X0901` attaching what the engine said. It is emphatically not a pass
+    // (there is no evidence) and not a violation (§5.4c MUST: no violation
+    // without a witness).
+    if !run.timed_out && tests_executed == 0 {
         let cause = fuzz_engine::first_build_error(&run.combined_output);
         let module = harness_module_name(cf);
         if let Some(n) = wants_fuzz {
@@ -3709,6 +3850,7 @@ fn run_fuzz_and_test_checks(
                 harness_pkg,
                 cause.as_deref(),
                 has_examples,
+                cf.receiver.is_some(),
             ));
         }
         if wants_test {
@@ -3720,6 +3862,7 @@ fn run_fuzz_and_test_checks(
                 harness_pkg,
                 cause.as_deref(),
                 has_examples,
+                cf.receiver.is_some(),
             ));
         }
         return Ok(HarnessRun {
@@ -3906,10 +4049,26 @@ fn run_fuzz_and_test_checks(
     }
 
     if wants_test {
+        // Anchored to this fn's own module (2026-08-27, misattribution fix,
+        // docs/review-strings-receivers.md finding 2): `cargo test`'s own
+        // filter argument is a plain substring match, so the invocation
+        // above can have executed another function's tests too whenever one
+        // harness module's identifier is a suffix of another's (a top-level
+        // `parse` and a `util::parse` collide this way: `parse_harness::` is
+        // a substring of `util_parse_harness::`). Filtering
+        // `run.failed_tests` by `.contains("::ply_direct_")` alone -- with
+        // no check that the failing test belongs to *this* fn's module --
+        // let `parse` be blamed for `util::parse`'s own broken promise, in a
+        // sentence that called those tests "its own". Requiring the name to
+        // start with `module_prefix` is what keeps this fn's verdict keyed
+        // to its own tests only.
         let failing_test_checks: Vec<&String> = run
             .failed_tests
             .iter()
-            .filter(|t| t.contains("::ply_example_") || t.contains("::ply_direct_"))
+            .filter(|t| {
+                t.starts_with(&module_prefix)
+                    && (t.contains("::ply_example_") || t.contains("::ply_direct_"))
+            })
             .collect();
         if run.timed_out {
             diagnostics.push(Diagnostic {
@@ -4022,6 +4181,7 @@ fn harness_fuzz_test_name(cf: &ContractFn) -> String {
     format!("{}::ply_fuzz_{}", harness_module_name(cf), cf.ident())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn harness_did_not_run_diag(
     node_id: &str,
     fn_name: &str,
@@ -4030,6 +4190,7 @@ fn harness_did_not_run_diag(
     harness_pkg: &str,
     cause: Option<&str>,
     has_examples: bool,
+    is_receiver_method: bool,
 ) -> Diagnostic {
     let compiler_says = match cause {
         Some(c) => format!(" The compiler's own first error was: {c}."),
@@ -4043,6 +4204,55 @@ fn harness_did_not_run_diag(
         )
     } else {
         String::new()
+    };
+    // The lede names *what actually happened*, and it must not claim a
+    // compile failure that never occurred (adversarial review, 2026-08-27):
+    // before this, every "ran zero cases" report said "failed to compile"
+    // unconditionally, even for a harness crate that built cleanly but had
+    // nothing generated for this check to run at all -- the shape behind
+    // the eleventh false pass (docs/review-strings-receivers.md finding 1).
+    // A receiver method (`&self`/`&mut self`) declared with only `test` and
+    // no `examples:` is the concrete, nameable case: `test` only ever runs
+    // a fixed example or a concrete-input case built from the function's
+    // own parameters, and a receiver method has no such value for this tier
+    // to call it on -- that is the sampling tier's own job (`fuzz(n)`),
+    // never this one's.
+    let (lede, receiver_fix) = if cause.is_some() {
+        (
+            format!(
+                "`{fn_name}`'s `{check_label}` check ran zero cases: the test harness Ply generates \
+                 for it failed to compile, so nothing was checked at all."
+            ),
+            None,
+        )
+    } else if check_label == "test" && is_receiver_method && !has_examples {
+        (
+            format!(
+                "`{fn_name}`'s `test` check ran zero cases: `{fn_name}` needs a value to call it on \
+                 (it takes `&self`/`&mut self`), and `test` only ever runs a fixed `examples:` entry \
+                 or a concrete-input case built directly from the function's own parameters -- \
+                 `{fn_name}` declares no `examples:` and has no such receiver value for this check to \
+                 build one from, so Ply's generated harness has nothing of that kind to run for it. \
+                 The `fuzz(n)` check builds its own receiver value and does check this function; \
+                 `test` alone cannot."
+            ),
+            Some(Fix {
+                title: format!(
+                    "add `fuzz(n)` to `{fn_name}`'s checks -- it builds its own receiver value to \
+                     call `{fn_name}` on -- or add `examples:` entries in ply.yaml naming concrete \
+                     calls for `test` to assert"
+                ),
+                edits: vec![],
+            }),
+        )
+    } else {
+        (
+            format!(
+                "`{fn_name}`'s `{check_label}` check ran zero cases: Ply's generated test harness \
+                 compiled, but nothing was ever generated for it to run under this check."
+            ),
+            None,
+        )
     };
     let mut fixes = vec![Fix {
         title: format!(
@@ -4065,6 +4275,9 @@ fn harness_did_not_run_diag(
             },
         );
     }
+    if let Some(f) = receiver_fix {
+        fixes.insert(0, f);
+    }
     Diagnostic {
         code: "X0901".into(),
         severity: "error".into(),
@@ -4073,10 +4286,9 @@ fn harness_did_not_run_diag(
         check: check_label.into(),
         node_id: node_id.into(),
         title: format!(
-            "`{fn_name}`'s `{check_label}` check ran zero cases: the test harness Ply generates for it \
-             failed to compile, so nothing was checked at all. This is reported as a tool error -- \
-             never as a pass, because no evidence was gathered, and never as a violation, because \
-             there is no failing input to show.{compiler_says}{examples_hint} (X0901)"
+            "{lede} This is reported as a tool error -- never as a pass, because no evidence was \
+             gathered, and never as a violation, because there is no failing input to show.\
+             {compiler_says}{examples_hint} (X0901)"
         ),
         pointer: None,
         primary_span: None,
@@ -4277,7 +4489,29 @@ fn render_fuzz_violation(
         ));
     };
 
-    match fuzz_engine::decode_marker_fields(&fields, &cf.params) {
+    // A receiver method is never rendered as a replay test, however this
+    // failure was found (2026-08-27, Blocker 3: "Ply breaks the user's own
+    // build"). `decode_marker_fields` only ever looks at `cf.params` -- the
+    // *checked call's own* arguments -- and for a receiver method with no
+    // parameters of its own (`Calc::value(&self) -> u32`, this task's own
+    // repro) that is an empty list, which trivially decodes as `Some(vec![])`
+    // even though the real counterexample also depends on a receiver Ply
+    // built (the constructor call plus a sequence of operations) that is not
+    // in `cf.params` at all. Taking the `Some` branch there rendered
+    // `Calc::value()` with no receiver argument at all -- a replay test that
+    // does not compile, breaking the user's own `cargo test` the moment a
+    // broken promise was found on any receiver method with an empty or fully
+    // scalar parameter list. There is no renderer for "the receiver Ply
+    // built plus a bounded operation sequence" (only `cf.params` ever gets
+    // written back out as Rust source), so a receiver method always takes
+    // the witness-only (`W0541`) path below -- honest evidence, never a
+    // test that cannot build.
+    let decoded = if cf.receiver.is_some() {
+        None
+    } else {
+        fuzz_engine::decode_marker_fields(&fields, &cf.params)
+    };
+    match decoded {
         Some(values) => {
             let rendered = contract_rt::render_cex_test(cf, &values, check_label, "P0502", 1)?;
             let test_file = harness::write_generated_test(
@@ -5328,6 +5562,76 @@ mod tests {
         assert!(
             diag.title.contains("false alarm") || diag.title.contains("false"),
             "must say *why* this matters, not merely that it happens: {}",
+            diag.title
+        );
+    }
+
+    /// The string exclusion's own visibility requirement, mirroring
+    /// `float_sampling_diag_names_nan_and_infinity_and_why_they_are_excluded`
+    /// exactly (also-fix, task 2026-08-27): the disclosure must name what
+    /// is excluded (control characters), why, and what is deliberately NOT
+    /// excluded (multi-byte Unicode) -- the same three-part shape the float
+    /// precedent already earns.
+    #[test]
+    fn string_sampling_diag_names_control_characters_and_that_unicode_is_not_excluded() {
+        let diag = string_sampling_diag("strings::preview", "preview", "fuzz(64)");
+        assert_eq!(diag.code, "W0521");
+        assert_eq!(
+            diag.severity, "info",
+            "nothing here is wrong or owed -- only worth naming"
+        );
+        assert!(diag.title.contains("control character"), "{}", diag.title);
+        assert!(
+            diag.title.contains("Unicode"),
+            "must say multi-byte Unicode is NOT excluded, the way the float disclosure names \
+             both sides of its own choice: {}",
+            diag.title
+        );
+        assert!(
+            diag.title.contains("false alarm"),
+            "must say *why* this matters, not merely that it happens: {}",
+            diag.title
+        );
+    }
+
+    /// A `bounded` refusal on a receiver method must blame the receiver,
+    /// never a param or return type that is perfectly fine (adversarial
+    /// review, 2026-08-27, "a proof refused on a method blames the u32
+    /// return type instead of the receiver").
+    #[test]
+    fn bounded_refused_on_a_receiver_method_names_the_receiver_not_the_return_type() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        let path = dir.path().join("src/lib.rs");
+        std::fs::write(
+            &path,
+            "pub struct Gauge { n: u32 }\nimpl Gauge {\npub fn new(n: u32) -> Self { Gauge { n } }\n\
+             #[ply::ensures(|result| *result == *result)]\npub fn level(&self) -> u32 { self.n }\n}\n",
+        )
+        .unwrap();
+        let cf =
+            ply_core::harness::discover_method_with_receiver(dir.path(), "Gauge::level").unwrap();
+        assert!(cf.receiver.is_some());
+        let diag = bounded_refused_sample_only_diag(
+            "receiverboundedrefuse::Gauge::level",
+            "Gauge::level",
+            &cf,
+            "bounded(2)",
+        );
+        assert_eq!(diag.code, "V0508");
+        assert!(
+            !diag.title.contains("its return type `u32`"),
+            "must never blame a return type that is fine: {}",
+            diag.title
+        );
+        assert!(
+            diag.title.contains("needs a value to call it on"),
+            "must name the real reason: {}",
+            diag.title
+        );
+        assert!(
+            diag.title.contains("fuzz"),
+            "must point at the check that actually works here: {}",
             diag.title
         );
     }

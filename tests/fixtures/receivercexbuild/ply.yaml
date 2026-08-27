@@ -1,0 +1,12 @@
+ply: 1
+
+# Blocker 3 (docs/review-strings-receivers.md finding 3): the replay test
+# Ply writes into the user's src/ for a broken receiver method must never
+# leave their crate uncompilable. `Gauge::level`'s promise is false on every
+# input, so `fuzz(64)` finds it immediately.
+components:
+  receivercexbuild:
+    anchor: ply_fixture_receivercexbuild
+    fns:
+      Gauge::level:
+        checks: [fuzz(64)]

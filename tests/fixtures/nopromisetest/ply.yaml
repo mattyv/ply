@@ -1,0 +1,11 @@
+ply: 1
+
+# The eleventh false pass, "one step milder" (docs/review-strings-receivers.md
+# finding 1): `checks: [test]` on a function with no `#[ply::ensures]` and no
+# `examples:` -- nothing at all for `test` to check.
+components:
+  nopromisetest:
+    anchor: ply_fixture_nopromisetest
+    fns:
+      seven:
+        checks: [test]

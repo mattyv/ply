@@ -165,6 +165,43 @@ fn parse_failed_test_names(combined: &str) -> Vec<String> {
         .collect()
 }
 
+/// Counts the individual libtest per-test lines (`test <name> ... ok` /
+/// `... FAILED`) reporting that one of *this function's own* generated tests
+/// actually ran -- the positive evidence a passing `test`/`fuzz` check must
+/// show before Ply trusts it (2026-08-27 review, "the eleventh false pass":
+/// a receiver method with no worked examples and no direct-contract cases
+/// generated no test module at all, `cargo test`'s own filter then matched
+/// nothing, the run exited 0 with zero tests run, and "no failing test" was
+/// read as "held").
+///
+/// `cargo test`'s own filter argument is a *plain substring* match, not an
+/// anchor, so the invocation this counts can have executed more than this
+/// function's own tests -- a top-level `parse` and a `util::parse` collide
+/// this way, because `parse_harness::` is a substring of
+/// `util_parse_harness::` (docs/review-strings-receivers.md finding 2).
+/// Counting only lines whose test name actually starts with `module_prefix`
+/// (`harness_module_name(cf) + "::"`) is what makes this a safe positive-
+/// evidence check rather than a new way to launder someone else's tests
+/// into "this function ran something": a function whose own module
+/// contributed nothing still reads zero here even when cargo, underneath,
+/// executed a same-shaped sibling's tests instead.
+///
+/// Libtest always prints this per-test line, independent of `--nocapture`
+/// (`run_harness_tests` always passes that flag for the `PLY_FUZZ_HIGH_REJECT`
+/// marker; `--nocapture` only suppresses a test's own captured stdout, never
+/// this pass/fail line), so it is a reliable positive signal even when the
+/// final `test result:` summary line is scoped to the same over-broad match.
+pub fn count_tests_executed(combined: &str, module_prefix: &str) -> u32 {
+    let needle = format!("test {module_prefix}");
+    combined
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            t.starts_with(&needle) && (t.ends_with("... ok") || t.ends_with("... FAILED"))
+        })
+        .count() as u32
+}
+
 /// The first *specific* compiler error in a failed harness build -- the one
 /// line that names what actually went wrong (`error[E0308]: mismatched
 /// types`), not cargo's own trailing summary (`error: could not compile
@@ -645,6 +682,36 @@ pub fn decode_marker_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The eleventh false pass, pinned directly against the parser: a
+    /// harness module that contributed zero tests (no worked examples, no
+    /// direct-contract cases -- exactly a receiver method with only a
+    /// `fuzz`/`test` promise) produces no `test <module>::... ok/FAILED`
+    /// line at all, and this must read as zero, never as "ran, and none
+    /// failed".
+    #[test]
+    fn counts_zero_when_no_test_line_for_the_module_exists_at_all() {
+        let combined = "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n";
+        assert_eq!(count_tests_executed(combined, "Calc_value_harness::"), 0);
+    }
+
+    #[test]
+    fn counts_one_passing_and_one_failing_line_for_the_named_module() {
+        let combined = "\nrunning 2 tests\ntest clamp_harness::ply_fuzz_clamp ... ok\ntest clamp_harness::ply_direct_clamp_00 ... FAILED\n\nfailures:\n    clamp_harness::ply_direct_clamp_00\n\ntest result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\n";
+        assert_eq!(count_tests_executed(combined, "clamp_harness::"), 2);
+    }
+
+    /// The misattribution guard: cargo's own filter is a plain substring, so
+    /// an invocation aimed at `parse` can still execute `util::parse`'s own
+    /// tests too (`parse_harness::` is a substring of
+    /// `util_parse_harness::`). Counting must not credit `parse`'s run with
+    /// tests that only ever belonged to `util::parse`'s module.
+    #[test]
+    fn does_not_count_a_same_shaped_sibling_modules_tests() {
+        let combined = "\nrunning 2 tests\ntest util_parse_harness::ply_direct_util_parse_00 ... FAILED\ntest util_parse_harness::ply_direct_util_parse_01 ... FAILED\n\nfailures:\n    util_parse_harness::ply_direct_util_parse_00\n    util_parse_harness::ply_direct_util_parse_01\n\ntest result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\n";
+        assert_eq!(count_tests_executed(combined, "parse_harness::"), 0);
+        assert_eq!(count_tests_executed(combined, "util_parse_harness::"), 2);
+    }
 
     #[test]
     fn parses_failing_test_names_from_libtest_headers() {

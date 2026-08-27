@@ -1,0 +1,12 @@
+ply: 1
+
+# "A proof refused on a method blames the u32 return type instead of the
+# receiver" (docs/review-strings-receivers.md). `Gauge::level` has no
+# parameter and returns `u32` -- both fine for `bounded` -- the receiver
+# is the actual, and only, blocker.
+components:
+  receiverboundedrefuse:
+    anchor: ply_fixture_receiverboundedrefuse
+    fns:
+      Gauge::level:
+        checks: [bounded(2)]

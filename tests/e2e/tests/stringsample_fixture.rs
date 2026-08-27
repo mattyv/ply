@@ -12,6 +12,46 @@
 
 use ply_e2e::{build_cargo_ply, copy_fixture, run_verify};
 
+/// Also-fix, smaller (task 2026-08-27, docs/review-strings-receivers.md):
+/// "the string control-character exclusion is real but never disclosed to
+/// the user, while the float NaN exclusion is." The exclusion itself and
+/// its own gate (`ContractFn::has_string_shape`) were already built and
+/// pinned by code-level tests in `harness.rs`; nothing pinned that a run
+/// over a string-shaped function actually tells the *user* what was left
+/// out, the way the float precedent (`W0518`) already does. This is that
+/// pin, from the outside -- reading `cargo ply verify`'s own JSON output,
+/// never the generated strategy source.
+#[test]
+fn a_string_shaped_run_discloses_the_control_character_exclusion_like_floats_do() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("stringsample");
+
+    let run = run_verify(&cargo_ply, fixture.path(), 120);
+
+    let diags = run.json["diagnostics"].as_array().unwrap();
+    let w0521 = diags
+        .iter()
+        .find(|d| d["code"] == "W0521" && d["node_id"].as_str().unwrap().ends_with("byte_len"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a W0521 info-level disclosure for a string-shaped run, the same way \
+                 floats get W0518: {}",
+                run.json
+            )
+        });
+    assert_eq!(w0521["severity"], "info");
+    let title = w0521["title"].as_str().unwrap();
+    assert!(
+        title.contains("control character"),
+        "must name what was excluded: {title}"
+    );
+    assert!(
+        title.contains("Unicode") || title.contains("multi-byte"),
+        "must also say what is NOT excluded, the way the float disclosure names both sides: \
+         {title}"
+    );
+}
+
 #[test]
 fn a_string_parameter_is_sampled_and_earns_a_real_verdict_via_the_default_route() {
     let cargo_ply = build_cargo_ply();
