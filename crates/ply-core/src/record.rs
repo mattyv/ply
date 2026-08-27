@@ -792,6 +792,176 @@ mod tests {
         assert_ne!(fingerprint(&a), fingerprint(&b));
     }
 
+    /// The bug report's own premise, proved rather than argued -- and proved
+    /// against the *real* encoder, not a hand-guessed stand-in for it, so
+    /// this test cannot pass by accident if a later edit to `group()`
+    /// reintroduces the ambiguity.
+    ///
+    /// The attack: take the exact bytes a genuine second field
+    /// (`declared-ensures` holding `"y"`) contributes to `group()`'s
+    /// output -- pulled straight out of the real encoder by diffing two
+    /// runs of it, not retyped by hand -- and splice them, separator
+    /// included, into the *value* of a single `declared-requires` entry
+    /// instead. If a value's content could ever be mistaken for a field
+    /// boundary, this input would read back identically to genuinely
+    /// having two fields.
+    ///
+    /// A minimal `label + 0 + value + 0` stand-in (no length prefix) is
+    /// checked first, to confirm the same construction really does
+    /// collide when nothing defends against it -- otherwise this would not
+    /// be testing the thing the previous caution was worried about.
+    #[test]
+    fn smuggling_a_field_boundary_inside_a_value_does_not_forge_a_collision() {
+        // ---- Half 1: the previous caution's premise, proved real. ----
+        fn naive(label: &str, value: &str) -> Vec<u8> {
+            let mut out = label.as_bytes().to_vec();
+            out.push(0);
+            out.extend_from_slice(value.as_bytes());
+            out.push(0);
+            out
+        }
+        let naive_two_fields = [
+            naive("declared-requires", "x"),
+            naive("declared-ensures", "y"),
+        ]
+        .concat();
+        let naive_smuggled = "x\u{0}declared-ensures\u{0}y".to_string();
+        let naive_one_field = naive("declared-requires", &naive_smuggled);
+        assert_eq!(
+            naive_two_fields, naive_one_field,
+            "the premise: a naive label+value+separator scheme really is ambiguous here -- \
+             this is the exact collision the previous caution was right to distrust"
+        );
+
+        // ---- Half 2: group()'s real, current encoding, attacked with its
+        // own real output rather than a guess at what that output is. ----
+        let mut base = inputs();
+        base.declared_requires = vec!["x".into()];
+        base.declared_ensures = vec![];
+
+        let mut a = base.clone();
+        a.declared_ensures = vec!["y".into()];
+
+        // Everything `group("its contract")` emits for the "y" field and
+        // nothing else: the extra suffix bytes `a` has beyond `base`.
+        let base_group = base.group("its contract");
+        let a_group = a.group("its contract");
+        assert!(
+            a_group.starts_with(&base_group),
+            "adding one declared_ensures entry must only append bytes, never rewrite earlier ones"
+        );
+        // Trimmed by one byte: that final byte is the closing separator
+        // `put` itself will append to *this* atom's own value once it is
+        // wrapped up below, so keeping it too would double it up and add
+        // an extra byte no genuine attack would have.
+        let second_atom = &a_group[base_group.len()..a_group.len() - 1];
+
+        // Splice those exact bytes into declared_requires's *only* value --
+        // a separator byte stands in for the closing byte a genuinely
+        // separate "x" atom would have had -- and drop the real second
+        // field entirely.
+        let mut smuggled_bytes = b"x".to_vec();
+        smuggled_bytes.push(0);
+        smuggled_bytes.extend_from_slice(second_atom);
+        let smuggled = String::from_utf8(smuggled_bytes)
+            .expect("every byte group() writes is either an ASCII label, an ASCII digit, or a \
+                     value already given to it as a String, so re-assembling them stays valid UTF-8");
+
+        let mut b = base.clone();
+        b.declared_requires = vec![smuggled];
+        // b.declared_ensures is still [] -- the "second field" only exists
+        // smuggled inside the first one's value.
+
+        assert_ne!(
+            a.canonical(),
+            b.canonical(),
+            "group()'s real output for two separate fields must not equal its output for one \
+             field whose value contains what the second field would have written"
+        );
+        assert_ne!(
+            fingerprint(&a),
+            fingerprint(&b),
+            "and the fingerprints built from those bytes must therefore differ too"
+        );
+    }
+
+    /// The same experiment against a different field shape: `code` loops
+    /// two *different* labels per entry (`code-unit`, then `code-tokens`)
+    /// rather than one label repeated. The attack bytes are again pulled
+    /// out of the real encoder, not guessed.
+    #[test]
+    fn smuggling_a_second_code_unit_inside_one_value_does_not_forge_a_collision() {
+        let mut base = inputs();
+        base.code = vec![("helper".into(), "fn helper() {}".into())];
+
+        let mut a = base.clone();
+        a.code.push(("other".into(), "fn other() {}".into()));
+
+        let base_group = base.group("the code it runs");
+        let a_group = a.group("the code it runs");
+        assert!(
+            a_group.starts_with(&base_group),
+            "adding one code entry must only append bytes, never rewrite earlier ones"
+        );
+        // Trimmed by one byte for the same reason as the test above: the
+        // wrapping `put` call supplies its own closing byte for this atom.
+        let second_pair = &a_group[base_group.len()..a_group.len() - 1];
+
+        let mut smuggled_bytes = b"fn helper() {}".to_vec();
+        smuggled_bytes.push(0);
+        smuggled_bytes.extend_from_slice(second_pair);
+        let smuggled = String::from_utf8(smuggled_bytes)
+            .expect("group() only ever writes ASCII labels, ASCII digits, and the given values");
+
+        let mut b = base.clone();
+        b.code = vec![("helper".into(), smuggled)];
+
+        assert_ne!(a.canonical(), b.canonical());
+        assert_ne!(fingerprint(&a), fingerprint(&b));
+    }
+
+    /// A value legitimately containing the record's own separator byte
+    /// must still hash like any other value: stable on repeat, and every
+    /// byte after the embedded separator still counted rather than
+    /// silently dropped or truncated at it.
+    #[test]
+    fn a_value_containing_the_records_own_separator_byte_round_trips() {
+        let sep = '\u{0}';
+        let mut a = inputs();
+        a.examples = vec![format!("has_a{sep}nul(\"quoted, text; too\") == 1")];
+
+        assert_eq!(
+            fingerprint(&a),
+            fingerprint(&a),
+            "hashing the same input twice must give the same answer"
+        );
+
+        let mut b = a.clone();
+        b.examples[0].push('!');
+        assert_ne!(
+            fingerprint(&a),
+            fingerprint(&b),
+            "content after the embedded separator byte must still count -- it must not be \
+             silently dropped or truncated at the first NUL"
+        );
+    }
+
+    /// A pin against `inputs()`'s current fingerprint. The investigation
+    /// above found `group()`'s length-prefixed encoding already safe, so no
+    /// change to it was needed or made -- this value must therefore never
+    /// move without a deliberate, reviewed change to the encoding. If it
+    /// does move unreviewed, every result recorded in every committed
+    /// `ply.lock` goes stale in the same run, silently.
+    #[test]
+    fn the_fingerprint_of_the_reference_fixture_is_pinned() {
+        assert_eq!(
+            fingerprint(&inputs()),
+            "b871446bca4bb77c08f1365dd373a43129b56822042f9da5215d146666b95a36",
+            "the encoding did not change, so this must not move; if it moved on purpose, every \
+             ply.lock committed against the old encoding is now stale"
+        );
+    }
+
     /// The honesty rule, at the one place it can be enforced structurally:
     /// there is no way to read a recorded result without presenting today's
     /// hash for it.
