@@ -4137,6 +4137,7 @@ fn format_value(v: &kani::WitnessValue) -> String {
         kani::WitnessValue::Int(i) => i.to_string(),
         kani::WitnessValue::Bool(b) => b.to_string(),
         kani::WitnessValue::VecU8(bytes) => format!("{bytes:?}"),
+        kani::WitnessValue::Duration(secs, nanos) => format!("{secs}.{nanos:09}s"),
     }
 }
 

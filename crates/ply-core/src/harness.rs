@@ -62,6 +62,57 @@ pub enum RustType {
     /// such limit, which is the entire point of the M4 fuzz tier (§1: it
     /// "reaches every signature shape ... §5.4b excludes from `bounded`").
     BTreeSet(Box<RustType>),
+    /// `usize`/`isize` -- added 2026-08-27 (measured against the rate-
+    /// limiter fixture: `usize` alone was 3 of its 70 public-surface type
+    /// uses). Pointer-width, unlike every other integer §5.4b already
+    /// supports -- see `scalar_byte_width`'s doc for what that costs.
+    Usize,
+    Isize,
+    /// `std::num::NonZero{U8,U16,U32,U64,Usize,I8,I16,I32,I64,Isize}` --
+    /// added 2026-08-27, the rate-limiter fixture's single most common
+    /// non-integer type (`NonZeroU32`: 10 of 70 uses measured). Wraps one of
+    /// the plain integer variants above -- never itself, and the parser
+    /// never constructs one over anything else. The wrapper changes only
+    /// *construction*: a `NonZero` is never `kani::any()`'d directly (see
+    /// `render_kani_args`) because nothing here trusts Kani's own
+    /// `Arbitrary` impl for the type to itself forbid zero -- the task this
+    /// shipped under was explicit that this constraint must reach the
+    /// solver, not be assumed true by convention. That is also why `NonZero`
+    /// is deliberately *not* part of [`RustType::is_leaf`]: nesting it
+    /// inside `Option`/`Result`/`[T; N]` would hand construction back to a
+    /// generic `kani::any::<T>()` call this module does not control, the
+    /// exact risk this type exists to avoid. Only a bare top-level
+    /// parameter/return `NonZero` is supported, same as `VecU8`.
+    NonZero(Box<RustType>),
+    /// `std::time::Duration` -- added 2026-08-27, the rate-limiter
+    /// fixture's most common type of all (11 of 70 measured uses on its own
+    /// module). A pair of integers (whole seconds, nanoseconds under one
+    /// billion) -- never derived as a generic struct, because its fields
+    /// are private, so §5.4b's "structs of Ply-derivable Arbitrary (public,
+    /// invariant-free fields)" cannot see them at all. Always built through
+    /// the public `Duration::new(secs, nanos)` constructor with
+    /// `nanos < 1_000_000_000` asserted at construction (see
+    /// `render_kani_args`) -- `Duration::new` in fact normalizes a larger
+    /// `nanos` by carrying into `secs` rather than panicking, but generating
+    /// only pre-normalized values is the honest, auditable choice: a
+    /// witness that needed the carry to make sense would be harder to read,
+    /// not impossible to build.
+    ///
+    /// **Measured, not assumed, whether this needs its own bound (task
+    /// brief, 2026-08-27):** it does not. `tests/fixtures/durationnonzero`
+    /// carries six functions over these new shapes (`Duration`, `NonZeroU32`,
+    /// `NonZeroUsize`, `usize`, `isize`), each checked with both `bounded(2)`
+    /// and `fuzz(64)` — twelve real engine invocations, no two functions
+    /// sharing a cached result. A cold run (`ply.lock` cleared) completed
+    /// in 1m26s wall-clock with every one earning a clean `bounded(2)` and
+    /// zero diagnostics — about 7s/harness on average, the ordinary
+    /// per-invocation cost of a trivial Kani harness of any shape, not a
+    /// cost specific to `Duration`. No harness came near the 60s
+    /// per-check `--engine-timeout` used for that run. Two independent
+    /// `kani::any()` calls plus one `assume`, no loop and so no unwind bound
+    /// to surface, unlike `Vec` — the seconds field ranges over the whole
+    /// `u64` with no bound at all.
+    Duration,
     Unsupported(String),
 }
 
@@ -93,12 +144,64 @@ impl RustType {
                 | RustType::I16
                 | RustType::I32
                 | RustType::I64
+                | RustType::Usize
+                | RustType::Isize
                 | RustType::Bool
         )
     }
 
+    /// True for exactly the ten integer widths a `NonZero` may wrap
+    /// (`u8`..`u64`/`usize`, `i8`..`i64`/`isize` -- never `bool`, and never
+    /// another `NonZero`). The parser (`rust_type_from_syn_at`) never
+    /// constructs `NonZero` over anything else, but every consumer of
+    /// `NonZero` checks this rather than assuming the parser's own
+    /// discipline held, so a future change to the parser fails loudly here
+    /// instead of producing a `NonZero` codegen cannot build.
+    fn is_valid_nonzero_inner(&self) -> bool {
+        matches!(
+            self,
+            RustType::U8
+                | RustType::U16
+                | RustType::U32
+                | RustType::U64
+                | RustType::Usize
+                | RustType::I8
+                | RustType::I16
+                | RustType::I32
+                | RustType::I64
+                | RustType::Isize
+        )
+    }
+
+    /// The `NonZero{X}` suffix for this integer type (`"U32"`, `"Usize"`,
+    /// ...), used to spell `std::num::NonZero{X}` in generated code and
+    /// diagnostics. `None` for anything [`is_valid_nonzero_inner`] refuses.
+    /// `pub` because codegen outside this module (`contract_rt`,
+    /// `engines::kani`, `fuzz_gen`) needs the exact same suffix to render a
+    /// `NonZero` witness back out as a literal -- one spelling, not a second
+    /// hand-maintained copy of it.
+    pub fn nonzero_suffix(&self) -> Option<&'static str> {
+        Some(match self {
+            RustType::U8 => "U8",
+            RustType::U16 => "U16",
+            RustType::U32 => "U32",
+            RustType::U64 => "U64",
+            RustType::Usize => "Usize",
+            RustType::I8 => "I8",
+            RustType::I16 => "I16",
+            RustType::I32 => "I32",
+            RustType::I64 => "I64",
+            RustType::Isize => "Isize",
+            _ => return None,
+        })
+    }
+
     /// A type both `kani::any()` and proptest's `any()` build directly with
-    /// no construction loop: the scalars plus `char`.
+    /// no construction loop: the scalars plus `char`. Deliberately excludes
+    /// `NonZero` and `Duration` even though both are supported top-level
+    /// shapes -- see their own doc comments on the enum for why nesting
+    /// either inside `Option`/`Result`/`[T; N]` is refused rather than
+    /// silently attempted.
     pub fn is_leaf(&self) -> bool {
         self.is_scalar() || matches!(self, RustType::Char)
     }
@@ -129,6 +232,8 @@ impl RustType {
         match self {
             RustType::VecU8 => true,
             RustType::Vec(_) | RustType::BTreeSet(_) | RustType::Unsupported(_) => false,
+            RustType::NonZero(inner) => inner.is_valid_nonzero_inner(),
+            RustType::Duration => true,
             other => other.is_leaf() || other.is_composite_constructible(),
         }
     }
@@ -191,6 +296,8 @@ impl RustType {
             RustType::I16 => "i16",
             RustType::I32 => "i32",
             RustType::I64 => "i64",
+            RustType::Usize => "usize",
+            RustType::Isize => "isize",
             RustType::Bool => "bool",
             _ => return None,
         })
@@ -208,6 +315,12 @@ impl RustType {
                 format!("Result<{}, {}>", ok.rust_name()?, err.rust_name()?)
             }
             RustType::Array(inner, n) => format!("[{}; {}]", inner.rust_name()?, n),
+            // Fully qualified so generated code never depends on a `use`
+            // being in scope at the point it is spliced in.
+            RustType::Duration => "std::time::Duration".to_string(),
+            RustType::NonZero(inner) => {
+                format!("std::num::NonZero{}", inner.nonzero_suffix()?)
+            }
             other => other.scalar_rust_name()?.to_string(),
         })
     }
@@ -230,6 +343,10 @@ impl RustType {
             RustType::VecU8 => "Vec<u8>".to_string(),
             RustType::Vec(inner) => format!("Vec<{}>", inner.display_name()),
             RustType::BTreeSet(inner) => format!("BTreeSet<{}>", inner.display_name()),
+            RustType::Duration => "Duration".to_string(),
+            RustType::NonZero(inner) => {
+                format!("NonZero{}", inner.nonzero_suffix().unwrap_or("?"))
+            }
             // The source text as the user wrote it: for a shape Ply does not
             // model, the words they typed are the only spelling that helps.
             RustType::Unsupported(src) => src.clone(),
@@ -245,6 +362,8 @@ impl RustType {
         match self {
             RustType::VecU8 => true,
             RustType::Vec(inner) => inner.as_ref() == &RustType::U8,
+            RustType::Duration => true,
+            RustType::NonZero(inner) => inner.scalar_byte_width().is_some(),
             _ => self.scalar_byte_width().is_some(),
         }
     }
@@ -252,12 +371,25 @@ impl RustType {
     /// Byte width Kani's concrete-playback encodes this scalar as
     /// (little-endian on the pinned toolchain's target -- measured, see
     /// docs/m3-slice-findings.md).
+    ///
+    /// `usize`/`isize` are **pointer-width**, unlike every other integer
+    /// here: `Some(8)` is only correct for a 64-bit target. The pinned
+    /// toolchain's own default target (and every target this workspace
+    /// builds or tests on) is `x86_64`, and §5.2a already records the build
+    /// target as part of what a stored result stood on -- a `usize` proof
+    /// earned on this target is not evidence for a 32-bit one, exactly the
+    /// same honesty condition `unstable_flags` already carries for the
+    /// engine's own version. Widening this to read the real target's
+    /// pointer width (rather than assuming 8) is future work if Ply ever
+    /// runs its engines against a 32-bit target; nothing here claims that
+    /// case is covered.
     pub fn scalar_byte_width(&self) -> Option<usize> {
         match self {
             RustType::U8 | RustType::I8 | RustType::Bool => Some(1),
             RustType::U16 | RustType::I16 => Some(2),
             RustType::U32 | RustType::I32 => Some(4),
             RustType::U64 | RustType::I64 => Some(8),
+            RustType::Usize | RustType::Isize => Some(8),
             // No witness decoder yet for these -- a violation on one is
             // reported honestly as a tool error rather than with an
             // invented input (see `verify::run_bounded_check`).
@@ -268,6 +400,8 @@ impl RustType {
             | RustType::VecU8
             | RustType::Vec(_)
             | RustType::BTreeSet(_)
+            | RustType::NonZero(_)
+            | RustType::Duration
             | RustType::Unsupported(_) => None,
         }
     }
@@ -373,7 +507,40 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                 "i16" => RustType::I16,
                 "i32" => RustType::I32,
                 "i64" => RustType::I64,
+                // Pointer-width -- see `scalar_byte_width`'s doc for the
+                // honesty condition this carries (a proof built on this
+                // target's byte width is not evidence for a different one).
+                "usize" => RustType::Usize,
+                "isize" => RustType::Isize,
                 "bool" => RustType::Bool,
+                // `std::num::NonZero{X}` -- matched on the bare last
+                // segment, so both `std::num::NonZeroU32` (never `use`d)
+                // and a bare `NonZeroU32` (after a `use` -- what every
+                // fixture and the rate-limiter measurement actually write)
+                // resolve to the same shape, the same way `"u8"` above
+                // matches regardless of whether it came through a `use` or
+                // a fully-qualified path (there is no fully-qualified `u8`,
+                // but `Duration` below faces the identical question).
+                // Deliberately never generic (`NonZero<u32>`) -- that is
+                // not the type's own surface syntax; only the ten
+                // `NonZero{X}` names below exist in `std`.
+                "NonZeroU8" => RustType::NonZero(Box::new(RustType::U8)),
+                "NonZeroU16" => RustType::NonZero(Box::new(RustType::U16)),
+                "NonZeroU32" => RustType::NonZero(Box::new(RustType::U32)),
+                "NonZeroU64" => RustType::NonZero(Box::new(RustType::U64)),
+                "NonZeroUsize" => RustType::NonZero(Box::new(RustType::Usize)),
+                "NonZeroI8" => RustType::NonZero(Box::new(RustType::I8)),
+                "NonZeroI16" => RustType::NonZero(Box::new(RustType::I16)),
+                "NonZeroI32" => RustType::NonZero(Box::new(RustType::I32)),
+                "NonZeroI64" => RustType::NonZero(Box::new(RustType::I64)),
+                "NonZeroIsize" => RustType::NonZero(Box::new(RustType::Isize)),
+                // `std::time::Duration`, matched the same way -- named by
+                // its bare last segment, so this is deliberately as
+                // vulnerable to a same-named unrelated type as `"u8"` above
+                // already is; §5.4b's whole fragment reads source text, not
+                // resolved item paths, and widening that is out of scope
+                // for this task.
+                "Duration" => RustType::Duration,
                 "Vec" => {
                     if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments
                         && let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first()
@@ -954,6 +1121,49 @@ fn render_kani_args(params: &[Param], bound_k: u32) -> (String, Vec<String>) {
                     n = bound_k
                 ));
             }
+            // Never `kani::any::<NonZeroU32>()` directly: this codegen does
+            // not rely on Kani's own `Arbitrary` impl for the type to
+            // itself forbid zero. The inner integer is what is actually
+            // symbolic; `kani::assume` rules zero out before the `NonZero`
+            // is ever constructed, so the constraint reaches the solver
+            // rather than living only in the type's own (untrusted, here)
+            // promise. A generated value that could be zero would let the
+            // proof explore a state the type forbids -- a witness that
+            // could never occur for a real caller (task brief, 2026-08-27).
+            RustType::NonZero(inner) => {
+                let inner_ty = inner
+                    .rust_name()
+                    .expect("nonzero inner is always a plain integer");
+                lets.push_str(&format!(
+                    "    let {name}_inner: {inner_ty} = kani::any();\n\
+                     \x20\x20\x20\x20kani::assume({name}_inner != 0);\n\
+                     \x20\x20\x20\x20let {name}: std::num::NonZero{suffix} = \
+                     std::num::NonZero{suffix}::new({name}_inner).unwrap();\n",
+                    name = p.name,
+                    inner_ty = inner_ty,
+                    suffix = inner.nonzero_suffix().expect("checked supported above"),
+                ));
+            }
+            // Two independent scalars, not a derived struct: `Duration`'s
+            // fields are private, so §5.4b's struct path (Ply-derivable
+            // Arbitrary over public fields) cannot see them at all. The
+            // `assume` on `nanos` is the type's own real invariant -- the
+            // standard library never returns a `Duration` whose internal
+            // nanos field reaches a billion -- not a loop bound, so unlike
+            // `Vec` there is no unwind annotation to emit here, and no
+            // second bound to surface in the verdict: `secs` ranges over
+            // the whole `u64` with no assume at all, exactly as it would if
+            // Ply were asked to build a bare `u64` parameter.
+            RustType::Duration => {
+                lets.push_str(&format!(
+                    "    let {name}_secs: u64 = kani::any();\n\
+                     \x20\x20\x20\x20let {name}_nanos: u32 = kani::any();\n\
+                     \x20\x20\x20\x20kani::assume({name}_nanos < 1_000_000_000u32);\n\
+                     \x20\x20\x20\x20let {name}: std::time::Duration = \
+                     std::time::Duration::new({name}_secs, {name}_nanos);\n",
+                    name = p.name,
+                ));
+            }
             other => {
                 let ty_name = other.rust_name().expect("checked supported above");
                 lets.push_str(&format!(
@@ -1510,6 +1720,220 @@ pub fn owed(account: AccountId, rate: Bps) -> i64 { 0 }
         );
         assert_eq!(cf.params[1].ty, RustType::U32);
         assert!(cf.is_bounded_supported());
+    }
+
+    // -- 2026-08-27: usize/isize, the `NonZero` family, and `Duration` -----
+    //
+    // The rate-limiter measurement (docs/greenfield-ratelimiter-design.md's
+    // Flowgate fixture) found these dominate ordinary Rust's public surface
+    // far more than any shape already in the fragment: `Duration` (20 uses),
+    // `NonZeroU32` (19), `NonZeroUsize` (8), `usize` (3) against 82 total
+    // type uses, of which Ply supported 17 (21%) before this landed.
+
+    #[test]
+    fn usize_and_isize_are_bounded_and_fuzz_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::ensures(|result| *result >= 0)]
+pub fn f(len: usize, delta: isize) -> i64 { 0 }
+"#,
+        );
+        let cf = discover_fn(&path, "f").unwrap();
+        assert_eq!(cf.params[0].ty, RustType::Usize);
+        assert_eq!(cf.params[1].ty, RustType::Isize);
+        assert!(
+            cf.is_bounded_supported(),
+            "usize/isize are pointer-width integers -- exactly the shape §5.4b already calls \
+             cheap unconditionally for every other integer width"
+        );
+        assert!(cf.is_fuzz_supported());
+    }
+
+    #[test]
+    fn nonzero_u32_is_bounded_and_fuzz_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+use std::num::NonZeroU32;
+#[ply::ensures(|result| *result > 0)]
+pub fn check_n(n: NonZeroU32) -> u32 { n.get() }
+"#,
+        );
+        let cf = discover_fn(&path, "check_n").unwrap();
+        assert_eq!(cf.params[0].ty, RustType::NonZero(Box::new(RustType::U32)));
+        assert!(
+            cf.is_bounded_supported(),
+            "NonZeroU32 must be a shape Ply's Kani codegen can build, not refused by name"
+        );
+        assert!(cf.is_fuzz_supported());
+    }
+
+    #[test]
+    fn nonzero_usize_is_bounded_and_fuzz_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+use std::num::NonZeroUsize;
+#[ply::ensures(|result| *result > 0)]
+pub fn cap(n: NonZeroUsize) -> usize { n.get() }
+"#,
+        );
+        let cf = discover_fn(&path, "cap").unwrap();
+        assert_eq!(
+            cf.params[0].ty,
+            RustType::NonZero(Box::new(RustType::Usize))
+        );
+        assert!(cf.is_bounded_supported());
+        assert!(cf.is_fuzz_supported());
+    }
+
+    #[test]
+    fn duration_is_bounded_and_fuzz_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+use std::time::Duration;
+#[ply::ensures(|result| result.as_nanos() >= 0)]
+pub fn identity(d: Duration) -> Duration { d }
+"#,
+        );
+        let cf = discover_fn(&path, "identity").unwrap();
+        assert_eq!(cf.params[0].ty, RustType::Duration);
+        assert!(
+            cf.is_bounded_supported(),
+            "Duration must be a shape Ply's Kani codegen can build -- a pair of integers, one \
+             bounded to under one billion, not a struct with private fields Ply must derive \
+             Arbitrary for"
+        );
+        assert!(cf.is_fuzz_supported());
+    }
+
+    #[test]
+    fn duration_proof_never_lets_nanos_reach_a_billion() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+use std::time::Duration;
+#[ply::ensures(|result| result.as_nanos() >= 0)]
+pub fn identity(d: Duration) -> Duration { d }
+"#,
+        );
+        let cf = discover_fn(&path, "identity").unwrap();
+        let harness_out = generate_proof_module(&cf, 2, &[]).unwrap();
+        assert!(
+            harness_out
+                .module_source
+                .contains("kani::assume(d_nanos < 1_000_000_000"),
+            "a generated Duration must never let its own construction produce nanos >= 1e9 -- \
+             the standard library never returns such a value, and a proof that could see one \
+             would be exploring a state the type forbids:\n{}",
+            harness_out.module_source
+        );
+        assert!(
+            harness_out
+                .module_source
+                .contains("Duration::new(d_secs, d_nanos)"),
+            "{}",
+            harness_out.module_source
+        );
+    }
+
+    #[test]
+    fn nonzero_proof_never_lets_the_inner_value_be_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+use std::num::NonZeroU32;
+#[ply::ensures(|result| *result > 0)]
+pub fn check_n(n: NonZeroU32) -> u32 { n.get() }
+"#,
+        );
+        let cf = discover_fn(&path, "check_n").unwrap();
+        let harness_out = generate_proof_module(&cf, 2, &[]).unwrap();
+        assert!(
+            harness_out
+                .module_source
+                .contains("kani::assume(n_inner != 0")
+                || harness_out
+                    .module_source
+                    .contains("kani::assume(n_inner != 0u32"),
+            "a generated NonZeroU32 must never let its own inner value be zero -- a proof that \
+             could see zero would be exploring a state the type forbids, and the witness it \
+             produced could never occur for real:\n{}",
+            harness_out.module_source
+        );
+        assert!(
+            harness_out
+                .module_source
+                .contains("NonZeroU32::new(n_inner).unwrap()"),
+            "{}",
+            harness_out.module_source
+        );
+    }
+
+    #[test]
+    fn nonzero_and_duration_are_full_domain_since_construction_is_unbounded() {
+        // D5's containment argument (§5.5): standing on a callee's
+        // `bounded(k)` proof costs nothing only when that proof already
+        // covers whatever a caller could ever pass. `NonZero`'s inner
+        // integer ranges over its *entire* type (only the assume rules out
+        // zero, which is not a value a real NonZeroU32 could hold anyway),
+        // and `Duration`'s seconds field is never bounded at all -- so both
+        // must be `is_full_domain() == true`, same as any plain scalar,
+        // unlike `VecU8` (bounded to length `k`).
+        assert!(RustType::NonZero(Box::new(RustType::U32)).is_full_domain());
+        assert!(RustType::NonZero(Box::new(RustType::Usize)).is_full_domain());
+        assert!(RustType::Duration.is_full_domain());
+    }
+
+    #[test]
+    fn instant_string_struct_and_enum_stay_refused_by_name_unchanged() {
+        // Explicitly out of scope for this task -- Instant's construction
+        // question (a monotonic clock the harness cannot rewind or fake)
+        // needs its own design, same as String/structs/enums
+        // (docs/review-self-construction.md). This must not regress.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+use std::time::Instant;
+#[derive(Clone, Copy)]
+pub struct Foo { pub x: u32 }
+pub enum Bar { A, B }
+#[ply::ensures(|result| *result >= 0)]
+pub fn f(t: Instant, s: String, foo: Foo, bar: Bar) -> i64 { 0 }
+"#,
+        );
+        let cf = discover_fn(&path, "f").unwrap();
+        assert!(
+            matches!(cf.params[0].ty, RustType::Unsupported(_)),
+            "Instant: {:?}",
+            cf.params[0].ty
+        );
+        assert!(
+            matches!(cf.params[1].ty, RustType::Unsupported(_)),
+            "String: {:?}",
+            cf.params[1].ty
+        );
+        assert!(
+            matches!(cf.params[2].ty, RustType::Unsupported(_)),
+            "struct: {:?}",
+            cf.params[2].ty
+        );
+        assert!(
+            matches!(cf.params[3].ty, RustType::Unsupported(_)),
+            "enum: {:?}",
+            cf.params[3].ty
+        );
+        assert!(!cf.is_bounded_supported());
+        assert!(!cf.is_fuzz_supported());
     }
 
     #[test]

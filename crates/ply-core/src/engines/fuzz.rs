@@ -510,9 +510,40 @@ pub fn decode_marker_fields(
             RustType::I8 | RustType::I16 | RustType::I32 | RustType::I64 => {
                 WitnessValue::Int(raw.parse::<i128>().ok()?)
             }
+            RustType::Usize => WitnessValue::UInt(raw.parse::<u128>().ok()?),
+            RustType::Isize => WitnessValue::Int(raw.parse::<i128>().ok()?),
             RustType::VecU8 => WitnessValue::VecU8(parse_u8_list(raw)?),
             RustType::Vec(inner) if inner.as_ref() == &RustType::U8 => {
                 WitnessValue::VecU8(parse_u8_list(raw)?)
+            }
+            // `marker_display_expr` prints a `NonZero{X}` with its own
+            // (plain-number) `Display` impl, so decoding it is exactly
+            // decoding its inner integer.
+            RustType::NonZero(inner)
+                if matches!(
+                    inner.as_ref(),
+                    RustType::U8 | RustType::U16 | RustType::U32 | RustType::U64 | RustType::Usize
+                ) =>
+            {
+                WitnessValue::UInt(raw.parse::<u128>().ok()?)
+            }
+            RustType::NonZero(inner)
+                if matches!(
+                    inner.as_ref(),
+                    RustType::I8 | RustType::I16 | RustType::I32 | RustType::I64 | RustType::Isize
+                ) =>
+            {
+                WitnessValue::Int(raw.parse::<i128>().ok()?)
+            }
+            // `marker_display_expr` prints `Duration` as `secs.nanos`
+            // (nanos always 9 digits) precisely so this split is exact --
+            // never `Duration`'s own SI-unit `Display` ("1.5s"), which a
+            // decoder could not invert.
+            RustType::Duration => {
+                let (secs_str, nanos_str) = raw.split_once('.')?;
+                let secs = secs_str.parse::<u64>().ok()?;
+                let nanos = nanos_str.parse::<u32>().ok()?;
+                WitnessValue::Duration(secs, nanos)
             }
             // The 2026-08-25 fragment widening: `char`, `Option`, `Result`
             // and `[T; N]` reach the engines, but `WitnessValue` has no way
@@ -524,6 +555,7 @@ pub fn decode_marker_fields(
             | RustType::Array(..)
             | RustType::Vec(_)
             | RustType::BTreeSet(_)
+            | RustType::NonZero(_)
             | RustType::Unsupported(_) => return None,
         };
         out.push(value);
@@ -683,6 +715,38 @@ mod tests {
         fields.insert("v".to_string(), "[255,0,3]".to_string());
         let decoded = decode_marker_fields(&fields, &params).unwrap();
         assert_eq!(decoded, vec![WitnessValue::VecU8(vec![255, 0, 3])]);
+    }
+
+    #[test]
+    fn decodes_a_nonzero_u32_marker_field_as_its_plain_number() {
+        // `marker_display_expr`'s default arm prints a NonZero with its own
+        // Display impl -- just the number, no wrapper syntax.
+        let params = vec![Param {
+            name: "n".into(),
+            ty: RustType::NonZero(Box::new(RustType::U32)),
+            by_ref: false,
+        }];
+        let mut fields = BTreeMap::new();
+        fields.insert("n".to_string(), "7".to_string());
+        let decoded = decode_marker_fields(&fields, &params).unwrap();
+        assert_eq!(decoded, vec![WitnessValue::UInt(7)]);
+    }
+
+    #[test]
+    fn decodes_a_duration_marker_field_from_its_secs_dot_nanos_spelling() {
+        // `marker_display_expr` prints `Duration` as `secs.nanos` (nanos
+        // always 9 digits), never the type's own SI-unit Display -- this is
+        // the exact string that spelling produces, and the decoder must
+        // split it back apart exactly.
+        let params = vec![Param {
+            name: "d".into(),
+            ty: RustType::Duration,
+            by_ref: false,
+        }];
+        let mut fields = BTreeMap::new();
+        fields.insert("d".to_string(), "7.500000000".to_string());
+        let decoded = decode_marker_fields(&fields, &params).unwrap();
+        assert_eq!(decoded, vec![WitnessValue::Duration(7, 500_000_000)]);
     }
 
     #[test]

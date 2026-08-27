@@ -95,13 +95,13 @@ pub fn seed_from_hex(text: &str) -> Option<[u8; 32]> {
 fn strategy_expr(ty: &RustType) -> Result<String> {
     Ok(match ty {
         RustType::Bool => "proptest::prelude::any::<bool>()".to_string(),
-        RustType::U8 | RustType::U16 | RustType::U32 | RustType::U64 => {
+        RustType::U8 | RustType::U16 | RustType::U32 | RustType::U64 | RustType::Usize => {
             let name = ty.scalar_rust_name().expect("scalar");
             format!(
                 "proptest::prop_oneof![3 => 0{name}..=16{name}, 1 => proptest::prelude::any::<{name}>()]"
             )
         }
-        RustType::I8 | RustType::I16 | RustType::I32 | RustType::I64 => {
+        RustType::I8 | RustType::I16 | RustType::I32 | RustType::I64 | RustType::Isize => {
             let name = ty.scalar_rust_name().expect("scalar");
             format!(
                 "proptest::prop_oneof![3 => -16{name}..=16{name}, 1 => proptest::prelude::any::<{name}>()]"
@@ -128,6 +128,37 @@ fn strategy_expr(ty: &RustType) -> Result<String> {
             let name = ty.rust_name().expect("composite has a rust name");
             format!("proptest::prelude::any::<{name}>()")
         }
+        // Never `any::<NonZeroU32>()`: proptest's own coverage of the
+        // `NonZero` family is not this module's concern one way or the
+        // other -- the inner integer's own (small-biased) strategy is
+        // reused and zero is folded up to one, so the value built is
+        // always the type's own non-zero invariant, on this engine too.
+        // `Strategy::prop_map` is called fully qualified (never `.prop_map`
+        // as a method): the generated harness module never `use`s
+        // `proptest::strategy::Strategy`, and method-call syntax did not
+        // find the trait on the concrete strategy type `prop_oneof!`/a
+        // tuple builds -- measured directly against this fixture (`.prop_map`
+        // on a `TupleUnion` and on a raw tuple both failed with "no method
+        // named `prop_map` found", E0599, before this fix).
+        RustType::NonZero(inner) => {
+            let inner_strategy = strategy_expr(inner)?;
+            let inner_name = inner.scalar_rust_name().expect("nonzero inner is scalar");
+            let suffix = inner.nonzero_suffix().expect("nonzero inner is valid");
+            format!(
+                "proptest::strategy::Strategy::prop_map({inner_strategy}, |v| \
+                 std::num::NonZero{suffix}::new(if v == 0 {{ 1{inner_name} }} else {{ v }}).unwrap())"
+            )
+        }
+        // A pair of independent strategies, never proptest's own `Arbitrary`
+        // for `Duration` (this crate does not depend on that feature and
+        // does not need to): whole seconds unconstrained, nanoseconds kept
+        // under one billion so the value built is always one the standard
+        // library could have returned. Same fully-qualified `Strategy::
+        // prop_map` call as `NonZero` above, for the same reason.
+        RustType::Duration => "proptest::strategy::Strategy::prop_map(\
+             (proptest::prelude::any::<u64>(), 0u32..1_000_000_000u32), \
+             |(s, n)| std::time::Duration::new(s, n))"
+            .to_string(),
         RustType::Unsupported(t) => {
             bail!("cannot build a fuzz strategy for unsupported type `{t}`")
         }
@@ -153,6 +184,16 @@ fn marker_display_expr(ty: &RustType, var: &str) -> String {
              __ply_s.push_str(&__ply_e.to_string()); }} \
              __ply_s.push(']'); __ply_s }}"
         ),
+        // `Duration`'s own `Display` picks whichever SI unit reads best
+        // ("1.5s", "500ms") -- exactly the ambiguity a decoder must not
+        // have to resolve. `secs.nanos` (nanos always 9 digits) is exact and
+        // trivially split back apart in `engines::fuzz`.
+        RustType::Duration => {
+            format!("format!(\"{{}}.{{:09}}\", {var}.as_secs(), {var}.subsec_nanos())")
+        }
+        // `NonZero{X}`'s own `Display` is already just the plain number
+        // (std impls it as a pass-through to the inner integer), so the
+        // default arm below is exact for it too -- no case needed.
         _ => var.to_string(),
     }
 }
@@ -466,11 +507,11 @@ pub fn generate_example_test(fn_name: &str, index: u32, example_src: &str) -> Re
 /// "generated direct contract cases" (§10 M4, §5.4c).
 fn boundary_literals(ty: &RustType) -> Vec<String> {
     match ty {
-        RustType::U8 | RustType::U16 | RustType::U32 | RustType::U64 => {
+        RustType::U8 | RustType::U16 | RustType::U32 | RustType::U64 | RustType::Usize => {
             let n = ty.scalar_rust_name().unwrap();
             vec![format!("0{n}"), format!("1{n}"), format!("{n}::MAX")]
         }
-        RustType::I8 | RustType::I16 | RustType::I32 | RustType::I64 => {
+        RustType::I8 | RustType::I16 | RustType::I32 | RustType::I64 | RustType::Isize => {
             let n = ty.scalar_rust_name().unwrap();
             vec![format!("0{n}"), format!("{n}::MIN"), format!("{n}::MAX")]
         }
@@ -522,6 +563,21 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
             .into_iter()
             .map(|lit| format!("[{lit}; {n}]"))
             .collect(),
+        RustType::NonZero(inner) => {
+            let Some(suffix) = inner.nonzero_suffix() else {
+                return vec![];
+            };
+            let n = inner.scalar_rust_name().unwrap_or("u32");
+            vec![
+                format!("std::num::NonZero{suffix}::new(1{n}).unwrap()"),
+                format!("std::num::NonZero{suffix}::new({n}::MAX).unwrap()"),
+            ]
+        }
+        RustType::Duration => vec![
+            "std::time::Duration::ZERO".to_string(),
+            "std::time::Duration::from_nanos(1)".to_string(),
+            "std::time::Duration::new(u64::MAX, 999_999_999)".to_string(),
+        ],
         RustType::Unsupported(_) => vec![],
     }
 }
