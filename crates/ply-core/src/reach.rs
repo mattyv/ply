@@ -319,6 +319,16 @@ pub fn code_scope(
                 );
             }
             Resolution::NotFound => continue,
+            // A method Ply resolves and refuses (a receiver, a generic
+            // `impl`, a trait method) or cannot choose between (an
+            // ambiguous `impl` match): out of this task's scope to descend
+            // into either way, so this widens the same way an unreadable
+            // root would, and is skipped the same way an unresolved callee
+            // further down the walk already is.
+            Resolution::Refused(reason) | Resolution::Ambiguous(reason) if is_root => {
+                return widened(first_party, reason);
+            }
+            Resolution::Refused(_) | Resolution::Ambiguous(_) => continue,
         };
         if !seen.insert(found.canonical.clone()) {
             continue;

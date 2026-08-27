@@ -456,6 +456,7 @@ pub(crate) fn assumed_contracts(
                             &found_fn.item,
                             &ply_core::harness::alias_map(&found_fn.file),
                             &found_fn.canonical,
+                            found_fn.is_method,
                         )
                     {
                         let canonical = found_fn.canonical.clone();

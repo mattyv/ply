@@ -162,6 +162,15 @@ fn strategy_expr(ty: &RustType) -> Result<String> {
         RustType::Unsupported(t) => {
             bail!("cannot build a fuzz strategy for unsupported type `{t}`")
         }
+        // Never reached: both are return-only shapes (`ContractFn::return_type`),
+        // never a parameter's, so no caller ever asks this for one.
+        RustType::SelfType | RustType::Unit => {
+            bail!(
+                "`{}` is a return-only shape and was never meant to reach a parameter strategy \
+                 -- this is a Ply bug, not a user error",
+                ty.display_name()
+            )
+        }
     })
 }
 
@@ -208,20 +217,36 @@ fn param_names(cf: &ContractFn) -> Vec<&str> {
 /// strategy `combined_strategy_expr` builds for that case).
 fn value_pattern(cf: &ContractFn) -> String {
     let names = param_names(cf);
-    if names.len() == 1 {
-        names[0].to_string()
-    } else {
-        format!("({})", names.join(", "))
+    match names.len() {
+        // A zero-parameter fn (a receiverless constructor like
+        // `FakeClock::new()`) has nothing for proptest to generate --
+        // `combined_strategy_expr` pairs this with `Just(())`, so the
+        // pattern that destructures it is `_`, never the empty-tuple
+        // pattern `()` the old `else` branch produced (which only ever
+        // matched a *value* of `()`, and the strategy below did not build
+        // one -- see that fn's own doc for the compile error this caused).
+        0 => "_".to_string(),
+        1 => names[0].to_string(),
+        _ => format!("({})", names.join(", ")),
     }
 }
 
 fn combined_strategy_expr(cf: &ContractFn) -> Result<String> {
     let exprs: Result<Vec<String>> = cf.params.iter().map(|p| strategy_expr(&p.ty)).collect();
     let exprs = exprs?;
-    Ok(if exprs.len() == 1 {
-        exprs[0].clone()
-    } else {
-        format!("({})", exprs.join(", "))
+    Ok(match exprs.len() {
+        // A zero-parameter fn (found broken 2026-08-27 against
+        // `Meter::zero`/`FakeClock::new`-shaped constructors, adversarial
+        // review of the method-resolution task): the old `else` branch
+        // joined zero expressions into a bare `()`, a *value*, not a
+        // `Strategy` -- `TestRunner::run` needs `&impl Strategy`, so every
+        // zero-param fuzz claim failed to compile with "the trait bound
+        // `(): Strategy` is not satisfied" (`X0901`), regardless of its
+        // return type. `Just(())` is proptest's own always-`()` strategy,
+        // built for exactly this case.
+        0 => "proptest::strategy::Just(())".to_string(),
+        1 => exprs[0].clone(),
+        _ => format!("({})", exprs.join(", ")),
     })
 }
 
@@ -379,11 +404,16 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
     let seed_hex = seed_hex(seed);
     let strategy = combined_strategy_expr(cf)?;
     let args = call_args(cf).join(", ");
-    // Two spellings, deliberately. `fname` is the bare identifier the
-    // harness module imports and therefore calls; `label` is where the
-    // function lives, which is what a reader of the output needs to see.
-    // They differ only for a function inside a module.
-    let fname = &cf.name;
+    // Two spellings, deliberately. `fname` is the expression generated
+    // code calls -- the bare identifier for a free function, or
+    // `Type::method` for a method (`ContractFn::call_expr`, added
+    // 2026-08-27: a bare `cf.name` here tried to call a method as if it
+    // were an imported free function, which does not compile -- see
+    // `wrap_fn_harness_module`'s matching fix to what gets imported).
+    // `label` is where the function lives, which is what a reader of the
+    // output needs to see. They differ only for a function inside a
+    // module, or a method.
+    let fname = cf.call_expr();
     let label = &cf.path;
     let ident = cf.ident();
 
@@ -578,7 +608,8 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
             "std::time::Duration::from_nanos(1)".to_string(),
             "std::time::Duration::new(u64::MAX, 999_999_999)".to_string(),
         ],
-        RustType::Unsupported(_) => vec![],
+        // Never reached: return-only shapes, never a parameter's.
+        RustType::SelfType | RustType::Unit | RustType::Unsupported(_) => vec![],
     }
 }
 
@@ -607,7 +638,16 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
     if literal_sets.iter().any(|s| s.is_empty()) {
         return String::new();
     }
-    let n_cases = literal_sets.iter().map(|s| s.len()).max().unwrap_or(0);
+    // A zero-parameter fn has no literal sets to size cases from at all
+    // (`.max()` on an empty iterator is `None`) -- one case, calling it with
+    // no arguments, is still a real direct-contract check, not nothing.
+    // Found silently generating zero cases (adversarial review, 2026-08-27,
+    // alongside the fuzz-tier `Just(())` fix this mirrors).
+    let n_cases = if cf.params.is_empty() {
+        1
+    } else {
+        literal_sets.iter().map(|s| s.len()).max().unwrap_or(0)
+    };
     let (checked_body, entry_values) = crate::contract_rt::lift_entry_values(&closure.body);
     let entry_lets = crate::contract_rt::entry_value_lets(&entry_values, &" ".repeat(8));
     let widened = crate::contract_rt::widen(&checked_body).to_string();
@@ -636,7 +676,7 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
              \x20\x20\x20\x20\x20\x20\x20\x20let result = &__ply_call_result;\n\
              \x20\x20\x20\x20\x20\x20\x20\x20assert!({widened}, \"direct contract case for `{label}` broke its postcondition\");\n\
              \x20\x20\x20\x20}}\n",
-            fname = cf.name,
+            fname = cf.call_expr(),
             label = cf.path,
             ident = cf.ident(),
             entry_lets = entry_lets,
@@ -655,9 +695,17 @@ pub fn wrap_fn_harness_module(
     bodies: &[String],
 ) -> String {
     let module_ident = cf.ident();
-    let fn_path = &cf.path;
+    // Import exactly what `call_expr()` needs in scope: the whole path for
+    // a free function (its bare final segment is then callable directly),
+    // or the path *minus* its final segment for a method -- the type,
+    // never the method itself, which is not an importable item at all
+    // (`use crate::Bucket::new;` does not compile; `use crate::Bucket;`
+    // plus calling `Bucket::new(..)` does). Added 2026-08-27: before this,
+    // every method's harness crate failed to compile with an unresolved
+    // import naming the method.
+    let import_path = cf.import_path();
     let mut out = format!(
-        "#[cfg(test)]\nmod {module_ident}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{fn_path};\n\n"
+        "#[cfg(test)]\nmod {module_ident}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{import_path};\n\n"
     );
     for b in bodies {
         out.push_str(b);

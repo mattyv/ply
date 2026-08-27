@@ -1,0 +1,7 @@
+ply: 1
+
+components:
+  implambiguous:
+    anchor: ply_fixture_implambiguous
+    fns:
+      Wrapper::describe: {}

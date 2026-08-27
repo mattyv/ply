@@ -1,0 +1,35 @@
+ply: 1
+
+components:
+  implmethod:
+    anchor: ply_fixture_implmethod
+    fns:
+      # Receiverless: fully checkable, once it resolves.
+      Bucket::new:
+        checks: [bounded(2)]
+      # Has a receiver: resolves, refused by name.
+      Bucket::capacity: {}
+      # Receiverless, u32 in and out, checked on the *fuzz* tier -- the
+      # exact shape a broken harness was found against (the fuzz harness
+      # crate tried to `use` a method, which does not compile).
+      Bucket::clamped:
+        checks: [fuzz(32)]
+      # Receiverless, but its return type is a struct Ply's parser does not
+      # model -- must be refused as unsupported, never a broken harness.
+      Bucket::make_elsewhere: {}
+      # A free function sharing a name with the method above -- must
+      # resolve to itself, never to `Bucket::capacity`.
+      capacity:
+        checks: [bounded(2)]
+      # Two impl blocks, no name collision: both resolve independently.
+      # Also: zero parameters, checked on the fuzz tier -- the shape a
+      # separate broken-harness bug was found against.
+      Meter::zero:
+        checks: [fuzz(32)]
+      Meter::centimeters_per_meter:
+        checks: [bounded(2)]
+      # A trait method and a trait-impl method: both resolve, both refused.
+      Widget::size: {}
+      Gadget::size: {}
+      # A generic impl block: resolves, refused.
+      Pair::describe: {}

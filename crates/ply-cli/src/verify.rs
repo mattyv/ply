@@ -390,6 +390,36 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 }
                 continue;
             }
+            // A `Type::method` claim that names something real but out of
+            // this task's scope (a receiver, a generic `impl` block, a
+            // trait method) or that Ply's syntactic reader cannot pick
+            // between (two `impl` blocks defining the same name): checked
+            // *before* `discover_fn_with`, and given its own diagnostic,
+            // because "could not find the function" (E0301, below) would be
+            // false about every one of these -- Ply found it and is
+            // refusing it for a stated reason, which is a different fact a
+            // reader needs a different sentence for. `discover_fn_with`
+            // still sees exactly the same three outcomes it always has
+            // (found, opaque, not-found) for everything that reaches it.
+            match resolver.lookup_fn(fn_name) {
+                Resolution::Refused(reason) => {
+                    diagnostics.push(refused_anchor_diag(&node_id, &reason));
+                    early_nodes_by_component
+                        .entry(comp_name.clone())
+                        .or_default()
+                        .push(leaf_node(fn_name, "unsupported"));
+                    continue;
+                }
+                Resolution::Ambiguous(reason) => {
+                    diagnostics.push(ambiguous_anchor_diag(&node_id, fn_name, &reason));
+                    early_nodes_by_component
+                        .entry(comp_name.clone())
+                        .or_default()
+                        .push(leaf_node(fn_name, "unsupported"));
+                    continue;
+                }
+                Resolution::Found(_) | Resolution::Opaque(_) | Resolution::NotFound => {}
+            }
             let cf = match harness::discover_fn_with(&mut resolver, fn_name, &lib_path) {
                 Ok(cf) => cf,
                 Err(e) => {
@@ -402,7 +432,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     early_nodes_by_component
                         .entry(comp_name.clone())
                         .or_default()
-                        .push(leaf_node(&node_id, "unclaimed"));
+                        .push(leaf_node(fn_name, "unclaimed"));
                     continue;
                 }
             };
@@ -476,7 +506,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 early_nodes_by_component
                     .entry(comp_name.clone())
                     .or_default()
-                    .push(leaf_node(&node_id, "unclaimed"));
+                    .push(leaf_node(fn_name, "unclaimed"));
                 continue;
             }
 
@@ -497,7 +527,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     early_nodes_by_component
                         .entry(comp_name.clone())
                         .or_default()
-                        .push(leaf_node(&node_id, "unclaimed"));
+                        .push(leaf_node(fn_name, "unclaimed"));
                     continue;
                 }
                 // "none otherwise" (§5.4c): either no contract at all, or a
@@ -507,12 +537,12 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     early_nodes_by_component
                         .entry(comp_name.clone())
                         .or_default()
-                        .push(leaf_node(&node_id, "unsupported"));
+                        .push(leaf_node(fn_name, "unsupported"));
                 } else {
                     early_nodes_by_component
                         .entry(comp_name.clone())
                         .or_default()
-                        .push(leaf_node(&node_id, "unclaimed"));
+                        .push(leaf_node(fn_name, "unclaimed"));
                 }
                 continue;
             }
@@ -1332,6 +1362,7 @@ fn boundary_plan(resolver: &mut Resolver, cf: &ContractFn) -> BoundaryPlan {
                                 &found.item,
                                 &harness::alias_map(&found.file),
                                 &canonical,
+                                found.is_method,
                             ) {
                                 Ok(callee_cf) => {
                                     let raw_return =
@@ -1374,6 +1405,21 @@ fn boundary_plan(resolver: &mut Resolver, cf: &ContractFn) -> BoundaryPlan {
                     Resolution::NotFound => {
                         if !plan.unclaimed.iter().any(|(p, _)| p == &site.path) {
                             plan.unclaimed.push((site.path.clone(), site.where_text()));
+                        }
+                    }
+                    // `classify` already resolved this exact site as
+                    // `Contracted`, which only ever follows from `Found` --
+                    // so, like the two arms above, this should not be
+                    // reachable. Refused rather than assumed, same reason.
+                    Resolution::Refused(_) | Resolution::Ambiguous(_) => {
+                        if !plan.opaque.iter().any(|(p, _, _)| p == &site.path) {
+                            plan.opaque.push((
+                                site.path.clone(),
+                                site.where_text(),
+                                "resolution disagreed with itself between classification and \
+                                 lookup (should not happen)"
+                                    .to_string(),
+                            ));
                         }
                     }
                 }
@@ -2701,6 +2747,60 @@ fn undecided_promise_diag(
         fixes: vec![],
         assumptions: vec![],
         open_item: Some("promise_not_checked".into()),
+    }
+}
+
+/// A `Type::method` claim that named something real -- a method with a
+/// receiver, an item in a generic `impl` block, or a trait method -- which
+/// this task's scope refuses to check. Distinct from `unresolved_anchor_diag`
+/// (E0301) on purpose: "could not find the function" is false here, and a
+/// false "not found" is exactly the defect this feature exists to close (see
+/// the module doc at the top of this file's `verify_crate`). `reason` is
+/// already a complete, plain-language sentence (`callgraph::Resolution`
+/// composes it), so this wraps it rather than re-deriving it.
+fn refused_anchor_diag(node_id: &str, reason: &str) -> Diagnostic {
+    Diagnostic {
+        code: "V0507".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        // `reason` is already a complete, self-contained sentence naming the
+        // function and why Ply refuses it (`callgraph::Resolution` composes
+        // it) -- wrapping it in another "Ply found `{fn_name}`" would either
+        // repeat that fact verbatim (the receiver case already opens with
+        // exactly that clause) or say it twice in different words (the
+        // trait/generic cases already open by naming `{fn_name}`).
+        title: format!("{reason}."),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: Some("unsupported_signature".into()),
+    }
+}
+
+/// `Type::method` matched more than one real candidate and Ply refuses to
+/// guess which one a claim means -- picking wrong would attach a verdict to
+/// the wrong function, which is worse than reporting nothing (see this
+/// task's own "get the ambiguity right" brief).
+fn ambiguous_anchor_diag(node_id: &str, fn_name: &str, reason: &str) -> Diagnostic {
+    Diagnostic {
+        code: "E0306".into(),
+        severity: "error".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        title: format!("`{fn_name}` does not name one function: {reason}."),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: Some("ambiguous_anchor".into()),
     }
 }
 
@@ -4162,10 +4262,20 @@ fn earned_evidence(node: &Node, diagnostics: &[Diagnostic]) -> bool {
         && !diagnostics.iter().any(|d| d.severity == "error")
 }
 
-fn leaf_node(node_id: &str, verdict: &str) -> Node {
-    let fn_part = node_id.rsplit("::").next().unwrap_or(node_id);
+/// A fn node for one of `verify`'s early-exit paths (an anchor that did not
+/// resolve, refused, or ambiguous; an empty checks list; an unsupported
+/// signature). `fn_name` is the claim's own key, used verbatim as the node
+/// `id` -- **not** derived by splitting the component-qualified `node_id`
+/// diagnostics use, which a method's own key (`Bucket::capacity`) would
+/// corrupt: rsplitting *that* on `::` throws away `Bucket` and leaves only
+/// `capacity`, indistinguishable from any other type's same-named method
+/// and inconsistent with the id a *successful* claim gets elsewhere in this
+/// file (always the untouched `fn_name`). Harmless before method support,
+/// since no free-function key ever contained `::` where this fired; live
+/// the moment one does.
+fn leaf_node(fn_name: &str, verdict: &str) -> Node {
     Node {
-        id: fn_part.to_string(),
+        id: fn_name.to_string(),
         kind: "fn".into(),
         verdict: verdict.to_string(),
         statuses: vec![],

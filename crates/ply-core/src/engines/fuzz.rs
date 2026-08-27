@@ -556,6 +556,10 @@ pub fn decode_marker_fields(
             | RustType::Vec(_)
             | RustType::BTreeSet(_)
             | RustType::NonZero(_)
+            // Never reached: both are return-only shapes, never a
+            // parameter's, so no witness ever needs to decode one.
+            | RustType::SelfType
+            | RustType::Unit
             | RustType::Unsupported(_) => return None,
         };
         out.push(value);

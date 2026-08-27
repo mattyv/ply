@@ -49,8 +49,8 @@ components:
       clock::FakeClock::new: {}
       clock::FakeClock::advance: {}
       clock::FakeClock::set: {}
-      clock::FakeClock::now_impl: {}
-      clock::FakeClock::duration_since_impl: {}
+      clock::FakeClock::now: {}
+      clock::FakeClock::duration_since: {}
 
       # -- decision.rs --------------------------------------------------------
       decision::Decision::is_allowed: {}
@@ -72,27 +72,51 @@ components:
       # -- rate_limiter.rs --------------------------------------------------------
       rate_limiter::RateLimiter::check: {}
       rate_limiter::RateLimiter::check_n: {}
-      rate_limiter::TokenBucket::check_n_impl: {}
-      rate_limiter::KeyedRateLimiter::check_n_impl: {}
+      rate_limiter::TokenBucket::check_n: {}
+      rate_limiter::KeyedRateLimiter::check_n: {}
 
       # -- internal.rs (pub(crate), still counted -- it is the one function
       #    with a real contract-shaped signature: a plain free function) ----
       internal::refill_and_debit: {}
 
-# Measured result (2026-08-27, cargo ply check and cargo ply verify, both
-# run against this exact file copied to ply.yaml): 1 of these 39 claims
-# resolves to a real function at all -- `internal::refill_and_debit`, the
+# Measured result, before method resolution (2026-08-27, `cargo ply verify`
+# against this exact file copied to `ply.yaml`): 1 of these 39 claims
+# resolved to a real function at all -- `internal::refill_and_debit`, the
 # one plain free function above every other entry names a method or an
-# associated function. `crates/ply-core/src/callgraph.rs`'s resolver (read,
-# not guessed) indexes only `syn::Item::Fn` reachable by module path; it has
-# no `syn::Item::Impl` arm at all, so a claim naming any method resolves to
-# nothing (E0301, "could not find a function"), regardless of what types its
-# parameters use. This is a real, separate, out-of-scope gap this task did
-# not touch -- flagged, not fixed. `refill_and_debit` itself resolves but
-# carries no `#[ply::]` contract (the source is untouched, per this task's
-# rules), so it reports `unclaimed` and never reaches a type-support
-# question either. Net: `check`/`verify` against this file answer nothing
-# about type-mapping coverage before or after this task's change -- see
-# `tests/e2e/tests/ratelimiter_type_coverage.rs` for the measurement that
-# does, reading `ply_core::harness::rust_type_from_source` directly against
-# every parameter/return type on this crate's public surface.
+# associated function. `crates/ply-core/src/callgraph.rs`'s resolver indexed
+# only `syn::Item::Fn` reachable by module path; it had no `syn::Item::Impl`
+# arm at all, so a claim naming any method resolved to nothing (E0301,
+# "could not find the function"), regardless of what types its parameters
+# used. Four of these 39 entries were themselves wrong at the time --
+# `clock::FakeClock::now_impl`/`duration_since_impl` and
+# `rate_limiter::TokenBucket`/`KeyedRateLimiter::check_n_impl` named
+# functions that do not exist (the real names have no `_impl` suffix) --
+# harmless while nothing resolved at all, but corrected here now that it
+# matters which 39 real items are being counted.
+#
+# Measured result, after method resolution (same file, same command): all
+# 39 claims resolve -- zero `E0301`s. None newly earn a `bounded`/`fuzzed`
+# verdict, because none of these functions carry a `#[ply::requires]`/
+# `#[ply::ensures]` (the source stays untouched, per this task's rules), so
+# every resolved claim reports either `unclaimed` (resolved, nothing to
+# check -- 6 of 39: the receiverless, non-generic associated functions,
+# where a contract would make the check run) or `unsupported`, each naming
+# the specific reason a method-shaped claim is refused (33 of 39): a
+# receiver Ply cannot yet construct (7 -- `RefillRate::tokens`/`interval`,
+# `Quota::capacity`/`refill`, `FakeClock::advance`/`set`,
+# `Decision::is_allowed`), a generic `impl` block (14 -- every
+# `TokenBucket`/`KeyedRateLimiter` inherent method, both generic over their
+# clock/key/hasher type parameters), or a trait method -- a bare signature,
+# a default body, or a trait-impl override (12 -- `Clock`/`RateLimiter`'s
+# own methods and every `Clock`/`RateLimiter` implementation for the three
+# clocks and the two limiter types). Net: resolution moved from 1/39 to
+# 39/39, and every refusal now names why in a sentence a newcomer can act
+# on, in place of the one false "could not find the function" that used to
+# cover all 38. Checked (`bounded`/`fuzzed`) stays 0/39, unchanged -- this
+# task widens what Ply can *find*, not what it can build a receiver for or
+# instantiate generically, and adding contracts to measure that would bend
+# the rate limiter toward Ply, which the task rules forbid. See
+# `tests/e2e/tests/ratelimiter_type_coverage.rs` for the type-mapping
+# measurement this file still does not exercise, reading
+# `ply_core::harness::rust_type_from_source` directly against every
+# parameter/return type on this crate's public surface.

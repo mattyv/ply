@@ -113,6 +113,29 @@ pub enum RustType {
     /// to surface, unlike `Vec` — the seconds field ranges over the whole
     /// `u64` with no bound at all.
     Duration,
+    /// This function's own enclosing type, written `Self` in its
+    /// signature -- added 2026-08-27 for receiverless associated functions
+    /// (constructors), whose return type is almost always `Self` or
+    /// `Result<Self, E>`/`Option<Self>`. Deliberately **not** covered by
+    /// `is_leaf`/`is_composite_constructible`/`is_bounded_supported`/
+    /// `is_fuzz_supported`, which all answer "can Ply *construct* one" --
+    /// the question that matters for a parameter. A return value is
+    /// produced by the real call, never constructed by Ply, so those
+    /// questions do not apply to it; `is_bounded_return_supported`/
+    /// `is_fuzz_return_supported` are the ones that do, and both say yes.
+    /// If `Self` ever appeared as a *parameter* type instead (rare, but
+    /// legal Rust: `fn merge(self, other: Self)`), it must not silently
+    /// read as supported there -- constructing an arbitrary receiver-shaped
+    /// value is exactly the unsettled work `docs/review-self-construction.md`
+    /// describes, not something this variant answers for free.
+    SelfType,
+    /// `-> ()`, i.e. no declared return type at all -- its own shape rather
+    /// than folded into `Unsupported` or treated as absent, so a return-type
+    /// gate has one real answer to give for every function, not a special
+    /// `None` case its caller has to remember to handle. Return-supported on
+    /// both engines, same reasoning as `SelfType`: nothing is ever
+    /// constructed from it.
+    Unit,
     Unsupported(String),
 }
 
@@ -284,6 +307,40 @@ impl RustType {
         }
     }
 
+    /// The *return*-position gate (added 2026-08-27, for a receiverless
+    /// associated function's return type -- adversarial review of the
+    /// method-resolution task). Unlike a parameter, a return value is never
+    /// *constructed* by Ply, so `SelfType`/`Unit` are always fine here --
+    /// `is_bounded_supported`/`is_fuzz_supported` correctly say `false` for
+    /// them (a *parameter* of type `Self` really would need construction
+    /// Ply cannot do), which is the wrong answer for a return, so this is a
+    /// genuinely different question, not an alias.
+    ///
+    /// **Measured, not assumed**: reject an ordinary struct/enum return type
+    /// Ply's parser does not model (`Bucket`, returned from outside its own
+    /// `impl` block) and this refuses `unsupported`, as the review that
+    /// requested this gate asked -- but empirically, once the *actual*
+    /// broken-harness cause is fixed (a zero-parameter fn's fuzz strategy
+    /// was a bare `()`, not a `Strategy` -- `combined_strategy_expr`'s own
+    /// doc), such a return type does not itself break anything on either
+    /// engine: nothing in this codegen ever names or constructs a return
+    /// type. This gate is therefore a deliberate, requested narrowing --
+    /// refusing a shape Ply cannot yet reason about by name, on principle,
+    /// matching §5.4b's own stated rule that a supported signature covers
+    /// "parameters *and* return type" -- not a fix for an observed compile
+    /// failure the way the zero-parameter one was. Recorded here rather
+    /// than left to look like the same kind of fix, because the two are not
+    /// (see `return_rust_type_from_syn`'s own doc for the nested-`Self`
+    /// narrowing this same gate also carries).
+    pub fn is_bounded_return_supported(&self) -> bool {
+        matches!(self, RustType::SelfType | RustType::Unit) || self.is_bounded_supported()
+    }
+
+    /// The fuzz engine's counterpart to `is_bounded_return_supported`.
+    pub fn is_fuzz_return_supported(&self) -> bool {
+        matches!(self, RustType::SelfType | RustType::Unit) || self.is_fuzz_supported()
+    }
+
     /// The exact source text used both to declare `let name: <ty> = ...`
     /// and to decode a scalar witness's byte width.
     pub fn scalar_rust_name(&self) -> Option<&'static str> {
@@ -350,6 +407,8 @@ impl RustType {
             // The source text as the user wrote it: for a shape Ply does not
             // model, the words they typed are the only spelling that helps.
             RustType::Unsupported(src) => src.clone(),
+            RustType::SelfType => "Self".to_string(),
+            RustType::Unit => "()".to_string(),
             other => other.scalar_rust_name().unwrap_or("?").to_string(),
         }
     }
@@ -402,6 +461,8 @@ impl RustType {
             | RustType::BTreeSet(_)
             | RustType::NonZero(_)
             | RustType::Duration
+            | RustType::SelfType
+            | RustType::Unit
             | RustType::Unsupported(_) => None,
         }
     }
@@ -430,6 +491,48 @@ pub fn rust_type_from_source(src: &str) -> Option<RustType> {
 
 fn rust_type_from_syn(ty: &Type, aliases: &AliasMap) -> RustType {
     rust_type_from_syn_at(ty, aliases, 0)
+}
+
+/// Bare `Self`, with no generic arguments and no `<T as Trait>::` qualifier
+/// -- the only spelling `Self` can legally take as a whole type (never
+/// `Self<T>`, never part of a longer path).
+fn is_bare_self_type(ty: &Type) -> bool {
+    matches!(ty, Type::Path(tp)
+        if tp.qself.is_none()
+            && tp.path.segments.len() == 1
+            && tp.path.segments[0].ident == "Self"
+            && tp.path.segments[0].arguments.is_empty())
+}
+
+/// Classifies a function's *return* type -- never a parameter's, and a
+/// genuinely different question from `rust_type_from_syn` even though it
+/// reuses that parser for every shape but one. A parameter must be
+/// something Ply can *construct*; a return value never is (the real call
+/// produces it), so the one shape that needs its own answer here is `Self`:
+/// `RustType::SelfType`, which every `is_bounded_return_supported`/
+/// `is_fuzz_return_supported` check treats as fine regardless of the
+/// enclosing type's own shape (added 2026-08-27, for the receiverless
+/// associated functions -- constructors -- this task's own review flagged
+/// as the measurable win; every one of them returns bare `Self`).
+///
+/// Everything else -- including an *ordinary* struct or enum name that is
+/// not `Self` (`Bucket`, returned from outside its own `impl` block) --
+/// is classified exactly as a parameter's type would be, so it reports
+/// `Unsupported` here too, refused by name rather than silently attempted.
+/// **Deliberately narrow**: `Self` nested inside `Option`/`Result`
+/// (`Result<Self, ConfigError>`, a real shape in the rate-limiter fixture)
+/// is not recognised -- it falls through to the ordinary parser, which has
+/// no `Self` case at all, and reports `Unsupported`. Widening this is
+/// future work; nothing in this task's own required tests needs it, and
+/// overclaiming it without a fixture pinning it is exactly the kind of gap
+/// this project's own testing rule (§9) exists to catch before a reviewer
+/// does.
+pub fn return_rust_type_from_syn(output: &syn::ReturnType, aliases: &AliasMap) -> RustType {
+    match output {
+        syn::ReturnType::Default => RustType::Unit,
+        syn::ReturnType::Type(_, ty) if is_bare_self_type(ty) => RustType::SelfType,
+        syn::ReturnType::Type(_, ty) => rust_type_from_syn(ty, aliases),
+    }
 }
 
 fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustType {
@@ -644,6 +747,22 @@ pub struct ContractFn {
     /// and re-running a four-minute proof for a reflowed line is how a
     /// record earns a reputation for being wrong.
     pub source: String,
+    /// Whether `path` is `Type::method` rather than a free function (added
+    /// 2026-08-27, method resolution) -- see `call_expr`/`import_path`,
+    /// which are the only things that need to know.
+    pub is_method: bool,
+    /// The return type, classified the same way a parameter's is --
+    /// `Self` (bare, or nested in `Option`/`Result`) is its own shape
+    /// (`RustType::SelfType`), because Ply never has to *construct* one: a
+    /// constructor's return value is produced by the call, never built by
+    /// `kani::any()`/proptest, so `Self`-shaped output blocks nothing.
+    /// Anything else Ply's parser does not recognise is `Unsupported`, the
+    /// same as an unrecognised parameter type, and gates checking this fn
+    /// the same way (`is_bounded_supported`/`is_fuzz_supported`) -- added
+    /// so that a genuinely un-modelled return shape is refused by name
+    /// before codegen runs, never silently attempted (adversarial review,
+    /// 2026-08-27).
+    pub return_type: RustType,
 }
 
 impl ContractFn {
@@ -656,15 +775,22 @@ impl ContractFn {
         self.path.replace("::", "_")
     }
 
-    /// Can Ply's Kani codegen build this fn's harness at all? (§5.4b gate.)
+    /// Can Ply's Kani codegen build this fn's harness at all? (§5.4b gate,
+    /// widened 2026-08-27 to also require the *return* type check out --
+    /// see `RustType::is_bounded_return_supported`'s own doc for why that
+    /// is a different question from a parameter's, never the same check
+    /// twice.)
     pub fn is_bounded_supported(&self) -> bool {
         self.params.iter().all(|p| p.ty.is_bounded_supported())
+            && self.return_type.is_bounded_return_supported()
     }
 
     /// Can Ply's proptest codegen build this fn's harness? (M4 gate --
-    /// strictly broader, see `RustType::is_fuzz_supported`.)
+    /// strictly broader, see `RustType::is_fuzz_supported`; widened
+    /// 2026-08-27 the same way `is_bounded_supported` was.)
     pub fn is_fuzz_supported(&self) -> bool {
         self.params.iter().all(|p| p.ty.is_fuzz_supported())
+            && self.return_type.is_fuzz_return_supported()
     }
 
     /// Whether this fn carries any contract at all (`requires` and/or
@@ -677,6 +803,50 @@ impl ContractFn {
 
     pub fn has_vec_param(&self) -> bool {
         self.params.iter().any(|p| matches!(p.ty, RustType::VecU8))
+    }
+
+    /// The expression generated code calls this fn by (added 2026-08-27,
+    /// method resolution): the bare final identifier for a free function
+    /// (`legacy_rate`), unchanged from before methods existed -- or, for a
+    /// method, the last two segments of `path` (`Bucket::new`), since the
+    /// method itself is not something a `use` can import (`use
+    /// crate::Bucket::new;` does not compile) and must be reached through
+    /// its type instead. Paired with `import_path`, which brings exactly
+    /// the right name into scope for whichever shape this is.
+    pub fn call_expr(&self) -> String {
+        if self.is_method {
+            last_two_segments(&self.path)
+        } else {
+            self.name.clone()
+        }
+    }
+
+    /// The path a generated harness `use`s so `call_expr()` resolves: the
+    /// whole `path` for a free function (unchanged -- this is what brings
+    /// its bare final segment into scope), or `path` minus its final
+    /// segment for a method (bringing the *type* into scope, since the
+    /// method is reached off of it, not imported directly).
+    pub fn import_path(&self) -> String {
+        if self.is_method {
+            match self.path.rsplit_once("::") {
+                Some((rest, _method)) => rest.to_string(),
+                None => self.path.clone(),
+            }
+        } else {
+            self.path.clone()
+        }
+    }
+}
+
+/// The last two `::`-separated segments of `path` (`Type::method`), or the
+/// whole thing when it has fewer than two. `pub` so `fuzz_gen`'s direct
+/// tests can pin this without duplicating the split logic.
+pub fn last_two_segments(path: &str) -> String {
+    let segs: Vec<&str> = path.split("::").collect();
+    if segs.len() >= 2 {
+        format!("{}::{}", segs[segs.len() - 2], segs[segs.len() - 1])
+    } else {
+        path.to_string()
     }
 }
 
@@ -769,11 +939,29 @@ pub fn resolve_anchor(
             if let Some(reason) = found.unnameable {
                 return Err(AnchorError::Private(reason));
             }
-            build_contract_fn(&found.item, &alias_map(&found.file), &found.canonical)
-                .map_err(AnchorError::Shape)
+            build_contract_fn(
+                &found.item,
+                &alias_map(&found.file),
+                &found.canonical,
+                found.is_method,
+            )
+            .map_err(AnchorError::Shape)
         }
         crate::callgraph::Resolution::Opaque(reason) => Err(AnchorError::Unreadable(reason)),
         crate::callgraph::Resolution::NotFound => Err(AnchorError::NotFound),
+        // A real item Ply found and will not check (a receiver, a generic
+        // `impl` block, a trait method) or could not choose between (two
+        // `impl` blocks defining the same name). Both are shape facts about
+        // real code, the same family `AnchorError::Shape` already names --
+        // `verify` gives each its own sharper diagnostic before it ever
+        // reaches here (see `verify.rs`'s pre-check), so this arm is what
+        // `cargo ply check` (and any other caller of `resolve_anchor`
+        // directly) sees, and its existing "found, cannot read its shape"
+        // wording is already true of all four reasons.
+        crate::callgraph::Resolution::Refused(reason)
+        | crate::callgraph::Resolution::Ambiguous(reason) => {
+            Err(AnchorError::Shape(anyhow::anyhow!("{reason}")))
+        }
     }
 }
 
@@ -806,7 +994,12 @@ fn tidy_contract_text(s: &str) -> String {
 /// difference between a fn `verify` checks directly and one reached only as
 /// another claim's callee is which caller asked, never how the source is
 /// read.
-pub fn build_contract_fn(f: &ItemFn, aliases: &AliasMap, path: &str) -> Result<ContractFn> {
+pub fn build_contract_fn(
+    f: &ItemFn,
+    aliases: &AliasMap,
+    path: &str,
+    is_method: bool,
+) -> Result<ContractFn> {
     let name = f.sig.ident.to_string();
     let mut params = Vec::new();
     for arg in &f.sig.inputs {
@@ -854,6 +1047,8 @@ pub fn build_contract_fn(f: &ItemFn, aliases: &AliasMap, path: &str) -> Result<C
         }
     }
 
+    let return_type = return_rust_type_from_syn(&f.sig.output, aliases);
+
     Ok(ContractFn {
         name,
         path: path.to_string(),
@@ -862,6 +1057,8 @@ pub fn build_contract_fn(f: &ItemFn, aliases: &AliasMap, path: &str) -> Result<C
         ensures,
         calls: crate::callgraph::call_sites(f),
         source: f.to_token_stream().to_string(),
+        is_method,
+        return_type,
     })
 }
 
@@ -2099,5 +2296,101 @@ pub fn vec_sum(v: &Vec<u8>) -> u32 { 0 }
             "// two\n",
             "the generated file's content still updates on rerun"
         );
+    }
+
+    // -- method resolution: `is_method`, `call_expr`/`import_path`, and the
+    // return-type gate (adversarial review, 2026-08-27) --
+
+    #[test]
+    fn a_receiverless_method_is_flagged_is_method_with_a_type_qualified_call_expr() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+pub struct Bucket { cap: u32 }
+impl Bucket {
+    #[ply::ensures(|result| result.cap == cap)]
+    pub fn new(cap: u32) -> Self { Bucket { cap } }
+}
+"#,
+        );
+        let cf = discover_fn(&path, "Bucket::new").unwrap();
+        assert!(cf.is_method, "a `Type::method` claim must set is_method");
+        assert_eq!(
+            cf.call_expr(),
+            "Bucket::new",
+            "generated code must call this by `Type::method`, never a bare `new` (which is not              importable at all -- a method is not a `use`-able item)"
+        );
+        assert_eq!(
+            cf.import_path(),
+            "Bucket",
+            "generated code must import the *type*, not the method, so `call_expr()` resolves"
+        );
+        assert_eq!(
+            cf.return_type,
+            RustType::SelfType,
+            "a constructor's `Self` return must never gate whether Ply checks it"
+        );
+        assert!(
+            cf.is_bounded_supported() && cf.is_fuzz_supported(),
+            "a `u32` parameter and a `Self` return are both fully supported"
+        );
+    }
+
+    #[test]
+    fn a_free_function_keeps_its_bare_call_expr_and_full_import_path_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+mod rates { pub fn legacy_rate(t: u8) -> u32 { 150 } }
+"#,
+        );
+        let cf = discover_fn(&path, "rates::legacy_rate").unwrap();
+        assert!(!cf.is_method);
+        assert_eq!(
+            cf.call_expr(),
+            "legacy_rate",
+            "unchanged from before methods existed"
+        );
+        assert_eq!(
+            cf.import_path(),
+            "rates::legacy_rate",
+            "unchanged -- the whole path is what a free function's own `use` still imports"
+        );
+    }
+
+    #[test]
+    fn a_receiverless_methods_unmodelled_return_type_is_unsupported_not_a_silent_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+pub struct Bucket;
+pub struct Elsewhere { pub n: u32 }
+impl Bucket {
+    #[ply::ensures(|result| result.n == 0)]
+    pub fn make_elsewhere() -> Elsewhere { Elsewhere { n: 0 } }
+}
+"#,
+        );
+        let cf = discover_fn(&path, "Bucket::make_elsewhere").unwrap();
+        assert!(
+            matches!(cf.return_type, RustType::Unsupported(_)),
+            "an ordinary struct Ply's parser does not model is unsupported in return position              exactly as it would be as a parameter: {:?}",
+            cf.return_type
+        );
+        assert!(!cf.is_bounded_supported());
+        assert!(!cf.is_fuzz_supported());
+    }
+
+    #[test]
+    fn last_two_segments_splits_a_method_path_and_passes_through_a_short_one() {
+        assert_eq!(
+            last_two_segments("bucket::TokenBucket::new"),
+            "TokenBucket::new"
+        );
+        assert_eq!(last_two_segments("Bucket::new"), "Bucket::new");
+        assert_eq!(last_two_segments("legacy_rate"), "legacy_rate");
     }
 }

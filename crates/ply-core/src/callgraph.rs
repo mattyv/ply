@@ -203,6 +203,15 @@ pub struct FoundFn {
     /// because the dependency's own crate-root path is not what a `#[kani::stub]`
     /// attribute in *this* crate can name.
     pub local: bool,
+    /// Whether this is `Type::method` rather than a free function (added
+    /// 2026-08-27, method resolution). Generated-harness codegen calls a
+    /// free function by its bare final segment (after `use`-importing the
+    /// whole path); it cannot do that for a method, which is not itself an
+    /// importable item -- `use crate::Bucket::new;` does not compile. Code
+    /// that builds a call expression from `canonical` needs to know which
+    /// shape it has: a bare identifier, or `Type::method` reached by
+    /// importing only `Type`.
+    pub is_method: bool,
 }
 
 /// What one path lookup found. `Opaque` is the branch that keeps the rule
@@ -212,6 +221,19 @@ pub enum Resolution {
     Found(Box<FoundFn>),
     Opaque(String),
     NotFound,
+    /// `Type::method` named something real -- a method with a receiver, an
+    /// item in a generic `impl` block, or a trait's own method (a bare
+    /// signature, a default body, or a trait-impl override) -- that this
+    /// slice's scope refuses to check, by name, rather than either guessing
+    /// at it or reporting the false "no such function" (added 2026-08-27,
+    /// method resolution). The payload is the plain-language reason.
+    Refused(String),
+    /// `Type::method` matched more than one candidate in the same file --
+    /// two `impl` blocks for the same type each defining a same-named
+    /// method (real Rust: e.g. two concrete instantiations of a generic
+    /// type, `impl Foo<u8>` and `impl Foo<u16>`, each with their own `bar`).
+    /// Ply will not pick one; the payload names why it could not.
+    Ambiguous(String),
 }
 
 impl Resolution {
@@ -297,6 +319,17 @@ impl Resolver {
             Resolution::Found(f) => *f,
             Resolution::Opaque(reason) => return CalleeStatus::Opaque(reason),
             Resolution::NotFound => return CalleeStatus::Unresolved,
+            // A call site naming a method Ply refuses to check (a receiver,
+            // a generic impl, a trait method): real and resolved, same as
+            // §5.5's third branch means for a free function -- nothing
+            // vouches for it, so Kani must not descend. `Unclaimed` is
+            // exactly that branch, not a new one.
+            Resolution::Refused(_) => return CalleeStatus::Unclaimed,
+            // Ambiguous is a stronger fact than "nothing vouches for it" --
+            // Ply does not even know which function this is, so it is
+            // refused the same way an unreadable module is: "I could not
+            // resolve this with confidence" is not "there is nothing here".
+            Resolution::Ambiguous(reason) => return CalleeStatus::Opaque(reason),
         };
         if has_inline_contract(&found.item) {
             return CalleeStatus::Contracted;
@@ -442,7 +475,28 @@ impl Resolver {
         if depth > MAX_DEPTH {
             return Resolution::NotFound;
         }
-        let segs = expand_imports(&import_map(&file.ast), &strip_prefixes(segments));
+        // `Type::method`, tried against *this file's own* `impl`/`trait`
+        // blocks before any `use`-import following: a fn key names the
+        // module its `impl` block lives in, exactly as a free function's key
+        // names the module its `fn` lives in -- never wherever the type
+        // itself happens to be declared or re-exported from. Tried on the
+        // raw (pre-`expand_imports`) segments on purpose: a type used inside
+        // a trait `impl` is almost always brought into scope by its own
+        // `use` (`use crate::bucket::TokenBucket;` in `rate_limiter.rs`,
+        // which implements `RateLimiter` for it), and `expand_imports`
+        // exists precisely to rewrite such a name to *its* module -- which
+        // would silently redirect a claim written `rate_limiter::TokenBucket::check_n`
+        // to `bucket::TokenBucket::check_n`, discarding the module the claim
+        // actually named. Falling through to `None` here (no local `impl`
+        // or `trait` matched `head` at all) leaves the import-following path
+        // below completely unchanged for every free-function claim.
+        let raw = strip_prefixes(segments);
+        if let [head, method_name] = raw.as_slice()
+            && let Some(resolution) = self.resolve_type_method(file, head, method_name, depth)
+        {
+            return resolution;
+        }
+        let segs = expand_imports(&import_map(&file.ast), &raw);
         let Some((head, rest)) = segs.split_first() else {
             return Resolution::NotFound;
         };
@@ -469,6 +523,7 @@ impl Resolver {
                         file: file.ast.clone(),
                         unnameable,
                         local: true,
+                        is_method: false,
                     }))
                 }
                 None => Resolution::NotFound,
@@ -504,7 +559,183 @@ impl Resolver {
                 return inner.under_module(head, mod_private);
             }
         }
+        // No nested module named `head`: this is exactly the shape a
+        // `Type::method` key takes once its module prefix has been walked
+        // off (`head` is the type, `rest` is the one remaining segment, the
+        // method name). A genuine two-segment "module::free_fn" path never
+        // reaches here, because the `rest.is_empty()` branch above already
+        // resolved the free-fn case one frame further down the recursion.
+        if let [method_name] = rest
+            && let Some(resolution) = self.resolve_type_method(file, head, method_name, depth)
+        {
+            return resolution;
+        }
         Resolution::NotFound
+    }
+
+    /// `Type::method`, resolved within one file — the same per-file scope a
+    /// free function's module-qualified path already uses, chosen for the
+    /// same reason: a claim names the module the definition lives in, not
+    /// the module the type happens to be declared in. When an `impl` block
+    /// sits in a different module than its type, the claim is written
+    /// against the `impl` block's module, exactly as a free function's
+    /// claim is written against the module the `fn` sits in, never the
+    /// module that merely re-exports it.
+    ///
+    /// Returns `None` when `head` matches no `impl` block and no `trait`
+    /// with a method named `method_name` in this file at all — the caller
+    /// falls through to `NotFound`, same as an unmatched free-function name.
+    fn resolve_type_method(
+        &self,
+        file: &SourceFile,
+        head: &str,
+        method_name: &str,
+        depth: usize,
+    ) -> Option<Resolution> {
+        let mut inherent: Vec<(&syn::ItemImpl, &syn::ImplItemFn)> = Vec::new();
+        let mut trait_impl: Vec<(&syn::ItemImpl, &syn::ImplItemFn)> = Vec::new();
+        for item in &file.ast.items {
+            let syn::Item::Impl(imp) = item else { continue };
+            if impl_self_type_head(&imp.self_ty).as_deref() != Some(head) {
+                continue;
+            }
+            for it in &imp.items {
+                if let syn::ImplItem::Fn(m) = it
+                    && m.sig.ident == method_name
+                {
+                    if imp.trait_.is_some() {
+                        trait_impl.push((imp, m));
+                    } else {
+                        inherent.push((imp, m));
+                    }
+                }
+            }
+        }
+        // Rust's own resolution rule: an inherent method shadows a trait
+        // method of the same name, so `Type::method` means the inherent one
+        // whenever both exist. Ambiguity is judged only *within* whichever
+        // pool actually applies -- two inherent candidates, or (with no
+        // inherent candidate) two trait-impl ones.
+        if inherent.len() > 1 {
+            return Some(Resolution::Ambiguous(format!(
+                "`{head}::{method_name}` matches {} different `impl {head}` blocks in this file, \
+                 each defining its own `{method_name}` -- real Rust when `{head}` is generic and \
+                 each `impl` targets a different concrete instantiation. Ply's syntactic reader \
+                 cannot tell which one a claim means, so it refuses rather than picking one",
+                inherent.len()
+            )));
+        }
+        if let Some((imp, m)) = inherent.first() {
+            return Some(self.classify_found_method(
+                file,
+                head,
+                method_name,
+                m,
+                false,
+                !imp.generics.params.is_empty(),
+                depth,
+            ));
+        }
+        if trait_impl.len() > 1 {
+            return Some(Resolution::Ambiguous(format!(
+                "`{head}::{method_name}` matches {} different trait `impl`s for `{head}` in this \
+                 file, each providing its own `{method_name}` -- Ply's syntactic reader cannot \
+                 tell which trait a bare `{head}::{method_name}` claim means, so it refuses rather \
+                 than picking one",
+                trait_impl.len()
+            )));
+        }
+        if let Some((imp, m)) = trait_impl.first() {
+            return Some(self.classify_found_method(
+                file,
+                head,
+                method_name,
+                m,
+                true,
+                !imp.generics.params.is_empty(),
+                depth,
+            ));
+        }
+        // No `impl` block named `head` matched at all -- `head` may still be
+        // a trait, with the method either a bare signature or a default
+        // body. Either way it is a trait method, and out of scope the same
+        // way a trait-impl override is.
+        for item in &file.ast.items {
+            if let syn::Item::Trait(t) = item
+                && t.ident == head
+            {
+                for it in &t.items {
+                    if let syn::TraitItem::Fn(m) = it
+                        && m.sig.ident == method_name
+                    {
+                        let has_body = m.default.is_some();
+                        return Some(Resolution::Refused(format!(
+                            "`{head}::{method_name}` is declared on `trait {head}` ({}), not in \
+                             an `impl` block. Ply checks inherent methods and free functions, not \
+                             trait methods, yet",
+                            if has_body {
+                                "a default-body method"
+                            } else {
+                                "a required method with no body of its own"
+                            }
+                        )));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// One matched `impl`-block method, sorted into `Found` (a plain
+    /// inherent, non-generic, receiverless associated function -- the same
+    /// shape a free function already is, from here on) or `Refused` (a
+    /// trait method, a generic `impl` block, or a receiver this task does
+    /// not build) — in that priority order, since a trait-impl method is
+    /// out of scope regardless of whether its `impl` block also happens to
+    /// be generic or the method also happens to take a receiver.
+    #[allow(clippy::too_many_arguments)]
+    fn classify_found_method(
+        &self,
+        file: &SourceFile,
+        head: &str,
+        method_name: &str,
+        m: &syn::ImplItemFn,
+        is_trait_impl: bool,
+        impl_is_generic: bool,
+        depth: usize,
+    ) -> Resolution {
+        if is_trait_impl {
+            return Resolution::Refused(format!(
+                "`{head}::{method_name}` is defined in a trait implementation (`impl ... for \
+                 {head}`). Ply checks inherent methods and free functions, not trait methods, yet"
+            ));
+        }
+        if impl_is_generic {
+            return Resolution::Refused(format!(
+                "`{head}::{method_name}` is declared in a generic `impl` block (`impl<...> \
+                 {head}<...>`). Ply does not check generic `impl` blocks yet"
+            ));
+        }
+        if has_self_receiver(&m.sig) {
+            return Resolution::Refused(format!(
+                "Ply found `{head}::{method_name}` but cannot yet build a value of `{head}` to \
+                 call it on -- constructing a receiver is not supported yet"
+            ));
+        }
+        let unnameable = (depth > 0 && matches!(m.vis, syn::Visibility::Inherited)).then(|| {
+            format!(
+                "`{head}::{method_name}` is private to the module it is declared in, so the \
+                 harness Ply generates at the crate root cannot call it by name"
+            )
+        });
+        Resolution::Found(Box::new(FoundFn {
+            item: impl_fn_to_item_fn(m),
+            canonical: format!("{head}::{method_name}"),
+            file: file.ast.clone(),
+            unnameable,
+            local: true,
+            is_method: true,
+        }))
     }
 
     /// The deliberate rule for glob imports (`use rates::*;`). A glob whose
@@ -546,6 +777,12 @@ impl Resolver {
                     ));
                 }
                 Resolution::NotFound => {}
+                // A bare name glob-resolved through a chain of modules can,
+                // in principle, land on a `Type::method`-shaped tail (see
+                // `resolve_type_method`'s doc). Treated the same as
+                // `NotFound` here: this glob prefix simply did not name it,
+                // try the next one.
+                Resolution::Refused(_) | Resolution::Ambiguous(_) => {}
             }
         }
         match opaque {
@@ -606,6 +843,43 @@ fn strip_prefixes(segments: &[String]) -> Vec<String> {
         .skip_while(|s| s.as_str() == "self" || s.as_str() == "crate")
         .cloned()
         .collect()
+}
+
+/// The identifier an `impl` block's self type is named by, ignoring any
+/// generic arguments (`impl<C: Clock> TokenBucket<C>`'s self type is
+/// `TokenBucket`, regardless of `<C>`) and any module qualification on the
+/// type itself (`impl crate::bucket::TokenBucket` — not used in this
+/// fixture, but the last path segment is the only part a `Type::method` key
+/// ever spells). `None` for a self type that is not a plain path at all
+/// (`impl [T; 4]`, `impl (A, B)`) — no `Type::method` key can name one of
+/// those, so no candidate is ever collected for it.
+fn impl_self_type_head(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(p) => p.path.segments.last().map(|s| s.ident.to_string()),
+        _ => None,
+    }
+}
+
+/// Whether this signature's first argument is a receiver (`self`, `&self`,
+/// `&mut self`) — the one shape this task's scope defers, because building
+/// a value to call it on is unsettled (docs/review-self-construction.md).
+fn has_self_receiver(sig: &syn::Signature) -> bool {
+    matches!(sig.inputs.first(), Some(syn::FnArg::Receiver(_)))
+}
+
+/// An `impl`-block method's fields are the same shape a free function's
+/// are (`attrs`, `vis`, `sig`, `block`) — `syn::ImplItemFn` just names them
+/// for a different context. Rebuilding a plain `syn::ItemFn` out of one lets
+/// every downstream reader (`build_contract_fn`, the call-site collector)
+/// stay written against free functions and never need its own method-shaped
+/// twin.
+fn impl_fn_to_item_fn(m: &syn::ImplItemFn) -> syn::ItemFn {
+    syn::ItemFn {
+        attrs: m.attrs.clone(),
+        vis: m.vis.clone(),
+        sig: m.sig.clone(),
+        block: Box::new(m.block.clone()),
+    }
 }
 
 fn starts_uppercase(name: &str) -> bool {
