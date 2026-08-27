@@ -843,6 +843,17 @@ pub struct ContractFn {
     /// before codegen runs, never silently attempted (adversarial review,
     /// 2026-08-27).
     pub return_type: RustType,
+    /// `Some` exactly when this is a method taking `&self` whose receiver
+    /// Ply itself built -- a constructor call plus a bounded sequence of
+    /// the type's own other operations (docs/review-self-construction.md's
+    /// "fourth option": constructor-only is this with an empty operation
+    /// pool and a sequence that always lands on length 0). `None` for every
+    /// free function and every receiverless associated function (a
+    /// constructor's own harness has nothing to build a receiver *for*).
+    /// Never set by field-by-field construction -- there is no other
+    /// producer of this field, on purpose (see `find_receiver_plan`'s own
+    /// doc: the one and only place a `ReceiverPlan` is built).
+    pub receiver: Option<ReceiverPlan>,
 }
 
 impl ContractFn {
@@ -860,8 +871,18 @@ impl ContractFn {
     /// see `RustType::is_bounded_return_supported`'s own doc for why that
     /// is a different question from a parameter's, never the same check
     /// twice.)
+    ///
+    /// A receiver method is refused here regardless of its params/return
+    /// (this task, 2026-08-27): the review that settled receiver
+    /// construction scoped the sequence-of-operations approach to the
+    /// sampling tier first ("affordable at length 1-2 and falls off a
+    /// cliff after" on the exhaustive tier, unmeasured), so `bounded(k)` on
+    /// a receiver method stays `unsupported` rather than attempting a Kani
+    /// harness nobody has measured the cost of. `fuzz`/`test` are what
+    /// `is_fuzz_supported` below governs, and are unaffected.
     pub fn is_bounded_supported(&self) -> bool {
-        self.params.iter().all(|p| p.ty.is_bounded_supported())
+        self.receiver.is_none()
+            && self.params.iter().all(|p| p.ty.is_bounded_supported())
             && self.return_type.is_bounded_return_supported()
     }
 
@@ -1150,7 +1171,453 @@ pub fn build_contract_fn(
         source: f.to_token_stream().to_string(),
         is_method,
         return_type,
+        receiver: None,
     })
+}
+
+// == Receiver construction (docs/review-self-construction.md's "fourth
+// option") =====================================================================
+//
+// A method taking `&self` is refused by `callgraph::Resolver` before it ever
+// reaches `discover_fn_with` -- "cannot yet build a value of `Type` to call
+// it on" (`callgraph::receiver_refusal_reason`). That refusal is correct for
+// what `discover_fn_with`'s single shared resolver is for (§5.5: "one
+// resolver answers both questions, so Ply can no longer have two ideas of
+// where a function lives"), and this task does not touch it.
+//
+// What follows is a second, narrower, independent path a caller (`verify`)
+// tries *after* that refusal, never instead of it: given the exact path a
+// `ply.yaml` claim wrote (`module::Type::method`), read that one module file
+// again, and see whether Ply's own machinery -- a constructor it already
+// knows how to call, a bounded sequence of the type's own other `&self`
+// operations -- can build a receiver to call the method on. Every value it
+// produces is built by calling the type's own code, nothing else, so no
+// invariant is assumed and nothing is taken on trust (the review's whole
+// point). It fails closed: anything it cannot handle returns a
+// [`ReceiverError`] naming why, and the caller falls back to the original
+// refusal, unchanged.
+//
+// **Deliberately narrow, honestly so:**
+// - only `&self` methods are attempted -- a `&mut self`/owned-`self` target
+//   is refused exactly as before (`ReceiverError::MutableOrOwnedReceiver`):
+//   Ply still has no way to state what such a call is supposed to change
+//   about the receiver, which is a separate gap this task does not close;
+// - only one module segment deep (`module::Type::method`, not
+//   `a::b::Type::method`) -- deeper nesting is `ReceiverError::UnsupportedModulePath`,
+//   a named limit rather than a silent wrong answer;
+// - a constructor must return bare `Self` (`return_rust_type_from_syn`'s own
+//   existing narrowing -- `Result<Self, E>`, a real shape in the rate
+//   limiter fixture's `Quota::new`/`RefillRate::new`, is not recognised
+//   here either, unchanged from every other consumer of that function);
+// - the bounded sequence's *other* operations (beyond repeating the target
+//   itself) are only ever pooled when their own non-`self` parameters are
+//   exactly the target's own shape (`Operation::params_match`) -- Ply's
+//   codegen does not yet build a mixed-shape step, so an operation whose
+//   parameters differ from the target's is left out of the pool rather than
+//   guessed at. The target itself always matches its own shape, so the pool
+//   is never empty and constructor-only (sequence length 0) is always the
+//   floor, never a total refusal.
+
+/// How long a bounded operation sequence Ply will build before calling the
+/// checked method -- named here once so the verdict-visibility disclosure
+/// (`verify`'s `receiver_sequence_diag`, W0520) and the codegen that
+/// actually bounds the generated `Vec` agree on the same number. Three,
+/// not zero: constructor-only (`docs/review-self-construction.md`'s own
+/// "reaches roughly three and a half of eleven stated invariants") is the
+/// floor this dial already covers at length 0; the decisive gap the review
+/// measured -- a bug behind a *second* or *third* call, unreachable from a
+/// freshly built value -- is what a nonzero default exists to close. On the
+/// sampling tier, unlike the exhaustive one, going from 0 to 3 costs nothing
+/// combinatorial (proptest draws one random sequence per case, it does not
+/// enumerate every one), which is why this task defaults it above zero on
+/// the tier it is scoped to -- see the module doc for why the exhaustive
+/// tier is left out of this pass entirely.
+pub const MAX_RECEIVER_SEQUENCE_LEN: u32 = 3;
+
+/// One other operation Ply may splice into the bounded sequence before the
+/// checked call -- an inherent, non-generic, `&self`-taking method living in
+/// the same `impl` block(s) this scan already read, found alongside the
+/// checked method itself (which is always operation zero, see
+/// `ReceiverPlan::operations`).
+#[derive(Debug, Clone)]
+pub struct Operation {
+    /// The full path as the checked method's own is spelled (`module::Type::name`
+    /// or `Type::name`), so `last_two_segments` renders it the same way
+    /// `ContractFn::call_expr` already does.
+    pub call_path: String,
+    /// Its own non-`self` parameters, already confirmed to equal the
+    /// checked method's own shape element-for-element (`params_match`) --
+    /// codegen reuses the checked method's own generated argument strategy
+    /// for every operation in the pool for exactly this reason.
+    pub params: Vec<Param>,
+}
+
+impl Operation {
+    /// Same non-`self` parameter shape as `target` -- same count, same
+    /// [`RustType`] and by-ref-ness at each position, names aside. This is
+    /// the whole reason the sequence codegen can share one argument
+    /// strategy across every pooled operation instead of building a
+    /// mixed-shape step.
+    fn params_match(candidate: &[Param], target: &[Param]) -> bool {
+        candidate.len() == target.len()
+            && candidate
+                .iter()
+                .zip(target.iter())
+                .all(|(a, b)| a.ty == b.ty && a.by_ref == b.by_ref)
+    }
+}
+
+/// A receiver Ply built for a method, rather than one a user declared or one
+/// filled in field-by-field (`docs/review-self-construction.md` rejects
+/// both): a constructor call, plus a pool of the type's own `&self`
+/// operations a bounded random sequence may call before the checked method
+/// runs. `operations[0]` is always the checked method itself -- repeating it
+/// is what reaches the invariant the review's own worked example needed a
+/// *second* call to find (a fresh value's first call is always the easy
+/// branch); every other entry is a same-shape sibling operation found in the
+/// same scan.
+#[derive(Debug, Clone)]
+pub struct ReceiverPlan {
+    /// The type this receiver is a value of, spelled the way a diagnostic
+    /// should name it (bare, no module prefix -- `Bucket`, not
+    /// `bucket::Bucket`).
+    pub type_name: String,
+    /// The constructor's own full path, same spelling convention as
+    /// [`Operation::call_path`].
+    pub constructor: String,
+    pub ctor_params: Vec<Param>,
+    pub operations: Vec<Operation>,
+    /// [`MAX_RECEIVER_SEQUENCE_LEN`], carried alongside the plan so a
+    /// caller building the verdict-visibility disclosure never has to
+    /// import the constant under a different name than what codegen used.
+    pub max_sequence_len: u32,
+}
+
+/// Why [`discover_method_with_receiver`] could not build a checkable method
+/// out of a `&self` receiver -- named so a caller can decide whether to fall
+/// back to the resolver's own original refusal (every variant here) or, one
+/// day, offer a sharper fix. `Display` renders the plain sentence a
+/// diagnostic quotes directly (newbie bar: names the type, says why, never
+/// just "unsupported").
+#[derive(Debug)]
+pub enum ReceiverError {
+    /// The exact method this task's file-based scan looked for is not in
+    /// any non-generic, trait-free `impl` block it could find in the one
+    /// module file `fn_path` names -- most likely it is behind a trait impl,
+    /// a generic `impl` block, split across a file this narrow scan does
+    /// not follow, or the claim path itself does not parse as
+    /// `[module::]Type::method`. The caller's own resolver-level refusal
+    /// already names the real reason in every one of those cases; this
+    /// variant only ever means "try the original message".
+    MethodNotFound,
+    /// The method exists but takes `&mut self` (or owned `self`) rather than
+    /// `&self` -- unchanged from before this task: Ply still has no way to
+    /// state what such a call is supposed to change about the receiver, so
+    /// building one would not be enough on its own (`callgraph`'s own
+    /// `&mut self` reason already says this; this variant exists so the
+    /// caller can fall back to it rather than silently doing nothing).
+    MutableOrOwnedReceiver,
+    /// This scan's own module-path convention (`module::Type::method`, one
+    /// segment at most) does not reach this claim's path -- named rather
+    /// than guessed at.
+    UnsupportedModulePath,
+    /// The file could not be read or did not parse as Rust at all.
+    Unreadable,
+    /// The type has no receiverless associated function anywhere in the
+    /// scanned `impl` block(s) that returns bare `Self` -- there is nothing
+    /// for Ply to build a receiver by calling.
+    NoConstructor { type_name: String },
+    /// Every candidate constructor found takes at least one parameter of a
+    /// type Ply's checkers cannot build a value of -- named so a reader
+    /// knows exactly which type blocked it, not merely that "a" constructor
+    /// exists.
+    UnsupportedConstructorParam {
+        type_name: String,
+        ctor_name: String,
+        bad_type: String,
+    },
+    /// The checked method's own parameter list contains a shape this scan's
+    /// simple pattern reader does not recognise (a destructuring pattern
+    /// rather than a plain identifier) -- the same limit `build_contract_fn`
+    /// already names for a free function, reached here before that shared
+    /// path is even called.
+    UnsupportedParamPattern,
+}
+
+impl std::fmt::Display for ReceiverError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReceiverError::MethodNotFound => write!(f, "the method was not found by this scan"),
+            ReceiverError::MutableOrOwnedReceiver => {
+                write!(f, "the method does not take a shared `&self` receiver")
+            }
+            ReceiverError::UnsupportedModulePath => {
+                write!(
+                    f,
+                    "the claim's module path is deeper than this scan follows"
+                )
+            }
+            ReceiverError::Unreadable => write!(f, "the module file could not be read or parsed"),
+            ReceiverError::NoConstructor { type_name } => write!(
+                f,
+                "Ply cannot build a receiver for `{type_name}`: it has no associated function \
+                 in the file it is declared in that builds a `{type_name}` value and takes only \
+                 types Ply's checkers already know how to build -- constructing a receiver needs \
+                 a constructor to call, and none was found"
+            ),
+            ReceiverError::UnsupportedConstructorParam {
+                type_name,
+                ctor_name,
+                bad_type,
+            } => write!(
+                f,
+                "Ply cannot build a receiver for `{type_name}`: its constructor `{ctor_name}` \
+                 takes a parameter of type `{bad_type}`, which is a shape Ply's checkers do not \
+                 build values for yet, so the constructor itself cannot be called"
+            ),
+            ReceiverError::UnsupportedParamPattern => write!(
+                f,
+                "the method's own parameter list uses a pattern this scan does not read (only \
+                 plain identifiers are supported)"
+            ),
+        }
+    }
+}
+
+/// The module-relative file `fn_path`'s own module segment names, one level
+/// deep at most (see the module doc's own narrowing) -- `crate_dir/src/lib.rs`
+/// for a bare `Type::method`, `crate_dir/src/{seg}.rs` or
+/// `crate_dir/src/{seg}/mod.rs` for `seg::Type::method`.
+fn receiver_module_file(crate_dir: &Path, module_segs: &[&str]) -> Result<PathBuf, ReceiverError> {
+    let src_dir = crate_dir.join("src");
+    if module_segs.is_empty() {
+        return Ok(src_dir.join("lib.rs"));
+    }
+    if module_segs.len() > 1 {
+        return Err(ReceiverError::UnsupportedModulePath);
+    }
+    let seg = module_segs[0];
+    let flat = src_dir.join(format!("{seg}.rs"));
+    if flat.is_file() {
+        return Ok(flat);
+    }
+    let nested = src_dir.join(seg).join("mod.rs");
+    if nested.is_file() {
+        return Ok(nested);
+    }
+    Err(ReceiverError::UnsupportedModulePath)
+}
+
+/// The bare name a `self_ty` must equal for an `impl` block to be "for"
+/// `type_name` -- a plain path, one segment, no generic arguments (an
+/// instantiation of a generic type, `impl Foo<u8>`, is left to the
+/// resolver's own generic-`impl` refusal, which already names it correctly).
+fn impl_targets_type(self_ty: &Type, type_name: &str) -> bool {
+    matches!(self_ty, Type::Path(tp)
+        if tp.qself.is_none()
+            && tp.path.segments.len() == 1
+            && tp.path.segments[0].ident == type_name
+            && tp.path.segments[0].arguments.is_empty())
+}
+
+/// Every non-`self` argument of `inputs` as a [`Param`], the same shape
+/// `build_contract_fn` already reads for a free function's whole parameter
+/// list -- `None` on the one pattern shape it refuses (anything but a plain
+/// identifier), so a caller can tell "no parameters" (`Some(vec![])`) apart
+/// from "a shape this reader does not understand".
+fn params_from_inputs<'a>(
+    inputs: impl Iterator<Item = &'a FnArg>,
+    aliases: &AliasMap,
+) -> Option<Vec<Param>> {
+    let mut out = Vec::new();
+    for arg in inputs {
+        let FnArg::Typed(pt) = arg else {
+            return None;
+        };
+        let pname = match &*pt.pat {
+            Pat::Ident(pi) => pi.ident.to_string(),
+            _ => return None,
+        };
+        let (by_ref, inner_ty) = match &*pt.ty {
+            Type::Reference(r) if r.mutability.is_none() => (true, r.elem.as_ref()),
+            other => (false, other),
+        };
+        out.push(Param {
+            name: pname,
+            ty: rust_type_from_syn(inner_ty, aliases),
+            by_ref,
+        });
+    }
+    Some(out)
+}
+
+/// `m`'s own signature with its receiver argument removed, converted to a
+/// plain `syn::ItemFn` -- lets [`discover_method_with_receiver`] hand the
+/// checked method straight to `build_contract_fn` and get every bit of its
+/// existing contract/call/source-hash handling for free, instead of
+/// duplicating it. Mirrors `callgraph::impl_fn_to_item_fn`'s own conversion
+/// (a private helper of that file, which this task's scope does not touch)
+/// plus the one extra step that function never needed: dropping the
+/// receiver `build_contract_fn` would otherwise bail out on by name
+/// (E0304).
+fn strip_receiver_to_item_fn(m: &syn::ImplItemFn) -> ItemFn {
+    let mut sig = m.sig.clone();
+    sig.inputs = sig.inputs.iter().skip(1).cloned().collect();
+    ItemFn {
+        attrs: m.attrs.clone(),
+        vis: m.vis.clone(),
+        sig,
+        block: Box::new(m.block.clone()),
+    }
+}
+
+/// Scans every non-generic, trait-free `impl {type_name} { .. }` block in
+/// `file` for: the checked method itself (must exist, must take `&self`),
+/// a constructor (a receiverless associated function returning bare `Self`,
+/// preferring the first fully-buildable one in source order), and every
+/// other `&self` operation whose own parameters match the checked method's
+/// shape exactly. See the module doc for the honesty conditions this
+/// narrows on purpose.
+fn scan_impls_for_receiver(
+    file: &syn::File,
+    aliases: &AliasMap,
+    type_name: &str,
+    method_name: &str,
+) -> std::result::Result<(syn::ImplItemFn, ReceiverPlan), ReceiverError> {
+    let mut target: Option<syn::ImplItemFn> = None;
+    let mut ctor_candidates: Vec<(String, Vec<Param>, Option<String>)> = Vec::new();
+    let mut other_ops: Vec<Operation> = Vec::new();
+
+    for item in &file.items {
+        let syn::Item::Impl(imp) = item else {
+            continue;
+        };
+        if imp.trait_.is_some() || !imp.generics.params.is_empty() {
+            continue;
+        }
+        if !impl_targets_type(&imp.self_ty, type_name) {
+            continue;
+        }
+        for impl_item in &imp.items {
+            let syn::ImplItem::Fn(m) = impl_item else {
+                continue;
+            };
+            let is_receiverless = !matches!(m.sig.inputs.first(), Some(FnArg::Receiver(_)));
+            if m.sig.ident == method_name && !is_receiverless {
+                target = Some(m.clone());
+                continue;
+            }
+            if is_receiverless {
+                // A candidate constructor: only ones returning bare `Self`
+                // count (`return_rust_type_from_syn`'s own narrowing --
+                // `Result<Self, E>` constructors, a real shape this crate's
+                // own `Quota::new` uses, are not recognised here either).
+                if return_rust_type_from_syn(&m.sig.output, aliases) != RustType::SelfType {
+                    continue;
+                }
+                let Some(params) = params_from_inputs(m.sig.inputs.iter(), aliases) else {
+                    continue;
+                };
+                let bad = params
+                    .iter()
+                    .find(|p| !p.ty.is_fuzz_supported())
+                    .map(|p| p.ty.display_name());
+                let path = format!("{type_name}::{}", m.sig.ident);
+                ctor_candidates.push((path, params, bad));
+            } else if let Some(syn::FnArg::Receiver(r)) = m.sig.inputs.first()
+                && r.reference.is_some()
+                && r.mutability.is_none()
+                && let Some(params) = params_from_inputs(m.sig.inputs.iter().skip(1), aliases)
+            {
+                // A candidate sequence operation -- shape-matched against
+                // the target below, once the target itself is known.
+                other_ops.push(Operation {
+                    call_path: format!("{type_name}::{}", m.sig.ident),
+                    params,
+                });
+            }
+        }
+    }
+
+    let Some(target) = target else {
+        return Err(ReceiverError::MethodNotFound);
+    };
+    match target.sig.inputs.first() {
+        Some(FnArg::Receiver(r)) if r.reference.is_some() && r.mutability.is_none() => {}
+        _ => return Err(ReceiverError::MutableOrOwnedReceiver),
+    }
+    let target_params = params_from_inputs(target.sig.inputs.iter().skip(1), aliases)
+        .ok_or(ReceiverError::UnsupportedParamPattern)?;
+
+    let buildable = ctor_candidates.iter().find(|(_, _, bad)| bad.is_none());
+    let (ctor_path, ctor_params) = match buildable {
+        Some((path, params, _)) => (path.clone(), params.clone()),
+        None => match ctor_candidates.first() {
+            Some((path, _, Some(bad))) => {
+                return Err(ReceiverError::UnsupportedConstructorParam {
+                    type_name: type_name.to_string(),
+                    ctor_name: path.clone(),
+                    bad_type: bad.clone(),
+                });
+            }
+            _ => {
+                return Err(ReceiverError::NoConstructor {
+                    type_name: type_name.to_string(),
+                });
+            }
+        },
+    };
+
+    let mut operations = vec![Operation {
+        call_path: format!("{type_name}::{method_name}"),
+        params: target_params.clone(),
+    }];
+    for op in other_ops {
+        if Operation::params_match(&op.params, &target_params) {
+            operations.push(op);
+        }
+    }
+
+    let plan = ReceiverPlan {
+        type_name: type_name.to_string(),
+        constructor: ctor_path,
+        ctor_params,
+        operations,
+        max_sequence_len: MAX_RECEIVER_SEQUENCE_LEN,
+    };
+    Ok((target, plan))
+}
+
+/// The second, narrower path §"Receiver construction" above describes: given
+/// the exact path a `ply.yaml` claim wrote, try to build a checkable
+/// [`ContractFn`] for a `&self` method by finding the type's own constructor
+/// and a pool of its own same-shape operations. Called only *after*
+/// `callgraph::Resolver` has already refused the same path -- see the module
+/// doc for why this never replaces that resolver, only follows it.
+pub fn discover_method_with_receiver(
+    crate_dir: &Path,
+    fn_path: &str,
+) -> std::result::Result<ContractFn, ReceiverError> {
+    let segs: Vec<&str> = fn_path.split("::").collect();
+    if segs.len() < 2 {
+        return Err(ReceiverError::MethodNotFound);
+    }
+    let method_name = segs[segs.len() - 1];
+    let type_name = segs[segs.len() - 2];
+    let module_segs = &segs[..segs.len() - 2];
+
+    let file_path = receiver_module_file(crate_dir, module_segs)?;
+    let src = std::fs::read_to_string(&file_path).map_err(|_| ReceiverError::Unreadable)?;
+    let file: syn::File = syn::parse_file(&src).map_err(|_| ReceiverError::Unreadable)?;
+    let aliases = alias_map(&file);
+
+    let (target, plan) = scan_impls_for_receiver(&file, &aliases, type_name, method_name)?;
+
+    let item_fn = strip_receiver_to_item_fn(&target);
+    let mut cf = build_contract_fn(&item_fn, &aliases, fn_path, true)
+        .map_err(|_| ReceiverError::UnsupportedParamPattern)?;
+    cf.receiver = Some(plan);
+    Ok(cf)
 }
 
 /// One callee stubbed out of a proof under D5's second branch (§5.5): its
@@ -2535,5 +3002,244 @@ impl Bucket {
         );
         assert_eq!(last_two_segments("Bucket::new"), "Bucket::new");
         assert_eq!(last_two_segments("legacy_rate"), "legacy_rate");
+    }
+
+    // -- receiver construction (docs/review-self-construction.md's "fourth
+    // option") -- `discover_method_with_receiver` is the second, narrower
+    // path a caller tries only after `callgraph::Resolver` has already
+    // refused a `&self` method; these tests call it directly, the same way
+    // `verify` will, never through the shared resolver.
+
+    /// The plain success case: a constructible type, a `&self` method with
+    /// no other same-shape sibling -- the receiver's pool is exactly the
+    /// checked method itself (constructor-only is length 0 of *this* pool,
+    /// never an empty one).
+    #[test]
+    fn a_self_method_on_a_constructible_type_builds_a_receiver_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "bucket.rs",
+                r#"
+pub struct Bucket { cap: u32 }
+impl Bucket {
+    pub fn new(cap: u32) -> Self { Bucket { cap } }
+    #[ply::ensures(|result| *result <= 1_000_000)]
+    pub fn capacity(&self) -> u32 { self.cap }
+}
+"#,
+            )],
+        );
+        let cf = discover_method_with_receiver(dir.path(), "bucket::Bucket::capacity").unwrap();
+        assert_eq!(cf.name, "capacity");
+        assert!(cf.is_method);
+        let plan = cf.receiver.expect("a receiver plan must be attached");
+        assert_eq!(plan.type_name, "Bucket");
+        assert_eq!(plan.constructor, "Bucket::new");
+        assert_eq!(plan.ctor_params.len(), 1);
+        assert_eq!(plan.max_sequence_len, MAX_RECEIVER_SEQUENCE_LEN);
+        assert_eq!(
+            plan.operations.len(),
+            1,
+            "with no other &self method sharing `capacity`'s (empty) shape, the pool is the \
+             checked method alone -- still a real sequence pool, not an absence of one"
+        );
+        assert_eq!(plan.operations[0].call_path, "Bucket::capacity");
+    }
+
+    /// The decisive shape for the sequence feature to mean anything: a
+    /// second `&self` method whose own parameters match the checked
+    /// method's exactly is pooled alongside it; one whose shape differs is
+    /// left out, honestly, rather than guessed at.
+    #[test]
+    fn a_same_shape_sibling_operation_is_pooled_and_a_different_shape_one_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "meter.rs",
+                r#"
+pub struct Meter { n: std::cell::Cell<u32> }
+impl Meter {
+    pub fn new() -> Self { Meter { n: std::cell::Cell::new(0) } }
+    pub fn bump(&self, amount: u32) -> u32 { self.n.set(self.n.get() + amount); self.n.get() }
+    #[ply::ensures(|result| *result < 1_000_000)]
+    pub fn spend(&self, amount: u32) -> u32 { self.n.set(self.n.get() - amount); self.n.get() }
+    pub fn reset(&self) { self.n.set(0); }
+}
+"#,
+            )],
+        );
+        let cf = discover_method_with_receiver(dir.path(), "meter::Meter::spend").unwrap();
+        let plan = cf.receiver.expect("a receiver plan must be attached");
+        let call_paths: Vec<&str> = plan
+            .operations
+            .iter()
+            .map(|o| o.call_path.as_str())
+            .collect();
+        assert!(
+            call_paths.contains(&"Meter::spend"),
+            "the checked method is always in its own pool: {call_paths:?}"
+        );
+        assert!(
+            call_paths.contains(&"Meter::bump"),
+            "`bump(u32)` shares `spend`'s own shape and must be pooled: {call_paths:?}"
+        );
+        assert!(
+            !call_paths.contains(&"Meter::reset"),
+            "`reset()` takes no parameters -- a different shape from `spend(u32)` -- and must \
+             not be pooled until Ply's codegen can build a mixed-shape step: {call_paths:?}"
+        );
+    }
+
+    /// The refusal-by-name half of the feature: a type with genuinely no
+    /// constructor is refused, naming the type -- never silently filled in
+    /// field-by-field (`docs/review-self-construction.md` rejects that for
+    /// exactly this reason).
+    #[test]
+    fn a_type_with_no_constructor_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "gauge.rs",
+                r#"
+pub struct Gauge { n: u32 }
+impl Gauge {
+    #[ply::ensures(|result| *result == self_n())]
+    pub fn read(&self) -> u32 { self.n }
+}
+fn self_n() -> u32 { 0 }
+"#,
+            )],
+        );
+        let err = discover_method_with_receiver(dir.path(), "gauge::Gauge::read").unwrap_err();
+        match &err {
+            ReceiverError::NoConstructor { type_name } => assert_eq!(type_name, "Gauge"),
+            other => panic!("expected NoConstructor naming `Gauge`, got {other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Gauge"),
+            "the refusal must name the type: {msg}"
+        );
+    }
+
+    /// A constructor exists, but every candidate takes a type Ply's
+    /// checkers cannot build -- refused by name, naming *which* type,
+    /// never silently skipped to another rule.
+    #[test]
+    fn a_constructor_needing_an_unsupported_type_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "labelled.rs",
+                r#"
+pub struct Labelled { label: String }
+impl Labelled {
+    pub fn new(label: String) -> Self { Labelled { label } }
+    #[ply::ensures(|result| *result == self_label_len())]
+    pub fn label_len(&self) -> u32 { self.label.len() as u32 }
+}
+fn self_label_len() -> u32 { 0 }
+"#,
+            )],
+        );
+        let err =
+            discover_method_with_receiver(dir.path(), "labelled::Labelled::label_len").unwrap_err();
+        match err {
+            ReceiverError::UnsupportedConstructorParam {
+                type_name,
+                ctor_name,
+                bad_type,
+            } => {
+                assert_eq!(type_name, "Labelled");
+                assert_eq!(ctor_name, "Labelled::new");
+                assert!(bad_type.contains("String"), "{bad_type}");
+            }
+            other => panic!("expected UnsupportedConstructorParam, got {other:?}"),
+        }
+    }
+
+    /// A `&mut self` target stays refused exactly as before this task: Ply
+    /// still has no way to state what such a call is supposed to change
+    /// about the receiver, so building one would not close the gap.
+    #[test]
+    fn a_mut_self_method_is_still_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "counter.rs",
+                r#"
+pub struct Counter { n: u32 }
+impl Counter {
+    pub fn new() -> Self { Counter { n: 0 } }
+    pub fn bump(&mut self) { self.n += 1; }
+}
+"#,
+            )],
+        );
+        let err = discover_method_with_receiver(dir.path(), "counter::Counter::bump").unwrap_err();
+        assert!(matches!(err, ReceiverError::MutableOrOwnedReceiver));
+    }
+
+    /// A trait-impl method is not in any inherent `impl` block this scan
+    /// reads -- it must come back `MethodNotFound`, so the caller falls
+    /// back to the resolver's own (correct) "defined in a trait
+    /// implementation" refusal, rather than this scan inventing its own
+    /// wrong answer.
+    #[test]
+    fn a_trait_impl_method_is_not_found_by_this_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "widget.rs",
+                r#"
+pub struct Widget;
+impl Widget {
+    pub fn new() -> Self { Widget }
+}
+pub trait Describe { fn describe(&self) -> u32; }
+impl Describe for Widget {
+    fn describe(&self) -> u32 { 0 }
+}
+"#,
+            )],
+        );
+        let err =
+            discover_method_with_receiver(dir.path(), "widget::Widget::describe").unwrap_err();
+        assert!(matches!(err, ReceiverError::MethodNotFound));
+    }
+
+    /// A claim path nested more than one module segment deep is an honest,
+    /// named limit (`ReceiverError::UnsupportedModulePath`), not a silent
+    /// wrong answer.
+    #[test]
+    fn a_claim_nested_two_modules_deep_is_refused_by_name_not_guessed_at() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub mod outer {
+    pub mod inner {
+        pub struct Deep;
+        impl Deep {
+            pub fn new() -> Self { Deep }
+            pub fn value(&self) -> u32 { 0 }
+        }
+    }
+}
+"#,
+            )],
+        );
+        let err =
+            discover_method_with_receiver(dir.path(), "outer::inner::Deep::value").unwrap_err();
+        assert!(matches!(err, ReceiverError::UnsupportedModulePath));
     }
 }
