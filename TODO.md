@@ -316,6 +316,65 @@ The review that forced it: `docs/review-result-reuse.md`.
       record. Fable's answer was yes — a hand-maintained "only when it matters" flag
       recreates the judgment call the design exists to eliminate. Not yet revisited.
 
+## Reach — types, methods, and four false cleans found closing them (2026-08-27)
+
+Driven by a yardstick rather than by opinion: `tests/fixtures/ratelimiter/` is a working
+rate limiter designed by someone told NOT to think about checkability and not told this
+project existed. Every number below is measured against it.
+
+- [x] **`usize`, `isize`, the `NonZero` family and `Duration`** (`4ce1c1c`). Type coverage
+      on the yardstick went from 3 of 70 uses to 25. My own estimate had been 82 percent;
+      the real figure is 36, because a duration nested inside an `Option` is not a bare
+      one and covering those would reintroduce the false-counterexample risk the work
+      exists to prevent. Second over-estimate of the day, same mistake both times:
+      counting something adjacent to the question and reporting it as the answer.
+- [x] **Methods resolve, and receiverless functions check** (`c1ea364`). Ply could not find
+      methods at all — its own schema documented `Type::method` and the anchor did not
+      resolve — and **no config in this repository that had ever been run through a real
+      check claimed a method**, which is why nobody noticed. Two defects were found by hand
+      before it landed: the generated harness imported a method as if it were an importable
+      item, and separately **any** zero-parameter function failed the same way, latent since
+      the sampling tier was built.
+- [x] **The ninth and tenth false cleans** (`62f4c74`, review `7f6bfe8`). Ply decided which
+      function a promise was ABOUT separately from which function the test would CALL, so
+      two same-named types in different modules made them disagree: a promise saying the
+      answer is 999, on a body returning 5, reported a clean pass on a different function
+      entirely. Fixed structurally — the called path is now derived from the resolution, so
+      the two cannot drift. Building the multi-module fixture that proved it then exposed
+      the tenth and worse: **the filter selecting which generated test to run matched
+      nothing for any method, so zero tests ran and the result was reported as held.** Every
+      method check had been passing without executing anything.
+- [x] **Floats, and one type list per engine** (`2443b85`). A type the sampler can build is
+      now checkable even where the prover cannot reason about it; a proof requested on such
+      a type is refused by name. Floats reach the property the yardstick's author named as
+      least trusted. Three honesty features arrived unasked: a run whose precondition
+      rejected 92 of 156 draws says its 64 accepted cases are weaker evidence than the
+      number suggests; NaN and infinity are excluded by default and the run says it
+      therefore says nothing about them; an unrenderable failing input says so and adds
+      that Ply never invents one.
+
+- [ ] **Strings and collections on the sampling tier.** Did not land; the mechanism now
+      exists. This is where parsing and validation bugs live, so it is the highest-value
+      remaining type work.
+- [ ] KNOWN GAP: a constructor returning `Result<Self, E>` — a real shape in the yardstick
+      — is still refused.
+- [ ] KNOWN GAP: `NonZero` and `Duration` are top-level only, never nested inside `Option`,
+      `Result`, arrays or collections.
+- [ ] Building a receiver, so methods that need one become checkable. Design settled in
+      `docs/review-self-construction.md`; the fourth option there (constructor plus a
+      bounded sequence of the type's own operations, with the length reported) is the one
+      to build, not constructor-only.
+- [ ] **The suite re-proves the same fixture up to eight times per run**, which is most of
+      the wall clock on every verification cycle. Making a proof earned once in a run serve
+      the other tests that need it would turn forty-minute waits into minutes. Deferred all
+      day behind more interesting work; it is now the biggest drag on the loop.
+
+**The method that actually worked, recorded because it is the transferable part:** verify
+with a promise that is FALSE. A passing check proves nothing — my own verification of the
+methods work used a true promise, saw a pass, and called it verified while nothing was
+running at all. Ten false cleans on this branch, every one found by real code or
+adversarial review, none by the suite.
+
 ## Agreed with the maintainer, not yet started
 
 - [x] **DECIDED 2026-08-26: the architecture verdict is code, never a model.** The

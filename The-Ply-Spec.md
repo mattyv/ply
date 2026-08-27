@@ -736,10 +736,37 @@ spike established (`tests/spike/scale/SCALE-FINDINGS.md`, 2026-08-23), construct
 not sufficient: a type Kani can *build* may still be one it cannot *finish*. The list below
 is evidence-backed, measured, not inferred.
 
+**One list per engine, not one list.** Until 2026-08-27 this section named a single set
+of types and both engines were held to it. That was an accident of build order: the list
+was justified by a study of the *prover*, and when the sampling tier arrived months later
+it inherited the prover's constraints wholesale. A tool that draws random values does not
+need the constraints of one that reasons about every value at once. A type may therefore
+be **sampled but not proved**, and where that is so, a `bounded`/`proved` check on it is
+refused by name rather than hanging or silently returning weaker evidence under a
+stronger word. The refusal says what would work instead: such a function is not
+unchecked, it needs a different check.
+
 v1 supports functions whose parameters and return type are, recursively:
 
 - **integers, `bool`, `char`, `Option<T>`, `Result<T,E>`** of supported types — cheap
   unconditionally (~0.1s);
+- **`usize` and `isize`** — ordinary integers, with one caveat that is recorded rather
+  than implied: they are pointer-width, so evidence earned on a 64-bit target is not
+  evidence for a 32-bit one. The build target is already a fingerprint input, so a
+  recorded result never crosses that line silently;
+- **the `NonZero` family** — top-level only, never nested. The non-zero constraint
+  reaches the solver rather than resting on convention: a generated zero would explore a
+  state the type forbids and produce a counterexample that cannot happen, which is a
+  false alarm, and this project treats those as nearly as costly as a false pass;
+- **`Duration`** — two integers, with the sub-billion nanosecond bound enforced for the
+  same reason. Whether its seconds field needed a bound was measured, not assumed: about
+  seven seconds per check against a sixty-second budget, so none was added;
+- **`f32` and `f64` — sampling tier only.** Proving over floating point is real work not
+  attempted in v1, so a `bounded` check on a float is refused by name. Generated floats
+  **exclude NaN and infinity by default**: a generated NaN makes almost any promise look
+  broken on a value the function may never receive. The run says so plainly rather than
+  leaving the exclusion silent — it states that it says nothing about those cases,
+  because it was never asked to;
 - **fixed-size arrays `[T; N]`** — cheap with no annotation, because the bound is a
   compile-time constant. Our own sweep only measured to 16; the Rust standard library's
   verification project routinely uses `MAX_SIZE = 32`, `ARRAY_LEN = 40`, and `MAX_LEN =
