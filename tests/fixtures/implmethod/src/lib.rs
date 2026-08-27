@@ -23,9 +23,16 @@ impl Bucket {
         Bucket { capacity: cap }
     }
 
-    /// A method with a receiver. Resolves -- Ply finds it -- but is refused
-    /// by name: constructing a `Bucket` to call this on is out of this
-    /// task's scope.
+    /// A method with a `&self` receiver -- and, since `Bucket` has its own
+    /// constructor above, exactly the shape `discover_method_with_receiver`
+    /// now builds a receiver for (docs/review-self-construction.md's
+    /// "fourth option", 2026-08-27): Ply calls `Bucket::new` itself, runs a
+    /// bounded sequence of `Bucket`'s own operations against the result (an
+    /// empty pool here -- there is no other same-shape sibling operation on
+    /// this type, so the pool is `capacity` repeated), then calls
+    /// `capacity` and checks its postcondition. No struct literal, no
+    /// declared invariant.
+    #[ply::ensures(|result| *result == *result)]
     pub fn capacity(&self) -> u32 {
         self.capacity
     }

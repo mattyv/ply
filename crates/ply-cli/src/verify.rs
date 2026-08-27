@@ -401,14 +401,30 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             // reader needs a different sentence for. `discover_fn_with`
             // still sees exactly the same three outcomes it always has
             // (found, opaque, not-found) for everything that reaches it.
-            match resolver.lookup_fn(fn_name) {
+            let cf = match resolver.lookup_fn(fn_name) {
                 Resolution::Refused(reason) => {
-                    diagnostics.push(refused_anchor_diag(&node_id, &reason));
-                    early_nodes_by_component
-                        .entry(comp_name.clone())
-                        .or_default()
-                        .push(leaf_node(fn_name, "unsupported"));
-                    continue;
+                    // A `&self` method is exactly this refusal's own shape
+                    // (`callgraph::receiver_refusal_reason`) -- before
+                    // reporting it, try the second, narrower path
+                    // (docs/review-self-construction.md's "fourth option"):
+                    // a constructor plus a bounded sequence of the type's
+                    // own operations, read straight from the one module file
+                    // the claim names. It fails closed for every other
+                    // refusal reason (a trait-impl method, a generic `impl`
+                    // block, a `&mut self` target) by simply not finding
+                    // what it is looking for, so falling back to `reason`
+                    // below is always the right thing on its own `Err`.
+                    match harness::discover_method_with_receiver(crate_dir, fn_name) {
+                        Ok(cf) => cf,
+                        Err(_receiver_err) => {
+                            diagnostics.push(refused_anchor_diag(&node_id, &reason));
+                            early_nodes_by_component
+                                .entry(comp_name.clone())
+                                .or_default()
+                                .push(leaf_node(fn_name, "unsupported"));
+                            continue;
+                        }
+                    }
                 }
                 Resolution::Ambiguous(reason) => {
                     diagnostics.push(ambiguous_anchor_diag(&node_id, fn_name, &reason));
@@ -418,22 +434,23 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                         .push(leaf_node(fn_name, "unsupported"));
                     continue;
                 }
-                Resolution::Found(_) | Resolution::Opaque(_) | Resolution::NotFound => {}
-            }
-            let cf = match harness::discover_fn_with(&mut resolver, fn_name, &lib_path) {
-                Ok(cf) => cf,
-                Err(e) => {
-                    diagnostics.push(unresolved_anchor_diag(
-                        &node_id,
-                        fn_name,
-                        "none",
-                        &e.to_string(),
-                    ));
-                    early_nodes_by_component
-                        .entry(comp_name.clone())
-                        .or_default()
-                        .push(leaf_node(fn_name, "unclaimed"));
-                    continue;
+                Resolution::Found(_) | Resolution::Opaque(_) | Resolution::NotFound => {
+                    match harness::discover_fn_with(&mut resolver, fn_name, &lib_path) {
+                        Ok(cf) => cf,
+                        Err(e) => {
+                            diagnostics.push(unresolved_anchor_diag(
+                                &node_id,
+                                fn_name,
+                                "none",
+                                &e.to_string(),
+                            ));
+                            early_nodes_by_component
+                                .entry(comp_name.clone())
+                                .or_default()
+                                .push(leaf_node(fn_name, "unclaimed"));
+                            continue;
+                        }
+                    }
                 }
             };
 
@@ -2497,6 +2514,18 @@ fn run_fn_checks(
                             &format!("fuzz({n})"),
                         ));
                     }
+                    // The sequence-length honesty requirement
+                    // (docs/review-self-construction.md's "fourth option",
+                    // 2026-08-27): a receiver method's verdict rests on a
+                    // value Ply built itself, over a *bounded* number of
+                    // prior operations, and that bound must be as visible
+                    // as a loop bound already is -- gated the same way the
+                    // float disclosure just above is, on a run that
+                    // actually happened, never on the check merely being
+                    // declared.
+                    if let Some(plan) = &cf.receiver {
+                        diagnostics.push(receiver_sequence_diag(node_id, fn_name, plan));
+                    }
                 }
             }
         }
@@ -3005,6 +3034,69 @@ fn float_sampling_diag(node_id: &str, fn_name: &str, check_label: &str) -> Diagn
              alarm, not a real bug, so Ply leaves NaN and infinity out of this run. If `{fn_name}` \
              needs to handle NaN or infinity correctly, this run says nothing about that -- it \
              was never asked to. (W0518, §5.4c)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
+/// The honesty requirement docs/review-self-construction.md's "fourth
+/// option" is built on (task, 2026-08-27): a receiver method's verdict rests
+/// on a value Ply built itself, over a *bounded* number of the type's own
+/// prior operations, never on one a user declared or one filled in field by
+/// field. That bound must be visible on the same verdict the way a `bounded`
+/// check's own loop bound already is (§5.4c) -- "checked on receivers
+/// reachable in at most N operations from a fresh one" is the honest reading
+/// of what this run does and does not cover, and a reader must be able to
+/// see it without reading source. `info`, not a warning, for the same reason
+/// `float_sampling_diag` is: nothing here is wrong or owed, it is a fact
+/// about the evidence that needs naming. Fires once per fuzz run that
+/// actually built a receiver (gated the same way the float disclosure is,
+/// on a run that happened, never merely on the check being declared).
+fn receiver_sequence_diag(node_id: &str, fn_name: &str, plan: &harness::ReceiverPlan) -> Diagnostic {
+    let others: Vec<&str> = plan
+        .operations
+        .iter()
+        .skip(1)
+        .map(|op| op.call_path.as_str())
+        .collect();
+    let pool_sentence = if others.is_empty() {
+        format!("repeating `{fn_name}` itself")
+    } else {
+        format!(
+            "repeating `{fn_name}` itself or calling {}",
+            others
+                .iter()
+                .map(|o| format!("`{o}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    Diagnostic {
+        code: "W0520".into(),
+        severity: "info".into(),
+        phase: "verify".into(),
+        engine: "proptest".into(),
+        check: "fuzz".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` needs a `{type_name}` value to call it on, and Ply built one itself: it \
+             called `{type_name}`'s own constructor (`{constructor}`), then ran up to {max} more \
+             calls to `{type_name}`'s own operations before the checked call -- each run picking \
+             a random number of steps from 0 to {max}, {pool_sentence}. Every value this run saw \
+             was reachable by calling `{type_name}`'s own code, nothing else, so nothing here was \
+             assumed. But this run only covers receivers reached in at most {max} such calls from \
+             a freshly built one -- a bug that only shows up on the {next}th call is outside what \
+             this run checked, and this is the sentence that says so rather than leaving a reader \
+             to assume the check covers every possible history. (W0520, §5.4c)",
+            type_name = plan.type_name,
+            constructor = plan.constructor,
+            max = plan.max_sequence_len,
+            next = plan.max_sequence_len + 2,
         ),
         pointer: None,
         primary_span: None,
@@ -3743,7 +3835,17 @@ fn run_fuzz_and_test_checks(
                     open_item: Some("high_rejection_rate".into()),
                 });
             }
-            if cf.params.is_empty() {
+            // A receiver method is never the zero-input shape below, even
+            // when its own checked call takes no parameters
+            // (`Bucket::capacity`, this fixture's own case, found by the
+            // e2e run itself, 2026-08-27): each of the `n` cases builds a
+            // receiver over a *randomly chosen* sequence length (0 up to
+            // `MAX_RECEIVER_SEQUENCE_LEN`), so `n` calls really do explore
+            // `n` different receiver states, not one repeated case -- the
+            // opposite mistake from the one this whole check exists to
+            // prevent would be reporting real variation as if there were
+            // none.
+            if cf.params.is_empty() && cf.receiver.is_none() {
                 // A zero-input fn's own honesty requirement (adversarial
                 // review, 2026-08-27): `n` calls to a function with no
                 // parameters are `n` repetitions of the *one* possible
@@ -4073,6 +4175,27 @@ fn render_fuzz_violation(
     let from_panic = fuzz_engine::parse_fuzz_marker(combined_output).is_none();
     let recovered = match fuzz_engine::parse_fuzz_marker(combined_output) {
         Some((_, fields)) => Some(fields),
+        // A receiver method's shrunk minimal input describes the *whole*
+        // generated value -- the constructor's own arguments, the bounded
+        // operation sequence, and only then the checked call's own
+        // arguments -- never a 1:1 positional match to `cf.params` alone
+        // (2026-08-27, receiver construction). Zipping it against
+        // `cf.params` by position the way a plain fn's panic-recovered
+        // input already is would silently mislabel it. Carried as one
+        // opaque field instead: `decode_marker_fields` below will not find
+        // any of `cf.params`' own names in it, so this naturally falls
+        // through to the witness-only (W0541) branch -- honest evidence,
+        // never a fabricated per-parameter reading.
+        None if cf.receiver.is_some() => {
+            fuzz_engine::parse_proptest_minimal_input(combined_output).map(|values| {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    "__ply_receiver_and_sequence".to_string(),
+                    values.join(", "),
+                );
+                m
+            })
+        }
         None => fuzz_engine::parse_proptest_minimal_input(combined_output)
             .filter(|values| values.len() == cf.params.len())
             .map(|values| {
@@ -4217,7 +4340,11 @@ fn render_fuzz_violation(
                     engine: "proptest".into(),
                     check: check_label.into(),
                     node_id: node_id.into(),
-                    title: unrenderable_inputs_title(fn_name, &contract_text, &cf.params),
+                    title: if cf.receiver.is_some() {
+                        unrenderable_receiver_inputs_title(fn_name, &contract_text)
+                    } else {
+                        unrenderable_inputs_title(fn_name, &contract_text, &cf.params)
+                    },
                     pointer: None,
                     primary_span: None,
                     counterexample: Some(Counterexample {
@@ -4280,6 +4407,26 @@ fn unrenderable_inputs_title(
     contract_text: &str,
     params: &[harness::Param],
 ) -> String {
+    unrenderable_inputs_title_impl(fn_name, contract_text, params, false)
+}
+
+/// Same message, with one extra sentence when the failing case came from a
+/// receiver Ply built itself (2026-08-27, receiver construction): the
+/// shrunk minimal input the engine printed describes the constructor call
+/// and the bounded operation sequence too, not only the checked method's own
+/// arguments, and Ply cannot yet decompose that back into named steps --
+/// naming that plainly beats letting a reader assume the raw text below is
+/// just the checked call's own parameters.
+fn unrenderable_receiver_inputs_title(fn_name: &str, contract_text: &str) -> String {
+    unrenderable_inputs_title_impl(fn_name, contract_text, &[], true)
+}
+
+fn unrenderable_inputs_title_impl(
+    fn_name: &str,
+    contract_text: &str,
+    params: &[harness::Param],
+    from_receiver: bool,
+) -> String {
     let blocked: Vec<String> = params
         .iter()
         .filter(|p| !p.ty.is_witness_renderable())
@@ -4289,7 +4436,11 @@ fn unrenderable_inputs_title(
     // parameter is renderable in principle and the engine's own text still
     // would not parse back. Saying "that input" is vague, but a vague true
     // sentence beats a precise false one.
-    let what = if blocked.is_empty() {
+    let what = if from_receiver {
+        "the receiver it built (the constructor call and the sequence of operations run before \
+         the checked call) together with that call's own arguments"
+            .to_string()
+    } else if blocked.is_empty() {
         "that input".to_string()
     } else {
         format!("parameter(s) {}", blocked.join(", "))

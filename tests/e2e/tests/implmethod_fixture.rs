@@ -47,34 +47,44 @@ fn a_receiverless_associated_function_is_fully_checked_and_earns_a_real_verdict(
     );
 }
 
+/// Superseded 2026-08-27 by receiver construction
+/// (docs/review-self-construction.md's "fourth option"): `Bucket` has its
+/// own constructor (`Bucket::new`), so `Bucket::capacity`'s `&self` receiver
+/// is no longer a reason to refuse it -- Ply builds one by calling
+/// `Bucket::new` itself. See
+/// `a_self_method_on_a_constructible_type_now_earns_a_real_verdict_with_its_sequence_bound_disclosed`
+/// below for the behaviour this test used to pin.
 #[test]
-fn a_method_with_a_receiver_resolves_and_is_refused_by_name_not_silently_missing() {
+fn a_self_method_on_a_constructible_type_now_earns_a_real_verdict_with_its_sequence_bound_disclosed()
+ {
     let cargo_ply = build_cargo_ply();
     let fixture = copy_fixture("implmethod");
     let run = run_verify(&cargo_ply, fixture.path(), 90);
 
     let n = node(&run.json, "Bucket::capacity");
     assert_eq!(
-        n["verdict"], "unsupported",
-        "a method with a receiver is real and resolved; it must not silently report as if \
-         nothing were there: {}",
+        n["verdict"], "fuzzed(32)",
+        "`Bucket::capacity` takes `&self`, but `Bucket` has its own constructor -- Ply must \
+         build a receiver from it and earn a real verdict, never stay refused: {}",
         run.json
     );
     let d = diag_for(&run.json, "Bucket::capacity");
-    assert_ne!(
-        d["code"], "E0301",
-        "E0301 says \"could not find the function\", which is false here -- Ply found \
-         `Bucket::capacity`: {d}"
+    assert_eq!(
+        d["code"], "W0520",
+        "the sequence-length honesty disclosure must be present on a receiver-checked verdict, \
+         the same way the float-sampling disclosure already is for floats: {d}"
     );
+    assert_eq!(d["severity"], "info", "{d}");
     let title = d["title"].as_str().unwrap();
     assert!(
-        !title.contains("could not find"),
-        "the diagnostic must not claim Ply could not find a function it actually resolved: {d}"
+        title.contains("Bucket::new"),
+        "the disclosure must name the constructor Ply actually called: {title}"
     );
     assert!(
-        title.contains("Bucket::capacity") && title.contains("receiver"),
-        "the diagnostic must name the function and say plainly that a receiver is the reason \
-         it is refused: {d}"
+        title.contains('3'),
+        "the disclosure must name the sequence bound (MAX_RECEIVER_SEQUENCE_LEN = 3) so a \
+         reader can see what this run does and does not cover, the same way a loop bound \
+         already is named in a `bounded(k)` verdict: {title}"
     );
 }
 
@@ -86,19 +96,19 @@ fn a_free_function_and_a_method_sharing_a_name_never_resolve_to_each_other() {
 
     // The free function `capacity` is receiverless and contracted: it must
     // be checked as itself, never confused with the method `Bucket::capacity`
-    // (checked with no explicit checks, refused for its receiver above).
+    // (checked with its own receiver-built verdict, above).
     let free_fn = node(&run.json, "capacity");
     assert_eq!(
         free_fn["verdict"], "bounded(2)",
         "the free function `capacity` must resolve and check on its own terms, not inherit \
-         `Bucket::capacity`'s receiver refusal: {}",
+         `Bucket::capacity`'s own verdict: {}",
         run.json
     );
     let method = node(&run.json, "Bucket::capacity");
     assert_eq!(
-        method["verdict"], "unsupported",
-        "the method `Bucket::capacity` must stay refused for its own reason, not borrow the \
-         free function's clean verdict: {}",
+        method["verdict"], "fuzzed(32)",
+        "the method `Bucket::capacity` must check on its own terms, not borrow the free \
+         function's `bounded(2)`: {}",
         run.json
     );
 }
