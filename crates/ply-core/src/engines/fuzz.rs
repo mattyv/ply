@@ -556,6 +556,16 @@ pub fn decode_marker_fields(
             | RustType::Vec(_)
             | RustType::BTreeSet(_)
             | RustType::NonZero(_)
+            // No `WitnessValue` variant for a float either -- rendering one
+            // as a runnable Rust literal is real, separate work this task
+            // did not take on (see `RustType::F32`/`F64`'s own doc comment
+            // and the mechanism/floats-only scope note in fuzz_gen.rs). The
+            // raw text `marker_display_expr` printed is still captured in
+            // `fields` before this function ever runs, so the caller still
+            // shows the real failing value -- just witness-only (`W0541`),
+            // never a fabricated one.
+            | RustType::F32
+            | RustType::F64
             // Never reached: both are return-only shapes, never a
             // parameter's, so no witness ever needs to decode one.
             | RustType::SelfType

@@ -113,6 +113,49 @@ pub enum RustType {
     /// to surface, unlike `Vec` — the seconds field ranges over the whole
     /// `u64` with no bound at all.
     Duration,
+    /// `f32`/`f64` -- added for the sampling/proving split (task,
+    /// 2026-08-27). Fuzz-supported, **never** bounded-supported: this is a
+    /// deliberate design decision, not a measured Kani exclusion the way
+    /// `BTreeSet` is (§5.4b's own list is evidence-backed for the shapes it
+    /// names; this one is the split's own point -- "a string is trivial to
+    /// sample and genuinely hard to prove ... probably for floats" per the
+    /// task brief). Reasoning about floating-point arithmetic exhaustively
+    /// (rounding, subnormals, the exact bit-level comparison semantics
+    /// CBMC/Kani must model) is real, substantial solver work in a way
+    /// sampling never has to pay for -- so rather than spend a session
+    /// measuring exactly how bad it is, Ply refuses `bounded`/`proved` on a
+    /// float by name (`V0508`) and routes it to `fuzz`/`test` instead,
+    /// where it is cheap and honest.
+    ///
+    /// Deliberately **not** part of [`RustType::is_leaf`] /
+    /// `is_composite_constructible`, the same narrowing already applied to
+    /// `NonZero`/`Duration`: only a bare top-level parameter or return is
+    /// supported, never `Option<f64>`/`Result<f64, _>`/`[f64; N]`/
+    /// `Vec<f64>`/`BTreeSet<f64>`. Widening that is possible (the fuzz side
+    /// has no technical obstacle to it) but was not attempted here --
+    /// nesting bare `is_leaf`-based composability would also have made
+    /// `Option<f64>` *bounded*-supported via `is_bounded_supported`'s own
+    /// generic composite fallback, which is exactly wrong, and untangling
+    /// that cleanly is more surface than one bare shape needs to cover the
+    /// task's own required case (a rate limiter's plain `f64` refill
+    /// arithmetic).
+    ///
+    /// **The NaN/infinity decision, made deliberately rather than by
+    /// accident (task brief):** Ply's generated float strategy
+    /// (`fuzz_gen::strategy_expr`) excludes NaN and both infinities by
+    /// default, sampling only ordinary finite floats (ordinary/ normal,
+    /// subnormal, zero, either sign). A generated NaN makes almost any
+    /// comparison in a postcondition false (`NaN >= x` is false for every
+    /// `x`, including `NaN` itself), which would report a broken promise on
+    /// an input the real program may never produce -- a false
+    /// counterexample, which this project treats as nearly as damaging as a
+    /// false pass (both end with the tool switched off, per the task
+    /// brief). The choice is not silent: `W0518` (info) names it on every
+    /// fuzz/test run over a float-shaped fn, so a user who *does* need NaN/
+    /// infinity behaviour checked knows Ply's default run said nothing
+    /// about it, rather than discovering that gap by reading source.
+    F32,
+    F64,
     /// This function's own enclosing type, written `Self` in its
     /// signature -- added 2026-08-27 for receiverless associated functions
     /// (constructors), whose return type is almost always `Self` or
@@ -257,6 +300,18 @@ impl RustType {
             RustType::Vec(_) | RustType::BTreeSet(_) | RustType::Unsupported(_) => false,
             RustType::NonZero(inner) => inner.is_valid_nonzero_inner(),
             RustType::Duration => true,
+            // The sampling/proving split's own point (task, 2026-08-27): a
+            // float is fuzz-supported (see `is_fuzz_supported` below) but
+            // never bounded-supported, by deliberate design decision rather
+            // than a measured Kani exclusion -- see the variant's own doc
+            // comment. Written as an explicit arm rather than left to the
+            // generic fallback below: `is_leaf`/`is_composite_constructible`
+            // deliberately never mention `F32`/`F64` either, so the
+            // fallback already agrees, but a design decision this load-
+            // bearing (it is what makes `V0508` fire at all) is named here
+            // rather than left implicit in what two *other* predicates
+            // happen not to say.
+            RustType::F32 | RustType::F64 => false,
             other => other.is_leaf() || other.is_composite_constructible(),
         }
     }
@@ -303,6 +358,16 @@ impl RustType {
         match self {
             RustType::Vec(inner) | RustType::BTreeSet(inner) => inner.is_scalar(),
             RustType::Unsupported(_) => false,
+            // The one type this gate says `true` for where
+            // `is_bounded_supported` says `false` for a reason other than a
+            // measured Kani exclusion (`BTreeSet`/`Vec` fall out of the
+            // `other => other.is_bounded_supported()` arm below just fine,
+            // since *they* are never fuzz-*and*-bounded-disagreeing at the
+            // bare-scalar level) -- floats need their own arm precisely
+            // because the fallback would otherwise inherit `false` from
+            // `is_bounded_supported`, which is backwards: proptest builds an
+            // arbitrary `f32`/`f64` as cheaply as any other scalar.
+            RustType::F32 | RustType::F64 => true,
             other => other.is_bounded_supported(),
         }
     }
@@ -356,6 +421,8 @@ impl RustType {
             RustType::Usize => "usize",
             RustType::Isize => "isize",
             RustType::Bool => "bool",
+            RustType::F32 => "f32",
+            RustType::F64 => "f64",
             _ => return None,
         })
     }
@@ -461,6 +528,14 @@ impl RustType {
             | RustType::BTreeSet(_)
             | RustType::NonZero(_)
             | RustType::Duration
+            // No byte-width witness decoder for floats either -- a fuzz-
+            // found float violation is reported witness-only (`W0541`),
+            // never with an invented input, same as `Option`/`Result`/etc.
+            // above and for the same reason: nothing here has a Kani
+            // witness decoder to reuse, since a float never reaches the
+            // bounded/Kani path at all (`is_bounded_supported` is `false`).
+            | RustType::F32
+            | RustType::F64
             | RustType::SelfType
             | RustType::Unit
             | RustType::Unsupported(_) => None,
@@ -616,6 +691,11 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                 "usize" => RustType::Usize,
                 "isize" => RustType::Isize,
                 "bool" => RustType::Bool,
+                // Fuzz-supported, never bounded-supported -- see
+                // `RustType::F32`/`F64`'s own doc comment for why this is a
+                // deliberate design decision, not a measured Kani exclusion.
+                "f32" => RustType::F32,
+                "f64" => RustType::F64,
                 // `std::num::NonZero{X}` -- matched on the bare last
                 // segment, so both `std::num::NonZeroU32` (never `use`d)
                 // and a bare `NonZeroU32` (after a `use` -- what every
@@ -803,6 +883,17 @@ impl ContractFn {
 
     pub fn has_vec_param(&self) -> bool {
         self.params.iter().any(|p| matches!(p.ty, RustType::VecU8))
+    }
+
+    /// Whether any parameter or the return type is `f32`/`f64` -- what
+    /// gates the NaN/infinity disclosure diagnostic (`W0518`, verify.rs):
+    /// only a run that actually sampled a float owes the reader that
+    /// disclosure.
+    pub fn has_float_shape(&self) -> bool {
+        self.params
+            .iter()
+            .any(|p| matches!(p.ty, RustType::F32 | RustType::F64))
+            || matches!(self.return_type, RustType::F32 | RustType::F64)
     }
 
     /// The expression generated code calls this fn by (added 2026-08-27,
@@ -2088,6 +2179,58 @@ pub fn check_n(n: NonZeroU32) -> u32 { n.get() }
         assert!(RustType::NonZero(Box::new(RustType::U32)).is_full_domain());
         assert!(RustType::NonZero(Box::new(RustType::Usize)).is_full_domain());
         assert!(RustType::Duration.is_full_domain());
+    }
+
+    // -- the sampling/proving split (task, 2026-08-27): floats are the
+    // headline case -- fuzz-supported, never bounded-supported, by
+    // deliberate design decision rather than a measured Kani exclusion.
+
+    #[test]
+    fn f32_and_f64_are_fuzz_supported_but_never_bounded_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::ensures(|result| *result >= x)]
+pub fn increment(x: f64) -> f64 { x + 1.0 }
+#[ply::ensures(|result| *result == y)]
+pub fn identity32(y: f32) -> f32 { y }
+"#,
+        );
+        let inc = discover_fn(&path, "increment").unwrap();
+        assert_eq!(inc.params[0].ty, RustType::F64);
+        assert_eq!(inc.return_type, RustType::F64);
+        assert!(
+            inc.is_fuzz_supported(),
+            "a plain f64 parameter must be sampleable -- proptest builds one as cheaply as any \
+             other scalar"
+        );
+        assert!(
+            !inc.is_bounded_supported(),
+            "f64 must stay refused on the proving engine -- this is the split's own headline \
+             case, a deliberate decision (§ split, not a measured exclusion the way BTreeSet is)"
+        );
+
+        let id32 = discover_fn(&path, "identity32").unwrap();
+        assert_eq!(id32.params[0].ty, RustType::F32);
+        assert!(id32.is_fuzz_supported());
+        assert!(!id32.is_bounded_supported());
+    }
+
+    #[test]
+    fn a_float_typed_fn_is_flagged_by_has_float_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::ensures(|result| *result >= x)]
+pub fn increment(x: f64) -> f64 { x + 1.0 }
+#[ply::ensures(|result| *result == x)]
+pub fn scalar(x: u32) -> u32 { x }
+"#,
+        );
+        assert!(discover_fn(&path, "increment").unwrap().has_float_shape());
+        assert!(!discover_fn(&path, "scalar").unwrap().has_float_shape());
     }
 
     #[test]

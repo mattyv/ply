@@ -24,6 +24,20 @@
 //! (`ply_core::harness::rust_type_from_source`) sees on this crate's public
 //! surface, does its codegen accept it? -- the fallback the task's own brief
 //! names for exactly this situation.
+//!
+//! **"Public surface" widened to include `pub(crate)` (sampling/proving
+//! split task, 2026-08-27).** This crate's own floating-point refill
+//! arithmetic (`Quota::tokens_per_nanosecond -> f64`) is `pub(crate)`, not
+//! `pub` -- deliberately: it is the one property
+//! `docs/greenfield-ratelimiter-design.md` names as the thing its author
+//! trusted least, and hiding it behind a crate-internal accessor is
+//! ordinary API design, not an attempt to dodge measurement. A `ply.yaml`
+//! claim is written from inside the crate it claims, so `pub(crate)` is
+//! real surface such a claim could name; a measurement that only ever
+//! looked at `pub` items would report `fuzz_only == 0` forever regardless
+//! of what the split could do, which is exactly what it did before this
+//! widening (`is_pub_or_crate_visible`, below) -- not evidence the feature
+//! changed nothing, but blindness to the one function it was aimed at.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -43,14 +57,40 @@ fn is_pub(vis: &Visibility) -> bool {
     matches!(vis, Visibility::Public(_))
 }
 
+/// `pub` **or** `pub(crate)` -- widened for the sampling/proving split
+/// (task, 2026-08-27), and the reason is not cosmetic: this fixture's own
+/// design puts its floating-point refill arithmetic behind exactly
+/// `pub(crate)` (`Quota::tokens_per_nanosecond` -> `f64`, `RefillRate`'s own
+/// impl block) -- the one property `docs/greenfield-ratelimiter-design.md`
+/// names as the thing its author trusted least. A measurement that only
+/// ever looks at `pub` items is blind to the exact function this whole
+/// feature exists to reach, and `fuzz_only` staying zero forever was that
+/// blindness showing, not evidence the split changed nothing. `fns:` items
+/// in this crate's own `ply.yaml` can be crate-internal too (a claim is
+/// written from inside the crate it claims), so `pub(crate)` is a real part
+/// of "this crate's own surface Ply would want to check" -- not a truly
+/// private helper nobody would ever anchor a claim to. Left narrow on
+/// purpose: only bare `pub(crate)`, never `pub(super)`/`pub(in ...)`, which
+/// this fixture does not use and which would need their own path-relative
+/// reasoning this measurement has no reason to take on.
+fn is_pub_or_crate_visible(vis: &Visibility) -> bool {
+    match vis {
+        Visibility::Public(_) => true,
+        Visibility::Restricted(r) => r.path.is_ident("crate"),
+        Visibility::Inherited => false,
+    }
+}
+
 /// Collects every parameter type (receiver excluded) and every explicit
-/// return type from the crate's public functions: top-level `pub fn`s,
-/// every fn in a `pub trait`'s body (its methods are public whenever the
-/// trait is, regardless of the `pub` keyword, which traits never repeat on
-/// their own items), and every fn in an `impl` block for a type this
-/// enumeration has already seen declared `pub` (an inherent impl's fn kept
-/// only if it itself says `pub`; a trait impl's fn always kept, since a
-/// trait impl's own visibility is the trait's).
+/// return type from the crate's public-**or-crate-visible** functions:
+/// top-level `pub`/`pub(crate) fn`s, every fn in a `pub trait`'s body (its
+/// methods are public whenever the trait is, regardless of the `pub`
+/// keyword, which traits never repeat on their own items), and every fn in
+/// an `impl` block for a type this enumeration has already seen declared
+/// `pub` (an inherent impl's fn kept only if it itself says `pub`/
+/// `pub(crate)`; a trait impl's fn always kept, since a trait impl's own
+/// visibility is the trait's). See `is_pub_or_crate_visible`'s own doc for
+/// why crate-visible items are in scope here at all.
 fn collect_type_uses(file: &syn::File, owner_prefix: &str, out: &mut Vec<TypeUse>) {
     use syn::Item;
 
@@ -89,7 +129,7 @@ fn collect_type_uses(file: &syn::File, owner_prefix: &str, out: &mut Vec<TypeUse
 
     for item in &file.items {
         match item {
-            Item::Fn(f) if is_pub(&f.vis) => {
+            Item::Fn(f) if is_pub_or_crate_visible(&f.vis) => {
                 push_sig(
                     format!("{owner_prefix}{}", f.sig.ident),
                     &f.sig.inputs,
@@ -137,7 +177,7 @@ fn collect_type_uses(file: &syn::File, owner_prefix: &str, out: &mut Vec<TypeUse
                 }
                 for ii in &imp.items {
                     if let syn::ImplItem::Fn(m) = ii {
-                        if is_trait_impl || is_pub(&m.vis) {
+                        if is_trait_impl || is_pub_or_crate_visible(&m.vis) {
                             push_sig(
                                 format!("{owner_prefix}{self_ty}::{}", m.sig.ident),
                                 &m.sig.inputs,

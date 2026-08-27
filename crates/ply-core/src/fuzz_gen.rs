@@ -159,6 +159,34 @@ fn strategy_expr(ty: &RustType) -> Result<String> {
              (proptest::prelude::any::<u64>(), 0u32..1_000_000_000u32), \
              |(s, n)| std::time::Duration::new(s, n))"
             .to_string(),
+        // The NaN/infinity decision (task brief, 2026-08-27), made
+        // deliberately rather than by accident: proptest's own
+        // `prelude::any::<f64>()` samples the *entire* bit-pattern space,
+        // NaN and both infinities included. A generated NaN makes almost
+        // any postcondition comparison false (`NaN >= x` is false for
+        // every `x`, `NaN == NaN` is false), so it would report a broken
+        // promise on an input the real program may never produce -- a
+        // false counterexample, which this project treats as nearly as
+        // damaging as a false pass (both end with the tool switched off).
+        // So the default excludes NaN and infinity: `POSITIVE | NEGATIVE`
+        // (both signs) combined with `NORMAL | SUBNORMAL | ZERO` (every
+        // *finite* class), deliberately never `INFINITE`, `QUIET_NAN`, or
+        // `SIGNALING_NAN`. `W0518` (verify.rs) names this choice on every
+        // run over a float-shaped fn, so it is visible rather than a silent
+        // default a user could only discover by reading this file.
+        //
+        // Pinned by `strategy_expr_tests::float_strategy_excludes_nan_and_infinity_by_default`
+        // below -- reversing this decision (back to a bare `any::<fN>()`)
+        // fails that test rather than silently reintroducing false
+        // counterexamples.
+        RustType::F32 => "(proptest::num::f32::POSITIVE | proptest::num::f32::NEGATIVE \
+             | proptest::num::f32::NORMAL | proptest::num::f32::SUBNORMAL \
+             | proptest::num::f32::ZERO)"
+            .to_string(),
+        RustType::F64 => "(proptest::num::f64::POSITIVE | proptest::num::f64::NEGATIVE \
+             | proptest::num::f64::NORMAL | proptest::num::f64::SUBNORMAL \
+             | proptest::num::f64::ZERO)"
+            .to_string(),
         RustType::Unsupported(t) => {
             bail!("cannot build a fuzz strategy for unsupported type `{t}`")
         }
@@ -608,6 +636,16 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
             "std::time::Duration::from_nanos(1)".to_string(),
             "std::time::Duration::new(u64::MAX, 999_999_999)".to_string(),
         ],
+        // Finite boundaries only, matching the fuzz tier's own NaN/infinity
+        // exclusion (`strategy_expr`'s doc comment): zero and the two
+        // finite extremes, never `NAN`/`INFINITY`/`NEG_INFINITY`. `{n}::MIN`
+        // for a float is the most negative *finite* value (unlike an
+        // integer's `MIN`, this is not the sign-flipped complement of
+        // `MAX` -- both are finite here, which is exactly the point).
+        RustType::F32 | RustType::F64 => {
+            let n = ty.scalar_rust_name().unwrap();
+            vec![format!("0.0{n}"), format!("{n}::MIN"), format!("{n}::MAX")]
+        }
         // Never reached: return-only shapes, never a parameter's.
         RustType::SelfType | RustType::Unit | RustType::Unsupported(_) => vec![],
     }
@@ -1014,5 +1052,74 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
         assert!(cases.contains("fn ply_direct_clamp_00()"));
         assert!(cases.contains("0u32"));
         assert!(cases.contains("u32::MAX"));
+    }
+
+    // -- the NaN/infinity decision (task, 2026-08-27), pinned so reversing
+    // it fails a test rather than silently reintroducing a false
+    // counterexample. §5.4c's own words for why this matters: a generated
+    // NaN makes almost any postcondition comparison false, which would
+    // report a broken promise on an input the real program may never
+    // produce.
+
+    /// This is the pin: reverting `strategy_expr`'s float arm to a bare
+    /// `proptest::prelude::any::<f64>()` (which samples NaN and infinity
+    /// along with everything else) makes this test fail, because the
+    /// finite-only class flags this asserts on would no longer appear in
+    /// the generated source.
+    #[test]
+    fn float_strategy_excludes_nan_and_infinity_by_default() {
+        for ty in [RustType::F32, RustType::F64] {
+            let expr = strategy_expr(&ty).unwrap();
+            for finite_class in ["POSITIVE", "NEGATIVE", "NORMAL", "SUBNORMAL", "ZERO"] {
+                assert!(
+                    expr.contains(finite_class),
+                    "{:?}'s strategy must sample the `{finite_class}` class -- every ordinary \
+                     finite value, one sign or the other -- got: {expr}",
+                    ty
+                );
+            }
+            for excluded_class in ["INFINITE", "QUIET_NAN", "SIGNALING_NAN"] {
+                assert!(
+                    !expr.contains(excluded_class),
+                    "{:?}'s strategy must NOT sample `{excluded_class}` by default -- a generated \
+                     NaN or infinity would report a false counterexample on an input the real \
+                     program may never produce: {expr}",
+                    ty
+                );
+            }
+        }
+    }
+
+    /// The `test` tier's own boundary literals must respect the same
+    /// finite-only decision: `NAN`/`INFINITY`/`NEG_INFINITY` are not
+    /// boundary values Ply generates for a direct contract case either.
+    #[test]
+    fn float_boundary_literals_are_finite_only() {
+        for ty in [RustType::F32, RustType::F64] {
+            let lits = boundary_literals(&ty);
+            assert!(!lits.is_empty(), "{:?}", ty);
+            for lit in &lits {
+                assert!(
+                    !lit.contains("NAN") && !lit.contains("INFINITY"),
+                    "a boundary literal for {:?} must be finite: {lits:?}",
+                    ty
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generates_a_fuzz_test_for_a_float_param_and_names_the_finite_only_strategy() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result >= x)]
+pub fn increment(x: f64) -> f64 { x + 1.0 }
+"#,
+            "increment",
+        );
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("increment", "")).unwrap();
+        assert!(body.contains("fn ply_fuzz_increment()"));
+        assert!(body.contains("proptest::num::f64::NORMAL"));
+        assert!(!body.contains("QUIET_NAN"));
     }
 }
