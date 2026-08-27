@@ -1,0 +1,18 @@
+ply: 1
+
+# `count` declares no `checks:` at all -- exercises the shape-aware default
+# routing (§5.4c) for `Vec<u32>`: it fails the Kani (`bounded`) gate (this
+# slice's Kani codegen only ever builds `Vec<u8>`) but passes the fuzz
+# (proptest) gate, so the default must land on `fuzz(256)`.
+#
+# `count_bounded` is the identical shape claimed with an explicit
+# `bounded(2)` -- refused by name, not silently downgraded.
+components:
+  vecscalar:
+    anchor: ply_fixture_vecscalar
+    fns:
+      count: {}
+      count_bounded:
+        checks: [bounded(2)]
+      sum_moved:
+        checks: [fuzz(64)]

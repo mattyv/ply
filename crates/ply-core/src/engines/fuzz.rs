@@ -298,21 +298,77 @@ pub fn parse_fuzz_marker(combined: &str) -> Option<(String, BTreeMap<String, Str
     let mut fields = BTreeMap::new();
     for entry in split_top_level_semicolons(rest) {
         if let Some((k, v)) = entry.split_once('=') {
-            fields.insert(k.to_string(), v.to_string());
+            // Universal, not gated on the field's own type: a `String`
+            // field is the only one `marker_display_expr` ever escapes
+            // (see its own doc), so unescaping every field is a no-op for
+            // every other type -- their rendered text never contains a
+            // backslash -- and means `decode_marker_fields` (which only
+            // ever sees the already-unescaped text) and the raw display
+            // path (`verify.rs`'s `fields.get(&p.name)`, shown on a
+            // witness-only violation) never have to know which fields were
+            // escaped and which were not.
+            fields.insert(k.to_string(), unescape_marker_value(v));
         }
     }
     Some((fn_name.to_string(), fields))
 }
 
+/// The exact reverse of `marker_display_expr`'s `RustType::String` arm:
+/// `\\`, `\;`, `\=`, `\[`, `\]`, `\n`, `\r` each collapse back to the one
+/// character they stand for. An unrecognised escape (a lone trailing `\`,
+/// or `\` followed by something neither side ever emits) is kept literally
+/// rather than dropped, so a decode this function cannot make sense of
+/// loses no information -- the caller sees the odd text rather than a
+/// silently mangled one.
+fn unescape_marker_value(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => out.push('\\'),
+            Some(';') => out.push(';'),
+            Some('=') => out.push('='),
+            Some('[') => out.push('['),
+            Some(']') => out.push(']'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 /// Splits on `;` but never inside a `[...]` bracket (a collection field's
 /// joined elements never contain `;`, but this keeps the parser correct if
-/// that ever changes).
+/// that ever changes), and never on an *escaped* `;`/`[`/`]`
+/// (`marker_display_expr`'s `String` arm escapes exactly these -- among
+/// others -- so a sampled string containing a raw `;` or bracket can never
+/// be mistaken for this wire format's own field separator or collection
+/// delimiter). A `\` outside an escape sequence is not itself special here
+/// -- it only ever appears as the first half of one of the pairs
+/// `unescape_marker_value` reverses, so simply not inspecting the character
+/// right after it is enough to keep this splitter correct without having
+/// to know which escape it is.
 fn split_top_level_semicolons(s: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0i32;
     let mut start = 0usize;
+    let mut escaped = false;
     for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match c {
+            '\\' => escaped = true,
             '[' => depth += 1,
             ']' => depth -= 1,
             ';' if depth == 0 => {
@@ -566,6 +622,15 @@ pub fn decode_marker_fields(
             // never a fabricated one.
             | RustType::F32
             | RustType::F64
+            // Same reason as the float arms just above -- `String` is not
+            // `is_witness_renderable` either (see that method's own doc),
+            // so a failure on one is reported witness-only (`W0541`),
+            // never with an invented Rust literal. The raw text is still
+            // shown to the reader (via `fields`, populated by
+            // `parse_fuzz_marker` below) -- already unescaped back to the
+            // real string content by the time it gets there, never the
+            // wire-escaped form `marker_display_expr` printed.
+            | RustType::String
             // Never reached: both are return-only shapes, never a
             // parameter's, so no witness ever needs to decode one.
             | RustType::SelfType
@@ -832,5 +897,98 @@ mod tests {
         let (fname, detail) = parse_high_reject_marker(combined).unwrap();
         assert_eq!(fname, "safe_increment");
         assert_eq!(detail, "12/20");
+    }
+
+    // -- the `String` marker wire-safety proof (task, 2026-08-27): a
+    // sampled string containing the marker format's own separator
+    // characters must not corrupt the field it belongs to, or any other
+    // field on the same line. Mirrors record.rs's own smuggling-proof tests
+    // this same session added for a different encoding, but for this
+    // hand-rolled wire format instead.
+
+    #[test]
+    fn unescape_marker_value_reverses_every_escape_marker_display_expr_emits() {
+        // Round-trip each individually-escaped character back to itself.
+        assert_eq!(unescape_marker_value("a\\\\b"), "a\\b");
+        assert_eq!(unescape_marker_value("a\\;b"), "a;b");
+        assert_eq!(unescape_marker_value("a\\=b"), "a=b");
+        assert_eq!(unescape_marker_value("a\\[b"), "a[b");
+        assert_eq!(unescape_marker_value("a\\]b"), "a]b");
+        assert_eq!(unescape_marker_value("a\\nb"), "a\nb");
+        assert_eq!(unescape_marker_value("a\\rb"), "a\rb");
+        // An unrecognised escape and a trailing lone backslash are kept
+        // literally, never dropped -- no information silently vanishes.
+        assert_eq!(unescape_marker_value("a\\qb"), "a\\qb");
+        assert_eq!(unescape_marker_value("a\\"), "a\\");
+    }
+
+    /// The decisive adversarial case: a sampled string crafted to contain
+    /// exactly what the wire format would read as a *second field's* own
+    /// `name=value` pair -- the same attack shape record.rs's own
+    /// `smuggling_a_field_boundary_inside_a_value_does_not_forge_a_collision`
+    /// proved safe for a different encoding this same session. Here it must
+    /// not corrupt a real later field (`x`), because `marker_display_expr`
+    /// escapes the value's own `;`/`=` before it is ever printed.
+    #[test]
+    fn a_string_value_crafted_to_look_like_a_second_field_does_not_corrupt_a_later_one() {
+        // What the harness would actually print for `s = "x;y=z"`, `x = 42`
+        // (escaping applied exactly as `marker_display_expr` specifies).
+        let combined = "PLY_FUZZED_CEX|f|s=x\\;y\\=z;x=42\n";
+        let (fn_name, fields) = parse_fuzz_marker(combined).unwrap();
+        assert_eq!(fn_name, "f");
+        assert_eq!(
+            fields.get("s").map(String::as_str),
+            Some("x;y=z"),
+            "the full crafted value must survive intact, not be truncated at its own embedded \
+             separator: {fields:?}"
+        );
+        assert_eq!(
+            fields.get("x").map(String::as_str),
+            Some("42"),
+            "a sibling field after the crafted string must decode to its real value, never a \
+             fragment smuggled out of the string's own content: {fields:?}"
+        );
+    }
+
+    /// The same attack, with the crafted field appearing *before* a
+    /// same-named real field earlier in param order (the direction that
+    /// would actually overwrite a correct decode, since a `BTreeMap` insert
+    /// keeps the *last* write) -- still must not corrupt `x`.
+    #[test]
+    fn a_string_value_crafted_to_smuggle_a_same_named_field_does_not_overwrite_it() {
+        let combined = "PLY_FUZZED_CEX|f|x=42;s=a\\;x=999\\;b\n";
+        let (_, fields) = parse_fuzz_marker(combined).unwrap();
+        assert_eq!(
+            fields.get("x").map(String::as_str),
+            Some("42"),
+            "the real `x` field must never be overwritten by content smuggled inside `s`'s own \
+             (escaped) value: {fields:?}"
+        );
+        assert_eq!(fields.get("s").map(String::as_str), Some("a;x=999;b"));
+    }
+
+    /// A raw, *unescaped* bracket inside a string value must not desync the
+    /// bracket-depth tracking `split_top_level_semicolons` uses for
+    /// `Vec`/`BTreeSet` fields -- `marker_display_expr` escapes `[`/`]` for
+    /// exactly this reason. Simulates the encoded wire text directly
+    /// (rather than running the generated harness) the same way the two
+    /// tests above do.
+    #[test]
+    fn an_escaped_bracket_in_a_string_value_does_not_desync_collection_bracket_tracking() {
+        let combined = "PLY_FUZZED_CEX|f|s=a\\[b;v=[1,2,3]\n";
+        let (_, fields) = parse_fuzz_marker(combined).unwrap();
+        assert_eq!(fields.get("s").map(String::as_str), Some("a[b"));
+        assert_eq!(
+            fields.get("v").map(String::as_str),
+            Some("[1,2,3]"),
+            "the real Vec field after the crafted string must still decode whole: {fields:?}"
+        );
+    }
+
+    #[test]
+    fn a_string_value_containing_only_ordinary_text_round_trips_unchanged() {
+        let combined = "PLY_FUZZED_CEX|f|s=hello world\n";
+        let (_, fields) = parse_fuzz_marker(combined).unwrap();
+        assert_eq!(fields.get("s").map(String::as_str), Some("hello world"));
     }
 }

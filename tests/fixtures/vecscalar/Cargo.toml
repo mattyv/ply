@@ -1,0 +1,21 @@
+[workspace]
+# Empty table: this fixture is its own workspace root, per tests/spike's
+# convention -- it must never be swept into the product workspace (each
+# fixture is its own cargo project, per The-Ply-Spec.md §4) or into tools/.
+
+[package]
+name = "ply-fixture-vecscalar"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Acceptance fixture: Vec<T> for an already fuzz-supported scalar T (u32), and that Vec<u8> still works on both engines (task: 2026-08-27)."
+
+[lib]
+name = "ply_fixture_vecscalar"
+path = "src/lib.rs"
+
+[dependencies]
+ply = { package = "ply-attrs", path = "../../../crates/ply-attrs" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

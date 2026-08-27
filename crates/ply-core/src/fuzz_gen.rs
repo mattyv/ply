@@ -90,6 +90,26 @@ pub fn seed_from_hex(text: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// The length bound (in **characters**, never bytes) Ply's generated
+/// `String` strategy samples up to -- named once so `strategy_expr` and
+/// `boundary_literals` agree on the same number, and so a reader (or a
+/// future change) sees one place to look rather than a constant copied
+/// twice. Chosen deliberately, not measured (task brief, 2026-08-27, unlike
+/// `Duration`'s benchmarked bound): long enough that a typical fixed-size
+/// "preview"/"truncate to N" idiom (commonly 8-20 characters in real code)
+/// has room to be exercised past its own boundary, short enough that
+/// proptest's shrinker stays fast. Mirrors `Vec`/`BTreeSet`'s own bound
+/// (0..=8 *elements*) in spirit -- a small, disclosed cap, never unbounded
+/// -- but a string genuinely needs more raw length than a numeric vector to
+/// reach the same kind of boundary bug, hence a larger number here.
+///
+/// Character count, not byte count, is what is bounded: a 32-character
+/// string of 4-byte emoji is a real (if unusual) input up to 128 bytes, and
+/// bounding by *bytes* instead would silently make multi-byte content rarer
+/// exactly where this type's own value proposition lives (see
+/// `RustType::String`'s doc: "the richest bug territory").
+pub(crate) const STRING_MAX_CHARS: u32 = 32;
+
 /// One proptest strategy expression for `ty`, biased toward small magnitudes
 /// (§10 M4: "ints biased small"). `Unsupported` must never reach here --
 /// callers gate on `RustType::is_fuzz_supported` first.
@@ -188,6 +208,58 @@ fn strategy_expr(ty: &RustType) -> Result<String> {
              | proptest::num::f64::NORMAL | proptest::num::f64::SUBNORMAL \
              | proptest::num::f64::ZERO)"
             .to_string(),
+        // The content/length decision (task brief, 2026-08-27), made
+        // deliberately rather than by accident, mirroring the float
+        // NaN/infinity precedent immediately above:
+        //
+        // **Length**: 0..=`STRING_MAX_CHARS` *characters* -- bounded for
+        // the same reason `Vec`/`BTreeSet` are (an unbounded string is not
+        // sensible), disclosed and named in one place rather than assumed
+        // (see that constant's own doc for the exact number and why).
+        //
+        // **Content**: a 9-to-1 mix of ordinary ASCII printable text
+        // (`0x20..=0x7E`, biased heavily because it is the overwhelmingly
+        // common case for real user-facing strings, the same "biased
+        // small" philosophy the integer strategies above already use) and
+        // genuine multi-byte Unicode (`0xA0..=0x10FFFF` -- accented
+        // letters, CJK, symbols, emoji). Multi-byte content is deliberately
+        // **included**, not excluded: unlike a float's NaN, any value a
+        // `String` parameter can hold in real Rust code can already be
+        // multi-byte UTF-8 (the type does not admit anything else), and
+        // byte-vs-character confusion -- slicing or truncating by byte
+        // count instead of char count -- is exactly the encoding/truncation
+        // bug class this type exists to catch (task brief: "the richest
+        // bug territory").
+        //
+        // **Excluded by default**: ASCII/Latin-1 *control* characters
+        // (`0x00..=0x1F`, `0x7F..=0x9F`) -- the same "exclude the class
+        // most likely to be a false alarm" reasoning as the float NaN
+        // exclusion. A raw control byte (NUL, ESC, a C1 control) is the
+        // input class ordinary user-facing text is least likely to
+        // actually contain, and the class most likely to trip an unrelated
+        // assumption (a terminal, a log line, a CSV cell) rather than the
+        // checked function's own logic -- a false counterexample, which
+        // this project treats as nearly as damaging as a false pass (both
+        // end with the tool switched off). This run says nothing about
+        // control-character handling, because it was never asked to --
+        // exactly the float precedent's own words.
+        //
+        // Deliberately excludes `\u{0}`..`\u{1F}`/`\u{7F}`..`\u{9F}` from
+        // *both* ranges below (`0x20` starts the first range, `0xA0` starts
+        // the second, `0x7E` ends the first just before `0x7F`) -- pinned
+        // by `strategy_expr_tests::string_strategy_excludes_control_
+        // characters_by_default` below, the same way the float exclusion
+        // is pinned: reversing this (widening either range to include a
+        // control block) fails that test.
+        RustType::String => format!(
+            "proptest::strategy::Strategy::prop_map(\
+             proptest::collection::vec(\
+             proptest::prop_oneof![\
+             9 => proptest::char::range('\\u{{20}}', '\\u{{7e}}'), \
+             1 => proptest::char::range('\\u{{a0}}', '\\u{{10ffff}}')\
+             ], 0..={STRING_MAX_CHARS}), \
+             |__ply_cs: Vec<char>| __ply_cs.into_iter().collect::<String>())"
+        ),
         RustType::Unsupported(t) => {
             bail!("cannot build a fuzz strategy for unsupported type `{t}`")
         }
@@ -229,6 +301,30 @@ fn marker_display_expr(ty: &RustType, var: &str) -> String {
         RustType::Duration => {
             format!("format!(\"{{}}.{{:09}}\", {var}.as_secs(), {var}.subsec_nanos())")
         }
+        // `String` needs its own arm, unlike every scalar the default arm
+        // below already handles correctly: the marker line itself is a
+        // hand-rolled wire format (`PLY_FUZZED_CEX|fn|k1=v1;k2=v2`, parsed
+        // by `engines::fuzz::parse_fuzz_marker`/`split_top_level_
+        // semicolons`) that reads `;` as the field separator, the first
+        // `=` as the name/value separator, and tracks `[`/`]` depth for a
+        // collection field -- and, being line-based, would silently
+        // truncate at an embedded newline. A *generated* string is
+        // Ply's own content, so it can legitimately contain any of those
+        // characters (the content decision on `RustType::String`
+        // deliberately does not exclude them) -- so this escapes exactly
+        // the seven characters the wire format itself is sensitive to
+        // (`\`, `;`, `=`, `[`, `]`, `\n`, `\r`) into a two-character
+        // backslash form, character by character (never byte by byte, so
+        // a multi-byte character is never split). `engines::fuzz::
+        // unescape_marker_value` is the exact, sole reverse of this
+        // encoding -- the two must change together. This is the *wire*
+        // encoding, never the witness: `String` is not
+        // `is_witness_renderable`, so a failure on one is always reported
+        // via the raw (here: already-unescaped-by-the-decoder) field text,
+        // never a fabricated Rust literal -- see that type's own doc.
+        RustType::String => format!(
+            r#"{{ let mut __ply_s = String::new(); for __ply_c in {var}.chars() {{ match __ply_c {{ '\\' => __ply_s.push_str("\\\\"), ';' => __ply_s.push_str("\\;"), '=' => __ply_s.push_str("\\="), '[' => __ply_s.push_str("\\["), ']' => __ply_s.push_str("\\]"), '\n' => __ply_s.push_str("\\n"), '\r' => __ply_s.push_str("\\r"), __ply_other => __ply_s.push(__ply_other), }} }} __ply_s }}"#
+        ),
         // `NonZero{X}`'s own `Display` is already just the plain number
         // (std impls it as a pass-through to the inner integer), so the
         // default arm below is exact for it too -- no case needed.
@@ -310,7 +406,7 @@ fn call_args(cf: &ContractFn) -> Vec<String> {
 /// (mirrored recursively, matching `derive(Copy)`'s own rule).
 fn moves_on_by_value_call(ty: &RustType) -> bool {
     match ty {
-        RustType::VecU8 | RustType::Vec(_) | RustType::BTreeSet(_) => true,
+        RustType::VecU8 | RustType::Vec(_) | RustType::BTreeSet(_) | RustType::String => true,
         RustType::Option(inner) => moves_on_by_value_call(inner),
         RustType::Result(ok, err) => moves_on_by_value_call(ok) || moves_on_by_value_call(err),
         RustType::Array(inner, _) => moves_on_by_value_call(inner),
@@ -565,24 +661,53 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
     let entry_lets = crate::contract_rt::entry_value_lets(&entry_values, &" ".repeat(12));
     let widened = crate::contract_rt::widen(&checked_body).to_string();
 
-    let marker_fields: Vec<String> = cf
+    // Every field's *display text* is computed into its own binding **before**
+    // the call, never inline inside the failure-branch marker build that
+    // used to reference `p.name` directly there. Found by this task's own
+    // fixture (2026-08-27): a by-value, non-`Copy` parameter whose
+    // postcondition never reads it back (so `moved_param_read_in_ensures`
+    // correctly does not refuse it -- nothing in the *contract* touches a
+    // moved value) was still moved into `{fname}({args})`, and the marker
+    // build the failure branches splice in *after* that call went right on
+    // reading `p.name` again to format it -- `error[E0382]: borrow of moved
+    // value`, for every by-value `String`/`Vec`/`BTreeSet` parameter whose
+    // contract does not itself read it post-call. Pre-computing every
+    // field's text before the move (alongside `old()`'s own entry-value
+    // bindings, which solve the identical problem for the *contract* side)
+    // closes it for every parameter shape at once, not just `String`'s.
+    // Wrapped in `format!("{{}}", ...)`, never spliced as a bare binding
+    // initializer: `marker_display_expr`'s default (scalar) arm returns the
+    // *bare variable reference* (`"x"`), relying on the surrounding
+    // `format!("{}", x)` call in the old inline site to `Display` it rather
+    // than producing a `String` itself -- `let _: String = x;` does not
+    // compile for a `u32` (`error[E0308]`, the regression this task's own
+    // `movedparam` e2e fixture caught: `scalar`, an ordinary `x: u32` fn
+    // wholly unrelated to `String`/`Vec`, failed to build). Every other arm
+    // already evaluates to a `String` (`format!(...)`, or a block ending in
+    // one), so wrapping is a harmless second `Display` pass for those, not
+    // a second escaping/formatting step.
+    let marker_precompute: String = cf
         .params
         .iter()
-        .map(|p| format!("{}={}", p.name, marker_display_expr(&p.ty, &p.name)))
+        .map(|p| {
+            format!(
+                "            let __ply_marker_val_{name}: String = format!(\"{{}}\", {expr});\n",
+                name = p.name,
+                expr = marker_display_expr(&p.ty, &p.name)
+            )
+        })
         .collect();
-    // Each field is itself an *expression*; join them at runtime, not here,
-    // since a Vec/BTreeSet field is a block expression, not a literal.
     let mut marker_build = String::from("let mut __ply_marker = String::new();\n");
     marker_build.push_str(&format!(
         "            __ply_marker.push_str(\"PLY_FUZZED_CEX|{label}|\");\n"
     ));
-    for (i, field) in marker_fields.iter().enumerate() {
-        let (name, value_expr) = field.split_once('=').expect("field has name=expr shape");
+    for (i, p) in cf.params.iter().enumerate() {
         if i > 0 {
             marker_build.push_str("            __ply_marker.push(';');\n");
         }
         marker_build.push_str(&format!(
-            "            __ply_marker.push_str(&format!(\"{name}={{}}\", {value_expr}));\n"
+            "            __ply_marker.push_str(&format!(\"{name}={{}}\", __ply_marker_val_{name}));\n",
+            name = p.name
         ));
     }
 
@@ -600,7 +725,7 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {strategy};\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{pattern}| {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{requires_check}{receiver_preamble_text}{entry_lets}let __ply_call_result = {fname}({args});\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{requires_check}{receiver_preamble_text}{entry_lets}{marker_precompute}let __ply_call_result = {fname}({args});\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let result = &__ply_call_result;\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {widened}));\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20match __ply_ok {{\n\
@@ -747,6 +872,18 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
             let n = ty.scalar_rust_name().unwrap();
             vec![format!("0.0{n}"), format!("{n}::MIN"), format!("{n}::MAX")]
         }
+        // The empty string, a single ASCII character, a string right at the
+        // sampled length bound, and -- deliberately, not an afterthought --
+        // one genuinely multi-byte case (accented Latin, CJK, and an emoji
+        // together) so the `test` tier's own concrete cases exercise the
+        // exact byte-vs-character bug class the fuzz strategy's content
+        // choice targets, not only its randomly sampled cases.
+        RustType::String => vec![
+            "String::new()".to_string(),
+            "\"a\".to_string()".to_string(),
+            format!("\"a\".repeat({STRING_MAX_CHARS})"),
+            "\"h\\u{e9}llo, \\u{4e16}\\u{754c}! \\u{1f389}\".to_string()".to_string(),
+        ],
         // Never reached: return-only shapes, never a parameter's.
         RustType::SelfType | RustType::Unit | RustType::Unsupported(_) => vec![],
     }
@@ -873,6 +1010,34 @@ mod tests {
         let path = dir.path().join("lib.rs");
         std::fs::write(&path, src).unwrap();
         discover_fn(&path, name).unwrap()
+    }
+
+    /// Regression pin (task, 2026-08-27): the marker-precompute fix for the
+    /// `String`/`Vec` moved-parameter defect must not break the far more
+    /// common scalar case. `marker_display_expr`'s default arm returns the
+    /// *bare variable reference* (`"x"`), relying on the surrounding
+    /// `format!("{}", x)` call to `Display` it -- assigning that bare
+    /// expression straight to a `String`-typed binding (`let _: String =
+    /// x;`) is `error[E0308]: mismatched types` for every scalar-parameter
+    /// fn, every one of them, the moment a precompute binding is
+    /// `String`-typed but the expression is not. This is the actual defect
+    /// this task's own `movedparam` e2e fixture caught (`scalar`, a plain
+    /// `x: u32` fn wholly unrelated to `String`/`Vec`, failed to build).
+    #[test]
+    fn the_precomputed_marker_binding_for_a_plain_scalar_is_well_typed() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == x)]
+pub fn clamp(x: u32) -> u32 { x.min(100) }
+"#,
+            "clamp",
+        );
+        let body = generate_fuzz_test(&cf, 256, &derive_seed("clamp", "")).unwrap();
+        assert!(
+            !body.contains(": String = x;"),
+            "a bare scalar reference assigned directly to a String-typed binding does not \
+             compile (expected String, found u32):\n{body}"
+        );
     }
 
     #[test]
@@ -1337,5 +1502,140 @@ impl Flag {
             body.contains("Flag::flip(&__ply_receiver)"),
             "a zero-arg checked call must not gain a stray trailing comma:\n{body}"
         );
+    }
+
+    // -- the sampling/proving split's second headline case (task,
+    // 2026-08-27): `String`'s content and length decisions, pinned so
+    // reversing either fails a test rather than silently reintroducing a
+    // false alarm or an unbounded generator, the same way the float
+    // NaN/infinity exclusion is pinned above.
+
+    /// The pin for the length bound: reversing `STRING_MAX_CHARS` (or
+    /// dropping the length cap from the generated strategy entirely) fails
+    /// this test, because the exact bound would no longer appear in the
+    /// generated source.
+    #[test]
+    fn string_strategy_is_length_bounded_by_the_named_constant() {
+        let expr = strategy_expr(&RustType::String).unwrap();
+        assert!(
+            expr.contains(&format!("0..={STRING_MAX_CHARS}")),
+            "the generated strategy must cap length at the one named constant, not an \
+             unbounded or ad-hoc range: {expr}"
+        );
+        assert_eq!(
+            STRING_MAX_CHARS, 32,
+            "this is the disclosed bound this task chose -- changing it is fine, but must be a \
+             deliberate edit to the constant, not a silent drift"
+        );
+    }
+
+    /// The pin for the content decision's exclusion half: reversing either
+    /// char range to include the control-character blocks
+    /// (`0x00..=0x1F`/`0x7F..=0x9F`) fails this test.
+    #[test]
+    fn string_strategy_excludes_control_characters_by_default() {
+        let expr = strategy_expr(&RustType::String).unwrap();
+        // The two ranges this task chose: ASCII printable (space through
+        // `~`) and everything from non-breaking space up through the top of
+        // the Unicode scalar value space -- deliberately skipping both the
+        // C0 control block below `0x20` and the C1 control block
+        // `0x7F..=0x9F`.
+        assert!(
+            expr.contains("proptest::char::range('\\u{20}', '\\u{7e}')"),
+            "must sample ordinary ASCII printable text: {expr}"
+        );
+        assert!(
+            expr.contains("proptest::char::range('\\u{a0}', '\\u{10ffff}')"),
+            "must also sample genuine multi-byte Unicode -- this is the type's own value \
+             proposition, never excluded the way NaN is for floats: {expr}"
+        );
+        assert!(
+            !expr.contains("any::<char>()"),
+            "must not fall back to proptest's own unrestricted char Arbitrary, which would \
+             reintroduce control characters: {expr}"
+        );
+    }
+
+    /// The content decision's inclusion half, from the other direction:
+    /// multi-byte Unicode must not be excluded the way NaN is for floats --
+    /// this is the type's whole point (task brief: "the richest bug
+    /// territory"). Pinned via the boundary literals the `test` tier emits.
+    #[test]
+    fn string_boundary_literals_include_genuine_multibyte_content() {
+        let lits = boundary_literals(&RustType::String);
+        assert!(!lits.is_empty());
+        assert!(
+            lits.iter().any(|l| l.contains("\\u{")),
+            "at least one boundary literal must exercise real multi-byte Unicode content, not \
+             ASCII only: {lits:?}"
+        );
+        assert!(
+            lits.iter().any(|l| l == "String::new()"),
+            "the empty string must be one of the boundary cases: {lits:?}"
+        );
+    }
+
+    #[test]
+    fn generates_a_fuzz_test_for_a_string_param() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == old(s).len())]
+pub fn byte_len(s: String) -> usize { s.len() }
+"#,
+            "byte_len",
+        );
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("byte_len", "")).unwrap();
+        assert!(body.contains("fn ply_fuzz_byte_len()"));
+        assert!(body.contains("proptest::char::range"));
+    }
+
+    /// `String` moves on a by-value call, exactly like `Vec<u8>` -- a
+    /// postcondition reading it after the call (without `old()`) must be
+    /// refused the same way, not silently compiled into a
+    /// borrow-of-moved-value error.
+    #[test]
+    fn a_postcondition_reading_a_moved_by_value_string_is_refused_by_name() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == s.len())]
+pub fn byte_len(s: String) -> usize { s.len() }
+"#,
+            "byte_len",
+        );
+        let refused = moved_param_read_in_ensures(&cf);
+        assert_eq!(refused.map(|p| p.name.as_str()), Some("s"));
+        let err = generate_fuzz_test(&cf, 32, &derive_seed("byte_len", "")).unwrap_err();
+        assert!(err.to_string().contains("V0506"), "{err}");
+    }
+
+    /// The marker-line safety property this task's own investigation
+    /// depended on (mirroring record.rs's "the record's own separator byte
+    /// cannot be smuggled" proof, but for the *fuzz marker* wire format
+    /// instead): a sampled string containing the marker's own separator
+    /// characters (`;`, `=`, `[`, `]`) must not corrupt the marker line --
+    /// `marker_display_expr`'s escaping is the mechanism, and this pins
+    /// that it actually escapes every one of them, character by character.
+    #[test]
+    fn string_marker_display_escapes_every_wire_format_separator() {
+        let expr = marker_display_expr(&RustType::String, "s");
+        for (label, needle) in [
+            ("backslash", "'\\\\' =>"),
+            ("semicolon", "';' =>"),
+            ("equals", "'=' =>"),
+            ("open bracket", "'[' =>"),
+            ("close bracket", "']' =>"),
+            ("newline", "'\\n' =>"),
+            ("carriage return", "'\\r' =>"),
+        ] {
+            assert!(
+                expr.contains(needle),
+                "the marker encoding must escape {label} -- a sampled string containing it \
+                 could otherwise be mistaken for the wire format's own field/collection \
+                 boundary: {expr}"
+            );
+        }
+        // Iterates by `char`, never by byte -- a multi-byte character must
+        // never be split mid-encoding.
+        assert!(expr.contains(".chars()"), "{expr}");
     }
 }

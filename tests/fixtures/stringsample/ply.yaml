@@ -1,0 +1,25 @@
+ply: 1
+
+# `byte_len` declares no `checks:` at all -- exercises the shape-aware
+# default routing (§5.4c) for a String: it fails the Kani (`bounded`) gate
+# by deliberate design decision (never a measured exclusion, unlike
+# `BTreeSet`) but passes the fuzz (proptest) gate, so the default must land
+# on `fuzz(256)`, never `bounded(2)` and never silently nothing.
+#
+# `preview` is the decisive case: a genuinely broken string function with a
+# false promise, caught by sampling.
+#
+# `byte_len_bounded` is the identical shape as `byte_len`, claimed with an
+# explicit `bounded(2)` -- which this shape cannot give, and must refuse by
+# name rather than silently downgrade or hang.
+components:
+  stringsample:
+    anchor: ply_fixture_stringsample
+    fns:
+      byte_len: {}
+      preview:
+        checks: [fuzz(256)]
+      byte_len_bounded:
+        checks: [bounded(2)]
+      char_count_wrong:
+        checks: [fuzz(256)]

@@ -156,6 +156,76 @@ pub enum RustType {
     /// about it, rather than discovering that gap by reading source.
     F32,
     F64,
+    /// `String` -- added for the sampling/proving split's second headline
+    /// case (task, 2026-08-27: "a string is trivial to sample and genuinely
+    /// hard to prove"). Fuzz-supported, **never** bounded-supported, by the
+    /// same deliberate design decision as `F32`/`F64` -- a `bounded`/`proved`
+    /// check on a `String` is refused by name (`V0508`, `bounded_refused_
+    /// sample_only_diag` in verify.rs already fires generically off
+    /// `is_bounded_supported`/`is_fuzz_supported`, no change needed there).
+    /// Kani has no `Arbitrary` for `String` that this codegen builds, and
+    /// reasoning about every possible sequence of Unicode scalar values at
+    /// once is exactly the kind of open-ended, unbounded-length proof work
+    /// this project is not taking on in v1 -- the same "real, substantial
+    /// work, not attempted here" reasoning as the float split, never a
+    /// measured Kani exclusion the way `BTreeSet` is.
+    ///
+    /// **Deliberately not part of [`RustType::is_leaf`] /
+    /// `is_composite_constructible`**, the same narrowing already applied to
+    /// `NonZero`/`Duration`/`F32`/`F64`: only a bare top-level parameter or
+    /// return is supported, never `Option<String>`/`Result<String, _>`/
+    /// `[String; N]`/`Vec<String>`. Widening that is future work, not
+    /// attempted here, for the same reason floats were left un-nested: it
+    /// would make e.g. `Option<String>` silently *bounded*-supported via
+    /// `is_bounded_supported`'s generic composite fallback, which is exactly
+    /// backwards.
+    ///
+    /// **Also deliberately not folded into `Vec<T>`'s existing scalar
+    /// element gate** (`RustType::is_scalar`, unchanged by this task):
+    /// `Vec<String>`/`BTreeSet<String>` stay `Unsupported`. The task that
+    /// added this type asked for "`Vec<T>` for already-supported `T`", and
+    /// the already-existing `Vec`/`BTreeSet` codegen (M4, pre-dating this
+    /// task) only ever builds a *scalar* element -- widening element
+    /// construction to a second container-shaped type is real, separate
+    /// codegen work (a nested nested-strategy, a nested marker encoding)
+    /// this pass did not take on. Narrowed, not solved -- see fuzz_gen.rs's
+    /// own note.
+    ///
+    /// **Content and length, made deliberately rather than by accident**
+    /// (task brief, mirroring the NaN/infinity precedent): see
+    /// `fuzz_gen::strategy_expr`'s own doc comment on its `RustType::String`
+    /// arm for the exact choice and why. In short: bounded to at most 32
+    /// Unicode characters (never bytes -- multi-byte content is exactly the
+    /// point, see below), sampling ordinary printable text -- ASCII
+    /// printable characters most of the time, plus real multi-byte Unicode
+    /// (accented letters, CJK, symbols) some of the time -- while excluding
+    /// ASCII/Latin-1 control characters (`0x00..=0x1F`, `0x7F..=0x9F`) by
+    /// default, the same "exclude the class most likely to be a false
+    /// alarm" reasoning as the float NaN exclusion: a raw control byte is
+    /// the input class real user-facing text is least likely to actually
+    /// contain, and is also the value class most likely to trip an
+    /// unrelated assumption (a log line, a terminal, a CSV cell) rather
+    /// than the function's own logic. Multi-byte Unicode is emphatically
+    /// **not** excluded -- unlike a control byte, any valid `String` a real
+    /// caller holds can already contain it (Rust's `String` guarantees
+    /// valid UTF-8, never "invalid encoding"), and byte-vs-character
+    /// confusion (slicing/truncating by byte count instead of by char
+    /// count) is precisely the truncation/encoding bug class this type
+    /// exists to catch (task brief: "the richest bug territory").
+    ///
+    /// **A CLI-level disclosure diagnostic analogous to floats' `W0518`
+    /// (naming the control-character exclusion the way the run itself
+    /// says so) is not wired in this pass**: that disclosure lives in
+    /// `crates/ply-cli/src/verify.rs`, which another agent was working in
+    /// this same session for an unrelated feature (receiver construction)
+    /// and which this task's own scope says not to touch. `ContractFn::
+    /// has_string_shape` below is built ready for that wiring (mirroring
+    /// `has_float_shape`'s exact shape) -- the choice is fully documented
+    /// and pinned by tests at the harness/fuzz_gen level (`strategy_expr`'s
+    /// own tests), but a user running `cargo ply verify` does not yet see
+    /// an info-level line naming it the way they do for floats. Recorded
+    /// here rather than left to be discovered by review.
+    String,
     /// This function's own enclosing type, written `Self` in its
     /// signature -- added 2026-08-27 for receiverless associated functions
     /// (constructors), whose return type is almost always `Self` or
@@ -312,6 +382,9 @@ impl RustType {
             // rather than left implicit in what two *other* predicates
             // happen not to say.
             RustType::F32 | RustType::F64 => false,
+            // Same deliberate-design-decision reasoning as floats, not a
+            // measured Kani exclusion: see `RustType::String`'s own doc.
+            RustType::String => false,
             other => other.is_leaf() || other.is_composite_constructible(),
         }
     }
@@ -344,6 +417,13 @@ impl RustType {
             | RustType::Vec(_)
             | RustType::BTreeSet(_)
             | RustType::Array(_, _)
+            // Never reached today (a `bounded` proof never runs over a
+            // `String` at all -- `is_bounded_supported` is `false`), but
+            // correct in its own right for the same reason `Vec` is: Ply's
+            // `String` sampling is always length-capped, so standing on a
+            // (hypothetical) proof over it would cover only strings up to
+            // that cap, never the type's whole value space.
+            | RustType::String
             | RustType::Unsupported(_) => false,
             RustType::Option(inner) => inner.is_full_domain(),
             RustType::Result(ok, err) => ok.is_full_domain() && err.is_full_domain(),
@@ -368,6 +448,13 @@ impl RustType {
             // `is_bounded_supported`, which is backwards: proptest builds an
             // arbitrary `f32`/`f64` as cheaply as any other scalar.
             RustType::F32 | RustType::F64 => true,
+            // The same reason floats need their own arm here: the fallback
+            // would otherwise inherit `false` from `is_bounded_supported`,
+            // which is backwards -- proptest builds a bounded-length,
+            // curated-content `String` as cheaply as any other sampled
+            // shape (see `fuzz_gen::strategy_expr`'s own doc for what it
+            // actually builds).
+            RustType::String => true,
             other => other.is_bounded_supported(),
         }
     }
@@ -445,6 +532,7 @@ impl RustType {
             RustType::NonZero(inner) => {
                 format!("std::num::NonZero{}", inner.nonzero_suffix()?)
             }
+            RustType::String => "String".to_string(),
             other => other.scalar_rust_name()?.to_string(),
         })
     }
@@ -471,6 +559,7 @@ impl RustType {
             RustType::NonZero(inner) => {
                 format!("NonZero{}", inner.nonzero_suffix().unwrap_or("?"))
             }
+            RustType::String => "String".to_string(),
             // The source text as the user wrote it: for a shape Ply does not
             // model, the words they typed are the only spelling that helps.
             RustType::Unsupported(src) => src.clone(),
@@ -536,6 +625,11 @@ impl RustType {
             // bounded/Kani path at all (`is_bounded_supported` is `false`).
             | RustType::F32
             | RustType::F64
+            // Same reason as the float arms just above: `String` never
+            // reaches the bounded/Kani path at all (`is_bounded_supported`
+            // is `false`), so a fuzz-found violation on one is reported
+            // witness-only (`W0541`), never with an invented input.
+            | RustType::String
             | RustType::SelfType
             | RustType::Unit
             | RustType::Unsupported(_) => None,
@@ -724,6 +818,16 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                 // resolved item paths, and widening that is out of scope
                 // for this task.
                 "Duration" => RustType::Duration,
+                // `std::string::String`, matched the same bare-last-segment
+                // way as `Duration`/`NonZero{X}` above -- both a bare
+                // `String` (after `use`, or the prelude, which always
+                // brings it into scope) and a fully-qualified
+                // `std::string::String` resolve to the same shape.
+                // Deliberately never nested (`Option<String>` etc. fall
+                // through to `Unsupported` below, same narrowing as
+                // `NonZero`/`Duration`/`F32`/`F64` -- see `RustType::
+                // String`'s own doc for why).
+                "String" => RustType::String,
                 "Vec" => {
                     if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments
                         && let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first()
@@ -915,6 +1019,16 @@ impl ContractFn {
             .iter()
             .any(|p| matches!(p.ty, RustType::F32 | RustType::F64))
             || matches!(self.return_type, RustType::F32 | RustType::F64)
+    }
+
+    /// Whether any parameter or the return type is `String` -- the
+    /// content/length disclosure this run owes the reader, mirroring
+    /// `has_float_shape`'s exact shape. Not yet wired to a CLI diagnostic
+    /// (see `RustType::String`'s own doc for why this pass stops here);
+    /// built ready for that wiring.
+    pub fn has_string_shape(&self) -> bool {
+        self.params.iter().any(|p| matches!(p.ty, RustType::String))
+            || matches!(self.return_type, RustType::String)
     }
 
     /// The expression generated code calls this fn by (added 2026-08-27,
@@ -2701,11 +2815,16 @@ pub fn scalar(x: u32) -> u32 { x }
     }
 
     #[test]
-    fn instant_string_struct_and_enum_stay_refused_by_name_unchanged() {
+    fn instant_struct_and_enum_stay_refused_by_name_unchanged() {
         // Explicitly out of scope for this task -- Instant's construction
         // question (a monotonic clock the harness cannot rewind or fake)
-        // needs its own design, same as String/structs/enums
+        // needs its own design, same as structs/enums
         // (docs/review-self-construction.md). This must not regress.
+        //
+        // `String` used to sit in this same list -- it no longer does (task,
+        // 2026-08-27, the sampling/proving split's second headline case):
+        // see `string_is_fuzz_supported_but_never_bounded_supported` below
+        // for its own, now-supported, behaviour.
         let dir = tempfile::tempdir().unwrap();
         let path = write_src(
             dir.path(),
@@ -2715,7 +2834,7 @@ use std::time::Instant;
 pub struct Foo { pub x: u32 }
 pub enum Bar { A, B }
 #[ply::ensures(|result| *result >= 0)]
-pub fn f(t: Instant, s: String, foo: Foo, bar: Bar) -> i64 { 0 }
+pub fn f(t: Instant, foo: Foo, bar: Bar) -> i64 { 0 }
 "#,
         );
         let cf = discover_fn(&path, "f").unwrap();
@@ -2726,21 +2845,82 @@ pub fn f(t: Instant, s: String, foo: Foo, bar: Bar) -> i64 { 0 }
         );
         assert!(
             matches!(cf.params[1].ty, RustType::Unsupported(_)),
-            "String: {:?}",
+            "struct: {:?}",
             cf.params[1].ty
         );
         assert!(
             matches!(cf.params[2].ty, RustType::Unsupported(_)),
-            "struct: {:?}",
-            cf.params[2].ty
-        );
-        assert!(
-            matches!(cf.params[3].ty, RustType::Unsupported(_)),
             "enum: {:?}",
-            cf.params[3].ty
+            cf.params[2].ty
         );
         assert!(!cf.is_bounded_supported());
         assert!(!cf.is_fuzz_supported());
+    }
+
+    // -- the sampling/proving split's second headline case (task,
+    // 2026-08-27): `String` is fuzz-supported, never bounded-supported, the
+    // same asymmetry as `f32`/`f64` above.
+
+    #[test]
+    fn string_is_fuzz_supported_but_never_bounded_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::ensures(|result| *result == old(s).len())]
+pub fn byte_len(s: String) -> usize { s.len() }
+"#,
+        );
+        let cf = discover_fn(&path, "byte_len").unwrap();
+        assert_eq!(cf.params[0].ty, RustType::String);
+        assert!(
+            cf.is_fuzz_supported(),
+            "a plain String parameter must be sampleable -- proptest builds one as cheaply as \
+             any other scalar shape"
+        );
+        assert!(
+            !cf.is_bounded_supported(),
+            "String must stay refused on the proving engine -- the split's own second headline \
+             case, a deliberate decision, not a measured Kani exclusion"
+        );
+    }
+
+    #[test]
+    fn a_string_typed_fn_is_flagged_by_has_string_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::ensures(|result| *result == old(s).len())]
+pub fn byte_len(s: String) -> usize { s.len() }
+#[ply::ensures(|result| *result == x)]
+pub fn scalar(x: u32) -> u32 { x }
+"#,
+        );
+        assert!(discover_fn(&path, "byte_len").unwrap().has_string_shape());
+        assert!(!discover_fn(&path, "scalar").unwrap().has_string_shape());
+    }
+
+    #[test]
+    fn nested_string_stays_unsupported_never_silently_bounded() {
+        // Same narrowing as `NonZero`/`Duration`/`F32`/`F64`: only a bare
+        // top-level `String` is supported. `Option<String>` must not fall
+        // through to `is_composite_constructible`'s generic fallback and
+        // read as bounded-supported.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::ensures(|result| result.is_none() || result.as_ref().unwrap().len() >= 0)]
+pub fn f(s: Option<String>) -> Option<String> { s }
+"#,
+        );
+        let cf = discover_fn(&path, "f").unwrap();
+        assert!(
+            matches!(cf.params[0].ty, RustType::Unsupported(_)),
+            "Option<String>: {:?}",
+            cf.params[0].ty
+        );
     }
 
     #[test]
@@ -3131,17 +3311,24 @@ fn self_n() -> u32 { 0 }
     /// never silently skipped to another rule.
     #[test]
     fn a_constructor_needing_an_unsupported_type_is_refused_by_name() {
+        // `Instant`, not `String`, is the unsupported type here (changed by
+        // the sampling/proving split task, 2026-08-27): `String` is now a
+        // sample-supported shape (`RustType::String`), so a constructor
+        // parameter of that type no longer demonstrates this refusal --
+        // `Instant` still does (a monotonic clock the harness cannot
+        // rewind or fake, unchanged and still `Unsupported`, see
+        // `instant_struct_and_enum_stay_refused_by_name_unchanged` above).
         let dir = tempfile::tempdir().unwrap();
         write_crate(
             dir.path(),
             &[(
                 "labelled.rs",
                 r#"
-pub struct Labelled { label: String }
+pub struct Labelled { at: std::time::Instant }
 impl Labelled {
-    pub fn new(label: String) -> Self { Labelled { label } }
+    pub fn new(at: std::time::Instant) -> Self { Labelled { at } }
     #[ply::ensures(|result| *result == self_label_len())]
-    pub fn label_len(&self) -> u32 { self.label.len() as u32 }
+    pub fn label_len(&self) -> u32 { self_label_len() }
 }
 fn self_label_len() -> u32 { 0 }
 "#,
@@ -3157,7 +3344,7 @@ fn self_label_len() -> u32 { 0 }
             } => {
                 assert_eq!(type_name, "Labelled");
                 assert_eq!(ctor_name, "Labelled::new");
-                assert!(bad_type.contains("String"), "{bad_type}");
+                assert!(bad_type.contains("Instant"), "{bad_type}");
             }
             other => panic!("expected UnsupportedConstructorParam, got {other:?}"),
         }
