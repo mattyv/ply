@@ -345,7 +345,29 @@ fn walk_anchors(
                 match r.lookup_fn(fn_name) {
                     ply_core::callgraph::Resolution::Refused(reason) => {
                         tally.resolved += 1;
-                        diagnostics.push(crate::verify::refused_anchor_diag(&node_id, &reason));
+                        // The resolver refuses every method that takes a
+                        // receiver, because it predates receiver
+                        // construction. `verify` no longer stops there: it
+                        // tries to build one from the type's own constructor
+                        // plus a bounded sequence of the type's own
+                        // operations, and where that succeeds it checks the
+                        // method and finds real violations. Reporting the
+                        // resolver's blanket refusal here told users a
+                        // feature that works does not exist -- and `check`
+                        // is the command people run first, so they would
+                        // never reach `verify` to find out otherwise
+                        // (adversarial review, 2026-08-27). Ask the same
+                        // question `verify` asks, and only report the
+                        // refusal when the answer is genuinely no.
+                        let buildable = lib_path.parent().and_then(|src| src.parent()).is_some_and(
+                            |crate_dir| {
+                                ply_core::harness::discover_method_with_receiver(crate_dir, fn_name)
+                                    .is_ok()
+                            },
+                        );
+                        if !buildable {
+                            diagnostics.push(crate::verify::refused_anchor_diag(&node_id, &reason));
+                        }
                         continue;
                     }
                     ply_core::callgraph::Resolution::Ambiguous(reason) => {
@@ -960,6 +982,50 @@ mod tests {
     /// pre-check at all, so this exact claim counted as `unresolved` under
     /// `E0301` -- the two commands disagreeing about the same fact for the
     /// same document.
+    #[test]
+    fn check_does_not_deny_a_receiver_verify_can_actually_build() {
+        // `check` is the command people run first. It used to report the
+        // resolver's blanket "constructing a receiver is not supported yet"
+        // for every method taking `&self`, while `verify` built one from the
+        // type's own constructor and found real violations in the same
+        // function. A user who ran `check` would conclude the feature did
+        // not exist and never reach `verify`. Reproduced by hand before the
+        // fix (adversarial review, 2026-08-27).
+        let dir = crate_with(
+            "pub struct Calc { pub v: u32 }\nimpl Calc { pub fn new(v: u32) -> Self { Self { v:              v.min(10) } }\n  pub fn value(&self) -> u32 { self.v } }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      Calc::value: {}\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        assert!(
+            !report
+                .envelope
+                .diagnostics
+                .iter()
+                .any(|d| d.title.contains("receiver")),
+            "a receiver `verify` can build must not be reported as unsupported by `check`: {:#?}",
+            report.envelope.diagnostics
+        );
+    }
+
+    #[test]
+    fn check_still_refuses_a_receiver_that_genuinely_cannot_be_built() {
+        // The other direction, so the fix above cannot become "never refuse".
+        let dir = crate_with(
+            "pub struct Calc { pub v: u32 }\nimpl Calc { pub fn value(&self) -> u32 { self.v } }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      Calc::value: {}\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        assert!(
+            report
+                .envelope
+                .diagnostics
+                .iter()
+                .any(|d| d.title.contains("receiver")),
+            "a type with no constructor has no receiver to build, and `check` must say so: {:#?}",
+            report.envelope.diagnostics
+        );
+    }
+
     #[test]
     fn a_method_refused_for_its_receiver_counts_as_resolved_not_unresolved() {
         let dir = crate_with(
