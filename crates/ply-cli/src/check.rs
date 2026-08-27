@@ -252,6 +252,22 @@ fn arch_diag(f: &ArchFinding) -> Diagnostic {
 
 /// What the anchor tier managed to look at — the numbers the human summary
 /// reports, so a reader can tell "all fine" from "nothing was looked at".
+///
+/// **`resolved` now also counts a `Type::method` claim Ply found but
+/// refuses to check for a stated, scope reason** -- a receiver method, a
+/// trait method, a generic `impl` block, or two candidates its syntactic
+/// reader cannot pick between -- exactly as `verify` counts them among the
+/// fns it resolved (adversarial review, 2026-08-27: before this, `check`
+/// was the one command that had no pre-check for these, so it folded all
+/// four into `unresolved` under `E0301`, the code that means "this claim
+/// describes nothing" — which made `check` and `verify` report two
+/// different numbers for the same document: 6 of 39 here, 39 of 39 there,
+/// for a crate where every single claim named a real method). A private fn
+/// Ply cannot verify from, or a signature/contract shape it cannot read,
+/// still count as `unresolved` here -- deliberately unchanged, because
+/// `verify` folds those two into its own `unclaimed` bucket the same way
+/// today; narrowing `unresolved` further than that would just move the
+/// disagreement rather than close it.
 pub struct AnchorTally {
     pub resolved: usize,
     pub unresolved: usize,
@@ -314,6 +330,36 @@ fn walk_anchors(
     if is_local(local_anchors, &comp.anchor) {
         for fn_name in comp.fns.keys() {
             let node_id = format!("{qualified}::{fn_name}");
+            // The same pre-check `verify` runs, in the same order, for the
+            // same reason (`verify.rs`'s own comment on this): a
+            // `Type::method` claim naming something real but out of this
+            // slice's scope (a receiver, a generic `impl` block, a trait
+            // method) or that the syntactic reader cannot pick between must
+            // never be reported as "could not find the function" -- that is
+            // false, Ply found it and is refusing it for a stated reason.
+            // Before this, only `verify` ran this pre-check, so this
+            // command folded all four of those into `unresolved` under the
+            // "describes nothing" code, and the two commands' headline
+            // counts disagreed (adversarial review, 2026-08-27).
+            if let Some(r) = resolver.as_deref_mut() {
+                match r.lookup_fn(fn_name) {
+                    ply_core::callgraph::Resolution::Refused(reason) => {
+                        tally.resolved += 1;
+                        diagnostics.push(crate::verify::refused_anchor_diag(&node_id, &reason));
+                        continue;
+                    }
+                    ply_core::callgraph::Resolution::Ambiguous(reason) => {
+                        tally.resolved += 1;
+                        diagnostics.push(crate::verify::ambiguous_anchor_diag(
+                            &node_id, fn_name, &reason,
+                        ));
+                        continue;
+                    }
+                    ply_core::callgraph::Resolution::Found(_)
+                    | ply_core::callgraph::Resolution::Opaque(_)
+                    | ply_core::callgraph::Resolution::NotFound => {}
+                }
+            }
             // The same resolver `verify` anchors with, so the two commands
             // cannot disagree about which claims point at real code -- and,
             // since 2026-08-25, the same one call classification uses, so
@@ -400,6 +446,17 @@ fn unresolved_anchor_diag(
              code; what this slice cannot handle is the function's signature or its contract."
         ),
     };
+    // `Private`/`Shape` are left exactly as they were -- `E0301`, error,
+    // "unresolvable_anchor" -- and deliberately so: `verify` itself reports
+    // both of these the same way today (`discover_fn_with` wraps every
+    // `AnchorError` variant as one `anyhow::Error` and `verify`'s own
+    // `unresolved_anchor_diag` gives all of them `E0301`/error, folding the
+    // resulting fn into `unclaimed`). Only `Refused`/`Ambiguous` earned a
+    // sharper, warning-level diagnostic in `verify` (checked *before*
+    // `discover_fn_with` even runs), and this tier's pre-check above now
+    // mirrors exactly that split -- narrowing this function to the two
+    // facts `verify` still folds together here would make `check` disagree
+    // with `verify` in the opposite direction, which is not the fix.
     Diagnostic {
         code: "E0301".into(),
         severity: "error".into(),
@@ -893,6 +950,51 @@ mod tests {
             d.title
         );
         assert!(d.title.contains("private"), "{}", d.title);
+    }
+
+    /// The disagreement this fixes (adversarial review, 2026-08-27): a
+    /// `Type::method` claim naming a method Ply finds and refuses for a
+    /// stated reason (here, a receiver it cannot build) is not "a claim
+    /// that describes nothing" -- `verify` already said so via its own
+    /// pre-check. Before this test could pass, `check` had no such
+    /// pre-check at all, so this exact claim counted as `unresolved` under
+    /// `E0301` -- the two commands disagreeing about the same fact for the
+    /// same document.
+    #[test]
+    fn a_method_refused_for_its_receiver_counts_as_resolved_not_unresolved() {
+        let dir = crate_with(
+            "pub struct Bucket { n: u32 }\nimpl Bucket { pub fn n(&self) -> u32 { self.n } }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      Bucket::n: {}\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        assert!(
+            !report
+                .envelope
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "E0301"),
+            "a method Ply found and refuses for a stated reason must never carry the code that \
+             means \"this claim describes nothing\": {:#?}",
+            report.envelope.diagnostics
+        );
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.node_id == "demo::Bucket::n")
+            .unwrap_or_else(|| {
+                panic!(
+                    "no diagnostic for demo::Bucket::n: {:#?}",
+                    report.envelope.diagnostics
+                )
+            });
+        assert_eq!(d.code, "V0507");
+        assert_eq!(d.severity, "warning");
+        assert!(
+            d.title.contains("Bucket::n") && d.title.contains("receiver"),
+            "{}",
+            d.title
+        );
     }
 
     /// §5.3: an advisory finding is worth reporting and is not a violation.

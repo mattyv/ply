@@ -1,0 +1,29 @@
+ply: 1
+
+components:
+  implmultimod:
+    anchor: ply_fixture_implmultimod
+    fns:
+      # The false pass this fixes: the promise ("the answer is 999") lives
+      # on the CRATE-ROOT `Root`, reached only by the bare, unqualified
+      # name. Checking it must report the real violation its body commits
+      # (it returns 5), never a clean pass borrowed from a different
+      # function.
+      Root::five:
+        checks: [fuzz(16)]
+      # The literal, real-Rust name of `inner`'s OWN `five` -- a different
+      # function from the one above, carrying no promise at all. Must
+      # never resolve to the crate-root one and borrow its false promise.
+      inner::Root::five:
+        checks: [fuzz(16)]
+      # A correct claim in a multi-module crate, with its `impl` in a
+      # different file from its type's own declaration.
+      widgets::Widget::three:
+        checks: [bounded(2)]
+      # A type re-exported under another name -- must resolve to the same
+      # declaration `widgets::Widget::four` names.
+      ExportedWidget::four:
+        checks: [bounded(2)]
+      # Two `impl` blocks for one type, in different files, defining the
+      # same method name -- ambiguous, and must be refused as such.
+      pairs::Pair::describe: {}

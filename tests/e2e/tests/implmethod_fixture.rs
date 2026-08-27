@@ -115,8 +115,10 @@ fn two_impl_blocks_for_one_type_with_no_name_collision_both_resolve() {
     // ambiguity, as long as they do not define the same name twice.
     let zero = node(&run.json, "Meter::zero");
     assert_eq!(
-        zero["verdict"], "fuzzed(32)",
-        "the first impl block's own method must resolve and check independently: {}",
+        zero["verdict"], "tested",
+        "the first impl block's own method must resolve and check independently -- and, since \
+         it takes no parameters, the honest verdict for its one possible call is `tested`, not \
+         a fuzzed case count (adversarial review, 2026-08-27): {}",
         run.json
     );
     let cpm = node(&run.json, "Meter::centimeters_per_meter");
@@ -232,6 +234,12 @@ fn a_receiverless_method_with_an_unsupported_return_type_is_refused_not_broken()
 /// exact shape, which is why this is pinned on its own rather than folded
 /// into the import-bug test above (§9: a defect found by review enters the
 /// suite as a fixture of its own shape).
+///
+/// The verdict itself changed in a later review pass the same day: a
+/// zero-parameter fn has exactly one possible call, so running it 32 times
+/// is one case repeated, not 32 samples of an input space that does not
+/// exist here. `fuzzed(32)` overstated that; the honest verdict is
+/// `tested` (§5.4c), and a `W0519` info diagnostic says why.
 #[test]
 fn a_zero_parameter_fn_checked_on_the_fuzz_tier_earns_a_real_verdict_not_a_broken_harness() {
     let cargo_ply = build_cargo_ply();
@@ -240,9 +248,13 @@ fn a_zero_parameter_fn_checked_on_the_fuzz_tier_earns_a_real_verdict_not_a_broke
 
     let n = node(&run.json, "Meter::zero");
     assert_eq!(
-        n["verdict"], "fuzzed(32)",
+        n["verdict"], "tested",
         "a zero-parameter fn checked with `fuzz` must compile and earn a real verdict, not \
-         `tool_error`: {}",
+         `tool_error` -- and the verdict must not overstate the one case that actually ran as a \
+         case count: {}",
         run.json
     );
+    let d = diag_for(&run.json, "Meter::zero");
+    assert_eq!(d["code"], "W0519", "{d}");
+    assert_eq!(d["severity"], "info", "{d}");
 }

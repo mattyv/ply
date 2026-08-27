@@ -18,7 +18,7 @@ use ply_core::engines::fuzz as fuzz_engine;
 use ply_core::engines::kani::ProbeOutcome;
 use ply_core::engines::kani::{self, KaniOutcome, KaniRunConfig};
 use ply_core::engines::mutants::{self, MutantsRunConfig, MutantsRunOutcome};
-use ply_core::harness::{self, ContractFn, Param, StubKind, StubSpec};
+use ply_core::harness::{self, ContractFn, Param, RustType, StubKind, StubSpec};
 use ply_core::harness_crate;
 use ply_core::model::{
     Check, Component, FnClaim, InheritedChecks, component_default_checks, effective_checks,
@@ -2393,6 +2393,14 @@ fn run_fn_checks(
             // cannot compile (`error[E0382]: borrow of moved value`).
             diagnostics.push(moved_param_diag(node_id, fn_name, p));
             labels.push("unsupported".into());
+        } else if let Some(field) = self_return_reads_private_field_on_sampling_tier(cf, lib_path) {
+            // The "a `Self` answer is always fine" rule's own blind spot
+            // on the sampling tier (adversarial review, 2026-08-27):
+            // refused by name, before codegen runs, rather than left to
+            // fail as a tool error quoting a private-field compiler
+            // message the harness crate could never avoid.
+            diagnostics.push(self_return_private_field_diag(node_id, fn_name, &field));
+            labels.push("unsupported".into());
         } else if let Some(info) = harness_info {
             let ident = cf.ident();
             if let Some(cause) = info.broken.get(&ident) {
@@ -2401,10 +2409,12 @@ fn run_fn_checks(
                 // reported broken -- its harness test never even runs
                 // (the module was dropped before the crate's remaining
                 // fns were built), and no crate-mate's verdict is touched.
+                let module = harness_module_name(cf);
                 if let Some(n) = wants_fuzz {
                     diagnostics.push(harness_did_not_run_diag(
                         node_id,
                         fn_name,
+                        &module,
                         &format!("fuzz({n})"),
                         &info.package,
                         Some(cause.as_str()),
@@ -2416,6 +2426,7 @@ fn run_fn_checks(
                     diagnostics.push(harness_did_not_run_diag(
                         node_id,
                         fn_name,
+                        &module,
                         "test",
                         &info.package,
                         Some(cause.as_str()),
@@ -2465,12 +2476,27 @@ fn run_fn_checks(
                 }
                 // §1: a verdict names the evidence that produced it. Only a
                 // run that happened has any to name.
-                if run.fuzz_ran && wants_fuzz.is_some() {
+                if run.fuzz_ran
+                    && let Some(n) = wants_fuzz
+                {
                     fuzz_evidence = Some(Evidence {
                         engine: "proptest".into(),
                         seed: Some(ply_core::fuzz_gen::seed_hex(seed)),
                         cases: run.fuzz_cases_reached,
                     });
+                    // The NaN/infinity decision's own visibility
+                    // requirement (task, 2026-08-27): only a run that
+                    // actually sampled a float owes the reader this
+                    // disclosure, so this is gated exactly like the
+                    // evidence block above it, never on `fuzz` merely being
+                    // declared.
+                    if cf.has_float_shape() {
+                        diagnostics.push(float_sampling_diag(
+                            node_id,
+                            fn_name,
+                            &format!("fuzz({n})"),
+                        ));
+                    }
                 }
             }
         }
@@ -2485,8 +2511,15 @@ fn run_fn_checks(
     if checks.iter().any(|c| matches!(c, Check::Mutate)) {
         if rank(&verdict) > 4 {
             if let Some(info) = harness_info {
-                let (outcome, mut d) =
-                    run_mutate_check(crate_dir, &info.package, node_id, fn_name, checks, opts)?;
+                let (outcome, mut d) = run_mutate_check(
+                    crate_dir,
+                    &info.package,
+                    node_id,
+                    fn_name,
+                    &harness_test_filter(cf),
+                    checks,
+                    opts,
+                )?;
                 diagnostics.append(&mut d);
                 apply_mutate_outcome(&mut verdict, &mut statuses, outcome);
             }
@@ -2758,7 +2791,7 @@ fn undecided_promise_diag(
 /// the module doc at the top of this file's `verify_crate`). `reason` is
 /// already a complete, plain-language sentence (`callgraph::Resolution`
 /// composes it), so this wraps it rather than re-deriving it.
-fn refused_anchor_diag(node_id: &str, reason: &str) -> Diagnostic {
+pub(crate) fn refused_anchor_diag(node_id: &str, reason: &str) -> Diagnostic {
     Diagnostic {
         code: "V0507".into(),
         severity: "warning".into(),
@@ -2786,7 +2819,7 @@ fn refused_anchor_diag(node_id: &str, reason: &str) -> Diagnostic {
 /// guess which one a claim means -- picking wrong would attach a verdict to
 /// the wrong function, which is worse than reporting nothing (see this
 /// task's own "get the ambiguity right" brief).
-fn ambiguous_anchor_diag(node_id: &str, fn_name: &str, reason: &str) -> Diagnostic {
+pub(crate) fn ambiguous_anchor_diag(node_id: &str, fn_name: &str, reason: &str) -> Diagnostic {
     Diagnostic {
         code: "E0306".into(),
         severity: "error".into(),
@@ -2875,6 +2908,229 @@ fn unsupported_shape_diag(node_id: &str, fn_name: &str, cf: &ContractFn) -> Diag
     }
 }
 
+/// The sampling/proving split's own honesty requirement (task, 2026-08-27):
+/// a `bounded`/`proved` check on a type the *fuzz* engine could build inputs
+/// for, but the *proving* engine cannot, must be refused **by name** --
+/// naming what blocked it and what would work instead -- never folded into
+/// `unsupported_shape_diag`'s "none of its declared checks apply" wording,
+/// which is simply false when a check the user did not ask for would have
+/// worked (a real defect this fixed: before this function existed,
+/// `run_bounded_check` reported that exact false sentence for any
+/// sample-only-typed fn, e.g. a plain `f64` parameter, because
+/// `unsupported_shape_diag`'s own "bad" list is filtered by
+/// `is_fuzz_supported`, which is true for every sample-only type by
+/// definition).
+fn bounded_refused_sample_only_diag(
+    node_id: &str,
+    fn_name: &str,
+    cf: &ContractFn,
+    check_label: &str,
+) -> Diagnostic {
+    let bad_params: Vec<String> = cf
+        .params
+        .iter()
+        .filter(|p| !p.ty.is_bounded_supported())
+        .map(|p| format!("`{}: {}`", p.name, p.ty.display_name()))
+        .collect();
+    let what = if !bad_params.is_empty() {
+        format!("parameter(s) {}", bad_params.join(", "))
+    } else {
+        // Every parameter is fine -- it is the *return* type that blocks
+        // `bounded` (`is_bounded_return_supported`), so name that instead of
+        // reporting an empty list.
+        format!("its return type `{}`", cf.return_type.display_name())
+    };
+    Diagnostic {
+        code: "V0508".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "kani".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "Ply did not run `{check_label}` on `{fn_name}`: {what} can be checked with random \
+             sample values just fine -- `fuzz`/`test` both work here -- but `{check_label}` needs \
+             to reason about *every* possible value at once, and this type is real, substantial \
+             work for that (or, for a floating-point type, a deliberate choice not to attempt it \
+             at all -- see §5.4b). Rather than let the attempt hang or silently fall back to a \
+             weaker check, Ply reports this honestly as unsupported for `{check_label}` specifically \
+             -- `{fn_name}` is not unchecked, it just needs a different check. (V0508)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![
+            Fix {
+                title: format!(
+                    "replace `{check_label}` with `fuzz(256)` on `{fn_name}` -- this shape \
+                     supports it, and it will earn a real `fuzzed(256)` verdict"
+                ),
+                edits: vec![],
+            },
+            Fix {
+                title: format!(
+                    "or use `test` with `examples:` entries for `{fn_name}`, which needs no \
+                     random sampling at all"
+                ),
+                edits: vec![],
+            },
+        ],
+        assumptions: vec![],
+        open_item: Some("unsupported_signature".into()),
+    }
+}
+
+/// The NaN/infinity decision's own visibility requirement (task,
+/// 2026-08-27, "make the choice visible to the user rather than silent"):
+/// `info`, not a warning -- nothing here is wrong or owed, it just needs
+/// naming, the same reasoning `verified_dependency_diag`'s own `W0517` uses.
+/// Fires once per fuzz/test run that actually sampled a float-shaped fn
+/// (`ContractFn::has_float_shape`), never merely because a float check was
+/// *declared* -- only a run that happened owes the reader this disclosure.
+fn float_sampling_diag(node_id: &str, fn_name: &str, check_label: &str) -> Diagnostic {
+    Diagnostic {
+        code: "W0518".into(),
+        severity: "info".into(),
+        phase: "verify".into(),
+        engine: "proptest".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` was checked using randomly generated floating-point values. By \
+             default, Ply never generates two special values every floating-point type has: NaN \
+             (\"not a number\", what you get from things like 0.0/0.0) and infinity. Comparisons \
+             and equality checks involving NaN are always false -- even `NaN == NaN` -- so a \
+             generated NaN would make almost any promise about `{fn_name}`'s result look broken, \
+             even on a value `{fn_name}` might never actually receive. That would be a false \
+             alarm, not a real bug, so Ply leaves NaN and infinity out of this run. If `{fn_name}` \
+             needs to handle NaN or infinity correctly, this run says nothing about that -- it \
+             was never asked to. (W0518, §5.4c)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
+/// A sampled check on a zero-input fn's own honesty requirement
+/// (adversarial review, 2026-08-27, "the count the user chose appearing as
+/// if it measured coverage"): `info`, not a warning -- nothing here is
+/// wrong or owed, only worth naming, the same reasoning `float_sampling_diag`
+/// already uses. `check_label` is the check the user actually wrote
+/// (`fuzz(64)`), reported in the diagnostic's own `check` field for
+/// traceability even though the *verdict* this run earns is `tested`.
+fn zero_input_sampled_diag(node_id: &str, fn_name: &str, check_label: &str) -> Diagnostic {
+    Diagnostic {
+        code: "W0519".into(),
+        severity: "info".into(),
+        phase: "verify".into(),
+        engine: "proptest".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` takes no input, so there was only one possible call to make -- not \
+             several different ones. Ply made that one call and it held. This is reported as \
+             `tested`, not as a fuzzed case count: `{fn_name}` has no input space for a bigger \
+             number to sample more of, so a bigger number here would not have looked at anything \
+             new. (W0519, §5.4c)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
+/// The "a `Self` answer is always fine" rule (§5.4b) is correct that Ply
+/// never has to *build* a `Self` return value on any tier -- the real call
+/// produces it. It is not the only question, though: Ply still has to
+/// *read* the value, because that is what the promise says, and where the
+/// generated harness lives differs by tier. The exhaustive/bounded tier's
+/// harness sits inside this crate and sees a private field fine; the
+/// fuzz/test tier's harness is a *separate* crate, so the exact same
+/// promise cannot compile there (adversarial review, 2026-08-27:
+/// demonstrated with the shipped fixture's own `Bucket::new`, checked
+/// exhaustively -- a real verdict -- versus the identical shape checked by
+/// sampling, which came back a bare `field ... is private` tool error).
+/// Returns the private field name the promise reads, so the caller can
+/// refuse this by name before codegen ever runs, rather than leaving it to
+/// fail as an unexplained compiler error.
+fn self_return_reads_private_field_on_sampling_tier(
+    cf: &ContractFn,
+    lib_path: &Path,
+) -> Option<String> {
+    if cf.return_type != RustType::SelfType {
+        return None;
+    }
+    let (_, ensures_src) = cf.ensures.as_ref()?;
+    let mut resolver = harness::resolver_for(lib_path).ok()?;
+    let private_fields = resolver.private_field_names(&cf.import_path())?;
+    private_fields
+        .into_iter()
+        .find(|field| ensures_mentions_field(ensures_src, field))
+}
+
+/// Whether `text` reads a `.field` access on `field`, checked on a word
+/// boundary so `.n` does not also match a field named `note`.
+fn ensures_mentions_field(text: &str, field: &str) -> bool {
+    let needle = format!(".{field}");
+    let mut start = 0;
+    while let Some(pos) = text[start..].find(&needle) {
+        let abs = start + pos;
+        let after = abs + needle.len();
+        let boundary_ok = match text[after..].chars().next() {
+            Some(c) => !c.is_alphanumeric() && c != '_',
+            None => true,
+        };
+        if boundary_ok {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
+}
+
+fn self_return_private_field_diag(node_id: &str, fn_name: &str, field: &str) -> Diagnostic {
+    Diagnostic {
+        code: "V0510".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "Ply cannot check `{fn_name}` this way: its promise reads `.{field}`, a private field \
+             of the value it returns, but the code Ply generates for this kind of check lives in \
+             a separate crate that cannot see a private field of your type -- so this is refused \
+             before it ever fails to compile, rather than after. `bounded`/`proved` do not have \
+             this problem, because their generated code lives inside your own crate."
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![
+            Fix {
+                title: format!("check `{fn_name}` with `bounded(k)` instead of `fuzz`/`test`"),
+                edits: vec![],
+            },
+            Fix {
+                title: format!(
+                    "or add a public accessor for `{field}` and write `{fn_name}`'s promise \
+                     against that instead of the field directly"
+                ),
+                edits: vec![],
+            },
+        ],
+        assumptions: vec![],
+        open_item: Some("unsupported_signature".into()),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_bounded_check(
     cf: &ContractFn,
@@ -2897,11 +3153,16 @@ fn run_bounded_check(
     let check_label = format!("bounded({bound_k})");
 
     if !cf.is_bounded_supported() {
-        return Ok((
-            "unsupported".into(),
-            vec![],
-            vec![unsupported_shape_diag(node_id, fn_name, cf)],
-        ));
+        // The split (task, 2026-08-27): a type the fuzz engine can build
+        // inputs for is refused *by name*, naming what would work instead
+        // (`V0508`) -- never `unsupported_shape_diag`'s "none of its
+        // declared checks apply", which is false exactly here.
+        let diag = if cf.is_fuzz_supported() {
+            bounded_refused_sample_only_diag(node_id, fn_name, cf, &check_label)
+        } else {
+            unsupported_shape_diag(node_id, fn_name, cf)
+        };
+        return Ok(("unsupported".into(), vec![], vec![diag]));
     }
 
     // §5.5's third branch, decided before any engine starts: a callee no
@@ -3280,11 +3541,24 @@ fn run_fuzz_and_test_checks(
     let timeout = opts
         .engine_timeout_secs
         .unwrap_or_else(default_secondary_engine_timeout_secs);
-    let filter = format!("{fn_name}_harness::");
+    // The generated harness names its module and test fn from `cf.ident()`
+    // (`path.replace("::", "_")`), never from the claim's own spelling --
+    // a `Type::method` claim (or a free fn nested in a module) still
+    // carries `::` in `fn_name`, and Rust identifiers cannot. Building this
+    // filter from `fn_name` instead matched nothing at all (`cargo test`'s
+    // filter is a plain substring on the real, underscored test path), so
+    // every method/nested-fn fuzz or test check silently ran zero cases
+    // and fell through to the same "no failure seen" success branch a real
+    // pass takes -- a run that checked nothing, reading as a clean verdict
+    // (adversarial review, 2026-08-27, found while building this task's own
+    // multi-module fixture: `Root::five`'s own violated promise reported
+    // `tested`/held instead of a violation, because the filter below
+    // matched zero of the harness crate's tests). See `harness_module_name`.
+    let filter = harness_test_filter(cf);
     let run = fuzz_engine::run_harness_tests(crate_dir, harness_pkg, &filter, timeout)?;
 
     let mut diagnostics = Vec::new();
-    let fuzz_test_name = format!("{fn_name}_harness::ply_fuzz_{fn_name}");
+    let fuzz_test_name = harness_fuzz_test_name(cf);
     let mut fuzz_label = None;
     let mut test_label = None;
     let mut fuzz_cases_reached: Option<u32> = None;
@@ -3302,10 +3576,12 @@ fn run_fuzz_and_test_checks(
     // (§5.4c MUST: no violation without a witness).
     if !run.success && !run.timed_out && run.failed_tests.is_empty() {
         let cause = fuzz_engine::first_build_error(&run.combined_output);
+        let module = harness_module_name(cf);
         if let Some(n) = wants_fuzz {
             diagnostics.push(harness_did_not_run_diag(
                 node_id,
                 fn_name,
+                &module,
                 &format!("fuzz({n})"),
                 harness_pkg,
                 cause.as_deref(),
@@ -3316,6 +3592,7 @@ fn run_fuzz_and_test_checks(
             diagnostics.push(harness_did_not_run_diag(
                 node_id,
                 fn_name,
+                &module,
                 "test",
                 harness_pkg,
                 cause.as_deref(),
@@ -3466,14 +3743,32 @@ fn run_fuzz_and_test_checks(
                     open_item: Some("high_rejection_rate".into()),
                 });
             }
-            // The earned verdict is `fuzzed(n)` (past tense, §5.4c's own
-            // check->verdict table), never the declared check spelling
-            // `fuzz(n)` -- those two strings look alike enough that this
-            // was wrong here once already; the difference matters because
-            // `rank()`/`combine_fn_check_verdicts` key off the `fuzzed`
-            // prefix.
-            fuzz_label = Some(format!("fuzzed({n})"));
-            fuzz_cases_reached = Some(n);
+            if cf.params.is_empty() {
+                // A zero-input fn's own honesty requirement (adversarial
+                // review, 2026-08-27): `n` calls to a function with no
+                // parameters are `n` repetitions of the *one* possible
+                // call, not `n` different samples of an input space that
+                // does not exist here. `fuzzed(n)` reads as "n samples
+                // were checked", which is false, and reads a bigger `n` as
+                // stronger evidence, which would be false too -- raising
+                // it would look at nothing new. `tested` (§5.4c's own word
+                // for "a concrete case was run and held") is the honest
+                // reading, and the diagnostic says why so the
+                // smaller-looking verdict does not read as an unexplained
+                // demotion.
+                diagnostics.push(zero_input_sampled_diag(node_id, fn_name, &check_label));
+                fuzz_label = Some("tested".into());
+                fuzz_cases_reached = Some(1);
+            } else {
+                // The earned verdict is `fuzzed(n)` (past tense, §5.4c's
+                // own check->verdict table), never the declared check
+                // spelling `fuzz(n)` -- those two strings look alike
+                // enough that this was wrong here once already; the
+                // difference matters because `rank()`/
+                // `combine_fn_check_verdicts` key off the `fuzzed` prefix.
+                fuzz_label = Some(format!("fuzzed({n})"));
+                fuzz_cases_reached = Some(n);
+            }
         }
     }
 
@@ -3562,9 +3857,42 @@ fn run_fuzz_and_test_checks(
 /// -- stating it as "the usual cause" regardless used to run even on a
 /// crate with no `examples:` entries at all, which is a cause Ply never
 /// established (misattribution fix, 2026-08-26).
+/// The generated harness's own module name for `cf`: `cf.ident()`
+/// (`path.replace("::", "_")`) with `_harness` appended, matching
+/// `fuzz_gen`'s `mod {module_ident}_harness { ... }` exactly. Every place
+/// that names or filters this module *from outside* the generated code --
+/// a `cargo test`/cargo-mutants filter, a check against `run.failed_tests`,
+/// a diagnostic telling a user what to run themselves -- must go through
+/// this (or [`harness_test_filter`]/[`harness_fuzz_test_name`] below),
+/// never through the claim's own spelling (`fn_name`): a `Type::method`
+/// claim (or a free fn nested in a module) still carries `::`, which
+/// cannot appear in a Rust identifier, so a filter or name built from
+/// `fn_name` instead matched *none* of the harness crate's real tests.
+/// `cargo test`'s own filter is a plain substring match, so that read as
+/// "0 passed; 0 failed" -- success, with nothing checked -- and fell
+/// through to the very same branch a genuine clean pass takes (adversarial
+/// review, 2026-08-27, found building this task's own multi-module
+/// fixture: a method's own violated promise reported as holding).
+fn harness_module_name(cf: &ContractFn) -> String {
+    format!("{}_harness", cf.ident())
+}
+
+/// The `cargo test`/cargo-mutants filter that selects exactly `cf`'s own
+/// generated tests and nothing else's -- see [`harness_module_name`].
+fn harness_test_filter(cf: &ContractFn) -> String {
+    format!("{}::", harness_module_name(cf))
+}
+
+/// The fully qualified name of `cf`'s own generated fuzz test, matching an
+/// entry in `run.failed_tests` exactly -- see [`harness_module_name`].
+fn harness_fuzz_test_name(cf: &ContractFn) -> String {
+    format!("{}::ply_fuzz_{}", harness_module_name(cf), cf.ident())
+}
+
 fn harness_did_not_run_diag(
     node_id: &str,
     fn_name: &str,
+    module: &str,
     check_label: &str,
     harness_pkg: &str,
     cause: Option<&str>,
@@ -3586,7 +3914,7 @@ fn harness_did_not_run_diag(
     let mut fixes = vec![Fix {
         title: format!(
             "see the full compiler output by running `cargo test -p {harness_pkg} --lib \
-             {fn_name}_harness::` from the crate root (Ply regenerates that harness crate on \
+             {module}::` from the crate root (Ply regenerates that harness crate on \
              every run, so editing it is never the fix)"
         ),
         edits: vec![],
@@ -3779,8 +4107,9 @@ fn render_fuzz_violation(
                     Fix {
                         title: format!(
                             "run the harness yourself -- `cargo test -p {harness_pkg} --lib \
-                             {fn_name}_harness::` from the crate root -- and read proptest's own report \
-                             of the failing input"
+                             {}_harness::` from the crate root -- and read proptest's own report \
+                             of the failing input",
+                            cf.ident()
                         ),
                         edits: vec![],
                     },
@@ -3850,10 +4179,11 @@ fn render_fuzz_violation(
                     counterexample: Some(Counterexample {
                         inputs,
                         kani_witness: Some(format!(
-                            "captured from proptest shrinking on harness `{fn_name}_harness::ply_fuzz_{fn_name}`, \
-                         replayable with `--seed {seed_hex}` (field named `kani_witness` for §8 schema \
-                         stability; this witness is proptest-, not Kani-, sourced -- see \
-                         docs/m4-findings.md)"
+                            "captured from proptest shrinking on harness `{}`, replayable with \
+                             `--seed {seed_hex}` (field named `kani_witness` for §8 schema \
+                             stability; this witness is proptest-, not Kani-, sourced -- see \
+                             docs/m4-findings.md)",
+                            harness_fuzz_test_name(cf)
                         )),
                         cargo_test: Some(
                             test_file
@@ -4027,6 +4357,7 @@ fn run_mutate_check(
     harness_pkg: &str,
     node_id: &str,
     fn_name: &str,
+    test_filter: &str,
     checks: &[Check],
     opts: &VerifyOptions,
 ) -> Result<(MutateOutcome, Vec<Diagnostic>)> {
@@ -4078,7 +4409,18 @@ fn run_mutate_check(
         // confirmed against a real run (docs/m4-findings.md) and matching
         // the spike's own usage (`--re strong_target`, no anchors).
         fn_regex: fn_name.to_string(),
-        test_filter: format!("{fn_name}_harness::"),
+        // `test_filter` is the caller's `harness_test_filter(cf)`, never
+        // built from `fn_name` here: the generated harness names its
+        // module from `cf.ident()` (`path.replace("::", "_")`), and a
+        // `Type::method` claim's own spelling still carries `::`, which
+        // cannot appear in a Rust identifier. Building this filter from
+        // `fn_name` matched none of the harness crate's real tests --
+        // `cargo test`'s filter is a plain substring on the actual,
+        // underscored path -- so `mutate` on any method silently ran its
+        // kill-signal tests against nothing and could never have caught a
+        // surviving mutant (adversarial review, 2026-08-27, the same root
+        // cause as the fuzz/test tier's own version of this bug above).
+        test_filter: test_filter.to_string(),
         timeout_secs: timeout,
         wall_clock_secs: wall_clock,
     };
@@ -4712,5 +5054,213 @@ mod tests {
             "tested",
             "D6: a weak leaf drags its parent down"
         );
+    }
+
+    // -- the sampling/proving split (task, 2026-08-27): `bounded` on a
+    // sample-only type is refused by name, distinctly from a type neither
+    // engine can build inputs for, and the fuzz/test tier still runs.
+
+    /// The defect this function replaces the old call site for: a plain
+    /// `f64` parameter is fuzz-supported, so `unsupported_shape_diag`'s own
+    /// "bad" list (filtered by `is_fuzz_supported`) comes back empty and it
+    /// falls into the "none of its declared checks apply to this
+    /// function's shape" branch -- false, since `fuzz`/`test` apply fine.
+    /// `bounded_refused_sample_only_diag` must say the true thing instead:
+    /// name the type, say it is sampleable but not provable, and say what
+    /// to use instead.
+    #[test]
+    fn bounded_on_a_float_is_refused_by_name_and_says_what_would_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(
+            &path,
+            "#[ply::ensures(|result| *result >= x)]\npub fn increment(x: f64) -> f64 { x + 1.0 }\n",
+        )
+        .unwrap();
+        let cf = ply_core::harness::discover_fn(&path, "increment").unwrap();
+        let diag =
+            bounded_refused_sample_only_diag("floats::increment", "increment", &cf, "bounded(2)");
+        assert_eq!(diag.code, "V0508");
+        assert_eq!(diag.severity, "warning");
+        assert!(
+            diag.title.contains("x: f64"),
+            "must name the actual blocking parameter, not a vague sentence: {}",
+            diag.title
+        );
+        assert!(
+            diag.title.contains("fuzz") || diag.fixes.iter().any(|f| f.title.contains("fuzz(256)")),
+            "must say what would work instead of `bounded`: {diag:?}"
+        );
+        assert!(
+            !diag.title.contains("none of its declared checks apply"),
+            "this is the exact false sentence a sample-only type must never get -- fuzz/test DO \
+             apply here: {}",
+            diag.title
+        );
+    }
+
+    /// The other half of the split: a type neither engine can build inputs
+    /// for (a plain struct, here) keeps its old `V0505` wording exactly --
+    /// this fix narrows one call site, it does not touch the shared-by-both
+    /// case.
+    #[test]
+    fn bounded_on_a_genuinely_unsupported_type_keeps_the_old_v0505_wording() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(
+            &path,
+            "pub struct Foo { pub x: u32 }\n#[ply::ensures(|result| *result >= 0)]\npub fn f(foo: Foo) -> i64 { 0 }\n",
+        )
+        .unwrap();
+        let cf = ply_core::harness::discover_fn(&path, "f").unwrap();
+        assert!(!cf.is_bounded_supported());
+        assert!(
+            !cf.is_fuzz_supported(),
+            "a plain struct must stay refused on both engines, unchanged"
+        );
+        let diag = unsupported_shape_diag("structs::f", "f", &cf);
+        assert_eq!(diag.code, "V0505");
+        assert!(diag.title.contains("neither the bounded"), "{}", diag.title);
+    }
+
+    /// The NaN/infinity decision's own visibility requirement: the
+    /// disclosure names the reason (false alarms on values the program may
+    /// never see), not just the bare fact that floats were sampled.
+    #[test]
+    fn float_sampling_diag_names_nan_and_infinity_and_why_they_are_excluded() {
+        let diag = float_sampling_diag("floats::increment", "increment", "fuzz(64)");
+        assert_eq!(diag.code, "W0518");
+        assert_eq!(
+            diag.severity, "info",
+            "nothing here is wrong or owed -- only worth naming"
+        );
+        assert!(diag.title.contains("NaN"), "{}", diag.title);
+        assert!(diag.title.contains("infinity"), "{}", diag.title);
+        assert!(
+            diag.title.contains("false alarm") || diag.title.contains("false"),
+            "must say *why* this matters, not merely that it happens: {}",
+            diag.title
+        );
+    }
+
+    // -- a sampled check on a zero-input fn overstates its evidence
+    // (adversarial review, 2026-08-27): one case run `n` times is not `n`
+    // cases.
+
+    #[test]
+    fn zero_input_sampled_diag_says_one_call_not_many() {
+        let diag = zero_input_sampled_diag("floats::zero", "zero", "fuzz(64)");
+        assert_eq!(diag.code, "W0519");
+        assert_eq!(
+            diag.severity, "info",
+            "nothing here is wrong or owed -- only worth naming"
+        );
+        assert!(
+            diag.title.contains("one possible call"),
+            "must say plainly that there was exactly one call to make: {}",
+            diag.title
+        );
+        assert!(
+            !diag.title.contains("fuzzed(64)"),
+            "must not repeat the overstated verdict as if it were still true: {}",
+            diag.title
+        );
+    }
+
+    // -- the "a `Self` answer is always fine" rule's own blind spot on the
+    // sampling tier (adversarial review, 2026-08-27): a promise reading a
+    // private field of a returned `Self` cannot compile in the fuzz/test
+    // harness crate, and must be refused by name rather than left to fail.
+
+    #[test]
+    fn a_self_returning_ctor_reading_a_private_field_is_refused_on_the_sampling_tier() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(
+            &path,
+            "pub struct Bucket { capacity: u32 }\nimpl Bucket {\n#[ply::ensures(|result| \
+             result.capacity == cap)]\npub fn new(cap: u32) -> Self { Bucket { capacity: cap } \
+             }\n}\n",
+        )
+        .unwrap();
+        let cf = ply_core::harness::discover_fn(&path, "Bucket::new").unwrap();
+        let field = self_return_reads_private_field_on_sampling_tier(&cf, &path);
+        assert_eq!(
+            field.as_deref(),
+            Some("capacity"),
+            "must name the exact private field the promise reads"
+        );
+        let diag =
+            self_return_private_field_diag("bucket::Bucket::new", "Bucket::new", &field.unwrap());
+        assert_eq!(diag.code, "V0510");
+        assert_eq!(diag.severity, "warning");
+        assert!(diag.title.contains("capacity"), "{}", diag.title);
+        assert!(
+            diag.title.contains("bounded"),
+            "must say bounded/proved do not have this problem: {}",
+            diag.title
+        );
+    }
+
+    #[test]
+    fn a_self_returning_ctor_reading_only_public_fields_is_not_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(
+            &path,
+            "pub struct Bucket { pub capacity: u32 }\nimpl Bucket {\n#[ply::ensures(|result| \
+             result.capacity == cap)]\npub fn new(cap: u32) -> Self { Bucket { capacity: cap } \
+             }\n}\n",
+        )
+        .unwrap();
+        let cf = ply_core::harness::discover_fn(&path, "Bucket::new").unwrap();
+        assert_eq!(
+            self_return_reads_private_field_on_sampling_tier(&cf, &path),
+            None,
+            "a promise reading only public fields compiles fine in a separate harness crate"
+        );
+    }
+
+    #[test]
+    fn ensures_mentions_field_does_not_false_positive_on_a_longer_field_name() {
+        assert!(ensures_mentions_field("|result| result.n == 0", "n"));
+        assert!(!ensures_mentions_field("|result| result.note == 0", "n"));
+    }
+
+    // -- a run that checked nothing reads as success, ninth-instance
+    // variant found while building this task's own fixture (adversarial
+    // review, 2026-08-27): the harness's own module/test names are always
+    // built from `cf.ident()`, never from a claim's own spelling, which
+    // still carries `::` for any method or module-nested free fn.
+
+    #[test]
+    fn harness_names_use_the_sanitized_identifier_never_the_claims_double_colons() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(
+            &path,
+            "pub struct Root;\nimpl Root {\n#[ply::ensures(|result| *result == 999)]\npub fn \
+             five() -> u32 { 5 }\n}\n",
+        )
+        .unwrap();
+        let cf = ply_core::harness::discover_fn(&path, "Root::five").unwrap();
+        assert_eq!(
+            harness_module_name(&cf),
+            "Root_five_harness",
+            "must be built from the sanitized identifier, matching the module `fuzz_gen` \
+             actually generates"
+        );
+        assert_eq!(harness_test_filter(&cf), "Root_five_harness::");
+        assert_eq!(
+            harness_fuzz_test_name(&cf),
+            "Root_five_harness::ply_fuzz_Root_five"
+        );
+        // The defect this pins directly: a filter or test name built from
+        // the claim's own spelling (`Root::five`) contains `::`, which
+        // cannot appear in a real Rust path segment the way the generated
+        // module's does -- `cargo test`'s filter is a plain substring
+        // match, so that variant matched none of the harness crate's real
+        // tests at all.
+        assert!(!harness_test_filter(&cf).contains("Root::five"));
     }
 }
