@@ -27,6 +27,7 @@ use quote::ToTokens;
 use syn::Expr;
 use syn::visit::Visit;
 
+use crate::harness;
 use crate::harness::{ContractFn, Param, RustType};
 
 /// The seed a `fuzz(n)` run uses, derived from the function it checks
@@ -235,20 +236,19 @@ fn marker_display_expr(ty: &RustType, var: &str) -> String {
     }
 }
 
-fn param_names(cf: &ContractFn) -> Vec<&str> {
-    cf.params.iter().map(|p| p.name.as_str()).collect()
-}
-
 /// The closure/loop-bound pattern proptest's `TestRunner::run` needs to
 /// destructure the strategy's produced value: a bare name for one param, a
 /// parenthesized tuple pattern for more than one (matching the tuple
-/// strategy `combined_strategy_expr` builds for that case).
-fn value_pattern(cf: &ContractFn) -> String {
-    let names = param_names(cf);
+/// strategy `combined_strategy_expr_for` builds for that case). Generalised
+/// from `cf.params` alone (2026-08-27, receiver construction) so the same
+/// logic renders a constructor's own parameter list, or a pooled operation's,
+/// without a second copy of the 0/1/N cases.
+fn value_pattern_for(params: &[Param]) -> String {
+    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
     match names.len() {
         // A zero-parameter fn (a receiverless constructor like
         // `FakeClock::new()`) has nothing for proptest to generate --
-        // `combined_strategy_expr` pairs this with `Just(())`, so the
+        // `combined_strategy_expr_for` pairs this with `Just(())`, so the
         // pattern that destructures it is `_`, never the empty-tuple
         // pattern `()` the old `else` branch produced (which only ever
         // matched a *value* of `()`, and the strategy below did not build
@@ -259,8 +259,12 @@ fn value_pattern(cf: &ContractFn) -> String {
     }
 }
 
-fn combined_strategy_expr(cf: &ContractFn) -> Result<String> {
-    let exprs: Result<Vec<String>> = cf.params.iter().map(|p| strategy_expr(&p.ty)).collect();
+fn value_pattern(cf: &ContractFn) -> String {
+    value_pattern_for(&cf.params)
+}
+
+fn combined_strategy_expr_for(params: &[Param]) -> Result<String> {
+    let exprs: Result<Vec<String>> = params.iter().map(|p| strategy_expr(&p.ty)).collect();
     let exprs = exprs?;
     Ok(match exprs.len() {
         // A zero-parameter fn (found broken 2026-08-27 against
@@ -278,8 +282,12 @@ fn combined_strategy_expr(cf: &ContractFn) -> Result<String> {
     })
 }
 
-fn call_args(cf: &ContractFn) -> Vec<String> {
-    cf.params
+fn combined_strategy_expr(cf: &ContractFn) -> Result<String> {
+    combined_strategy_expr_for(&cf.params)
+}
+
+fn call_args_for(params: &[Param]) -> Vec<String> {
+    params
         .iter()
         .map(|p| {
             if p.by_ref {
@@ -289,6 +297,10 @@ fn call_args(cf: &ContractFn) -> Vec<String> {
             }
         })
         .collect()
+}
+
+fn call_args(cf: &ContractFn) -> Vec<String> {
+    call_args_for(&cf.params)
 }
 
 /// True for a type that *moves* when passed by value -- so a parameter of
@@ -366,6 +378,72 @@ pub fn moved_param_read_in_ensures(cf: &ContractFn) -> Option<&Param> {
     cf.params.iter().find(|p| p.name == found_name)
 }
 
+/// The receiver half of a generated fuzz test (docs/review-self-construction.md's
+/// "fourth option", 2026-08-27): the outer strategy/pattern grow a leading
+/// constructor slot and a bounded-sequence slot, and the closure body grows a
+/// preamble that builds the receiver and drives the sequence, before the
+/// checked call runs -- exactly the shape a stateful-property test always
+/// has, generated instead of hand-written.
+///
+/// `target_pattern`/`target_strategy` are the checked method's *own*
+/// (already-computed) pattern and strategy -- reused verbatim for every
+/// operation in the pool, since [`harness::Operation::params_match`]
+/// guarantees every pooled operation shares the checked method's exact
+/// parameter shape. This is why the codegen never builds a mixed-shape
+/// step: there is only ever one argument shape to generate, no matter which
+/// operation a given step calls.
+fn receiver_pattern_and_strategy(
+    plan: &harness::ReceiverPlan,
+    target_pattern: &str,
+    target_strategy: &str,
+) -> Result<(String, String)> {
+    let ctor_pattern = value_pattern_for(&plan.ctor_params);
+    let ctor_strategy = combined_strategy_expr_for(&plan.ctor_params)?;
+    let num_ops = plan.operations.len();
+    let seq_strategy = format!(
+        "proptest::collection::vec((0u8..{num_ops}u8, {target_strategy}), 0..={max}usize)",
+        max = plan.max_sequence_len
+    );
+    let pattern = format!("({ctor_pattern}, __ply_seq, {target_pattern})");
+    let strategy = format!("({ctor_strategy}, {seq_strategy}, {target_strategy})");
+    Ok((pattern, strategy))
+}
+
+/// The preamble text inserted into the generated test, after `requires` has
+/// already rejected an unsuitable case and before the checked call: builds
+/// the receiver by calling the type's own constructor
+/// (`docs/review-self-construction.md`'s whole point -- never a struct
+/// literal, never a field), then runs up to `plan.max_sequence_len` of the
+/// type's own operations against it, each with its own freshly generated
+/// arguments (the same shape as the checked method's own, per
+/// `receiver_pattern_and_strategy`'s doc).
+fn receiver_preamble(plan: &harness::ReceiverPlan, target_pattern: &str) -> String {
+    let ctor_call = harness::last_two_segments(&plan.constructor);
+    let ctor_args = call_args_for(&plan.ctor_params).join(", ");
+    let mut body = format!("let __ply_receiver = {ctor_call}({ctor_args});\n            ");
+    body.push_str(&format!(
+        "for (__ply_op_choice, {target_pattern}) in __ply_seq {{\n"
+    ));
+    body.push_str("                match __ply_op_choice {\n");
+    for (i, op) in plan.operations.iter().enumerate() {
+        let call = harness::last_two_segments(&op.call_path);
+        let op_args = call_args_for(&op.params).join(", ");
+        let full_args = if op_args.is_empty() {
+            "&__ply_receiver".to_string()
+        } else {
+            format!("&__ply_receiver, {op_args}")
+        };
+        body.push_str(&format!(
+            "                    {i} => {{ let _ = {call}({full_args}); }}\n"
+        ));
+    }
+    body.push_str(
+        "                    _ => unreachable!(\"__ply_op_choice is generated in 0..num_ops\"),\n",
+    );
+    body.push_str("                }\n            }\n            ");
+    body
+}
+
 /// Generates the `ply_fuzz_{fn}` proptest-driven test: `cases` runs of the
 /// combined strategy, `requires` as a rejection filter (§5.4c), the
 /// `ensures` clause checked in `catch_unwind` (never crashing the whole
@@ -421,7 +499,8 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
         );
     }
 
-    let pattern = value_pattern(cf);
+    let target_pattern = value_pattern(cf);
+    let target_strategy = combined_strategy_expr(cf)?;
     let seed_literal = format!(
         "[{}]",
         seed.iter()
@@ -430,8 +509,30 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
             .join(", ")
     );
     let seed_hex = seed_hex(seed);
-    let strategy = combined_strategy_expr(cf)?;
-    let args = call_args(cf).join(", ");
+    // Receiver construction (docs/review-self-construction.md's "fourth
+    // option", 2026-08-27): a method whose `ContractFn::receiver` is `Some`
+    // gets a wider outer strategy/pattern (constructor slot, bounded
+    // sequence slot, then the checked call's own) and a preamble that builds
+    // the receiver and drives the sequence before the checked call runs.
+    // Every other fn's generated harness is byte-identical to before this
+    // task -- `receiver` is `None` everywhere else.
+    let (pattern, strategy, receiver_preamble_text) = match &cf.receiver {
+        Some(plan) => {
+            let (p, s) = receiver_pattern_and_strategy(plan, &target_pattern, &target_strategy)?;
+            (p, s, receiver_preamble(plan, &target_pattern))
+        }
+        None => (
+            target_pattern.clone(),
+            target_strategy.clone(),
+            String::new(),
+        ),
+    };
+    let target_args = call_args(cf).join(", ");
+    let args = match &cf.receiver {
+        Some(_) if target_args.is_empty() => "&__ply_receiver".to_string(),
+        Some(_) => format!("&__ply_receiver, {target_args}"),
+        None => target_args,
+    };
     // Two spellings, deliberately. `fname` is the expression generated
     // code calls -- the bare identifier for a free function, or
     // `Type::method` for a method (`ContractFn::call_expr`, added
@@ -499,7 +600,7 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {strategy};\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{pattern}| {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{requires_check}{entry_lets}let __ply_call_result = {fname}({args});\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{requires_check}{receiver_preamble_text}{entry_lets}let __ply_call_result = {fname}({args});\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let result = &__ply_call_result;\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {widened}));\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20match __ply_ok {{\n\
@@ -666,6 +767,15 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
         return String::new();
     };
     if !cf.is_fuzz_supported() {
+        return String::new();
+    }
+    // A receiver method has no *concrete* receiver value this tier builds --
+    // only the fuzz tier's own randomly-sampled constructor-plus-sequence
+    // does (2026-08-27, receiver construction). Producing nothing here is
+    // the honest answer, the same one this fn already gives for a shape it
+    // cannot build inputs for at all; it is not the same as refusing the fn
+    // -- `fuzz(n)` above still runs.
+    if cf.receiver.is_some() {
         return String::new();
     }
     if moved_param_read_in_ensures(cf).is_some() {
@@ -1121,5 +1231,111 @@ pub fn increment(x: f64) -> f64 { x + 1.0 }
         assert!(body.contains("fn ply_fuzz_increment()"));
         assert!(body.contains("proptest::num::f64::NORMAL"));
         assert!(!body.contains("QUIET_NAN"));
+    }
+
+    // -- receiver construction (docs/review-self-construction.md's "fourth
+    // option", 2026-08-27): a method whose `ContractFn::receiver` is `Some`
+    // gets a constructor call plus a bounded operation sequence spliced into
+    // its generated fuzz test.
+
+    /// `fn_path` must be spelled `m::Type::method` -- this helper always
+    /// writes the fixture source to `src/m.rs`, matching that one module
+    /// segment.
+    fn discover_receiver(src: &str, fn_path: &str) -> ContractFn {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src").join("m.rs"), src).unwrap();
+        harness::discover_method_with_receiver(dir.path(), fn_path).unwrap()
+    }
+
+    #[test]
+    fn generates_a_constructor_call_and_sequence_loop_for_a_receiver_method() {
+        let cf = discover_receiver(
+            r#"
+pub struct Bucket { cap: u32 }
+impl Bucket {
+    pub fn new(cap: u32) -> Self { Bucket { cap } }
+    #[ply::ensures(|result| *result <= 1_000_000)]
+    pub fn capacity(&self) -> u32 { self.cap }
+}
+"#,
+            "m::Bucket::capacity",
+        );
+        assert!(cf.receiver.is_some());
+        let body = generate_fuzz_test(&cf, 32, &derive_seed("capacity", "")).unwrap();
+        assert!(
+            body.contains("let __ply_receiver = Bucket::new"),
+            "the receiver must be built by calling the type's own constructor:\n{body}"
+        );
+        assert!(
+            body.contains("for (__ply_op_choice, "),
+            "a bounded sequence of the type's own operations must be spliced in before the \
+             checked call:\n{body}"
+        );
+        assert!(
+            body.contains("Bucket::capacity(&__ply_receiver)"),
+            "the checked call itself must pass the built receiver:\n{body}"
+        );
+    }
+
+    /// The pin the task asked for: a generated receiver is only ever built
+    /// by calling the type's own code, never a struct literal -- so nobody
+    /// later "improves" this into field-filling. Checked on generated
+    /// source text directly, not merely on which function was called, so a
+    /// future change that reintroduces a literal fails this test rather
+    /// than passing quietly.
+    #[test]
+    fn a_generated_receiver_never_contains_a_struct_literal() {
+        let cf = discover_receiver(
+            r#"
+pub struct Meter { n: std::cell::Cell<u32> }
+impl Meter {
+    pub fn new() -> Self { Meter { n: std::cell::Cell::new(0) } }
+    pub fn bump(&self, amount: u32) -> u32 { self.n.set(self.n.get() + amount); self.n.get() }
+    #[ply::ensures(|result| *result < 1_000_000)]
+    pub fn spend(&self, amount: u32) -> u32 { self.n.set(self.n.get() - amount); self.n.get() }
+}
+"#,
+            "m::Meter::spend",
+        );
+        let body = generate_fuzz_test(&cf, 32, &derive_seed("spend", "")).unwrap();
+        assert!(
+            !body.contains("Meter {") && !body.contains("Meter{"),
+            "the generated receiver must be built by calling `Meter`'s own code (`Meter::new`), \
+             never by writing a `Meter {{ .. }}` struct literal:\n{body}"
+        );
+        // The sibling operation `bump` shares `spend`'s own shape and must
+        // be pooled alongside it (harness::tests already pins the plan
+        // itself; this pins that codegen actually calls it).
+        assert!(
+            body.contains("Meter::bump(&__ply_receiver"),
+            "a same-shape sibling operation must be callable from the sequence:\n{body}"
+        );
+    }
+
+    /// A zero-parameter constructor and a zero-parameter checked method
+    /// (the shape `Meter::new()`/a no-arg operation would take) must not
+    /// regress the fix already pinned for a free zero-parameter fn --
+    /// `Just(())` for the constructor slot, `_` for its pattern, and no
+    /// stray trailing comma in the checked call's own argument list.
+    #[test]
+    fn a_zero_arg_constructor_and_zero_arg_checked_method_both_compile_cleanly() {
+        let cf = discover_receiver(
+            r#"
+pub struct Flag { on: std::cell::Cell<bool> }
+impl Flag {
+    pub fn new() -> Self { Flag { on: std::cell::Cell::new(false) } }
+    #[ply::ensures(|result| *result == true || *result == false)]
+    pub fn flip(&self) -> bool { self.on.set(!self.on.get()); self.on.get() }
+}
+"#,
+            "m::Flag::flip",
+        );
+        let body = generate_fuzz_test(&cf, 16, &derive_seed("flip", "")).unwrap();
+        assert!(body.contains("Flag::new()"), "{body}");
+        assert!(
+            body.contains("Flag::flip(&__ply_receiver)"),
+            "a zero-arg checked call must not gain a stray trailing comma:\n{body}"
+        );
     }
 }
