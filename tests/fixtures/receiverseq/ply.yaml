@@ -1,0 +1,15 @@
+ply: 1
+
+# The decisive test for receiver construction
+# (docs/review-self-construction.md's "fourth option"): `Meter::spend`'s
+# invariant holds on any single call from a fresh `Meter` and breaks only
+# after a second one. Constructor-only (a sequence of length 0) can never
+# reach the second call, so it can never find this; a bounded sequence of
+# `Meter`'s own operations (here: repeating `spend` itself, since it is the
+# only `&self` operation on the type) can, and does.
+components:
+  receiverseq:
+    anchor: ply_fixture_receiverseq
+    fns:
+      Meter::spend:
+        checks: [fuzz(256)]

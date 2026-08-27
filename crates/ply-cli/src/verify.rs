@@ -416,6 +416,33 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     // below is always the right thing on its own `Err`.
                     match harness::discover_method_with_receiver(crate_dir, fn_name) {
                         Ok(cf) => cf,
+                        // Two kinds of `Err` here, and they need two
+                        // different sentences (2026-08-27). A `NoConstructor`/
+                        // `UnsupportedConstructorParam`/`UnsupportedParamPattern`
+                        // is this scan's *own* finding -- it read the type,
+                        // found real associated functions, and named exactly
+                        // which one blocked it, which is a sharper, truer
+                        // sentence than the resolver's generic "constructing
+                        // a receiver is not supported yet" and must be shown
+                        // instead of it. Every other variant
+                        // (`MethodNotFound`, `MutableOrOwnedReceiver`,
+                        // `UnsupportedModulePath`, `Unreadable`) means this
+                        // scan simply did not find what it was looking for --
+                        // the resolver's own `reason` (already correct for a
+                        // trait-impl method, a generic `impl` block, a
+                        // `&mut self` target) is the truer sentence there.
+                        Err(
+                            err @ (harness::ReceiverError::NoConstructor { .. }
+                            | harness::ReceiverError::UnsupportedConstructorParam { .. }
+                            | harness::ReceiverError::UnsupportedParamPattern),
+                        ) => {
+                            diagnostics.push(refused_anchor_diag(&node_id, &err.to_string()));
+                            early_nodes_by_component
+                                .entry(comp_name.clone())
+                                .or_default()
+                                .push(leaf_node(fn_name, "unsupported"));
+                            continue;
+                        }
                         Err(_receiver_err) => {
                             diagnostics.push(refused_anchor_diag(&node_id, &reason));
                             early_nodes_by_component
@@ -3057,7 +3084,11 @@ fn float_sampling_diag(node_id: &str, fn_name: &str, check_label: &str) -> Diagn
 /// about the evidence that needs naming. Fires once per fuzz run that
 /// actually built a receiver (gated the same way the float disclosure is,
 /// on a run that happened, never merely on the check being declared).
-fn receiver_sequence_diag(node_id: &str, fn_name: &str, plan: &harness::ReceiverPlan) -> Diagnostic {
+fn receiver_sequence_diag(
+    node_id: &str,
+    fn_name: &str,
+    plan: &harness::ReceiverPlan,
+) -> Diagnostic {
     let others: Vec<&str> = plan
         .operations
         .iter()
@@ -4186,16 +4217,12 @@ fn render_fuzz_violation(
         // any of `cf.params`' own names in it, so this naturally falls
         // through to the witness-only (W0541) branch -- honest evidence,
         // never a fabricated per-parameter reading.
-        None if cf.receiver.is_some() => {
-            fuzz_engine::parse_proptest_minimal_input(combined_output).map(|values| {
+        None if cf.receiver.is_some() => fuzz_engine::parse_proptest_minimal_input(combined_output)
+            .map(|values| {
                 let mut m = BTreeMap::new();
-                m.insert(
-                    "__ply_receiver_and_sequence".to_string(),
-                    values.join(", "),
-                );
+                m.insert("__ply_receiver_and_sequence".to_string(), values.join(", "));
                 m
-            })
-        }
+            }),
         None => fuzz_engine::parse_proptest_minimal_input(combined_output)
             .filter(|values| values.len() == cf.params.len())
             .map(|values| {
@@ -4330,6 +4357,17 @@ fn render_fuzz_violation(
                 if let Some(raw) = fields.get(&p.name) {
                     inputs.insert(p.name.clone(), raw.clone());
                 }
+            }
+            // A receiver method's raw shrunk witness lives under its own
+            // synthetic key (`__ply_receiver_and_sequence`, set above),
+            // never under one of `cf.params`' own names -- so the loop just
+            // above never copies it, and the reader would see an empty
+            // `inputs` map despite real evidence existing. Carried through
+            // here under a name the title above already explains, rather
+            // than silently dropped (2026-08-27, found running this
+            // against `tests/fixtures/receiverseq`).
+            if let Some(raw) = fields.get("__ply_receiver_and_sequence") {
+                inputs.insert("receiver_and_sequence".to_string(), raw.clone());
             }
             Ok((
                 "violation".to_string(),

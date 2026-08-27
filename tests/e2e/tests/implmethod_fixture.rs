@@ -55,8 +55,8 @@ fn a_receiverless_associated_function_is_fully_checked_and_earns_a_real_verdict(
 /// `a_self_method_on_a_constructible_type_now_earns_a_real_verdict_with_its_sequence_bound_disclosed`
 /// below for the behaviour this test used to pin.
 #[test]
-fn a_self_method_on_a_constructible_type_now_earns_a_real_verdict_with_its_sequence_bound_disclosed()
- {
+fn a_self_method_on_a_constructible_type_now_earns_a_real_verdict_with_its_sequence_bound_disclosed(
+) {
     let cargo_ply = build_cargo_ply();
     let fixture = copy_fixture("implmethod");
     let run = run_verify(&cargo_ply, fixture.path(), 90);
