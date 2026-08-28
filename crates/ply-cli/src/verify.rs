@@ -6143,6 +6143,91 @@ mod tests {
         );
     }
 
+    /// A minimal, hand-built `ReceiverPlan` for the disclosure-wording
+    /// tests below -- every field `receiver_sequence_diag` does not read is
+    /// filled with the cheapest value that type-checks, since the point of
+    /// these tests is the sentence, not the plan.
+    fn bare_receiver_plan(type_name: &str, constructor: &str) -> harness::ReceiverPlan {
+        harness::ReceiverPlan {
+            type_name: type_name.into(),
+            import_path: type_name.into(),
+            constructor: constructor.into(),
+            ctor_params: vec![],
+            ctor_requires: None,
+            ctor_return: harness::CtorReturn::Bare,
+            operations: vec![harness::Operation {
+                call_path: "checked_method".into(),
+                params: vec![],
+                takes_mut_self: false,
+            }],
+            excluded_operations: vec![],
+            other_constructors: vec![],
+            max_sequence_len: 3,
+        }
+    }
+
+    /// CLAUDE.md's rule for user-facing wording: pinned exact-string, so a
+    /// later edit is reviewed like a diff to code, not waved through by a
+    /// `.contains()` check that a much longer sentence would also satisfy.
+    /// This is the tightened wording itself (docs/review-silent-narrowing.md
+    /// §6: the old sentence measured 193 words per method per run and moved
+    /// neither the verdict nor the exit code) -- every fact the old
+    /// sentence carried is still here: the receiver was built by Ply, which
+    /// constructor, the pool it could draw from, the bound, and the
+    /// completeness claim that bound earns when nothing was excluded.
+    #[test]
+    fn receiver_sequence_diag_wording_is_pinned_when_nothing_was_narrowed() {
+        let plan = bare_receiver_plan("Till", "Till::new");
+        let diag = receiver_sequence_diag("till::Till::total", "total", &plan);
+        assert_eq!(diag.code, "W0520");
+        assert_eq!(diag.severity, "info");
+        assert_eq!(
+            diag.title,
+            "`total` needs a `Till`, so Ply built one itself: `Till::new`, then up to 3 calls to \
+             `total`, in random order, before the checked call. That covers every value `Till`'s \
+             own code can reach within 3 steps of a fresh one -- nothing else was assumed. \
+             (W0520, §5.4c)"
+        );
+    }
+
+    /// Same pin for the narrowed case -- both an excluded operation and an
+    /// unused second constructor at once, since that is the longest the
+    /// sentence gets and is exactly what `docs/review-silent-narrowing.md`'s
+    /// three reproductions need said together. The old wording could not
+    /// say this at all (its "nothing here was assumed" claim is simply
+    /// false the moment anything was excluded); the tightened wording says
+    /// it in one sentence rather than two paragraphs.
+    #[test]
+    fn receiver_sequence_diag_wording_is_pinned_when_narrowed() {
+        let mut plan = bare_receiver_plan("Acc", "Acc::new");
+        plan.excluded_operations = vec![harness::ExcludedOperation {
+            call_path: "Acc::note".into(),
+            reason: "its `s: str` argument uses a type Ply cannot build a value for".into(),
+        }];
+        plan.other_constructors = vec!["Acc::preloaded".into()];
+        let diag = receiver_sequence_diag("acc::Acc::get", "get", &plan);
+        assert_eq!(diag.code, "W0520");
+        assert_eq!(
+            diag.severity, "warning",
+            "an excluded operation or an unused constructor is a real coverage gap, not a \
+             routine disclosure"
+        );
+        assert_eq!(
+            diag.title,
+            "`get` needs a `Acc`, so Ply built one itself: `Acc::new`, then up to 3 calls to \
+             `get`, in random order, before the checked call. `Acc` can also be changed by \
+             `Acc::note` (its `s: str` argument uses a type Ply cannot build a value for), which \
+             this run never called, and was only ever built by calling `Acc::new`, never by \
+             calling `Acc::preloaded`. If `get`'s promise depends on what this run never reached, \
+             this run says nothing about it. (W0520, §5.4c)"
+        );
+        assert!(
+            !diag.title.contains("nothing here was assumed"),
+            "the superseded completeness claim must never survive alongside a real exclusion: {}",
+            diag.title
+        );
+    }
+
     /// A `bounded` refusal on a receiver method must blame the receiver,
     /// never a param or return type that is perfectly fine (adversarial
     /// review, 2026-08-27, "a proof refused on a method blames the u32

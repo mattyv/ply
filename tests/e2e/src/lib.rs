@@ -259,3 +259,78 @@ pub fn run_cargo_build(crate_dir: &Path) -> CargoTestRun {
         combined_output: combined,
     }
 }
+
+/// A private copy of Ply's own source tree, built and edited independently
+/// of this checkout -- what the decisive build-identity test needs
+/// (The-Ply-Spec.md §5.2a input 11): to change what a *build* of Ply
+/// hashes, without ever touching the source this test suite itself runs
+/// from.
+///
+/// Copies everything a workspace build of `ply-cli` reads: the root
+/// manifest and lockfile, every crate under `crates/`, and `schema/`
+/// (`ply_core::schema` embeds `schema/ply.schema.json` via `include_str!`
+/// at a path relative to `ply-core`'s own manifest, so it must exist at the
+/// same relative depth in the copy). `target/` lives *inside* the copy too,
+/// deliberately -- not shared with this repo's own `target/` -- so the
+/// whole thing, source and every build artifact alike, is one tempdir that
+/// vanishes on drop and never touches this checkout's build state.
+pub struct PlySourceCopy {
+    dir: TempDir,
+}
+
+impl PlySourceCopy {
+    /// `crates/ply-core/src` inside the copy -- edit a file under here
+    /// between two calls to `build()` to change what the next build's
+    /// identity hashes, honestly: a real second build from real changed
+    /// source, not a hand-substituted string.
+    pub fn ply_core_src(&self) -> PathBuf {
+        self.dir.path().join("crates/ply-core/src")
+    }
+
+    /// Builds `cargo-ply` from this copy (its own self-contained
+    /// `target/`) and returns the binary's path. Safe to call more than
+    /// once on the same copy after editing its source between calls --
+    /// each call is an ordinary incremental `cargo build`.
+    pub fn build(&self) -> PathBuf {
+        let target_dir = self.dir.path().join("target");
+        let status = Command::new("cargo")
+            .current_dir(self.dir.path())
+            .args(["build", "-p", "ply-cli"])
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .status()
+            .expect("spawning `cargo build -p ply-cli` in the Ply source copy");
+        assert!(status.success(), "cargo build (Ply source copy) failed");
+        target_dir.join("debug/cargo-ply")
+    }
+}
+
+/// Copies Ply's own source tree into a fresh tempdir. See
+/// [`PlySourceCopy`]'s own doc for exactly what is copied and why.
+pub fn copy_ply_source() -> PlySourceCopy {
+    let root = repo_root();
+    let dir = tempfile::tempdir().expect("tempdir");
+    for name in ["crates", "schema"] {
+        let dst = dir.path().join(name);
+        std::fs::create_dir_all(&dst).unwrap();
+        copy_dir_recursive(&root.join(name), &dst);
+    }
+    for name in ["Cargo.toml", "Cargo.lock"] {
+        std::fs::copy(root.join(name), dir.path().join(name)).unwrap();
+    }
+    // The workspace root declares `tests/e2e` as an explicit member --
+    // cargo requires that manifest to exist even though building `-p
+    // ply-cli` never compiles its test binaries -- so its library half
+    // (never the `tests/` integration tests, which are not needed to
+    // build the binary) comes along too.
+    std::fs::create_dir_all(dir.path().join("tests/e2e/src")).unwrap();
+    std::fs::copy(
+        root.join("tests/e2e/Cargo.toml"),
+        dir.path().join("tests/e2e/Cargo.toml"),
+    )
+    .unwrap();
+    copy_dir_recursive(
+        &root.join("tests/e2e/src"),
+        &dir.path().join("tests/e2e/src"),
+    );
+    PlySourceCopy { dir }
+}

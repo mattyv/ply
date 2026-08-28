@@ -18,3 +18,9 @@ anyhow = "1"
 
 [dev-dependencies]
 tempfile = "3"
+
+# build.rs computes PLY_BUILD_ID (The-Ply-Spec.md §5.2a input 11) by hashing
+# Ply's own first-party source -- same blake3 version ply-core hashes
+# fingerprints with, pinned identically so the two never quietly diverge.
+[build-dependencies]
+blake3 = "1.8.7"

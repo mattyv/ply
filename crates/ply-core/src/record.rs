@@ -779,6 +779,48 @@ mod tests {
         assert_eq!(fingerprint(&inputs()), fingerprint(&inputs()));
     }
 
+    /// A build whose own identity is unknown, empty, or a placeholder must
+    /// never coincide with a real build's fingerprint -- "unavailable
+    /// invalidates, never matches" (the task this module's `ply_version`
+    /// field exists for). `build.rs` never actually produces such a value
+    /// (a build that cannot compute its own identity fails outright rather
+    /// than falling back to one, by design -- see `crates/ply-cli/build.rs`),
+    /// so this is the honest version of that guarantee at the layer a unit
+    /// test can reach: nothing here special-cases an "unknown" string into
+    /// matching anything, empty or otherwise -- it is just one more value
+    /// the hash treats as ordinary content, and every mutation test above
+    /// already establishes that *any* different `ply_version` moves the
+    /// hash. Stated on its own because it is the one value a naive
+    /// implementation might be tempted to special-case (treat "no version
+    /// known" as a wildcard, or skip hashing it when empty) -- exactly the
+    /// silent fallback the task warned would reintroduce the bug.
+    #[test]
+    fn an_unknown_or_empty_build_identity_never_matches_a_real_one() {
+        let real = inputs();
+        let mut unknown = inputs();
+        unknown.ply_version = "unknown".into();
+        let mut empty = inputs();
+        empty.ply_version = String::new();
+
+        let real_fp = fingerprint(&real);
+        assert_ne!(
+            real_fp,
+            fingerprint(&unknown),
+            "a placeholder \"unknown\" identity must not match a real build's fingerprint"
+        );
+        assert_ne!(
+            real_fp,
+            fingerprint(&empty),
+            "an empty identity must not match a real build's fingerprint either"
+        );
+        assert_ne!(
+            fingerprint(&unknown),
+            fingerprint(&empty),
+            "two different kinds of \"no real identity\" must not even match each other -- there \
+             is no wildcard value that silently matches everything"
+        );
+    }
+
     /// Field boundaries are real: moving text from one field to the next
     /// must not produce the same hash.
     #[test]
