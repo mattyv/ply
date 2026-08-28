@@ -2,7 +2,7 @@
 //! these needs Kani, proptest or cargo-mutants to pass, the command is not
 //! the one §6 describes as "fast, no engines".
 
-use ply_e2e::{build_cargo_ply, copy_fixture};
+use ply_e2e::{build_cargo_ply, copy_fixture, run_verify};
 
 /// The CLI reflows diagnostics to ~92 columns, so where a sentence breaks
 /// depends on how long the tempdir path happens to be. Collapsing runs of
@@ -163,5 +163,74 @@ fn a_private_function_inside_a_module_is_refused_with_the_real_reason() {
     assert!(
         !unwrapped(&stdout).contains("could not find a function called"),
         "the function was found; saying otherwise sends the reader hunting for a typo: {stdout}"
+    );
+}
+
+/// A crate with a `src/main.rs` and no `src/lib.rs` used to get a clean
+/// `check`: exit 0, every claim counted as "anchored to another crate" --
+/// which reads as a boundary somebody chose. Nobody had chosen anything;
+/// there was no library to look in, and `verify` refused the same claims by
+/// name (`E0301`, exit 1) the moment it was asked. The absence-of-evidence
+/// rule (§1) makes that the wrong way round: the command that looked at
+/// nothing must not be the one that comes back happy.
+#[test]
+fn a_binary_only_crate_is_told_nothing_was_searched_rather_than_given_a_clean_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"binonly\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/main.rs"),
+        "fn fee(x: u32) -> u32 { if x == 7 { 0 } else { x } }\nfn main() { println!(\"{}\", fee(1)); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("ply.yaml"),
+        "ply: 1\n\ncomponents:\n  binonly:\n    anchor: binonly\n    fns:\n      fee:\n        checks: [fuzz(64)]\n",
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = run(&["check", root.to_str().unwrap()]);
+    assert_ne!(
+        code, 0,
+        "a run that resolved nothing must not exit 0:\n{stdout}\n{stderr}"
+    );
+    let flat = unwrapped(&stdout);
+    assert!(
+        flat.contains(
+            "NOT RESOLVED. Ply resolved nothing: the one fn claim in this document was never \
+             looked for, because there is no `src/lib.rs` here for Ply to look in. This is \
+             not a count of zero problems -- it is a count of zero searches."
+        ),
+        "the summary has to say a search did not happen, in those words:\n{flat}"
+    );
+    assert!(
+        !flat.contains("belong to a component anchored to another crate"),
+        "nothing here was anchored elsewhere; saying so was the bug:\n{flat}"
+    );
+    assert!(
+        flat.contains(
+            "E0301 there is no library for Ply to look in, so `fee` was never searched for."
+        ),
+        "the claim itself has to be reported, not counted as someone else's:\n{flat}"
+    );
+
+    // The point of the fix: both commands now say the same thing about the
+    // same crate.
+    let cargo_ply = build_cargo_ply();
+    let verify = run_verify(&cargo_ply, root, 120);
+    assert_eq!(verify.json["root"]["verdict"], "unclaimed", "{}", verify.json);
+    assert!(
+        verify.json["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "E0301"),
+        "{}",
+        verify.json
     );
 }

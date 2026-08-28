@@ -275,6 +275,10 @@ pub struct AnchorTally {
     /// `verify` is single-crate, so their anchors simply cannot be resolved
     /// from here, and reporting them as errors would be wrong.
     pub elsewhere: usize,
+    /// There was no `src/lib.rs` to resolve any claim against, so the
+    /// counts above describe a search that never happened. The summary
+    /// sentence has to say that outright rather than report a tidy zero.
+    pub no_library: bool,
 }
 
 fn check_anchors(
@@ -286,12 +290,30 @@ fn check_anchors(
         resolved: 0,
         unresolved: 0,
         elsewhere: 0,
+        no_library: false,
     };
     let lib_path = crate_dir.join("src/lib.rs");
     let Ok(lib_src) = std::fs::read_to_string(&lib_path) else {
-        // No local crate to resolve against. Every claim falls into
-        // "elsewhere", and the summary says so rather than inventing errors.
-        tally.elsewhere = count_fn_claims(doc);
+        // There is no library here to resolve anything against. This used
+        // to be counted as "anchored to another crate", which reads as a
+        // deliberate boundary and let the command exit 0 having resolved
+        // nothing -- a binary-only crate (`src/main.rs`, no `src/lib.rs`)
+        // got a clean `check` for claims `verify` then refused by name
+        // (`E0301`, exit 1). A run that could not look must not read like a
+        // run that looked and was satisfied (§1), and the two commands have
+        // to agree about the same fact, so every claim is unresolved and
+        // says why.
+        for (name, comp) in &doc.components {
+            for fn_name in comp.fns.keys() {
+                tally.unresolved += 1;
+                diagnostics.push(no_library_diag(
+                    &format!("{name}::{fn_name}"),
+                    fn_name,
+                    &lib_path,
+                ));
+            }
+        }
+        tally.no_library = true;
         return tally;
     };
     let local_anchors = local_anchor_names(crate_dir);
@@ -595,7 +617,53 @@ fn coverage(anchors: Option<AnchorTally>, arch: ArchOutcome) -> Coverage {
     }
 }
 
+/// The claim could not be looked for at all, because there is no library
+/// here to look in. Written to be actionable by someone who has never seen
+/// Ply: name the missing thing, say what it does *not* mean, then give the
+/// two things that are actually wrong in practice.
+fn no_library_diag(node_id: &str, fn_name: &str, lib_path: &Path) -> Diagnostic {
+    Diagnostic {
+        code: "E0301".into(),
+        severity: "error".into(),
+        phase: "check".into(),
+        engine: "ply".into(),
+        check: "anchor".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "there is no library for Ply to look in, so `{fn_name}` was never searched for. \
+             Ply reads a crate's library code, which lives in {}, and that file does not \
+             exist here. This does not mean `{fn_name}` is missing -- nothing was looked at, \
+             which is a different and worse answer. If this crate is a binary (a `src/main.rs` \
+             and no `src/lib.rs`), move the code you want checked into a `src/lib.rs` and have \
+             `main.rs` call it. If you meant a different crate, point Ply at that crate's own \
+             directory rather than this one.",
+            lib_path.display()
+        ),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: Some("unresolvable_anchor".into()),
+    }
+}
+
 fn anchor_detail(t: &AnchorTally) -> String {
+    if t.no_library {
+        let claims = if t.unresolved == 1 {
+            "the one fn claim in this document was never looked for".to_string()
+        } else {
+            format!(
+                "none of the {} fn claims in this document were ever looked for",
+                t.unresolved
+            )
+        };
+        return format!(
+            "NOT RESOLVED. Ply resolved nothing: {claims}, because there is no `src/lib.rs` here for Ply \
+             to look in. This is not a count of zero problems -- it is a count of zero \
+             searches."
+        );
+    }
     let total = t.resolved + t.unresolved;
     let mut s = format!(
         "{} of {} fn claims in this crate point at a function Ply can find.",

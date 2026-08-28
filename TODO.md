@@ -1,5 +1,20 @@
 # TODO
 
+## `check` on a crate with no library stops reading clean — 2026-08-28
+
+- [x] **A binary-only crate got a clean `check` and a refusal from `verify`.** Found
+      while answering whether the fast command needs code to be there. With no
+      `src/lib.rs`, every claim was counted as "anchored to another crate" -- the shape
+      of a boundary somebody chose -- and the run exited 0 having resolved nothing.
+      `verify` on the same crate said `E0301`, exit 1. The two commands now agree: the
+      claim is unresolved, the missing library is named as the obstacle, and the
+      summary says a search did not happen instead of reporting a zero.
+- [x] End-to-end test in `check_command`, watched red against the old behaviour; both
+      commands asserted on the same crate in the same test. The-Ply-Spec.md §5.2
+      amended.
+- Note: the document half still needs no code at all -- a `ply.yaml` alone in an empty
+  directory gets its grammar checked, which is the spec-first loop working as intended.
+
 ## Ply borrows the user's Cargo.toml and gives it back — 2026-08-28
 
 - [x] **A run on a crate with its own workspace no longer leaves an edit behind.**

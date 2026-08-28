@@ -413,6 +413,17 @@ The schema must encode all of the following; the goldens (§9) pin them.
 
 Every component anchors to a real crate or module; every fn claim anchors to a real
 function. `ply check` resolves anchors via the extractor. An unresolvable anchor →
+A crate with no `src/lib.rs` is a third case, and the one that used to read backwards.
+`check` counted every claim in such a crate as *anchored to another crate* — the shape of
+a deliberate boundary — and exited 0, while `verify`, asked about the same crate, refused
+the same claims with `E0301` and exited 1. Nobody had declared a boundary; there was
+simply no library to look in. A binary-only crate (`src/main.rs` alone) therefore got a
+clean bill from the fast command and a refusal from the slow one. Under §1 the command
+that looked at nothing is the one that must not come back happy, so `check` now reports
+every such claim as unresolved, names the missing `src/lib.rs` as the obstacle, and its
+summary line says a search did not happen rather than reporting a zero that could be
+mistaken for zero problems.
+
 `E0301` with nearest-name suggestions (edit distance over the item index). **A renamed
 function must break CI, not silently orphan its claims.**
 
