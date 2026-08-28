@@ -3133,7 +3133,10 @@ pub fn render_svg_with_options(
          <defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\">\
          <path d=\"M 0 0 L 10 5 L 0 10 z\" /></marker></defs>\
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\">{workspace_tip}</rect>\
-         <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text>\
+         <g><title>ply.yaml — the document this picture is drawn from. Everything you \
+see here was declared in it; nothing was inferred from code. What each box has actually \
+been checked for is what `cargo ply verify` reports, not this drawing.</title>\
+         <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text></g>\
          {title_extra}\
          {deny_svg}{registry_svg}{body}{edges_svg}{external_edges_svg}{external_svg}\
          </svg>",

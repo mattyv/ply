@@ -48,6 +48,27 @@ Nothing below jumps that queue.
       change, so it needs doing in GitHub's settings by the repository owner (or via
       the API with admin rights) -- Ply cannot set it from here.
 
+## Second smoke-test impression — 2026-08-28
+
+- [x] **"The check badges are the one thing with no tooltip, while the canvas tooltip
+      promises hover anything for its meaning."** Checked rather than assumed: the
+      badges do resolve a tooltip, and it glosses each one in plain language
+      ("bounded(2) — proves the contract for every input, unrolling loops at most 2
+      times"). The claim was wrong; the instinct behind it was not.
+- [x] **The invariant test that should have settled that question could not.**
+      `every_drawn_item_resolves_a_tooltip` walked a hand-maintained list of classes: of
+      the 35 the renderer emits, it named 14. A construct added later was explained only
+      if someone remembered to add it, and nothing failed if they did not -- the same
+      silent absence this project treats as a defect everywhere else. Inverted: every
+      class emitted must resolve a tooltip, and anything that genuinely cannot has to be
+      named as decoration, so a new construct fails until someone decides which it is.
+- [x] Inverting it found exactly one real gap: the `ply.yaml` title on the canvas had no
+      tooltip. It has one now.
+- [ ] **Tooltips should say why a thing is the colour it is.** The frame tooltip
+      explains the scale ("the weakest function sets the whole box's shade") but an
+      individual box never says which function set its own. Agreed with the maintainer;
+      next.
+
 ## Smoke test on a real project — 2026-08-28
 
 The maintainer ran Ply against a project of their own and reported what broke. Findings

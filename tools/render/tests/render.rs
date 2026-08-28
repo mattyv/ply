@@ -817,47 +817,48 @@ fn workspace_frame_explains_the_whole_picture() {
 /// ancestor, so nothing in the picture is unexplainable by hovering it.
 #[test]
 fn every_drawn_item_resolves_a_tooltip() {
-    // Item-bearing groups: a class here means "this is a thing a reader can
-    // point at", so it must be explained.
-    const ITEM_CLASSES: &[&str] = &[
-        "workspace-frame",
-        "component",
-        "fn-chip",
-        "cap-badge",
-        "profile-tag",
-        "fn-shield",
-        "unresolved-pin",
-        "registry-pin",
-        "edge-call",
-        "edge-flow",
-        "deny-rule",
-        "any-node",
-        // docs/plans/external-elements.md: the external box itself, and
-        // the derived `entry:` edge (an explicit `~>` touching one reuses
-        // `edge-flow` above — same construct, same tooltip mechanism).
-        "external",
-        "edge-entry",
-    ];
+    // This walked a hand-maintained list of classes, which meant its name
+    // was an overclaim: of the 35 classes the renderer actually emits, the
+    // list named 14. A construct added later was explained only if someone
+    // remembered to add it here, and nothing failed if they did not --
+    // which is the same shape of silent absence this project treats as a
+    // defect everywhere else (2026-08-28, prompted by a smoke test
+    // reporting that the check badges carry no tooltip; they do, but
+    // checking that claim showed the test could not have told us either
+    // way).
+    //
+    // Inverted: every class the renderer emits must resolve a tooltip, on
+    // itself or on an ancestor -- which is what a reader hovering it gets.
+    // Anything that genuinely cannot carry one has to be named in
+    // DECORATION below, so a new construct fails this test until someone
+    // decides which it is, rather than passing by omission.
+    const DECORATION: &[&str] = &[];
 
     let mut untitled: Vec<String> = Vec::new();
+    let mut classes_seen = 0usize;
     for fixture in [
         "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
         "tests/fixtures/full.ply.yaml",
         "tests/fixtures/qualified_refs.ply.yaml",
         "tests/fixtures/visual_forms.ply.yaml",
         "tests/fixtures/externals.ply.yaml",
+        "tests/fixtures/deny_stress.ply.yaml",
+        "tests/fixtures/hollow.ply.yaml",
+        "tests/fixtures/strict_with_finding.ply.yaml",
     ] {
         let svg = render_fixture(fixture);
         let doc = roxmltree::Document::parse(&svg).unwrap();
-        let mut seen: Vec<&str> = Vec::new();
+        let mut seen_here = 0usize;
         for node in doc.descendants().filter(|n| n.is_element()) {
             let Some(class) = node.attribute("class") else {
                 continue;
             };
-            if !ITEM_CLASSES.contains(&class) {
+            if DECORATION.contains(&class) {
                 continue;
             }
-            seen.push(class);
+            seen_here += 1;
             let titled = node
                 .ancestors()
                 .any(|a| a.children().any(|c| c.tag_name().name() == "title"));
@@ -865,13 +866,20 @@ fn every_drawn_item_resolves_a_tooltip() {
                 untitled.push(format!("{fixture}: .{class}"));
             }
         }
-        assert!(!seen.is_empty(), "{fixture}: no item classes found at all");
+        assert!(seen_here > 0, "{fixture}: nothing drawn carried a class");
+        classes_seen += seen_here;
     }
+    assert!(
+        classes_seen > 100,
+        "these fixtures are meant to exercise the whole grammar; only {classes_seen} \
+         classed elements were drawn, so this test is checking far less than it looks"
+    );
     untitled.sort();
     untitled.dedup();
     assert!(
         untitled.is_empty(),
-        "drawn items with no tooltip: {untitled:?}"
+        "drawn items a reader can point at, with nothing to tell them what they are: \
+         {untitled:?}"
     );
 }
 
