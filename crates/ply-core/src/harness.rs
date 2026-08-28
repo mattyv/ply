@@ -831,11 +831,48 @@ pub enum CtorReturn {
     ResultSelf,
 }
 
-fn ctor_return_kind(output: &syn::ReturnType, _aliases: &AliasMap) -> Option<CtorReturn> {
+/// Whether a constructor's return type names the type being constructed:
+/// `Self`, or the type's own name written out (`-> Quota`, `-> super::Quota`,
+/// `-> crate::bucket::Quota`).
+///
+/// Spelling the type instead of `Self` is ordinary Rust and common in
+/// submodule-split crates, but only `Self` was recognised, so such a
+/// constructor was invisible and Ply reported "it has no constructor Ply
+/// can call" about a type with a public `new` (2026-08-28, found probing
+/// the same family as the qualified-`impl` fix).
+///
+/// A written-out name is accepted only when it resolves to the type's own
+/// canonical declaration, the same `Confirmed`-only rule the `impl` block
+/// itself is held to: another module's same-named type is a different type,
+/// and constructing the wrong one is worse than refusing.
+fn return_names_this_type(
+    ty: &Type,
+    type_name: &str,
+    file_mod: &[String],
+    use_aliases: &std::collections::BTreeMap<String, Vec<String>>,
+    target_absolute: Option<&[String]>,
+) -> bool {
+    if is_bare_self_type(ty) {
+        return true;
+    }
+    classify_impl_self_ty(ty, type_name, file_mod, use_aliases, target_absolute)
+        == ImplMatch::Confirmed
+}
+
+fn ctor_return_kind(
+    output: &syn::ReturnType,
+    _aliases: &AliasMap,
+    type_name: &str,
+    file_mod: &[String],
+    use_aliases: &std::collections::BTreeMap<String, Vec<String>>,
+    target_absolute: Option<&[String]>,
+) -> Option<CtorReturn> {
     let syn::ReturnType::Type(_, ty) = output else {
         return None;
     };
-    if is_bare_self_type(ty) {
+    let names_it =
+        |t: &Type| return_names_this_type(t, type_name, file_mod, use_aliases, target_absolute);
+    if names_it(ty) {
         return Some(CtorReturn::Bare);
     }
     if let Type::Path(tp) = ty.as_ref()
@@ -852,7 +889,7 @@ fn ctor_return_kind(output: &syn::ReturnType, _aliases: &AliasMap) -> Option<Cto
                 _ => None,
             })
             .collect();
-        if args.len() == 2 && is_bare_self_type(args[0]) {
+        if args.len() == 2 && names_it(args[0]) {
             return Some(CtorReturn::ResultSelf);
         }
     }
@@ -2352,11 +2389,29 @@ fn scan_file_for_receiver(
                 continue;
             }
             if is_receiverless {
-                // A candidate constructor: only ones returning bare `Self`
-                // count (`return_rust_type_from_syn`'s own narrowing --
-                // `Result<Self, E>` constructors, a real shape this crate's
-                // own `Quota::new` uses, are not recognised here either).
-                if return_rust_type_from_syn(&m.sig.output, aliases) != RustType::SelfType {
+                // A candidate constructor: one returning `Self`, or the
+                // type's own name written out -- `-> Quota`,
+                // `-> super::Quota` -- which is ordinary Rust and was not
+                // recognised here, so a type whose constructor spelled
+                // itself that way had "no constructor to call" as far as
+                // the receiver scan was concerned (2026-08-28, the same
+                // family as the qualified-`impl` fix).
+                //
+                // Still narrower than the parameter path in one respect,
+                // deliberately and recorded rather than papered over: a
+                // `Result<Self, E>` constructor is recognised for a
+                // parameter and not for a receiver.
+                let returns_self = match &m.sig.output {
+                    syn::ReturnType::Type(_, ty) => return_names_this_type(
+                        ty,
+                        type_name,
+                        file_mod,
+                        &use_aliases,
+                        target_absolute,
+                    ),
+                    syn::ReturnType::Default => false,
+                };
+                if !returns_self {
                     continue;
                 }
                 let Some(params) = params_from_inputs(m.sig.inputs.iter(), aliases) else {
@@ -3000,7 +3055,14 @@ fn scan_ctor_candidates(
             if !is_receiverless {
                 continue;
             }
-            let Some(ctor_return) = ctor_return_kind(&m.sig.output, aliases) else {
+            let Some(ctor_return) = ctor_return_kind(
+                &m.sig.output,
+                aliases,
+                type_name,
+                file_mod,
+                &use_aliases,
+                target_absolute,
+            ) else {
                 continue;
             };
             let Some(params) = params_from_inputs(m.sig.inputs.iter(), aliases) else {

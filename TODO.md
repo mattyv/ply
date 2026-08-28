@@ -57,9 +57,19 @@ Nothing below jumps that queue.
       paths now use the same resolution. An `impl` that ends in the same bare name but
       cannot be resolved to the type's own canonical module is still refused: building
       the wrong type is worse than refusing to build one.
+- [x] **The same false sentence had a second cause, on both paths: a constructor that
+      returns the type by name rather than `Self`.** `pub fn new(..) -> super::Quota`
+      is ordinary Rust; only `-> Self` was recognised, so the constructor was invisible
+      for an ordinary parameter *and* for a receiver, the receiver message reading
+      "none was found". Found by probing the same family rather than by the suite. Both
+      paths now accept the type's own name, resolved to its canonical declaration
+      (`Confirmed` only -- another module's same-named type is a different type).
+- [x] KNOWN GAP, unchanged and now written where it is: a `Result<Self, E>`
+      constructor is recognised for a parameter and still not for a receiver.
 - [x] `qualifiedctor` fixture and end-to-end test, watched red. The test also weakens
       what the constructor guarantees and requires the verdict to go red, so a green
-      run cannot be Ply quietly not calling it.
+      run cannot be Ply quietly not calling it. It asserts each path's own leaf verdict
+      rather than the worst-of root, which either path alone could satisfy.
 - [x] Fixed while there: a diagnostic quoted a type as `super :: Quota` -- token-stream
       spacing leaking into a sentence held to the newbie bar. It now reads
       `super::Quota`, as written.

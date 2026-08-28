@@ -6,3 +6,5 @@ components:
     fns:
       refill_per_second:
         checks: [fuzz(64)]
+      Quota::burst_ceiling:
+        checks: [fuzz(64)]
