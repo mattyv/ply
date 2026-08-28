@@ -1,5 +1,30 @@
 # TODO
 
+## `cargo ply render`, component notes, the envelope's reasoning — 2026-08-28
+
+- [x] **`cargo ply render` exists.** The loop's step 2 said "Ply renders that intent
+      before implementation begins" and meant "build a second binary and invoke it by
+      path". The whole run -- read, draw, and the "this selection folded nothing away"
+      notice -- lives in `ply_core::visual` beside the renderer, so the subcommand and
+      the standalone binary cannot drift. Needed no new crate and no new architecture
+      edge: main had already moved the renderer into the product.
+- [x] **A component may carry a `note:`; a function may not.** Argued by review rather
+      than assumed. Every prose slot in this grammar already sits where checking is
+      impossible, and `externals`' note is *required* on exactly the reporter's own
+      argument. Ply's own three load-bearing rules moved out of comments into notes.
+- [x] **The envelope carries the contract and the trusted claims.** The tree said only
+      what came out, so an agent could read `fuzzed(64)` and not know what it was fuzzed
+      for -- and §7.1 already assumed otherwise. Set from the claim, not the run, so a
+      reused verdict carries it too; wiring it to the run first and watching the second
+      run come back bare is how that was found.
+- [x] Half the report that prompted this was wrong and is recorded as such: `audit
+      --json` has always carried the trust surface. What was missing was the verdict tree.
+- [ ] Comments still evaporate, deliberately: making them survive needs a position-aware
+      second parse this codebase does not have, and would let prose reach output without
+      passing validation. The component note is the declared home instead.
+- [ ] `cargo ply render --help` advertises the global `--json` flag, which does nothing
+      for a command that emits an SVG.
+
 ## Agreed 2026-08-28, not yet done
 
 **Order the maintainer set: land the release, then the bug backlog, then suite speed.**

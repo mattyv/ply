@@ -592,6 +592,7 @@ fn qualified_function_identity_keeps_same_named_claims_sources_and_diagnostics_a
         reused: false,
         evidence: None,
         children: vec![],
+        ..Default::default()
     };
     let component = |id: &str| Node {
         id: id.into(),
@@ -601,6 +602,7 @@ fn qualified_function_identity_keeps_same_named_claims_sources_and_diagnostics_a
         reused: false,
         evidence: None,
         children: vec![leaf()],
+        ..Default::default()
     };
     let diagnostic = |node_id: &str, code: &str| Diagnostic {
         code: code.into(),
@@ -628,6 +630,7 @@ fn qualified_function_identity_keeps_same_named_claims_sources_and_diagnostics_a
             reused: false,
             evidence: None,
             children: vec![component("billing"), component("shipping")],
+            ..Default::default()
         },
         diagnostics: vec![
             diagnostic("billing::run", "W-BILLING"),

@@ -73,6 +73,29 @@ enum Commands {
         /// Path to the crate directory containing `ply.yaml`.
         path: PathBuf,
     },
+    /// Draw a ply.yaml as an SVG (§7.1). Reads the document only -- no
+    /// code, no engines -- so it works before any of the code exists,
+    /// which is the point: the loop renders intent first.
+    Render {
+        /// Path to the ply.yaml (or *.ply.yaml) to draw.
+        input: PathBuf,
+        /// Where to write the SVG. Omit to write it to stdout.
+        #[arg(short = 'o', long = "out")]
+        out: Option<PathBuf>,
+        /// Fold components nested this many levels deep or more into one
+        /// box each (top-level boxes are level 1). Omit to draw everything
+        /// expanded.
+        #[arg(long = "depth", value_parser = ply_core::visual::parse_depth)]
+        depth: Option<usize>,
+        /// Draw this component fully expanded and fold everything that is
+        /// not on the path to it. A dotted path like `ingest.book` works.
+        #[arg(long = "focus")]
+        focus: Option<String>,
+        /// Fold this component, whatever the other flags say. Repeat for
+        /// more than one.
+        #[arg(long = "collapse")]
+        collapse: Vec<String>,
+    },
     /// Run checks via engines and write cex artifacts (§6).
     Verify {
         /// Path to the crate directory containing `ply.yaml`.
@@ -167,6 +190,44 @@ fn main() -> anyhow::Result<()> {
                 worklist::print_human(&report);
             }
             std::process::exit(report.exit_code());
+        }
+        // Deliberately thin: the whole run lives beside the renderer in
+        // `ply_core::visual`, so this command and the standalone
+        // `ply-render` binary cannot drift -- including the "this
+        // selection folded nothing away" notice, which exists for someone
+        // using the tool for the first time and would be a poor joke to
+        // deliver from only one of the two commands they might type.
+        Commands::Render {
+            input,
+            out,
+            depth,
+            focus,
+            collapse,
+        } => {
+            let options = ply_core::visual::svg::RenderOptions {
+                depth,
+                focus,
+                collapse,
+            };
+            let mut notice = |m: &str| eprintln!("{m}");
+            match ply_core::visual::render_document(&input, &options, &mut notice) {
+                Ok(svg) => {
+                    match out {
+                        Some(path) => {
+                            if let Err(e) = std::fs::write(&path, svg) {
+                                eprintln!("error: could not write {}: {e}", path.display());
+                                std::process::exit(1);
+                            }
+                        }
+                        None => print!("{svg}"),
+                    }
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         Commands::Verify {
             path,
@@ -531,6 +592,7 @@ mod tests {
                 reused: false,
                 evidence: None,
                 children: vec![],
+                ..Default::default()
             })
             .collect();
         Envelope {
@@ -544,6 +606,7 @@ mod tests {
                 reused: false,
                 evidence: None,
                 children,
+                ..Default::default()
             },
             diagnostics: vec![],
             coverage: None,

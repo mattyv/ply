@@ -1037,6 +1037,73 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
+/// One rendering run, start to finish: read the document, draw it, and say
+/// so when the selection folded nothing away.
+///
+/// This lives beside the renderer rather than in a caller because there are
+/// two of them -- `cargo ply render` and the standalone `ply-render` binary
+/// -- and a rule only one of them applies is a rule with a hole in it. The
+/// "this folded nothing" notice in particular was written for someone using
+/// the tool for the first time; it would be a poor joke for it to appear
+/// from one entry point and not the other.
+///
+/// Notices go to `notice`, never to stdout, so nothing here can contaminate
+/// an SVG a caller is piping.
+pub fn render_document(
+    input: &std::path::Path,
+    options: &svg::RenderOptions,
+    notice: &mut dyn FnMut(&str),
+) -> Result<String, String> {
+    let yaml = std::fs::read_to_string(input)
+        .map_err(|e| format!("could not read {}: {e}", input.display()))?;
+    let doc = crate::model::parse_document(&yaml)
+        .map_err(|e| format!("{} did not parse as ply.yaml: {e}", input.display()))?;
+    let drawn = svg::render_svg_with_options(&doc, options)
+        .map_err(|e| format!("{} could not be rendered: {e}", input.display()))?;
+
+    // A selection that selects nothing is worth saying out loud. On a flat
+    // document `--depth 1` and `--focus x` produce exactly the default
+    // drawing, and silence there reads as "the flag did nothing visible, so
+    // something is broken" -- a smoke test on a real project recorded it as
+    // a bug before deciding it was correct behaviour (2026-08-28). The
+    // check is the honest one: render the default too, and compare. It
+    // costs one extra layout pass and cannot disagree with what was drawn.
+    if options.depth.is_some() || options.focus.is_some() || !options.collapse.is_empty() {
+        let plain = svg::render_svg_with_options(&doc, &svg::RenderOptions::default());
+        if plain.as_deref().ok() == Some(drawn.as_str()) {
+            notice(&format!(
+                "note: this drawing is identical to the one with no --depth/--focus/--collapse \
+                 at all. Nothing in {} nests deeply enough for that selection to fold anything \
+                 away, so the flag had nothing to do -- not an error, and not a sign the flag \
+                 was ignored.",
+                input.display()
+            ));
+        }
+    }
+    Ok(drawn)
+}
+
+/// `--depth` is 1-indexed (top-level boxes are level 1, §7.1), so 0 names no
+/// real level and a non-numeric value isn't a level at all. Both get a
+/// plain-language message naming what is wrong and what to do, rather than
+/// clap's `invalid digit found in string`, which never says what a depth
+/// *is*, let alone a valid one. Shared, so the message is the same
+/// whichever command the reader typed.
+pub fn parse_depth(s: &str) -> Result<usize, String> {
+    match s.parse::<usize>() {
+        Ok(0) => Err(
+            "--depth 0 doesn't select anything: nesting levels start at 1 for the top-level \
+             boxes — pass --depth 1 or higher, or drop --depth to render everything expanded"
+                .to_string(),
+        ),
+        Ok(n) => Ok(n),
+        Err(_) => Err(format!(
+            "--depth wants a whole number of nesting levels, counting the top-level boxes as \
+             1 — {s:?} is not a number"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

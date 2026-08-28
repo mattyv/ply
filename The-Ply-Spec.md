@@ -424,6 +424,30 @@ every such claim as unresolved, names the missing `src/lib.rs` as the obstacle, 
 summary line says a search did not happen rather than reporting a zero that could be
 mistaken for zero problems.
 
+**A component may carry a `note:`; a function may not.** Every prose slot in this
+grammar sits where checking is impossible -- an outside party (`externals`, whose note is
+required because "a bare name tells a newbie nothing"), an unmade decision
+(`unresolved`), a human's word (`trusted`). A component's rationale is the fourth: why a
+crate must stand alone, why one layer may never reach into another, has no contract form
+and no engine will ever consume it, and it is exactly what a reader or an agent needs.
+Ply's own document was forty lines of comment to twelve of configuration, every one of
+them discarded by the parser -- the format inviting prose and then throwing it away.
+
+Not offered on a function, and the reason is a failure observed in use: someone wrote a
+real invariant as an `examples` string -- a test case wearing a specification's clothes --
+because no better slot was visible. The answer there is `ensures`, which both a reader
+and an engine can act on. A prose slot beside it would make that mistake comfortable
+rather than correcting it. What a function does belongs in its contract, and where there
+is no contract the drawing already says so.
+
+**The envelope carries what was promised, not only what came of it.** §7.1's contract
+mark says inline attributes "join when `cargo ply` emits the §8 envelope", which only
+means something if the envelope carries clauses; it did not. A node now carries its
+effective `requires`/`ensures` -- declared and inline, merged -- and any `trusted` claims
+with the evidence named for each. Both are set from the claim rather than from the run,
+so a carried-forward verdict says the same thing a freshly earned one does. Additive, so
+a reader of the old shape is unaffected.
+
 `E0301` with nearest-name suggestions (edit distance over the item index). **A renamed
 function must break CI, not silently orphan its claims.**
 

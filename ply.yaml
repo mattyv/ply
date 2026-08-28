@@ -44,10 +44,27 @@ components:
   # to excuse one file -- the crate tier cannot say "one test file may".
   e2e:
     anchor: ply_e2e
+    note: >-
+      Drives the built binary the way a user does, and depends on nothing.
+      A suite that links the library instead stops testing what ships. It
+      had grown exactly that dependency once; the fix was to move the test
+      rather than widen the rule.
   attrs:
     anchor: ply_attrs
+    note: >-
+      Stands alone. It is a proc-macro crate, compiled for the machine doing
+      the building rather than the machine the program will run on, so a
+      dependency from here into the library would compile perfectly well and
+      would be wrong: the macro would begin depending on the very thing it
+      exists to annotate.
   core:
     anchor: ply_core
+    note: >-
+      Everything Ply knows how to do, with no terminal attached. It must
+      never reach up into the command-line layer: that constraint is what
+      makes the engine adapters testable at all, because the moment a
+      diagnostic's wording lives here, the wording and the engine can only
+      be tested together.
   cli:
     anchor: ply_cli
 

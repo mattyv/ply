@@ -169,6 +169,7 @@ pub(crate) fn workspace_node(doc: &Document) -> Node {
                 reused: false,
                 evidence: None,
                 children: vec![],
+                ..Default::default()
             })
             .collect();
         children.extend(
@@ -184,6 +185,7 @@ pub(crate) fn workspace_node(doc: &Document) -> Node {
             reused: false,
             evidence: None,
             children,
+            ..Default::default()
         }
     }
     Node {
@@ -198,6 +200,7 @@ pub(crate) fn workspace_node(doc: &Document) -> Node {
             .iter()
             .map(|(n, c)| component_node(n, c))
             .collect(),
+        ..Default::default()
     }
 }
 
@@ -212,6 +215,7 @@ pub(crate) fn empty_workspace() -> Node {
         reused: false,
         evidence: None,
         children: vec![],
+        ..Default::default()
     }
 }
 
