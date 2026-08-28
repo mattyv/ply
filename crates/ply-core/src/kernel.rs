@@ -464,7 +464,10 @@ mod tests {
     #[test]
     fn an_empty_status_set_reports_empty_and_a_populated_one_does_not() {
         let empty = StatusSet::new();
-        assert!(empty.is_empty(), "a set with nothing in it must report empty");
+        assert!(
+            empty.is_empty(),
+            "a set with nothing in it must report empty"
+        );
 
         let mut populated = StatusSet::new();
         populated.insert(ALL_STATUS_KINDS[0]);
@@ -490,7 +493,10 @@ mod tests {
             "collecting every status kind must yield a set holding every one of them"
         );
         for kind in ALL_STATUS_KINDS {
-            assert!(collected.contains(kind), "{kind:?} was lost while collecting");
+            assert!(
+                collected.contains(kind),
+                "{kind:?} was lost while collecting"
+            );
         }
     }
 
