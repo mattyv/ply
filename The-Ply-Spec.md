@@ -761,6 +761,27 @@ v1 supports functions whose parameters and return type are, recursively:
 - **`Duration`** — two integers, with the sub-billion nanosecond bound enforced for the
   same reason. Whether its seconds field needed a bound was measured, not assumed: about
   seven seconds per check against a sixty-second budget, so none was added;
+- **a `struct` or `enum` of the user's own** — sampling tier only, and built by the same
+  three rules, in order, that govern a receiver. **First**, the type's own constructor,
+  honouring the constructor's own precondition and recursing through nested user-type
+  arguments to a bounded depth; every value so built is one the real program could
+  produce. **Second**, and only when the first cannot apply, direct construction of the
+  fields or variant data — permitted solely when every one of them is already public and
+  the type is not `#[non_exhaustive]`, on the ground that a caller could then already
+  build any combination, so there is no invariant left to violate. **Otherwise refused by
+  name**, saying which type and why.
+
+  The second route carries an assumption and the run says so rather than leaving it
+  implied: public fields mean nothing *restricts* what a caller may build, but a type's
+  own methods can maintain a relationship between public fields that nothing enforces, so
+  a value built this way could in principle be one the program never produces. Evidence
+  earned on that route rests on that assumption and is not proved. The first route
+  carries no such assumption, which is why it is tried first rather than second.
+
+  An enum is admitted or refused whole. Rust gives a variant no visibility of its own, so
+  "every field public" reduces to "every variant's data is buildable"; admitting only the
+  variants that happen to qualify would quietly drop the rest, and a harness that skips a
+  case without saying so is the failure this document exists to refuse;
 - **`f32` and `f64` — sampling tier only.** Proving over floating point is real work not
   attempted in v1, so a `bounded` check on a float is refused by name. Generated floats
   **exclude NaN and infinity by default**: a generated NaN makes almost any promise look
