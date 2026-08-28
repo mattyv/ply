@@ -1711,6 +1711,20 @@ pub struct ReceiverPlan {
     /// "the fourteenth false clean": a mutator this list names is a mutator
     /// this run's history cannot contain, however many cases it ran.
     pub excluded_operations: Vec<ExcludedOperation>,
+    /// Every other buildable constructor this scan found for `type_name`
+    /// but did not use to build this receiver -- named, never merely
+    /// unused, so the coverage disclosure can say which states this run
+    /// never started from (2026-08-28, docs/review-silent-narrowing.md
+    /// finding 3, "the type has a second constructor Ply never calls"):
+    /// `scan_impls_for_receiver` always builds a receiver by calling one
+    /// fixed constructor (the first fully-buildable one found, in source
+    /// order), so a type with more than one usable constructor has states
+    /// -- everything reachable only by calling the others -- that no case
+    /// this run generated ever started from, however many cases ran or how
+    /// long the operation sequence. Always empty for a parameter's own
+    /// plan (built by [`resolve_user_type`], never nested more than one
+    /// constructor deep by design).
+    pub other_constructors: Vec<String>,
     /// [`MAX_RECEIVER_SEQUENCE_LEN`], carried alongside the plan so a
     /// caller building the verdict-visibility disclosure never has to
     /// import the constant under a different name than what codegen used.
@@ -1955,34 +1969,106 @@ type CtorCandidate = (String, Vec<Param>, Option<String>, Option<Expr>);
 /// it has ([`CtorReturn`]), and whether it is `pub`.
 type ParamCtorCandidate = (String, Vec<Param>, Option<Expr>, CtorReturn, bool);
 
-/// Scans every non-generic, trait-free `impl {type_name} { .. }` block in
-/// `file` for: the checked method itself (must exist, must take `&self`),
-/// a constructor (a receiverless associated function returning bare `Self`,
-/// preferring the first fully-buildable one in source order), and every
+/// Every `.rs` file under `crate_dir/src`, recursing into subdirectories --
+/// the same walk [`scan_crate_type_locations`]/`scan_ctor_candidates_crate_wide`
+/// already do for a struct/enum *parameter*'s own lookup, factored out here
+/// so the receiver scan's own crate-wide widening (2026-08-28,
+/// docs/review-silent-narrowing.md finding 1, "the type's only mutator
+/// lives in a second file") can reuse the same walk rather than re-deriving
+/// it a third time. Order does not matter to any caller: every consumer
+/// either merges into an order-independent structure or sorts its own
+/// output afterward.
+fn crate_source_files(crate_dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![crate_dir.join("src")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// One file's own contribution to a receiver's pool, before the candidates
+/// found across every file the crate has are merged and a constructor is
+/// chosen ([`scan_impls_for_receiver`]).
+#[derive(Default)]
+struct FileReceiverScan {
+    target: Option<syn::ImplItemFn>,
+    ctor_candidates: Vec<CtorCandidate>,
+    other_ops: Vec<Operation>,
+    excluded_ops: Vec<ExcludedOperation>,
+}
+
+/// Scans every `impl {type_name} { .. }` block in `file` for: the checked
+/// method itself (must exist, must take `&self`), a constructor candidate
+/// (a receiverless associated function returning bare `Self`), and every
 /// other `&self`/`&mut self` operation whose own parameters are all types
 /// the fuzz tier can build (no longer required to match the checked
 /// method's own shape -- see `Operation`'s doc, docs/review-caveats.md N3).
-/// See the module doc for the honesty conditions this narrows on purpose.
-fn scan_impls_for_receiver(
+/// Called once per file [`scan_impls_for_receiver`] visits; see the module
+/// doc for the honesty conditions this narrows on purpose.
+///
+/// **A `trait` implementation's own `&self`/`&mut self` methods are
+/// recorded as excluded, not skipped silently** (2026-08-28,
+/// docs/review-silent-narrowing.md finding 2, "the type's only mutator is a
+/// trait method"): this scan does not resolve which trait a call needs or
+/// attempt a trait-qualified call, and that is a real, permanent limit
+/// (calling through a trait needs the trait itself in scope and, for a
+/// generic trait, a chosen instantiation -- real work, not attempted here),
+/// so a mutating trait method is out of scope rather than absent from the
+/// pool by mistake. A trait impl's *receiverless* associated functions
+/// (its own constructor-shaped methods, `impl Default for Foo`'s `default`
+/// among them) are left untouched by this fix -- still silently invisible,
+/// exactly as before this task: recognising a trait method as a receiver
+/// constructor candidate is separate, adjacent scope this task's three
+/// reproductions never needed (docs/review-silent-narrowing.md's own
+/// finding 2 is about a *mutator*, not a constructor).
+fn scan_file_for_receiver(
     file: &syn::File,
     aliases: &AliasMap,
     type_name: &str,
     method_name: &str,
-    crate_dir: &Path,
-) -> std::result::Result<(syn::ImplItemFn, ReceiverPlan), ReceiverError> {
-    let mut target: Option<syn::ImplItemFn> = None;
-    let mut ctor_candidates: Vec<CtorCandidate> = Vec::new();
-    let mut other_ops: Vec<Operation> = Vec::new();
-    let mut excluded_ops: Vec<ExcludedOperation> = Vec::new();
+) -> std::result::Result<FileReceiverScan, ReceiverError> {
+    let mut out = FileReceiverScan::default();
 
     for item in &file.items {
         let syn::Item::Impl(imp) = item else {
             continue;
         };
-        if imp.trait_.is_some() || !imp.generics.params.is_empty() {
+        if !impl_targets_type(&imp.self_ty, type_name) {
             continue;
         }
-        if !impl_targets_type(&imp.self_ty, type_name) {
+        if imp.trait_.is_some() {
+            for impl_item in &imp.items {
+                let syn::ImplItem::Fn(m) = impl_item else {
+                    continue;
+                };
+                let has_ref_receiver = matches!(
+                    m.sig.inputs.first(),
+                    Some(FnArg::Receiver(r)) if r.reference.is_some()
+                );
+                if has_ref_receiver {
+                    out.excluded_ops.push(ExcludedOperation {
+                        call_path: format!("{type_name}::{}", m.sig.ident),
+                        reason: "it is defined in a `trait` implementation, and this scan \
+                                 only calls a type's own inherent methods, never a trait's"
+                            .to_string(),
+                    });
+                }
+            }
+            continue;
+        }
+        if !imp.generics.params.is_empty() {
             continue;
         }
         for impl_item in &imp.items {
@@ -1991,7 +2077,7 @@ fn scan_impls_for_receiver(
             };
             let is_receiverless = !matches!(m.sig.inputs.first(), Some(FnArg::Receiver(_)));
             if m.sig.ident == method_name && !is_receiverless {
-                target = Some(m.clone());
+                out.target = Some(m.clone());
                 continue;
             }
             if is_receiverless {
@@ -2028,7 +2114,7 @@ fn scan_impls_for_receiver(
                 // generates for it (2026-08-27, docs/review-caveats.md N2).
                 let ctor_requires = extract_requires_expr(&m.attrs)
                     .map_err(|_| ReceiverError::UnsupportedParamPattern)?;
-                ctor_candidates.push((path, params, bad, ctor_requires));
+                out.ctor_candidates.push((path, params, bad, ctor_requires));
             } else if let Some(syn::FnArg::Receiver(r)) = m.sig.inputs.first()
                 && r.reference.is_some()
                 && let Some(params) = params_from_inputs(m.sig.inputs.iter().skip(1), aliases)
@@ -2048,12 +2134,12 @@ fn scan_impls_for_receiver(
                 // `other_ops`.
                 let call_path = format!("{type_name}::{}", m.sig.ident);
                 match params.iter().find(|p| !p.ty.is_fuzz_supported()) {
-                    None => other_ops.push(Operation {
+                    None => out.other_ops.push(Operation {
                         call_path,
                         params,
                         takes_mut_self: r.mutability.is_some(),
                     }),
-                    Some(bad) => excluded_ops.push(ExcludedOperation {
+                    Some(bad) => out.excluded_ops.push(ExcludedOperation {
                         call_path,
                         reason: format!(
                             "its `{}: {}` argument uses a type Ply cannot build a value for",
@@ -2064,6 +2150,67 @@ fn scan_impls_for_receiver(
                 }
             }
         }
+    }
+    Ok(out)
+}
+
+/// Builds a receiver's pool by merging [`scan_file_for_receiver`] over the
+/// method's declaring file plus every other `.rs` file under the crate's
+/// `src/` (2026-08-28, docs/review-silent-narrowing.md finding 1): an
+/// ordinary second `impl {type_name} { .. }` block elsewhere in the crate
+/// is completely normal Rust, and this scan used to read the declaring file
+/// only, so a type whose only mutating method lived in a different file had
+/// an operation pool of nothing but reads -- and reported the receiver
+/// disclosure's strongest sentence ("nothing here was assumed") over a
+/// history that never had the chance to call the one operation that
+/// mattered. The crate-wide walk this reuses
+/// ([`crate_source_files`]) already exists from the struct/enum parameter
+/// work, so this is the same inventory, not a new one.
+fn scan_impls_for_receiver(
+    file: &syn::File,
+    aliases: &AliasMap,
+    type_name: &str,
+    method_name: &str,
+    crate_dir: &Path,
+    declaring_file: &Path,
+) -> std::result::Result<(syn::ImplItemFn, ReceiverPlan), ReceiverError> {
+    let mut target: Option<syn::ImplItemFn> = None;
+    let mut ctor_candidates: Vec<CtorCandidate> = Vec::new();
+    let mut other_ops: Vec<Operation> = Vec::new();
+    let mut excluded_ops: Vec<ExcludedOperation> = Vec::new();
+
+    let mut merge = |scan: FileReceiverScan| {
+        if target.is_none() {
+            target = scan.target;
+        }
+        ctor_candidates.extend(scan.ctor_candidates);
+        other_ops.extend(scan.other_ops);
+        excluded_ops.extend(scan.excluded_ops);
+    };
+    merge(scan_file_for_receiver(
+        file,
+        aliases,
+        type_name,
+        method_name,
+    )?);
+
+    for path in crate_source_files(crate_dir) {
+        if path == declaring_file {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(other_file) = syn::parse_file(&src) else {
+            continue;
+        };
+        let other_aliases = alias_map(&other_file);
+        merge(scan_file_for_receiver(
+            &other_file,
+            &other_aliases,
+            type_name,
+            method_name,
+        )?);
     }
 
     let Some(target) = target else {
@@ -2154,6 +2301,28 @@ fn scan_impls_for_receiver(
     }];
     operations.extend(other_ops);
 
+    // Finding 3 (2026-08-28, docs/review-silent-narrowing.md, "the type has
+    // a second constructor Ply never calls"): every other fully-buildable
+    // constructor candidate this scan found -- across every file, now that
+    // the scan above is crate-wide -- but did not choose, named rather than
+    // merely discarded. This run still only ever starts a receiver's
+    // history from one of them (`ctor_path`, picked deterministically as
+    // the first fully-buildable one found); trying every constructor as a
+    // separate starting point is real, further work this task's three
+    // reproductions did not ask for (it would mean generating and running a
+    // separate harness per constructor, or teaching one harness to choose
+    // its own starting constructor the way it already chooses which pooled
+    // operation to call next) -- named here so a reader knows which states
+    // this run never started from, rather than a disclosure that goes
+    // silent exactly where the first two findings' fix stops.
+    let mut other_constructors: Vec<String> = ctor_candidates
+        .iter()
+        .filter(|(path, _, bad, _)| bad.is_none() && *path != ctor_path)
+        .map(|(path, _, _, _)| path.clone())
+        .collect();
+    other_constructors.sort();
+    other_constructors.dedup();
+
     let plan = ReceiverPlan {
         type_name: type_name.to_string(),
         // Never read for the receiver's own plan -- see the field's own
@@ -2165,13 +2334,15 @@ fn scan_impls_for_receiver(
         // `scan_impls_for_receiver`'s own ctor-candidate scan (just above)
         // still gates on bare `Self` only, so every receiver's own plan is
         // always `Bare` here -- widening the receiver path to `Result<Self,
-        // E>` and to a cross-file constructor search is real, adjacent
-        // scope this task did not ask for (docs/review-structs-enums.md's
-        // two reproductions are both a *parameter*, never a receiver), left
-        // for the user to decide whether it is wanted.
+        // E>` is real, adjacent scope this task did not ask for
+        // (docs/review-structs-enums.md's two reproductions are both a
+        // *parameter*, never a receiver), left for the user to decide
+        // whether it is wanted. The constructor search itself is now
+        // crate-wide (finding 1, just above).
         ctor_return: CtorReturn::Bare,
         operations,
         excluded_operations: excluded_ops,
+        other_constructors,
         max_sequence_len: MAX_RECEIVER_SEQUENCE_LEN,
     };
     Ok((target, plan))
@@ -2200,8 +2371,14 @@ pub fn discover_method_with_receiver(
     let file: syn::File = syn::parse_file(&src).map_err(|_| ReceiverError::Unreadable)?;
     let aliases = alias_map(&file);
 
-    let (target, plan) =
-        scan_impls_for_receiver(&file, &aliases, type_name, method_name, crate_dir)?;
+    let (target, plan) = scan_impls_for_receiver(
+        &file,
+        &aliases,
+        type_name,
+        method_name,
+        crate_dir,
+        &file_path,
+    )?;
 
     let item_fn = strip_receiver_to_item_fn(&target);
     let mut cf = build_contract_fn(&item_fn, &aliases, fn_path, true)
@@ -2832,6 +3009,7 @@ fn resolve_user_type(
                     ctor_return,
                     operations: vec![],
                     excluded_operations: vec![],
+                    other_constructors: vec![],
                     max_sequence_len: 0,
                 })));
             }

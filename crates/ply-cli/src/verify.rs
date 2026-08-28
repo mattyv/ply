@@ -29,7 +29,14 @@ use ply_core::record::{self, AssumedPromise, EngineId, FingerprintInputs, Match,
 
 use crate::shared::{self, declared_contracts, local_anchor_names, sorted_by_key};
 
-pub const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Ply's own identity, as §5.2a input 11 needs it: not the hand-edited
+/// `version` field in `Cargo.toml` (fourteen false-clean fixes on this
+/// branch never moved it, docs/review-silent-narrowing.md §6), but a hash
+/// of the source that decides what a verdict means, computed once at
+/// compile time by `build.rs` and baked in here. There is no fallback
+/// string -- if `build.rs` could not compute one, the build itself failed,
+/// so reaching this line at all means a real identity was computed.
+pub const PLY_VERSION: &str = env!("PLY_BUILD_ID");
 
 pub struct VerifyOptions {
     /// `None` means "use the shape-aware default" (Task 0: a flat default
@@ -2686,7 +2693,16 @@ fn run_fn_checks(
                         // one is about the spec's strength, this is about
                         // how much of the type's own behaviour the run
                         // could even attempt.
-                        if !plan.excluded_operations.is_empty()
+                        // Finding 3 (docs/review-silent-narrowing.md, "the
+                        // type has a second constructor Ply never calls",
+                        // 2026-08-28): a receiver history that only ever
+                        // starts from one of a type's several usable
+                        // constructors is exactly as narrow as one that
+                        // could not call one of the type's operations --
+                        // both are states this run never explored, however
+                        // many cases ran -- so both trip the same status.
+                        if (!plan.excluded_operations.is_empty()
+                            || !plan.other_constructors.is_empty())
                             && !statuses.iter().any(|s| s == "partial-history")
                         {
                             statuses.push("partial-history".into());
@@ -3321,25 +3337,55 @@ fn string_sampling_diag(node_id: &str, fn_name: &str, check_label: &str) -> Diag
 /// and drops the completeness claim entirely rather than leave a milder
 /// version of it standing.
 ///
-/// **Severity escalates to `warning` when an operation was excluded.** An
-/// excluded operation is not a deliberate, documented design choice the way
-/// the float/string sampling exclusions are (there `info` is right: nothing
-/// is wrong, a choice was made on purpose and is being disclosed). Here a
-/// mutator that exists in the user's own code was left out of the run for a
-/// reason that has nothing to do with the promise being checked, and that is
-/// a real gap in what the verdict covers -- serious enough that
-/// `--fail-on warn` should be able to catch it, the same lever `weak-spec`
-/// already gives a stricter caller (§5.4c's own "a finding beside real
-/// evidence, not an absence of it" precedent). It does not join the D6
-/// absence-of-evidence vocabulary and does not change the verdict string:
-/// real cases really did run, against the operations that could be called,
-/// so calling the *fuzzed(n)* verdict itself an absence would overclaim in
-/// the other direction. See this fn's caller for the `partial-history`
-/// status this pairs with on the node.
+/// **Severity escalates to `warning` when an operation was excluded, or the
+/// receiver was only ever built from one of several usable constructors.**
+/// Neither is a deliberate, documented design choice the way the
+/// float/string sampling exclusions are (there `info` is right: nothing is
+/// wrong, a choice was made on purpose and is being disclosed). Here a
+/// mutator or a constructor that exists in the user's own code was left out
+/// of the run for a reason that has nothing to do with the promise being
+/// checked, and that is a real gap in what the verdict covers -- serious
+/// enough that `--fail-on warn` should be able to catch it, the same lever
+/// `weak-spec` already gives a stricter caller (§5.4c's own "a finding
+/// beside real evidence, not an absence of it" precedent). It does not join
+/// the D6 absence-of-evidence vocabulary and does not change the verdict
+/// string: real cases really did run, against the operations and the
+/// constructor that could be called, so calling the *fuzzed(n)* verdict
+/// itself an absence would overclaim in the other direction. See this fn's
+/// caller for the `partial-history` status this pairs with on the node.
 ///
-/// Fires once per fuzz run that actually built a receiver (gated the same
-/// way the float disclosure is, on a run that happened, never merely on the
-/// check being declared).
+/// **Extended again 2026-08-28** (docs/review-silent-narrowing.md, the
+/// three false cleans found beside the fourteenth's own fix) in two ways:
+///
+/// - `plan.excluded_operations` now also carries a mutating method Ply
+///   found but could not call because it lives behind a `trait`
+///   implementation (finding 2) -- the old wording after the list assumed
+///   every exclusion meant "an unbuildable argument" and said so in a
+///   sentence of its own; that is no longer true of every entry, so the
+///   sentence now says only what is true of *every* reason (no case
+///   generated ever called it), and leaves *why* entirely to each
+///   operation's own `reason` text, which is already specific.
+/// - `plan.other_constructors`, when non-empty, earns its own sentence and
+///   the same severity escalation (finding 3): a receiver history that only
+///   ever starts from one of a type's several usable constructors never
+///   explores whatever is reachable only through the others, exactly the
+///   same shape of gap as an uncalled operation.
+///
+/// **Tightened 2026-08-28, same-day review (docs/review-silent-narrowing.md
+/// §6): this disclosure was measured at 193 words per method per run and
+/// changed neither the verdict nor the exit code -- all cost, no benefit
+/// collected.** Every fact above still has a sentence: the receiver was
+/// built by Ply, which constructor, the pool and the bound it drew from,
+/// which operation or constructor this run could never reach and why, and
+/// the caveat that a promise depending on that is unchecked. What is cut is
+/// pure restatement: the old closing sentence re-said the bound the opening
+/// clause had already given in different words ("outside what this run
+/// checked... rather than leaving a reader to assume the check covers every
+/// possible history"), and the "nothing here was assumed" / "no case this
+/// run generated changed its state that way" pair each said their branch's
+/// point twice. Cutting those took this to 49 words with nothing narrowed
+/// and under 85 with every kind of gap present at once -- still a complete
+/// sentence, no code or § reference doing the work prose should.
 fn receiver_sequence_diag(
     node_id: &str,
     fn_name: &str,
@@ -3352,10 +3398,10 @@ fn receiver_sequence_diag(
         .map(|op| op.call_path.as_str())
         .collect();
     let pool_sentence = if others.is_empty() {
-        format!("repeating `{fn_name}` itself")
+        format!("`{fn_name}`")
     } else {
         format!(
-            "repeating `{fn_name}` itself or calling {}",
+            "`{fn_name}` and {}",
             others
                 .iter()
                 .map(|o| format!("`{o}`"))
@@ -3363,40 +3409,60 @@ fn receiver_sequence_diag(
                 .join(", ")
         )
     };
-    let (coverage_sentence, severity) = if plan.excluded_operations.is_empty() {
-        (
-            "Every value this run saw was reachable by calling `{type_name}`'s own code, \
-             nothing else, so nothing here was assumed."
-                .replace("{type_name}", &plan.type_name),
-            "info",
+    let narrowed = !plan.excluded_operations.is_empty() || !plan.other_constructors.is_empty();
+    let severity = if narrowed { "warning" } else { "info" };
+
+    let base = format!(
+        "`{fn_name}` needs a `{type_name}`, so Ply built one itself: `{constructor}`, then up \
+         to {max} calls to {pool_sentence}, in random order, before the checked call.",
+        fn_name = fn_name,
+        type_name = plan.type_name,
+        constructor = plan.constructor,
+        max = plan.max_sequence_len,
+        pool_sentence = pool_sentence,
+    );
+
+    let tail = if !narrowed {
+        format!(
+            "That covers every value `{type_name}`'s own code can reach within {max} steps of a \
+             fresh one -- nothing else was assumed.",
+            type_name = plan.type_name,
+            max = plan.max_sequence_len,
         )
     } else {
-        let excluded_list = plan
-            .excluded_operations
-            .iter()
-            .map(|op| format!("`{}` ({})", op.call_path, op.reason))
-            .collect::<Vec<_>>()
-            .join("; ");
-        let plural = if plan.excluded_operations.len() == 1 {
-            "an operation"
-        } else {
-            "operations"
-        };
-        (
-            format!(
-                "`{type_name}` has {plural} this run never called at all and never will: {excluded_list}. \
-                 Ply could not build an argument for it, so it was left out of the pool of calls tried \
-                 before the checked call -- no case this run generated changed `{type_name}`'s state \
-                 that way, however many cases ran. If `{fn_name}`'s promise depends on what that \
-                 operation does to `{type_name}`, this run says nothing about it.",
-                type_name = plan.type_name,
-                plural = plural,
-                excluded_list = excluded_list,
-                fn_name = fn_name,
-            ),
-            "warning",
+        let mut gaps = Vec::new();
+        if !plan.excluded_operations.is_empty() {
+            let excluded_list = plan
+                .excluded_operations
+                .iter()
+                .map(|op| format!("`{}` ({})", op.call_path, op.reason))
+                .collect::<Vec<_>>()
+                .join("; ");
+            gaps.push(format!(
+                "can also be changed by {excluded_list}, which this run never called"
+            ));
+        }
+        if !plan.other_constructors.is_empty() {
+            let other_list = plan
+                .other_constructors
+                .iter()
+                .map(|c| format!("`{c}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            gaps.push(format!(
+                "was only ever built by calling `{}`, never by calling {other_list}",
+                plan.constructor
+            ));
+        }
+        format!(
+            "`{type_name}` {gaps}. If `{fn_name}`'s promise depends on what this run never \
+             reached, this run says nothing about it.",
+            type_name = plan.type_name,
+            gaps = gaps.join(", and "),
+            fn_name = fn_name,
         )
     };
+
     Diagnostic {
         code: "W0520".into(),
         severity: severity.into(),
@@ -3404,20 +3470,7 @@ fn receiver_sequence_diag(
         engine: "proptest".into(),
         check: "fuzz".into(),
         node_id: node_id.into(),
-        title: format!(
-            "`{fn_name}` needs a `{type_name}` value to call it on, and Ply built one itself: it \
-             called `{type_name}`'s own constructor (`{constructor}`), then ran up to {max} more \
-             calls to `{type_name}`'s own operations before the checked call -- each run picking \
-             a random number of steps from 0 to {max}, {pool_sentence}. {coverage_sentence} But \
-             this run only covers receivers reached in at most {max} such calls from a freshly \
-             built one -- a bug that only shows up on the {next}th call is outside what this run \
-             checked, and this is the sentence that says so rather than leaving a reader to assume \
-             the check covers every possible history. (W0520, §5.4c)",
-            type_name = plan.type_name,
-            constructor = plan.constructor,
-            max = plan.max_sequence_len,
-            next = plan.max_sequence_len + 2,
-        ),
+        title: format!("{base} {tail} (W0520, §5.4c)"),
         pointer: None,
         primary_span: None,
         counterexample: None,
@@ -5524,6 +5577,32 @@ fn unused(_p: &PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §5.2a input 11: `PLY_VERSION` must be a real digest `build.rs`
+    /// computed, never a placeholder or a hand-edited constant. This cannot
+    /// prove the digest is *correct* (that needs an actual second build with
+    /// different source, done at the e2e level -- `buildidentity_fixture.rs`),
+    /// but it does pin the one property a unit test can: the value compiled
+    /// into this binary looks like a blake3 hash, not the old `"0.1.0"`
+    /// `CARGO_PKG_VERSION` string that never moved across fourteen fixes.
+    #[test]
+    fn ply_version_is_a_real_build_digest_not_the_old_hand_edited_constant() {
+        assert_ne!(
+            PLY_VERSION, "0.1.0",
+            "PLY_VERSION must not be the hand-edited Cargo.toml version -- that constant is what \
+             let fourteen fixes go unnoticed by every stored result (docs/review-silent-\
+             narrowing.md §6)"
+        );
+        assert_eq!(
+            PLY_VERSION.len(),
+            64,
+            "a blake3 hex digest is 64 characters; PLY_VERSION was {PLY_VERSION:?}"
+        );
+        assert!(
+            PLY_VERSION.chars().all(|c| c.is_ascii_hexdigit()),
+            "a blake3 hex digest is all hex characters; PLY_VERSION was {PLY_VERSION:?}"
+        );
+    }
 
     /// D6 (adversarial review, 2026-08-26): a `·spec-strong`-decorated verdict
     /// must still parse to its bound, or a mutation-tested callee silently

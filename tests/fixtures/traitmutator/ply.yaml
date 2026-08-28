@@ -1,0 +1,15 @@
+ply: 1
+
+# docs/review-silent-narrowing.md finding 2, "the type's only mutator is a
+# trait method". `TraitTill::take` is the only operation that changes
+# `TraitTill`'s state, and it is defined via `impl Fill for TraitTill`, not
+# an inherent `impl TraitTill`. The receiver scan does not call through a
+# trait, so `take` can never enter the pool -- this run must name it as
+# excluded and mark the verdict as narrower than it looks, never claim
+# completeness.
+components:
+  traitmutator:
+    anchor: ply_fixture_traitmutator
+    fns:
+      TraitTill::total:
+        checks: [fuzz(256)]
