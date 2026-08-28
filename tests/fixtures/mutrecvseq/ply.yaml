@@ -1,0 +1,14 @@
+ply: 1
+
+# docs/review-caveats.md N3: "the twelfth false clean". `Acc::get`'s promise
+# (`< 5`) is false the moment two ordinary `add` calls push the total over 4
+# -- three lines of ordinary use (`a.add(3); a.add(3); a.get()`) break it.
+# A receiver sequence that can never include a `&mut self` operation, or one
+# whose own parameters differ from the checked method's, can never reach
+# that state and must not report a clean pass.
+components:
+  mutrecvseq:
+    anchor: ply_fixture_mutrecvseq
+    fns:
+      Acc::get:
+        checks: [fuzz(256)]

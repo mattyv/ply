@@ -1,0 +1,14 @@
+ply: 1
+
+# docs/review-caveats.md N2, second half: the earlier calls Ply's own
+# bounded sequence makes before the checked call must honour that method's
+# own precondition too, not only the final call's arguments. `Thing::set`
+# can never break its own postcondition on a call that respects its
+# precondition -- a violation here can only mean Ply called it out of
+# contract.
+components:
+  seqprecond:
+    anchor: ply_fixture_seqprecond
+    fns:
+      Thing::set:
+        checks: [fuzz(256)]

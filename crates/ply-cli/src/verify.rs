@@ -3856,12 +3856,38 @@ fn run_fuzz_and_test_checks(
     // function's tests too (finding 2's `parse`/`util::parse` collision) --
     // see `count_tests_executed`'s own doc.
     let tests_executed = fuzz_engine::count_tests_executed(&run.combined_output, &module_prefix);
+    // Per-*check* counts, not just the per-function one above (2026-08-27,
+    // "also fix": declaring `[test, fuzz(n)]` together on one fn silently
+    // dropped whichever check ran nothing, undoing this morning's own "a
+    // pass must prove a case ran" fix the moment two checks shared a
+    // harness module. `test` and `fuzz` generate their tests into that one
+    // module under their own name prefixes (`fuzz_gen`'s `ply_fuzz_`,
+    // `ply_example_`, `ply_direct_`), so each check's own count is that
+    // prefix's own line count under this fn's module, never the module-wide
+    // total: a `fuzz` test executing must not paper over a `test` check
+    // that compiled to nothing beside it, and the reverse.
+    let fuzz_tests_executed = fuzz_engine::count_tests_executed(
+        &run.combined_output,
+        &format!("{module_prefix}ply_fuzz_"),
+    );
+    let test_tests_executed = fuzz_engine::count_tests_executed(
+        &run.combined_output,
+        &format!("{module_prefix}ply_example_"),
+    ) + fuzz_engine::count_tests_executed(
+        &run.combined_output,
+        &format!("{module_prefix}ply_direct_"),
+    );
 
     let mut diagnostics = Vec::new();
     let fuzz_test_name = harness_fuzz_test_name(cf);
     let mut fuzz_label = None;
     let mut test_label = None;
     let mut fuzz_cases_reached: Option<u32> = None;
+    // Whether `fuzz` specifically produced evidence worth naming in §8's
+    // `evidence` block -- distinct from "the harness ran at all", since a
+    // sibling `test` check running is not evidence for `fuzz` (see the
+    // `fuzz_tests_executed == 0` branch below, "also fix" task 2026-08-27).
+    let mut fuzz_ran = true;
 
     // The harness never ran at all for this fn (2026-08-24 M4 review, D1 --
     // the review's most serious finding, widened 2026-08-27 to catch the
@@ -3920,7 +3946,34 @@ fn run_fuzz_and_test_checks(
 
     if let Some(n) = wants_fuzz {
         let check_label = format!("fuzz({n})");
-        if run.timed_out {
+        if !run.timed_out && fuzz_tests_executed == 0 {
+            // The harness crate built, and *something* under this fn's
+            // module ran (the module-wide gate above already returned
+            // otherwise) -- but nothing `fuzz` itself generated executed.
+            // The commonest way to reach this is `[test, fuzz(n)]`
+            // declared together on a receiver method: `test` alone
+            // generates nothing for it (see `harness_did_not_run_diag`'s
+            // own receiver case below), which used to make the module-wide
+            // count zero and correctly report `test` as a tool error --
+            // but the moment `fuzz` also ran, the module-wide count turned
+            // nonzero and this branch never even ran, so `fuzz` looked
+            // like a pass. Never here: an X0901 tool error, exactly the
+            // one `harness_did_not_run_diag` already writes for a check
+            // that ran nothing, just keyed to `fuzz` specifically rather
+            // than the whole fn.
+            diagnostics.push(harness_did_not_run_diag(
+                node_id,
+                fn_name,
+                &harness_module_name(cf),
+                &check_label,
+                harness_pkg,
+                None,
+                has_examples,
+                cf.receiver.is_some(),
+            ));
+            fuzz_label = Some("tool_error".into());
+            fuzz_ran = false;
+        } else if run.timed_out {
             diagnostics.push(Diagnostic {
                 code: "P0601".into(),
                 severity: "warning".into(),
@@ -4109,7 +4162,29 @@ fn run_fuzz_and_test_checks(
                     && (t.contains("::ply_example_") || t.contains("::ply_direct_"))
             })
             .collect();
-        if run.timed_out {
+        if !run.timed_out && test_tests_executed == 0 {
+            // Same guard as `fuzz`'s own above, for the same reason: the
+            // module-wide count above only proves *something* under this
+            // fn ran, which a sibling `fuzz` check declared on the same fn
+            // is enough to satisfy even when `test` itself generated
+            // nothing (no `examples:`, no direct-contract case -- the
+            // common receiver-method shape). Without this, `[test,
+            // fuzz(n)]` on such a fn reported `test` as `tested` on zero
+            // cases the moment `fuzz` ran at all: `failing_test_checks` is
+            // trivially empty when nothing of `test`'s own ran either, and
+            // the `else` arm below used to read that silence as a pass.
+            diagnostics.push(harness_did_not_run_diag(
+                node_id,
+                fn_name,
+                &harness_module_name(cf),
+                "test",
+                harness_pkg,
+                None,
+                has_examples,
+                cf.receiver.is_some(),
+            ));
+            test_label = Some("tool_error".into());
+        } else if run.timed_out {
             diagnostics.push(Diagnostic {
                 code: "R0601".into(),
                 severity: "warning".into(),
@@ -4170,7 +4245,7 @@ fn run_fuzz_and_test_checks(
     Ok(HarnessRun {
         fuzz_label,
         test_label,
-        fuzz_ran: true,
+        fuzz_ran,
         fuzz_cases_reached,
         diagnostics,
     })
@@ -4652,9 +4727,9 @@ fn render_fuzz_violation(
                     check: check_label.into(),
                     node_id: node_id.into(),
                     title: if cf.receiver.is_some() {
-                        unrenderable_receiver_inputs_title(fn_name, &contract_text)
+                        unrenderable_receiver_inputs_title(fn_name, &contract_text, from_panic)
                     } else {
-                        unrenderable_inputs_title(fn_name, &contract_text, &cf.params)
+                        unrenderable_inputs_title(fn_name, &contract_text, &cf.params, from_panic)
                     },
                     pointer: None,
                     primary_span: None,
@@ -4717,8 +4792,9 @@ fn unrenderable_inputs_title(
     fn_name: &str,
     contract_text: &str,
     params: &[harness::Param],
+    from_panic: bool,
 ) -> String {
-    unrenderable_inputs_title_impl(fn_name, contract_text, params, false)
+    unrenderable_inputs_title_impl(fn_name, contract_text, params, false, from_panic)
 }
 
 /// Same message, with one extra sentence when the failing case came from a
@@ -4728,15 +4804,31 @@ fn unrenderable_inputs_title(
 /// arguments, and Ply cannot yet decompose that back into named steps --
 /// naming that plainly beats letting a reader assume the raw text below is
 /// just the checked call's own parameters.
-fn unrenderable_receiver_inputs_title(fn_name: &str, contract_text: &str) -> String {
-    unrenderable_inputs_title_impl(fn_name, contract_text, &[], true)
+fn unrenderable_receiver_inputs_title(
+    fn_name: &str,
+    contract_text: &str,
+    from_panic: bool,
+) -> String {
+    unrenderable_inputs_title_impl(fn_name, contract_text, &[], true, from_panic)
 }
 
+/// `from_panic` (2026-08-27, docs/review-caveats.md N2: "a crash is
+/// described as fails its own contract"): a body that panics before its
+/// postcondition is ever evaluated has broken its promise by crashing, not
+/// by returning a value the promise rejects, and the plain-function path
+/// (`render_fuzz_violation`'s `Some(values)` branch, a few lines above this
+/// one) already says so in those words. This witness-only branch used to
+/// say "fails its own contract" unconditionally, on a receiver method
+/// always and on a plain function whenever its input could not be
+/// rendered -- collapsing a crash and a broken postcondition into one
+/// sentence, which reads a stack-unwinding bug as though the function ran
+/// to completion and simply lied.
 fn unrenderable_inputs_title_impl(
     fn_name: &str,
     contract_text: &str,
     params: &[harness::Param],
     from_receiver: bool,
+    from_panic: bool,
 ) -> String {
     let blocked: Vec<String> = params
         .iter()
@@ -4756,13 +4848,27 @@ fn unrenderable_inputs_title_impl(
     } else {
         format!("parameter(s) {}", blocked.join(", "))
     };
-    format!(
-        "`{fn_name}` fails its own contract `{contract_text}` for at least one input, and proptest \
-         shrank that input down to the smallest one that still fails. Ply cannot turn it into a \
-         runnable Rust test, though: it has no way yet to write {what} back out as a literal value \
-         in Rust source. The failing input is recorded below exactly as the engine reported it -- \
-         Ply never invents one. (W0541, reason: inputs_unrenderable)"
-    )
+    if from_panic {
+        format!(
+            "`{fn_name}` does not return at all for at least one input Ply generated -- it \
+             panicked before its postcondition `{contract_text}` could even be evaluated, and \
+             proptest shrank that input down to the smallest one that still crashes. Ply cannot \
+             turn it into a runnable Rust test, though: it has no way yet to write {what} back \
+             out as a literal value in Rust source. A function that panics has broken its promise \
+             as surely as one that returns a wrong answer, so this is a violation, with a witness \
+             -- just not a replayable one. The failing input is recorded below exactly as the \
+             engine reported it -- Ply never invents one. (W0541, reason: inputs_unrenderable)"
+        )
+    } else {
+        format!(
+            "`{fn_name}` fails its own contract `{contract_text}` for at least one input, and \
+             proptest shrank that input down to the smallest one that still fails. Ply cannot \
+             turn it into a runnable Rust test, though: it has no way yet to write {what} back \
+             out as a literal value in Rust source. The failing input is recorded below exactly \
+             as the engine reported it -- Ply never invents one. (W0541, reason: \
+             inputs_unrenderable)"
+        )
+    }
 }
 
 /// The whole-run wall-clock cap for one `mutate` invocation (2026-08-24 M4
@@ -5516,6 +5622,7 @@ mod tests {
                 param("amount_cents", RustType::U32),
                 param("card_bps", RustType::Array(Box::new(RustType::U32), 4)),
             ],
+            false,
         );
         assert!(
             title.contains("parameter(s) `card_bps: [u32; 4]`"),
@@ -5539,6 +5646,7 @@ mod tests {
             "count",
             "|result| *result == xs.len() as u32",
             &[param("xs", RustType::BTreeSet(Box::new(RustType::U8)))],
+            false,
         );
         assert!(
             title.contains("parameter(s) `xs: BTreeSet<u8>`"),

@@ -355,6 +355,48 @@ fn value_pattern_for(params: &[Param]) -> String {
     }
 }
 
+/// A unique, collision-free variable-name prefix for pooled operation `i`
+/// inside the receiver sequence's own per-step tuple (2026-08-27,
+/// docs/review-caveats.md N3: the pool is no longer restricted to the
+/// checked method's own parameter shape, so two different pooled
+/// operations -- or one of them and the checked method itself -- can
+/// otherwise share a parameter *name*). Every operation but the checked
+/// method's own repeat (`i == 0`, which keeps its bare names -- see
+/// `receiver_preamble`'s doc for why) is prefixed with this before its
+/// pattern or its call arguments are rendered.
+fn op_prefix(i: usize) -> String {
+    format!("__ply_op{i}_")
+}
+
+/// [`value_pattern_for`] with every name prefixed for operation `i` --
+/// used for every pooled operation's own slot in the sequence's per-step
+/// tuple pattern except operation zero's.
+fn value_pattern_for_prefixed(params: &[Param], i: usize) -> String {
+    let prefix = op_prefix(i);
+    let names: Vec<String> = params
+        .iter()
+        .map(|p| format!("{prefix}{}", p.name))
+        .collect();
+    match names.len() {
+        0 => "_".to_string(),
+        1 => names[0].clone(),
+        _ => format!("({})", names.join(", ")),
+    }
+}
+
+/// [`call_args_for`] reading the same prefixed names
+/// [`value_pattern_for_prefixed`] bound.
+fn call_args_for_prefixed(params: &[Param], i: usize) -> Vec<String> {
+    let prefix = op_prefix(i);
+    params
+        .iter()
+        .map(|p| {
+            let name = format!("{prefix}{}", p.name);
+            if p.by_ref { format!("&{name}") } else { name }
+        })
+        .collect()
+}
+
 fn value_pattern(cf: &ContractFn) -> String {
     value_pattern_for(&cf.params)
 }
@@ -482,12 +524,16 @@ pub fn moved_param_read_in_ensures(cf: &ContractFn) -> Option<&Param> {
 /// has, generated instead of hand-written.
 ///
 /// `target_pattern`/`target_strategy` are the checked method's *own*
-/// (already-computed) pattern and strategy -- reused verbatim for every
-/// operation in the pool, since [`harness::Operation::params_match`]
-/// guarantees every pooled operation shares the checked method's exact
-/// parameter shape. This is why the codegen never builds a mixed-shape
-/// step: there is only ever one argument shape to generate, no matter which
-/// operation a given step calls.
+/// (already-computed) pattern and strategy, reused verbatim as operation
+/// zero's own slot in the per-step tuple below -- the checked method is
+/// always pooled (`ReceiverPlan::operations[0]`), and giving its repeat the
+/// same bare names as the final call is what lets its own `#[ply::requires]`
+/// text be spliced into the loop unmodified (`receiver_preamble`'s doc).
+/// Every *other* pooled operation gets its own strategy and its own
+/// (prefixed) pattern (2026-08-27, docs/review-caveats.md N3): the pool is
+/// no longer restricted to the checked method's own parameter shape, so a
+/// mixed-shape step needs its own slot per operation rather than one shared
+/// one.
 fn receiver_pattern_and_strategy(
     plan: &harness::ReceiverPlan,
     target_pattern: &str,
@@ -496,8 +542,13 @@ fn receiver_pattern_and_strategy(
     let ctor_pattern = value_pattern_for(&plan.ctor_params);
     let ctor_strategy = combined_strategy_expr_for(&plan.ctor_params)?;
     let num_ops = plan.operations.len();
+    let mut step_strategies = vec![target_strategy.to_string()];
+    for op in plan.operations.iter().skip(1) {
+        step_strategies.push(combined_strategy_expr_for(&op.params)?);
+    }
     let seq_strategy = format!(
-        "proptest::collection::vec((0u8..{num_ops}u8, {target_strategy}), 0..={max}usize)",
+        "proptest::collection::vec((0u8..{num_ops}u8, {}), 0..={max}usize)",
+        step_strategies.join(", "),
         max = plan.max_sequence_len
     );
     let pattern = format!("({ctor_pattern}, __ply_seq, {target_pattern})");
@@ -511,27 +562,99 @@ fn receiver_pattern_and_strategy(
 /// (`docs/review-self-construction.md`'s whole point -- never a struct
 /// literal, never a field), then runs up to `plan.max_sequence_len` of the
 /// type's own operations against it, each with its own freshly generated
-/// arguments (the same shape as the checked method's own, per
-/// `receiver_pattern_and_strategy`'s doc).
-fn receiver_preamble(plan: &harness::ReceiverPlan, target_pattern: &str) -> String {
+/// arguments.
+///
+/// Two honesty fixes land here alongside the mixed-shape pool
+/// (2026-08-27, docs/review-caveats.md N2 -- "Ply ignores the rules the
+/// type itself declares about how that value may be built"):
+///
+/// - the constructor's own `#[ply::requires]`, if it declares one, gates
+///   the arguments generated for it, exactly like the checked call's own
+///   `requires` already gates its arguments -- a violated constructor
+///   precondition used to panic on entry, and that panic was reported as
+///   the *checked method* breaking its own promise;
+/// - the checked method's own `#[ply::requires]` gates *every* call the
+///   sequence makes to it, not only the final one: operation zero is
+///   always a repeat of the checked method (`ReceiverPlan::operations`),
+///   and before this fix only the outer, final call's arguments were
+///   filtered -- an earlier repeat inside the loop drew its arguments
+///   unfiltered, so calling the checked method out of its own contract
+///   from *inside* the sequence was exactly how a violation used to be
+///   reported on correct code. A step whose drawn arguments fail that
+///   check is skipped, not attempted, never rejecting the whole case (the
+///   checked method's own precondition says nothing about which other
+///   states are reachable, only that this particular call would not be a
+///   real one).
+fn receiver_preamble(
+    cf: &ContractFn,
+    plan: &harness::ReceiverPlan,
+    target_pattern: &str,
+) -> String {
     let ctor_call = harness::last_two_segments(&plan.constructor);
     let ctor_args = call_args_for(&plan.ctor_params).join(", ");
-    let mut body = format!("let __ply_receiver = {ctor_call}({ctor_args});\n            ");
+
+    let mut body = String::new();
+    if let Some(ctor_requires) = &plan.ctor_requires {
+        let cond = ctor_requires.to_token_stream().to_string();
+        body.push_str(&format!(
+            "if !({cond}) {{ __ply_rejected.set(__ply_rejected.get() + 1); \
+             return Err(proptest::test_runner::TestCaseError::reject(\"constructor requires \
+             filter\")); }}\n            "
+        ));
+    }
+    let needs_mut = plan.operations.iter().any(|op| op.takes_mut_self);
+    let mut_kw = if needs_mut { "mut " } else { "" };
     body.push_str(&format!(
-        "for (__ply_op_choice, {target_pattern}) in __ply_seq {{\n"
+        "let {mut_kw}__ply_receiver = {ctor_call}({ctor_args});\n            "
+    ));
+
+    let step_pattern = plan
+        .operations
+        .iter()
+        .enumerate()
+        .map(|(i, op)| {
+            if i == 0 {
+                target_pattern.to_string()
+            } else {
+                value_pattern_for_prefixed(&op.params, i)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    body.push_str(&format!(
+        "for (__ply_op_choice, {step_pattern}) in __ply_seq {{\n"
     ));
     body.push_str("                match __ply_op_choice {\n");
     for (i, op) in plan.operations.iter().enumerate() {
         let call = harness::last_two_segments(&op.call_path);
-        let op_args = call_args_for(&op.params).join(", ");
-        let full_args = if op_args.is_empty() {
-            "&__ply_receiver".to_string()
+        let op_args = if i == 0 {
+            call_args_for(&op.params).join(", ")
         } else {
-            format!("&__ply_receiver, {op_args}")
+            call_args_for_prefixed(&op.params, i).join(", ")
         };
-        body.push_str(&format!(
-            "                    {i} => {{ let _ = {call}({full_args}); }}\n"
-        ));
+        let recv_ref = if op.takes_mut_self {
+            "&mut __ply_receiver"
+        } else {
+            "&__ply_receiver"
+        };
+        let full_args = if op_args.is_empty() {
+            recv_ref.to_string()
+        } else {
+            format!("{recv_ref}, {op_args}")
+        };
+        let call_stmt = format!("let _ = {call}({full_args});");
+        let arm_body = if i == 0 {
+            match &cf.requires {
+                Some((expr, _)) => {
+                    let cond = expr.to_token_stream().to_string();
+                    format!("if {cond} {{ {call_stmt} }}")
+                }
+                None => call_stmt,
+            }
+        } else {
+            call_stmt
+        };
+        body.push_str(&format!("                    {i} => {{ {arm_body} }}\n"));
     }
     body.push_str(
         "                    _ => unreachable!(\"__ply_op_choice is generated in 0..num_ops\"),\n",
@@ -615,7 +738,7 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
     let (pattern, strategy, receiver_preamble_text) = match &cf.receiver {
         Some(plan) => {
             let (p, s) = receiver_pattern_and_strategy(plan, &target_pattern, &target_strategy)?;
-            (p, s, receiver_preamble(plan, &target_pattern))
+            (p, s, receiver_preamble(cf, plan, &target_pattern))
         }
         None => (
             target_pattern.clone(),
@@ -1475,6 +1598,104 @@ impl Meter {
         assert!(
             body.contains("Meter::bump(&__ply_receiver"),
             "a same-shape sibling operation must be callable from the sequence:\n{body}"
+        );
+    }
+
+    /// docs/review-caveats.md N3, codegen half: a `&mut self` sibling
+    /// operation whose own shape differs from the checked method's must
+    /// still be spliced into the sequence, borrowed `&mut`, with its own
+    /// (prefixed) argument names -- never left out for either reason.
+    #[test]
+    fn a_mut_self_different_shape_sibling_is_pooled_and_borrowed_mutably() {
+        let cf = discover_receiver(
+            r#"
+pub struct Acc { n: u32 }
+impl Acc {
+    pub fn new() -> Self { Acc { n: 0 } }
+    pub fn add(&mut self, k: u32) -> u32 { self.n += k; self.n }
+    #[ply::ensures(|result| *result < 5)]
+    pub fn get(&self) -> u32 { self.n }
+}
+"#,
+            "m::Acc::get",
+        );
+        let body = generate_fuzz_test(&cf, 32, &derive_seed("get", "")).unwrap();
+        assert!(
+            body.contains("let mut __ply_receiver = Acc::new"),
+            "any `&mut self` operation in the pool means the receiver binding itself must be \
+             `mut`:\n{body}"
+        );
+        assert!(
+            body.contains("Acc::add(&mut __ply_receiver"),
+            "a `&mut self` sibling of a different shape must still be called, borrowed \
+             mutably:\n{body}"
+        );
+    }
+
+    /// docs/review-caveats.md N2: the constructor's own `#[ply::requires]`
+    /// must gate the arguments Ply generates for it, exactly like the
+    /// checked call's own `requires` already gates its own arguments.
+    #[test]
+    fn a_constructors_own_requires_gates_its_generated_arguments() {
+        let cf = discover_receiver(
+            r#"
+pub struct Gauge { n: u32 }
+impl Gauge {
+    #[ply::requires(n > 0)]
+    pub fn new(n: u32) -> Self { Gauge { n } }
+    #[ply::ensures(|result| *result >= 0)]
+    pub fn value(&self) -> u32 { self.n }
+}
+"#,
+            "m::Gauge::value",
+        );
+        let body = generate_fuzz_test(&cf, 32, &derive_seed("value", "")).unwrap();
+        assert!(
+            body.contains("if !(n > 0 as u32)")
+                || body.contains("if !(n > 0u32)")
+                || body.contains("if !(n > 0)"),
+            "the constructor's own precondition must be rendered as a rejection filter before \
+             the receiver is built:\n{body}"
+        );
+        let ctor_pos = body.find("let __ply_receiver = Gauge::new").unwrap();
+        let requires_pos = body.find("constructor requires filter").unwrap();
+        assert!(
+            requires_pos < ctor_pos,
+            "the constructor's precondition must be checked *before* the constructor is called, \
+             not after:\n{body}"
+        );
+    }
+
+    /// docs/review-caveats.md N2, second half: the checked method's own
+    /// `#[ply::requires]` must gate *every* call the sequence makes to it,
+    /// not only the final one -- operation zero (a repeat of the checked
+    /// method itself) must be wrapped in the same precondition check.
+    #[test]
+    fn the_checked_methods_own_requires_gates_its_repeats_inside_the_sequence() {
+        let cf = discover_receiver(
+            r#"
+pub struct Thing { n: u32 }
+impl Thing {
+    pub fn new() -> Self { Thing { n: 0 } }
+    #[ply::requires(k <= 10)]
+    #[ply::ensures(|result| *result <= 10)]
+    pub fn set(&self, k: u32) -> u32 { k }
+}
+"#,
+            "m::Thing::set",
+        );
+        let body = generate_fuzz_test(&cf, 32, &derive_seed("set", "")).unwrap();
+        // Arm zero (the checked method's own repeat) must itself be guarded
+        // by the same precondition text used for the final call -- looking
+        // for the arm's own guarded-call shape rather than a raw substring
+        // match on the whole body, so this fails if the guard is missing
+        // even though the *final* call's own filter (elsewhere in the body)
+        // still contains the same text.
+        assert!(
+            body.contains("0 => { if k <= 10u32 { let _ = Thing::set(&__ply_receiver, k); } }")
+                || body.contains("0 => { if k <= 10 { let _ = Thing::set(&__ply_receiver, k); } }"),
+            "the sequence's own repeat of the checked method must be gated by its own \
+             precondition, never called out of contract:\n{body}"
         );
     }
 

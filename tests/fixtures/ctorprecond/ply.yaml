@@ -1,0 +1,11 @@
+ply: 1
+
+# docs/review-caveats.md N2: a promise that cannot be false must never
+# report `violation` because Ply's own generated receiver called the
+# constructor with an argument its own declared precondition forbids.
+components:
+  ctorprecond:
+    anchor: ply_fixture_ctorprecond
+    fns:
+      Gauge::value:
+        checks: [fuzz(256)]

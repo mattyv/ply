@@ -1,0 +1,12 @@
+ply: 1
+
+# docs/review-caveats.md, "also fix": `checks: [test, fuzz(64)]` on a
+# receiver method with no `examples:` -- `test` alone must still be
+# reported as having run zero cases, even though `fuzz` finds the real bug
+# in the same run.
+components:
+  twochecktoolerr:
+    anchor: ply_fixture_twochecktoolerr
+    fns:
+      Gauge::value:
+        checks: [test, fuzz(64)]

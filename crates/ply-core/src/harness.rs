@@ -1324,13 +1324,29 @@ pub fn build_contract_fn(
 //   limiter fixture's `Quota::new`/`RefillRate::new`, is not recognised
 //   here either, unchanged from every other consumer of that function);
 // - the bounded sequence's *other* operations (beyond repeating the target
-//   itself) are only ever pooled when their own non-`self` parameters are
-//   exactly the target's own shape (`Operation::params_match`) -- Ply's
-//   codegen does not yet build a mixed-shape step, so an operation whose
-//   parameters differ from the target's is left out of the pool rather than
-//   guessed at. The target itself always matches its own shape, so the pool
-//   is never empty and constructor-only (sequence length 0) is always the
-//   floor, never a total refusal.
+//   itself) may be `&self` or `&mut self`, of any parameter shape, so long
+//   as every parameter is a type the fuzz tier can build a value for --
+//   widened 2026-08-27 (docs/review-caveats.md N3, "the twelfth false
+//   clean") from an earlier, narrower rule that required an operation's own
+//   shape to match the checked method's exactly: that rule is exactly what
+//   emptied the pool for an ordinary Rust type, whose `&mut self` mutator
+//   almost never shares its read-only sibling's parameter list, so nothing
+//   that could actually change the receiver's state ever qualified. Each
+//   operation now draws its own arguments from its own strategy
+//   (`fuzz_gen::receiver_pattern_and_strategy`), so a mixed-shape pool is
+//   exactly what gets built. The checked method itself is always pooled
+//   (operation zero), so the pool is never empty and constructor-only
+//   (sequence length 0) is always the floor, never a total refusal --
+//   though it is a floor with nothing above it whenever the impl block
+//   the checked method lives in declares no other `&self`/`&mut self`
+//   operation at all;
+// - the checked method's own `#[ply::requires]`, and the constructor's own
+//   if it declares one, gate every call Ply's generated harness makes to
+//   them -- including the earlier ones inside the sequence, not only the
+//   final checked call (2026-08-27, docs/review-caveats.md N2). A pooled
+//   operation that is not the checked method itself carries no such gate:
+//   only the checked method's and the constructor's own preconditions are
+//   honoured, which is what this task was asked to fix.
 
 /// How long a bounded operation sequence Ply will build before calling the
 /// checked method -- named here once so the verdict-visibility disclosure
@@ -1349,47 +1365,56 @@ pub fn build_contract_fn(
 pub const MAX_RECEIVER_SEQUENCE_LEN: u32 = 3;
 
 /// One other operation Ply may splice into the bounded sequence before the
-/// checked call -- an inherent, non-generic, `&self`-taking method living in
-/// the same `impl` block(s) this scan already read, found alongside the
-/// checked method itself (which is always operation zero, see
+/// checked call -- an inherent, non-generic, `&self`- or `&mut self`-taking
+/// method living in the same `impl` block(s) this scan already read, found
+/// alongside the checked method itself (which is always operation zero, see
 /// `ReceiverPlan::operations`).
+///
+/// **Shape need not match the checked method's own** (2026-08-27,
+/// docs/review-caveats.md N3, "the twelfth false clean"): the pool used to
+/// require every operation's own non-`self` parameters to equal the checked
+/// method's element-for-element (`params_match`, since removed), which is
+/// exactly what emptied the pool for any ordinary type -- a `&mut self`
+/// mutator almost never shares its read-only sibling's parameter list (an
+/// `add(&mut self, k: u32)` beside a `get(&self)`, say), so nothing that
+/// could actually change the receiver's state ever qualified, and every
+/// generated case called the checked method on a value no earlier step had
+/// touched. Each operation now generates its own arguments from its own
+/// strategy (`fuzz_gen::receiver_pattern_and_strategy`), so a mixed-shape
+/// pool is exactly what the sequence now builds.
 #[derive(Debug, Clone)]
 pub struct Operation {
     /// The full path as the checked method's own is spelled (`module::Type::name`
     /// or `Type::name`), so `last_two_segments` renders it the same way
     /// `ContractFn::call_expr` already does.
     pub call_path: String,
-    /// Its own non-`self` parameters, already confirmed to equal the
-    /// checked method's own shape element-for-element (`params_match`) --
-    /// codegen reuses the checked method's own generated argument strategy
-    /// for every operation in the pool for exactly this reason.
+    /// Its own non-`self` parameters -- no longer required to match the
+    /// checked method's own shape (see the struct doc). Every parameter
+    /// here is confirmed buildable by the fuzz tier (`is_fuzz_supported`)
+    /// before this operation is admitted to the pool at all
+    /// (`scan_impls_for_receiver`), so codegen never has to refuse one
+    /// mid-generation.
     pub params: Vec<Param>,
-}
-
-impl Operation {
-    /// Same non-`self` parameter shape as `target` -- same count, same
-    /// [`RustType`] and by-ref-ness at each position, names aside. This is
-    /// the whole reason the sequence codegen can share one argument
-    /// strategy across every pooled operation instead of building a
-    /// mixed-shape step.
-    fn params_match(candidate: &[Param], target: &[Param]) -> bool {
-        candidate.len() == target.len()
-            && candidate
-                .iter()
-                .zip(target.iter())
-                .all(|(a, b)| a.ty == b.ty && a.by_ref == b.by_ref)
-    }
+    /// Whether this operation's own receiver is `&mut self` (true) rather
+    /// than `&self` (false) -- codegen borrows `__ply_receiver` accordingly
+    /// (`&mut __ply_receiver` vs `&__ply_receiver`) and declares the
+    /// receiver binding itself `mut` whenever any pooled operation needs it.
+    /// The checked method itself (operation zero) is always `&self` --
+    /// enforced before a `ReceiverPlan` is ever built (`MutableOrOwnedReceiver`)
+    /// -- so this is `false` for `operations[0]` unconditionally.
+    pub takes_mut_self: bool,
 }
 
 /// A receiver Ply built for a method, rather than one a user declared or one
 /// filled in field-by-field (`docs/review-self-construction.md` rejects
-/// both): a constructor call, plus a pool of the type's own `&self`
-/// operations a bounded random sequence may call before the checked method
-/// runs. `operations[0]` is always the checked method itself -- repeating it
-/// is what reaches the invariant the review's own worked example needed a
-/// *second* call to find (a fresh value's first call is always the easy
-/// branch); every other entry is a same-shape sibling operation found in the
-/// same scan.
+/// both): a constructor call, plus a pool of the type's own `&self`/
+/// `&mut self` operations a bounded random sequence may call before the
+/// checked method runs. `operations[0]` is always the checked method itself
+/// -- repeating it is what reaches the invariant the review's own worked
+/// example needed a *second* call to find (a fresh value's first call is
+/// always the easy branch); every other entry is a sibling operation found
+/// in the same scan, of whatever shape its own signature has (see
+/// `Operation`'s doc).
 #[derive(Debug, Clone)]
 pub struct ReceiverPlan {
     /// The type this receiver is a value of, spelled the way a diagnostic
@@ -1400,6 +1425,17 @@ pub struct ReceiverPlan {
     /// [`Operation::call_path`].
     pub constructor: String,
     pub ctor_params: Vec<Param>,
+    /// The constructor's own `#[ply::requires]`, if it declares one --
+    /// honoured exactly like the checked method's own (2026-08-27,
+    /// docs/review-caveats.md N2): a caller declaring `Gauge::new`'s own
+    /// precondition wrote it so *every* caller of `new`, including Ply's
+    /// generated harness, respects it. Before this, Ply built the receiver
+    /// by calling the constructor with an unfiltered argument, so a
+    /// constructor whose own contract forbids the value it was given
+    /// panicked on entry, and that panic was reported as the checked
+    /// method's own promise breaking -- a violation on code that cannot be
+    /// false.
+    pub ctor_requires: Option<Expr>,
     pub operations: Vec<Operation>,
     /// [`MAX_RECEIVER_SEQUENCE_LEN`], carried alongside the plan so a
     /// caller building the verdict-visibility disclosure never has to
@@ -1585,13 +1621,47 @@ fn strip_receiver_to_item_fn(m: &syn::ImplItemFn) -> ItemFn {
     }
 }
 
+/// Same `#[ply::requires]` extraction `build_contract_fn` performs for the
+/// checked function itself, factored out so a constructor found by
+/// `scan_impls_for_receiver` can be held to its own declared precondition
+/// too (2026-08-27, docs/review-caveats.md N2): a receiverless associated
+/// function never goes through `build_contract_fn` at all -- it is not
+/// itself a claim, only a value `discover_method_with_receiver` calls on
+/// the checked method's behalf -- so without this, its own
+/// `#[ply::requires]`, if it declares one, would be silently ignored by
+/// the one path that ever calls it: Ply's own generated receiver.
+fn extract_requires_expr(attrs: &[syn::Attribute]) -> Result<Option<Expr>> {
+    for attr in attrs {
+        let segs: Vec<String> = attr
+            .path()
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect();
+        if segs == ["ply", "requires"] {
+            let expr: Expr = attr
+                .parse_args()
+                .context("E0501: could not parse #[ply::requires] as an expression")?;
+            return Ok(Some(expr));
+        }
+    }
+    Ok(None)
+}
+
+/// One candidate constructor found while scanning: its call path, its own
+/// parameters, the first unbuildable-parameter type it has (if any), and
+/// its own declared `#[ply::requires]` (if any) -- see
+/// `scan_impls_for_receiver`.
+type CtorCandidate = (String, Vec<Param>, Option<String>, Option<Expr>);
+
 /// Scans every non-generic, trait-free `impl {type_name} { .. }` block in
 /// `file` for: the checked method itself (must exist, must take `&self`),
 /// a constructor (a receiverless associated function returning bare `Self`,
 /// preferring the first fully-buildable one in source order), and every
-/// other `&self` operation whose own parameters match the checked method's
-/// shape exactly. See the module doc for the honesty conditions this
-/// narrows on purpose.
+/// other `&self`/`&mut self` operation whose own parameters are all types
+/// the fuzz tier can build (no longer required to match the checked
+/// method's own shape -- see `Operation`'s doc, docs/review-caveats.md N3).
+/// See the module doc for the honesty conditions this narrows on purpose.
 fn scan_impls_for_receiver(
     file: &syn::File,
     aliases: &AliasMap,
@@ -1599,7 +1669,7 @@ fn scan_impls_for_receiver(
     method_name: &str,
 ) -> std::result::Result<(syn::ImplItemFn, ReceiverPlan), ReceiverError> {
     let mut target: Option<syn::ImplItemFn> = None;
-    let mut ctor_candidates: Vec<(String, Vec<Param>, Option<String>)> = Vec::new();
+    let mut ctor_candidates: Vec<CtorCandidate> = Vec::new();
     let mut other_ops: Vec<Operation> = Vec::new();
 
     for item in &file.items {
@@ -1637,18 +1707,32 @@ fn scan_impls_for_receiver(
                     .find(|p| !p.ty.is_fuzz_supported())
                     .map(|p| p.ty.display_name());
                 let path = format!("{type_name}::{}", m.sig.ident);
-                ctor_candidates.push((path, params, bad));
+                // A constructor's own `#[ply::requires]`, if it declares
+                // one, travels with the candidate so the chosen
+                // constructor's precondition can gate the arguments Ply
+                // generates for it (2026-08-27, docs/review-caveats.md N2).
+                let ctor_requires = extract_requires_expr(&m.attrs)
+                    .map_err(|_| ReceiverError::UnsupportedParamPattern)?;
+                ctor_candidates.push((path, params, bad, ctor_requires));
             } else if let Some(syn::FnArg::Receiver(r)) = m.sig.inputs.first()
                 && r.reference.is_some()
-                && r.mutability.is_none()
                 && let Some(params) = params_from_inputs(m.sig.inputs.iter().skip(1), aliases)
             {
-                // A candidate sequence operation -- shape-matched against
-                // the target below, once the target itself is known.
-                other_ops.push(Operation {
-                    call_path: format!("{type_name}::{}", m.sig.ident),
-                    params,
-                });
+                // A candidate sequence operation: `&self` *or* `&mut self`
+                // (2026-08-27, docs/review-caveats.md N3 -- the ordinary
+                // way a Rust type changes state), any shape, so long as
+                // every one of its own parameters is a type the fuzz tier
+                // can build a value for. An unbuildable-type operation is
+                // left out of the pool rather than guessed at, the same
+                // discipline the constructor candidates already use just
+                // above.
+                if params.iter().all(|p| p.ty.is_fuzz_supported()) {
+                    other_ops.push(Operation {
+                        call_path: format!("{type_name}::{}", m.sig.ident),
+                        params,
+                        takes_mut_self: r.mutability.is_some(),
+                    });
+                }
             }
         }
     }
@@ -1663,11 +1747,11 @@ fn scan_impls_for_receiver(
     let target_params = params_from_inputs(target.sig.inputs.iter().skip(1), aliases)
         .ok_or(ReceiverError::UnsupportedParamPattern)?;
 
-    let buildable = ctor_candidates.iter().find(|(_, _, bad)| bad.is_none());
-    let (ctor_path, ctor_params) = match buildable {
-        Some((path, params, _)) => (path.clone(), params.clone()),
+    let buildable = ctor_candidates.iter().find(|(_, _, bad, _)| bad.is_none());
+    let (ctor_path, ctor_params, ctor_requires) = match buildable {
+        Some((path, params, _, req)) => (path.clone(), params.clone(), req.clone()),
         None => match ctor_candidates.first() {
-            Some((path, _, Some(bad))) => {
+            Some((path, _, Some(bad), _)) => {
                 return Err(ReceiverError::UnsupportedConstructorParam {
                     type_name: type_name.to_string(),
                     ctor_name: path.clone(),
@@ -1682,20 +1766,23 @@ fn scan_impls_for_receiver(
         },
     };
 
+    // Operation zero is always the checked method itself; every other
+    // pooled operation found above is admitted as-is -- no shape match
+    // against the target is required any more (2026-08-27, N3: that
+    // requirement is exactly what emptied the pool for an ordinary
+    // `&mut self`-mutating type).
     let mut operations = vec![Operation {
         call_path: format!("{type_name}::{method_name}"),
         params: target_params.clone(),
+        takes_mut_self: false,
     }];
-    for op in other_ops {
-        if Operation::params_match(&op.params, &target_params) {
-            operations.push(op);
-        }
-    }
+    operations.extend(other_ops);
 
     let plan = ReceiverPlan {
         type_name: type_name.to_string(),
         constructor: ctor_path,
         ctor_params,
+        ctor_requires,
         operations,
         max_sequence_len: MAX_RECEIVER_SEQUENCE_LEN,
     };
@@ -3228,12 +3315,19 @@ impl Bucket {
         assert_eq!(plan.operations[0].call_path, "Bucket::capacity");
     }
 
-    /// The decisive shape for the sequence feature to mean anything: a
-    /// second `&self` method whose own parameters match the checked
-    /// method's exactly is pooled alongside it; one whose shape differs is
-    /// left out, honestly, rather than guessed at.
+    /// The decisive shape for the sequence feature to mean anything: every
+    /// `&self`/`&mut self` sibling operation with a buildable parameter
+    /// shape is pooled alongside the checked method, whatever its own
+    /// shape is -- widened 2026-08-27 (docs/review-caveats.md N3, "the
+    /// twelfth false clean") from an earlier, narrower rule that required a
+    /// pooled operation's own parameters to match the checked method's
+    /// exactly. That rule is exactly what emptied the pool for an ordinary
+    /// Rust type: a `&mut self` mutator (`bump` here) almost never shares
+    /// its read-only sibling's parameter list, and neither does a
+    /// zero-argument one (`reset`), so nothing that could actually change
+    /// the receiver's state ever qualified.
     #[test]
-    fn a_same_shape_sibling_operation_is_pooled_and_a_different_shape_one_is_not() {
+    fn every_buildable_sibling_operation_is_pooled_whatever_its_shape() {
         let dir = tempfile::tempdir().unwrap();
         write_crate(
             dir.path(),
@@ -3247,6 +3341,7 @@ impl Meter {
     #[ply::ensures(|result| *result < 1_000_000)]
     pub fn spend(&self, amount: u32) -> u32 { self.n.set(self.n.get() - amount); self.n.get() }
     pub fn reset(&self) { self.n.set(0); }
+    pub fn set_direct(&mut self, amount: u32) { self.n.set(amount); }
 }
 "#,
             )],
@@ -3267,9 +3362,24 @@ impl Meter {
             "`bump(u32)` shares `spend`'s own shape and must be pooled: {call_paths:?}"
         );
         assert!(
-            !call_paths.contains(&"Meter::reset"),
-            "`reset()` takes no parameters -- a different shape from `spend(u32)` -- and must \
-             not be pooled until Ply's codegen can build a mixed-shape step: {call_paths:?}"
+            call_paths.contains(&"Meter::reset"),
+            "`reset()` takes no parameters -- a *different* shape from `spend(u32)` -- and must \
+             still be pooled: a mixed-shape pool is exactly what this task built: {call_paths:?}"
+        );
+        assert!(
+            call_paths.contains(&"Meter::set_direct"),
+            "`set_direct` takes `&mut self` -- the ordinary way a Rust type changes state -- and \
+             must be pooled too, or nothing in the sequence could ever change the receiver: \
+             {call_paths:?}"
+        );
+        let set_direct_op = plan
+            .operations
+            .iter()
+            .find(|o| o.call_path == "Meter::set_direct")
+            .unwrap();
+        assert!(
+            set_direct_op.takes_mut_self,
+            "codegen needs to know this operation borrows `&mut`, not `&`, to call it correctly"
         );
     }
 
