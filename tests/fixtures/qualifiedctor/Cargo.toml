@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "ply-fixture-qualifiedctor"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ply_fixture_qualifiedctor"
+path = "src/lib.rs"
+
+[dependencies]
+ply = { package = "ply-attrs", path = "../../../crates/ply-attrs" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

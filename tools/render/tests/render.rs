@@ -817,47 +817,48 @@ fn workspace_frame_explains_the_whole_picture() {
 /// ancestor, so nothing in the picture is unexplainable by hovering it.
 #[test]
 fn every_drawn_item_resolves_a_tooltip() {
-    // Item-bearing groups: a class here means "this is a thing a reader can
-    // point at", so it must be explained.
-    const ITEM_CLASSES: &[&str] = &[
-        "workspace-frame",
-        "component",
-        "fn-chip",
-        "cap-badge",
-        "profile-tag",
-        "fn-shield",
-        "unresolved-pin",
-        "registry-pin",
-        "edge-call",
-        "edge-flow",
-        "deny-rule",
-        "any-node",
-        // docs/plans/external-elements.md: the external box itself, and
-        // the derived `entry:` edge (an explicit `~>` touching one reuses
-        // `edge-flow` above — same construct, same tooltip mechanism).
-        "external",
-        "edge-entry",
-    ];
+    // This walked a hand-maintained list of classes, which meant its name
+    // was an overclaim: of the 35 classes the renderer actually emits, the
+    // list named 14. A construct added later was explained only if someone
+    // remembered to add it here, and nothing failed if they did not --
+    // which is the same shape of silent absence this project treats as a
+    // defect everywhere else (2026-08-28, prompted by a smoke test
+    // reporting that the check badges carry no tooltip; they do, but
+    // checking that claim showed the test could not have told us either
+    // way).
+    //
+    // Inverted: every class the renderer emits must resolve a tooltip, on
+    // itself or on an ancestor -- which is what a reader hovering it gets.
+    // Anything that genuinely cannot carry one has to be named in
+    // DECORATION below, so a new construct fails this test until someone
+    // decides which it is, rather than passing by omission.
+    const DECORATION: &[&str] = &[];
 
     let mut untitled: Vec<String> = Vec::new();
+    let mut classes_seen = 0usize;
     for fixture in [
         "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
         "tests/fixtures/full.ply.yaml",
         "tests/fixtures/qualified_refs.ply.yaml",
         "tests/fixtures/visual_forms.ply.yaml",
         "tests/fixtures/externals.ply.yaml",
+        "tests/fixtures/deny_stress.ply.yaml",
+        "tests/fixtures/hollow.ply.yaml",
+        "tests/fixtures/strict_with_finding.ply.yaml",
     ] {
         let svg = render_fixture(fixture);
         let doc = roxmltree::Document::parse(&svg).unwrap();
-        let mut seen: Vec<&str> = Vec::new();
+        let mut seen_here = 0usize;
         for node in doc.descendants().filter(|n| n.is_element()) {
             let Some(class) = node.attribute("class") else {
                 continue;
             };
-            if !ITEM_CLASSES.contains(&class) {
+            if DECORATION.contains(&class) {
                 continue;
             }
-            seen.push(class);
+            seen_here += 1;
             let titled = node
                 .ancestors()
                 .any(|a| a.children().any(|c| c.tag_name().name() == "title"));
@@ -865,13 +866,20 @@ fn every_drawn_item_resolves_a_tooltip() {
                 untitled.push(format!("{fixture}: .{class}"));
             }
         }
-        assert!(!seen.is_empty(), "{fixture}: no item classes found at all");
+        assert!(seen_here > 0, "{fixture}: nothing drawn carried a class");
+        classes_seen += seen_here;
     }
+    assert!(
+        classes_seen > 100,
+        "these fixtures are meant to exercise the whole grammar; only {classes_seen} \
+         classed elements were drawn, so this test is checking far less than it looks"
+    );
     untitled.sort();
     untitled.dedup();
     assert!(
         untitled.is_empty(),
-        "drawn items with no tooltip: {untitled:?}"
+        "drawn items a reader can point at, with nothing to tell them what they are: \
+         {untitled:?}"
     );
 }
 
@@ -3248,4 +3256,188 @@ mod frame_boundary {
             violations.join("\n")
         );
     }
+}
+
+/// Every drawn edge label lies inside the drawing.
+///
+/// Written after a smoke test on a real project found two flow labels
+/// misplaced at `--depth 1`: one sitting up in the title band with no line
+/// under it, and one at y=162 on a canvas 152 tall -- outside the image
+/// entirely, so the reader is not told the flow's type at all. The label
+/// placement escalates away from its line until it finds a spot clear of
+/// every box, and between two boxes sitting side by side there is no such
+/// spot, so the search ran to the end of its budget and off the page.
+///
+/// This is an invariant rather than a spot-check on that one document: it
+/// walks whatever the renderer actually emitted and fails on the first
+/// label outside the canvas, so a layout change that reintroduces the
+/// problem somewhere else cannot pass.
+#[test]
+fn every_drawn_label_lies_inside_the_canvas() {
+    let docs: Vec<(&str, &str)> = vec![
+        ("side by side, folded", SIDE_BY_SIDE_FOLDED),
+        (
+            "vetting 002",
+            include_str!("../../../vetting/002-ingest-pipeline.ply.yaml"),
+        ),
+        (
+            "vetting 003",
+            include_str!("../../../vetting/003-trading-system.ply.yaml"),
+        ),
+    ];
+    for (name, yaml) in docs {
+        let doc = ply_render::model::parse_document(yaml)
+            .unwrap_or_else(|e| panic!("{name} must parse: {e}"));
+        for depth in [None, Some(1), Some(2)] {
+            let opts = ply_render::svg::RenderOptions {
+                depth,
+                focus: None,
+                collapse: Vec::new(),
+            };
+            let svg = ply_render::svg::render_svg_with_options(&doc, &opts)
+                .unwrap_or_else(|e| panic!("{name} must render: {e}"));
+            let (w, h) = canvas_size(&svg);
+            for (x, y, text) in text_elements(&svg) {
+                assert!(
+                    x >= 0.0 && x <= w && y >= 0.0 && y <= h,
+                    "{name} at depth {depth:?}: the label {text:?} is drawn at ({x}, {y}), \
+                     outside the {w}x{h} canvas -- a reader never sees it"
+                );
+            }
+        }
+    }
+}
+
+/// A document with two top-level components, each holding children, and
+/// flows between those children. At `--depth 1` both ends of every flow
+/// fold into their parents, which is the shape that stranded the labels.
+const SIDE_BY_SIDE_FOLDED: &str = "\
+ply: 1
+
+components:
+  scheduling:
+    anchor: sched
+    components:
+      queue:
+        anchor: sched::queue
+      poller:
+        anchor: sched::poller
+  edge:
+    anchor: edge
+    components:
+      mapper:
+        anchor: edge::mapper
+      sink:
+        anchor: edge::sink
+
+edges:
+  - \"scheduling.queue ~> edge.mapper : MappedRecord\"
+  - \"edge.sink ~> scheduling.poller : PollAttempt\"
+";
+
+fn canvas_size(svg: &str) -> (f64, f64) {
+    let grab = |key: &str| -> f64 {
+        let at = svg
+            .find(&format!("{key}=\""))
+            .expect("svg carries width/height");
+        let rest = &svg[at + key.len() + 2..];
+        let end = rest.find('"').expect("attribute is closed");
+        rest[..end].parse().expect("a number")
+    };
+    (grab("width"), grab("height"))
+}
+
+/// Every `<text ...>` element's position and content.
+fn text_elements(svg: &str) -> Vec<(f64, f64, String)> {
+    let mut out = Vec::new();
+    for chunk in svg.split("<text").skip(1) {
+        let Some(close) = chunk.find('>') else {
+            continue;
+        };
+        let attrs = &chunk[..close];
+        let body = &chunk[close + 1..];
+        let text = body.split('<').next().unwrap_or("").to_string();
+        let num = |key: &str| -> Option<f64> {
+            let at = attrs.find(&format!(" {key}=\""))?;
+            let rest = &attrs[at + key.len() + 3..];
+            let end = rest.find('"')?;
+            rest[..end].parse().ok()
+        };
+        if let (Some(x), Some(y)) = (num("x"), num("y")) {
+            out.push((x, y, text));
+        }
+    }
+    out
+}
+
+/// The sentence explaining a box's colour must agree with the colour the
+/// box is actually painted.
+///
+/// A tooltip that explains the shade is only worth having if it cannot
+/// drift from the shade. The canvas already says "the weakest function
+/// sets the whole box's shade"; each box now names which one, and this
+/// checks the level it names is the level the box is filled with -- so a
+/// change to either the aggregation or the wording that separates them
+/// fails here rather than quietly misinforming a reader.
+#[test]
+fn the_sentence_explaining_a_box_colour_agrees_with_the_colour_drawn() {
+    // The ceiling class a box carries, and the words a reader would have to
+    // read in the tooltip for that class to be honest.
+    const LEVEL_WORDS: &[(&str, &str)] = &[
+        ("ceiling-unclaimed", "declares no checks at all"),
+        ("ceiling-tested", "it declares tested"),
+        ("ceiling-fuzzed", "it declares fuzzed"),
+        ("ceiling-bounded", "it declares bounded"),
+        ("ceiling-proved", "it declares proved"),
+    ];
+
+    let mut checked = 0usize;
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "tests/fixtures/full.ply.yaml",
+        "tests/fixtures/visual_forms.ply.yaml",
+        "tests/fixtures/checks_inheritance.ply.yaml",
+    ] {
+        let svg = render_fixture(fixture);
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        for node in doc.descendants().filter(|n| n.is_element()) {
+            if node.attribute("class") != Some("component") {
+                continue;
+            }
+            let title = node
+                .children()
+                .find(|c| c.tag_name().name() == "title")
+                .and_then(|t| t.text())
+                .unwrap_or("");
+            // A hollow component declares nothing anywhere inside; the
+            // unclaimed sentence covers it and there is no weakest link to
+            // name, so there is no colour sentence to check.
+            let Some(why) = title.lines().find(|l| l.starts_with("this box is")) else {
+                continue;
+            };
+            let box_class = node
+                .descendants()
+                .filter_map(|d| d.attribute("class"))
+                .find(|c| c.contains("component-box"))
+                .unwrap_or_else(|| panic!("{fixture}: a component with no box"));
+            let level = LEVEL_WORDS
+                .iter()
+                .find(|(class, _)| box_class.contains(*class))
+                .unwrap_or_else(|| panic!("{fixture}: unknown ceiling class in {box_class:?}"));
+            assert!(
+                why.contains(level.1),
+                "{fixture}: this box is painted {} but its tooltip says {why:?} -- the words \
+                 and the colour disagree, so one of them is lying to the reader",
+                level.0
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 15,
+        "only {checked} boxes carried a colour explanation; these fixtures should exercise \
+         several levels, so this test is checking less than it looks"
+    );
 }

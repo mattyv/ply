@@ -831,11 +831,48 @@ pub enum CtorReturn {
     ResultSelf,
 }
 
-fn ctor_return_kind(output: &syn::ReturnType, _aliases: &AliasMap) -> Option<CtorReturn> {
+/// Whether a constructor's return type names the type being constructed:
+/// `Self`, or the type's own name written out (`-> Quota`, `-> super::Quota`,
+/// `-> crate::bucket::Quota`).
+///
+/// Spelling the type instead of `Self` is ordinary Rust and common in
+/// submodule-split crates, but only `Self` was recognised, so such a
+/// constructor was invisible and Ply reported "it has no constructor Ply
+/// can call" about a type with a public `new` (2026-08-28, found probing
+/// the same family as the qualified-`impl` fix).
+///
+/// A written-out name is accepted only when it resolves to the type's own
+/// canonical declaration, the same `Confirmed`-only rule the `impl` block
+/// itself is held to: another module's same-named type is a different type,
+/// and constructing the wrong one is worse than refusing.
+fn return_names_this_type(
+    ty: &Type,
+    type_name: &str,
+    file_mod: &[String],
+    use_aliases: &std::collections::BTreeMap<String, Vec<String>>,
+    target_absolute: Option<&[String]>,
+) -> bool {
+    if is_bare_self_type(ty) {
+        return true;
+    }
+    classify_impl_self_ty(ty, type_name, file_mod, use_aliases, target_absolute)
+        == ImplMatch::Confirmed
+}
+
+fn ctor_return_kind(
+    output: &syn::ReturnType,
+    _aliases: &AliasMap,
+    type_name: &str,
+    file_mod: &[String],
+    use_aliases: &std::collections::BTreeMap<String, Vec<String>>,
+    target_absolute: Option<&[String]>,
+) -> Option<CtorReturn> {
     let syn::ReturnType::Type(_, ty) = output else {
         return None;
     };
-    if is_bare_self_type(ty) {
+    let names_it =
+        |t: &Type| return_names_this_type(t, type_name, file_mod, use_aliases, target_absolute);
+    if names_it(ty) {
         return Some(CtorReturn::Bare);
     }
     if let Type::Path(tp) = ty.as_ref()
@@ -852,7 +889,7 @@ fn ctor_return_kind(output: &syn::ReturnType, _aliases: &AliasMap) -> Option<Cto
                 _ => None,
             })
             .collect();
-        if args.len() == 2 && is_bare_self_type(args[0]) {
+        if args.len() == 2 && names_it(args[0]) {
             return Some(CtorReturn::ResultSelf);
         }
     }
@@ -890,6 +927,36 @@ pub fn return_rust_type_from_syn(output: &syn::ReturnType, aliases: &AliasMap) -
     }
 }
 
+/// A type rendered back to something a person wrote. `to_token_stream()`
+/// separates every token, so `impl Into<u32>` comes back as
+/// `impl Into < u32 >` and `Vec<u8>` as `Vec < u8 >` -- accurate, and not a
+/// spelling any reader recognises. Diagnostics quote these strings
+/// directly, and the newbie bar applies to every one of them.
+fn normalise_type_source(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != ' ' {
+            out.push(c);
+            continue;
+        }
+        // Drop a space that sits next to punctuation on either side.
+        let before = out.chars().last();
+        let after = chars.peek().copied();
+        let tight = |ch: Option<char>| {
+            matches!(
+                ch,
+                Some('<' | '>' | ',' | '(' | ')' | '[' | ']' | ':' | '&')
+            )
+        };
+        if tight(before) || tight(after) {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustType {
     match ty {
         Type::Array(arr) => {
@@ -898,21 +965,27 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                 ..
             }) = &arr.len
             else {
-                return RustType::Unsupported(ty.to_token_stream().to_string());
+                return RustType::Unsupported(normalise_type_source(
+                    &ty.to_token_stream().to_string(),
+                ));
             };
             let Ok(n) = n.base10_parse::<u32>() else {
-                return RustType::Unsupported(ty.to_token_stream().to_string());
+                return RustType::Unsupported(normalise_type_source(
+                    &ty.to_token_stream().to_string(),
+                ));
             };
             let elem = rust_type_from_syn_at(&arr.elem, aliases, depth);
             if elem.is_leaf() || elem.is_composite_constructible() {
                 RustType::Array(Box::new(elem), n)
             } else {
-                RustType::Unsupported(ty.to_token_stream().to_string())
+                RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
             }
         }
         Type::Path(tp) => {
             let Some(seg) = tp.path.segments.last() else {
-                return RustType::Unsupported(ty.to_token_stream().to_string());
+                return RustType::Unsupported(normalise_type_source(
+                    &ty.to_token_stream().to_string(),
+                ));
             };
             // An alias resolves to whatever it names, by its last segment
             // (`ledger::AccountId` and `AccountId` are the same alias).
@@ -933,7 +1006,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                             return RustType::Option(Box::new(inner));
                         }
                     }
-                    RustType::Unsupported(ty.to_token_stream().to_string())
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
                 }
                 "Result" => {
                     if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
@@ -955,7 +1028,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                             }
                         }
                     }
-                    RustType::Unsupported(ty.to_token_stream().to_string())
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
                 }
                 "u8" => RustType::U8,
                 "u16" => RustType::U16,
@@ -1028,7 +1101,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                             return RustType::Vec(Box::new(inner));
                         }
                     }
-                    RustType::Unsupported(ty.to_token_stream().to_string())
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
                 }
                 // Fuzz-only (§5.4b measured exclusion): proptest has no
                 // trouble generating a BTreeSet of scalars; Kani does, past
@@ -1042,9 +1115,40 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                             return RustType::BTreeSet(Box::new(inner));
                         }
                     }
-                    RustType::Unsupported(ty.to_token_stream().to_string())
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
                 }
-                _ => RustType::Unsupported(ty.to_token_stream().to_string()),
+                // Not a type this module knows by name. Reported by the
+                // *bare* name for a plain path, which does two things: the
+                // user-type resolution below looks a type up by its bare
+                // name, so `v: crate::Beta` used to resolve to nothing and
+                // be refused as unbuildable while `v: Beta` worked
+                // (2026-08-28, same family as the qualified-`impl` fixes);
+                // and the diagnostic stops quoting `crate :: Beta` at the
+                // reader, which is `to_token_stream`'s spacing rather than
+                // anything anyone wrote. Ambiguity is still caught: a bare
+                // name declared in more than one file resolves to
+                // `Ambiguous` and is refused by name.
+                // A plain path is kept whole, spelled the way it is
+                // written -- `crate::Beta`, `depx::Thing` -- rather than as
+                // `to_token_stream`'s `crate :: Beta`, which is nobody's
+                // spelling and which no lookup could match. Keeping the
+                // qualifiers (rather than trimming to the last segment, as
+                // a first attempt at this did) is what lets the user-type
+                // resolution below check that the path the user wrote and
+                // the declaration it found are the same type: trimming
+                // made `depx::Thing` resolve to a local `Thing` of the same
+                // name and build the wrong type entirely.
+                _ if tp.qself.is_none() && seg.arguments.is_empty() => RustType::Unsupported(
+                    tp.path
+                        .segments
+                        .iter()
+                        .map(|s| s.ident.to_string())
+                        .collect::<Vec<_>>()
+                        .join("::"),
+                ),
+                _ => {
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
+                }
             }
         }
         // A shared reference is looked through: what matters for building
@@ -1063,7 +1167,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
             rust_type_from_syn_at(&r.elem, aliases, depth).display_name()
         )),
         Type::Reference(r) => rust_type_from_syn_at(&r.elem, aliases, depth),
-        other => RustType::Unsupported(other.to_token_stream().to_string()),
+        other => RustType::Unsupported(normalise_type_source(&other.to_token_stream().to_string())),
     }
 }
 
@@ -1865,18 +1969,6 @@ fn receiver_module_file(crate_dir: &Path, module_segs: &[&str]) -> Result<PathBu
     Err(ReceiverError::UnsupportedModulePath)
 }
 
-/// The bare name a `self_ty` must equal for an `impl` block to be "for"
-/// `type_name` -- a plain path, one segment, no generic arguments (an
-/// instantiation of a generic type, `impl Foo<u8>`, is left to the
-/// resolver's own generic-`impl` refusal, which already names it correctly).
-fn impl_targets_type(self_ty: &Type, type_name: &str) -> bool {
-    matches!(self_ty, Type::Path(tp)
-        if tp.qself.is_none()
-            && tp.path.segments.len() == 1
-            && tp.path.segments[0].ident == type_name
-            && tp.path.segments[0].arguments.is_empty())
-}
-
 /// `file_path`'s own module path, as a list of segments from the crate
 /// root -- `crate_dir/src/lib.rs`/`main.rs` is `[]`, `crate_dir/src/a.rs`
 /// or `crate_dir/src/a/mod.rs` is `["a"]`, `crate_dir/src/a/b.rs` is
@@ -2364,11 +2456,29 @@ fn scan_file_for_receiver(
                 continue;
             }
             if is_receiverless {
-                // A candidate constructor: only ones returning bare `Self`
-                // count (`return_rust_type_from_syn`'s own narrowing --
-                // `Result<Self, E>` constructors, a real shape this crate's
-                // own `Quota::new` uses, are not recognised here either).
-                if return_rust_type_from_syn(&m.sig.output, aliases) != RustType::SelfType {
+                // A candidate constructor: one returning `Self`, or the
+                // type's own name written out -- `-> Quota`,
+                // `-> super::Quota` -- which is ordinary Rust and was not
+                // recognised here, so a type whose constructor spelled
+                // itself that way had "no constructor to call" as far as
+                // the receiver scan was concerned (2026-08-28, the same
+                // family as the qualified-`impl` fix).
+                //
+                // Still narrower than the parameter path in one respect,
+                // deliberately and recorded rather than papered over: a
+                // `Result<Self, E>` constructor is recognised for a
+                // parameter and not for a receiver.
+                let returns_self = match &m.sig.output {
+                    syn::ReturnType::Type(_, ty) => return_names_this_type(
+                        ty,
+                        type_name,
+                        file_mod,
+                        &use_aliases,
+                        target_absolute,
+                    ),
+                    syn::ReturnType::Default => false,
+                };
+                if !returns_self {
                     continue;
                 }
                 let Some(params) = params_from_inputs(m.sig.inputs.iter(), aliases) else {
@@ -2471,8 +2581,8 @@ fn scan_impls_for_receiver(
     // rather than two scans that could disagree.
     let locations = scan_crate_type_locations(crate_dir);
     let target_absolute: Option<Vec<String>> = match locations.get(type_name) {
-        Some(Some(decl_path)) => {
-            let mut segs = file_module_segments(crate_dir, decl_path);
+        Some(Some(decl)) => {
+            let mut segs = decl.module_segments(crate_dir);
             segs.push(type_name.to_string());
             Some(segs)
         }
@@ -2798,7 +2908,40 @@ const MAX_DIRECT_CONSTRUCTION_FIELDS: usize = 12;
 /// `None` records that the same bare name was found declared in more than
 /// one file: ambiguous, refused by name (`UserTypeError::Ambiguous`) rather
 /// than picking one arbitrarily.
-pub type TypeLocations = std::collections::BTreeMap<String, Option<PathBuf>>;
+/// Where one type is declared: the file, plus the inline `mod` blocks it
+/// sits inside within that file.
+///
+/// The inline part is not decoration. `pub mod sub { pub struct Only; }`
+/// written inside `lib.rs` is ordinary Rust, and an index that recorded
+/// only the file put `Only` at the crate root -- so a parameter written
+/// `sub::Only` did not match where Ply thought the type was, and a fully
+/// public type with a public constructor was refused as if Ply had never
+/// heard of it (2026-08-28, review finding: the inline-module blindness the
+/// constructor scan had lost was still here).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeDecl {
+    pub file: PathBuf,
+    /// The inline `mod` names between the file's own module and the type,
+    /// outermost first. Empty for a type at the top level of its file.
+    pub inline_mods: Vec<String>,
+    /// Whether every inline `mod` in that chain is `pub`. A type inside a
+    /// private inline module is real, and unreachable from outside -- which
+    /// is a different answer from "not found" and has to stay
+    /// distinguishable.
+    pub inline_mods_all_pub: bool,
+}
+
+impl TypeDecl {
+    /// The type's module path from the crate root: the file's own module
+    /// segments, then the inline `mod` names.
+    pub fn module_segments(&self, crate_dir: &Path) -> Vec<String> {
+        let mut segs = file_module_segments(crate_dir, &self.file);
+        segs.extend(self.inline_mods.iter().cloned());
+        segs
+    }
+}
+
+pub type TypeLocations = std::collections::BTreeMap<String, Option<TypeDecl>>;
 
 /// Builds [`TypeLocations`] for `crate_dir` -- a name -> file index, not a
 /// resolver: a bare parameter type carries no hint about which module its
@@ -2829,15 +2972,35 @@ pub fn scan_crate_type_locations(crate_dir: &Path) -> TypeLocations {
             let Ok(file) = syn::parse_file(&src) else {
                 continue;
             };
-            for item in &file.items {
-                let name = match item {
-                    syn::Item::Struct(s) => s.ident.to_string(),
-                    syn::Item::Enum(e) => e.ident.to_string(),
-                    _ => continue,
-                };
-                out.entry(name)
-                    .and_modify(|slot| *slot = None)
-                    .or_insert_with(|| Some(path.clone()));
+            // Inline modules count: the walk carries the `mod` chain down
+            // with it, so a type inside `pub mod sub { .. }` is indexed at
+            // `sub`, not at the crate root.
+            let mut work: Vec<(&Vec<syn::Item>, Vec<String>, bool)> =
+                vec![(&file.items, Vec::new(), true)];
+            while let Some((items, mods, all_pub)) = work.pop() {
+                for item in items {
+                    if let syn::Item::Mod(m) = item
+                        && let Some((_, inner)) = &m.content
+                    {
+                        let mut child = mods.clone();
+                        child.push(m.ident.to_string());
+                        work.push((inner, child, all_pub && is_pub(&m.vis)));
+                        continue;
+                    }
+                    let name = match item {
+                        syn::Item::Struct(s) => s.ident.to_string(),
+                        syn::Item::Enum(e) => e.ident.to_string(),
+                        _ => continue,
+                    };
+                    let decl = TypeDecl {
+                        file: path.clone(),
+                        inline_mods: mods.clone(),
+                        inline_mods_all_pub: all_pub,
+                    };
+                    out.entry(name)
+                        .and_modify(|slot| *slot = None)
+                        .or_insert(Some(decl));
+                }
             }
         }
     }
@@ -2872,9 +3035,15 @@ pub enum UserTypeError {
 impl std::fmt::Display for UserTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // Reached both for a struct Ply genuinely could not find and
+            // for a type that was never a struct at all -- `impl Into<u32>`,
+            // a trait object, a generic parameter. The old wording ("not a
+            // struct or enum found declared anywhere") sent the second
+            // group looking for a missing declaration they never wrote.
             UserTypeError::NotFound => write!(
                 f,
-                "not a struct or enum Ply found declared anywhere under this crate's `src/`"
+                "not a type Ply builds values of: neither one of the shapes its generators \
+                 cover nor a struct or enum declared under this crate's `src/`"
             ),
             UserTypeError::Ambiguous => write!(
                 f,
@@ -2969,16 +3138,61 @@ fn scan_ctor_candidates(
     file: &syn::File,
     aliases: &AliasMap,
     type_name: &str,
+    file_mod: &[String],
+    target_absolute: Option<&[String]>,
 ) -> Vec<ParamCtorCandidate> {
     let mut out = Vec::new();
-    for item in &file.items {
+    let use_aliases = use_aliases_in_file(file);
+    // Inline modules count. `mod inner { impl super::Alpha { .. } }` in the
+    // same file is ordinary Rust, and walking only `file.items` skipped
+    // every `impl` block written inside one -- so Ply again said a type
+    // "has no constructor Ply can call" about a type with a public `new`
+    // (2026-08-28, third cause of that same sentence). The module path is
+    // carried down so `super::` inside the inline module resolves against
+    // the module it is actually written in, not the file's own.
+    let mut work: Vec<(&Vec<syn::Item>, Vec<String>)> = vec![(&file.items, file_mod.to_vec())];
+    let mut flat: Vec<(&syn::Item, Vec<String>)> = Vec::new();
+    while let Some((items, module)) = work.pop() {
+        for item in items {
+            if let syn::Item::Mod(m) = item
+                && let Some((_, inner)) = &m.content
+            {
+                let mut child = module.clone();
+                child.push(m.ident.to_string());
+                work.push((inner, child));
+            }
+            flat.push((item, module.clone()));
+        }
+    }
+    for (item, item_mod) in &flat {
+        let file_mod: &[String] = item_mod;
         let syn::Item::Impl(imp) = item else {
             continue;
         };
         if imp.trait_.is_some() || !imp.generics.params.is_empty() {
             continue;
         }
-        if !impl_targets_type(&imp.self_ty, type_name) {
+        // The same resolution the receiver scan does (2026-08-28,
+        // `classify_impl_self_ty`), rather than this path's older
+        // bare-name-only test. A type declared in one module with its
+        // `impl` block in a submodule has to write `impl super::T` -- there
+        // is no other spelling available in that file -- and the older test
+        // saw no constructor at all, so Ply told the user their type "has
+        // no constructor Ply can call" about a type with a public `new`.
+        // A false sentence, not merely a missing feature.
+        //
+        // `Unconfirmed` is deliberately not accepted: an `impl` ending in
+        // the same bare name that this scan could not resolve to the type's
+        // own canonical module might belong to a different type entirely,
+        // and constructing the wrong type is worse than refusing.
+        if classify_impl_self_ty(
+            &imp.self_ty,
+            type_name,
+            file_mod,
+            &use_aliases,
+            target_absolute,
+        ) != ImplMatch::Confirmed
+        {
             continue;
         }
         for impl_item in &imp.items {
@@ -2989,7 +3203,14 @@ fn scan_ctor_candidates(
             if !is_receiverless {
                 continue;
             }
-            let Some(ctor_return) = ctor_return_kind(&m.sig.output, aliases) else {
+            let Some(ctor_return) = ctor_return_kind(
+                &m.sig.output,
+                aliases,
+                type_name,
+                file_mod,
+                &use_aliases,
+                target_absolute,
+            ) else {
                 continue;
             };
             let Some(params) = params_from_inputs(m.sig.inputs.iter(), aliases) else {
@@ -3027,6 +3248,21 @@ fn scan_ctor_candidates_crate_wide(
     type_name: &str,
 ) -> Vec<ParamCtorCandidate> {
     let mut out = Vec::new();
+    // The type's own canonical absolute path, so a qualified or aliased
+    // `impl` spelling can be resolved back to it -- `None` when the type is
+    // declared nowhere this scan found or in more than one file, in which
+    // case no qualified spelling is confirmable and only the bare one
+    // counts. Computed once for the whole walk, exactly as the receiver
+    // scan does it.
+    let locations = scan_crate_type_locations(crate_dir);
+    let target_absolute: Option<Vec<String>> = match locations.get(type_name) {
+        Some(Some(decl)) => {
+            let mut segs = decl.module_segments(crate_dir);
+            segs.push(type_name.to_string());
+            Some(segs)
+        }
+        _ => None,
+    };
     let parse_and_scan = |path: &Path, out: &mut Vec<ParamCtorCandidate>| {
         let Ok(src) = std::fs::read_to_string(path) else {
             return;
@@ -3035,7 +3271,14 @@ fn scan_ctor_candidates_crate_wide(
             return;
         };
         let aliases = alias_map(&file);
-        out.extend(scan_ctor_candidates(&file, &aliases, type_name));
+        let file_mod = file_module_segments(crate_dir, path);
+        out.extend(scan_ctor_candidates(
+            &file,
+            &aliases,
+            type_name,
+            &file_mod,
+            target_absolute.as_deref(),
+        ));
     };
     parse_and_scan(declaring_file, &mut out);
 
@@ -3062,25 +3305,6 @@ fn scan_ctor_candidates_crate_wide(
         parse_and_scan(&path, &mut out);
     }
     out
-}
-
-/// `type_name`'s crate-root-qualified path, derived from the file it was
-/// found declared in (`crate_dir/src/bucket.rs` -> `bucket::{type_name}`;
-/// `crate_dir/src/lib.rs` -> bare `{type_name}`; `crate_dir/src/a/b.rs` or
-/// `crate_dir/src/a/b/mod.rs` -> `a::b::{type_name}`) -- what
-/// `fuzz_gen::wrap_fn_harness_module` needs to `use` a nested constructor
-/// argument's own type, since nothing else in the generated harness names
-/// its module the way `ContractFn::import_path` does for the checked
-/// function itself. `main.rs`/`mod.rs`/`lib.rs` name the directory they sit
-/// in, never themselves; any other file name is its own last module
-/// segment.
-fn qualified_type_path(crate_dir: &Path, file_path: &Path, type_name: &str) -> String {
-    let segs = file_module_segments(crate_dir, file_path);
-    if segs.is_empty() {
-        type_name.to_string()
-    } else {
-        format!("{}::{type_name}", segs.join("::"))
-    }
 }
 
 /// Whether `file_path`'s type sits behind a private module somewhere
@@ -3186,6 +3410,69 @@ fn resolve_param_type(
 /// module doc's three rules, in order. Recursive through
 /// [`resolve_param_type`] for a constructor argument or a field that is
 /// itself another user type, bounded by [`MAX_USER_TYPE_DEPTH`].
+/// Whether the type has a `Default` -- hand-written as `impl Default for T`
+/// or produced by `#[derive(Default)]`. Both count: the derive writes no
+/// `fn default` into the source, so a scan reading only `impl` blocks would
+/// find the hand-written one and miss the derived one, which is the same
+/// false sentence one attribute away.
+fn type_declares_default(file: &syn::File, type_name: &str, inline_mods: &[String]) -> bool {
+    fn walk(items: &[syn::Item], type_name: &str) -> bool {
+        for item in items {
+            match item {
+                syn::Item::Impl(imp) => {
+                    let is_default = imp
+                        .trait_
+                        .as_ref()
+                        .and_then(|(_, path, _)| path.segments.last())
+                        .is_some_and(|seg| seg.ident == "Default");
+                    if is_default
+                        && let Type::Path(tp) = imp.self_ty.as_ref()
+                        && tp
+                            .path
+                            .segments
+                            .last()
+                            .is_some_and(|s| s.ident == type_name)
+                    {
+                        return true;
+                    }
+                }
+                syn::Item::Struct(s) if s.ident == type_name => {
+                    if derives_default(&s.attrs) {
+                        return true;
+                    }
+                }
+                syn::Item::Enum(e) if e.ident == type_name => {
+                    if derives_default(&e.attrs) {
+                        return true;
+                    }
+                }
+                syn::Item::Mod(m) => {
+                    if let Some((_, inner)) = &m.content
+                        && walk(inner, type_name)
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let _ = inline_mods;
+    walk(&file.items, type_name)
+}
+
+fn derives_default(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        a.path().is_ident("derive")
+            && a.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+            )
+            .map(|paths| paths.iter().any(|p| p.is_ident("Default")))
+            .unwrap_or(false)
+    })
+}
+
 fn resolve_user_type(
     crate_dir: &Path,
     locations: &TypeLocations,
@@ -3199,16 +3486,36 @@ fn resolve_user_type(
              risk it not terminating"
         )));
     }
-    let file_path = match locations.get(type_name) {
-        Some(Some(p)) => p.clone(),
+    let decl = match locations.get(type_name) {
+        Some(Some(d)) => d.clone(),
         Some(None) => return Err(UserTypeError::Ambiguous),
         None => return Err(UserTypeError::NotFound),
     };
+    let file_path = decl.file.clone();
     let src = std::fs::read_to_string(&file_path).map_err(|_| UserTypeError::Unreadable)?;
     let file: syn::File = syn::parse_file(&src).map_err(|_| UserTypeError::Unreadable)?;
     let aliases = alias_map(&file);
-    let import_path = qualified_type_path(crate_dir, &file_path, type_name);
-    let item = file.items.iter().find(|it| match it {
+    // The path the generated harness has to write to name this type, which
+    // now includes any inline `mod` it is nested in -- `p8::sub::Only`, not
+    // `p8::Only`, which would not compile.
+    let import_path = {
+        let mut segs = decl.module_segments(crate_dir);
+        segs.push(type_name.to_string());
+        segs.join("::")
+    };
+    // Descend the same inline `mod` chain the index recorded, so the
+    // declaration found here is the one the index pointed at.
+    let mut items: &Vec<syn::Item> = &file.items;
+    for m in &decl.inline_mods {
+        let Some(next) = items.iter().find_map(|it| match it {
+            syn::Item::Mod(md) if md.ident == m.as_str() => md.content.as_ref().map(|(_, i)| i),
+            _ => None,
+        }) else {
+            return Err(UserTypeError::Unreadable);
+        };
+        items = next;
+    }
+    let item = items.iter().find(|it| match it {
         syn::Item::Struct(s) => s.ident == type_name,
         syn::Item::Enum(e) => e.ident == type_name,
         _ => false,
@@ -3231,6 +3538,18 @@ fn resolve_user_type(
         return Err(UserTypeError::Refused(format!(
             "Ply cannot build a value of `{type_name}`: the type itself is not `pub`, so the \
              fuzz harness Ply generates -- which sits outside this module -- cannot name it"
+        )));
+    }
+    // A type inside a private inline module is real and unreachable from
+    // outside, which is a different answer from "not found" and is said as
+    // such rather than folded into the generic refusal.
+    if !decl.inline_mods_all_pub {
+        return Err(UserTypeError::Refused(format!(
+            "Ply cannot build a value of `{type_name}`: it is declared inside an inline `mod` \
+             that is not `pub`, so the fuzz harness Ply generates -- which sits outside this \
+             crate -- cannot name it by its module path even though the type itself is public. \
+             A `pub use` elsewhere may re-export it under a public path; this scan does not \
+             follow re-exports yet."
         )));
     }
     if let Some(private_mod) = private_ancestor_module(crate_dir, &file_path) {
@@ -3259,6 +3578,21 @@ fn resolve_user_type(
     // No": the old wording ("it has no constructor Ply can call") is true
     // only when this stays `None`).
     let mut skipped_constructor: Option<String> = None;
+    // `impl Default for T` is a constructor anyone can call, and the scans
+    // above skip every trait `impl`, so a type whose only way to be built
+    // is `T::default()` was told it had none -- false, and the whole family
+    // of bug this file has been correcting today. Building through it is
+    // separate, larger work (a single value is not 256 cases, however many
+    // times it is run: TODO.md carries the design), so what changes here is
+    // the sentence, which was wrong regardless of whether the construction
+    // ever lands.
+    if type_declares_default(&file, type_name, &decl.inline_mods) {
+        skipped_constructor = Some(format!(
+            "`{type_name}::default()`, which Ply does not build values through yet: it \
+             produces a single value, and reporting that as many sampled cases would \
+             overstate what was checked"
+        ));
+    }
     for (ctor_path, raw_params, ctor_requires, ctor_return, ctor_is_pub) in
         scan_ctor_candidates_crate_wide(crate_dir, &file_path, type_name)
     {
@@ -3312,25 +3646,42 @@ fn resolve_user_type(
             }
             Some(reason) if skipped_constructor.is_none() => {
                 skipped_constructor = Some(format!(
-                    "Ply also found `{ctor_path}`, a constructor for `{type_name}`, but could \
-                     not use it: {reason}"
+                    "`{ctor_path}`, which Ply could not use because {reason}"
                 ));
             }
             Some(_) => {}
         }
     }
 
+    // Every refusal below used to open "it has no constructor Ply can
+    // call". That is true only while `skipped_constructor` is `None`. A
+    // constructor Ply found and could not use -- private, or with an
+    // argument it cannot build, `fn new(n: impl Into<u32>)` being the
+    // ordinary case -- was recorded here and then dropped by every refusal
+    // arm, so a user with a perfectly public `new` two lines away was told
+    // it did not exist (2026-08-28, review finding). The note now replaces
+    // that clause wherever it exists, so the sentence names what was found
+    // and why it could not be used.
+    let no_ctor = |extra: &str| -> UserTypeError {
+        let opening = match &skipped_constructor {
+            None => format!("it has no constructor Ply can call, {extra}"),
+            Some(note) => format!("the only constructor it has is {note}; and {extra}"),
+        };
+        UserTypeError::Refused(format!(
+            "Ply cannot build a value of `{type_name}`: {opening}"
+        ))
+    };
+
     // Rule 2: direct construction, only when nothing is private and
     // nothing is a shape this reader does not recognise.
     match item {
         syn::Item::Struct(s) => {
             if has_non_exhaustive(&s.attrs) {
-                return Err(UserTypeError::Refused(format!(
-                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                     call, and it is marked `#[non_exhaustive]`, which blocks a field literal \
-                     from outside its own crate -- the fuzz harness Ply generates is exactly \
-                     such an outside crate"
-                )));
+                return Err(no_ctor(
+                    "it is marked `#[non_exhaustive]`, which blocks a field literal from \
+                     outside its own crate -- the fuzz harness Ply generates is exactly such \
+                     an outside crate",
+                ));
             }
             if !all_fields_public(&s.fields) {
                 let private: Vec<String> = s
@@ -3344,25 +3695,22 @@ fn resolve_user_type(
                 } else {
                     format!("field(s) {} are", private.join(", "))
                 };
-                return Err(UserTypeError::Refused(format!(
-                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                     call, and {which} private, so building it field by field would risk a \
-                     value the real program could never produce"
+                return Err(no_ctor(&format!(
+                    "{which} private, so building it field by field would risk a value the \
+                     real program could never produce"
                 )));
             }
             let Some(fields) = named_fields_as_params(&s.fields, &aliases) else {
-                return Err(UserTypeError::Refused(format!(
-                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                     call, and its fields are positional (a tuple struct), a shape direct \
-                     construction does not read yet"
-                )));
+                return Err(no_ctor(
+                    "its fields are positional (a tuple struct), a shape direct construction \
+                     does not read yet",
+                ));
             };
             if fields.len() > MAX_DIRECT_CONSTRUCTION_FIELDS {
-                return Err(UserTypeError::Refused(format!(
-                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                     call, and it has {} public fields -- direct field construction's generated \
-                     strategy is a tuple of one value per field, and the trait proptest builds \
-                     that on stops being implemented past {MAX_DIRECT_CONSTRUCTION_FIELDS} \
+                return Err(no_ctor(&format!(
+                    "it has {} public fields -- direct field construction's generated strategy \
+                     is a tuple of one value per field, and the trait proptest builds that on \
+                     stops being implemented past {MAX_DIRECT_CONSTRUCTION_FIELDS} \
                      (2026-08-28, docs/review-structs-enums.md's \"Also fix\" list)",
                     fields.len()
                 )));
@@ -3372,9 +3720,8 @@ fn resolve_user_type(
                 match resolve_param_type(crate_dir, locations, &f.ty, depth + 1) {
                     Ok(ty) => resolved.push(Param { ty, ..f }),
                     Err(e) => {
-                        return Err(UserTypeError::Refused(format!(
-                            "Ply cannot build a value of `{type_name}`: it has no constructor \
-                             Ply can call, and field `{}` has type `{}`, which is {}",
+                        return Err(no_ctor(&format!(
+                            "field `{}` has type `{}`, which is {}",
                             f.name,
                             f.ty.display_name(),
                             e
@@ -3391,12 +3738,11 @@ fn resolve_user_type(
         }
         syn::Item::Enum(e) => {
             if has_non_exhaustive(&e.attrs) {
-                return Err(UserTypeError::Refused(format!(
-                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                     call, and it is marked `#[non_exhaustive]`, which blocks building a variant \
-                     from outside its own crate -- the fuzz harness Ply generates is exactly \
-                     such an outside crate"
-                )));
+                return Err(no_ctor(
+                    "it is marked `#[non_exhaustive]`, which blocks building a variant from \
+                     outside its own crate -- the fuzz harness Ply generates is exactly such \
+                     an outside crate",
+                ));
             }
             if e.variants.is_empty() {
                 return Err(UserTypeError::Refused(format!(
@@ -3418,11 +3764,10 @@ fn resolve_user_type(
                 // harness that silently drops one variant under-represents
                 // the type without saying so.
                 if has_non_exhaustive(&v.attrs) {
-                    return Err(UserTypeError::Refused(format!(
-                        "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                         call, and variant `{}` is marked `#[non_exhaustive]`, which blocks \
-                         building that variant from outside its own crate -- refusing the whole \
-                         enum rather than silently building only some of its variants",
+                    return Err(no_ctor(&format!(
+                        "variant `{}` is marked `#[non_exhaustive]`, which blocks building that \
+                         variant from outside its own crate -- refusing the whole enum rather \
+                         than silently building only some of its variants",
                         v.ident
                     )));
                 }
@@ -3475,6 +3820,60 @@ fn resolve_user_type(
 /// builds inputs for" diagnostic already names it honestly, and reporting
 /// "not found" about something that was never a candidate in the first
 /// place would not be true.
+/// The bare name to look a written parameter type up by, but **only** when
+/// the path as written and the declaration Ply would find are the same
+/// type.
+///
+/// A bare `Beta` is itself. A qualified `crate::Beta` or `bucket::Quota` is
+/// accepted when the qualifiers match the module the type is actually
+/// declared in. Anything else -- `depx::Thing` naming a dependency's type
+/// while this crate declares its own `Thing`, or a `super::` chain with no
+/// module context to resolve it against -- returns `None`, so the parameter
+/// stays refused with the path the user wrote, rather than being built as
+/// some other type that merely shares its last segment.
+///
+/// This exists because the first version of the qualified-path fix trimmed
+/// every path to its last segment. That made `v: depx::Thing` resolve to
+/// the local `Thing`, generate a harness that could not compile, and report
+/// a tool error blaming Ply's own generated code -- turning a calm, correct
+/// refusal into an internal error. Reported by review, reproduced, fixed
+/// here (2026-08-28).
+fn crate_local_type_name(
+    crate_dir: &Path,
+    locations: &TypeLocations,
+    written: &str,
+) -> Option<String> {
+    if is_bare_ident(written) {
+        return Some(written.to_string());
+    }
+    let mut segs: Vec<&str> = written.split("::").collect();
+    let name = segs.pop()?;
+    if !is_bare_ident(name) {
+        return None;
+    }
+    // `crate::`/`self::` at the front just says "from the crate root",
+    // which is where the module walk below starts anyway. `super::` is
+    // relative to the writing module, which this scan does not have here,
+    // so it is refused rather than guessed at.
+    if matches!(segs.first(), Some(&"crate") | Some(&"self")) {
+        segs.remove(0);
+    }
+    if segs
+        .iter()
+        .any(|s| *s == "super" || *s == "crate" || *s == "self")
+    {
+        return None;
+    }
+    // Where the type of that name actually lives. Declared nowhere, or in
+    // more than one file, and no qualified spelling can be confirmed.
+    let declared_in = match locations.get(name) {
+        Some(Some(path)) => path.clone(),
+        _ => return None,
+    };
+    let declared_mod = declared_in.module_segments(crate_dir);
+    (declared_mod == segs).then(|| name.to_string())
+}
+
 pub fn enrich_contract_fn_user_types(
     cf: &mut ContractFn,
     crate_dir: &Path,
@@ -3485,10 +3884,9 @@ pub fn enrich_contract_fn_user_types(
         let RustType::Unsupported(src) = &p.ty else {
             continue;
         };
-        if !is_bare_ident(src) {
+        let Some(src) = crate_local_type_name(crate_dir, &locations, src) else {
             continue;
-        }
-        let src = src.clone();
+        };
         match resolve_user_type(crate_dir, &locations, &src, 0) {
             Ok(ty) => p.ty = ty,
             Err(UserTypeError::NotFound) => {}

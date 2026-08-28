@@ -68,6 +68,28 @@ jobs:
   # signal above is not held hostage to it; still gates merges to main.
   product-e2e:
     runs-on: ubuntu-latest
+    # The suite is 82 independent test binaries and it ran as one job for
+    # over an hour, which is most of the wait on every pull request. They
+    # have nothing to say to each other, so they are split across parallel
+    # runners: wall clock becomes roughly the slowest shard rather than the
+    # sum, with no change to any test or to what is actually checked.
+    #
+    # The split is computed at run time from the files on disk, not written
+    # down here, so a test added later is picked up by whichever shard its
+    # position falls in and can never be silently left out of all of them --
+    # a hand-maintained list would rot the first time someone forgot it, and
+    # a test nobody runs is exactly the kind of absence this project treats
+    # as a defect. Round-robin rather than contiguous blocks, so the slow
+    # Kani-backed tests -- which sit together alphabetically -- land in
+    # different shards instead of all in one.
+    #
+    # The honest cost: every shard pays the engine install, which the cache
+    # makes cheap but not free, so the real figure is above total/4.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    name: product-e2e (${{ matrix.shard }}/4)
     steps:
       - uses: actions/checkout@v4
 
@@ -94,5 +116,19 @@ jobs:
           cargo kani --version
           cargo mutants --version
 
-      - name: cargo test -p ply-e2e
-        run: cargo test -p ply-e2e
+      - name: cargo test -p ply-e2e (shard ${{ matrix.shard }} of 4)
+        run: |
+          set -euo pipefail
+          targets=$(ls tests/e2e/tests/*.rs \
+            | sed 's|.*/||; s|\.rs$||' \
+            | sort \
+            | awk -v s=${{ matrix.shard }} -v n=4 '(NR-1) % n == s')
+          if [ -z "$targets" ]; then
+            echo "shard ${{ matrix.shard }} has no test targets -- there are fewer test files"
+            echo "than shards, which means this matrix is wider than it needs to be."
+            exit 1
+          fi
+          echo "$targets" | sed 's/^/  /'
+          args=$(echo "$targets" | sed 's/^/--test /' | tr '\n' ' ')
+          # shellcheck disable=SC2086
+          cargo test -p ply-e2e $args

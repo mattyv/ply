@@ -15,6 +15,74 @@ the boundaries, and the uncovered risk instead of treating plausible code as pro
 > ran. Capabilities may change quickly; Ply is not ready to serve as production assurance.
 > See [Current status](#current-status).
 
+## Install
+
+Two things go in: the command, and one dependency in the crate you want checked.
+
+**The command.** Installs as a `cargo` subcommand:
+
+```console
+$ cargo install --git https://github.com/mattyv/ply ply-cli --locked
+$ cargo ply --help
+```
+
+**The dependency.** The `#[ply::requires]` and `#[ply::ensures]` attributes come from a
+crate you add to whatever you are checking. Under a plain `cargo build` they compile to
+nothing, so this costs you no runtime behaviour:
+
+```toml
+[dependencies]
+ply = { package = "ply-attrs", git = "https://github.com/mattyv/ply" }
+
+# Ply's generated proof harnesses are `cfg(kani)`-gated. Without this line
+# `cargo build` still works, but warns about an unknown cfg.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+```
+
+Then write what a function promises, and a `ply.yaml` beside your `Cargo.toml` saying
+what evidence you want for it:
+
+```rust
+#[ply::ensures(|result| *result >= a)]
+pub fn add(a: u32, b: u32) -> u32 {
+    a.saturating_add(b)
+}
+```
+
+```yaml
+ply: 1
+
+components:
+  mycrate:
+    anchor: mycrate          # your crate's library name
+    fns:
+      add:
+        checks: [fuzz(64)]
+```
+
+```console
+$ cargo ply check .          # grammar and anchors, no engines, fast
+$ cargo ply verify .         # runs the checks and reports what they earned
+workspace — fuzzed(64)
+  mycrate — fuzzed(64)
+    add — fuzzed(64)
+```
+
+**Engines.** `fuzz` and `test` need nothing beyond the above — proptest arrives with the
+generated harness. Two checks need a tool on your `PATH`, and Ply says so rather than
+skipping quietly if one is missing:
+
+```console
+$ cargo install --locked kani-verifier && cargo kani setup   # for bounded(k)
+$ cargo install --locked cargo-mutants                       # for mutate
+```
+
+**What Ply leaves behind.** Generated harnesses live under `target/ply/`, which is
+already ignored by every Rust `.gitignore`. Nothing else in your project is modified: on
+a crate that declares its own workspace Ply borrows your `Cargo.toml` for the length of
+the run and writes it back byte-for-byte when the run ends.
+
 ## The development loop
 
 Ply is designed for a human-directed agent workflow:
@@ -30,6 +98,14 @@ Ply is designed for a human-directed agent workflow:
 
 This is review compression, not review elimination. Experienced developers still decide
 what matters and inspect code where mechanical evidence stops.
+
+**What step 2 can and cannot do before the code exists.** The drawing is available
+immediately — the renderer reads a `ply.yaml` alone, with no crate behind it. `cargo ply
+check` is only half available: it validates the document's grammar with nothing else
+present, but its architecture half reads your real crate dependency graph from `cargo
+metadata`, so before there is a Cargo project to read there is nothing for it to check
+against, and it says so rather than reporting a clean run. Anchors behave the same way:
+point it at a crate whose promised functions are not written yet and it names each one.
 
 ## A declarative grammar, and the line where it stops
 

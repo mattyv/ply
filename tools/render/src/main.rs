@@ -92,6 +92,26 @@ fn main() -> ExitCode {
         }
     };
 
+    // A selection that selects nothing is worth saying out loud. On a flat
+    // document `--depth 1` and `--focus x` produce exactly the default
+    // drawing, and silence there reads as "the flag did nothing visible, so
+    // something is broken" -- a smoke test on a real project recorded it as
+    // a bug before deciding it was correct behaviour (2026-08-28). The
+    // check is the honest one: render the default too, and compare. It
+    // costs one extra layout pass and cannot disagree with what was drawn.
+    if options.depth.is_some() || options.focus.is_some() || !options.collapse.is_empty() {
+        let plain = render_svg_with_options(&doc, &RenderOptions::default());
+        if plain.as_deref().ok() == Some(svg.as_str()) {
+            eprintln!(
+                "note: this drawing is identical to the one with no --depth/--focus/--collapse \
+                 at all. Nothing in {} nests deeply enough for that selection to fold anything \
+                 away, so the flag had nothing to do -- not an error, and not a sign the flag \
+                 was ignored.",
+                cli.input.display()
+            );
+        }
+    }
+
     match cli.out {
         Some(path) => {
             if let Err(e) = std::fs::write(&path, svg) {

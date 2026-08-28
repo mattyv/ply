@@ -815,6 +815,70 @@ fn ceiling_level_prose(e: Evidence) -> &'static str {
     }
 }
 
+/// The name of the weakest thing inside `comp`, and what it declares --
+/// which is *why* the box is the shade it is.
+///
+/// The canvas tooltip already explains the scale ("the weakest function
+/// sets the whole box's shade"), but no box said which function that was,
+/// so a reader who wanted a deeper green had to work out where the drag
+/// was coming from by opening every chip in turn (maintainer, 2026-08-28).
+/// Recursive, because the weakest thing may be a function several
+/// components down; the path is reported so it can be found.
+///
+/// Returns `None` when nothing is declared anywhere inside -- there is no
+/// weakest link in an empty chain, and the unclaimed sentence already says
+/// so.
+fn weakest_declaration<'a>(
+    comp: &'a Component,
+    inherited: Option<InheritedChecks<'a>>,
+    prefix: &str,
+    default_name: &str,
+) -> Option<(String, Evidence)> {
+    let this_default = component_default_checks(default_name, comp, inherited);
+    let mut worst: Option<(String, Evidence)> = None;
+    let mut consider = |path: String, e: Evidence| {
+        let better = match &worst {
+            None => true,
+            Some((_, seen)) => (e as u8) < (*seen as u8),
+        };
+        if better {
+            worst = Some((path, e));
+        }
+    };
+    for (fname, fc) in &comp.fns {
+        let e = fn_declared_ceiling(effective_checks(fc, this_default).unwrap_or(&[]));
+        consider(format!("{prefix}{fname}"), e);
+    }
+    for (cname, child) in &comp.components {
+        if let Some((path, e)) =
+            weakest_declaration(child, this_default, &format!("{prefix}{cname}."), cname)
+        {
+            consider(path, e);
+        }
+    }
+    worst
+}
+
+/// The tooltip line naming why this box is the colour it is.
+fn colour_reason_line(
+    comp: &Component,
+    inherited: Option<InheritedChecks<'_>>,
+    name: &str,
+) -> Option<String> {
+    let (path, e) = weakest_declaration(comp, inherited, "", name)?;
+    Some(match e {
+        Evidence::Violation | Evidence::Unclaimed => format!(
+            "this box is white because `{path}` declares no checks at all — one unchecked \
+             thing inside sets the shade of everything around it"
+        ),
+        other => format!(
+            "this box is this shade because `{path}` is the weakest thing in it: it declares \
+             {} — nothing here is drawn stronger than its weakest part",
+            ceiling_level_prose(other)
+        ),
+    })
+}
+
 /// The component tooltip's declared-ceiling line (§7.1: "its tooltip says
 /// none of it has run"). `unclaimed` gets its own plain sentence rather than
 /// the "declares checks up to unclaimed" template, which would read as a
@@ -1374,6 +1438,9 @@ fn render_collapsed_component(
         if n_fns == 1 { "" } else { "s" },
     ));
     tip.push(ceiling_tooltip_line(ceiling));
+    if let Some(why) = colour_reason_line(comp, inherited, name) {
+        tip.push(why);
+    }
 
     let component_box_class = format!(
         "{} {}",
@@ -1721,6 +1788,9 @@ fn render_component<'a>(
 
     let mut tip = component_tip_lines(name, comp, profiles, &findings);
     tip.push(ceiling_tooltip_line(ceiling));
+    if let Some(why) = colour_reason_line(comp, inherited, name) {
+        tip.push(why);
+    }
 
     // §7.1 "hollow component": derived from absence — nothing declared
     // inside means a dashed sketch outline, the opposite claim to a
@@ -2076,6 +2146,41 @@ impl std::error::Error for RenderError {}
 /// nothing more). The qualified name comes back alongside the rect so
 /// callers can group edges by the component pair they actually connect
 /// (parallel-lane offsetting) without re-deriving it.
+/// The rectangle every drawn box fits inside, which is what "on the page"
+/// means at the point edge labels are placed: the frame's own size is not
+/// computed until after this, but the content it will have to contain is
+/// already known.
+fn drawn_content_bounds(positions: &IndexMap<String, Rect>) -> (f64, f64, f64, f64) {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for r in positions.values() {
+        min_x = min_x.min(r.x);
+        min_y = min_y.min(r.y);
+        max_x = max_x.max(r.x + r.w);
+        max_y = max_y.max(r.y + r.h);
+    }
+    if positions.is_empty() {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    (
+        min_x - FRAME_PAD,
+        min_y - FRAME_PAD,
+        max_x + FRAME_PAD,
+        max_y + FRAME_PAD,
+    )
+}
+
+/// Whether a `text-anchor:middle` label drawn at `pos` fits inside
+/// `bounds`. Its own half-width counts: a label whose centre is on the page
+/// but whose text runs off it is still off the page.
+fn label_within_bounds(pos: (f64, f64), text: &str, bounds: (f64, f64, f64, f64)) -> bool {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let half = text_w(text, NAME_CHAR_W) / 2.0;
+    pos.0 - half >= min_x && pos.0 + half <= max_x && pos.1 >= min_y && pos.1 <= max_y
+}
+
 fn resolve(
     token: &str,
     positions: &IndexMap<String, Rect>,
@@ -2610,6 +2715,16 @@ pub fn render_svg_with_options(
         // empty), so this never touches the default rendering path.
         let from_q = effective.get(&from_q).cloned().unwrap_or(from_q);
         let to_q = effective.get(&to_q).cloned().unwrap_or(to_q);
+        // Reattachment moved which *box* each end belongs to; the geometry
+        // has to move with it. It did not, so an edge whose endpoint folded
+        // into a collapsed ancestor was still drawn from the hidden leaf's
+        // own rectangle -- a line starting from nothing visible, striking
+        // through whatever sat between, and a label placed relative to that
+        // phantom line, which is how flow labels ended up stranded in the
+        // title band with no edge under them (smoke test on a real project,
+        // 2026-08-28). The endpoint is now the drawn box's own rectangle.
+        let from_rect = positions.get(&from_q).copied().unwrap_or(from_rect);
+        let to_rect = positions.get(&to_q).copied().unwrap_or(to_rect);
         // Both ends now land on the same box: the edge is entirely internal
         // to a collapsed component, and the grammar has no visual form for
         // "a box calls itself" — drop it rather than draw a degenerate
@@ -2737,11 +2852,29 @@ pub fn render_svg_with_options(
             // every real box; if none do within the budget, keep the
             // original (lane-consistent, unscaled) placement rather than
             // drifting arbitrarily far.
+            //
+            // The escalation also has to stay on the page. Between two
+            // boxes sitting side by side there is no clear space above or
+            // below the line at any multiple, so every candidate clashed
+            // and the search ran to the end of its budget -- placing one
+            // label up in the title band and the other below the bottom of
+            // the drawing entirely, where it is not merely ugly but
+            // invisible (smoke test on a real project, 2026-08-28: labels
+            // "float in the title band", and one at y=162 on a canvas 152
+            // tall). A position outside the drawn content is not a
+            // placement, so it is not a candidate; when nothing is both
+            // clear and on the page, the unscaled position beside the line
+            // is the honest fallback -- overlapping something is better
+            // than being absent.
+            let bounds = drawn_content_bounds(&positions);
             [1.0, 1.5, 2.0, 2.5, 3.0]
                 .into_iter()
                 .flat_map(|mult| [(mult, sign), (mult, -sign)])
                 .map(|(mult, s)| at(mult, s))
-                .find(|&pos| !label_clashes_with_any_box(pos, ty_label, &positions))
+                .find(|&pos| {
+                    label_within_bounds(pos, ty_label, bounds)
+                        && !label_clashes_with_any_box(pos, ty_label, &positions)
+                })
                 .unwrap_or_else(|| at(1.0, sign))
         } else {
             (0.0, 0.0) // unused: EdgeKind::Call never renders a label
@@ -3070,7 +3203,10 @@ pub fn render_svg_with_options(
          <defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\">\
          <path d=\"M 0 0 L 10 5 L 0 10 z\" /></marker></defs>\
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\">{workspace_tip}</rect>\
-         <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text>\
+         <g><title>ply.yaml — the document this picture is drawn from. Everything you \
+see here was declared in it; nothing was inferred from code. What each box has actually \
+been checked for is what `cargo ply verify` reports, not this drawing.</title>\
+         <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text></g>\
          {title_extra}\
          {deny_svg}{registry_svg}{body}{edges_svg}{external_edges_svg}{external_svg}\
          </svg>",

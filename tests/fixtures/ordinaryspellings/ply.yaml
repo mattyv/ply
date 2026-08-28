@@ -1,0 +1,14 @@
+ply: 1
+
+components:
+  ordinaryspellings:
+    anchor: ply_fixture_ordinaryspellings
+    fns:
+      alpha_inline_mod:
+        checks: [fuzz(64)]
+      beta_qualified:
+        checks: [fuzz(64)]
+      foreign_shaped_name:
+        checks: [fuzz(64)]
+      gauge_reading:
+        checks: [fuzz(64)]

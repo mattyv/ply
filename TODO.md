@@ -5,6 +5,20 @@
 **Order the maintainer set: land the release, then the bug backlog, then suite speed.**
 Nothing below jumps that queue.
 
+- [x] **The end-to-end CI job is sharded across a matrix of four.** The suite is 84
+      independent test binaries that ran as one job for over an hour, which was most of
+      the wait on every pull request. No test, no product code and nothing about what is
+      checked changed. The split is computed at run time from the files on disk rather
+      than written into the workflow, so a test added later lands in a shard by its
+      position and cannot be silently left out of all of them -- a hand-maintained list
+      would rot the first time someone forgot it, and a test nobody runs is the kind of
+      absence this project treats as a defect. Round-robin rather than contiguous
+      blocks, so the slow Kani-backed tests, which sit together alphabetically, spread
+      3/2/2/3 instead of landing in one shard. Verified before pushing: the four shards
+      are disjoint and cover all 84 files, and the exact command the workflow runs
+      compiles a real shard. The honest cost: every shard pays the engine install, only
+      partly cached, so the real figure sits above total/4.
+
 - [ ] **Cut the duplicate proofs out of the end-to-end suite.** Measured today: 137
       fixture copies across 71 distinct fixtures, so the same code is proved many times
       over -- `resultreuse` and `implmethod` nine times each, `structenumparam` and
@@ -33,6 +47,173 @@ Nothing below jumps that queue.
       `product-e2e` and `tools` to pass. This is a repository setting, not a code
       change, so it needs doing in GitHub's settings by the repository owner (or via
       the API with admin rights) -- Ply cannot set it from here.
+
+## Second smoke-test impression — 2026-08-28
+
+- [x] **"The check badges are the one thing with no tooltip, while the canvas tooltip
+      promises hover anything for its meaning."** Checked rather than assumed: the
+      badges do resolve a tooltip, and it glosses each one in plain language
+      ("bounded(2) — proves the contract for every input, unrolling loops at most 2
+      times"). The claim was wrong; the instinct behind it was not.
+- [x] **The invariant test that should have settled that question could not.**
+      `every_drawn_item_resolves_a_tooltip` walked a hand-maintained list of classes: of
+      the 35 the renderer emits, it named 14. A construct added later was explained only
+      if someone remembered to add it, and nothing failed if they did not -- the same
+      silent absence this project treats as a defect everywhere else. Inverted: every
+      class emitted must resolve a tooltip, and anything that genuinely cannot has to be
+      named as decoration, so a new construct fails until someone decides which it is.
+- [x] Inverting it found exactly one real gap: the `ply.yaml` title on the canvas had no
+      tooltip. It has one now.
+- [x] **Every box now says why it is the colour it is.** The canvas tooltip explained
+      the scale; no box said which function set its own shade, so finding the drag meant
+      opening every chip in turn. Each box now names the weakest thing inside it and
+      what that thing declares -- by path, so a function several components down is
+      findable rather than merely blamed. A box that is white says which claim declares
+      nothing at all.
+- [x] The words cannot drift from the colour: a test walks every component in six
+      documents and fails if the level the sentence names is not the level the box is
+      painted. Watched red by making the search pick the strongest declaration instead
+      of the weakest.
+
+## Smoke test on a real project — 2026-08-28
+
+The maintainer ran Ply against a project of their own and reported what broke. Findings
+in their words, and what happened to each.
+
+- [x] **`cargo ply --version` did not exist.** It reports two numbers now, because they
+      answer different questions: the release, and the build identity -- the content
+      hash that decides whether a stored result may be carried forward, so the number a
+      run means when it says "the build of Ply that checked it changed".
+- [x] **The help text contradicted itself**, describing the CLI as a slice that
+      "implements only `verify`" while listing four working commands under it.
+- [x] **`--depth`/`--focus` on a flat document emitted identical output silently**, which
+      the maintainer initially recorded as a bug before deciding it was correct. It now
+      says so: the note is earned by rendering the default drawing and comparing, so it
+      cannot disagree with what was drawn.
+- [x] **Flow labels stranded at `--depth 1`** -- one in the title band, one at y=162 on a
+      canvas 152 tall, invisible. Reproduced exactly. The label placement escalates away
+      from its line until it clears every box, and between two boxes side by side there
+      is no such spot, so the search ran off the page. A position outside the drawn
+      content is no longer a candidate. Pinned by an invariant test that walks the real
+      output of several documents at several depths and fails on the first label outside
+      the canvas.
+- [ ] **KNOWN GAP, reproduced and not yet fixed: edge lines strike through box text.**
+      An edge between two boxes with a third between them is drawn as a straight line
+      through the middle box. Repro: three top-level components in a row, an edge from
+      the first to the third. Fixing it means routing a line around obstacles -- a
+      waypoint on the path and an obstacle test -- rather than the single straight
+      segment `render_edge` draws today.
+- [ ] **The architecture summary counts crates it never names.** "1 of 2 crates in this
+      workspace belong to a declared component" is honest but not actionable: the crate
+      that belongs to nothing is not named, so the reader cannot tell which. Found while
+      checking a reviewer's claim that an undeclared dependency is skipped silently --
+      it is skipped, but the coverage count does disclose it, so the fix is naming
+      rather than counting.
+- [x] **`check` cannot check architecture without a Cargo workspace**, so the pre-code
+      half of the loop is render-only. True, and the README implied otherwise. The
+      development-loop section now says which half of step 2 works before the code
+      exists: the drawing always, the document's grammar always, the architecture check
+      not until there is a Cargo project to read a dependency graph from.
+
+## Bug fixes after 0.1.0 — branch `claude/bugfix-post-0-1-0`
+
+- [x] **The README says how to install it.** There was no install path written down at
+      all, which is a strange gap in a tool someone is about to try on a real project.
+      Every command in the new section was run before it was written: installing the
+      CLI straight from the repo, adding the attribute crate to a project that had
+      never seen Ply, and getting a real `fuzzed(64)` out of `cargo ply verify` -- with
+      the project's `Cargo.toml` byte-identical afterwards. The engine prerequisites
+      (`kani-verifier` for `bounded`, `cargo-mutants` for `mutate`) are named, along
+      with what Ply leaves on disk and what it does not.
+
+- [x] **A constructor in a qualified `impl` block was invisible on the parameter path,
+      and Ply said the type had none.** The receiver path learned in 2026-08-27 that
+      `impl super::T`, `impl crate::T` and `impl Alias` name the same type as
+      `impl T`; the parameter path kept the older bare-name-only rule. So a type
+      declared in `lib.rs` with its `impl` block in a submodule -- which has no other
+      spelling available -- was reported as having "no constructor Ply can call", about
+      a type with a public `new`. A false sentence rather than a missing feature. Both
+      paths now use the same resolution. An `impl` that ends in the same bare name but
+      cannot be resolved to the type's own canonical module is still refused: building
+      the wrong type is worse than refusing to build one.
+- [x] **The same false sentence had a second cause, on both paths: a constructor that
+      returns the type by name rather than `Self`.** `pub fn new(..) -> super::Quota`
+      is ordinary Rust; only `-> Self` was recognised, so the constructor was invisible
+      for an ordinary parameter *and* for a receiver, the receiver message reading
+      "none was found". Found by probing the same family rather than by the suite. Both
+      paths now accept the type's own name, resolved to its canonical declaration
+      (`Confirmed` only -- another module's same-named type is a different type).
+- [x] **Two more causes of the same sentence, found by writing ordinary Rust and
+      watching Ply be wrong about it.** An `impl` block inside an inline `mod` in the
+      same file was never looked at -- the scan walked only the file's top-level items;
+      it now flattens inline modules, carrying the module path down so `super::` still
+      resolves to the right place. And a parameter spelled `crate::Beta` rather than
+      `Beta` was carried as the rendering of a token stream, `crate :: Beta`, which the
+      by-bare-name type lookup could never match and no sentence should quote at a
+      reader; a plain path now keeps its bare last segment. `ordinaryspellings` fixture
+      and test, both watched red.
+- [x] **REGRESSION I INTRODUCED, found by review and fixed.** The first version of the
+      qualified-parameter fix trimmed every path to its last segment before looking the
+      type up. A parameter naming another crate's type (`v: depx::Thing`) then resolved
+      to a same-named local type, built the wrong thing, and reported a compile failure
+      in Ply's own generated code -- a calm, correct refusal turned into an internal
+      error blaming Ply. Reproduced outside the repo before fixing. A plain path now
+      keeps its qualifiers, and a qualified spelling is accepted only when those
+      qualifiers match the module the type is really declared in; `super::` with no
+      module context to resolve against is refused rather than guessed at. Pinned in
+      `ordinaryspellings` and watched red against the trimming version.
+
+- [ ] **OPEN, out for review: a type whose only constructor is `impl Default`.** Ply
+      says "it has no constructor Ply can call", which is false -- `T::default()` is a
+      constructor anyone can call. Building via Default yields exactly one value, so a
+      `fuzz(256)` claim would report 256 cases having tried one distinct input, which
+      is the silent-narrowing failure this project exists to prevent. Three options
+      (correct the sentence only; build via Default; build via Default plus the bounded
+      operation sequence the receiver path already uses) went to a reviewer, whose
+      answer is: take the third, and correct the sentence now regardless, because it is
+      false on both the parameter and the receiver path today. The second option cannot
+      be made honest by disclosure, because the case count in the verdict is itself the
+      claim: 256 runs of one value is one test run 256 times. Two cautions recorded
+      with it -- `#[derive(Default)]` declares no `fn default` in the source, so a scan
+      reading only `impl` blocks would recognise the hand-written one and miss the
+      derived one; and when a type has no operations at all the sequence degenerates
+      back to a single value, which needs the count clamped or the disclosure escalated
+      rather than the general sentence quietly covering it.
+- [x] **A constructor found and then found unusable is no longer reported as absent.**
+      Every refusal opened "it has no constructor Ply can call", which is true only
+      while nothing was found. A constructor Ply found and could not use -- private, or
+      with an argument it cannot build, `fn new(n: impl Into<u32>)` being the ordinary
+      case -- was recorded and then dropped by every refusal arm. The note now replaces
+      that clause wherever it exists, so the sentence names what was found and why.
+- [x] Fixed alongside: types were quoted with token-stream spacing (`impl Into < u32 >`,
+      `Vec < u8 >`) in every message that fell back to that rendering; and
+      `NotFound`'s wording told someone whose parameter was `impl Into<u32>` that Ply
+      found no such struct declared, sending them to look for a declaration they never
+      wrote.
+- [x] **The Default-only sentence is corrected**, as the reviewer said to do regardless
+      of the construction work. A type whose only constructor is `Default` -- written by
+      hand or derived, both now recognised -- is told exactly that, and told why Ply
+      does not build through it yet: one value is not many sampled cases, however many
+      times it is run. Construction itself (option (iii)) stays open below.
+- [x] **A type declared inside an inline `pub mod` was invisible to the type index.**
+      The blindness fixed in the constructor scan was still in
+      `scan_crate_type_locations`, which walked only each file's top-level items and so
+      recorded an inline-module type as living at the crate root -- where it matched
+      neither the `holder::Gauge` a caller writes nor the path the generated harness
+      has to import. A fully public type with a public `new` was refused as if Ply had
+      never heard of it. The index now records the inline `mod` chain alongside the
+      file, and the harness imports the type by its real path. A type inside a
+      *private* inline module is real and unreachable, which is a different answer
+      again, and now gets its own sentence rather than the generic refusal.
+- [x] KNOWN GAP, unchanged and now written where it is: a `Result<Self, E>`
+      constructor is recognised for a parameter and still not for a receiver.
+- [x] `qualifiedctor` fixture and end-to-end test, watched red. The test also weakens
+      what the constructor guarantees and requires the verdict to go red, so a green
+      run cannot be Ply quietly not calling it. It asserts each path's own leaf verdict
+      rather than the worst-of root, which either path alone could satisfy.
+- [x] Fixed while there: a diagnostic quoted a type as `super :: Quota` -- token-stream
+      spacing leaking into a sentence held to the newbie bar. It now reads
+      `super::Quota`, as written.
 
 ## Forced colour made Ply blind to its own engines — 2026-08-28
 
