@@ -1,0 +1,19 @@
+[workspace]
+# Empty table: this fixture is its own workspace root, per tests/fixtures'
+# convention -- it must never be swept into the product workspace.
+
+[package]
+name = "ply-fixture-nameoverlap"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ply_fixture_nameoverlap"
+path = "src/lib.rs"
+
+[dependencies]
+ply = { package = "ply-attrs", path = "../../../crates/ply-attrs" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

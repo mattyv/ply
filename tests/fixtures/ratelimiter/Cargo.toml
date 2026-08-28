@@ -1,0 +1,19 @@
+[workspace]
+# Empty table: this fixture is its own workspace root, per tests/fixtures'
+# convention -- it must never be swept into the product workspace.
+
+[package]
+name = "flowgate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Fixture build of the Flowgate rate limiter design (docs/greenfield-ratelimiter-design.md), for measuring Ply coverage against naturally-designed code."
+
+[lib]
+name = "flowgate"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = "1"
+
+[dev-dependencies]

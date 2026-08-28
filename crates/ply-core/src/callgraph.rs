@@ -203,6 +203,15 @@ pub struct FoundFn {
     /// because the dependency's own crate-root path is not what a `#[kani::stub]`
     /// attribute in *this* crate can name.
     pub local: bool,
+    /// Whether this is `Type::method` rather than a free function (added
+    /// 2026-08-27, method resolution). Generated-harness codegen calls a
+    /// free function by its bare final segment (after `use`-importing the
+    /// whole path); it cannot do that for a method, which is not itself an
+    /// importable item -- `use crate::Bucket::new;` does not compile. Code
+    /// that builds a call expression from `canonical` needs to know which
+    /// shape it has: a bare identifier, or `Type::method` reached by
+    /// importing only `Type`.
+    pub is_method: bool,
 }
 
 /// What one path lookup found. `Opaque` is the branch that keeps the rule
@@ -212,6 +221,19 @@ pub enum Resolution {
     Found(Box<FoundFn>),
     Opaque(String),
     NotFound,
+    /// `Type::method` named something real -- a method with a receiver, an
+    /// item in a generic `impl` block, or a trait's own method (a bare
+    /// signature, a default body, or a trait-impl override) -- that this
+    /// slice's scope refuses to check, by name, rather than either guessing
+    /// at it or reporting the false "no such function" (added 2026-08-27,
+    /// method resolution). The payload is the plain-language reason.
+    Refused(String),
+    /// `Type::method` matched more than one candidate in the same file --
+    /// two `impl` blocks for the same type each defining a same-named
+    /// method (real Rust: e.g. two concrete instantiations of a generic
+    /// type, `impl Foo<u8>` and `impl Foo<u16>`, each with their own `bar`).
+    /// Ply will not pick one; the payload names why it could not.
+    Ambiguous(String),
 }
 
 impl Resolution {
@@ -292,11 +314,52 @@ impl Resolver {
         self.resolve_path(&segments)
     }
 
+    /// The names of every field a `struct` declares as *not* fully `pub`
+    /// (`pub(crate)`/`pub(super)`/private all count, since none of them are
+    /// visible from a harness crate outside this one) -- what the "a `Self`
+    /// answer is always fine" rule (§5.4b) needs to check before it ever
+    /// applies on the sampling tier (adversarial review, 2026-08-27): the
+    /// exhaustive tier's harness lives *inside* this crate and sees a
+    /// private field fine; the fuzz/test tier's harness is a separate crate
+    /// and cannot. `None` when `type_path` does not resolve to a `struct`
+    /// at all (an enum, or nothing) -- there is nothing this check applies
+    /// to either way.
+    pub fn private_field_names(&mut self, type_path: &str) -> Option<Vec<String>> {
+        let segments: Vec<String> = type_path.split("::").map(|s| s.to_string()).collect();
+        let (_, name, file) = self.resolve_type_decl(&segments)?;
+        file.ast.items.iter().find_map(|item| {
+            let syn::Item::Struct(s) = item else {
+                return None;
+            };
+            if s.ident != name {
+                return None;
+            }
+            Some(
+                s.fields
+                    .iter()
+                    .filter(|f| !matches!(f.vis, syn::Visibility::Public(_)))
+                    .filter_map(|f| f.ident.as_ref().map(|i| i.to_string()))
+                    .collect(),
+            )
+        })
+    }
+
     fn status_of(&mut self, path: &str) -> CalleeStatus {
         let found = match self.lookup_fn(path) {
             Resolution::Found(f) => *f,
             Resolution::Opaque(reason) => return CalleeStatus::Opaque(reason),
             Resolution::NotFound => return CalleeStatus::Unresolved,
+            // A call site naming a method Ply refuses to check (a receiver,
+            // a generic impl, a trait method): real and resolved, same as
+            // §5.5's third branch means for a free function -- nothing
+            // vouches for it, so Kani must not descend. `Unclaimed` is
+            // exactly that branch, not a new one.
+            Resolution::Refused(_) => return CalleeStatus::Unclaimed,
+            // Ambiguous is a stronger fact than "nothing vouches for it" --
+            // Ply does not even know which function this is, so it is
+            // refused the same way an unreadable module is: "I could not
+            // resolve this with confidence" is not "there is nothing here".
+            Resolution::Ambiguous(reason) => return CalleeStatus::Opaque(reason),
         };
         if has_inline_contract(&found.item) {
             return CalleeStatus::Contracted;
@@ -387,7 +450,266 @@ impl Resolver {
         }
     }
 
+    /// Every module this crate declares, paired with the file at that
+    /// position and whether *any* module on the chain down from the crate
+    /// root is non-`pub` (the crate root itself always carries `false`) --
+    /// the answer `resolve_method_globally` needs to check every `impl`
+    /// block in the crate against a type's declaration, not just whichever
+    /// one happens to sit in the same file. Same traversal shape as
+    /// [`Resolver::collect_fns`], a different payload.
+    fn all_modules(&mut self) -> Vec<(Vec<String>, SourceFile, bool)> {
+        let local = self.local.clone();
+        let mut out = vec![(Vec::new(), local.clone(), false)];
+        self.collect_modules(&local, &mut Vec::new(), false, 0, &mut out);
+        out
+    }
+
+    fn collect_modules(
+        &mut self,
+        file: &SourceFile,
+        prefix: &mut Vec<String>,
+        chain_private: bool,
+        depth: usize,
+        out: &mut Vec<(Vec<String>, SourceFile, bool)>,
+    ) {
+        if depth > MAX_DEPTH {
+            return;
+        }
+        for item in &file.ast.items {
+            if let syn::Item::Mod(m) = item {
+                let name = m.ident.to_string();
+                let this_private = chain_private || matches!(m.vis, syn::Visibility::Inherited);
+                let nested = match &m.content {
+                    Some((_, inner)) => Some(SourceFile {
+                        ast: std::rc::Rc::new(syn::File {
+                            shebang: None,
+                            attrs: vec![],
+                            items: inner.clone(),
+                        }),
+                        dir: file.dir.join(&name),
+                    }),
+                    None => self.module_file(&file.dir, &name),
+                };
+                if let Some(nested) = nested {
+                    prefix.push(name);
+                    out.push((prefix.clone(), nested.clone(), this_private));
+                    self.collect_modules(&nested, prefix, this_private, depth + 1, out);
+                    prefix.pop();
+                }
+            }
+        }
+    }
+
+    /// Resolves a *type* path (a `struct`/`enum`, never a fn) to the module
+    /// path its declaration genuinely sits at -- walking `use` imports
+    /// (renames and re-exports included, exactly as a free function's path
+    /// already does), inline `mod`s and file modules. This is the ground
+    /// truth a `Type::method` claim's type half is checked against: never
+    /// the module an `impl` block for it happens to be written in, never a
+    /// re-export's own location, only where the `struct`/`enum` itself is
+    /// declared.
+    fn resolve_type_decl(
+        &mut self,
+        segments: &[String],
+    ) -> Option<(Vec<String>, String, SourceFile)> {
+        let local = self.local.clone();
+        self.type_decl_in_file(&local, Vec::new(), segments, 0)
+    }
+
+    fn type_decl_in_file(
+        &mut self,
+        file: &SourceFile,
+        module_path: Vec<String>,
+        segments: &[String],
+        depth: usize,
+    ) -> Option<(Vec<String>, String, SourceFile)> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        let raw = strip_prefixes(segments);
+        let segs = expand_imports(&import_map(&file.ast), &raw);
+        let (head, rest) = segs.split_first()?;
+        if rest.is_empty() {
+            return type_item_ident(&file.ast.items, head)
+                .map(|name| (module_path, name, file.clone()));
+        }
+        for item in &file.ast.items {
+            if let syn::Item::Mod(m) = item
+                && m.ident == head.as_str()
+            {
+                let inner = match &m.content {
+                    Some((_, inner)) => SourceFile {
+                        ast: std::rc::Rc::new(syn::File {
+                            shebang: None,
+                            attrs: vec![],
+                            items: inner.clone(),
+                        }),
+                        dir: file.dir.join(head),
+                    },
+                    None => self.module_file(&file.dir, head)?,
+                };
+                let mut new_path = module_path.clone();
+                new_path.push(head.clone());
+                return self.type_decl_in_file(&inner, new_path, rest, depth + 1);
+            }
+        }
+        None
+    }
+
+    /// The same walk as [`Resolver::resolve_type_decl`], but for a `trait`
+    /// item instead of a `struct`/`enum` -- used only when the type half of
+    /// a `Type::method` claim names no real type at all, so it may still be
+    /// a trait declaration (`Widget::size` naming `trait Widget`'s own
+    /// method, not an `impl`).
+    fn resolve_trait_decl(&mut self, segments: &[String]) -> Option<(Vec<String>, SourceFile)> {
+        let local = self.local.clone();
+        self.trait_decl_in_file(&local, Vec::new(), segments, 0)
+    }
+
+    fn trait_decl_in_file(
+        &mut self,
+        file: &SourceFile,
+        module_path: Vec<String>,
+        segments: &[String],
+        depth: usize,
+    ) -> Option<(Vec<String>, SourceFile)> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        let raw = strip_prefixes(segments);
+        let segs = expand_imports(&import_map(&file.ast), &raw);
+        let (head, rest) = segs.split_first()?;
+        if rest.is_empty() {
+            return trait_item_ident(&file.ast.items, head).map(|_| (module_path, file.clone()));
+        }
+        for item in &file.ast.items {
+            if let syn::Item::Mod(m) = item
+                && m.ident == head.as_str()
+            {
+                let inner = match &m.content {
+                    Some((_, inner)) => SourceFile {
+                        ast: std::rc::Rc::new(syn::File {
+                            shebang: None,
+                            attrs: vec![],
+                            items: inner.clone(),
+                        }),
+                        dir: file.dir.join(head),
+                    },
+                    None => self.module_file(&file.dir, head)?,
+                };
+                let mut new_path = module_path.clone();
+                new_path.push(head.clone());
+                return self.trait_decl_in_file(&inner, new_path, rest, depth + 1);
+            }
+        }
+        None
+    }
+
+    /// Resolves an `impl` block's own `self_ty`, from *that block's own*
+    /// module position and file, to the module path + name it actually
+    /// names -- respecting `super`/`crate`/`self` qualification and that
+    /// file's own `use` imports, never assumed to be "whatever this file's
+    /// module happens to be". This is what lets Ply tell `impl super::Root`
+    /// (written inside a submodule, naming the crate root's `Root`) apart
+    /// from an `impl Root` in that very same file (naming a `Root` declared
+    /// in the submodule itself) -- two syntactically similar blocks naming
+    /// two different types, which is exactly the shape the false pass this
+    /// replaces exploited.
+    fn resolve_self_ty_target(
+        &self,
+        from_module: &[String],
+        from_file: &SourceFile,
+        self_ty: &syn::Type,
+    ) -> Option<(Vec<String>, String)> {
+        let syn::Type::Path(p) = self_ty else {
+            return None;
+        };
+        let segs: Vec<String> = p
+            .path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect();
+        let (name, mods) = segs.split_last()?;
+        let name = name.clone();
+        if mods.first().map(String::as_str) == Some("crate") {
+            return Some((mods[1..].to_vec(), name));
+        }
+        if mods.first().map(String::as_str) == Some("self") {
+            let mut full = from_module.to_vec();
+            full.extend(mods[1..].iter().cloned());
+            return Some((full, name));
+        }
+        if mods.first().map(String::as_str) == Some("super") {
+            let up = mods.iter().take_while(|s| s.as_str() == "super").count();
+            if up > from_module.len() {
+                return None;
+            }
+            let mut full = from_module[..from_module.len() - up].to_vec();
+            full.extend(mods[up..].iter().cloned());
+            return Some((full, name));
+        }
+        // Bare (no explicit qualifier): follow this file's own `use`
+        // imports first -- `expand_imports` already resolves a rename or a
+        // re-export to an absolute path from the crate root, exactly as it
+        // does for a free function's own call sites.
+        let whole: Vec<String> = mods
+            .iter()
+            .cloned()
+            .chain(std::iter::once(name.clone()))
+            .collect();
+        let expanded = expand_imports(&import_map(&from_file.ast), &whole);
+        if expanded != whole {
+            // `use crate::a::B;` binds `B` to the literal segments
+            // `["crate", "a", "B"]` -- `crate` is a real token in a use
+            // tree, not something `expand_imports` strips on its own -- so
+            // an expansion is always re-anchored to the crate root exactly
+            // as the top-level entry point does for any path.
+            let stripped = strip_prefixes(&expanded);
+            let (ename, emods) = stripped.split_last()?;
+            return Some((emods.to_vec(), ename.clone()));
+        }
+        if mods.is_empty() {
+            // No module qualifier and no import matched: declared in this
+            // exact module -- the ordinary case (`impl Bucket` beside
+            // `struct Bucket`).
+            return Some((from_module.to_vec(), name));
+        }
+        // A multi-segment bare path with no matching import can only be a
+        // child module declared right here (`impl inner::Root`, written in
+        // the very file that declares `mod inner;`) -- the one shape Rust
+        // allows without `super`/`crate`/a `use`.
+        if from_file
+            .ast
+            .items
+            .iter()
+            .any(|it| matches!(it, syn::Item::Mod(m) if m.ident == mods[0].as_str()))
+        {
+            let mut full = from_module.to_vec();
+            full.extend(mods.iter().cloned());
+            return Some((full, name));
+        }
+        None
+    }
+
     fn resolve_path(&mut self, raw: &[String]) -> Resolution {
+        // `Type::method`, tried once, crate-wide, before any free-function
+        // walk: a bare heuristic (the segment right before the last one
+        // looks like a type, Rust's own UpperCamelCase convention for one)
+        // decides whether to *attempt* this reading at all, but never
+        // decides the answer -- `resolve_method_globally` either finds a
+        // real declaration both halves agree on, or returns `None` and
+        // this falls through to the ordinary free-function path unchanged
+        // (so a lowercase module name that happens to precede a free
+        // function, `rates::legacy_rate`, never even tries this branch).
+        let stripped = strip_prefixes(raw);
+        if let Some((method_name, type_segments)) = stripped.split_last()
+            && let Some(head) = type_segments.last()
+            && starts_uppercase(head)
+            && let Some(resolution) = self.resolve_method_globally(type_segments, method_name)
+        {
+            return resolution;
+        }
         let segs = expand_imports(&import_map(&self.local.ast), &strip_prefixes(raw));
         if segs.is_empty() {
             return Resolution::NotFound;
@@ -442,7 +764,20 @@ impl Resolver {
         if depth > MAX_DEPTH {
             return Resolution::NotFound;
         }
-        let segs = expand_imports(&import_map(&file.ast), &strip_prefixes(segments));
+        // `Type::method` claims are resolved once, up front, in
+        // `resolve_path` (see `resolve_method_globally`) -- never here.
+        // Before 2026-08-27 this frame matched a `Type::method` tail
+        // against whatever `impl` blocks happened to sit in *this* file,
+        // purely by the type's bare textual name, which is what let
+        // `impl super::Root` (written inside a submodule, naming the
+        // crate-root's `Root`) satisfy a claim for the submodule's own,
+        // unrelated `Root` -- reading one function's contract and calling
+        // another's body (adversarial review, "ninth false clean",
+        // 2026-08-27). `resolve_method_globally` instead verifies both
+        // halves resolve to the *same* declaration before ever looking at
+        // an `impl` block's methods.
+        let raw = strip_prefixes(segments);
+        let segs = expand_imports(&import_map(&file.ast), &raw);
         let Some((head, rest)) = segs.split_first() else {
             return Resolution::NotFound;
         };
@@ -469,6 +804,7 @@ impl Resolver {
                         file: file.ast.clone(),
                         unnameable,
                         local: true,
+                        is_method: false,
                     }))
                 }
                 None => Resolution::NotFound,
@@ -504,7 +840,228 @@ impl Resolver {
                 return inner.under_module(head, mod_private);
             }
         }
+        // No nested module named `head`, and `Type::method` is handled
+        // entirely up front (see the comment above this function's own
+        // `Type::method` note) -- nothing left to try here.
         Resolution::NotFound
+    }
+
+    /// `Type::method`, resolved crate-wide by verifying that the type half
+    /// and every candidate `impl` block's own `self_ty` name the *same*
+    /// declaration, never merely a file or a bare textual name in common.
+    ///
+    /// This is the fix for the false pass this project's ninth review
+    /// found (2026-08-27): before this, a `Type::method` key was matched
+    /// against whatever `impl` blocks sat in whichever file the type's own
+    /// module segments walked to, purely by `self_ty`'s bare last
+    /// identifier -- so `impl super::Root`, written inside `inner.rs` and
+    /// plainly naming `crate::Root`, satisfied a claim for
+    /// `inner::Root::five` just because the text "Root" matched and the
+    /// walk had landed in `inner.rs` for an unrelated reason (module
+    /// descent, not type identity). Ply read one function's contract and
+    /// called a different function's body.
+    ///
+    /// The fix has one source of truth: [`Resolver::resolve_type_decl`]
+    /// resolves `type_segments` to the module path its `struct`/`enum` is
+    /// genuinely *declared* at (following re-exports, same as a free
+    /// function's own path does). Every `impl` block in the crate is then
+    /// checked by resolving *its own* `self_ty`, from *its own* module
+    /// position and file (`resolve_self_ty_target`), and only a match
+    /// against that same declared location is accepted as a candidate --
+    /// wherever in the crate that `impl` block happens to live. Whatever
+    /// canonical path a match earns is therefore read off the *declaration*
+    /// the claim and the `impl` block both independently agree on, not
+    /// re-spelled from either one alone.
+    ///
+    /// Returns `None` when nothing in the crate matches at all -- the
+    /// caller falls through to `NotFound`, same as an unmatched
+    /// free-function name.
+    fn resolve_method_globally(
+        &mut self,
+        type_segments: &[String],
+        method_name: &str,
+    ) -> Option<Resolution> {
+        let modules = self.all_modules();
+        let Some((target_path, target_name, _decl_file)) = self.resolve_type_decl(type_segments)
+        else {
+            // The type half named no `struct`/`enum` this crate declares --
+            // it may still be a trait, with `method_name` either a bare
+            // signature or a default body. Either way it is a trait
+            // method, out of scope the same way a trait-impl override is.
+            let (mpath, file) = self.resolve_trait_decl(type_segments)?;
+            let _ = mpath;
+            let trait_name = type_segments.last()?;
+            let t = trait_item_ident(&file.ast.items, trait_name)?;
+            for it in &t.items {
+                if let syn::TraitItem::Fn(m) = it
+                    && m.sig.ident == method_name
+                {
+                    let has_body = m.default.is_some();
+                    return Some(Resolution::Refused(format!(
+                        "`{trait_name}::{method_name}` is declared on `trait {trait_name}` ({}), \
+                         not in an `impl` block. Ply checks inherent methods and free functions, \
+                         not trait methods, yet",
+                        if has_body {
+                            "a default-body method"
+                        } else {
+                            "a required method with no body of its own"
+                        }
+                    )));
+                }
+            }
+            return None;
+        };
+        let type_text = format_type_path(&target_path, &target_name);
+        let mut inherent: Vec<(Vec<String>, bool, SourceFile, syn::ImplItemFn, bool)> = Vec::new();
+        let mut trait_impl: Vec<(Vec<String>, bool, SourceFile, syn::ImplItemFn)> = Vec::new();
+        for (mpath, file, chain_private) in &modules {
+            for item in &file.ast.items {
+                let syn::Item::Impl(imp) = item else { continue };
+                let Some(this_target) = self.resolve_self_ty_target(mpath, file, &imp.self_ty)
+                else {
+                    continue;
+                };
+                if this_target != (target_path.clone(), target_name.clone()) {
+                    continue;
+                }
+                for it in &imp.items {
+                    if let syn::ImplItem::Fn(m) = it
+                        && m.sig.ident == method_name
+                    {
+                        if imp.trait_.is_some() {
+                            trait_impl.push((
+                                mpath.clone(),
+                                *chain_private,
+                                file.clone(),
+                                m.clone(),
+                            ));
+                        } else {
+                            inherent.push((
+                                mpath.clone(),
+                                *chain_private,
+                                file.clone(),
+                                m.clone(),
+                                !imp.generics.params.is_empty(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        // Rust's own resolution rule: an inherent method shadows a trait
+        // method of the same name, so `Type::method` means the inherent one
+        // whenever both exist. Ambiguity is judged only *within* whichever
+        // pool actually applies -- two inherent candidates (crate-wide, not
+        // merely within one file: two `impl` blocks for the same type in
+        // *different* files are just as ambiguous as two in the same one),
+        // or (with no inherent candidate) two trait-impl ones.
+        if inherent.len() > 1 {
+            return Some(Resolution::Ambiguous(format!(
+                "`{type_text}::{method_name}` matches {} different `impl {target_name}` blocks, \
+                 each defining its own `{method_name}` -- real Rust when `{target_name}` is \
+                 generic and each `impl` targets a different concrete instantiation. Ply's \
+                 syntactic reader cannot tell which one a claim means, so it refuses rather than \
+                 picking one",
+                inherent.len()
+            )));
+        }
+        if let Some((mpath, chain_private, file, m, is_generic)) = inherent.into_iter().next() {
+            return Some(self.classify_found_method(
+                &mpath,
+                chain_private,
+                &file,
+                &type_text,
+                method_name,
+                m,
+                false,
+                is_generic,
+            ));
+        }
+        if trait_impl.len() > 1 {
+            return Some(Resolution::Ambiguous(format!(
+                "`{type_text}::{method_name}` matches {} different trait `impl`s for \
+                 `{target_name}`, each providing its own `{method_name}` -- Ply's syntactic \
+                 reader cannot tell which trait a bare `{type_text}::{method_name}` claim means, \
+                 so it refuses rather than picking one",
+                trait_impl.len()
+            )));
+        }
+        if let Some((mpath, chain_private, file, m)) = trait_impl.into_iter().next() {
+            return Some(self.classify_found_method(
+                &mpath,
+                chain_private,
+                &file,
+                &type_text,
+                method_name,
+                m,
+                true,
+                false,
+            ));
+        }
+        // The type is real and its declaration is genuinely known, but
+        // nothing implementing it defines this method name.
+        None
+    }
+
+    /// One matched `impl`-block method, sorted into `Found` (a plain
+    /// inherent, non-generic, receiverless associated function -- the same
+    /// shape a free function already is, from here on) or `Refused` (a
+    /// trait method, a generic `impl` block, or a receiver this task does
+    /// not build) — in that priority order, since a trait-impl method is
+    /// out of scope regardless of whether its `impl` block also happens to
+    /// be generic or the method also happens to take a receiver.
+    ///
+    /// `mpath`/`chain_private` are the *`impl` block's own* module position
+    /// -- which may differ from `target_path` (the type's own declaration
+    /// site) when the `impl` lives in a different file from its type, a
+    /// shape real Rust allows and this resolver now supports. Nameability
+    /// from the crate-root harness is a fact about where the *method text*
+    /// sits, so it is judged against the `impl`'s own location, never the
+    /// type's.
+    #[allow(clippy::too_many_arguments)]
+    fn classify_found_method(
+        &self,
+        mpath: &[String],
+        chain_private: bool,
+        file: &SourceFile,
+        type_text: &str,
+        method_name: &str,
+        m: syn::ImplItemFn,
+        is_trait_impl: bool,
+        impl_is_generic: bool,
+    ) -> Resolution {
+        if is_trait_impl {
+            return Resolution::Refused(format!(
+                "`{type_text}::{method_name}` is defined in a trait implementation (`impl ... for \
+                 {type_text}`). Ply checks inherent methods and free functions, not trait \
+                 methods, yet"
+            ));
+        }
+        if impl_is_generic {
+            return Resolution::Refused(format!(
+                "`{type_text}::{method_name}` is declared in a generic `impl` block (`impl<...> \
+                 {type_text}<...>`). Ply does not check generic `impl` blocks yet"
+            ));
+        }
+        if has_self_receiver(&m.sig) {
+            return Resolution::Refused(receiver_refusal_reason(type_text, method_name, &m));
+        }
+        let unnameable = (chain_private
+            || (!mpath.is_empty() && matches!(m.vis, syn::Visibility::Inherited)))
+        .then(|| {
+            format!(
+                "`{type_text}::{method_name}` is private to the module it is declared in, so the \
+                 harness Ply generates at the crate root cannot call it by name"
+            )
+        });
+        Resolution::Found(Box::new(FoundFn {
+            item: impl_fn_to_item_fn(&m),
+            canonical: format!("{type_text}::{method_name}"),
+            file: file.ast.clone(),
+            unnameable,
+            local: true,
+            is_method: true,
+        }))
     }
 
     /// The deliberate rule for glob imports (`use rates::*;`). A glob whose
@@ -546,6 +1103,13 @@ impl Resolver {
                     ));
                 }
                 Resolution::NotFound => {}
+                // `Type::method` no longer resolves through
+                // `resolve_in_file` at all (see `resolve_method_globally`),
+                // so this branch is unreachable in practice; kept matching
+                // `Resolution`'s full set rather than a wildcard, so a
+                // future variant cannot silently fall through here
+                // unnoticed.
+                Resolution::Refused(_) | Resolution::Ambiguous(_) => {}
             }
         }
         match opaque {
@@ -606,6 +1170,127 @@ fn strip_prefixes(segments: &[String]) -> Vec<String> {
         .skip_while(|s| s.as_str() == "self" || s.as_str() == "crate")
         .cloned()
         .collect()
+}
+
+/// Whether `name` is declared as a `struct` or `enum` right in `items` --
+/// the ground truth a `Type::method` claim's type half must resolve to
+/// (never an `impl` block, and never a re-export, both of which merely
+/// *point at* a declaration that lives elsewhere).
+fn type_item_ident(items: &[syn::Item], name: &str) -> Option<String> {
+    items.iter().find_map(|item| match item {
+        syn::Item::Struct(s) if s.ident == name => Some(s.ident.to_string()),
+        syn::Item::Enum(e) if e.ident == name => Some(e.ident.to_string()),
+        _ => None,
+    })
+}
+
+/// The `trait` item named `name`, declared right in `items` -- the
+/// declaration side of the trait-method fallback in
+/// `Resolver::resolve_method_globally`.
+fn trait_item_ident<'a>(items: &'a [syn::Item], name: &str) -> Option<&'a syn::ItemTrait> {
+    items.iter().find_map(|item| match item {
+        syn::Item::Trait(t) if t.ident == name => Some(t),
+        _ => None,
+    })
+}
+
+/// A type's declared module path plus its own name, spelled the way a
+/// `Type::method` claim (or an `unnameable`/canonical string) writes it:
+/// bare at the crate root, module-qualified otherwise.
+fn format_type_path(module_path: &[String], name: &str) -> String {
+    if module_path.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}::{name}", module_path.join("::"))
+    }
+}
+
+/// A very small, deliberately conservative textual check used only to
+/// *name* a second blocking reason alongside a receiver refusal (never to
+/// gate a check that has already resolved normally -- that remains
+/// `harness::RustType`'s job, the one place this project keeps that
+/// authority). Flags a bare identifier that is neither one of Rust's
+/// built-in scalar names nor `Self` -- almost always a custom
+/// `struct`/`enum` this resolver has no way to build a value of, and the
+/// common shape a receiver-refused method's *other* parameters take.
+/// Deliberately narrow: a false negative here only means a second reason
+/// goes unnamed (the receiver reason, always named, remains true), never a
+/// false claim that a genuinely-supported type is not.
+fn obviously_unsupported_param(ty: &syn::Type) -> Option<String> {
+    const KNOWN: &[&str] = &[
+        "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
+        "bool", "f32", "f64", "Self",
+    ];
+    let syn::Type::Path(p) = ty else {
+        return None;
+    };
+    let seg = p.path.segments.last()?;
+    let name = seg.ident.to_string();
+    if KNOWN.contains(&name.as_str()) || name.starts_with("NonZero") || name == "Duration" {
+        return None;
+    }
+    Some(name)
+}
+
+/// A receiver refusal names *every* reason the method cannot be checked
+/// yet, not only the first one found -- the review's own finding
+/// (2026-08-27): a `&mut self` method is missing two things, not one
+/// (building the receiver, and a way to state what the method *changes*),
+/// and a receiver alongside a parameter type this resolver cannot build
+/// either would otherwise read as "fix the receiver and you're done", which
+/// is false.
+fn receiver_refusal_reason(type_text: &str, method_name: &str, m: &syn::ImplItemFn) -> String {
+    let mut reasons = vec![format!(
+        "cannot yet build a value of `{type_text}` to call it on -- constructing a receiver is \
+         not supported yet"
+    )];
+    if let Some(syn::FnArg::Receiver(r)) = m.sig.inputs.first()
+        && r.mutability.is_some()
+    {
+        reasons.push(
+            "even a built receiver would not be enough here: this method takes `&mut self`, and \
+             Ply has no way yet to state what it is supposed to change about the value it was \
+             called on, so there would still be nothing to check"
+                .to_string(),
+        );
+    }
+    for arg in m.sig.inputs.iter().skip(1) {
+        if let syn::FnArg::Typed(pt) = arg
+            && let Some(bad_ty) = obviously_unsupported_param(&pt.ty)
+        {
+            reasons.push(format!(
+                "and separately, its parameter of type `{bad_ty}` is a shape Ply's checkers do \
+                 not build inputs for either, so building a receiver would not be enough on its \
+                 own"
+            ));
+        }
+    }
+    format!(
+        "Ply found `{type_text}::{method_name}` but {}",
+        reasons.join("; ")
+    )
+}
+
+/// Whether this signature's first argument is a receiver (`self`, `&self`,
+/// `&mut self`) — the one shape this task's scope defers, because building
+/// a value to call it on is unsettled (docs/review-self-construction.md).
+fn has_self_receiver(sig: &syn::Signature) -> bool {
+    matches!(sig.inputs.first(), Some(syn::FnArg::Receiver(_)))
+}
+
+/// An `impl`-block method's fields are the same shape a free function's
+/// are (`attrs`, `vis`, `sig`, `block`) — `syn::ImplItemFn` just names them
+/// for a different context. Rebuilding a plain `syn::ItemFn` out of one lets
+/// every downstream reader (`build_contract_fn`, the call-site collector)
+/// stay written against free functions and never need its own method-shaped
+/// twin.
+fn impl_fn_to_item_fn(m: &syn::ImplItemFn) -> syn::ItemFn {
+    syn::ItemFn {
+        attrs: m.attrs.clone(),
+        vis: m.vis.clone(),
+        sig: m.sig.clone(),
+        block: Box::new(m.block.clone()),
+    }
 }
 
 fn starts_uppercase(name: &str) -> bool {
@@ -1120,5 +1805,382 @@ pub mod fees {
         .unwrap();
         assert!(find_fn(&file, &["fees", "bps_for_tier"]).is_some());
         assert!(find_fn(&file, &["fees", "missing"]).is_none());
+    }
+
+    // -- the ninth false clean (adversarial review, 2026-08-27): a
+    // `Type::method` claim's type half must resolve to the same
+    // *declaration* an `impl` block's own `self_ty` names, never merely a
+    // bare textual match against whatever file the module-path walk landed
+    // on. Every test below needs more than one module -- the one shape the
+    // suite that shipped this defect never exercised (§9: a defect found by
+    // review enters the suite as a fixture of its own shape).
+
+    /// A short, readable stand-in for `{:?}` -- `Resolution` cannot derive
+    /// `Debug` (its `FoundFn` payload carries `syn` types this workspace
+    /// does not build with the `extra-traits` feature), so a test failure
+    /// needs this to say which variant it got.
+    fn describe(r: &Resolution) -> String {
+        match r {
+            Resolution::Found(f) => format!("Found({})", f.canonical),
+            Resolution::Opaque(s) => format!("Opaque({s})"),
+            Resolution::NotFound => "NotFound".to_string(),
+            Resolution::Refused(s) => format!("Refused({s})"),
+            Resolution::Ambiguous(s) => format!("Ambiguous({s})"),
+        }
+    }
+
+    /// The exact reproduction: two structs both named `Root`, one at the
+    /// crate root and one in `inner`. The `impl` block written inside
+    /// `inner.rs` says `impl super::Root` -- the CRATE ROOT's `Root`, not
+    /// `inner`'s own -- and carries a promise that is false of its own
+    /// body. The old resolver matched `inner::Root::five` against this
+    /// block purely because the bare name "Root" and the recursion frame
+    /// lined up; that promise must never again attach to a function it
+    /// does not describe.
+    fn write_wrongfn_crate(dir: &Path) -> String {
+        std::fs::create_dir_all(dir.join("src/inner")).unwrap();
+        std::fs::write(
+            dir.join("src/lib.rs"),
+            "pub mod inner;\n\
+             pub struct Root;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src/inner.rs"),
+            "pub mod sub;\n\
+             pub struct Root;\n\
+             impl super::Root {\n\
+             #[ply::ensures(|result| *result == 999)]\n\
+             pub fn five() -> u32 { 5 }\n\
+             }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src/inner/sub.rs"),
+            "impl super::Root {\n\
+             pub fn five() -> u32 { 999 }\n\
+             }\n",
+        )
+        .unwrap();
+        std::fs::read_to_string(dir.join("src/lib.rs")).unwrap()
+    }
+
+    #[test]
+    fn the_wrong_spelling_no_longer_attaches_a_false_promise_to_the_wrong_function() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_wrongfn_crate(dir.path());
+        let mut r = Resolver::new(&src, dir.path(), BTreeMap::new()).unwrap();
+        match r.lookup_fn("inner::Root::five") {
+            Resolution::Found(found) => {
+                // The only honest match for THIS spelling is `inner::Root`'s
+                // own `five` (in `sub.rs`), which carries no promise at
+                // all -- never the crate-root `Root::five` whose promise
+                // ("the answer is 999") is false of a body that returns 5.
+                assert!(
+                    !has_inline_contract(&found.item),
+                    "`inner::Root::five` must resolve to the function actually declared as \
+                     `inner::Root`'s own -- which carries no promise -- never to the unrelated \
+                     crate-root `Root` whose `impl` block merely happens to sit in the same file"
+                );
+                assert_eq!(found.canonical, "inner::Root::five");
+            }
+            other => {
+                // A refusal is also an honest outcome -- anything except a
+                // clean match to the wrong body.
+                panic!(
+                    "expected a real resolution to inner::Root's own five, got {}",
+                    describe(&other)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_correct_spelling_resolves_to_the_function_that_actually_carries_the_promise() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_wrongfn_crate(dir.path());
+        let mut r = Resolver::new(&src, dir.path(), BTreeMap::new()).unwrap();
+        match r.lookup_fn("Root::five") {
+            Resolution::Found(found) => {
+                assert_eq!(
+                    found.canonical, "Root::five",
+                    "the promise lives on the crate-root `Root`, so that is what `Root::five` \
+                     must canonicalise to"
+                );
+                assert!(
+                    has_inline_contract(&found.item),
+                    "`Root::five` must resolve to the function that actually carries the \
+                     promise (\"the answer is 999\"), not to `inner::Root`'s unrelated `five`"
+                );
+            }
+            other => panic!(
+                "`Root::five` names a real function and must resolve: {}",
+                describe(&other)
+            ),
+        }
+    }
+
+    /// A correct claim in a multi-module crate still resolves and checks --
+    /// the ordinary, non-adversarial case the fix must not break.
+    #[test]
+    fn a_correct_claim_in_a_multi_module_crate_still_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/inner")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub mod inner;\n").unwrap();
+        std::fs::write(
+            dir.path().join("src/inner.rs"),
+            "pub mod sub;\n\
+             pub struct Widget;\n\
+             impl Widget {\n\
+             #[ply::ensures(|result| *result == 3)]\n\
+             pub fn value() -> u32 { 3 }\n\
+             }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/inner/sub.rs"), "// unrelated\n").unwrap();
+        let src = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        let mut r = Resolver::new(&src, dir.path(), BTreeMap::new()).unwrap();
+        match r.lookup_fn("inner::Widget::value") {
+            Resolution::Found(found) => {
+                assert_eq!(found.canonical, "inner::Widget::value");
+                assert!(has_inline_contract(&found.item));
+            }
+            other => panic!("expected a clean resolution, got {}", describe(&other)),
+        }
+    }
+
+    /// A type re-exported under another name: the `impl` block is written
+    /// against the type's real declaration, and a claim spelled with the
+    /// alias must still land on it -- re-exports are followed for a type
+    /// exactly as they already are for a free function.
+    #[test]
+    fn a_type_re_exported_under_another_name_still_resolves_its_methods() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub mod inner;\n\
+             pub use inner::Root as Exported;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/inner.rs"),
+            "pub struct Root;\n\
+             impl Root {\n\
+             #[ply::ensures(|result| *result == 5)]\n\
+             pub fn five() -> u32 { 5 }\n\
+             }\n",
+        )
+        .unwrap();
+        let src = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        let mut r = Resolver::new(&src, dir.path(), BTreeMap::new()).unwrap();
+        match r.lookup_fn("Exported::five") {
+            Resolution::Found(found) => {
+                assert_eq!(
+                    found.canonical, "inner::Root::five",
+                    "the canonical path is the type's real declaration, not the alias a claim \
+                     happened to spell it with"
+                );
+                assert!(has_inline_contract(&found.item));
+            }
+            other => panic!(
+                "a re-exported name must still resolve: {}",
+                describe(&other)
+            ),
+        }
+    }
+
+    /// An `impl` block in a different file from its type's own declaration
+    /// -- real, ordinary Rust (a `struct` in one module, its methods added
+    /// from another) -- must still resolve.
+    #[test]
+    fn an_impl_block_in_a_different_file_from_its_type_still_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub mod types;\n\
+             pub mod ops;\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/types.rs"), "pub struct Widget;\n").unwrap();
+        std::fs::write(
+            dir.path().join("src/ops.rs"),
+            "use crate::types::Widget;\n\
+             impl Widget {\n\
+             #[ply::ensures(|result| *result == 9)]\n\
+             pub fn nine() -> u32 { 9 }\n\
+             }\n",
+        )
+        .unwrap();
+        let src = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        let mut r = Resolver::new(&src, dir.path(), BTreeMap::new()).unwrap();
+        match r.lookup_fn("types::Widget::nine") {
+            Resolution::Found(found) => {
+                assert_eq!(found.canonical, "types::Widget::nine");
+                assert!(has_inline_contract(&found.item));
+            }
+            other => panic!(
+                "a type and the `impl` block implementing it may live in different files -- \
+                 real Rust -- and must still resolve: {}",
+                describe(&other)
+            ),
+        }
+    }
+
+    /// Ambiguity is not scoped to one file: two `impl` blocks for the same
+    /// type in *different* files are exactly as ambiguous as two in the
+    /// same file, and Ply must refuse rather than silently pick the first
+    /// one it walks to.
+    #[test]
+    fn two_impl_blocks_for_one_type_in_different_files_are_ambiguous_not_silently_picked() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub mod types;\n\
+             pub mod a;\n\
+             pub mod b;\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/types.rs"), "pub struct Widget;\n").unwrap();
+        std::fs::write(
+            dir.path().join("src/a.rs"),
+            "use crate::types::Widget;\n\
+             impl Widget { pub fn describe() -> u32 { 1 } }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/b.rs"),
+            "use crate::types::Widget;\n\
+             impl Widget { pub fn describe() -> u32 { 2 } }\n",
+        )
+        .unwrap();
+        let src = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        let mut r = Resolver::new(&src, dir.path(), BTreeMap::new()).unwrap();
+        match r.lookup_fn("types::Widget::describe") {
+            Resolution::Ambiguous(reason) => {
+                assert!(
+                    reason.contains("Widget") && reason.contains("describe"),
+                    "the refusal must name the type and method: {reason}"
+                );
+            }
+            other => panic!(
+                "two impl blocks for one type, in different files, defining the same method \
+                 name must be refused as ambiguous, not silently resolved to whichever file \
+                 the walk reached first: {}",
+                describe(&other)
+            ),
+        }
+    }
+
+    // -- a receiver refusal names every blocking reason, not only the
+    // first (adversarial review, 2026-08-27): a `&mut self` method is
+    // missing two things, and a receiver plus an unbuildable argument
+    // names only the receiver was true before this.
+
+    #[test]
+    fn a_mut_self_method_names_both_the_receiver_and_the_mutation_gap() {
+        let src = r#"
+pub struct Bucket { n: u32 }
+impl Bucket {
+    pub fn bump(&mut self) { self.n += 1; }
+}
+"#;
+        let mut r = Resolver::new(src, Path::new("."), BTreeMap::new()).unwrap();
+        match r.lookup_fn("Bucket::bump") {
+            Resolution::Refused(reason) => {
+                assert!(
+                    reason.contains("receiver"),
+                    "must still name the receiver blocker: {reason}"
+                );
+                assert!(
+                    reason.contains("&mut self") || reason.contains("change"),
+                    "must ALSO name that Ply has no way to state what a `&mut self` method \
+                     changes -- a second, real blocker a fixed receiver would not remove: \
+                     {reason}"
+                );
+            }
+            other => panic!("expected Refused, got {}", describe(&other)),
+        }
+    }
+
+    #[test]
+    fn a_receiver_plus_an_unbuildable_argument_names_both_reasons() {
+        let src = r#"
+pub struct Thing;
+pub struct Odd;
+impl Thing {
+    pub fn scale(&self, factor: Odd) -> u32 { 0 }
+}
+"#;
+        let mut r = Resolver::new(src, Path::new("."), BTreeMap::new()).unwrap();
+        match r.lookup_fn("Thing::scale") {
+            Resolution::Refused(reason) => {
+                assert!(
+                    reason.contains("receiver"),
+                    "must name the receiver blocker: {reason}"
+                );
+                assert!(
+                    reason.contains("Odd"),
+                    "must ALSO name the parameter type Ply cannot build inputs for -- fixing the \
+                     receiver alone would not be enough: {reason}"
+                );
+            }
+            other => panic!("expected Refused, got {}", describe(&other)),
+        }
+    }
+
+    #[test]
+    fn a_plain_receiver_refusal_names_only_the_receiver_when_that_is_the_only_reason() {
+        let src = r#"
+pub struct Bucket { n: u32 }
+impl Bucket {
+    pub fn n(&self) -> u32 { self.n }
+}
+"#;
+        let mut r = Resolver::new(src, Path::new("."), BTreeMap::new()).unwrap();
+        match r.lookup_fn("Bucket::n") {
+            Resolution::Refused(reason) => {
+                assert!(reason.contains("receiver"), "{reason}");
+                assert!(
+                    !reason.contains("&mut self") && !reason.contains("change"),
+                    "a `&self` method has no mutation gap to name: {reason}"
+                );
+            }
+            other => panic!("expected Refused, got {}", describe(&other)),
+        }
+    }
+
+    // -- the "a `Self` answer is always fine" rule's own blind spot on the
+    // sampling tier (adversarial review, 2026-08-27): `private_field_names`
+    // is what a caller checks before trusting that rule where it does not
+    // hold.
+
+    #[test]
+    fn private_field_names_lists_only_the_non_pub_fields() {
+        let src = r#"
+pub struct Bucket {
+    pub capacity: u32,
+    filled: u32,
+    pub(crate) note: u32,
+}
+"#;
+        let mut r = Resolver::new(src, Path::new("."), BTreeMap::new()).unwrap();
+        let mut fields = r.private_field_names("Bucket").unwrap();
+        fields.sort();
+        assert_eq!(
+            fields,
+            vec!["filled".to_string(), "note".to_string()],
+            "a fully `pub` field must not be listed; a private or `pub(crate)` one must be"
+        );
+    }
+
+    #[test]
+    fn private_field_names_is_none_for_a_type_that_is_not_a_struct() {
+        let src = "pub enum Shape { Round, Square }\n";
+        let mut r = Resolver::new(src, Path::new("."), BTreeMap::new()).unwrap();
+        assert_eq!(r.private_field_names("Shape"), None);
+        assert_eq!(r.private_field_names("Nowhere"), None);
     }
 }

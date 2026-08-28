@@ -1,0 +1,18 @@
+ply: 1
+
+components:
+  durationnonzero:
+    anchor: ply_fixture_durationnonzero
+    fns:
+      bump_len:
+        checks: [bounded(2), fuzz(64)]
+      double_delta:
+        checks: [bounded(2), fuzz(64)]
+      tokens_requested:
+        checks: [bounded(2), fuzz(64)]
+      shard_count:
+        checks: [bounded(2), fuzz(64)]
+      round_trip:
+        checks: [bounded(2), fuzz(64)]
+      from_whole_seconds:
+        checks: [bounded(2), fuzz(64)]

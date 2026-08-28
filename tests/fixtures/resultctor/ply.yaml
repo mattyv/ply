@@ -1,0 +1,13 @@
+ply: 1
+
+# docs/review-structs-enums.md finding 2: "a violation reported on correct
+# code". `Range::new` returns `Result<Self, String>` and rejects `lo > hi`
+# -- the ordinary fallible-constructor shape. `well_formed`'s promise holds
+# for every `Range` the constructor can produce; a violation here can only
+# mean Ply built one the constructor would have refused.
+components:
+  resultctor:
+    anchor: ply_fixture_resultctor
+    fns:
+      well_formed:
+        checks: [fuzz(256)]

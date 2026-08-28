@@ -1,5 +1,321 @@
 # TODO
 
+## Agreed 2026-08-28, not yet done
+
+**Order the maintainer set: land the release, then the bug backlog, then suite speed.**
+Nothing below jumps that queue.
+
+- [ ] **Cut the duplicate proofs out of the end-to-end suite.** Measured today: 137
+      fixture copies across 71 distinct fixtures, so the same code is proved many times
+      over -- `resultreuse` and `implmethod` nine times each, `structenumparam` and
+      `clamp` eight, `reusehelper` seven. Kani-heavy binaries alone are 1,020s of the
+      3,053s of test time. The fix is test design, not infrastructure: several tests
+      that each prove one fixture to assert on different parts of the same run become
+      one test making several assertions about one run. Caching was already tried and
+      measured (docs/suite-speed-finding.md): 2,533s before, 2,569s after, no speed-up,
+      because those tests run concurrently and all miss together. Deferred by the
+      maintainer until after the bug backlog -- a large refactor of the tests that
+      vouch for a release is the wrong thing to do while landing one.
+
+- [ ] **Consider pinning the Rust toolchain (`rust-toolchain.toml`).** CI installs
+      `stable`, which was 1.98.0; this container had 1.94.1, four releases behind, and
+      clippy gained lints in between. Two `-D warnings` failures therefore could not be
+      reproduced locally and were pushed red. Installing `stable` here and running
+      `cargo +stable clippy` reproduces CI exactly and is the working practice from now
+      on, but a pinned toolchain would make the two agree by construction rather than
+      by remembering.
+
+- [ ] **Make CI a required check on `main`, so a red pull request cannot be merged.**
+      Asked for by the maintainer after PR #4 offered a merge button while all three
+      jobs were failing -- twice, on two different causes. GitHub will not block a merge
+      on a failing check unless the branch is protected and the check is named as
+      required. Needs a branch protection rule on `main` requiring `product`,
+      `product-e2e` and `tools` to pass. This is a repository setting, not a code
+      change, so it needs doing in GitHub's settings by the repository owner (or via
+      the API with admin rights) -- Ply cannot set it from here.
+
+## Forced colour made Ply blind to its own engines — 2026-08-28
+
+- [x] **Every compiler error reached Ply as `\x1b[1m\x1b[91merror\x1b[0m: ...` under
+      `CARGO_TERM_COLOR=always`, and nothing matched.** Ply reads its engines'
+      output line-first -- a compiler error is a line beginning `error`, attributed to
+      a function by the `-->` span under it -- so forced colour meant it could neither
+      pin a build failure to the function that caused it nor quote the compiler. It
+      fell back to "the compiler gave no specific error line": a sentence written for a
+      failure genuinely beyond attribution, printed for one that was entirely
+      attributable. A true sentence in the wrong place, which reads like the tool
+      working.
+- [x] Found by CI, which sets that variable, on a test that had been green locally for
+      months. Engine output is now stripped of ANSI escapes (CSI and OSC, including
+      terminal hyperlinks) before anything parses it -- at every engine, not just
+      cargo, so the next tool to add colour costs nothing.
+- [x] Regression test runs the real fixture with the variable set and asserts the
+      compiler's own message survives; watched red, and the pre-existing test stayed
+      green under the same sabotage, which is why it never caught this.
+
+## Ply's own architecture, rendered and checked — 2026-08-28
+
+- [x] **ARCHITECTURE.md**, with the diagram rendered from the root `ply.yaml` rather
+      than drawn by hand, and linked from the README. A test in the render tools fails
+      if the committed SVG stops matching what the spec renders to, so the page cannot
+      go stale quietly; watched red by adding a crate to the spec.
+- [x] **Running Ply on Ply found a real violation of Ply's own rule, and it is fixed
+      rather than declared away.** `ply_e2e` had grown a dependency on `ply_core` that
+      no edge allowed -- the type-coverage measurement reads core's classifier directly
+      so the published count cannot drift. Declaring `e2e -> core` would have made the
+      run green by widening the rule to the whole suite to excuse one file (the crate
+      tier cannot say "one test file may"), leaving every other e2e test resting on a
+      convention the checker could no longer enforce. The measurement moved to
+      `ply-core`'s own tests instead, beside the classifier it measures: the rule is
+      intact, the edge is gone, `e2e` depends on nothing again.
+- [x] Fixed while there: the architecture summary said "1 real crate dependencies
+      cross" -- now "1 real crate dependency crosses". The unit test had been pinning
+      the ungrammatical wording, so it was updated to the corrected sentence.
+- [x] Fixed while there: a document that declares no fn claims at all was told "NOT
+      RESOLVED ... none of the 0 fn claims were ever looked for" -- a failure that did
+      not happen, the mirror image of the bug the previous entry fixed. It now says
+      there were no fn claims to resolve.
+
+## `check` on a crate with no library stops reading clean — 2026-08-28
+
+- [x] **A binary-only crate got a clean `check` and a refusal from `verify`.** Found
+      while answering whether the fast command needs code to be there. With no
+      `src/lib.rs`, every claim was counted as "anchored to another crate" -- the shape
+      of a boundary somebody chose -- and the run exited 0 having resolved nothing.
+      `verify` on the same crate said `E0301`, exit 1. The two commands now agree: the
+      claim is unresolved, the missing library is named as the obstacle, and the
+      summary says a search did not happen instead of reporting a zero.
+- [x] End-to-end test in `check_command`, watched red against the old behaviour; both
+      commands asserted on the same crate in the same test. The-Ply-Spec.md §5.2
+      amended.
+- Note: the document half still needs no code at all -- a `ply.yaml` alone in an empty
+  directory gets its grammar checked, which is the spec-first loop working as intended.
+
+## Ply borrows the user's Cargo.toml and gives it back — 2026-08-28
+
+- [x] **A run on a crate with its own workspace no longer leaves an edit behind.**
+      Found while cleaning up a stray modified file in this checkout, which turned out
+      to be a Ply run artifact, then reproduced on a scratch crate outside the repo.
+      Registering the generated harness as a workspace member is still how the mutate
+      engine finds it, but the registration is now held by a guard that puts the
+      original manifest back byte-for-byte when the run ends, error paths included.
+      Confirmed end to end: a real crate with `members = ["."]`, checked with both
+      `fuzz` and `mutate`, comes back `fuzzed(64)·spec-strong` with its `Cargo.toml`
+      byte-identical to what was there before.
+- [x] **The generated failing test survives the cleanup.** Removing the membership
+      alone would orphan the harness -- neither a workspace root nor a member of one,
+      so unbuildable -- and the counterexample Ply just rendered would be unrunnable.
+      The same guard release rewrites the harness manifest into the standalone shape;
+      `cargo test` in `target/ply/fuzz/<name>/` fails on the seeded bug afterwards,
+      checked directly rather than assumed.
+- [x] Four unit tests, each watched red against the specific defect it names (restore,
+      whole-line removal, don't-touch-what-changed, clear a stale entry), plus the
+      `existingworkspace` end-to-end test rewritten to assert the new contract.
+      The-Ply-Spec.md §5.4c amended.
+- KNOWN GAP (in the spec, deliberately): a run killed outright runs no guard, so the
+  `members` entry survives a `SIGKILL` or a crashed container. The next run clears it,
+  since the restore target is always the original minus the harness entry.
+
+## D5's first branch lands: `stub_verified` — 2026-08-26
+
+Full write-up of both red-first passes (the feature, then the reuse gap an adversarial
+review found in it) belongs beside this entry's own literal failures, recorded here
+since no separate doc was asked for this session.
+
+- [x] **`stub_verified` works, mechanically, against the generated harnesses.** Confirmed
+      by direct reproduction against real `cargo kani` runs (not just unit tests): a
+      caller stubbing a callee proved clean this run verifies in a fraction of a second
+      via `#[kani::stub_verified]` plus a never-run "existence" harness satisfying
+      Kani's purely-syntactic existence check (`tests/spike/FINDINGS.md` item 4 --
+      confirmed again here, not just cited). §5.5's opening claim ("verification runs
+      callees-before-callers") is real now: a topological order over the call graph,
+      ties broken by node id, cycles falling back to the second branch.
+- [x] **Ordering** (`callgraph`/`verify.rs`): claimed functions with a `bounded` check
+      are ordered callees-before-callers; a cycle (mutual recursion, direct or
+      transitive) cannot be ordered and every claim in it falls back to D5's second
+      branch, `conditional`, exactly as before this feature -- not an error, not a hang
+      (`stubverifiedcycle` fixture).
+- [x] **The bound composes to the weaker of the two, never the caller's own declared
+      one** (`stubverifiedminbound` fixture) -- the anti-overclaim test, and the one that
+      matters most.
+- [x] **A real Kani limitation found and worked around, not papered over**: plain
+      `#[kani::stub]` cannot target a function that itself carries a contract (issue
+      #4591, "Failed to find contract closure" -- a compile error killing the whole
+      crate, reproduced here against this feature after `tests/spike/kani-pin` found it
+      for a different case). Both of D5's branches, when reached through a same-crate
+      contracted callee, therefore use `#[kani::stub_verified]` mechanically; what marks
+      one `conditional` and not the other is entirely Ply's own bookkeeping (did the
+      ordering above establish the callee clean this run), never anything Kani checks.
+- [x] **A second defect, found by adversarial review of this feature and not by any
+      test already in the suite**: the composed bound depends on a callee's *earned*
+      verdict, and nothing hashed it. Editing only a callee's declared `checks:` (its
+      bound going from `bounded(5)` down to `bounded(2)`, no source touched anywhere)
+      correctly re-earned the callee's own record while the caller's record -- and its
+      now-stale deeper bound -- went untouched. Closed by adding `verified_bounds` to
+      `FingerprintInputs` (`record.rs`, new `INPUT_GROUPS` entry "the callees it stands
+      on") and by *deferring* a bounded-eligible claim's reuse lookup until its
+      fingerprint is finalised in dependency order, rather than deciding it from the
+      Pass-1 fingerprint before that composition is known. Pinned permanently:
+      `stubverifiedstalebound` fixture, red-first against the isolated defect, green
+      with the fix restored.
+- [x] **The same restructuring incidentally fixed a second, independent bug the review
+      also caught**: an earlier version of the ordered pass decided "reused" before
+      ordering and then unconditionally re-ran every bounded-eligible claim's engine
+      regardless, wasting the exact cost reuse exists to avoid and writing a proof
+      module for a claim the envelope reported `reused: true` -- caught by
+      `resultreuse_fixture` going from 5/7 to 7/7 once the ordered pass was made to
+      consult the reuse decision instead of ignoring it.
+- [x] The missing "§5.5's limits" subsection §5.5 already pointed at ("see this
+      section's limits below") now exists, gathering: cross-crate `stub_verified` (out
+      of scope for v1, unchanged), a call outside the workspace, a call Ply's reader
+      cannot see, branch one requiring a callee *clean* (never merely `bounded`-shaped
+      -- a conservative, stated restriction on composing across more than one hop of
+      assumption), the cycle fallback being decided per claim rather than per edge, and
+      the whole mechanism's soundness resting entirely on Ply's own scheduler, never on
+      Kani (`tests/spike/FINDINGS.md` item 4, restated where a reader of this rule would
+      need it).
+- [x] **A third defect, found independently by re-verifying this commit against a
+      fresh fixture rather than trusting the 313 green tests that had just landed**:
+      standing on a proved callee made a caller *permanently* unreusable, not merely
+      briefly stale. The `verified_bounds` fix above closed the stale-number gap, but
+      `record.rs`'s own "is this verdict one the declared checks could earn" integrity
+      check (`W0516`) predates D5's first branch and still assumed a `bounded(k)` check
+      could only ever produce `bounded(k)` verbatim -- so a claim declaring `bounded(5)`
+      that genuinely composed down to `bounded(2)` looked identical to a hand-edited
+      record on every run after the one that earned it, and was silently re-verified
+      from scratch, forever, paying full engine cost each time. Confirmed by direct
+      instrumentation before touching anything (the lookup and stored fingerprints for
+      the caller were byte-identical, including the new "callees it stands on" group --
+      ruling out the first, more obvious suspicion before fixing anything): the actual
+      divergence was `W0516` itself, refusing an exact-fingerprint match because the
+      composed verdict's number differed from the check's own. Fixed by making
+      `bounded(k)` earn any `bounded(j)` with `j <= k`, never only `k` itself, and never
+      a `j` deeper than declared -- the one place a stored verdict is allowed to differ
+      from its own check's number, stated as exactly that in `verdict_is_earnable`.
+      Pinned permanently: `stubverifiedwarmreuse` test (reusing the plain `stubverified`
+      fixture, two runs, nothing edited between them) -- red-first against the isolated
+      defect, green with the fix restored, run three consecutive warm runs by hand
+      first to confirm the fix holds indefinitely and not just once.
+- [x] Fixtures: `stubverified`, `stubverifiedminbound`, `stubverifiedcycle`,
+      `stubverifiedfuzzedcallee`, `stubverifiedstalebound` (`tests/fixtures/`), each
+      with its own e2e test under `tests/e2e/tests/` (`stubverifiedwarmreuse`'s test
+      reuses the `stubverified` fixture rather than needing its own). `cargo test
+      --workspace`: 315 passed, 0 failed, fmt and clippy clean.
+- [ ] KNOWN GAP, deliberate: a claim declaring **both** `bounded` and `fuzz`/`test` in
+      the same `checks:` list is bounded-eligible (needs the ordered pass) but its
+      fuzz/test portion needs the harness crate built in the *unchanged*, earlier pass
+      that the ordered pass's own reuse decision now runs after. No current fixture
+      declares such a mixed list, so this has not bitten anything real, but it is not
+      solved either -- recorded here rather than discovered later.
+- [ ] KNOWN GAP, stated in §5.5's new limits paragraph: branch one requires a callee's
+      own verdict to be clean (never `conditional`) before this claim can stand on it.
+      Composing branch one across more than one hop of assumption -- does a claim
+      resting on a clean callee that itself rested on a clean callee inherit anything
+      the second hop assumed, transitively -- is a real question this design declines
+      to answer rather than guesses at.
+
+## Third adversarial review of D5's first branch — 2026-08-26
+
+`docs/review-callees-first.md`, three BLOCKING findings (D1, D2, D3) plus three
+non-blocking-but-real ones (D4, D5, D6). Every fix red-first, with the literal failure
+text captured before the fix went back in.
+
+- [x] **D1 (BLOCKING) — branch one composed against a callee whose own proof did not
+      cover the caller's argument.** A `bounded(k)` proof over a length-indexed
+      parameter (`Vec<u8>`, a slice, `BTreeSet`, an array) only ever builds values up to
+      length `k`, not the type's full value space -- composing a caller's bound against
+      it assumes the callee's contract holds on arguments its own proof never touched.
+      Reproduced live: a callee proved only over vectors of length <= 2 returns a value
+      breaking its own postcondition at length 3; a caller always passing length 3
+      composed to a clean `bounded(2)`, exit 0, false. Red-first (`stubverifiedveclen`
+      fixture, domain gate disabled): `f` came back `"verdict":"bounded(2)"`,
+      `"statuses":[]` -- no `conditional`, no `owed-evidence`, the exact false-clean
+      shape the review named. Fixed with `RustType::is_full_domain()`
+      (`crates/ply-core/src/harness.rs`): a callee with any non-full-domain parameter is
+      excluded from branch one, whatever its own verdict, falling back to branch two
+      exactly like a cycle does. **Narrowed, not proved**: a fixed-size `[T; N]` array is
+      excluded too, conservatively, even though its size is part of the type and an
+      argument-containment argument might one day admit it safely -- that argument is
+      not made here. Green: `f` composes to `bounded(2)` with `conditional`/
+      `owed-evidence`, `W0511` present, no `W0517`, exit 0.
+- [x] **D2 (BLOCKING) — a same-crate contracted callee Ply cannot build a stub for was
+      silently inlined.** A tuple-pattern parameter, a `self` parameter, or an
+      unparseable contract attribute made `build_contract_fn` fail for the callee, and
+      the `if let ... && ...` chain deciding D5's first two branches had no `else`: the
+      failure fell through with no stub, no refusal, no diagnostic, contradicting this
+      commit's own "always stubbed, never inlined" claim. Red-first (`stubverifiedtuparg`
+      fixture, the new refusal gate disabled): `f` came back a real, freshly-computed
+      `"verdict":"bounded(2)"` in 32.55s -- Kani had genuinely compiled and inlined `g`'s
+      real tuple-pattern body, exactly the silent inlining the review named. Fixed: the
+      match rewritten with every arm explicit, a new `unstubbable_contracted` field on
+      `BoundaryPlan`, and a new diagnostic (`W0512`, `unbuildable_contracted_stub_diag`)
+      naming the callee and why its stand-in could not be built. Green: `g` and `f` both
+      report `unclaimed`, `W0512` names `g`, exit 1.
+- [x] **D3 (BLOCKING) — the widened tamper check accepted a hand-edited overclaim.**
+      Round 2's fix for the stale-bound defect widened `W0516`'s "is this verdict
+      earnable" check to accept any `bounded(j)` with `j <= k` for a claim declared
+      `bounded(k)` -- necessary, because branch one can genuinely compose to a shallower
+      `j`. But the review showed this was a strict superset of what composition can
+      produce: a hand-edited `bounded(4)` for a claim that had actually composed to
+      `bounded(2)` passed, because `4 <= 5` (the claim's own declared bound) was the only
+      thing checked. Red-first (`stubverifiedtamperedbound` fixture: run once, hand-edit
+      the stored `bounded(2)` to `bounded(4)`, re-run against the pre-fix "any `j <= k`"
+      rule): the tampered `bounded(4)` was silently accepted, no `W0516`, exactly the
+      overclaim the review reproduced. Fixed (`record.rs`'s `verdict_is_earnable`): the
+      expected value is now pinned exactly, `min(declared_k, min(the bound each
+      stood-on callee earned))`, read from `verified_bounds`, and a stored verdict must
+      equal that number, never merely sit under it. Green: the tampered record is
+      refused, `W0516` present, re-verified to the honest `bounded(2)`, exit 0.
+- [x] **D4 (non-blocking, real) — `audit`/`worklist` never saw an inline-contracted
+      assumption.** Both commands read only the `ply.yaml`-declared boundary-contract
+      route; a same-crate callee assumed through its own inline `#[ply::requires]`/
+      `#[ply::ensures]` (branch two, reached whenever that callee is not itself an
+      independently bounded-checked claim) reported `conditional`/`owed-evidence`
+      correctly at `verify` time while `audit`'s trust surface and `worklist`'s count
+      both stayed silent -- §5.5's own honesty condition 3 not holding for this class.
+      Red-first (`stubverifiedinlineaudit` fixture, the new listing arm disabled): both
+      commands reported "(0)" -- zero assumed contracts, zero owed evidence -- for a
+      callee `verify` itself marks conditional. Fixed in `shared.rs`'s
+      `assumed_contracts`, narrowly: listed whenever the callee carries no `bounded`
+      check anywhere in the document. **Known gap, not solved**: a same-crate callee
+      that *is* claimed `bounded` elsewhere but still lands on branch two at `verify`
+      time (a cycle, or an unclean run) needs the same ordering computation `verify`
+      does to tell "stood on" from "assumed" -- this listing does not attempt that and
+      under-reports exactly that case. Green: both commands report "(1)", naming the
+      callee, the caller, and the promise text.
+- [x] **D5 (non-blocking, real) — the vacuity gate fired on a proved callee's inline
+      contract.** §5.5's emptiness/vacuity check (E0502/E0503) exists to interrogate
+      branch two's *assumed* clauses; it was running over every stub's contract
+      regardless of branch, including a callee proved clean this run (branch one), whose
+      inline contract is real evidence rather than a promise being trusted sight-unseen.
+      Fixed by filtering the stub list fed to the vacuity gate to assumed-only
+      (`is_assumed()`) before it runs. A second, smaller wording defect went with it:
+      diagnostic text in this area said a contract was "declared in ply.yaml" in
+      contexts where it could just as easily be an inline `#[ply::requires]`/
+      `#[ply::ensures]` on the callee itself -- corrected in `W0511`'s
+      `conditional_verdict_diag` and the three E0502/E0503 title strings to describe the
+      contract neutrally rather than naming the wrong source.
+- [x] **D6 (non-blocking, real) — a mutation-decorated verdict broke bound parsing.**
+      `parse_bound` (`verify.rs`, feeds the `known_bounded` map branch one composes
+      against) matched only a bare `bounded(k)` string; a `·spec-strong`-decorated
+      verdict failed to parse, silently dropping that claim out of `known_bounded` and
+      its callers to branch two. Fixed by stripping the `·spec-strong` suffix before
+      parsing, matching the same handling `record.rs`'s `verdict_is_earnable` already
+      had for the identical shape.
+- [x] Fixtures added, each with its own permanent e2e test:
+      `stubverifiedveclen` (D1, the reviewer's length-indexed-parameter shape, entered
+      the suite permanently as required), `stubverifiedtuparg` (D2, a tuple-pattern
+      parameter), `stubverifiedtamperedbound` (D3, a live hand-edit-and-reverify
+      reproduction), `stubverifiedinlineaudit` (D4, `audit` + `worklist`). All four
+      confirmed red-first against the isolated defect and green with the fix restored,
+      including a red-first pass over D3's own live e2e reproduction (hand-editing
+      `ply.lock` and re-running against the pre-fix "any `j <= k`" rule accepted the
+      tampered `bounded(4)`; the fix refuses it and re-earns `bounded(2)`). D6 also
+      carries its own unit test (`parse_bound`, spec-strong-decorated input).
+      `cargo test --workspace`: 321 passed, 0 failed, 0 ignored, across 50 test
+      binaries; `cargo fmt --all` made no changes; `cargo clippy --workspace
+      --all-targets -- -D warnings` clean.
+
 ## Phase 1a — landed 2026-08-25
 
 Full write-up with verbatim red-first failures: `docs/phase-1a.md`.
@@ -25,7 +341,18 @@ Full write-up with verbatim red-first failures: `docs/phase-1a.md`.
 
 - [ ] `check`'s staleness tier — blocked on `ply.lock` (Phase 1c); its absence is currently
       declared in `coverage.not_checked`.
-- [ ] `check`'s architecture tier — M2, same.
+- [x] `check`'s architecture tier — crate level BUILT (`6fac707`), and it reads the real
+      dependency graph rather than guessing. Carries a known defect found by review: it is
+      blind to binary-only crates, so it reports a clean pass on this repo's own violation.
+      FIXED (`a4c8675`), verified against this repo in both directions, and the repo now
+      declares and checks its own architecture (`ply.yaml`, committed). A second review
+      then found a blocker that outranks it: a run in which the architecture check could
+      not happen at all — a broken manifest, no cargo, or a dependency cycle — prints "No
+      problems found" and exits 0, so CI goes green on a run that checked nothing. That is
+      the eighth instance of absence-of-evidence reading as success. Reproduced
+      independently; fix dispatched. The item level is CANCELLED as specified — see the resolvability
+      measurement (`fed5bf3`): one call site in five is resolvable from source, so that tier
+      would report on a minority of the program and its silence would read as approval.
 - [ ] JSON-pointer → (line, col) index for `E0201`/`E0204` (§5). The pointer ships; the line
       does not, and §5 now says a guessed line is worse than none.
 - [ ] Multi-file `ply.yaml` discovery and merge (§5) — and with it, `E0202` across files,
@@ -105,7 +432,106 @@ The review that forced it: `docs/review-result-reuse.md`.
       record. Fable's answer was yes — a hand-maintained "only when it matters" flag
       recreates the judgment call the design exists to eliminate. Not yet revisited.
 
+## Reach — types, methods, and four false cleans found closing them (2026-08-27)
+
+Driven by a yardstick rather than by opinion: `tests/fixtures/ratelimiter/` is a working
+rate limiter designed by someone told NOT to think about checkability and not told this
+project existed. Every number below is measured against it.
+
+- [x] **`usize`, `isize`, the `NonZero` family and `Duration`** (`4ce1c1c`). Type coverage
+      on the yardstick went from 3 of 70 uses to 25. My own estimate had been 82 percent;
+      the real figure is 36, because a duration nested inside an `Option` is not a bare
+      one and covering those would reintroduce the false-counterexample risk the work
+      exists to prevent. Second over-estimate of the day, same mistake both times:
+      counting something adjacent to the question and reporting it as the answer.
+- [x] **Methods resolve, and receiverless functions check** (`c1ea364`). Ply could not find
+      methods at all — its own schema documented `Type::method` and the anchor did not
+      resolve — and **no config in this repository that had ever been run through a real
+      check claimed a method**, which is why nobody noticed. Two defects were found by hand
+      before it landed: the generated harness imported a method as if it were an importable
+      item, and separately **any** zero-parameter function failed the same way, latent since
+      the sampling tier was built.
+- [x] **The ninth and tenth false cleans** (`62f4c74`, review `7f6bfe8`). Ply decided which
+      function a promise was ABOUT separately from which function the test would CALL, so
+      two same-named types in different modules made them disagree: a promise saying the
+      answer is 999, on a body returning 5, reported a clean pass on a different function
+      entirely. Fixed structurally — the called path is now derived from the resolution, so
+      the two cannot drift. Building the multi-module fixture that proved it then exposed
+      the tenth and worse: **the filter selecting which generated test to run matched
+      nothing for any method, so zero tests ran and the result was reported as held.** Every
+      method check had been passing without executing anything.
+- [x] **Floats, and one type list per engine** (`2443b85`). A type the sampler can build is
+      now checkable even where the prover cannot reason about it; a proof requested on such
+      a type is refused by name. Floats reach the property the yardstick's author named as
+      least trusted. Three honesty features arrived unasked: a run whose precondition
+      rejected 92 of 156 draws says its 64 accepted cases are weaker evidence than the
+      number suggests; NaN and infinity are excluded by default and the run says it
+      therefore says nothing about them; an unrenderable failing input says so and adds
+      that Ply never invents one.
+
+- [ ] **Strings and collections on the sampling tier.** Did not land; the mechanism now
+      exists. This is where parsing and validation bugs live, so it is the highest-value
+      remaining type work.
+- [ ] KNOWN GAP: a constructor returning `Result<Self, E>` — a real shape in the yardstick
+      — is still refused.
+- [ ] KNOWN GAP: `NonZero` and `Duration` are top-level only, never nested inside `Option`,
+      `Result`, arrays or collections.
+- [ ] Building a receiver, so methods that need one become checkable. Design settled in
+      `docs/review-self-construction.md`; the fourth option there (constructor plus a
+      bounded sequence of the type's own operations, with the length reported) is the one
+      to build, not constructor-only.
+- [ ] **The suite re-proves the same fixture up to eight times per run**, which is most of
+      the wall clock on every verification cycle. Making a proof earned once in a run serve
+      the other tests that need it would turn forty-minute waits into minutes. Deferred all
+      day behind more interesting work; it is now the biggest drag on the loop.
+
+**The method that actually worked, recorded because it is the transferable part:** verify
+with a promise that is FALSE. A passing check proves nothing — my own verification of the
+methods work used a true promise, saw a pass, and called it verified while nothing was
+running at all. Ten false cleans on this branch, every one found by real code or
+adversarial review, none by the suite.
+
 ## Agreed with the maintainer, not yet started
+
+- [x] **DECIDED 2026-08-26: the architecture verdict is code, never a model.** The
+      question was raised and settled: since the architecture tier is *approximate* by
+      nature — warnings by default, an escape hatch that takes a written reason — would a
+      model be the better enforcer? No. Approximate and nondeterministic are different
+      properties: a source-reading checker is wrong in the same places every run and can
+      enumerate what it could not see, while a model is wrong in different places each run
+      and cannot. Full argument, including two repairs to the reasoning that reached the
+      right answer for partly wrong reasons: `docs/review-architecture-enforcement.md`
+      (`b32deba`).
+
+      What that review changed about the plan, and what to actually do when this starts:
+
+      - **Crate tier first.** Cargo already knows the dependency graph exactly. Cheap,
+        sound, errors rather than warnings. Then turn it on this repository immediately —
+        self-hosting is the point, not a follow-up.
+      - **Measure before committing to depth.** A rough count says ~60% of this
+        workspace's own call sites are method calls, the shape a source reader handles
+        worst. Turn that estimate into a real number first; it decides how much
+        function-level checking is worth building at all.
+      - **The hand-run spike is rejected as designed** — circular (a model drafts the
+        description it then checks itself against), and unscoreable. Replaced with seeded
+        violations, including one behind dynamic dispatch, measured against ground truth.
+      - **The unexhausted middle rung**: a real type-resolving backend sits between
+        reading source and asking a model, and the extractor was made swappable for
+        exactly that. "Source reader or model" was a false choice.
+      - **A model's place is upstream only** — drafting the architecture description,
+        triaging call sites the reader could not place, proposing where an exception is
+        warranted. Propose, never decide. Anything it proposes gets confirmed
+        mechanically (the span exists, the item exists, the name matches) before it is
+        ever reported.
+      - **KNOWN RISK, recorded because it fails quietly**: "propose, never decide"
+        collapses the moment proposals are rubber-stamped. A model-drafted architecture
+        description that someone skims and approves is architecture-as-vibes laundered
+        through a deterministic checker. The rule that goldens are reviewed rather than
+        blind-accepted has to reach it.
+      - **Not an exception to the thesis.** A model rung has no oracle, and `strict: true`
+        means this tier is designed to gate merges — so "it's only warnings" is not a
+        defence available here.
+
 
 - [ ] **D7 for stubbed crossings — `W0541 stub_substituted`** (planned
       2026-08-25, `docs/plans/d7-stub-failures.md`). The Kani-pin spike proved a
@@ -322,7 +748,10 @@ costs: `docs/post-004-fixes.md`. Four commits, one per item plus item 1's spec-a
       0.036s `Option<u32>`, 0.040s `Result<u32,u8>`, 0.036s `[u32; 4]`, 0.041s
       `[u32; 16]`, 0.028s alias. No unwind annotation for an array — its bound is a
       compile-time constant. Commit `593cf9a`.
-- [ ] **KNOWN GAP — D5's *first* branch is still not implemented.** A callee that passed
+- [x] **D5's first branch IS implemented** (`5671ab5`, then `dc1e7ed`/`4ca1c9e` closing six
+      defects an adversarial review found — one of them a false clean verdict). Superseded
+      text follows, kept because its concrete example is still the right one. **KNOWN GAP
+      (was) — D5's *first* branch is still not implemented.** A callee that passed
       its own Kani proof this run is inlined, not `stub_verified`, because callees-first
       scheduling (ADR-0003's "entire soundness guarantee", living unlinked in
       `tools/schedule`) is not promoted into the product. Concretely: 004's
@@ -843,8 +1272,9 @@ wall clock, 72 tests (was 53), zero warnings on `cargo check --workspace --tests
 - [x] Engine-limit diagnostics specced (52222ab) — §8 now requires timeout/unsupported
       to name the cause and populate `fixes`, with the boundary written in: Ply
       proposes, never rewrites. IMPLEMENTATION still owed when the engines are wired.
-- [ ] `schema/ply.schema.json` is called normative in §5/D3 and does not exist —
-      build it or cut the claim.
+- [x] `schema/ply.schema.json` was called normative in §5/D3 while not existing. BUILT
+      (`c8528ce`) and load-bearing: the key vocabulary and required-field list are read from
+      it at runtime. Also recorded at the top of this file under Phase 1a.
 - [ ] Separate declared ceilings from earned verdicts in the type system (both are
       `Evidence` today; only convention keeps them apart).
 - [ ] `trusted` claims are unrestricted prose — no identity, date, commit, scope, or

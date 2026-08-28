@@ -83,6 +83,67 @@ pub fn copy_fixture(name: &str) -> FixtureCopy {
     FixtureCopy { dir }
 }
 
+/// Copies a *multi-crate* fixture tree verbatim (`wsmember`: a workspace
+/// root plus member crates), rewriting the `ply-attrs` path dependency to
+/// an absolute path in every `Cargo.toml` under the copy, whatever depth
+/// each member sits at -- `copy_fixture` above only handles the common
+/// single-crate-at-the-root shape (one fixed relative depth). Returns the
+/// scratch dir itself; callers join the member subdirectory they want to
+/// point `cargo-ply verify` or `cargo build`/`cargo test` at.
+pub fn copy_fixture_tree(name: &str) -> TempDir {
+    let src = repo_root().join("tests/fixtures").join(name);
+    assert!(src.is_dir(), "no such fixture: {}", src.display());
+    let dir = tempfile::tempdir().expect("tempdir");
+    copy_dir_recursive(&src, dir.path());
+    let ply_attrs_abs = repo_root().join("crates/ply-attrs");
+    let rewrote = rewrite_ply_attrs_paths(dir.path(), &ply_attrs_abs);
+    assert!(
+        rewrote > 0,
+        "no Cargo.toml under {} referenced crates/ply-attrs by relative path",
+        src.display()
+    );
+    dir
+}
+
+/// Walks `dir` for every `Cargo.toml` and replaces the quoted path value on
+/// any `path = "..."` line that mentions `crates/ply-attrs` with `abs`.
+/// Returns how many files were rewritten, so the caller can assert it found
+/// at least one (the same sanity check `copy_fixture` does with `assert_ne!`).
+fn rewrite_ply_attrs_paths(dir: &Path, abs: &Path) -> u32 {
+    let mut rewritten_count = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_dir() {
+            rewritten_count += rewrite_ply_attrs_paths(&path, abs);
+            continue;
+        }
+        if path.file_name().and_then(|n| n.to_str()) != Some("Cargo.toml") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        if !text.contains("crates/ply-attrs") {
+            continue;
+        }
+        let mut out = String::with_capacity(text.len());
+        for line in text.lines() {
+            if line.contains("crates/ply-attrs") && line.contains("path = \"") {
+                let start = line.find("path = \"").unwrap() + "path = \"".len();
+                let end = start + line[start..].find('"').unwrap();
+                out.push_str(&line[..start]);
+                out.push_str(&abs.display().to_string());
+                out.push_str(&line[end..]);
+            } else {
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+        std::fs::write(&path, out).unwrap();
+        rewritten_count += 1;
+    }
+    rewritten_count
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path) {
     for entry in std::fs::read_dir(src).unwrap() {
         let entry = entry.unwrap();
@@ -175,4 +236,101 @@ pub fn run_cargo_test(crate_dir: &Path) -> CargoTestRun {
         success: output.status.success(),
         combined_output: combined,
     }
+}
+
+/// Runs plain `cargo build` in `crate_dir` -- no `--lib` restriction, so
+/// pointed at a *workspace root* it builds every member. Used to prove a
+/// multi-crate workspace still builds after `cargo ply verify` ran against
+/// one of its members (docs/review-caveats.md N1: the only prior
+/// workaround broke exactly this).
+pub fn run_cargo_build(crate_dir: &Path) -> CargoTestRun {
+    let output = Command::new("cargo")
+        .current_dir(crate_dir)
+        .arg("build")
+        .output()
+        .expect("spawning cargo build");
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    CargoTestRun {
+        success: output.status.success(),
+        combined_output: combined,
+    }
+}
+
+/// A private copy of Ply's own source tree, built and edited independently
+/// of this checkout -- what the decisive build-identity test needs
+/// (The-Ply-Spec.md §5.2a input 11): to change what a *build* of Ply
+/// hashes, without ever touching the source this test suite itself runs
+/// from.
+///
+/// Copies everything a workspace build of `ply-cli` reads: the root
+/// manifest and lockfile, every crate under `crates/`, and `schema/`
+/// (`ply_core::schema` embeds `schema/ply.schema.json` via `include_str!`
+/// at a path relative to `ply-core`'s own manifest, so it must exist at the
+/// same relative depth in the copy). `target/` lives *inside* the copy too,
+/// deliberately -- not shared with this repo's own `target/` -- so the
+/// whole thing, source and every build artifact alike, is one tempdir that
+/// vanishes on drop and never touches this checkout's build state.
+pub struct PlySourceCopy {
+    dir: TempDir,
+}
+
+impl PlySourceCopy {
+    /// `crates/ply-core/src` inside the copy -- edit a file under here
+    /// between two calls to `build()` to change what the next build's
+    /// identity hashes, honestly: a real second build from real changed
+    /// source, not a hand-substituted string.
+    pub fn ply_core_src(&self) -> PathBuf {
+        self.dir.path().join("crates/ply-core/src")
+    }
+
+    /// Builds `cargo-ply` from this copy (its own self-contained
+    /// `target/`) and returns the binary's path. Safe to call more than
+    /// once on the same copy after editing its source between calls --
+    /// each call is an ordinary incremental `cargo build`.
+    pub fn build(&self) -> PathBuf {
+        let target_dir = self.dir.path().join("target");
+        let status = Command::new("cargo")
+            .current_dir(self.dir.path())
+            .args(["build", "-p", "ply-cli"])
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .status()
+            .expect("spawning `cargo build -p ply-cli` in the Ply source copy");
+        assert!(status.success(), "cargo build (Ply source copy) failed");
+        target_dir.join("debug/cargo-ply")
+    }
+}
+
+/// Copies Ply's own source tree into a fresh tempdir. See
+/// [`PlySourceCopy`]'s own doc for exactly what is copied and why.
+pub fn copy_ply_source() -> PlySourceCopy {
+    let root = repo_root();
+    let dir = tempfile::tempdir().expect("tempdir");
+    for name in ["crates", "schema"] {
+        let dst = dir.path().join(name);
+        std::fs::create_dir_all(&dst).unwrap();
+        copy_dir_recursive(&root.join(name), &dst);
+    }
+    for name in ["Cargo.toml", "Cargo.lock"] {
+        std::fs::copy(root.join(name), dir.path().join(name)).unwrap();
+    }
+    // The workspace root declares `tests/e2e` as an explicit member --
+    // cargo requires that manifest to exist even though building `-p
+    // ply-cli` never compiles its test binaries -- so its library half
+    // (never the `tests/` integration tests, which are not needed to
+    // build the binary) comes along too.
+    std::fs::create_dir_all(dir.path().join("tests/e2e/src")).unwrap();
+    std::fs::copy(
+        root.join("tests/e2e/Cargo.toml"),
+        dir.path().join("tests/e2e/Cargo.toml"),
+    )
+    .unwrap();
+    copy_dir_recursive(
+        &root.join("tests/e2e/src"),
+        &dir.path().join("tests/e2e/src"),
+    );
+    PlySourceCopy { dir }
 }

@@ -1,0 +1,9 @@
+[package]
+name = "ply-fixture-wsmember-beta"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ply_fixture_wsmember_beta"
+path = "src/lib.rs"

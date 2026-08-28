@@ -1,12 +1,15 @@
 //! `cargo ply check` (§6): "schema + anchors + architecture.
 //! Fast, no engines."
 //!
-//! **One of those three tiers does not exist yet**, and this command says
-//! so in both its surfaces rather than letting a clean run read as full
-//! coverage: the architecture tier needs the crate and call graphs (M2).
-//! (There is no staleness tier any more: `verify` re-hashes every recorded
-//! result at the moment of use, D14/§5.2a, so there is no recorded-but-
-//! possibly-stale state for this command to report on.) What runs here is:
+//! Architecture's **crate tier** (§5.3, first paragraph) now runs: the real
+//! crate dependency graph, from `cargo metadata`, checked against declared
+//! components and `edges:`/`deny:`. Its **item tier** (calls, capabilities,
+//! ownership, profile bans — approximate, from syn) is a separate, later
+//! milestone and does not run here; the coverage report says so rather than
+//! letting a clean run read as full coverage. (There is no staleness tier
+//! any more: `verify` re-hashes every recorded result at the moment of use,
+//! D14/§5.2a, so there is no recorded-but-possibly-stale state for this
+//! command to report on.) What runs here is:
 //!
 //! - **schema** — the document against `schema/ply.schema.json` (`E0201`,
 //!   `E0204`), then every document-local rule that needs no code behind the
@@ -19,6 +22,9 @@
 //!   this path resolve *anywhere* in the crate? — purely so `E0301` can
 //!   say which of the two things went wrong: a name that exists nowhere,
 //!   or a name that exists somewhere this slice cannot verify from.
+//! - **architecture** — `ply_core::arch`: the real crate
+//!   dependency graph from `cargo metadata`, checked against declared
+//!   components (`A0401`) and `deny:` patterns (`A0405`).
 //!
 //! No engines start, so this command produces no verdicts. Every node in
 //! its envelope reads `unclaimed`, and that is the command reporting no
@@ -28,6 +34,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
+use ply_core::arch::{self, ArchFinding, ArchTally};
 use ply_core::callgraph::Resolver;
 use ply_core::check::Target;
 use ply_core::diag::{Coverage, Diagnostic, Envelope, Node, Tier};
@@ -44,10 +51,22 @@ const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What `check` could not look at, in the words a user needs to know what
 /// their green run did not cover. Exact strings: they are the whole point of
 /// the tier, and they are tested as such.
-const ARCHITECTURE_GAP: &str = "NOT CHECKED. The `edges:` and `deny:` lines are read and their \
-     form is checked, and an edge that is redundant or names an external is reported — but \
-     nothing compares them against what your code actually calls. A call that violates a `deny` \
-     rule will not be reported here.";
+///
+/// The crate-level half of architecture is now checked (see
+/// [`ArchOutcome::Ran`]'s own detail sentence); this is what remains --
+/// the item tier, which needs the syn-backed extractor this milestone does
+/// not build.
+const ITEM_TIER_GAP: &str = "NOT CHECKED. Ply now checks whether one crate depends on another \
+     crate across a boundary no `edges:` line allows. It does not yet look inside your \
+     functions: a call from one function to another, use of a capability like the filesystem or \
+     the network, or a change to a type another component owns can still cross that same \
+     boundary with nothing here noticing.";
+
+/// The crate-tier architecture check did not run at all -- the document
+/// failed the schema before `check` ever got this far, and there was
+/// nothing well-formed to read dependencies for.
+const ARCH_NOT_REACHED: &str = "NOT REACHED. The document did not pass the schema, so there was \
+     nothing well-formed to check crate dependencies against.";
 
 /// The sentence that stops a clean `check` from reading like a verified
 /// codebase.
@@ -97,7 +116,11 @@ pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
         Loaded::Document(doc) => *doc,
         Loaded::SchemaViolations(violations) => {
             return Ok(CheckReport {
-                envelope: envelope(empty_workspace(), violations, coverage(None)),
+                envelope: envelope(
+                    empty_workspace(),
+                    violations,
+                    coverage(None, ArchOutcome::NotReached),
+                ),
                 document: yaml_path.display().to_string(),
             });
         }
@@ -111,15 +134,140 @@ pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
     // Tier 2: anchors.
     let anchors = check_anchors(crate_dir, &doc, &mut diagnostics);
 
+    // Tier 3: architecture's crate tier (§5.3, first paragraph) -- the real
+    // crate dependency graph from `cargo metadata`, checked against
+    // declared components and `edges:`/`deny:`.
+    let arch_outcome = run_architecture_tier(crate_dir, &doc, &mut diagnostics);
+
     let root = workspace_node(&doc);
     Ok(CheckReport {
-        envelope: envelope(root, diagnostics, coverage(Some(anchors))),
+        envelope: envelope(root, diagnostics, coverage(Some(anchors), arch_outcome)),
         document: yaml_path.display().to_string(),
     })
 }
 
+/// What the crate-tier architecture check managed to look at, for the
+/// coverage report -- the same honest-gap discipline [`AnchorTally`]
+/// already follows: a green run must say what ran, not just what it found.
+pub enum ArchOutcome {
+    /// The tier ran: `cargo metadata` produced a real graph, and every
+    /// cross-component dependency in it was classified.
+    Ran(ArchTally),
+    /// `cargo metadata` could not be run, or its output could not be read
+    /// -- the tier did not run, and the reason is reported rather than the
+    /// run being assumed clean.
+    Unavailable(String),
+    /// The document never reached this tier at all (it failed the schema
+    /// first).
+    NotReached,
+}
+
+/// Runs `cargo metadata` in `crate_dir`, classifies every real
+/// cross-component crate dependency against `doc`'s declared components,
+/// edges and deny rules (`ply_core::arch::check_architecture`), and pushes
+/// every finding (`A0401`, `A0405`, and the rest of the `A04xx` family) onto
+/// `diagnostics`.
+///
+/// docs/review-architecture-tier.md, finding 1: when `cargo metadata` itself
+/// fails -- a broken manifest, `cargo` missing from `PATH`, a package
+/// dependency cycle -- this tier did not merely skip a component of the
+/// report, it produced **no error at all**: no diagnostic, no status on any
+/// node, exit 0, with the failure buried as a sentence inside the coverage
+/// report. That is an absence of evidence reported as a pass (§1), so it is
+/// now `A0409`, an error-severity diagnostic -- which is what makes
+/// `CheckReport::exit_code` return 1 for it, the same way any other
+/// error-severity finding does, with no separate exit-code special case
+/// needed.
+fn run_architecture_tier(
+    crate_dir: &Path,
+    doc: &Document,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ArchOutcome {
+    match arch::crate_dependency_graph(crate_dir) {
+        Ok(graph) => {
+            let (findings, tally) = arch::check_architecture(doc, &graph);
+            for f in &findings {
+                diagnostics.push(arch_diag(f));
+            }
+            ArchOutcome::Ran(tally)
+        }
+        Err(e) => {
+            diagnostics.push(arch_unavailable_diag(&e.to_string()));
+            ArchOutcome::Unavailable(e.to_string())
+        }
+    }
+}
+
+/// `A0409`: the architecture check could not run at all, because Ply could
+/// not get this crate's real dependency graph. Reproduced
+/// (docs/review-architecture-tier.md, finding 1) three ways: a broken
+/// `Cargo.toml` anywhere in the workspace, `cargo` missing from `PATH`, and
+/// a package dependency cycle -- the last one matters most, because a cycle
+/// is exactly the shape a `ply.yaml` boundary rule is usually written to
+/// prevent, so a run that cannot see the graph at all is the one case where
+/// silence would be most dangerous.
+fn arch_unavailable_diag(reason: &str) -> Diagnostic {
+    Diagnostic {
+        code: "A0409".into(),
+        severity: "error".into(),
+        phase: "check".into(),
+        engine: "ply".into(),
+        check: "architecture".into(),
+        node_id: "ply.yaml".into(),
+        title: format!(
+            "Ply could not check whether one crate in this workspace depends on another across \
+             a boundary this document does not allow, because it could not get the real \
+             dependency graph: {reason} — that is not a clean result, it means this run did not \
+             look. Fix the problem named above, then check again."
+        ),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: Some("architecture_not_checked".into()),
+    }
+}
+
+/// §5.3: the crate tier is exact and sound, so every finding it produces is
+/// an error -- there is no advisory form the way item-tier findings have
+/// one under `strict: false`.
+fn arch_diag(f: &ArchFinding) -> Diagnostic {
+    Diagnostic {
+        code: f.code.into(),
+        severity: "error".into(),
+        phase: "check".into(),
+        engine: "ply".into(),
+        check: "architecture".into(),
+        node_id: f.node_id.clone(),
+        title: f.message.clone(),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
 /// What the anchor tier managed to look at — the numbers the human summary
 /// reports, so a reader can tell "all fine" from "nothing was looked at".
+///
+/// **`resolved` now also counts a `Type::method` claim Ply found but
+/// refuses to check for a stated, scope reason** -- a receiver method, a
+/// trait method, a generic `impl` block, or two candidates its syntactic
+/// reader cannot pick between -- exactly as `verify` counts them among the
+/// fns it resolved (adversarial review, 2026-08-27: before this, `check`
+/// was the one command that had no pre-check for these, so it folded all
+/// four into `unresolved` under `E0301`, the code that means "this claim
+/// describes nothing" — which made `check` and `verify` report two
+/// different numbers for the same document: 6 of 39 here, 39 of 39 there,
+/// for a crate where every single claim named a real method). A private fn
+/// Ply cannot verify from, or a signature/contract shape it cannot read,
+/// still count as `unresolved` here -- deliberately unchanged, because
+/// `verify` folds those two into its own `unclaimed` bucket the same way
+/// today; narrowing `unresolved` further than that would just move the
+/// disagreement rather than close it.
 pub struct AnchorTally {
     pub resolved: usize,
     pub unresolved: usize,
@@ -127,6 +275,10 @@ pub struct AnchorTally {
     /// `verify` is single-crate, so their anchors simply cannot be resolved
     /// from here, and reporting them as errors would be wrong.
     pub elsewhere: usize,
+    /// There was no `src/lib.rs` to resolve any claim against, so the
+    /// counts above describe a search that never happened. The summary
+    /// sentence has to say that outright rather than report a tidy zero.
+    pub no_library: bool,
 }
 
 fn check_anchors(
@@ -138,12 +290,52 @@ fn check_anchors(
         resolved: 0,
         unresolved: 0,
         elsewhere: 0,
+        no_library: false,
     };
     let lib_path = crate_dir.join("src/lib.rs");
     let Ok(lib_src) = std::fs::read_to_string(&lib_path) else {
-        // No local crate to resolve against. Every claim falls into
-        // "elsewhere", and the summary says so rather than inventing errors.
-        tally.elsewhere = count_fn_claims(doc);
+        // There is no library here to resolve anything against. This used
+        // to be counted as "anchored to another crate", which reads as a
+        // deliberate boundary and let the command exit 0 having resolved
+        // nothing -- a binary-only crate (`src/main.rs`, no `src/lib.rs`)
+        // got a clean `check` for claims `verify` then refused by name
+        // (`E0301`, exit 1). A run that could not look must not read like a
+        // run that looked and was satisfied (§1), and the two commands have
+        // to agree about the same fact, so every claim is unresolved and
+        // says why.
+        // Nested components carry claims too, so this walks the same tree
+        // `count_fn_claims` does rather than only the top level -- a claim
+        // Ply cannot look for must be reported wherever it was written.
+        fn walk_no_library(
+            qualified: &str,
+            comp: &Component,
+            lib_path: &Path,
+            diagnostics: &mut Vec<Diagnostic>,
+            tally: &mut AnchorTally,
+        ) {
+            for fn_name in comp.fns.keys() {
+                tally.unresolved += 1;
+                diagnostics.push(no_library_diag(
+                    &format!("{qualified}::{fn_name}"),
+                    fn_name,
+                    lib_path,
+                ));
+            }
+            for (child, sub) in &comp.components {
+                walk_no_library(
+                    &format!("{qualified}::{child}"),
+                    sub,
+                    lib_path,
+                    diagnostics,
+                    tally,
+                );
+            }
+        }
+        for (name, comp) in &doc.components {
+            walk_no_library(name, comp, &lib_path, diagnostics, &mut tally);
+        }
+        debug_assert_eq!(tally.unresolved, count_fn_claims(doc));
+        tally.no_library = true;
         return tally;
     };
     let local_anchors = local_anchor_names(crate_dir);
@@ -182,6 +374,58 @@ fn walk_anchors(
     if is_local(local_anchors, &comp.anchor) {
         for fn_name in comp.fns.keys() {
             let node_id = format!("{qualified}::{fn_name}");
+            // The same pre-check `verify` runs, in the same order, for the
+            // same reason (`verify.rs`'s own comment on this): a
+            // `Type::method` claim naming something real but out of this
+            // slice's scope (a receiver, a generic `impl` block, a trait
+            // method) or that the syntactic reader cannot pick between must
+            // never be reported as "could not find the function" -- that is
+            // false, Ply found it and is refusing it for a stated reason.
+            // Before this, only `verify` ran this pre-check, so this
+            // command folded all four of those into `unresolved` under the
+            // "describes nothing" code, and the two commands' headline
+            // counts disagreed (adversarial review, 2026-08-27).
+            if let Some(r) = resolver.as_deref_mut() {
+                match r.lookup_fn(fn_name) {
+                    ply_core::callgraph::Resolution::Refused(reason) => {
+                        tally.resolved += 1;
+                        // The resolver refuses every method that takes a
+                        // receiver, because it predates receiver
+                        // construction. `verify` no longer stops there: it
+                        // tries to build one from the type's own constructor
+                        // plus a bounded sequence of the type's own
+                        // operations, and where that succeeds it checks the
+                        // method and finds real violations. Reporting the
+                        // resolver's blanket refusal here told users a
+                        // feature that works does not exist -- and `check`
+                        // is the command people run first, so they would
+                        // never reach `verify` to find out otherwise
+                        // (adversarial review, 2026-08-27). Ask the same
+                        // question `verify` asks, and only report the
+                        // refusal when the answer is genuinely no.
+                        let buildable = lib_path.parent().and_then(|src| src.parent()).is_some_and(
+                            |crate_dir| {
+                                ply_core::harness::discover_method_with_receiver(crate_dir, fn_name)
+                                    .is_ok()
+                            },
+                        );
+                        if !buildable {
+                            diagnostics.push(crate::verify::refused_anchor_diag(&node_id, &reason));
+                        }
+                        continue;
+                    }
+                    ply_core::callgraph::Resolution::Ambiguous(reason) => {
+                        tally.resolved += 1;
+                        diagnostics.push(crate::verify::ambiguous_anchor_diag(
+                            &node_id, fn_name, &reason,
+                        ));
+                        continue;
+                    }
+                    ply_core::callgraph::Resolution::Found(_)
+                    | ply_core::callgraph::Resolution::Opaque(_)
+                    | ply_core::callgraph::Resolution::NotFound => {}
+                }
+            }
             // The same resolver `verify` anchors with, so the two commands
             // cannot disagree about which claims point at real code -- and,
             // since 2026-08-25, the same one call classification uses, so
@@ -268,6 +512,17 @@ fn unresolved_anchor_diag(
              code; what this slice cannot handle is the function's signature or its contract."
         ),
     };
+    // `Private`/`Shape` are left exactly as they were -- `E0301`, error,
+    // "unresolvable_anchor" -- and deliberately so: `verify` itself reports
+    // both of these the same way today (`discover_fn_with` wraps every
+    // `AnchorError` variant as one `anyhow::Error` and `verify`'s own
+    // `unresolved_anchor_diag` gives all of them `E0301`/error, folding the
+    // resulting fn into `unclaimed`). Only `Refused`/`Ambiguous` earned a
+    // sharper, warning-level diagnostic in `verify` (checked *before*
+    // `discover_fn_with` even runs), and this tier's pre-check above now
+    // mirrors exactly that split -- narrowing this function to the two
+    // facts `verify` still folds together here would make `check` disagree
+    // with `verify` in the opposite direction, which is not the fix.
     Diagnostic {
         code: "E0301".into(),
         severity: "error".into(),
@@ -328,7 +583,7 @@ fn count_fn_claims(doc: &Document) -> usize {
     doc.components.values().map(walk).sum()
 }
 
-fn coverage(anchors: Option<AnchorTally>) -> Coverage {
+fn coverage(anchors: Option<AnchorTally>, arch: ArchOutcome) -> Coverage {
     let mut checked = vec![Tier {
         tier: "schema".into(),
         detail: "The document against schema/ply.schema.json, then every rule that can be \
@@ -347,16 +602,100 @@ fn coverage(anchors: Option<AnchorTally>) -> Coverage {
                 .into(),
         }),
     }
+
+    let mut not_checked = Vec::new();
+    match arch {
+        ArchOutcome::Ran(tally) => {
+            checked.push(Tier {
+                tier: "architecture".into(),
+                detail: arch_detail(&tally),
+            });
+            not_checked.push(Tier {
+                tier: "item-level".into(),
+                detail: ITEM_TIER_GAP.into(),
+            });
+        }
+        ArchOutcome::Unavailable(reason) => {
+            not_checked.push(Tier {
+                tier: "architecture".into(),
+                detail: format!(
+                    "NOT CHECKED. Ply could not get this crate's real dependency graph, so \
+                     neither the crate-level nor the item-level part of the architecture check \
+                     ran: {reason}"
+                ),
+            });
+        }
+        ArchOutcome::NotReached => {
+            not_checked.push(Tier {
+                tier: "architecture".into(),
+                detail: ARCH_NOT_REACHED.into(),
+            });
+        }
+    }
+
     Coverage {
         checked,
-        not_checked: vec![Tier {
-            tier: "architecture".into(),
-            detail: ARCHITECTURE_GAP.into(),
-        }],
+        not_checked,
+    }
+}
+
+/// The claim could not be looked for at all, because there is no library
+/// here to look in. Written to be actionable by someone who has never seen
+/// Ply: name the missing thing, say what it does *not* mean, then give the
+/// two things that are actually wrong in practice.
+fn no_library_diag(node_id: &str, fn_name: &str, lib_path: &Path) -> Diagnostic {
+    Diagnostic {
+        code: "E0301".into(),
+        severity: "error".into(),
+        phase: "check".into(),
+        engine: "ply".into(),
+        check: "anchor".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "there is no library for Ply to look in, so `{fn_name}` was never searched for. \
+             Ply reads a crate's library code, which lives in {}, and that file does not \
+             exist here. This does not mean `{fn_name}` is missing -- nothing was looked at, \
+             which is a different and worse answer. If this crate is a binary (a `src/main.rs` \
+             and no `src/lib.rs`), move the code you want checked into a `src/lib.rs` and have \
+             `main.rs` call it. If you meant a different crate, point Ply at that crate's own \
+             directory rather than this one.",
+            lib_path.display()
+        ),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: Some("unresolvable_anchor".into()),
     }
 }
 
 fn anchor_detail(t: &AnchorTally) -> String {
+    if t.no_library && t.unresolved == 0 {
+        // A document with no fn claims at all has nothing to resolve, so
+        // the missing library cost it nothing. Saying "NOT RESOLVED" here
+        // would report a failure that did not happen -- the mirror of the
+        // bug this branch is otherwise about. Ply's own root `ply.yaml`,
+        // which declares only architecture, is exactly this case.
+        return "This document declares no fn claims, so there was nothing for this tier to \
+                resolve."
+            .to_string();
+    }
+    if t.no_library {
+        let claims = if t.unresolved == 1 {
+            "the one fn claim in this document was never looked for".to_string()
+        } else {
+            format!(
+                "none of the {} fn claims in this document were ever looked for",
+                t.unresolved
+            )
+        };
+        return format!(
+            "NOT RESOLVED. Ply resolved nothing: {claims}, because there is no `src/lib.rs` here for Ply \
+             to look in. This is not a count of zero problems -- it is a count of zero \
+             searches."
+        );
+    }
     let total = t.resolved + t.unresolved;
     let mut s = format!(
         "{} of {} fn claims in this crate point at a function Ply can find.",
@@ -367,6 +706,79 @@ fn anchor_detail(t: &AnchorTally) -> String {
             " {} more belong to a component anchored to another crate, which `verify` reads \
              contracts from rather than checking — their anchors are not resolved from here.",
             t.elsewhere
+        ));
+    }
+    s
+}
+
+/// §5.3's crate tier, told as a coverage sentence: how many real crate
+/// dependencies actually cross between two differently-declared
+/// components, and how they were classified.
+///
+/// docs/review-architecture-tier.md, findings 3 and 4:
+/// - **Finding 4** decided: `dev-dependencies`/`build-dependencies` stay
+///   excluded from enforcement (§5.3 is about code that ships, and a test
+///   harness legitimately wires components together in ways the shipped
+///   binary never does) -- but disclosed, so this sentence never again
+///   claims "no crate here depends on another" when one does, just not at
+///   runtime. "at runtime" below is the qualifier that keeps the base
+///   sentence honest even when every real crossing is a dev/build one.
+/// - **Finding 3** adds the denominator: how many crates in this workspace
+///   `cargo metadata` actually reports, and how many of those no declared
+///   component's anchor claims at all -- named, not left for a wildcard
+///   `deny:` to imply it already covers them (`*` only ever means "any
+///   *declared* component").
+fn arch_detail(t: &ArchTally) -> String {
+    let mut s = if t.cross_component_pairs == 0 {
+        "No crate here depends on another crate that belongs to a different declared \
+         component at runtime, so there was nothing to check."
+            .to_string()
+    } else {
+        let permitted = t.cross_component_pairs - t.violations;
+        let (n, verb) = if t.cross_component_pairs == 1 {
+            ("1 real crate dependency".to_string(), "crosses")
+        } else {
+            (
+                format!("{} real crate dependencies", t.cross_component_pairs),
+                "cross",
+            )
+        };
+        let mut s = format!(
+            "{n} {verb} between two differently-declared components: {permitted} permitted by a \
+             declared edge or by nesting, {} not permitted (reported below).",
+            t.violations
+        );
+        if t.deny_violations > 0 {
+            s.push_str(&format!(
+                " {} of them also match an explicit `deny:` rule (reported below).",
+                t.deny_violations
+            ));
+        }
+        s
+    };
+
+    if t.dev_or_build_cross_component_pairs > 0 {
+        let plural = if t.dev_or_build_cross_component_pairs == 1 {
+            "crosses"
+        } else {
+            "cross"
+        };
+        s.push_str(&format!(
+            " {} more {plural} a declared boundary only as a test or build dependency \
+             (`dev-dependencies`/`build-dependencies`) — not enforced, because that code never \
+             ships, but named here rather than dropped silently.",
+            t.dev_or_build_cross_component_pairs
+        ));
+    }
+
+    s.push_str(&format!(
+        " {} of {} crates in this workspace belong to a declared component.",
+        t.declared_crate_count, t.workspace_crate_count
+    ));
+    if !t.undeclared_crates.is_empty() {
+        s.push_str(&format!(
+            " Not declared, and so invisible even to a wildcard `deny:` rule: {}.",
+            t.undeclared_crates.join(", ")
         ));
     }
     s
@@ -442,6 +854,142 @@ mod tests {
     }
 
     const CLEAN_YAML: &str = "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      clamp:\n        checks: [bounded(2)]\n";
+
+    /// A crate that really, on disk, depends on `ply-attrs` (this
+    /// workspace's own tiny proc-macro crate, path-referenced absolutely) --
+    /// the crate tier's own acceptance tests need one real cross-crate
+    /// `cargo metadata` dependency to classify, and this is the cheapest
+    /// real one available: no network, no extra fixture crate to maintain.
+    /// `ply-attrs`'s own lib-target identifier (what an anchor must name)
+    /// is `ply_attrs` -- the package name with its hyphen turned to an
+    /// underscore, same as every other crate's default.
+    fn crate_with_real_dep(yaml: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+        std::fs::write(dir.path().join("ply.yaml"), yaml).unwrap();
+        let ply_attrs = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("ply-attrs");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+                 [dependencies]\nply-attrs = {{ path = {:?} }}\n",
+                ply_attrs.display().to_string()
+            ),
+        )
+        .unwrap();
+        dir
+    }
+
+    /// The plain default-deny case: `demo` really depends on `ply_attrs`
+    /// (a real `cargo metadata` edge), both are declared components, and
+    /// no `->` edge says `demo` may depend on `attrs` -- `A0401`, naming
+    /// both crates and both components, and saying plainly that no
+    /// declared edge permits it.
+    #[test]
+    fn an_undeclared_cross_component_crate_dependency_is_a0401_and_fails_the_run() {
+        let dir = crate_with_real_dep(
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n  attrs:\n    anchor: ply_attrs\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "A0401")
+            .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
+        assert_eq!(d.severity, "error");
+        assert!(d.title.contains("ply_attrs"), "{}", d.title);
+        assert!(d.title.contains("demo"), "{}", d.title);
+        assert!(d.title.contains("`attrs`"), "{}", d.title);
+        assert!(
+            d.title.contains("no `->` edge in this document says"),
+            "{}",
+            d.title
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    /// A declared `->` edge permits exactly this real dependency -- zero
+    /// diagnostics, and the coverage report says the crate tier actually
+    /// ran and found nothing wrong (not that it was skipped).
+    #[test]
+    fn a_declared_edge_permits_a_real_cross_component_dependency_and_the_run_is_clean() {
+        let dir = crate_with_real_dep(
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n  attrs:\n    anchor: ply_attrs\nedges:\n  - \"demo -> attrs\"\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        assert!(
+            report.envelope.diagnostics.is_empty(),
+            "{:#?}",
+            report.envelope.diagnostics
+        );
+        assert_eq!(report.exit_code(), 0);
+        let cov = report.envelope.coverage.as_ref().unwrap();
+        let checked = cov
+            .checked
+            .iter()
+            .find(|t| t.tier == "architecture")
+            .unwrap_or_else(|| panic!("{:#?}", cov.checked));
+        assert!(
+            checked
+                .detail
+                .contains("1 real crate dependency crosses between"),
+            "{}",
+            checked.detail
+        );
+        assert!(checked.detail.contains("1 permitted"), "{}", checked.detail);
+    }
+
+    /// A `deny:` rule is checked against the real graph independent of
+    /// whether an edge permits the dependency -- an explicit ban fires even
+    /// though the edge above would otherwise keep this clean, which is
+    /// exactly what makes `A0405` a different fact from `A0401`.
+    #[test]
+    fn a_deny_rule_violated_by_a_real_dependency_is_a0405_even_with_a_permitting_edge() {
+        let dir = crate_with_real_dep(
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n  attrs:\n    anchor: ply_attrs\n\
+             edges:\n  - \"demo -> attrs\"\ndeny:\n  - \"demo -> attrs\"\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "A0405")
+            .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
+        assert_eq!(d.severity, "error");
+        assert!(
+            !report
+                .envelope
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "A0401"),
+            "the edge permits it, so A0401 must not also fire: {:#?}",
+            report.envelope.diagnostics
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    /// §5.3: a component depending on its own nested descendant's crate is
+    /// never a violation, even with no edge declared at all -- containment
+    /// implies permission.
+    #[test]
+    fn a_component_depending_on_its_own_nested_crate_is_not_a_violation() {
+        let dir = crate_with_real_dep(
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    components:\n      attrs:\n        anchor: ply_attrs\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        assert!(
+            report.envelope.diagnostics.is_empty(),
+            "containment permits this with no edge declared: {:#?}",
+            report.envelope.diagnostics
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
 
     #[test]
     fn a_clean_crate_reports_no_problems_and_exits_zero() {
@@ -536,6 +1084,95 @@ mod tests {
         assert!(d.title.contains("private"), "{}", d.title);
     }
 
+    /// The disagreement this fixes (adversarial review, 2026-08-27): a
+    /// `Type::method` claim naming a method Ply finds and refuses for a
+    /// stated reason (here, a receiver it cannot build) is not "a claim
+    /// that describes nothing" -- `verify` already said so via its own
+    /// pre-check. Before this test could pass, `check` had no such
+    /// pre-check at all, so this exact claim counted as `unresolved` under
+    /// `E0301` -- the two commands disagreeing about the same fact for the
+    /// same document.
+    #[test]
+    fn check_does_not_deny_a_receiver_verify_can_actually_build() {
+        // `check` is the command people run first. It used to report the
+        // resolver's blanket "constructing a receiver is not supported yet"
+        // for every method taking `&self`, while `verify` built one from the
+        // type's own constructor and found real violations in the same
+        // function. A user who ran `check` would conclude the feature did
+        // not exist and never reach `verify`. Reproduced by hand before the
+        // fix (adversarial review, 2026-08-27).
+        let dir = crate_with(
+            "pub struct Calc { pub v: u32 }\nimpl Calc { pub fn new(v: u32) -> Self { Self { v:              v.min(10) } }\n  pub fn value(&self) -> u32 { self.v } }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      Calc::value: {}\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        assert!(
+            !report
+                .envelope
+                .diagnostics
+                .iter()
+                .any(|d| d.title.contains("receiver")),
+            "a receiver `verify` can build must not be reported as unsupported by `check`: {:#?}",
+            report.envelope.diagnostics
+        );
+    }
+
+    #[test]
+    fn check_still_refuses_a_receiver_that_genuinely_cannot_be_built() {
+        // The other direction, so the fix above cannot become "never refuse".
+        let dir = crate_with(
+            "pub struct Calc { pub v: u32 }\nimpl Calc { pub fn value(&self) -> u32 { self.v } }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      Calc::value: {}\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        assert!(
+            report
+                .envelope
+                .diagnostics
+                .iter()
+                .any(|d| d.title.contains("receiver")),
+            "a type with no constructor has no receiver to build, and `check` must say so: {:#?}",
+            report.envelope.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_method_refused_for_its_receiver_counts_as_resolved_not_unresolved() {
+        let dir = crate_with(
+            "pub struct Bucket { n: u32 }\nimpl Bucket { pub fn n(&self) -> u32 { self.n } }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      Bucket::n: {}\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        assert!(
+            !report
+                .envelope
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "E0301"),
+            "a method Ply found and refuses for a stated reason must never carry the code that \
+             means \"this claim describes nothing\": {:#?}",
+            report.envelope.diagnostics
+        );
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.node_id == "demo::Bucket::n")
+            .unwrap_or_else(|| {
+                panic!(
+                    "no diagnostic for demo::Bucket::n: {:#?}",
+                    report.envelope.diagnostics
+                )
+            });
+        assert_eq!(d.code, "V0507");
+        assert_eq!(d.severity, "warning");
+        assert!(
+            d.title.contains("Bucket::n") && d.title.contains("receiver"),
+            "{}",
+            d.title
+        );
+    }
+
     /// §5.3: an advisory finding is worth reporting and is not a violation.
     #[test]
     fn an_advisory_finding_is_reported_but_does_not_fail_the_run() {
@@ -576,18 +1213,41 @@ mod tests {
         );
     }
 
-    /// The tiers §6 promises that this command does not deliver. Exact
-    /// strings: a clean run's honesty is entirely carried by these two
-    /// sentences, so they are reviewed like the diagnostics are.
+    /// The tier §6 promises that this command does not yet fully deliver.
+    /// Exact strings: a clean run's honesty is entirely carried by this
+    /// sentence, so it is reviewed like the diagnostics are. The crate half
+    /// of architecture (this test's fixture has no cross-component
+    /// dependency at all) now runs and moves into `checked` --
+    /// [`the_crate_tier_reports_it_ran_with_nothing_to_check`] covers that
+    /// half; this test is only about what still doesn't run.
     #[test]
     fn the_report_names_the_tier_it_does_not_cover() {
         let dir = crate_with("pub fn clamp(x: u32) -> u32 { x }\n", CLEAN_YAML);
         let report = check_crate(dir.path()).unwrap();
         let cov = report.envelope.coverage.as_ref().unwrap();
         let names: Vec<&str> = cov.not_checked.iter().map(|t| t.tier.as_str()).collect();
-        assert_eq!(names, ["architecture"]);
-        assert_eq!(cov.not_checked[0].detail, ARCHITECTURE_GAP);
-        assert!(ARCHITECTURE_GAP.contains("`deny`"));
+        assert_eq!(names, ["item-level"]);
+        assert_eq!(cov.not_checked[0].detail, ITEM_TIER_GAP);
+    }
+
+    /// The crate tier's own honest-nothing-to-check-here sentence: a
+    /// single-crate fixture with no cross-component dependency at all still
+    /// reports the tier *ran*, not that it was skipped.
+    #[test]
+    fn the_crate_tier_reports_it_ran_with_nothing_to_check() {
+        let dir = crate_with("pub fn clamp(x: u32) -> u32 { x }\n", CLEAN_YAML);
+        let report = check_crate(dir.path()).unwrap();
+        let cov = report.envelope.coverage.as_ref().unwrap();
+        let checked = cov
+            .checked
+            .iter()
+            .find(|t| t.tier == "architecture")
+            .unwrap_or_else(|| panic!("{:#?}", cov.checked));
+        assert!(
+            checked.detail.contains("nothing to check"),
+            "{}",
+            checked.detail
+        );
     }
 
     /// §8's envelope, with `check` in the command field and a node tree that
@@ -624,5 +1284,101 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = check_crate(dir.path()).unwrap_err().to_string();
         assert!(err.contains("could not read a ply.yaml at"), "{err}");
+    }
+
+    // ---- Blocker 1 (docs/review-architecture-tier.md, finding 1) ----
+    //
+    // "No problems found in the document" printing, exit 0, while the
+    // architecture tier silently never ran at all -- reproduced here two of
+    // the review's three ways (a broken manifest; a real package
+    // dependency cycle). The third (`cargo` missing from `PATH`) needs a
+    // real subprocess environment to mutate safely and lives in
+    // `tests/e2e/tests/arch_unavailable.rs` instead.
+
+    /// (a) A bad version requirement anywhere in the workspace's manifests
+    /// makes `cargo metadata` fail outright. Before the fix this printed
+    /// "No problems found in the document." and exited 0, with the failure
+    /// buried as a sentence in the coverage report; now it is `A0409`, an
+    /// error-severity diagnostic, so the run fails and the diagnostic is
+    /// what a reader sees first.
+    #[test]
+    fn a_broken_manifest_makes_the_architecture_tier_a0409_not_a_clean_run() {
+        let dir = crate_with("pub fn clamp(x: u32) -> u32 { x }\n", CLEAN_YAML);
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nbogus = \"!!!\"\n",
+        )
+        .unwrap();
+        let report = check_crate(dir.path()).unwrap();
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "A0409")
+            .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
+        assert_eq!(d.severity, "error");
+        assert!(
+            d.title.contains("could not get the real dependency graph"),
+            "{}",
+            d.title
+        );
+        assert_eq!(report.exit_code(), 1, "an unchecked tier must not exit 0");
+    }
+
+    /// A tiny two-crate workspace where each crate depends normally on the
+    /// other -- a real package dependency cycle, which `cargo metadata`
+    /// refuses to produce a graph for at all. This is the review's own
+    /// headline reproduction: the exact shape a `deny:` rule is usually
+    /// written to catch is the one case that made the check stop running
+    /// entirely.
+    fn cycle_workspace() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crate_x\", \"crate_y\"]\nresolver = \"2\"\n",
+        )
+        .unwrap();
+        for (name, dep) in [("crate_x", "crate_y"), ("crate_y", "crate_x")] {
+            let sub = dir.path().join(name);
+            std::fs::create_dir_all(sub.join("src")).unwrap();
+            std::fs::write(sub.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+            std::fs::write(
+                sub.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+                     [dependencies]\n{dep} = {{ path = \"../{dep}\" }}\n"
+                ),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            dir.path().join("ply.yaml"),
+            "ply: 1\ncomponents:\n  x:\n    anchor: crate_x\n  y:\n    anchor: crate_y\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    /// (b, the review's headline case) A real package dependency cycle:
+    /// `cargo metadata` fails outright, so the crate tier cannot run --
+    /// `A0409`, not a clean exit 0.
+    #[test]
+    fn a_package_dependency_cycle_makes_the_architecture_tier_a0409() {
+        let dir = cycle_workspace();
+        let report = check_crate(dir.path()).unwrap();
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "A0409")
+            .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
+        assert_eq!(d.severity, "error");
+        assert!(
+            d.title.contains("cargo metadata") || d.title.contains("cyclic"),
+            "{}",
+            d.title
+        );
+        assert_eq!(report.exit_code(), 1);
     }
 }

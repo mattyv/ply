@@ -16,6 +16,17 @@
 //! supplies the missing input; `reach`'s own module comment states the one
 //! limit it cannot pass, and §5.2a states it to users.
 //!
+//! **A second input was missing, found 2026-08-26.** D5's first branch
+//! (§5.5) lets a caller's proof stand on a same-crate callee's own earned
+//! `bounded(k)`, composing to the weaker of the two bounds. Composing
+//! against a number is depending on that number, and nothing hashed it: a
+//! caller's record stayed unchanged when the callee's *declared checks*
+//! moved in `ply.yaml` (no source touched anywhere), so editing a callee
+//! from `bounded(5)` down to `bounded(2)` re-earned the callee's own record
+//! correctly while the caller kept reporting its stale `bounded(5)` --
+//! `[reused]`, standing on a callee this same run had just proved only to
+//! depth 2. `verified_bounds` is the fixed input.
+//!
 //! **The honesty rule is the whole design.** A stored verdict that reaches a
 //! reader without being re-hashed is a remembered opinion, and it can drift
 //! from the code silently for as long as nobody re-blesses it. A stored
@@ -98,6 +109,20 @@ pub struct FingerprintInputs {
     pub declared_ensures: Vec<String>,
     /// The promises assumed for the callees this claim crosses into.
     pub assumed: Vec<AssumedPromise>,
+    /// D5's first branch (§5.5): the same-crate callees this claim stands
+    /// on rather than assumes, each with the `bounded(k)` it earned *this
+    /// run* -- `(canonical path, k)`. Added 2026-08-26 after a review found
+    /// the gap it closes: composing a caller's bound against a callee's
+    /// earned depth is new evidence this claim's result depends on, and
+    /// before this field existed nothing hashed it. Editing only the
+    /// callee's *declared checks* in `ply.yaml` (`bounded(5)` down to
+    /// `bounded(2)`) with no source touched anywhere re-earns the callee's
+    /// own record correctly, but left the caller's record fingerprint
+    /// unchanged -- so the caller kept reporting its old, deeper composed
+    /// bound over a callee this same run had just proved shallower. That is
+    /// the exact overclaim §5.5's bound-composition rule exists to refuse,
+    /// arriving through the record instead of through composition.
+    pub verified_bounds: Vec<(String, u32)>,
     /// The worked examples a `test` check compiles into assertions. Editing
     /// one changes what the check asserts, so it changes the result.
     pub examples: Vec<String>,
@@ -137,13 +162,15 @@ pub struct FingerprintInputs {
 /// hashed on its own, so a run that could not carry a result forward can
 /// say **which** of them moved instead of silently re-paying engine cost
 /// (§5.2a).
-pub const INPUT_GROUPS: [&str; 11] = [
+pub const INPUT_GROUPS: [&str; 13] = [
     "which claim this is",
+    "the build of Ply that checked it",
     "the function's own source",
     "its contract",
     "the code it runs",
     "the worked examples it asserts",
     "the promises it assumes",
+    "the callees it stands on",
     "the checks that ran",
     "the engines behind them",
     "the compiler and the build target",
@@ -171,9 +198,18 @@ impl FingerprintInputs {
         match name {
             "which claim this is" => {
                 put("ply-fingerprint", "2");
-                put("ply-version", &self.ply_version);
                 put("node", &self.node_id);
                 put("fn-path", &self.fn_path);
+            }
+            // Its own group, not folded in with the claim's identity. Both
+            // invalidate, so the fingerprint is unchanged either way -- but
+            // a run that could not carry a result forward NAMES the group
+            // that moved, and "which claim this is changed" is a baffling
+            // thing to read after upgrading Ply, when nothing about the
+            // claim changed at all. Found by upgrading Ply and reading the
+            // sentence (2026-08-28).
+            "the build of Ply that checked it" => {
+                put("ply-version", &self.ply_version);
             }
             "the function's own source" => put("fn-source", &self.fn_source),
             "its contract" => {
@@ -208,6 +244,12 @@ impl FingerprintInputs {
                         put("assumed-ensures", e);
                     }
                     put("assumed-signature", &a.signature);
+                }
+            }
+            "the callees it stands on" => {
+                for (path, k) in &self.verified_bounds {
+                    put("verified-callee", path);
+                    put("verified-bound", &k.to_string());
                 }
             }
             "the checks that ran" => {
@@ -344,7 +386,13 @@ impl Record {
     /// read an entry without presenting both: the honesty rule is enforced
     /// by the shape of this function, not by remembering to call a checker
     /// first.
-    pub fn matching(&self, node_id: &str, fingerprint: &str, checks: &[String]) -> Match<'_> {
+    pub fn matching(
+        &self,
+        node_id: &str,
+        fingerprint: &str,
+        checks: &[String],
+        verified_bounds: &[(String, u32)],
+    ) -> Match<'_> {
         let Some(entry) = self
             .results
             .get(node_id)
@@ -352,7 +400,7 @@ impl Record {
         else {
             return Match::Miss;
         };
-        if !verdict_is_earnable(&entry.verdict, checks) {
+        if !verdict_is_earnable(&entry.verdict, checks, verified_bounds) {
             return Match::Impossible(format!(
                 "The recorded result for `{node_id}` says `{}`, and the checks recorded beside it \
                  ({}) cannot produce that answer. A result file Ply wrote never contains this, so \
@@ -418,13 +466,16 @@ impl Record {
 fn earnable_verdicts(checks: &[String]) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
     for check in checks {
-        if check.starts_with("bounded(") {
-            out.insert(check.clone());
-        } else if let Some(rest) = check.strip_prefix("fuzz(") {
+        if let Some(rest) = check.strip_prefix("fuzz(") {
             out.insert(format!("fuzzed({rest}"));
         } else if check == "test" {
             out.insert("tested".to_string());
         }
+        // `bounded(k)` is handled separately in `verdict_is_earnable`, not
+        // here: it is the one shape a declared check can earn a *weaker*
+        // verdict than its own number under (D5's first branch composing
+        // against a callee's shallower proof, §5.5), so exact-string
+        // membership is the wrong test for it.
     }
     out
 }
@@ -433,13 +484,58 @@ fn earnable_verdicts(checks: &[String]) -> std::collections::BTreeSet<String> {
 /// planted bug. It is the only decoration a stored verdict may carry.
 const SPEC_STRONG: &str = "\u{00b7}spec-strong";
 
-pub fn verdict_is_earnable(verdict: &str, checks: &[String]) -> bool {
+/// The `k` out of a `bounded(k)` string, or `None` for anything else.
+fn bounded_k(s: &str) -> Option<u32> {
+    s.strip_prefix("bounded(")?.strip_suffix(')')?.parse().ok()
+}
+
+/// `verified_bounds` is the *lookup-time* fingerprint's own D5 dependency
+/// list (`FingerprintInputs::verified_bounds`) -- by the time this is
+/// called the fingerprint has already matched (`matching`, above), which
+/// pins those bounds to exactly the ones the stored verdict was earned
+/// under. That makes the honestly-earnable value for a `bounded(k)` check
+/// *computable*, not merely bounded above: `min(k, min of verified_bounds)`,
+/// and nothing else.
+pub fn verdict_is_earnable(
+    verdict: &str,
+    checks: &[String],
+    verified_bounds: &[(String, u32)],
+) -> bool {
     let (base, decorated) = match verdict.strip_suffix(SPEC_STRONG) {
         Some(base) => (base, true),
         None => (verdict, false),
     };
     if decorated && !checks.iter().any(|c| c == "mutate") {
         return false;
+    }
+    // A `bounded(k)` check is a *declared upper bound*, not a fixed exact
+    // one -- D5's first branch (§5.5) can compose a claim's own proof down
+    // to a shallower bound than `k`, when the callee it stands on was only
+    // proved that far this run. Found by adversarial review 2026-08-26,
+    // twice: first, that before this exception existed a claim declaring
+    // `bounded(5)` that composed to a genuinely-earned `bounded(2)` was
+    // refused as `W0516` "impossible" on every single subsequent run --
+    // this integrity check, written before D5's first branch existed,
+    // still assumed a `bounded(k)` check could only ever produce `bounded(k)`
+    // verbatim, so a real composed result looked identical to a hand-edited
+    // one and was silently re-earned from scratch forever. Second, that
+    // the first fix for that (accepting *any* `bounded(j)` with `j <= k`)
+    // was a needless superset: the honestly-earnable `j` is not a range,
+    // it is one computed number, `min(k, min of verified_bounds)`, and the
+    // review demonstrated a hand-edited `bounded(4)` sailing through the
+    // wider check on a claim that had actually composed to `bounded(2)`.
+    // Equality against the computed value is what an "impossible" check
+    // means; a range was the easy version, not the true one.
+    if let Some(j) = bounded_k(base) {
+        let declared = checks.iter().filter_map(|c| bounded_k(c)).max();
+        let Some(declared) = declared else {
+            return false;
+        };
+        let expected = verified_bounds
+            .iter()
+            .map(|(_, k)| *k)
+            .fold(declared, u32::min);
+        return j == expected;
     }
     earnable_verdicts(checks).contains(base)
 }
@@ -513,6 +609,7 @@ mod tests {
                 ensures: vec!["|result| *result <= 10_000".into()],
                 signature: "(tier: u8) -> u32".into(),
             }],
+            verified_bounds: vec![("g".into(), 5)],
             examples: vec!["tiered_fee(1) == 1".into()],
             code_scope: "reached".into(),
             code: vec![(
@@ -583,6 +680,14 @@ mod tests {
                 Box::new(|i: &mut FingerprintInputs| {
                     i.assumed[0].signature = "(tier: u8) -> u64".into()
                 }),
+            ),
+            (
+                "the bound a stub_verified callee earned",
+                Box::new(|i: &mut FingerprintInputs| i.verified_bounds[0].1 = 2),
+            ),
+            (
+                "which callee a stub_verified dependency is for",
+                Box::new(|i: &mut FingerprintInputs| i.verified_bounds[0].0 = "h".into()),
             ),
             (
                 "the worked examples a `test` check asserts",
@@ -684,6 +789,48 @@ mod tests {
         assert_eq!(fingerprint(&inputs()), fingerprint(&inputs()));
     }
 
+    /// A build whose own identity is unknown, empty, or a placeholder must
+    /// never coincide with a real build's fingerprint -- "unavailable
+    /// invalidates, never matches" (the task this module's `ply_version`
+    /// field exists for). `build.rs` never actually produces such a value
+    /// (a build that cannot compute its own identity fails outright rather
+    /// than falling back to one, by design -- see `crates/ply-cli/build.rs`),
+    /// so this is the honest version of that guarantee at the layer a unit
+    /// test can reach: nothing here special-cases an "unknown" string into
+    /// matching anything, empty or otherwise -- it is just one more value
+    /// the hash treats as ordinary content, and every mutation test above
+    /// already establishes that *any* different `ply_version` moves the
+    /// hash. Stated on its own because it is the one value a naive
+    /// implementation might be tempted to special-case (treat "no version
+    /// known" as a wildcard, or skip hashing it when empty) -- exactly the
+    /// silent fallback the task warned would reintroduce the bug.
+    #[test]
+    fn an_unknown_or_empty_build_identity_never_matches_a_real_one() {
+        let real = inputs();
+        let mut unknown = inputs();
+        unknown.ply_version = "unknown".into();
+        let mut empty = inputs();
+        empty.ply_version = String::new();
+
+        let real_fp = fingerprint(&real);
+        assert_ne!(
+            real_fp,
+            fingerprint(&unknown),
+            "a placeholder \"unknown\" identity must not match a real build's fingerprint"
+        );
+        assert_ne!(
+            real_fp,
+            fingerprint(&empty),
+            "an empty identity must not match a real build's fingerprint either"
+        );
+        assert_ne!(
+            fingerprint(&unknown),
+            fingerprint(&empty),
+            "two different kinds of \"no real identity\" must not even match each other -- there \
+             is no wildcard value that silently matches everything"
+        );
+    }
+
     /// Field boundaries are real: moving text from one field to the next
     /// must not produce the same hash.
     #[test]
@@ -695,6 +842,184 @@ mod tests {
         b.inline_requires = "xy".into();
         b.inline_ensures = String::new();
         assert_ne!(fingerprint(&a), fingerprint(&b));
+    }
+
+    /// The bug report's own premise, proved rather than argued -- and proved
+    /// against the *real* encoder, not a hand-guessed stand-in for it, so
+    /// this test cannot pass by accident if a later edit to `group()`
+    /// reintroduces the ambiguity.
+    ///
+    /// The attack: take the exact bytes a genuine second field
+    /// (`declared-ensures` holding `"y"`) contributes to `group()`'s
+    /// output -- pulled straight out of the real encoder by diffing two
+    /// runs of it, not retyped by hand -- and splice them, separator
+    /// included, into the *value* of a single `declared-requires` entry
+    /// instead. If a value's content could ever be mistaken for a field
+    /// boundary, this input would read back identically to genuinely
+    /// having two fields.
+    ///
+    /// A minimal `label + 0 + value + 0` stand-in (no length prefix) is
+    /// checked first, to confirm the same construction really does
+    /// collide when nothing defends against it -- otherwise this would not
+    /// be testing the thing the previous caution was worried about.
+    #[test]
+    fn smuggling_a_field_boundary_inside_a_value_does_not_forge_a_collision() {
+        // ---- Half 1: the previous caution's premise, proved real. ----
+        fn naive(label: &str, value: &str) -> Vec<u8> {
+            let mut out = label.as_bytes().to_vec();
+            out.push(0);
+            out.extend_from_slice(value.as_bytes());
+            out.push(0);
+            out
+        }
+        let naive_two_fields = [
+            naive("declared-requires", "x"),
+            naive("declared-ensures", "y"),
+        ]
+        .concat();
+        let naive_smuggled = "x\u{0}declared-ensures\u{0}y".to_string();
+        let naive_one_field = naive("declared-requires", &naive_smuggled);
+        assert_eq!(
+            naive_two_fields, naive_one_field,
+            "the premise: a naive label+value+separator scheme really is ambiguous here -- \
+             this is the exact collision the previous caution was right to distrust"
+        );
+
+        // ---- Half 2: group()'s real, current encoding, attacked with its
+        // own real output rather than a guess at what that output is. ----
+        let mut base = inputs();
+        base.declared_requires = vec!["x".into()];
+        base.declared_ensures = vec![];
+
+        let mut a = base.clone();
+        a.declared_ensures = vec!["y".into()];
+
+        // Everything `group("its contract")` emits for the "y" field and
+        // nothing else: the extra suffix bytes `a` has beyond `base`.
+        let base_group = base.group("its contract");
+        let a_group = a.group("its contract");
+        assert!(
+            a_group.starts_with(&base_group),
+            "adding one declared_ensures entry must only append bytes, never rewrite earlier ones"
+        );
+        // Trimmed by one byte: that final byte is the closing separator
+        // `put` itself will append to *this* atom's own value once it is
+        // wrapped up below, so keeping it too would double it up and add
+        // an extra byte no genuine attack would have.
+        let second_atom = &a_group[base_group.len()..a_group.len() - 1];
+
+        // Splice those exact bytes into declared_requires's *only* value --
+        // a separator byte stands in for the closing byte a genuinely
+        // separate "x" atom would have had -- and drop the real second
+        // field entirely.
+        let mut smuggled_bytes = b"x".to_vec();
+        smuggled_bytes.push(0);
+        smuggled_bytes.extend_from_slice(second_atom);
+        let smuggled = String::from_utf8(smuggled_bytes)
+            .expect("every byte group() writes is either an ASCII label, an ASCII digit, or a \
+                     value already given to it as a String, so re-assembling them stays valid UTF-8");
+
+        let mut b = base.clone();
+        b.declared_requires = vec![smuggled];
+        // b.declared_ensures is still [] -- the "second field" only exists
+        // smuggled inside the first one's value.
+
+        assert_ne!(
+            a.canonical(),
+            b.canonical(),
+            "group()'s real output for two separate fields must not equal its output for one \
+             field whose value contains what the second field would have written"
+        );
+        assert_ne!(
+            fingerprint(&a),
+            fingerprint(&b),
+            "and the fingerprints built from those bytes must therefore differ too"
+        );
+    }
+
+    /// The same experiment against a different field shape: `code` loops
+    /// two *different* labels per entry (`code-unit`, then `code-tokens`)
+    /// rather than one label repeated. The attack bytes are again pulled
+    /// out of the real encoder, not guessed.
+    #[test]
+    fn smuggling_a_second_code_unit_inside_one_value_does_not_forge_a_collision() {
+        let mut base = inputs();
+        base.code = vec![("helper".into(), "fn helper() {}".into())];
+
+        let mut a = base.clone();
+        a.code.push(("other".into(), "fn other() {}".into()));
+
+        let base_group = base.group("the code it runs");
+        let a_group = a.group("the code it runs");
+        assert!(
+            a_group.starts_with(&base_group),
+            "adding one code entry must only append bytes, never rewrite earlier ones"
+        );
+        // Trimmed by one byte for the same reason as the test above: the
+        // wrapping `put` call supplies its own closing byte for this atom.
+        let second_pair = &a_group[base_group.len()..a_group.len() - 1];
+
+        let mut smuggled_bytes = b"fn helper() {}".to_vec();
+        smuggled_bytes.push(0);
+        smuggled_bytes.extend_from_slice(second_pair);
+        let smuggled = String::from_utf8(smuggled_bytes)
+            .expect("group() only ever writes ASCII labels, ASCII digits, and the given values");
+
+        let mut b = base.clone();
+        b.code = vec![("helper".into(), smuggled)];
+
+        assert_ne!(a.canonical(), b.canonical());
+        assert_ne!(fingerprint(&a), fingerprint(&b));
+    }
+
+    /// A value legitimately containing the record's own separator byte
+    /// must still hash like any other value: stable on repeat, and every
+    /// byte after the embedded separator still counted rather than
+    /// silently dropped or truncated at it.
+    #[test]
+    fn a_value_containing_the_records_own_separator_byte_round_trips() {
+        let sep = '\u{0}';
+        let mut a = inputs();
+        a.examples = vec![format!("has_a{sep}nul(\"quoted, text; too\") == 1")];
+
+        assert_eq!(
+            fingerprint(&a),
+            fingerprint(&a),
+            "hashing the same input twice must give the same answer"
+        );
+
+        let mut b = a.clone();
+        b.examples[0].push('!');
+        assert_ne!(
+            fingerprint(&a),
+            fingerprint(&b),
+            "content after the embedded separator byte must still count -- it must not be \
+             silently dropped or truncated at the first NUL"
+        );
+    }
+
+    /// A pin against `inputs()`'s current fingerprint. The investigation
+    /// above found `group()`'s length-prefixed encoding already safe, so no
+    /// change to it was needed or made -- this value must therefore never
+    /// move without a deliberate, reviewed change to the encoding. If it
+    /// does move unreviewed, every result recorded in every committed
+    /// `ply.lock` goes stale in the same run, silently.
+    #[test]
+    fn the_fingerprint_of_the_reference_fixture_is_pinned() {
+        assert_eq!(
+            fingerprint(&inputs()),
+            "188fabb251f5cb7dbee50c0bf519c7a9f2099f4ac64da5bb21ad98aa67e53a17",
+            "the encoding did not change, so this must not move; if it moved on purpose, every \
+             ply.lock committed against the old encoding is now stale. Moved once deliberately, \
+             2026-08-28: Ply's own build identity was split out of the claim-identity group into \
+             a group of its own, which changes the canonical bytes. No input was added or \
+             removed, and nothing invalidates now that did not invalidate before -- the split \
+             exists so a run that could not carry a result forward can say `the build of Ply \
+             that checked it changed` rather than `which claim this is changed`, which is what \
+             it said after an upgrade and is baffling, because nothing about the claim had \
+             changed. Free in practice: Ply's build identity already invalidates every stored \
+             result whenever Ply's own source moves, and this edit is one such move"
+        );
     }
 
     /// The honesty rule, at the one place it can be enforced structurally:
@@ -716,12 +1041,12 @@ mod tests {
         );
         let checks = vec!["bounded(2)".to_string()];
         assert!(matches!(
-            record.matching("billing::tiered_fee", "aaaa", &checks),
+            record.matching("billing::tiered_fee", "aaaa", &checks, &[]),
             Match::Hit(_)
         ));
         assert!(
             matches!(
-                record.matching("billing::tiered_fee", "bbbb", &checks),
+                record.matching("billing::tiered_fee", "bbbb", &checks, &[]),
                 Match::Miss
             ),
             "a stored result must never be handed back against inputs that no longer match it"
@@ -775,7 +1100,7 @@ mod tests {
         );
         save(&path, &record).unwrap();
         let back = load(&path, "0.1.0").unwrap();
-        let Match::Hit(entry) = back.matching("a::f", "h", &["fuzz(256)".to_string()]) else {
+        let Match::Hit(entry) = back.matching("a::f", "h", &["fuzz(256)".to_string()], &[]) else {
             panic!("round trip")
         };
         assert_eq!(entry.verdict, "fuzzed(256)");
@@ -790,35 +1115,96 @@ mod tests {
     #[test]
     fn a_verdict_the_recorded_checks_could_never_earn_is_not_earnable() {
         let fuzz = vec!["fuzz(64)".to_string()];
-        assert!(verdict_is_earnable("fuzzed(64)", &fuzz));
+        assert!(verdict_is_earnable("fuzzed(64)", &fuzz, &[]));
         assert!(
-            !verdict_is_earnable("proved", &fuzz),
+            !verdict_is_earnable("proved", &fuzz, &[]),
             "sampling cannot mint the strongest verdict Ply has"
         );
-        assert!(!verdict_is_earnable("bounded(2)", &fuzz), "nor a proof");
         assert!(
-            !verdict_is_earnable("fuzzed(256)", &fuzz),
+            !verdict_is_earnable("bounded(2)", &fuzz, &[]),
+            "nor a proof"
+        );
+        assert!(
+            !verdict_is_earnable("fuzzed(256)", &fuzz, &[]),
             "nor more cases than the check asked for"
         );
         assert!(verdict_is_earnable(
             "bounded(2)",
-            &["bounded(2)".to_string()]
+            &["bounded(2)".to_string()],
+            &[]
         ));
-        assert!(verdict_is_earnable("tested", &["test".to_string()]));
+        assert!(verdict_is_earnable("tested", &["test".to_string()], &[]));
         assert!(
-            !verdict_is_earnable("proved", &["prove".to_string()]),
+            !verdict_is_earnable("proved", &["prove".to_string()], &[]),
             "`prove` has no engine behind it, so it earns nothing at all"
         );
         assert!(
             verdict_is_earnable(
                 "fuzzed(64)\u{00b7}spec-strong",
-                &["fuzz(64)".to_string(), "mutate".to_string()]
+                &["fuzz(64)".to_string(), "mutate".to_string()],
+                &[]
             ),
             "the one decoration a stored verdict may carry"
         );
         assert!(
-            !verdict_is_earnable("fuzzed(64)\u{00b7}spec-strong", &fuzz),
+            !verdict_is_earnable("fuzzed(64)\u{00b7}spec-strong", &fuzz, &[]),
             "and only when `mutate` actually ran"
+        );
+    }
+
+    /// The one deliberate exception to "a verdict must match a check
+    /// exactly": D5's first branch (§5.5) can compose a `bounded(k)`
+    /// claim's proof down to a shallower bound than `k`, when the callee it
+    /// stands on was only proved that far this run -- so a claim declaring
+    /// `bounded(5)` earning `bounded(2)` is not tampering, it is exactly
+    /// what standing on a `g` proved only to depth 2 means. Before this was
+    /// recognised, `W0516` refused that genuine result as "impossible" on
+    /// every single subsequent run (adversarial review, 2026-08-26) --
+    /// caught by `stubverifiedstalebound_fixture`, not by anything already
+    /// in this file.
+    ///
+    /// **The earnable value is exactly one number, never a range** (a
+    /// second adversarial pass, same day): the first fix here accepted any
+    /// `bounded(j)` with `j <= k`, which let a hand-edited `bounded(4)`
+    /// through on a claim that had actually composed to `bounded(2)` --
+    /// self-contradicting the very envelope it shipped in (`W0517` on the
+    /// same node still said "capped ... at bounded(2)"). Equality against
+    /// `min(declared, min(verified_bounds))` is the honest value; passing
+    /// `verified_bounds` in is what makes it computable at lookup time
+    /// rather than merely bounded above.
+    #[test]
+    fn a_bounded_check_earns_exactly_the_computed_value_never_a_range() {
+        let bounded5 = vec!["bounded(5)".to_string()];
+        assert!(
+            verdict_is_earnable("bounded(5)", &bounded5, &[]),
+            "the ordinary case: a claim's own declared bound, uncomposed"
+        );
+        assert!(
+            verdict_is_earnable("bounded(2)", &bounded5, &[("g".to_string(), 2)]),
+            "D5's first branch composing against a callee proved only to depth 2"
+        );
+        assert!(
+            !verdict_is_earnable("bounded(4)", &bounded5, &[("g".to_string(), 2)]),
+            "the exact tamper the review demonstrated: a stored bound deeper than what \
+             the recorded dependency actually composed to, even though 4 <= 5"
+        );
+        assert!(
+            !verdict_is_earnable("bounded(1)", &bounded5, &[("g".to_string(), 2)]),
+            "shallower than the computed value is just as much a lie in the other \
+             direction -- not merely a conservative one"
+        );
+        assert!(
+            !verdict_is_earnable("bounded(6)", &bounded5, &[]),
+            "never a bound deeper than what was declared -- that really would be a \
+             hand-edited or otherwise impossible record"
+        );
+        assert!(
+            verdict_is_earnable(
+                "bounded(2)",
+                &bounded5,
+                &[("g".to_string(), 4), ("h".to_string(), 2)]
+            ),
+            "the minimum over every stood-on callee, not just the first one"
         );
     }
 
@@ -909,7 +1295,10 @@ mod tests {
         )
         .unwrap();
         let record = load(&path, "0.1.0").unwrap();
-        assert!(matches!(record.matching("a::f", "h", &[]), Match::Miss));
+        assert!(matches!(
+            record.matching("a::f", "h", &[], &[]),
+            Match::Miss
+        ));
     }
 
     /// A run that reused everything must leave the working tree exactly as

@@ -1,0 +1,12 @@
+[package]
+name = "ply-fixture-archtier-a"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "archtier_a"
+path = "src/lib.rs"
+
+[dependencies]
+archtier_c = { package = "ply-fixture-archtier-c", path = "../crate_c" }

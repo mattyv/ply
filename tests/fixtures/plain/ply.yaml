@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  plain:
+    anchor: ply_fixture_plain
+    fns:
+      seeded_bug:
+        checks: [fuzz(256)]

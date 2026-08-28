@@ -21,6 +21,17 @@ pub enum WitnessValue {
     /// -- decoded from Kani's length-prefixed `any_vec` encoding (measured,
     /// see docs/m3-slice-findings.md).
     VecU8(Vec<u8>),
+    /// A `Duration` witness: (whole seconds, nanoseconds -- always under one
+    /// billion, the type's own invariant). Its own variant rather than two
+    /// `UInt`s because `render_cex_test` needs both parts together to
+    /// render one `Duration::new(secs, nanos)` call, and `decode_witness`
+    /// consumes exactly two `kani::any()` entries to produce it -- see
+    /// `RustType::Duration`'s own doc comment for why it is a pair, not a
+    /// derived struct. A `NonZero{X}` witness needs no variant of its own:
+    /// only its *construction* differs from a plain scalar (see
+    /// `RustType::NonZero`'s doc comment), and its inner integer decodes
+    /// (and renders) exactly like one, via `UInt`/`Int` below.
+    Duration(u64, u32),
 }
 
 /// The engine-honest outcome of one Kani run. `Timeout` and `Violation` are
@@ -98,7 +109,7 @@ pub fn version() -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let text = super::strip_ansi(String::from_utf8_lossy(&out.stdout).trim());
     if text.is_empty() { None } else { Some(text) }
 }
 
@@ -132,11 +143,11 @@ fn invoke(cfg: &KaniRunConfig) -> Result<String> {
         .output()
         .with_context(|| format!("spawning `cargo kani` in {}", cfg.crate_dir.display()))?;
 
-    Ok(format!(
+    Ok(super::strip_ansi(&format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    ))
+    )))
 }
 
 /// Runs one **probe**: a harness asked a yes/no question about an assertion,
@@ -333,47 +344,95 @@ pub fn decode_witness(
                 cursor += n;
                 out.push(WitnessValue::VecU8(elems));
             }
-            other => {
-                let width = other
-                    .scalar_byte_width()
-                    .with_context(|| format!("`{}` has no known scalar byte width", p.name))?;
+            // The inner integer is the only actually-symbolic `kani::any()`
+            // call this codegen emitted for a `NonZero` (see
+            // `harness::render_kani_args`) -- `NonZero{X}::new(..).unwrap()`
+            // is deterministic from it, so decoding is exactly decoding one
+            // scalar of the inner type. One witness entry consumed, same as
+            // any plain scalar.
+            crate::harness::RustType::NonZero(inner) => {
                 let entry = witness_bytes
                     .get(cursor)
                     .with_context(|| format!("missing witness entry for `{}`", p.name))?;
                 cursor += 1;
-                let is_signed = matches!(
-                    other,
-                    crate::harness::RustType::I8
-                        | crate::harness::RustType::I16
-                        | crate::harness::RustType::I32
-                        | crate::harness::RustType::I64
-                );
-                if matches!(other, crate::harness::RustType::Bool) {
-                    out.push(WitnessValue::Bool(entry.first().copied().unwrap_or(0) != 0));
-                    continue;
+                out.push(decode_scalar_entry(entry, inner, &p.name)?);
+            }
+            // Two independent `kani::any()` calls, in the exact order
+            // `render_kani_args` emitted them: seconds, then nanoseconds.
+            crate::harness::RustType::Duration => {
+                let secs_entry = witness_bytes
+                    .get(cursor)
+                    .with_context(|| format!("missing seconds witness entry for `{}`", p.name))?;
+                cursor += 1;
+                let nanos_entry = witness_bytes.get(cursor).with_context(|| {
+                    format!("missing nanoseconds witness entry for `{}`", p.name)
+                })?;
+                cursor += 1;
+                let mut secs_buf = [0u8; 8];
+                for (i, b) in secs_entry.iter().take(8).enumerate() {
+                    secs_buf[i] = *b;
                 }
-                let mut buf = [0u8; 16];
-                for (i, b) in entry.iter().take(width).enumerate() {
-                    buf[i] = *b;
+                let mut nanos_buf = [0u8; 4];
+                for (i, b) in nanos_entry.iter().take(4).enumerate() {
+                    nanos_buf[i] = *b;
                 }
-                if is_signed {
-                    // Sign-extend from `width` bytes into i128.
-                    let mut v: i128 = i128::from_le_bytes(buf);
-                    let bits = width * 8;
-                    if bits < 128 {
-                        let sign_bit = 1i128 << (bits - 1);
-                        if v & sign_bit != 0 {
-                            v -= 1i128 << bits;
-                        }
-                    }
-                    out.push(WitnessValue::Int(v));
-                } else {
-                    out.push(WitnessValue::UInt(u128::from_le_bytes(buf)));
-                }
+                out.push(WitnessValue::Duration(
+                    u64::from_le_bytes(secs_buf),
+                    u32::from_le_bytes(nanos_buf),
+                ));
+            }
+            other => {
+                let entry = witness_bytes
+                    .get(cursor)
+                    .with_context(|| format!("missing witness entry for `{}`", p.name))?;
+                cursor += 1;
+                out.push(decode_scalar_entry(entry, other, &p.name)?);
             }
         }
     }
     Ok(out)
+}
+
+/// Decodes one raw witness entry as a plain scalar of `ty` -- shared between
+/// the generic scalar arm above and `NonZero`'s inner integer, so a `NonZero`
+/// is never a second, hand-duplicated copy of this decoding.
+fn decode_scalar_entry(
+    entry: &[u8],
+    ty: &crate::harness::RustType,
+    param_name: &str,
+) -> Result<WitnessValue> {
+    let width = ty
+        .scalar_byte_width()
+        .with_context(|| format!("`{param_name}` has no known scalar byte width"))?;
+    let is_signed = matches!(
+        ty,
+        crate::harness::RustType::I8
+            | crate::harness::RustType::I16
+            | crate::harness::RustType::I32
+            | crate::harness::RustType::I64
+            | crate::harness::RustType::Isize
+    );
+    if matches!(ty, crate::harness::RustType::Bool) {
+        return Ok(WitnessValue::Bool(entry.first().copied().unwrap_or(0) != 0));
+    }
+    let mut buf = [0u8; 16];
+    for (i, b) in entry.iter().take(width).enumerate() {
+        buf[i] = *b;
+    }
+    if is_signed {
+        // Sign-extend from `width` bytes into i128.
+        let mut v: i128 = i128::from_le_bytes(buf);
+        let bits = width * 8;
+        if bits < 128 {
+            let sign_bit = 1i128 << (bits - 1);
+            if v & sign_bit != 0 {
+                v -= 1i128 << bits;
+            }
+        }
+        Ok(WitnessValue::Int(v))
+    } else {
+        Ok(WitnessValue::UInt(u128::from_le_bytes(buf)))
+    }
 }
 
 /// Runs `cargo kani playback` (`--lib`, per FINDINGS.md's "playback needs
@@ -524,5 +583,42 @@ fn kani_concrete_playback_ply_proof_clamp_123() {
         ];
         let decoded = decode_witness(&witness, &params, 3).unwrap();
         assert_eq!(decoded, vec![WitnessValue::VecU8(vec![255])]);
+    }
+
+    // -- 2026-08-27: NonZero and Duration witnesses ------------------------
+    //
+    // `render_kani_args` emits exactly one `kani::any()` call for a
+    // `NonZero`'s inner integer (the wrapper itself is never symbolic) and
+    // exactly two for a `Duration` (seconds, then nanoseconds) -- these pin
+    // that decoding consumes the same number of witness entries codegen
+    // produced, in the same order.
+
+    #[test]
+    fn decodes_a_nonzero_u32_witness_as_its_inner_integer() {
+        let params = vec![Param {
+            name: "n".into(),
+            ty: RustType::NonZero(Box::new(RustType::U32)),
+            by_ref: false,
+        }];
+        // The only kani::any() call this shape emits is for the inner u32.
+        let decoded = decode_witness(&[vec![7, 0, 0, 0]], &params, 0).unwrap();
+        assert_eq!(decoded, vec![WitnessValue::UInt(7)]);
+    }
+
+    #[test]
+    fn decodes_a_duration_witness_as_two_entries_in_construction_order() {
+        let params = vec![Param {
+            name: "d".into(),
+            ty: RustType::Duration,
+            by_ref: false,
+        }];
+        let witness = vec![
+            // secs = 7 (u64, 8 bytes)
+            vec![7, 0, 0, 0, 0, 0, 0, 0],
+            // nanos = 500_000_000 (u32, 4 bytes) = 0x1DCD6500
+            vec![0x00, 0x65, 0xCD, 0x1D],
+        ];
+        let decoded = decode_witness(&witness, &params, 0).unwrap();
+        assert_eq!(decoded, vec![WitnessValue::Duration(7, 500_000_000)]);
     }
 }

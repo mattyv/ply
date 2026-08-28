@@ -1,0 +1,15 @@
+ply: 1
+
+# `g` starts at bounded(5); `f` also declares bounded(5) and stands on `g`'s
+# proof (D5's first branch, §5.5), composing to bounded(5). The test that
+# uses this fixture then edits ONLY this file -- g's checks down to
+# bounded(2), f's left at bounded(5) -- and re-runs: `f`'s own record must
+# not still say bounded(5) once `g` is only proved to bounded(2).
+components:
+  stubverifiedstalebound:
+    anchor: ply_fixture_stubverifiedstalebound
+    fns:
+      g:
+        checks: [bounded(5)]
+      f:
+        checks: [bounded(5)]

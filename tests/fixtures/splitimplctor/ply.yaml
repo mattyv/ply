@@ -1,0 +1,14 @@
+ply: 1
+
+# docs/review-structs-enums.md finding 2, second shape: `Window` is declared
+# in types.rs, its constructor in build.rs. Ply used to search for a
+# constructor only in the type's own declaring file, so this layout was
+# indistinguishable from "no constructor at all" and fell through to direct
+# field construction. A violation here can only mean the cross-file
+# constructor (and its own #[ply::requires]) was not found.
+components:
+  splitimplctor:
+    anchor: ply_fixture_splitimplctor
+    fns:
+      well_formed:
+        checks: [fuzz(256)]

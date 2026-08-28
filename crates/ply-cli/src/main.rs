@@ -185,6 +185,23 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
     if node.statuses.iter().any(|s| s == "owed-evidence") {
         marks.push("evidence owed");
     }
+    // A run that left one of a type's own operations or constructors out
+    // of the histories it explores -- an unbuildable argument, a trait
+    // method, a spelling it could not confirm names the same type, or a
+    // constructor it never started from -- can still read as a clean pass
+    // on a promise it never had the chance to break. The verdict carries
+    // that fact, and until now it carried it only into `--json` -- the
+    // tree, which is the line most people actually read, showed a bare
+    // `fuzzed(n)` (found by hand, 2026-08-28). Making the narrowing visible
+    // everywhere except where it is read is the same failure this status
+    // exists to end. The gloss below was written for the first of these
+    // causes only (the unbuildable argument) and quietly stopped being
+    // true the moment the other three were added to the same status
+    // (coordinator review, 2026-08-28) -- it now names all four in the one
+    // sentence a reader who has never seen this status gets.
+    if node.statuses.iter().any(|s| s == "partial-history") {
+        marks.push("narrower than it looks");
+    }
     // Last, and from its own field rather than from `statuses`: reuse is
     // not a qualifier on the evidence (D6), it is a fact about when the run
     // happened. A person reading `bounded(2)` should be able to tell
@@ -198,7 +215,7 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
 
 /// What each mark means, printed once beneath the tree and only when the
 /// tree actually carries it. A mark a reader cannot decode is decoration.
-const MARK_GLOSS: [(&str, &str); 3] = [
+const MARK_GLOSS: [(&str, &str); 4] = [
     (
         "assumed",
         "this result rests on a promise Ply was handed and did not check — if the promise is \
@@ -208,6 +225,14 @@ const MARK_GLOSS: [(&str, &str); 3] = [
         "evidence owed",
         "nothing has run the real code against that promise yet; the lines below name it and say \
          what would settle it",
+    ),
+    (
+        "narrower than it looks",
+        "real cases ran and this result is real, but this run could not call every one of this \
+         type's own operations or build every one of its constructors — one had an argument it \
+         could not build, belonged to a trait or a piece of code it could not confirm is this \
+         same type, or was simply never the one this run started from — so it says nothing about \
+         what the ones it skipped would have done. The lines below name which, and why",
     ),
     (
         "reused",
@@ -260,7 +285,15 @@ fn tree_report(envelope: &ply_core::diag::Envelope) -> String {
         for (mark, gloss) in MARK_GLOSS {
             if seen.contains(&mark) {
                 let label = format!("[{mark}]");
-                out.push_str(&format!("  {label:<17}{gloss}\n"));
+                // Pad to the same column for the short marks (unchanged
+                // output), but never let a longer one run straight into its
+                // own gloss.
+                let pad = if label.len() >= 17 {
+                    "  ".to_string()
+                } else {
+                    " ".repeat(17 - label.len())
+                };
+                out.push_str(&format!("  {label}{pad}{gloss}\n"));
             }
         }
         // The diagnostics come next, and they are paragraphs. Without this

@@ -1,0 +1,18 @@
+ply: 1
+
+# `g` destructures its parameter with a tuple pattern -- `build_contract_fn`
+# (crates/ply-core/src/harness.rs) can only build a stand-in for a plain
+# identifier parameter (E0304), so no stub can be built for `g` under
+# either of D5's first two branches (§5.5). `f` calls it anyway. Before
+# this fix that fell through silently and let Kani inline `g`'s real body
+# -- contradicting §5.5's "always stubbed, never inlined" claim -- so this
+# must now be refused by name (W0512) rather than passed through as
+# `bounded`/`conditional`.
+components:
+  stubverifiedtuparg:
+    anchor: ply_fixture_stubverifiedtuparg
+    fns:
+      g:
+        checks: [bounded(2)]
+      f:
+        checks: [bounded(2)]

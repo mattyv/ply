@@ -37,7 +37,7 @@ Terms this spec uses without further explanation. Ply-specific terms are marked 
 | component | (Ply) A named architectural unit, declared in `ply.yaml` and anchored to a crate or module. |
 | capability (cap) | (Ply) A coarse effect a component is allowed: `net fs db time rand proc unsafe`. |
 | anchor | (Ply) The real code item (crate, module, or function) a claim attaches to. |
-| fingerprint | (Ply) The recorded hash of what a result depended on: item body, contract text, **the first-party bodies the check runs or descends into** (or all of the crate's source, when Ply cannot bound that set — §5.2a), the worked examples it asserts, the contracts assumed for the callees it crosses into, the checks that ran, engine name + version + flags, active features, target triple, compiler version, the resolved versions of packages outside the workspace, **and Ply's own version**. It is recomputed from today's inputs every time a recorded result is used or shown: it matches, the result is reused; it does not, the check runs again (D14, §5.2a). |
+| fingerprint | (Ply) The recorded hash of what a result depended on: item body, contract text, **the first-party bodies the check runs or descends into** (or all of the crate's source, when Ply cannot bound that set — §5.2a), the worked examples it asserts, the contracts assumed for the callees it crosses into, the same-crate callees it stands on rather than assumes and the bound each earned (D5's first branch, §5.5), the checks that ran, engine name + version + flags, active features, target triple, compiler version, the resolved versions of packages outside the workspace, **and Ply's own version**. It is recomputed from today's inputs every time a recorded result is used or shown: it matches, the result is reused; it does not, the check runs again (D14, §5.2a). |
 | verdict tree | (Ply) The aggregated per-node verdicts for the whole workspace, rendered by `cargo ply tree`. |
 | visual grammar | (Ply) The fixed one-to-one mapping between grammar constructs and visual forms (§7.1). A grammar feature that cannot be drawn is not admitted. |
 | watermark | (Ply) The per-function line where declaration stops and code begins: signature plus contract (§7.2). Below it, Ply verifies but never specifies; the un-specifiable imperative interior is the *floor*. |
@@ -141,7 +141,7 @@ proof search has gone off-spec — stop.
 | D11 | Extraction may be incomplete but never silently so: every call site the extractor cannot resolve is counted and reported (W0412 plus a per-component coverage metric in `check` output). | Visibility is what makes the advisory tier (D4) and any future `strict` opt-in meaningful. |
 | D12 | A function declares a **checks list**, e.g. `checks: [bounded(3), fuzz(256), mutate]`. `mutate` requires a `test` or `fuzz` entry in the same list (else `E0504`) and uses only those as its mutant-kill signal, scoped per function with cargo-mutants' `--re`. | One base check could not express "bounded plus a fuzz-backed mutation tier". Running Kani once per mutant costs minutes per mutant per function; proof-backed mutation needs an opt-in budget, which is out of scope. |
 | D13 | **Spike before build** (milestone M0): every engine-facing detail in this spec is provisional until a hands-on spike, with the pinned Kani version, records in ADR-0003 what actually works — attribute emission, in-crate harness modules, `stub_verified`, playback, input construction. The spec is then amended to match reality. | The engine surface is the highest-risk part of the design; paper decisions there are guesses. |
-| D14 | `ply.lock` (committed) records, per claim, a **fingerprint** beside the result that fingerprint earned: item token-stream hash, merged contract text, **the first-party bodies the check runs or descends into** — or, where a syntactic walk cannot bound that set, the whole of the crate's source (§5.2a) — the worked examples a `test` check asserts, the contracts assumed for the callees it crosses into, the checks that ran, engine name + version + flags, active features, target triple, compiler version, the resolved versions of packages outside the workspace, **and Ply's own version**. `verify` recomputes the fingerprint from today's inputs *before* it uses or shows a recorded result — matches, the result is reused and the run says so on the node; differs, the check runs again and the record is rewritten. **There is no `stale` state and nothing for a human to re-bless**: the hash is the confirmation, and it is checked at every single use. Only a result that earned evidence is recorded, so no failure, timeout or absence is ever carried forward. | Committing the record is what stops CI and the next colleague re-proving what is already proven, and lets a reviewer see in a diff that a claim was checked. Re-hashing at every use is what makes storing verdicts safe at all: a stored verdict a human re-blesses can drift from the code between blessings, and every warning that accumulates faster than it is cleared ends up meaning nothing. **Ply's own version is in the hash because a fix to Ply changes what a result means.** The four defects fixed on 2026-08-25 — a harness that failed to compile earning a confident pass, an ordinary `use` import letting an unvouched-for body into a proof, an unsatisfiable declared promise passing vacuously, a claim inside a nested component skipped in silence — would every one of them have hash-matched perfectly against a record written the day before, because the source had not changed: Ply had. |
+| D14 | `ply.lock` (committed) records, per claim, a **fingerprint** beside the result that fingerprint earned: item token-stream hash, merged contract text, **the first-party bodies the check runs or descends into** — or, where a syntactic walk cannot bound that set, the whole of the crate's source (§5.2a) — the worked examples a `test` check asserts, the contracts assumed for the callees it crosses into, the same-crate callees it stands on rather than assumes and the bound each earned (D5's first branch, §5.5), the checks that ran, engine name + version + flags, active features, target triple, compiler version, the resolved versions of packages outside the workspace, **and Ply's own version**. `verify` recomputes the fingerprint from today's inputs *before* it uses or shows a recorded result — matches, the result is reused and the run says so on the node; differs, the check runs again and the record is rewritten. **There is no `stale` state and nothing for a human to re-bless**: the hash is the confirmation, and it is checked at every single use. Only a result that earned evidence is recorded, so no failure, timeout or absence is ever carried forward. | Committing the record is what stops CI and the next colleague re-proving what is already proven, and lets a reviewer see in a diff that a claim was checked. Re-hashing at every use is what makes storing verdicts safe at all: a stored verdict a human re-blesses can drift from the code between blessings, and every warning that accumulates faster than it is cleared ends up meaning nothing. **Ply's own version is in the hash because a fix to Ply changes what a result means.** The four defects fixed on 2026-08-25 — a harness that failed to compile earning a confident pass, an ordinary `use` import letting an unvouched-for body into a proof, an unsatisfiable declared promise passing vacuously, a claim inside a nested component skipped in silence — would every one of them have hash-matched perfectly against a record written the day before, because the source had not changed: Ply had. |
 
 ## 3. Toolchain
 
@@ -413,6 +413,17 @@ The schema must encode all of the following; the goldens (§9) pin them.
 
 Every component anchors to a real crate or module; every fn claim anchors to a real
 function. `ply check` resolves anchors via the extractor. An unresolvable anchor →
+A crate with no `src/lib.rs` is a third case, and the one that used to read backwards.
+`check` counted every claim in such a crate as *anchored to another crate* — the shape of
+a deliberate boundary — and exited 0, while `verify`, asked about the same crate, refused
+the same claims with `E0301` and exited 1. Nobody had declared a boundary; there was
+simply no library to look in. A binary-only crate (`src/main.rs` alone) therefore got a
+clean bill from the fast command and a refusal from the slow one. Under §1 the command
+that looked at nothing is the one that must not come back happy, so `check` now reports
+every such claim as unresolved, names the missing `src/lib.rs` as the obstacle, and its
+summary line says a search did not happen rather than reporting a zero that could be
+mistaken for zero problems.
+
 `E0301` with nearest-name suggestions (edit distance over the item index). **A renamed
 function must break CI, not silently orphan its claims.**
 
@@ -475,21 +486,27 @@ fingerprint of what it was checked against" into a diff a reviewer reads.
    path and the contract text assumed for it (§5.5's second branch). A caller's proof is
    *about* those promises, so a promise edited in `ply.yaml` re-runs every caller resting
    on it;
-6. the checks that were run, as written, plus the `fuzz` seed that drew the cases
+6. **the same-crate callees a claim stands on rather than assumes, and the `bounded(k)`
+   each earned this run** (D5's first branch, §5.5, added 2026-08-26). Composing a
+   caller's bound against a callee's own depth is depending on that number: before this
+   input existed, editing only a callee's declared `checks:` — its bound moving with no
+   source touched anywhere — re-earned the callee's own record correctly while the
+   caller's record, and its now-stale composed bound, went untouched;
+7. the checks that were run, as written, plus the `fuzz` seed that drew the cases
    (§5.4c) — a `--seed` that replays a different run must not match a record written by
    the derived one;
-7. the engine behind each of those checks: name, version, and the flags that shape the
+8. the engine behind each of those checks: name, version, and the flags that shape the
    obligation it discharged;
-8. the build target triple, the compiler that builds for it (D9's "an old success must
+9. the build target triple, the compiler that builds for it (D9's "an old success must
    not bless ... a different toolchain"), and the crate's declared feature table — Ply
    passes no `--features`, so the set that is active is the default set that table
    defines;
-9. the resolved versions of every package outside this workspace that the crate depends
-   on, as the lockfile pins them. A `bounded` proof descends into registry code and every
-   `fuzz`/`test` run executes it, so `cargo update` changes what was checked. Where there
-   is no lockfile, Ply records that fact instead of a version list, and a result recorded
-   with one never matches a run without one;
-10. **Ply's own version.**
+10. the resolved versions of every package outside this workspace that the crate depends
+    on, as the lockfile pins them. A `bounded` proof descends into registry code and every
+    `fuzz`/`test` run executes it, so `cargo update` changes what was checked. Where there
+    is no lockfile, Ply records that fact instead of a version list, and a result recorded
+    with one never matches a run without one;
+11. **Ply's own version.**
 
 **Input 3 is the one that has to be stated carefully, because it cannot always be
 narrow.** A check does not run the claimed function alone: it runs whatever that function
@@ -499,7 +516,7 @@ mentions of a function by name (`map(helper)` never writes `helper(..)` and stil
 body) *and* the functions named inside the claim's own contract expression, which run on
 every generated case — transitively, stopping at a callee replaced by a declared promise
 (whose promise is hashed instead, input 5) and at anything outside the workspace (covered
-by inputs 8 and 9). That walk is syntactic, and a syntactic walk cannot follow a method
+by inputs 9 and 10). That walk is syntactic, and a syntactic walk cannot follow a method
 call, an operator that some `impl` defines, a macro expansion, or a trait method reached
 under another name. So the walk is trusted **only** under conditions that make all of
 those impossible: every item in first-party source is a function, a module, an import, a
@@ -582,7 +599,23 @@ fingerprint guards a stored result against its inputs *moving*, not against some
 editing `ply.lock`. Nothing short of signing could, and signing is out of scope — but the
 honest version of that mistake is caught: a stored verdict must be one the checks
 recorded beside it could actually have earned (`fuzz` can never yield `proved`), and one
-that could not is refused with `W0516`, said out loud, and the claim checked again.
+that could not is refused with `W0516`, said out loud, and the claim checked again. One
+exception, added with D5's first branch (§5.5, 2026-08-26): a `bounded(k)` check earns
+not only `bounded(k)` but any `bounded(j)` genuinely composed against a shallower
+same-crate proof — and the exact value that composition must equal is pinned, not
+merely bounded above. **The rule is equality against a computed number, never `j <= k`
+on its own**: the expected value is `min(k, the shallowest bound among every callee
+this claim stands on)`, read from the fingerprint's twelfth input (`verified_bounds`),
+and a stored verdict must match that number exactly. A same-day widening of this rule
+to "any `j <= k`" was itself found unsound by a second adversarial review (2026-08-26):
+it accepted a hand-edited `bounded(4)` for a claim whose real composed value was
+`bounded(2)`, because `4 <= 5` (the claim's own declared bound) was the only thing the
+looser rule checked — a tampered record that widened, rather than merely stayed within
+the declaration, slipped through. `W0516` learning the first version of this the hard
+way (a caller standing on a proved callee was refused as "impossible" and silently
+re-verified from scratch on every single subsequent run, until that was found and
+fixed) is why this sentence names the exception rather than leaving it implicit; the
+second finding is why the exception is equality, not a ceiling.
 
 **A result that could not be carried forward says which input moved.** When a claim has a
 recorded result whose fingerprint no longer matches, `verify` names it and names the
@@ -714,10 +747,58 @@ spike established (`tests/spike/scale/SCALE-FINDINGS.md`, 2026-08-23), construct
 not sufficient: a type Kani can *build* may still be one it cannot *finish*. The list below
 is evidence-backed, measured, not inferred.
 
+**One list per engine, not one list.** Until 2026-08-27 this section named a single set
+of types and both engines were held to it. That was an accident of build order: the list
+was justified by a study of the *prover*, and when the sampling tier arrived months later
+it inherited the prover's constraints wholesale. A tool that draws random values does not
+need the constraints of one that reasons about every value at once. A type may therefore
+be **sampled but not proved**, and where that is so, a `bounded`/`proved` check on it is
+refused by name rather than hanging or silently returning weaker evidence under a
+stronger word. The refusal says what would work instead: such a function is not
+unchecked, it needs a different check.
+
 v1 supports functions whose parameters and return type are, recursively:
 
 - **integers, `bool`, `char`, `Option<T>`, `Result<T,E>`** of supported types — cheap
   unconditionally (~0.1s);
+- **`usize` and `isize`** — ordinary integers, with one caveat that is recorded rather
+  than implied: they are pointer-width, so evidence earned on a 64-bit target is not
+  evidence for a 32-bit one. The build target is already a fingerprint input, so a
+  recorded result never crosses that line silently;
+- **the `NonZero` family** — top-level only, never nested. The non-zero constraint
+  reaches the solver rather than resting on convention: a generated zero would explore a
+  state the type forbids and produce a counterexample that cannot happen, which is a
+  false alarm, and this project treats those as nearly as costly as a false pass;
+- **`Duration`** — two integers, with the sub-billion nanosecond bound enforced for the
+  same reason. Whether its seconds field needed a bound was measured, not assumed: about
+  seven seconds per check against a sixty-second budget, so none was added;
+- **a `struct` or `enum` of the user's own** — sampling tier only, and built by the same
+  three rules, in order, that govern a receiver. **First**, the type's own constructor,
+  honouring the constructor's own precondition and recursing through nested user-type
+  arguments to a bounded depth; every value so built is one the real program could
+  produce. **Second**, and only when the first cannot apply, direct construction of the
+  fields or variant data — permitted solely when every one of them is already public and
+  the type is not `#[non_exhaustive]`, on the ground that a caller could then already
+  build any combination, so there is no invariant left to violate. **Otherwise refused by
+  name**, saying which type and why.
+
+  The second route carries an assumption and the run says so rather than leaving it
+  implied: public fields mean nothing *restricts* what a caller may build, but a type's
+  own methods can maintain a relationship between public fields that nothing enforces, so
+  a value built this way could in principle be one the program never produces. Evidence
+  earned on that route rests on that assumption and is not proved. The first route
+  carries no such assumption, which is why it is tried first rather than second.
+
+  An enum is admitted or refused whole. Rust gives a variant no visibility of its own, so
+  "every field public" reduces to "every variant's data is buildable"; admitting only the
+  variants that happen to qualify would quietly drop the rest, and a harness that skips a
+  case without saying so is the failure this document exists to refuse;
+- **`f32` and `f64` — sampling tier only.** Proving over floating point is real work not
+  attempted in v1, so a `bounded` check on a float is refused by name. Generated floats
+  **exclude NaN and infinity by default**: a generated NaN makes almost any promise look
+  broken on a value the function may never receive. The run says so plainly rather than
+  leaving the exclusion silent — it states that it says nothing about those cases,
+  because it was never asked to;
 - **fixed-size arrays `[T; N]`** — cheap with no annotation, because the bound is a
   compile-time constant. Our own sweep only measured to 16; the Rust standard library's
   verification project routinely uses `MAX_SIZE = 32`, `ARRAY_LEN = 40`, and `MAX_LEN =
@@ -807,6 +888,28 @@ builds — measured at ~13s total (baseline + 2 trivial mutants) against a 189MB
 in this session's `weakspec` fixture; a real, size-dependent cost, not a free fix, and an
 open item for M5 (moving the harness crate to a location outside `target/` entirely would
 remove the need for this flag, at the cost of its own git-ignore entry).
+
+**Ply borrows the user's `Cargo.toml`; it does not keep it.** Package targeting above
+only resolves if the generated harness is a member of the same workspace `cargo metadata`
+sees, so on a crate that declares its own `[workspace]` table Ply adds the harness to that
+table's `members` list before running any engine. That is an edit to a file the user owns
+and did not ask to have changed, so it lasts exactly as long as the run that needs it: the
+registration is held by a guard whose release — including on the error paths — writes the
+original manifest back byte-for-byte. A run therefore leaves nothing in `git status`.
+
+Two conditions keep the undo honest. It never restores over a manifest whose bytes changed
+while the run was in flight; a file that moved under the guard is not the guard's to
+rewrite, so it is left exactly as found. And because taking the harness out of `members`
+would otherwise orphan it — a crate that is neither a workspace root nor a member of one
+cannot be built at all — the same release rewrites the harness's own manifest into the
+standalone shape. The counterexample test Ply just generated stays runnable from
+`target/ply/fuzz/<name>/` afterwards. A counterexample you cannot run is one you have to
+take on trust, which is the opposite of the point.
+
+The one gap, stated rather than left to be found: a run killed outright (`SIGKILL`, a
+crashed container) runs no guard, so the `members` entry survives it. The next run removes
+it — the restore target is always the original *minus* the harness entry, and no human
+hand-writes a member path under `target/ply/fuzz/`.
 
 `W0502`'s surviving-mutant count is not a pure weak-spec measure: an *equivalent* mutant —
 one whose change cannot alter observable behaviour — survives any spec, however strong.
@@ -946,19 +1049,96 @@ attestation can only be renewed by the person who made it.
 
 ### 5.5 Modular composition (D5)
 
-Verification runs callees-before-callers over the call graph. To verify fn `f` that calls
-fn `g`, the split is on **what `g` offers**, in three branches — the first two keyed on
-the evidence behind `g`'s contract, the third on there being no contract to key on:
+Verification runs callees-before-callers over the call graph: within a crate, claimed
+functions are ordered topologically by their call edges, callees before callers, ties
+(equal-rank items — no dependency between them either way) broken by node id so the
+order is deterministic and a re-run cannot flap a golden. **A cycle cannot be ordered.**
+`f` and `g` calling each other (directly, or through any chain back to one another) is
+not a failure of the ordering, it is the fact the second branch below exists to catch:
+every claim in a cycle falls back to it, for every same-crate contracted callee it
+reaches, because the one thing branch one needs — this claim's callees already verified
+— cannot be established for a claim with no place in the order (built 2026-08-26).
+
+To verify fn `f` that calls fn `g`, the split is on **what `g` offers**, in three
+branches — the first two keyed on the evidence behind `g`'s contract, the third on there
+being no contract to key on:
 
 - `g` passed its own Kani contract proof this run, and `g` is in the same crate →
-  generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict.
+  generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict: `f` is not
+  marked `conditional` for `g` and owes no evidence for it. **A reused result counts as
+  proved**, not merely as a shortcut: since commit c650e55 the record's fingerprint
+  covers the code a check actually runs, not just the checked function's own lines, so a
+  matching stored `bounded(k)` for `g` is exactly as sound a foundation as one earned
+  fresh this run — the honesty condition that reuse feature exists to make true. What
+  does *not* qualify: a `g` whose own verdict is itself `conditional` (standing on a
+  further assumption) is never treated as proved here, or the debt it carries would be
+  laundered out of view the moment something stubs it out — this branch requires `g`
+  clean all the way down, not merely `bounded`-shaped.
+  **The bound this branch reports is capped at the weakest link.** `f`'s own proof holds
+  only *given* `g` meets its contract, and that was only established to `g`'s own depth —
+  so if `f` is declared at `bounded(5)` but stands on a `g` proved only to `bounded(2)`,
+  the honest composed verdict is `bounded(2)`, never `f`'s own declared number. Reporting
+  the deeper one would be exactly the "evidence stronger than what it rests on" overclaim
+  §1 exists to refuse. **A clean verdict is not a standalone one**: `f`'s tree entry
+  still names every same-crate proof it stood on and the bound each earned (`W0517`,
+  `info` severity — nothing here is wrong or owed, only worth recording) so a reader
+  never mistakes "not conditional" for "proved in isolation".
+  **Branch one requires `g`'s own proof to cover `g`'s whole parameter domain, not
+  merely the caller's specific argument** (added 2026-08-26, adversarial review): a
+  `bounded(k)` proof over a length-indexed parameter — `Vec<u8>`, a slice, `BTreeSet`,
+  an array — only ever builds values up to length `k`, so it says nothing about a
+  caller passing a longer one. Composing against it anyway is the overclaim §1 exists
+  to refuse in its purest form: reproduced live, a callee proved only over vectors of
+  length ≤ 2 returns a value breaking its own postcondition at length 3, and a caller
+  always passing length 3 still composed to a clean `bounded(2)`, exit 0. A callee with
+  any such parameter is therefore never eligible for branch one, whatever its own
+  verdict — it falls back to branch two exactly like a cycle or an unclean callee does.
+  This is narrowed, not proved: a fixed-size `[T; N]` array is conservatively excluded
+  too, even though its size is part of the type and an argument-containment argument
+  might one day admit it — that argument is not made here (`RustType::is_full_domain`,
+  `crates/ply-core/src/harness.rs`).
+  **`f`'s own record depends on what it composed against, not only on `g`'s source.**
+  §5.2a's fingerprint gained a twelfth input for exactly this branch: the same-crate
+  callees a claim stands on, each with the bound it earned (`verified_bounds`,
+  2026-08-26, found by adversarial review of this branch before it landed and *again*
+  after, independently, on a second reviewer's own fixture — editing only `g`'s declared
+  `checks:` with no source touched anywhere left `f`'s stored, now-stale deeper bound
+  untouched the first time this was tried). A second, quieter defect went with it and
+  took a separate fix: the record's own "is this a verdict the checks could earn"
+  integrity check (`W0516`) predates this branch and assumed a `bounded(k)` check could
+  only ever produce `bounded(k)` verbatim, so a caller's *genuinely* composed
+  `bounded(j)` for `j < k` looked exactly like tampering and was refused, silently
+  re-verified from scratch, on every run after the one that earned it — `f` paid full
+  engine cost forever, not once. A same-day widening of that fix — accepting any
+  `bounded(j)` with `j <= k` — was itself found unsound by a second adversarial review:
+  a hand-edited `bounded(4)` for a claim whose real composed value was `bounded(2)`
+  passed, because it still sat under `f`'s own declared `bounded(5)`. The rule now
+  pins the exact value the composition must equal — `min(f`'s declared bound, the
+  shallowest bound among every callee it stands on`)` — and requires equality against
+  that number, not merely a ceiling (§5.2a states it in full); a reused `g` supplies
+  its bound the same way a freshly proved one does, since either way it is `g`'s own
+  recorded, re-hashed verdict that answers the question.
 - Anything else *that still has a declared contract* — `g` merely fuzzed or tested, `g` in
   another crate, `f` and `g` in a cycle, or `g` carrying no verification at all but a
   contract declared for it in `ply.yaml` (§5.4's external-spec route) → verify `f`
   assuming `g`'s contract, stub `g` out of the proof, and mark `f`'s verdict
   `conditional` (`W0511`), listing each assumed contract. The contract has to *say*
   something first: a promise nothing can satisfy, or one true of every value, is caught
-  before the proof runs (`E0502`/`E0503`, below).
+  before the proof runs (`E0502`/`E0503`, below). **A same-crate contracted `g` reached
+  through this branch is stubbed with `#[kani::stub_verified(g)]` too, mechanically
+  identical to the first branch** — Kani's plain `#[kani::stub]` cannot target a function
+  that carries its own contract at all (Kani issue #4591: a compile error, "Failed to
+  find contract closure", killing the whole crate; reproduced against both the pinned
+  toolchain and Kani's own `main` in `tests/spike/kani-pin`, and again directly against
+  this feature 2026-08-26). What tells the two branches apart is never anything Kani
+  checks — its own existence gate for `stub_verified` is purely syntactic either way
+  (`tests/spike/FINDINGS.md` item 4: it "works, but is unenforced" — no check that the
+  named proof harness ever ran or passed) — it is entirely Ply's own bookkeeping: whether
+  the ordering above actually established `g` clean this run. A callee still reached
+  through `ply.yaml`'s external-spec route (no inline contract at all) keeps the older,
+  hand-built stand-in function and plain `#[kani::stub]`, which works fine there — Kani's
+  limitation is specifically about stubbing a target that itself carries `#[kani::requires]`/
+  `#[kani::ensures]`, and a boundary-contract callee never does.
 - **No contract is declared for `g` anywhere** — not inline, not in `ply.yaml` → Ply
   **refuses to descend into `g`'s body**. `f`'s `bounded` check earns no evidence:
   verdict `unclaimed`, diagnostic `W0512`, and the run fails by default (§1's
@@ -988,9 +1168,20 @@ than a shortcut:
    nobody claimed*, yielding a `bounded` verdict whose meaning silently includes code no
    contract vouches for. The qualifier is exact and not decorative: this condition holds
    for the call sites this rule inspects, which are the ones written in the function being
-   checked. An unclaimed callee *below a contracted callee* is a gap that stays open until
-   D5's first branch stubs the contracted one — see this section's limits below, where it
-   is stated rather than implied.
+   checked. An unclaimed callee *below a contracted callee* `g` was a gap that stayed open
+   until D5's first branch landed (2026-08-26, closed for either of its branches): a
+   same-crate `g` is now always either stubbed or refused, never inlined, whichever
+   branch reached it, so whatever `g` itself calls never travels into the caller's
+   proof at all. **"Refused" is not a hedge**: a same-crate contracted `g` whose exact
+   shape Ply cannot build a stand-in for — a tuple-pattern parameter, a `self`
+   parameter, an unparseable contract attribute — used to fall through this rule
+   silently (no stub, no refusal, no diagnostic, `g`'s real body inlined) until an
+   adversarial review found it 2026-08-26; it is refused by name now (`W0512`), the
+   same way an unclaimed callee already was. **Still open**:
+   a contracted `g` reached through a path dependency (a different crate) is still
+   inlined exactly as before — cross-crate `stub_verified` is out of scope for v1 (below),
+   so this gap survives there specifically. See this section's limits below for what else
+   is still open.
 3. **An assumed boundary contract is owed evidence until something exercises it.** A
    contract declared in `ply.yaml` for an unclaimed callee is trusted, and trust that is
    never checked is green paint. The assumption is auditable (`cargo ply audit`'s trust
@@ -1008,6 +1199,19 @@ than a shortcut:
    state of a legacy-extension codebase, so it
    must read as routine and legible rather than as an alarm — the annotation carries the
    trust story, and a user who learns to skip it has lost it.
+   **This condition covers branch two's *inline*-contracted callees too, not only its
+   `ply.yaml`-declared route** — found not to, by adversarial review, 2026-08-26: both
+   commands read only the declared-contract map, so a same-crate callee assumed through
+   its own `#[ply::requires]`/`#[ply::ensures]` (this branch, reached whenever that
+   callee is not itself an independently bounded-checked claim) reported `conditional`/
+   `owed-evidence` correctly at `verify` time while `audit`'s trust surface and
+   `worklist`'s count both stayed silent about it — this honesty condition not holding
+   for a whole class of assumption. Fixed the same day, narrowly: listed whenever the
+   callee carries no `bounded` check anywhere in the document. **Known gap, not solved
+   here**: a same-crate callee that *is* claimed `bounded` elsewhere but still lands on
+   branch two at `verify` time (inside a cycle, or behind an unclean run) needs the same
+   ordering computation `verify` itself does to tell "stood on" from "assumed" — these
+   two listing commands do not attempt that and under-report exactly that case.
 
 **What this rule reaches, and what it does not.** It applies to `bounded` only: Kani
 descends into a callee's real body, so a caller's proof silently acquires that body's
@@ -1049,14 +1253,12 @@ or enum-variant constructor (`Some(x)`, `Ok(v)`, `Wrapper(t)`), not a free funct
 never triggers the glob refusal. Firing the boundary rule on `Some(x)` would tell a
 reader nothing they could act on — the same reason method calls are not call sites here.
 
-Two first-party gaps remain open, and are recorded in TODO.md rather than papered over:
-(a) the rule inspects the **claimed function's own body**, so a caller that calls a
-*contracted* callee `g` still acquires whatever `g` itself calls — until D5's first
-branch (`stub_verified`) lands, `g` is inlined rather than stubbed, and an unclaimed
-callee one level below `g` travels into the caller's proof unnamed; (b) calls Ply's
-reader cannot see at all — generated by a macro, routed through a `#[path = "..."]`
+One first-party gap remains open (recorded in TODO.md rather than papered over): calls
+Ply's reader cannot see at all — generated by a macro, routed through a `#[path = "..."]`
 module attribute, or made through a function pointer or trait method — are not call
-sites for it.
+sites for it. The gap this used to name for a same-crate contracted callee `g` (`g`
+inlined rather than stubbed, so an unclaimed callee one level below it travelled into the
+caller's proof unnamed) closed 2026-08-26 when D5's first branch landed — see above.
 
 A `ply.yaml` fn entry that declares `requires`/`ensures` and asks for no `checks` is a
 **boundary contract declaration**, not a claim: it exists so callers can assume something
@@ -1075,6 +1277,13 @@ alone with no function body anywhere in the harness: **can any value satisfy it*
 **can any value break it**. Both are answered exhaustively over the value space (CBMC
 solves them symbolically, not by sampling), and each costs well under a second once the
 crate is compiled — measured 2026-08-25.
+**This gate is about branch two's clauses, never branch one's** (made explicit
+2026-08-26, after an adversarial review found the gate firing on branch one too): a
+callee proved clean this run (`stub_verified`, branch one) is not standing on an
+assumption at all — its inline contract is real evidence, established by its own
+passing proof, not a promise this run is trusting sight-unseen. Interrogating it for
+vacuity is asking the wrong question of the wrong branch, so the gate now runs only
+over the clauses branch two actually assumes.
 
 - **Unsatisfiable** — no value satisfies it. Ply hands the clause to the engine as an
   assumption, so the caller's proof holds *vacuously* and anything at all is provable
@@ -1108,8 +1317,64 @@ does not look at a verified function's own inline `#[ply::ensures]`, where a wea
 the `mutate` tier's question (`W0502`) rather than this one's.
 
 The verdict tree shows each verdict's assumption chain; `conditional` propagates upward as a
-status (D6). Cross-crate `stub_verified` (Kani's wrapper/double-stub workaround) is out
-of scope for v1.
+status (D6).
+
+**§5.5's limits**, gathered in one place rather than left scattered across the section
+they were each stated in:
+
+- **Branch one excludes a callee with any length-indexed parameter** — `Vec<u8>`, a
+  slice, `BTreeSet`, an array — because its own `bounded(k)` proof only ever covers
+  values up to length `k`, not the type's full value space, and a caller's argument is
+  never checked against that limit. Stated in full above, where the branch is defined;
+  gathered here because it is a domain-coverage gap, the same shape as the others in
+  this list. Narrowed rather than solved: excluding every non-full-domain type is
+  conservative (a fixed-size array is excluded too, though its bound is arguably part
+  of its type), because no argument-containment check exists yet to admit any of them
+  safely. Adding one is future work, not a defect in what shipped.
+- **Ply cannot build a stand-in for every same-crate contracted callee's exact shape**
+  — a tuple-pattern parameter, a `self` parameter, a contract attribute Ply cannot
+  parse. Before 2026-08-26 this fell through silently: no stub, no refusal, no
+  diagnostic, and Kani inlined the callee's real body — contradicting this section's
+  own "always stubbed, never inlined" condition. Refused now (`W0512`) exactly like an
+  unclaimed callee is, naming the callee and why Ply could not build its stand-in.
+- **Cross-crate `stub_verified` is out of scope for v1.** A callee reached through a path
+  dependency is left exactly as before this feature (full descent, Kani inlines its real
+  body) even when it carries its own contract — neither branch one nor branch two's
+  same-crate `stub_verified` mechanism applies across a crate boundary. `tests/spike`'s
+  own item 5 found a sound *workaround* (a caller-local `#[kani::proof_for_contract]`
+  naming the remote `pub` function by qualified path), but it needs a second harness
+  declared per consuming crate with no cross-crate proof caching, and D5 does not
+  generate it automatically. Decide whether a later milestone does.
+- **A call outside the workspace** (`std`, `core`, a registry crate) is left alone and
+  Kani still descends into it — stated above, repeated here because it is the same shape
+  of gap: a `bounded` verdict can still include a body Ply never examined.
+- **A call Ply's reader cannot see at all** — generated by a macro, routed through a
+  `#[path = "..."]` module attribute, or made through a function pointer or trait method —
+  is not a call site for this rule at all, in either direction: such a call is neither
+  refused (branch three) nor stubbed (branches one and two), because Ply never extracted
+  it from the body to begin with.
+- **Branch one requires `g` clean, never merely `bounded`-shaped.** A `g` whose own
+  verdict carries `conditional` — because it, in turn, stands on a further assumption —
+  never qualifies as proved here, however deep its own declared bound. This is a
+  deliberate, conservative reading of "passed its own Kani contract proof": composing
+  branch one across more than one hop of assumption is a real question (does `f`
+  inherit `g`'s own owed-evidence debt, transitively, and how is that shown on `f`'s
+  node?) that this design does not answer. Recorded as a known gap rather than guessed
+  at — see TODO.md.
+- **The cycle fallback is decided per claim, not per edge.** A claim inside an
+  unorderable cycle falls back to branch two for *every* same-crate contracted callee it
+  reaches, including ones outside the cycle that could, in principle, still have been
+  ordered relative to it. The coarser rule is what §5.5's own ordering text states and
+  what this section's own test suite pins; a finer per-edge version is a possible
+  future refinement, not a defect in what shipped.
+- **The stub-verified mechanism's own soundness rests entirely on Ply's scheduler, never
+  on Kani.** `tests/spike/FINDINGS.md` item 4 found Kani's own compile-time check for
+  `#[kani::stub_verified]` purely syntactic — it confirms *some* `#[kani::proof_for_contract]`
+  harness exists for the named target, never that the harness ran, or passed, in this
+  invocation or any other. Every honesty condition above (ordering, "clean not merely
+  bounded-shaped", the reused-record rule) exists because of this: if Ply's own ordering
+  or its "clean" gate were ever wrong, nothing downstream — not Kani, not CBMC — would
+  notice or refuse.
 
 ### 5.6 Underspecification
 
@@ -1587,6 +1852,35 @@ verification, prefixes `K/P/M/R` reserved for engine-specific codes, `W01xx` env
 it, or fail with `X0901` attaching the raw output for debugging.
 
 ## 9. Testing strategy
+
+**A test nobody has watched fail is not evidence.** This is §1's absence-of-evidence
+principle turned on Ply's own suite, and it is stated here because Ply has repeatedly
+failed it. Every test in this repository must be observed red — against the defect it
+names, with a failure message that names that defect and not merely "assertion failed" —
+before it is made green. A test written after the code it checks proves only that the
+test agrees with the code, which is exactly the reasoning Ply refuses to accept from a
+user about their own program.
+
+The evidence for the rule, recorded rather than asserted: D5's first branch (2026-08-26)
+shipped with 315 passing tests and six defects, four of them found by adversarial review
+rather than by the suite. Two of those were nearly dismissed as environment flakiness.
+The worst was a **false clean verdict** — a caller reported `bounded` while standing on a
+callee whose proof never covered the arguments it was actually passed — and the commit
+before it had honestly reported a timeout, so the feature converted an honest absence of
+evidence into evidence. Every fixture its author wrote used scalar parameters; the defect
+needed a length-indexed one. The suite was not weak by accident: it was blind in exactly
+the shape nobody thought to write.
+
+Two consequences follow, and both are requirements:
+
+1. **A defect found by review enters the suite as a fixture of its own shape**, permanently
+   — not as a spot-check on the code path that happened to be wrong. The shape is what was
+   missing; the line was only where it surfaced.
+2. **Green is not a merge argument.** A passing suite is evidence that the shapes it
+   covers still behave; it is never evidence that a feature is correct. Where a feature
+   crosses into a subsystem it was not written against — the record and reuse path is the
+   one that has caught Ply out twice — the crossing gets its own test, or the feature is
+   narrowed until it does not cross.
 
 - **Fixture e2e**: each feature ships a minimal fixture project + `ply.yaml` + expected
   `--json` output as insta goldens. Review goldens like API diffs.

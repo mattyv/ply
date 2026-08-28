@@ -288,6 +288,7 @@ name = "ply-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "clap",
  "indexmap",
  "ply-core",
@@ -316,7 +317,9 @@ dependencies = [
 name = "ply-e2e"
 version = "0.0.0"
 dependencies = [
+ "quote",
  "serde_json",
+ "syn 2.0.119",
  "tempfile",
 ]
 

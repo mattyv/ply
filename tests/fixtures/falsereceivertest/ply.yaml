@@ -1,0 +1,12 @@
+ply: 1
+
+# The eleventh false pass (docs/review-strings-receivers.md finding 1):
+# `checks: [test]` on a receiver method whose promise is false on every
+# input, and which declares no worked examples. This is the shape that used
+# to report `tested`/held with zero cases run.
+components:
+  falsereceivertest:
+    anchor: ply_fixture_falsereceivertest
+    fns:
+      Calc::value:
+        checks: [test]

@@ -1,0 +1,15 @@
+ply: 1
+
+# `g` takes a `Vec<u8>` -- its own bounded(2) proof only ever builds
+# vectors up to length 2, so it is not a full-domain proof (The-Ply-Spec.md
+# §5.5's limits). `f` always passes length 3, outside that domain. D5's
+# first branch must refuse this callee and fall `f` back to the second
+# branch (assumed, conditional) rather than composing a false clean bound.
+components:
+  stubverifiedveclen:
+    anchor: ply_fixture_stubverifiedveclen
+    fns:
+      g:
+        checks: [bounded(2)]
+      f:
+        checks: [bounded(2)]

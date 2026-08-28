@@ -1,0 +1,14 @@
+ply: 1
+
+# `g` is claimed but only `fuzz`-checked, never `bounded` -- it can never
+# earn the `bounded(k)` verdict D5's first branch requires, so `f`'s call
+# to it must still fall to the second branch: assumed, stubbed, and
+# `conditional` with `owed-evidence`, exactly as before this feature.
+components:
+  stubverifiedfuzzedcallee:
+    anchor: ply_fixture_stubverifiedfuzzedcallee
+    fns:
+      g:
+        checks: [fuzz(64)]
+      f:
+        checks: [bounded(2)]

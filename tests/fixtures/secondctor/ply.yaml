@@ -1,0 +1,14 @@
+ply: 1
+
+# docs/review-silent-narrowing.md finding 3, "the type has a second
+# constructor Ply never calls". `TwoCtor` has two usable constructors
+# (`new`, `preloaded`); the receiver scan always builds from exactly one
+# (`new`, chosen deterministically), so states reachable only through
+# `preloaded` are never explored. This run must name `preloaded` as an
+# unused constructor and mark the verdict as narrower than it looks.
+components:
+  secondctor:
+    anchor: ply_fixture_secondctor
+    fns:
+      TwoCtor::value:
+        checks: [fuzz(256)]

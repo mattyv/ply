@@ -1,0 +1,9 @@
+[package]
+name = "ply-fixture-archambiguous-left"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "shared"
+path = "src/lib.rs"

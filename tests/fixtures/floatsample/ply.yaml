@@ -1,0 +1,23 @@
+ply: 1
+
+# `increment` declares no `checks:` at all -- this exercises the
+# shape-aware default routing (§5.4c) for a float: `f64` fails the Kani
+# (`bounded`) gate by deliberate design decision (never a measured
+# exclusion, unlike `BTreeSet`) but passes the fuzz (proptest) gate, so the
+# default must land on `fuzz(256)`, never `bounded(2)` and never silently
+# nothing.
+#
+# `mirror32_bounded`/`mirror32_fuzzed` are the same shape claimed two ways,
+# under two names (a `ply.yaml` claim key is the real function it names, so
+# two outcomes need two functions): one explicitly asks for `bounded`,
+# which this shape cannot give and must refuse by name; the other asks for
+# `fuzz`, which this shape can give and must earn a real verdict for.
+components:
+  floatsample:
+    anchor: ply_fixture_floatsample
+    fns:
+      increment: {}
+      mirror32_bounded:
+        checks: [bounded(2)]
+      mirror32_fuzzed:
+        checks: [fuzz(64)]

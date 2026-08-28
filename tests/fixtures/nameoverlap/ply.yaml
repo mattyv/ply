@@ -1,0 +1,14 @@
+ply: 1
+
+# Blocker 2 (docs/review-strings-receivers.md finding 2): `parse_harness::`
+# is a substring of `util_parse_harness::`, so a `cargo test` filter aimed
+# at `parse` alone used to execute `util::parse`'s own tests too, and the
+# correct `parse` was blamed for `util::parse`'s own broken promise.
+components:
+  nameoverlap:
+    anchor: ply_fixture_nameoverlap
+    fns:
+      parse:
+        checks: [test]
+      util::parse:
+        checks: [test]

@@ -1,0 +1,16 @@
+ply: 1
+
+# docs/review-silent-narrowing.md finding 1, "the type's only mutator lives
+# in a second file", extended by the coordinator's own follow-up review:
+# `Till`'s mutating operations are spread across five files, each reached
+# by a different spelling a real crate actually writes -- the bare name
+# after a `use`, `super::Till`, `crate::till::Till`, `self::Till`, and a
+# `use ... as` alias. `total`'s promise (always 0) is false after any one
+# of them runs, and the receiver scan must resolve every spelling to the
+# same `till::Till` to find that.
+components:
+  crossfilemutator:
+    anchor: ply_fixture_crossfilemutator
+    fns:
+      till::Till::total:
+        checks: [fuzz(256)]

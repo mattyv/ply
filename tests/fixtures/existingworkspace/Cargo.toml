@@ -1,0 +1,23 @@
+[workspace]
+# Empty table: this fixture is its own workspace root, per tests/fixtures'
+# convention -- it must never be swept into the product workspace. Also
+# the N1 regression fixture for the *other* half of docs/review-caveats.md:
+# a crate that already opts into `[workspace]` must see the harness
+# registered into it exactly as before (`harness_crate::ensure_workspace_member`),
+# never routed onto the new standalone-harness path the review's fix adds.
+
+[package]
+name = "ply-fixture-existingworkspace"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ply_fixture_existingworkspace"
+path = "src/lib.rs"
+
+[dependencies]
+ply = { package = "ply-attrs", path = "../../../crates/ply-attrs" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

@@ -1,0 +1,10 @@
+ply: 1
+
+components:
+  a:
+    anchor: archtier_a
+    components:
+      c:
+        anchor: archtier_c
+  b:
+    anchor: archtier_b

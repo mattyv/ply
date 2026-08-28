@@ -1,0 +1,15 @@
+ply: 1
+
+# The safety net a qualified-spelling resolution needs (coordinator review,
+# 2026-08-28): `Till`'s bare name is ambiguous crate-wide (a second,
+# unrelated `Till` sits at the crate root), so Ply cannot confirm that
+# `till::ops`'s own `impl super::Till` is really `till::Till` rather than
+# the other one. This run must name `take` as an unconfirmed exclusion --
+# never silently pool it (a wrong merge, if the guess were wrong) and never
+# silently drop it (a false claim of completeness).
+components:
+  unconfirmedspell:
+    anchor: ply_fixture_unconfirmedspell
+    fns:
+      till::Till::total:
+        checks: [fuzz(256)]

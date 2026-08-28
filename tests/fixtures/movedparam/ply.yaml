@@ -1,0 +1,10 @@
+ply: 1
+
+components:
+  movedparam:
+    anchor: ply_fixture_movedparam
+    fns:
+      scalar:
+        checks: [fuzz(32)]
+      vector:
+        checks: [fuzz(32)]

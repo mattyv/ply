@@ -1,0 +1,17 @@
+[package]
+name = "ply-fixture-archtierbin-dual"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Both a lib and a bin target on the same package -- the shape that pins
+# "identified by its lib name, not its bin name": if a fix ever picked the
+# *last* target found, or the bin, instead of always preferring the lib,
+# this is the package that would catch it.
+[lib]
+name = "archtierbin_dual"
+path = "src/lib.rs"
+
+[[bin]]
+name = "archtierbin-dual-cli"
+path = "src/main.rs"

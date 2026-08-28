@@ -10,7 +10,7 @@
 //! a diagnostic that names the build failure and carries concrete fixes, and
 //! a non-zero exit.
 
-use ply_e2e::{build_cargo_ply, copy_fixture, run_verify};
+use ply_e2e::{build_cargo_ply, copy_fixture, run_verify, run_verify_with_env};
 
 #[test]
 fn a_harness_that_fails_to_compile_is_a_tool_error_not_a_clean_pass() {
@@ -106,4 +106,56 @@ fn a_harness_that_fails_to_compile_is_a_tool_error_not_a_clean_pass() {
         Some(0),
         "a run that could not check anything must not exit 0"
     );
+}
+
+/// The same fixture, run the way this project's own CI runs everything:
+/// `CARGO_TERM_COLOR=always`.
+///
+/// Ply reads its engines' output, and that reading is line-oriented -- a
+/// compiler error is found by a line beginning `error`, and attributed to a
+/// function by the `-->` span beneath it. Under forced colour, cargo emits
+/// those lines wrapped in escape sequences, so every one of them began with
+/// `\x1b` instead. Nothing matched. Ply could not pin the failure to the
+/// function that caused it and could not quote the compiler either, so it
+/// fell back to "the compiler gave no specific error line" -- a sentence
+/// written for a failure genuinely beyond attribution, printed for one that
+/// was entirely attributable. A true sentence in the wrong place, which
+/// reads exactly like the tool working.
+///
+/// The test above passes in a plain terminal and passed here for months.
+/// This one is the environment the failure actually needed.
+#[test]
+fn a_build_failure_is_still_attributed_when_the_compiler_is_forced_to_use_colour() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("badexample");
+
+    let run = run_verify_with_env(
+        &cargo_ply,
+        fixture.path(),
+        Some(120),
+        &[("CARGO_TERM_COLOR", "always".to_string())],
+    );
+
+    let diagnostics = run.json["diagnostics"].as_array().unwrap();
+    let build_failures: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d["code"] == "X0901")
+        .collect();
+    assert!(
+        !build_failures.is_empty(),
+        "the harness still fails to compile under colour, so it is still a tool error: {}",
+        run.json
+    );
+    for d in &build_failures {
+        let title = d["title"].as_str().unwrap();
+        assert!(
+            !title.contains("gave no specific error line"),
+            "colour must not cost Ply the compiler's own message -- that fallback is for a \
+             failure nothing could attribute, and this one names a line: {title}"
+        );
+        assert!(
+            title.contains("E0308") || title.contains("mismatched types"),
+            "the compiler's distinguishing output has to survive the escape codes: {title}"
+        );
+    }
 }

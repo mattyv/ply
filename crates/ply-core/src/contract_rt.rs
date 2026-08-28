@@ -159,6 +159,11 @@ fn scalar_literal(v: &WitnessValue, ty: &RustType) -> Result<String> {
         WitnessValue::Int(i) => format!("{i}{ty_name}"),
         WitnessValue::Bool(b) => format!("{b}"),
         WitnessValue::VecU8(_) => bail!("scalar_literal called on a Vec<u8> witness value"),
+        WitnessValue::Duration(..) => {
+            bail!(
+                "scalar_literal called on a Duration witness value -- render_cex_test has its own arm for it"
+            )
+        }
     })
 }
 
@@ -220,6 +225,22 @@ pub fn render_cex_test(
                     "    let {name}: Vec<u8> = {lit};\n",
                     name = p.name,
                     lit = vec_literal(bytes)
+                ));
+            }
+            (RustType::Duration, WitnessValue::Duration(secs, nanos)) => {
+                lets.push_str(&format!(
+                    "    let {name}: std::time::Duration = std::time::Duration::new({secs}u64, {nanos}u32);\n",
+                    name = p.name,
+                ));
+            }
+            (RustType::NonZero(inner), val) => {
+                let inner_lit = scalar_literal(val, inner)?;
+                let suffix = inner
+                    .nonzero_suffix()
+                    .expect("a NonZero's inner is always a valid nonzero integer");
+                lets.push_str(&format!(
+                    "    let {name}: std::num::NonZero{suffix} = std::num::NonZero{suffix}::new({inner_lit}).unwrap();\n",
+                    name = p.name,
                 ));
             }
             (other, val) => {
@@ -427,5 +448,53 @@ pub fn saturating_bump(x: u8) -> u8 { x.saturating_add(1) }
             "arithmetic must be widened"
         );
         assert!(rendered.source.contains("(x as i128) + (1 as i128)"));
+    }
+
+    // -- 2026-08-27: NonZero and Duration witnesses render as the real
+    // constructor, never as a bare integer literal a `NonZero`/`Duration`
+    // binding could not even accept.
+
+    #[test]
+    fn a_nonzero_u32_witness_renders_through_the_public_constructor() {
+        let cf = discover(
+            r#"
+use std::num::NonZeroU32;
+#[ply::ensures(|result| *result > 0)]
+pub fn get(n: NonZeroU32) -> u32 { n.get() }
+"#,
+            "get",
+        );
+        let values = vec![WitnessValue::UInt(0)];
+        let rendered = render_cex_test(&cf, &values, "bounded(2)", "K0502", 1).unwrap();
+        assert!(
+            rendered
+                .source
+                .contains("std::num::NonZeroU32::new(0u32).unwrap()"),
+            "a NonZero witness must render through `NonZero{{X}}::new(..).unwrap()`, never as a \
+             bare integer literal a NonZeroU32-typed binding could not accept:\n{}",
+            rendered.source
+        );
+    }
+
+    #[test]
+    fn a_duration_witness_renders_through_duration_new() {
+        let cf = discover(
+            r#"
+use std::time::Duration;
+#[ply::ensures(|result| result.subsec_nanos() < 1_000_000_000)]
+pub fn identity(d: Duration) -> Duration { d }
+"#,
+            "identity",
+        );
+        let values = vec![WitnessValue::Duration(7, 500_000_000)];
+        let rendered = render_cex_test(&cf, &values, "bounded(2)", "K0502", 1).unwrap();
+        assert!(
+            rendered
+                .source
+                .contains("std::time::Duration::new(7u64, 500000000u32)"),
+            "a Duration witness must render through `Duration::new(secs, nanos)`, the same public \
+             constructor the harness itself uses to build one:\n{}",
+            rendered.source
+        );
     }
 }

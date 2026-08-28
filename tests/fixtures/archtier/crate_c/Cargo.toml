@@ -1,0 +1,9 @@
+[package]
+name = "ply-fixture-archtier-c"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "archtier_c"
+path = "src/lib.rs"

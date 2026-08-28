@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use ply_core::callgraph::DeclaredContract;
+use ply_core::callgraph::{DeclaredContract, Resolution};
 use ply_core::diag::{Diagnostic, Node};
 use ply_core::model::{
     Component, Document, InheritedChecks, component_default_checks, effective_checks,
@@ -406,26 +406,88 @@ pub(crate) fn assumed_contracts(
             // at all. `verify` refuses it (`W0512`) and the caller earns no
             // evidence -- nobody is trusting anything, so there is nothing
             // for a trust surface to list and nothing owed on it.
-            if let ply_core::callgraph::CalleeStatus::Assumed {
-                contract,
-                canonical_path,
-                signature,
-            } = resolver.classify(site).status
-                && signature.return_type.is_some()
-                && seen.insert(canonical_path.clone())
-            {
-                let (checks, checks_from, anchor) =
-                    callee_entry(doc, &canonical_path, local_anchors);
-                found.push(AssumedContract {
-                    caller_node_id: c.node_id(),
-                    caller_fn: c.fn_name.clone(),
-                    callee: canonical_path.clone(),
-                    contract: contract_text(&contract.requires, &contract.ensures),
-                    callee_checks: checks,
-                    callee_checks_from: checks_from,
-                    callee_anchor: anchor,
-                    where_text: site.where_text(),
-                });
+            match resolver.classify(site).status {
+                ply_core::callgraph::CalleeStatus::Assumed {
+                    contract,
+                    canonical_path,
+                    signature,
+                } if signature.return_type.is_some() && seen.insert(canonical_path.clone()) => {
+                    let (checks, checks_from, anchor) =
+                        callee_entry(doc, &canonical_path, local_anchors);
+                    found.push(AssumedContract {
+                        caller_node_id: c.node_id(),
+                        caller_fn: c.fn_name.clone(),
+                        callee: canonical_path.clone(),
+                        contract: contract_text(&contract.requires, &contract.ensures),
+                        callee_checks: checks,
+                        callee_checks_from: checks_from,
+                        callee_anchor: anchor,
+                        where_text: site.where_text(),
+                    });
+                }
+                // A same-crate callee carrying its own inline contract
+                // (D5's first two branches, §5.5) is invisible here before
+                // this arm existed: both trust-listing commands read only
+                // the `ply.yaml`-declared route, so a caller conditional on
+                // an inline-contracted callee reported `owed-evidence` in
+                // `verify` while `audit`'s trust surface and `worklist`'s
+                // count both stayed empty (adversarial review, 2026-08-26,
+                // fixture `privmod`) -- §5.5's own honesty condition 3
+                // ("trust that is never checked is green paint ... `cargo
+                // ply audit` lists it") silently did not hold for this
+                // class. Listed here whenever the callee is not itself
+                // claimed with a `bounded` check anywhere in the document:
+                // that is exactly the condition under which `verify` can
+                // never treat it as D5's first branch (which requires the
+                // callee to be an independently bounded-checked claim), so
+                // it is unconditionally an assumption here, never a
+                // narrower guess. **Known gap, not solved here**: a
+                // same-crate callee that *is* claimed with `bounded`
+                // elsewhere but still lands on branch two at `verify` time
+                // (a cycle, or an unclean run) needs the same ordering
+                // computation `verify` does to tell clean from assumed --
+                // this listing does not attempt that and under-reports
+                // exactly that case.
+                ply_core::callgraph::CalleeStatus::Contracted if seen.insert(site.path.clone()) => {
+                    if let Resolution::Found(found_fn) = resolver.lookup_fn(&site.path)
+                        && found_fn.local
+                        && found_fn.unnameable.is_none()
+                        && let Ok(callee_cf) = ply_core::harness::build_contract_fn(
+                            &found_fn.item,
+                            &ply_core::harness::alias_map(&found_fn.file),
+                            &found_fn.canonical,
+                            found_fn.is_method,
+                        )
+                    {
+                        let canonical = found_fn.canonical.clone();
+                        let (checks, checks_from, anchor) =
+                            callee_entry(doc, &canonical, local_anchors);
+                        let claimed_bounded = checks.iter().any(|c| c.starts_with("bounded("));
+                        if !claimed_bounded {
+                            let requires = callee_cf
+                                .requires
+                                .as_ref()
+                                .map(|(_, t)| vec![t.clone()])
+                                .unwrap_or_default();
+                            let ensures = callee_cf
+                                .ensures
+                                .as_ref()
+                                .map(|(_, t)| vec![t.clone()])
+                                .unwrap_or_default();
+                            found.push(AssumedContract {
+                                caller_node_id: c.node_id(),
+                                caller_fn: c.fn_name.clone(),
+                                callee: canonical,
+                                contract: contract_text(&requires, &ensures),
+                                callee_checks: checks,
+                                callee_checks_from: checks_from,
+                                callee_anchor: anchor,
+                                where_text: site.where_text(),
+                            });
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     });

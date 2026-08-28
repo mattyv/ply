@@ -1,0 +1,55 @@
+ply: 1
+
+# Ply's own architecture, checked by Ply (§5.3, M2's self-host requirement).
+#
+# Deliberately small. This file declares only what the crate tier can actually
+# check today -- which crates exist and which may depend on which. Capability
+# declarations (`pure`, `uses`) and type ownership (`owns`) are item-tier
+# facts, and the item tier is not built: declaring them here would put
+# unchecked promises in the one file whose whole purpose is that its claims
+# are checked. They arrive when the tier that checks them does.
+#
+# The three rules below are real invariants of this codebase, not decoration:
+#
+#   attrs  stands alone. It is a proc-macro crate, compiled for the host
+#          rather than the target. A dependency from it into the library
+#          would compile and would be wrong -- the macro would start
+#          depending on the thing it exists to annotate.
+#   core   holds the model, the engines and the record. It must never reach
+#          up into the command-line layer: everything core does has to be
+#          usable without a terminal, which is what makes the engines
+#          testable at all.
+#   cli    is the only component allowed to depend on core, and nothing may
+#          depend on cli. It is the top of the stack by construction.
+#
+# The one edge at the foot of this file is therefore the whole permitted
+# graph. Anything else between these crates is a violation, including the
+# cycle a well-meaning refactor would create by moving a diagnostic's
+# wording into core's caller.
+
+components:
+  # The end-to-end suite. It carries no dependency on any of the three
+  # crates below, and that is the rule rather than an accident: it drives the
+  # real built binary the way a user does. The day it links the library
+  # directly it stops testing what ships, and the checker will say so --
+  # there is no edge from `e2e` to anything, so any such dependency is a
+  # violation.
+  #
+  # It had grown one. On 2026-08-28 this checker, run on its own repository,
+  # reported that `ply_e2e` depended on `ply_core` and nothing allowed it: a
+  # measurement test was reading the type classifier directly. The fix was to
+  # move that test next to the classifier it measures, in `ply-core`'s own
+  # tests, where the dependency is native and the rule here is intact again.
+  # Declaring an edge would have widened the rule to the whole suite in order
+  # to excuse one file -- the crate tier cannot say "one test file may".
+  e2e:
+    anchor: ply_e2e
+  attrs:
+    anchor: ply_attrs
+  core:
+    anchor: ply_core
+  cli:
+    anchor: ply_cli
+
+edges:
+  - "cli -> core"

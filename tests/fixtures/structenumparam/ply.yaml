@@ -1,0 +1,23 @@
+ply: 1
+
+# Struct and enum PARAMETERS (this task, 2026-08-27) -- see src/lib.rs's own
+# module doc for the three-rule order docs/review-self-construction.md
+# settles and this fixture pins.
+components:
+  structenumparam:
+    anchor: ply_fixture_structenumparam
+    fns:
+      manhattan_norm:
+        checks: [fuzz(64)]
+      shape_area_upper_bound:
+        checks: [fuzz(64)]
+      doubled_capacity:
+        checks: [fuzz(64)]
+      broken_doubled_capacity:
+        checks: [fuzz(64)]
+      tokens_never_exceed_capacity:
+        checks: [fuzz(64)]
+      read_secret:
+        checks: [fuzz(64)]
+      bump_mut:
+        checks: [fuzz(64)]

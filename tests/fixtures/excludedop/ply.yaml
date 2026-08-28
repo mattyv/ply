@@ -1,0 +1,16 @@
+ply: 1
+
+# docs/review-structs-enums.md finding 1, "the fourteenth false clean".
+# `Acc::note` is the type's only state-changing operation and takes a
+# `&str`, which Ply's fuzz tier cannot build an argument for -- so `note`
+# never enters the bounded operation sequence `Acc::get`'s check builds.
+# `Acc::get`'s promise (always 0) is false after one ordinary `note` call,
+# but this run cannot call `note`, so it cannot find that by running cases.
+# It must instead say so plainly: name `note`, and mark the verdict as
+# resting on a narrower history than a bare `fuzzed(n)` reads.
+components:
+  excludedop:
+    anchor: ply_fixture_excludedop
+    fns:
+      Acc::get:
+        checks: [fuzz(256)]

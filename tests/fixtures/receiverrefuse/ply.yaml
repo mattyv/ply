@@ -1,0 +1,18 @@
+ply: 1
+
+components:
+  receiverrefuse:
+    anchor: ply_fixture_receiverrefuse
+    fns:
+      # No `Self`-returning associated function anywhere on `Gauge` -- no
+      # constructor to call, so no receiver Ply can build.
+      Gauge::read:
+        checks: [fuzz(32)]
+      # `Labelled::new` is a real constructor, but its own parameter is a
+      # type Ply's checkers cannot build a value of -- the constructor
+      # itself can never be called.
+      Labelled::tag_value:
+        checks: [fuzz(32)]
+      # `Counter` is constructible, but `bump` takes `&mut self` -- must
+      # stay refused unchanged (this task never widens past `&self`).
+      Counter::bump: {}
