@@ -414,7 +414,7 @@ fn aggregate_raw(node: &VerdictNode) -> (Option<Evidence>, AggregatedNode) {
     for child in &node.children {
         let (child_raw, child_agg) = aggregate_raw(child);
         raw_evidence = combine_claimable(raw_evidence, child_raw);
-        statuses.extend(child_agg.statuses.iter());
+        statuses = statuses.union(&child_agg.statuses);
         conditional = merge_conditional(conditional, child_agg.conditional.clone());
         open_items += child_agg.open_items;
         children.push(child_agg);
@@ -455,6 +455,68 @@ pub fn aggregate(node: &VerdictNode) -> AggregatedNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `is_empty` has exactly one consumer that changes behaviour on the
+    /// answer -- the renderer, which picks what to draw from it -- and that
+    /// lives in another crate, so nothing here used to notice if the answer
+    /// were wrong. A mutation run found that: "always report empty" survived
+    /// the whole suite. Both directions are pinned so it cannot come back.
+    #[test]
+    fn an_empty_status_set_reports_empty_and_a_populated_one_does_not() {
+        let empty = StatusSet::new();
+        assert!(empty.is_empty(), "a set with nothing in it must report empty");
+
+        let mut populated = StatusSet::new();
+        populated.insert(ALL_STATUS_KINDS[0]);
+        assert!(
+            !populated.is_empty(),
+            "a set holding {:?} must not report empty -- the renderer decides \
+             what to draw from this answer",
+            ALL_STATUS_KINDS[0]
+        );
+    }
+
+    /// Collecting statuses into a set is public API that nothing in the
+    /// product calls, so a mutation replacing it with "always produce the
+    /// empty set" survived. Pinned rather than deleted: it is the idiomatic
+    /// partner to `Extend`, and an untested constructor is how a later
+    /// caller inherits a silent bug.
+    #[test]
+    fn collecting_statuses_into_a_set_keeps_every_distinct_one() {
+        let collected: StatusSet = ALL_STATUS_KINDS.iter().copied().collect();
+        assert_eq!(
+            collected.len(),
+            ALL_STATUS_KINDS.len(),
+            "collecting every status kind must yield a set holding every one of them"
+        );
+        for kind in ALL_STATUS_KINDS {
+            assert!(collected.contains(kind), "{kind:?} was lost while collecting");
+        }
+    }
+
+    /// This set's printed form is what the exhaustive check prints when it
+    /// finds a counterexample. CLAUDE.md's rule is that a failure must name
+    /// the actual defect -- so a mutation blanking this output degrades every
+    /// future failure message into something unreadable, and survived because
+    /// no test read it. Exact-string, because the words are the point.
+    #[test]
+    fn a_status_set_prints_its_members_so_a_failure_message_names_them() {
+        assert_eq!(format!("{:?}", StatusSet::new()), "{}");
+
+        let mut one = StatusSet::new();
+        one.insert(ALL_STATUS_KINDS[0]);
+        assert_eq!(format!("{one:?}"), format!("{{{:?}}}", ALL_STATUS_KINDS[0]));
+
+        let all: StatusSet = ALL_STATUS_KINDS.iter().copied().collect();
+        let printed = format!("{all:?}");
+        for kind in ALL_STATUS_KINDS {
+            assert!(
+                printed.contains(&format!("{kind:?}")),
+                "printed form {printed} omits {kind:?}, so a counterexample \
+                 mentioning it would be unreadable"
+            );
+        }
+    }
 
     fn leaf(kind: NodeKind) -> VerdictNode {
         VerdictNode {
