@@ -672,6 +672,15 @@ pub fn decode_marker_fields(
             // parameter's, so no witness ever needs to decode one.
             | RustType::SelfType
             | RustType::Unit
+            // Same reasoning as the float/`String` arms above: not
+            // `is_witness_renderable`, so a struct/enum parameter's failing
+            // value is reported witness-only (`W0541`) -- the raw
+            // `marker_display_expr` text (a description built from the
+            // constructor's/fields' own already-decodable arguments, never
+            // a `{:?}` of the struct itself) is still shown to the reader
+            // via `fields`, just not turned into a `WitnessValue` literal.
+            | RustType::UserTypeCtor(_)
+            | RustType::UserTypeFields(_)
             | RustType::Unsupported(_) => return None,
         };
         out.push(value);

@@ -272,6 +272,24 @@ fn strategy_expr(ty: &RustType) -> Result<String> {
                 ty.display_name()
             )
         }
+        // Never reached either, for a different reason: a struct/enum
+        // parameter is never handed to `strategy_expr` directly -- it has
+        // no single scalar `Strategy` of its own. `plan_for_param`/
+        // `build_user_value_stmt` (below) draw a *leaf* strategy per
+        // constructor argument or field instead, and call `strategy_expr`
+        // only on each of those (always an ordinary type by the time it
+        // gets there -- `resolve_user_type` never resolves a leaf to
+        // another unresolved shape). Reaching this arm would mean some
+        // caller skipped that machinery, which is a Ply bug, not a user
+        // error.
+        RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => {
+            bail!(
+                "`{}` has no strategy of its own -- it is built from its own constructor's or \
+                 fields' leaf strategies, never sampled directly; this is a Ply bug, not a user \
+                 error",
+                ty.display_name()
+            )
+        }
     })
 }
 
@@ -325,6 +343,21 @@ fn marker_display_expr(ty: &RustType, var: &str) -> String {
         RustType::String => format!(
             r#"{{ let mut __ply_s = String::new(); for __ply_c in {var}.chars() {{ match __ply_c {{ '\\' => __ply_s.push_str("\\\\"), ';' => __ply_s.push_str("\\;"), '=' => __ply_s.push_str("\\="), '[' => __ply_s.push_str("\\["), ']' => __ply_s.push_str("\\]"), '\n' => __ply_s.push_str("\\n"), '\r' => __ply_s.push_str("\\r"), __ply_other => __ply_s.push(__ply_other), }} }} __ply_s }}"#
         ),
+        // A struct/enum parameter's own display text is precomputed *before*
+        // its value is built (`build_user_value_stmt`'s own doc: the
+        // constructor call, or the field/variant literal, may move a
+        // leaf's value that the marker also wants to show) into
+        // `__ply_marker_val_{var}` -- a `String` already bound by the time
+        // the generic `marker_precompute` loop in `generate_fuzz_test`
+        // reaches this parameter, so the expression it needs is just that
+        // binding's own name, re-`Display`ed (a harmless self-shadowing
+        // rewrap, not a second computation). Never `{:?}` of the built
+        // value itself: the user's own struct/enum is not guaranteed to
+        // derive `Debug` at all, and this must never be the reason a
+        // generated harness fails to compile.
+        RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => {
+            format!("__ply_marker_val_{var}")
+        }
         // `NonZero{X}`'s own `Display` is already just the plain number
         // (std impls it as a pass-through to the inner integer), so the
         // default arm below is exact for it too -- no case needed.
@@ -340,7 +373,20 @@ fn marker_display_expr(ty: &RustType, var: &str) -> String {
 /// logic renders a constructor's own parameter list, or a pooled operation's,
 /// without a second copy of the 0/1/N cases.
 fn value_pattern_for(params: &[Param]) -> String {
-    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+    // Routed through `plan_for_param` (2026-08-27, struct/enum parameters)
+    // so a struct/enum Ply itself builds contributes its own nested tuple
+    // of synthetic leaf names here instead of its own (unbound) bare name
+    // -- byte-identical to the old bare-name-per-param logic for every
+    // ordinary type, since `plan_for_param`'s default arm reproduces it
+    // exactly. `.expect` is safe: this fn returns no error path of its own
+    // (unlike `combined_strategy_expr_for`, which can fail on an
+    // `Unsupported` type), and every real caller already gated on
+    // `is_fuzz_supported` before reaching here.
+    let names: Vec<String> = params
+        .iter()
+        .map(|p| plan_for_param(p).map(|plan| plan.pattern))
+        .collect::<Result<_>>()
+        .unwrap_or_else(|e| panic!("value_pattern_for: {e}"));
     match names.len() {
         // A zero-parameter fn (a receiverless constructor like
         // `FakeClock::new()`) has nothing for proptest to generate --
@@ -350,7 +396,7 @@ fn value_pattern_for(params: &[Param]) -> String {
         // matched a *value* of `()`, and the strategy below did not build
         // one -- see that fn's own doc for the compile error this caused).
         0 => "_".to_string(),
-        1 => names[0].to_string(),
+        1 => names[0].clone(),
         _ => format!("({})", names.join(", ")),
     }
 }
@@ -401,10 +447,240 @@ fn value_pattern(cf: &ContractFn) -> String {
     value_pattern_for(&cf.params)
 }
 
+/// One raw scalar-ish strategy slot a struct/enum parameter's own build
+/// needs -- a constructor argument, a struct field, an enum field, or the
+/// discriminant that picks which variant to build -- named uniquely across
+/// the whole generated test (`path_prefix`, threaded down through
+/// [`build_user_value_stmt`]'s own recursion) so two different built
+/// parameters, or two arguments sharing a name at different nesting levels,
+/// never collide in the one flat outer tuple every leaf is drawn from.
+struct LeafSlot {
+    name: String,
+    ty: RustType,
+    strategy: String,
+}
+
+/// Struct/enum parameters (docs/review-self-construction.md's rule, applied
+/// to a parameter -- see `harness.rs`'s own module doc on
+/// `resolve_user_type` for the three-rule order this renders): recursively
+/// builds the imperative Rust snippet that binds `binding_name` to a value
+/// of `ty`, appending every leaf strategy slot it draws on to `leaves` and
+/// every statement it needs to `preamble`. This is `receiver_preamble`'s
+/// exact mechanism (a constructor call gated by its own `#[ply::requires]`;
+/// for the direct-construction rule, a struct literal or an enum `match`
+/// over a drawn discriminant) generalised from "always `__ply_receiver`" to
+/// "whatever name the caller wants this value bound to" -- so a
+/// constructor argument or a field that is itself another user type (
+/// `Quota::new`'s own `refill: RefillRate` argument, in the rate-limiter
+/// fixture) recurses into its own nested block, bound under its **own
+/// original** parameter/field name (never a synthetic one), so that type's
+/// own `#[ply::requires]` text -- which names its own parameters verbatim
+/// -- still resolves correctly by ordinary Rust block scoping. Every
+/// *leaf* still gets a globally-unique synthetic name (`path_prefix`
+/// accumulates one path segment per nesting level), so the flat outer
+/// tuple pattern/strategy never collides even when two different built
+/// parameters happen to share a field name.
+///
+/// An enum (`UserTypeShape::Enum`) always draws **every** variant's own
+/// fields, whichever one a discriminant leaf ends up selecting -- simpler
+/// than a strategy that only samples the chosen variant's own fields, at
+/// the cost of a few wasted draws per case, which proptest does not notice.
+fn build_user_value_stmt(
+    ty: &RustType,
+    binding_name: &str,
+    path_prefix: &str,
+    leaves: &mut Vec<LeafSlot>,
+    preamble: &mut String,
+) -> Result<()> {
+    match ty {
+        RustType::UserTypeCtor(plan) => {
+            preamble.push_str(&format!("            let {binding_name} = {{\n"));
+            for cp in &plan.ctor_params {
+                let sub_prefix = format!("{path_prefix}{}_", cp.name);
+                build_user_value_stmt(&cp.ty, &cp.name, &sub_prefix, leaves, preamble)?;
+            }
+            if let Some(req) = &plan.ctor_requires {
+                let cond = req.to_token_stream().to_string();
+                preamble.push_str(&format!(
+                    "                if !({cond}) {{ __ply_rejected.set(__ply_rejected.get() + \
+                     1); return Err(proptest::test_runner::TestCaseError::reject(\"constructor \
+                     requires filter\")); }}\n"
+                ));
+            }
+            let ctor_call = harness::last_two_segments(&plan.constructor);
+            let ctor_args = call_args_for(&plan.ctor_params).join(", ");
+            preamble.push_str(&format!(
+                "                {ctor_call}({ctor_args})\n            }};\n"
+            ));
+            Ok(())
+        }
+        RustType::UserTypeFields(plan) => match &plan.shape {
+            harness::UserTypeShape::Struct(fields) => {
+                preamble.push_str(&format!("            let {binding_name} = {{\n"));
+                for f in fields {
+                    let sub_prefix = format!("{path_prefix}{}_", f.name);
+                    build_user_value_stmt(&f.ty, &f.name, &sub_prefix, leaves, preamble)?;
+                }
+                let field_inits: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                preamble.push_str(&format!(
+                    "                {} {{ {} }}\n            }};\n",
+                    plan.type_name,
+                    field_inits.join(", ")
+                ));
+                Ok(())
+            }
+            harness::UserTypeShape::Enum(variants) => {
+                let disc_name = format!("__ply_leaf_{path_prefix}variant");
+                leaves.push(LeafSlot {
+                    name: disc_name.clone(),
+                    ty: RustType::U8,
+                    strategy: format!("0u8..{}u8", variants.len()),
+                });
+                preamble.push_str(&format!("            let {binding_name} = {{\n"));
+                preamble.push_str(&format!("                match {disc_name} {{\n"));
+                for (i, (vname, vfields)) in variants.iter().enumerate() {
+                    preamble.push_str(&format!("                    {i} => {{\n"));
+                    for f in vfields {
+                        let sub_prefix = format!("{path_prefix}v{i}_{}_", f.name);
+                        build_user_value_stmt(&f.ty, &f.name, &sub_prefix, leaves, preamble)?;
+                    }
+                    if vfields.is_empty() {
+                        preamble.push_str(&format!(
+                            "                        {}::{vname}\n                    }}\n",
+                            plan.type_name
+                        ));
+                    } else {
+                        let field_inits: Vec<String> =
+                            vfields.iter().map(|f| f.name.clone()).collect();
+                        preamble.push_str(&format!(
+                            "                        {}::{vname} {{ {} }}\n                    }}\n",
+                            plan.type_name,
+                            field_inits.join(", ")
+                        ));
+                    }
+                }
+                preamble.push_str(&format!(
+                    "                    _ => unreachable!(\"{disc_name} is generated in \
+                     0..{}\"),\n",
+                    variants.len()
+                ));
+                preamble.push_str("                }\n            };\n");
+                Ok(())
+            }
+        },
+        _ => {
+            let leaf_name = format!("__ply_leaf_{path_prefix}{binding_name}");
+            leaves.push(LeafSlot {
+                name: leaf_name.clone(),
+                ty: ty.clone(),
+                strategy: strategy_expr(ty)?,
+            });
+            preamble.push_str(&format!("            let {binding_name} = {leaf_name};\n"));
+            Ok(())
+        }
+    }
+}
+
+/// The `PLY_FUZZED_CEX` marker text for a struct/enum parameter, precomputed
+/// **before** its own construction preamble runs (`build_user_value_stmt`'s
+/// own doc: the constructor call, or the field/variant literal, may move a
+/// leaf's value the marker also wants to show) -- built from each leaf's
+/// own already-decodable `marker_display_expr`, since every leaf is by
+/// construction an ordinary type, never another unresolved user type.
+fn build_marker_stmt(param_name: &str, leaves: &[LeafSlot]) -> String {
+    if leaves.is_empty() {
+        return format!("            let __ply_marker_val_{param_name}: String = String::new();\n");
+    }
+    let fmt_str = leaves
+        .iter()
+        .map(|l| format!("{}={{}}", l.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let args = leaves
+        .iter()
+        .map(|l| marker_display_expr(&l.ty, &l.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "            let __ply_marker_val_{param_name}: String = format!(\"{fmt_str}\", {args});\n"
+    )
+}
+
+/// Everything needed to fold one parameter into the outer combined proptest
+/// tuple: the pattern fragment (a bare name for an ordinary type; a nested
+/// tuple of synthetic leaf names for a struct/enum Ply itself builds), the
+/// matching strategy fragment, and the preamble text (empty for an
+/// ordinary type) that turns those leaves into the parameter's own bound
+/// name before the checked call runs. For an ordinary type this is
+/// byte-for-byte what the pre-existing per-param logic already produced --
+/// no behaviour changes for any function with no struct/enum parameter.
+struct ParamPlan {
+    pattern: String,
+    strategy: String,
+    preamble: String,
+}
+
+fn plan_for_param(p: &Param) -> Result<ParamPlan> {
+    match &p.ty {
+        RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => {
+            let mut leaves = Vec::new();
+            let mut preamble = String::new();
+            build_user_value_stmt(
+                &p.ty,
+                &p.name,
+                &format!("p_{}_", p.name),
+                &mut leaves,
+                &mut preamble,
+            )?;
+            let pattern = match leaves.len() {
+                0 => "_".to_string(),
+                1 => leaves[0].name.clone(),
+                _ => format!(
+                    "({})",
+                    leaves
+                        .iter()
+                        .map(|l| l.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            let strategy = match leaves.len() {
+                0 => "proptest::strategy::Just(())".to_string(),
+                1 => leaves[0].strategy.clone(),
+                _ => format!(
+                    "({})",
+                    leaves
+                        .iter()
+                        .map(|l| l.strategy.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            let marker_stmt = build_marker_stmt(&p.name, &leaves);
+            Ok(ParamPlan {
+                pattern,
+                strategy,
+                preamble: format!("{marker_stmt}{preamble}"),
+            })
+        }
+        _ => Ok(ParamPlan {
+            pattern: p.name.clone(),
+            strategy: strategy_expr(&p.ty)?,
+            preamble: String::new(),
+        }),
+    }
+}
+
+/// The preamble text every built parameter in `params` contributes, in
+/// order -- empty when none of them is a struct/enum Ply itself builds.
+fn params_preamble(params: &[Param]) -> Result<String> {
+    let plans: Vec<ParamPlan> = params.iter().map(plan_for_param).collect::<Result<_>>()?;
+    Ok(plans.into_iter().map(|p| p.preamble).collect())
+}
+
 fn combined_strategy_expr_for(params: &[Param]) -> Result<String> {
-    let exprs: Result<Vec<String>> = params.iter().map(|p| strategy_expr(&p.ty)).collect();
-    let exprs = exprs?;
-    Ok(match exprs.len() {
+    let plans: Vec<ParamPlan> = params.iter().map(plan_for_param).collect::<Result<_>>()?;
+    Ok(match plans.len() {
         // A zero-parameter fn (found broken 2026-08-27 against
         // `Meter::zero`/`FakeClock::new`-shaped constructors, adversarial
         // review of the method-resolution task): the old `else` branch
@@ -415,8 +691,15 @@ fn combined_strategy_expr_for(params: &[Param]) -> Result<String> {
         // return type. `Just(())` is proptest's own always-`()` strategy,
         // built for exactly this case.
         0 => "proptest::strategy::Just(())".to_string(),
-        1 => exprs[0].clone(),
-        _ => format!("({})", exprs.join(", ")),
+        1 => plans[0].strategy.clone(),
+        _ => format!(
+            "({})",
+            plans
+                .iter()
+                .map(|p| p.strategy.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     })
 }
 
@@ -453,6 +736,17 @@ fn moves_on_by_value_call(ty: &RustType) -> bool {
         RustType::Result(ok, err) => moves_on_by_value_call(ok) || moves_on_by_value_call(err),
         RustType::Array(inner, _) => moves_on_by_value_call(inner),
         RustType::Unsupported(_) => false,
+        // A struct/enum parameter (2026-08-27): conservative rather than
+        // measured -- Ply's parser does not read `#[derive(Copy)]`, so
+        // whether a given user type actually moves on a by-value call is
+        // genuinely unknown here. Assuming it does is the safe direction:
+        // a postcondition that reads it back after the call is refused up
+        // front with a specific fix (`V0506`, "wrap the read in `old(...)`,
+        // or take it by reference"), instead of risking a raw
+        // `error[E0382]: borrow of moved value` inside Ply's own generated
+        // harness for the (real, common) case where the type is not
+        // actually `Copy`.
+        RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => true,
         _ => false,
     }
 }
@@ -589,11 +883,21 @@ fn receiver_preamble(
     cf: &ContractFn,
     plan: &harness::ReceiverPlan,
     target_pattern: &str,
-) -> String {
+) -> Result<String> {
     let ctor_call = harness::last_two_segments(&plan.constructor);
     let ctor_args = call_args_for(&plan.ctor_params).join(", ");
 
     let mut body = String::new();
+    // Struct/enum parameters (2026-08-27): one of the receiver's own
+    // constructor arguments may itself be another user type Ply builds
+    // (`Quota::new`'s own `refill: RefillRate` argument, in the rate-limiter
+    // fixture) -- its own construction preamble must run, and its own value
+    // must be bound under its original name, before `ctor_args` above (which
+    // references that same name) is ever spliced into the ctor call below.
+    // A plain ctor argument contributes nothing here (`plan_for_param`'s
+    // default arm), so this is a no-op for every receiver this task did not
+    // touch.
+    body.push_str(&params_preamble(&plan.ctor_params)?);
     if let Some(ctor_requires) = &plan.ctor_requires {
         let cond = ctor_requires.to_token_stream().to_string();
         body.push_str(&format!(
@@ -660,7 +964,7 @@ fn receiver_preamble(
         "                    _ => unreachable!(\"__ply_op_choice is generated in 0..num_ops\"),\n",
     );
     body.push_str("                }\n            }\n            ");
-    body
+    Ok(body)
 }
 
 /// Generates the `ply_fuzz_{fn}` proptest-driven test: `cases` runs of the
@@ -738,7 +1042,7 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
     let (pattern, strategy, receiver_preamble_text) = match &cf.receiver {
         Some(plan) => {
             let (p, s) = receiver_pattern_and_strategy(plan, &target_pattern, &target_strategy)?;
-            (p, s, receiver_preamble(cf, plan, &target_pattern))
+            (p, s, receiver_preamble(cf, plan, &target_pattern)?)
         }
         None => (
             target_pattern.clone(),
@@ -746,6 +1050,17 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
             String::new(),
         ),
     };
+    // Struct/enum parameters (2026-08-27): a plain (non-receiver) function's
+    // own parameter may itself be one Ply builds via a constructor or
+    // direct field/variant construction -- this is empty for every fn with
+    // no such parameter (`params_preamble`'s own doc), so it changes
+    // nothing for the vast majority of generated harnesses. For a receiver
+    // method, `cf.params` here is the *checked method's own* arguments,
+    // deliberately never enriched into a user type (`scan_impls_for_
+    // receiver`'s own comment on `target_params`), so this is always empty
+    // in that case too -- the receiver's own construction, including its
+    // constructor's arguments, is entirely `receiver_preamble_text`'s job.
+    let params_preamble_text = params_preamble(&cf.params)?;
     let target_args = call_args(cf).join(", ");
     let args = match &cf.receiver {
         Some(_) if target_args.is_empty() => "&__ply_receiver".to_string(),
@@ -848,7 +1163,7 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {strategy};\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{pattern}| {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{requires_check}{receiver_preamble_text}{entry_lets}{marker_precompute}let __ply_call_result = {fname}({args});\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{params_preamble_text}{requires_check}{receiver_preamble_text}{entry_lets}{marker_precompute}let __ply_call_result = {fname}({args});\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let result = &__ply_call_result;\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {widened}));\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20match __ply_ok {{\n\
@@ -1009,6 +1324,15 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
         ],
         // Never reached: return-only shapes, never a parameter's.
         RustType::SelfType | RustType::Unit | RustType::Unsupported(_) => vec![],
+        // No fixed boundary literal makes sense for a value built by calling
+        // a constructor or filling in fields -- there is no "zero" or "MAX"
+        // for `Quota`. An empty list here means `generate_direct_contract_
+        // cases` skips the `test` check's direct cases for this fn
+        // entirely (its own `literal_sets.iter().any(|s| s.is_empty())`
+        // guard), the same honest "nothing generated, not a crash" answer
+        // it already gives for a receiver method -- `fuzz(n)` still runs
+        // and still earns a real verdict.
+        RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => vec![],
     }
 }
 
@@ -1097,6 +1421,60 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
 /// bodies (fuzz test, example tests, direct-case tests), importing the
 /// target fn from `target_crate_ident` (the target crate's Rust identifier
 /// -- its `[lib] name`, not necessarily its package name).
+/// Every struct/enum type name Ply itself constructs somewhere in `cf` --
+/// a parameter's own type, or (recursively) a constructor argument or a
+/// field/variant's own type -- deduplicated, in first-seen order.
+/// Struct/enum parameters (2026-08-27): `call_expr()`'s own import only
+/// brings the checked function (or its enclosing type, for a method) into
+/// scope, never a *parameter's* type -- `wrap_fn_harness_module` needs one
+/// more `use` per such type, or the generated harness fails to compile with
+/// "cannot find struct/enum `X` in this scope" the moment it names one in a
+/// constructor call or a field/variant literal.
+fn extra_type_imports(cf: &ContractFn) -> Vec<String> {
+    fn walk(ty: &RustType, out: &mut Vec<String>) {
+        match ty {
+            RustType::UserTypeCtor(plan) => {
+                if !out.iter().any(|n| n == &plan.import_path) {
+                    out.push(plan.import_path.clone());
+                }
+                for p in &plan.ctor_params {
+                    walk(&p.ty, out);
+                }
+            }
+            RustType::UserTypeFields(plan) => {
+                if !out.iter().any(|n| n == &plan.import_path) {
+                    out.push(plan.import_path.clone());
+                }
+                match &plan.shape {
+                    harness::UserTypeShape::Struct(fields) => {
+                        for f in fields {
+                            walk(&f.ty, out);
+                        }
+                    }
+                    harness::UserTypeShape::Enum(variants) => {
+                        for (_, fields) in variants {
+                            for f in fields {
+                                walk(&f.ty, out);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for p in &cf.params {
+        walk(&p.ty, &mut out);
+    }
+    if let Some(plan) = &cf.receiver {
+        for p in &plan.ctor_params {
+            walk(&p.ty, &mut out);
+        }
+    }
+    out
+}
+
 pub fn wrap_fn_harness_module(
     cf: &ContractFn,
     target_crate_ident: &str,
@@ -1113,8 +1491,18 @@ pub fn wrap_fn_harness_module(
     // import naming the method.
     let import_path = cf.import_path();
     let mut out = format!(
-        "#[cfg(test)]\nmod {module_ident}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{import_path};\n\n"
+        "#[cfg(test)]\nmod {module_ident}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{import_path};\n"
     );
+    // Struct/enum parameters (2026-08-27): one `use` per type Ply itself
+    // constructs -- assumed to sit at the target crate's own root, same as
+    // every other bare struct/enum name this scan resolves
+    // (`scan_crate_type_locations` indexes by bare name, not module path).
+    for extra in extra_type_imports(cf) {
+        out.push_str(&format!(
+            "    #[allow(unused_imports)]\n    use {target_crate_ident}::{extra};\n"
+        ));
+    }
+    out.push('\n');
     for b in bodies {
         out.push_str(b);
         out.push('\n');

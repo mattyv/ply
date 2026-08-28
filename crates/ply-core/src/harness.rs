@@ -249,7 +249,83 @@ pub enum RustType {
     /// both engines, same reasoning as `SelfType`: nothing is ever
     /// constructed from it.
     Unit,
+    /// A struct/enum **parameter** Ply builds by calling the type's own
+    /// constructor -- rule 1 of `docs/review-self-construction.md`'s
+    /// settled order, added for struct/enum parameters (as opposed to a
+    /// `&self` receiver, which `ReceiverPlan`/`ContractFn::receiver` already
+    /// covered): every value reached this way is one the real program could
+    /// build too, through this exact call, so no invariant is assumed.
+    /// Literally reuses [`ReceiverPlan`] -- the same constructor-call
+    /// mechanism receiver construction built, minus the "bounded sequence of
+    /// further operations" half (`operations` is always empty here, and
+    /// `max_sequence_len` always 0): a parameter is handed to the real
+    /// function once, built, never a `self` further calls run against, so
+    /// there is no receiver here to mutate before the call. See the
+    /// "Parameter construction" section below for the resolver that
+    /// produces this and why reusing `ReceiverPlan` rather than a second
+    /// type is the right call.
+    UserTypeCtor(Box<ReceiverPlan>),
+    /// A struct/enum **parameter** Ply builds directly, field by field
+    /// (struct) or variant by variant (enum) -- rule 2: only ever produced
+    /// when every field (struct) or every variant's every field (enum) is
+    /// already public, so there is no invariant to violate because any
+    /// caller could already build any combination. This is §5.4b's own
+    /// "structs and enums ... of Ply-derivable Arbitrary (public,
+    /// invariant-free fields)", and `docs/review-self-construction.md` is
+    /// the reasoning it rests on: "invariant-free" is a **named
+    /// assumption** carried on every verdict that rests on it
+    /// (`public_fields_assumed_diag` in `verify.rs`), never a proof --
+    /// `SweepReport`'s own worked counterexample in that review
+    /// (`keys_before - keys_removed == keys_after`, enforced by nothing but
+    /// `sweep` itself) is exactly the risk the disclosure names.
+    UserTypeFields(Box<UserTypeFieldsPlan>),
     Unsupported(String),
+}
+
+/// A struct or enum Ply builds directly because every field/variant-field
+/// is public (`RustType::UserTypeFields`'s rule 2) -- the type's bare name
+/// (for diagnostics) plus its own shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserTypeFieldsPlan {
+    pub type_name: String,
+    /// `type_name`, qualified from the crate root (`bucket::Quota`, not
+    /// bare `Quota`) -- see [`ReceiverPlan::import_path`]'s doc for why
+    /// `fuzz_gen::wrap_fn_harness_module` needs this.
+    pub import_path: String,
+    pub shape: UserTypeShape,
+}
+
+/// **Deliberately narrow** (2026-08-27, struct/enum parameters): only a
+/// named-field struct or a named-field/unit enum variant is recognised here
+/// -- a tuple struct or a tuple variant is refused by name (`UserTypeError`)
+/// rather than guessed at, the same "narrowed, not solved" discipline
+/// `RustType::String`'s own doc already uses for nesting. Every field's own
+/// type is resolved the same recursive way a constructor's own argument is
+/// (`resolve_user_type`), so a public field that is itself a buildable user
+/// type is not refused just because it is not a bare scalar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserTypeShape {
+    /// A plain struct with named fields, all public.
+    Struct(Vec<Param>),
+    /// Every variant this enum declares, each with its own name and its own
+    /// named fields (empty for a unit variant). **Decided deliberately**
+    /// (the task's own question -- "is every variant reachable"): in plain
+    /// Rust a variant's fields carry the *enum's* visibility, never their
+    /// own, so "all fields public" is really "is every variant's own field
+    /// data a shape Ply can build" -- and if even one variant's field is
+    /// not, `resolve_user_type` refuses the **whole enum** by name rather
+    /// than silently building only the variants it can. A harness that
+    /// quietly dropped one variant would under-represent the type without
+    /// saying so, which is the "false clean" shape this project refuses on
+    /// principle (§1); a named refusal that says which variant and why
+    /// costs one sentence and tells the truth. Every variant this rule
+    /// *does* admit is one the real program can already construct too
+    /// (nothing here invents a field combination no constructor produces --
+    /// unlike a struct's own fields, a Rust enum variant's shape is fixed by
+    /// its declaration, so there is no "combination" to invent in the first
+    /// place), which is what answers the task's other question: generating
+    /// any admitted variant is never a false alarm.
+    Enum(Vec<(String, Vec<Param>)>),
 }
 
 /// Spelled the way the user wrote it, never the way Ply stores it.
@@ -385,6 +461,18 @@ impl RustType {
             // Same deliberate-design-decision reasoning as floats, not a
             // measured Kani exclusion: see `RustType::String`'s own doc.
             RustType::String => false,
+            // Struct/enum parameters (2026-08-27): never bounded-supported,
+            // matching the receiver mechanism they reuse -- Kani's harness
+            // codegen has never built a constructor call or a struct/enum
+            // literal (`fuzz_gen`'s own module doc, pre-dating this task),
+            // and the sequence-of-operations idea a receiver's own `bounded`
+            // refusal already cites ("affordable... unmeasured on the
+            // exhaustive tier") applies here too. Explicit arm rather than
+            // left to the fallback below, matching floats'/`String`'s own
+            // reasoning: this is what makes the sample-only refusal fire by
+            // name (`bounded_refused_sample_only_diag`) rather than the
+            // generic "not attempted" one.
+            RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => false,
             other => other.is_leaf() || other.is_composite_constructible(),
         }
     }
@@ -424,6 +512,13 @@ impl RustType {
             // (hypothetical) proof over it would cover only strings up to
             // that cap, never the type's whole value space.
             | RustType::String
+            // A struct/enum parameter is built from one constructor call (or
+            // one randomly-chosen variant), never every value the type could
+            // hold -- the same "sampled, not exhaustive" reasoning as
+            // `String`/`Vec` just above, and for the same reason never
+            // reached today (`is_bounded_supported` already says `false`).
+            | RustType::UserTypeCtor(_)
+            | RustType::UserTypeFields(_)
             | RustType::Unsupported(_) => false,
             RustType::Option(inner) => inner.is_full_domain(),
             RustType::Result(ok, err) => ok.is_full_domain() && err.is_full_domain(),
@@ -455,6 +550,17 @@ impl RustType {
             // shape (see `fuzz_gen::strategy_expr`'s own doc for what it
             // actually builds).
             RustType::String => true,
+            // Struct/enum parameters (2026-08-27): the whole point of this
+            // shape -- built via a constructor call or a direct field/
+            // variant literal, both ordinary imperative codegen the fuzz
+            // harness crate can compile just fine (it is a real crate
+            // depending on the target one, so it can call the target's own
+            // public constructor or name its own public fields, exactly as
+            // any other downstream crate could). Same reason floats/
+            // `String` need their own arm: the fallback would otherwise
+            // inherit `false` from `is_bounded_supported`, which is
+            // backwards here too.
+            RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => true,
             other => other.is_bounded_supported(),
         }
     }
@@ -565,6 +671,8 @@ impl RustType {
             RustType::Unsupported(src) => src.clone(),
             RustType::SelfType => "Self".to_string(),
             RustType::Unit => "()".to_string(),
+            RustType::UserTypeCtor(plan) => plan.type_name.clone(),
+            RustType::UserTypeFields(plan) => plan.type_name.clone(),
             other => other.scalar_rust_name().unwrap_or("?").to_string(),
         }
     }
@@ -579,6 +687,15 @@ impl RustType {
             RustType::Vec(inner) => inner.as_ref() == &RustType::U8,
             RustType::Duration => true,
             RustType::NonZero(inner) => inner.scalar_byte_width().is_some(),
+            // Not yet (2026-08-27): a shrunk struct/enum witness is reported
+            // witness-only (`W0541`), same as `String`/a float -- Ply has no
+            // literal-rendering path for "call this constructor with these
+            // values" or "build this variant" yet, only a *description* of
+            // it (`marker_display_expr`'s own new arm, used for the
+            // human-readable failing-case line, which is a different,
+            // already-solved question from "can this become a runnable
+            // `#[test]`").
+            RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => false,
             _ => self.scalar_byte_width().is_some(),
         }
     }
@@ -632,6 +749,11 @@ impl RustType {
             | RustType::String
             | RustType::SelfType
             | RustType::Unit
+            // Same reasoning as `String`/floats just above: never reaches
+            // the bounded/Kani path (`is_bounded_supported` is `false`), so
+            // no byte-width witness decoder is needed.
+            | RustType::UserTypeCtor(_)
+            | RustType::UserTypeFields(_)
             | RustType::Unsupported(_) => None,
         }
     }
@@ -894,7 +1016,7 @@ pub fn alias_map(file: &syn::File) -> AliasMap {
     out
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
     pub name: String,
     pub ty: RustType,
@@ -1029,6 +1151,24 @@ impl ContractFn {
     pub fn has_string_shape(&self) -> bool {
         self.params.iter().any(|p| matches!(p.ty, RustType::String))
             || matches!(self.return_type, RustType::String)
+    }
+
+    /// The type name of every parameter Ply builds by direct field/variant
+    /// construction (`RustType::UserTypeFields`, rule 2) -- what gates
+    /// `public_fields_assumed_diag`'s own disclosure (verify.rs): a fuzz
+    /// run that actually used this route owes the reader the "no
+    /// invariant" assumption it rested on, the same way a float/`String`
+    /// run discloses its own sampling choice. Empty for a fn with no such
+    /// parameter (every constructor-built one, `RustType::UserTypeCtor`,
+    /// needs no such disclosure -- nothing about it is assumed).
+    pub fn public_fields_param_type_names(&self) -> Vec<String> {
+        self.params
+            .iter()
+            .filter_map(|p| match &p.ty {
+                RustType::UserTypeFields(plan) => Some(plan.type_name.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The expression generated code calls this fn by (added 2026-08-27,
@@ -1382,7 +1522,7 @@ pub const MAX_RECEIVER_SEQUENCE_LEN: u32 = 3;
 /// touched. Each operation now generates its own arguments from its own
 /// strategy (`fuzz_gen::receiver_pattern_and_strategy`), so a mixed-shape
 /// pool is exactly what the sequence now builds.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Operation {
     /// The full path as the checked method's own is spelled (`module::Type::name`
     /// or `Type::name`), so `last_two_segments` renders it the same way
@@ -1415,12 +1555,23 @@ pub struct Operation {
 /// always the easy branch); every other entry is a sibling operation found
 /// in the same scan, of whatever shape its own signature has (see
 /// `Operation`'s doc).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiverPlan {
     /// The type this receiver is a value of, spelled the way a diagnostic
     /// should name it (bare, no module prefix -- `Bucket`, not
     /// `bucket::Bucket`).
     pub type_name: String,
+    /// `type_name`, qualified from the crate root the way a `use` needs it
+    /// (`bucket::Quota`, not bare `Quota`) -- added for struct/enum
+    /// **parameters** (2026-08-27): when this plan sits *nested* inside
+    /// another one's `ctor_params` (`Quota::new`'s own `refill: RefillRate`
+    /// argument), `fuzz_gen::wrap_fn_harness_module` needs this to `use` the
+    /// type at all, since nothing else names its module. For the *receiver's
+    /// own* plan (built by `scan_impls_for_receiver`, never nested), this
+    /// field is never read -- `ContractFn::import_path` already brings the
+    /// receiver's own type into scope from the claim's own path -- so it is
+    /// set to the bare `type_name` there rather than computed, harmlessly.
+    pub import_path: String,
     /// The constructor's own full path, same spelling convention as
     /// [`Operation::call_path`].
     pub constructor: String,
@@ -1667,6 +1818,7 @@ fn scan_impls_for_receiver(
     aliases: &AliasMap,
     type_name: &str,
     method_name: &str,
+    crate_dir: &Path,
 ) -> std::result::Result<(syn::ImplItemFn, ReceiverPlan), ReceiverError> {
     let mut target: Option<syn::ImplItemFn> = None;
     let mut ctor_candidates: Vec<CtorCandidate> = Vec::new();
@@ -1747,6 +1899,47 @@ fn scan_impls_for_receiver(
     let target_params = params_from_inputs(target.sig.inputs.iter().skip(1), aliases)
         .ok_or(ReceiverError::UnsupportedParamPattern)?;
 
+    // Struct/enum parameters (2026-08-27): a constructor argument classified
+    // `Unsupported` by the plain parser above may still be a struct/enum Ply
+    // itself knows how to build (this is exactly `Quota::new`'s own
+    // `refill: RefillRate` in the rate-limiter fixture) -- re-resolve every
+    // candidate's own parameters, and the checked method's own, before
+    // deciding what is buildable. Naive `is_fuzz_supported` on the
+    // *unresolved* type would reject `Quota::new` here before this
+    // recursion ever ran, which is exactly the bug this re-resolution
+    // fixes: without it, a receiver whose constructor takes another
+    // buildable user type is refused for a type that was never actually
+    // unbuildable, just not resolved yet at scan time.
+    let locations = scan_crate_type_locations(crate_dir);
+    let resolve_or_keep = |p: &Param| -> Param {
+        match resolve_param_type(crate_dir, &locations, &p.ty, 0) {
+            Ok(ty) => Param { ty, ..(*p).clone() },
+            Err(_) => p.clone(),
+        }
+    };
+    let ctor_candidates: Vec<CtorCandidate> = ctor_candidates
+        .into_iter()
+        .map(|(path, params, _bad, req)| {
+            let resolved: Vec<Param> = params.iter().map(resolve_or_keep).collect();
+            let bad = resolved
+                .iter()
+                .find(|p| !p.ty.is_fuzz_supported())
+                .map(|p| p.ty.display_name());
+            (path, resolved, bad, req)
+        })
+        .collect();
+    // `target_params` (the checked method's own non-`self` arguments) is
+    // deliberately **not** run through `resolve_or_keep`: `receiver_preamble`'s
+    // codegen (`fuzz_gen.rs`) calls the checked method with its own params'
+    // *plain, already-bound* names, taken straight from the outer pattern --
+    // it has no preamble-building path yet for one of those being a
+    // struct/enum Ply itself constructs (only a constructor's own arguments,
+    // and an ordinary top-level parameter, are wired). Leaving it
+    // unresolved means such a param stays `Unsupported`, and the existing
+    // `is_fuzz_supported` gate refuses the whole method honestly (naming
+    // that parameter) rather than emitting a harness that cannot compile --
+    // narrower than it could be, not broken.
+
     let buildable = ctor_candidates.iter().find(|(_, _, bad, _)| bad.is_none());
     let (ctor_path, ctor_params, ctor_requires) = match buildable {
         Some((path, params, _, req)) => (path.clone(), params.clone(), req.clone()),
@@ -1780,6 +1973,9 @@ fn scan_impls_for_receiver(
 
     let plan = ReceiverPlan {
         type_name: type_name.to_string(),
+        // Never read for the receiver's own plan -- see the field's own
+        // doc.
+        import_path: type_name.to_string(),
         constructor: ctor_path,
         ctor_params,
         ctor_requires,
@@ -1812,13 +2008,563 @@ pub fn discover_method_with_receiver(
     let file: syn::File = syn::parse_file(&src).map_err(|_| ReceiverError::Unreadable)?;
     let aliases = alias_map(&file);
 
-    let (target, plan) = scan_impls_for_receiver(&file, &aliases, type_name, method_name)?;
+    let (target, plan) =
+        scan_impls_for_receiver(&file, &aliases, type_name, method_name, crate_dir)?;
 
     let item_fn = strip_receiver_to_item_fn(&target);
     let mut cf = build_contract_fn(&item_fn, &aliases, fn_path, true)
         .map_err(|_| ReceiverError::UnsupportedParamPattern)?;
     cf.receiver = Some(plan);
+    // Struct/enum parameters (2026-08-27): the checked method's own
+    // parameters (not the receiver, not the constructor's own arguments --
+    // both already resolved inside `scan_impls_for_receiver` above) get the
+    // same chance any ordinary function's parameters do. Reasons for a
+    // struct/enum found-but-refused are discarded here rather than
+    // threaded through `ReceiverError` -- a receiver method's own
+    // diagnostics are already keyed to the *receiver*, and widening that
+    // shape to also carry a per-parameter refusal reason is more surface
+    // than this task's own receiver-adjacent case needs; the generic
+    // "type neither engine builds inputs for" message still names the
+    // parameter and its type.
+    let _ = enrich_contract_fn_user_types(&mut cf, crate_dir);
     Ok(cf)
+}
+
+// == Struct/enum parameters (this task, 2026-08-27) =============================
+//
+// `docs/review-self-construction.md` settled how a value of the user's own
+// type may be built; this task applies that same conclusion to an ordinary
+// *parameter* (as opposed to `&self`, which the "Receiver construction"
+// section above already covers). Literally the same rule, in order:
+//
+// 1. **Construct via the type's own constructor** where one exists that
+//    takes buildable arguments, honouring its own precondition -- reusing
+//    [`ReceiverPlan`] itself (with an empty operation pool: a parameter is
+//    handed to the real function once, built, never a `self` further calls
+//    run against). This is [`scan_ctor_candidates`] plus the recursive loop
+//    in [`resolve_user_type`] below.
+// 2. **Direct construction only when nothing is private** -- a struct whose
+//    fields are all public, or an enum whose variants are all public and
+//    carry only buildable public data. `#[non_exhaustive]` disqualifies it
+//    (the fuzz harness is a separate crate depending on the target one, so
+//    it is exactly the kind of "outside crate" `#[non_exhaustive]` blocks
+//    from building a new variant/field literal) -- checked, not ignored,
+//    per the review's own callout.
+// 3. **Otherwise refuse by name**, naming the type and why
+//    ([`UserTypeError::Refused`]).
+//
+// A struct/enum's own bare name is looked up across the *whole* crate
+// ([`scan_crate_type_locations`]), never re-derived from the parameter's own
+// module the way the receiver path's `Type::method` claim already names its
+// module -- an ordinary parameter's type carries no such hint (it might be
+// `use`d from anywhere), so the crate is scanned once for every top-level
+// `struct`/`enum` declaration instead. A name declared in more than one file
+// is refused as ambiguous rather than guessed at.
+//
+// **Recursion, bounded**: a constructor argument or a struct/enum field may
+// itself be another buildable user type (`Quota::new`'s own `refill:
+// RefillRate` argument, in the rate-limiter fixture, is exactly this shape)
+// -- `resolve_user_type` calls itself, deeper each time, capped by
+// [`MAX_USER_TYPE_DEPTH`] the same way alias-chasing is capped: a cycle
+// cannot occur for an owned Rust value without indirection this parser does
+// not follow anyway, but a parser is not a compiler and must not hang on
+// unexpected input.
+//
+// **Deliberately narrow, honestly so:**
+// - only a *named*-field struct, or an enum whose variants are all named-
+//   field/unit, is recognised for rule 2 -- a tuple struct or a tuple
+//   variant is refused by name rather than guessed at ([`UserTypeShape`]'s
+//   own doc);
+// - every variant must qualify for rule 2 to apply at all: one variant with
+//   an unbuildable field refuses the *whole* enum, rather than silently
+//   building only the variants Ply can reach -- the task's own question
+//   ("is every variant reachable") is answered by refusing outright rather
+//   than quietly narrowing, which would be exactly the kind of "false
+//   clean" this project refuses on principle (§1);
+// - a nested user type is only resolved as a *bare* top-level parameter/
+//   field/argument, never inside `Option`/`Result`/`Vec`/`[T; N]` of one --
+//   the same narrowing already applied to `NonZero`/`Duration`/`String`;
+// - an operation Ply pools for a *receiver's* own bounded sequence
+//   (`Operation::params`, the "Receiver construction" section above) is
+//   deliberately **not** enriched here: `receiver_preamble`'s codegen has
+//   no preamble-building path for an operation's own argument, only for the
+//   checked call's and a constructor's, so a struct-typed operation
+//   argument stays `Unsupported` and is filtered out of the pool by the
+//   existing `is_fuzz_supported` gate -- a real function keeps checking
+//   without that particular mutator in its sequence, rather than the
+//   harness failing to compile.
+
+/// Recursion bound for a chain of user types nested through constructor
+/// arguments or struct/enum fields (`Quota::new`'s own `RefillRate`
+/// argument is the real shape this exists for, at depth one) -- generous
+/// enough for any realistic chain while still refusing to hang on
+/// unexpected input, the same role [`MAX_ALIAS_DEPTH`] plays for a type
+/// alias chain.
+const MAX_USER_TYPE_DEPTH: usize = 6;
+
+/// Where Ply found a bare struct/enum name declared, scanning every `.rs`
+/// file under a crate's `src/` directory (recursing into subdirectories,
+/// following Ply's own file-per-module convention) -- keyed by bare name.
+/// `None` records that the same bare name was found declared in more than
+/// one file: ambiguous, refused by name (`UserTypeError::Ambiguous`) rather
+/// than picking one arbitrarily.
+pub type TypeLocations = std::collections::BTreeMap<String, Option<PathBuf>>;
+
+/// Builds [`TypeLocations`] for `crate_dir` -- a name -> file index, not a
+/// resolver: a bare parameter type carries no hint about which module its
+/// declaration lives in (unlike a `Type::method` claim's own path), so every
+/// file under `src/` is read once. Cheap for the crate sizes this project
+/// targets; a file that fails to parse is simply skipped (never a hang, and
+/// a type declared only in an unparseable file is reported `NotFound`
+/// downstream, the same honest answer as if it were not declared at all).
+pub fn scan_crate_type_locations(crate_dir: &Path) -> TypeLocations {
+    let mut out: TypeLocations = std::collections::BTreeMap::new();
+    let mut stack = vec![crate_dir.join("src")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(file) = syn::parse_file(&src) else {
+                continue;
+            };
+            for item in &file.items {
+                let name = match item {
+                    syn::Item::Struct(s) => s.ident.to_string(),
+                    syn::Item::Enum(e) => e.ident.to_string(),
+                    _ => continue,
+                };
+                out.entry(name)
+                    .and_modify(|slot| *slot = None)
+                    .or_insert_with(|| Some(path.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Why Ply could not build a value of a user's own struct/enum type for a
+/// **parameter** -- see the module doc above for the three-rule order this
+/// answers. `Display` renders the plain sentence a diagnostic quotes
+/// directly; `Refused` already carries a complete, type-naming sentence of
+/// its own (built where the refusal actually happens, so it can be
+/// specific), the other three are generic enough to render here.
+#[derive(Debug, Clone)]
+pub enum UserTypeError {
+    /// Not a struct or enum this scan found declared anywhere under this
+    /// crate's `src/` -- most often because the `Unsupported` type is not a
+    /// user type at all (a generic parameter, a trait object, a type this
+    /// task's scope does not reach), so this is not itself reported to a
+    /// user: the generic "type neither engine builds inputs for" message
+    /// already names it honestly.
+    NotFound,
+    /// More than one type shares this bare name across the crate.
+    Ambiguous,
+    /// The file declaring it could not be read or parsed as Rust.
+    Unreadable,
+    /// Found, real, and still refused -- rule 1 (constructor) and rule 2
+    /// (direct construction) both failed, for the reason this sentence
+    /// names.
+    Refused(String),
+}
+
+impl std::fmt::Display for UserTypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UserTypeError::NotFound => write!(
+                f,
+                "not a struct or enum Ply found declared anywhere under this crate's `src/`"
+            ),
+            UserTypeError::Ambiguous => write!(
+                f,
+                "more than one type shares this bare name in this crate, and Ply does not guess \
+                 which declaration a parameter means"
+            ),
+            UserTypeError::Unreadable => {
+                write!(f, "the file declaring it could not be read or parsed")
+            }
+            UserTypeError::Refused(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
+/// A single Rust identifier and nothing else -- the only shape a bare
+/// parameter type's `Unsupported` source text can be for this scan to even
+/// attempt a lookup (`Vec < Foo >`, `& mut Bar`, `some :: Path` all fail
+/// this and are left exactly as they were, honestly: they are real shapes
+/// this task does not reach, not a struct/enum this scan could look up).
+fn is_bare_ident(src: &str) -> bool {
+    let mut chars = src.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn has_non_exhaustive(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| a.path().is_ident("non_exhaustive"))
+}
+
+/// `fields` read as [`Param`]s, `None` for a tuple shape this reader does
+/// not recognise (rule 2's own narrowing -- see `UserTypeShape`'s doc).
+/// `Some(vec![])` for a unit struct/variant: real, buildable, zero fields.
+fn named_fields_as_params(fields: &syn::Fields, aliases: &AliasMap) -> Option<Vec<Param>> {
+    match fields {
+        syn::Fields::Named(named) => {
+            let mut out = Vec::new();
+            for f in &named.named {
+                out.push(Param {
+                    name: f.ident.as_ref()?.to_string(),
+                    ty: rust_type_from_syn(&f.ty, aliases),
+                    by_ref: false,
+                });
+            }
+            Some(out)
+        }
+        syn::Fields::Unit => Some(Vec::new()),
+        syn::Fields::Unnamed(_) => None,
+    }
+}
+
+/// Every field a struct/enum-variant's `fields` declares, all `pub` --
+/// rule 2's own gate. Deliberately re-implemented here rather than reusing
+/// `callgraph::Resolver::private_field_names`: that method answers a
+/// different question (over a path *resolved* through a caller's own `use`
+/// imports, from a resolver this module's scope does not touch), where this
+/// scan already has the declaration itself open.
+fn all_fields_public(fields: &syn::Fields) -> bool {
+    fields
+        .iter()
+        .all(|f| matches!(f.vis, syn::Visibility::Public(_)))
+}
+
+/// Rule 1's own candidate scan, narrowed from [`scan_impls_for_receiver`]'s
+/// (which also looks for a *target* method and an operation pool -- neither
+/// applies to a parameter, which has no receiver to call further methods
+/// on): every receiverless associated fn of `type_name` returning bare
+/// `Self`, with its raw (not yet recursively resolved) parameters and its
+/// own `#[ply::requires]`. **Unfiltered by buildability on purpose** --
+/// unlike the older per-type scans, a candidate whose parameter is itself
+/// an unresolved user type must not be discarded here, or `resolve_user_type`
+/// below would never get the chance to resolve it (exactly the bug fixed in
+/// `scan_impls_for_receiver` alongside this task, for `Quota::new`'s own
+/// `RefillRate` argument).
+fn scan_ctor_candidates(
+    file: &syn::File,
+    aliases: &AliasMap,
+    type_name: &str,
+) -> Vec<(String, Vec<Param>, Option<Expr>)> {
+    let mut out = Vec::new();
+    for item in &file.items {
+        let syn::Item::Impl(imp) = item else {
+            continue;
+        };
+        if imp.trait_.is_some() || !imp.generics.params.is_empty() {
+            continue;
+        }
+        if !impl_targets_type(&imp.self_ty, type_name) {
+            continue;
+        }
+        for impl_item in &imp.items {
+            let syn::ImplItem::Fn(m) = impl_item else {
+                continue;
+            };
+            let is_receiverless = !matches!(m.sig.inputs.first(), Some(FnArg::Receiver(_)));
+            if !is_receiverless {
+                continue;
+            }
+            if return_rust_type_from_syn(&m.sig.output, aliases) != RustType::SelfType {
+                continue;
+            }
+            let Some(params) = params_from_inputs(m.sig.inputs.iter(), aliases) else {
+                continue;
+            };
+            let Ok(ctor_requires) = extract_requires_expr(&m.attrs) else {
+                continue;
+            };
+            out.push((
+                format!("{type_name}::{}", m.sig.ident),
+                params,
+                ctor_requires,
+            ));
+        }
+    }
+    out
+}
+
+/// `type_name`'s crate-root-qualified path, derived from the file it was
+/// found declared in (`crate_dir/src/bucket.rs` -> `bucket::{type_name}`;
+/// `crate_dir/src/lib.rs` -> bare `{type_name}`; `crate_dir/src/a/b.rs` or
+/// `crate_dir/src/a/b/mod.rs` -> `a::b::{type_name}`) -- what
+/// `fuzz_gen::wrap_fn_harness_module` needs to `use` a nested constructor
+/// argument's own type, since nothing else in the generated harness names
+/// its module the way `ContractFn::import_path` does for the checked
+/// function itself. `main.rs`/`mod.rs`/`lib.rs` name the directory they sit
+/// in, never themselves; any other file name is its own last module
+/// segment.
+fn qualified_type_path(crate_dir: &Path, file_path: &Path, type_name: &str) -> String {
+    let src_dir = crate_dir.join("src");
+    let rel = file_path.strip_prefix(&src_dir).unwrap_or(file_path);
+    let mut segs: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
+    if let Some(last) = segs.last().cloned() {
+        if last == "lib.rs" || last == "main.rs" || last == "mod.rs" {
+            segs.pop();
+        } else if let Some(stem) = last.strip_suffix(".rs") {
+            let stem = stem.to_string();
+            *segs.last_mut().unwrap() = stem;
+        }
+    }
+    if segs.is_empty() {
+        type_name.to_string()
+    } else {
+        format!("{}::{type_name}", segs.join("::"))
+    }
+}
+
+/// If `ty` is already something Ply knows how to build, returns it
+/// unchanged; if it is `Unsupported` and its source text is a bare
+/// identifier, tries to resolve it as a user-defined struct/enum
+/// ([`resolve_user_type`]); anything else (a compound type expression Ply's
+/// parser did not recognise -- `Vec<Foo>`, `&mut Bar`, a generic parameter)
+/// is `NotFound` rather than guessed at.
+fn resolve_param_type(
+    crate_dir: &Path,
+    locations: &TypeLocations,
+    ty: &RustType,
+    depth: usize,
+) -> std::result::Result<RustType, UserTypeError> {
+    let RustType::Unsupported(src) = ty else {
+        return Ok(ty.clone());
+    };
+    if !is_bare_ident(src) {
+        return Err(UserTypeError::NotFound);
+    }
+    resolve_user_type(crate_dir, locations, src, depth)
+}
+
+/// The resolver at the centre of this section: try to build `RustType`
+/// value-construction for the struct/enum named `type_name`, per the
+/// module doc's three rules, in order. Recursive through
+/// [`resolve_param_type`] for a constructor argument or a field that is
+/// itself another user type, bounded by [`MAX_USER_TYPE_DEPTH`].
+fn resolve_user_type(
+    crate_dir: &Path,
+    locations: &TypeLocations,
+    type_name: &str,
+    depth: usize,
+) -> std::result::Result<RustType, UserTypeError> {
+    if depth > MAX_USER_TYPE_DEPTH {
+        return Err(UserTypeError::Refused(format!(
+            "`{type_name}` nests more than {MAX_USER_TYPE_DEPTH} user-defined types deep through \
+             constructor arguments or fields -- Ply stops following the chain here rather than \
+             risk it not terminating"
+        )));
+    }
+    let file_path = match locations.get(type_name) {
+        Some(Some(p)) => p.clone(),
+        Some(None) => return Err(UserTypeError::Ambiguous),
+        None => return Err(UserTypeError::NotFound),
+    };
+    let src = std::fs::read_to_string(&file_path).map_err(|_| UserTypeError::Unreadable)?;
+    let file: syn::File = syn::parse_file(&src).map_err(|_| UserTypeError::Unreadable)?;
+    let aliases = alias_map(&file);
+    let import_path = qualified_type_path(crate_dir, &file_path, type_name);
+    let item = file.items.iter().find(|it| match it {
+        syn::Item::Struct(s) => s.ident == type_name,
+        syn::Item::Enum(e) => e.ident == type_name,
+        _ => false,
+    });
+    let Some(item) = item else {
+        return Err(UserTypeError::Unreadable);
+    };
+
+    // Rule 1: the type's own constructor, recursively -- the first
+    // candidate (source order) whose every parameter itself resolves wins,
+    // matching `scan_impls_for_receiver`'s own "first fully-buildable one"
+    // preference.
+    for (ctor_path, raw_params, ctor_requires) in scan_ctor_candidates(&file, &aliases, type_name) {
+        let mut resolved_params = Vec::with_capacity(raw_params.len());
+        let mut all_ok = true;
+        for p in &raw_params {
+            match resolve_param_type(crate_dir, locations, &p.ty, depth + 1) {
+                Ok(ty) => resolved_params.push(Param { ty, ..p.clone() }),
+                Err(_) => {
+                    all_ok = false;
+                    break;
+                }
+            }
+        }
+        if all_ok {
+            return Ok(RustType::UserTypeCtor(Box::new(ReceiverPlan {
+                type_name: type_name.to_string(),
+                import_path: import_path.clone(),
+                constructor: ctor_path,
+                ctor_params: resolved_params,
+                ctor_requires,
+                operations: vec![],
+                max_sequence_len: 0,
+            })));
+        }
+    }
+
+    // Rule 2: direct construction, only when nothing is private and
+    // nothing is a shape this reader does not recognise.
+    match item {
+        syn::Item::Struct(s) => {
+            if has_non_exhaustive(&s.attrs) {
+                return Err(UserTypeError::Refused(format!(
+                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
+                     call, and it is marked `#[non_exhaustive]`, which blocks a field literal \
+                     from outside its own crate -- the fuzz harness Ply generates is exactly \
+                     such an outside crate"
+                )));
+            }
+            if !all_fields_public(&s.fields) {
+                let private: Vec<String> = s
+                    .fields
+                    .iter()
+                    .filter(|f| !matches!(f.vis, syn::Visibility::Public(_)))
+                    .filter_map(|f| f.ident.as_ref().map(|i| i.to_string()))
+                    .collect();
+                let which = if private.is_empty() {
+                    "one or more of its fields are".to_string()
+                } else {
+                    format!("field(s) {} are", private.join(", "))
+                };
+                return Err(UserTypeError::Refused(format!(
+                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
+                     call, and {which} private, so building it field by field would risk a \
+                     value the real program could never produce"
+                )));
+            }
+            let Some(fields) = named_fields_as_params(&s.fields, &aliases) else {
+                return Err(UserTypeError::Refused(format!(
+                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
+                     call, and its fields are positional (a tuple struct), a shape direct \
+                     construction does not read yet"
+                )));
+            };
+            let mut resolved = Vec::with_capacity(fields.len());
+            for f in fields {
+                match resolve_param_type(crate_dir, locations, &f.ty, depth + 1) {
+                    Ok(ty) => resolved.push(Param { ty, ..f }),
+                    Err(e) => {
+                        return Err(UserTypeError::Refused(format!(
+                            "Ply cannot build a value of `{type_name}`: it has no constructor \
+                             Ply can call, and field `{}` has type `{}`, which is {}",
+                            f.name,
+                            f.ty.display_name(),
+                            e
+                        )));
+                    }
+                }
+            }
+            Ok(RustType::UserTypeFields(Box::new(UserTypeFieldsPlan {
+                type_name: type_name.to_string(),
+                import_path: import_path.clone(),
+                shape: UserTypeShape::Struct(resolved),
+            })))
+        }
+        syn::Item::Enum(e) => {
+            if has_non_exhaustive(&e.attrs) {
+                return Err(UserTypeError::Refused(format!(
+                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
+                     call, and it is marked `#[non_exhaustive]`, which blocks building a variant \
+                     from outside its own crate -- the fuzz harness Ply generates is exactly \
+                     such an outside crate"
+                )));
+            }
+            if e.variants.is_empty() {
+                return Err(UserTypeError::Refused(format!(
+                    "`{type_name}` declares no variants at all -- there is no value to build"
+                )));
+            }
+            let mut variants = Vec::with_capacity(e.variants.len());
+            for v in &e.variants {
+                let Some(fields) = named_fields_as_params(&v.fields, &aliases) else {
+                    return Err(UserTypeError::Refused(format!(
+                        "Ply cannot build a value of `{type_name}`: variant `{}` has positional \
+                         (tuple) fields, a shape direct construction does not read yet -- \
+                         refusing the whole enum rather than silently building only some of its \
+                         variants",
+                        v.ident
+                    )));
+                };
+                let mut resolved = Vec::with_capacity(fields.len());
+                for f in fields {
+                    match resolve_param_type(crate_dir, locations, &f.ty, depth + 1) {
+                        Ok(ty) => resolved.push(Param { ty, ..f }),
+                        Err(e2) => {
+                            return Err(UserTypeError::Refused(format!(
+                                "Ply cannot build a value of `{type_name}`: variant `{}`'s \
+                                 field `{}` has type `{}`, which is {}",
+                                v.ident,
+                                f.name,
+                                f.ty.display_name(),
+                                e2
+                            )));
+                        }
+                    }
+                }
+                variants.push((v.ident.to_string(), resolved));
+            }
+            Ok(RustType::UserTypeFields(Box::new(UserTypeFieldsPlan {
+                type_name: type_name.to_string(),
+                import_path: import_path.clone(),
+                shape: UserTypeShape::Enum(variants),
+            })))
+        }
+        _ => unreachable!("the search above only ever matches a Struct or an Enum"),
+    }
+}
+
+/// The parameter counterpart of receiver construction: upgrades every
+/// parameter of `cf` whose type parsed to `RustType::Unsupported` and names
+/// a bare struct/enum this crate declares into a value Ply itself knows how
+/// to build, in place. Returns `(param_name, type_name, reason)` for every
+/// parameter this scan recognised as a real struct/enum declaration but
+/// still could not build (rule 3's refusal) -- a parameter whose
+/// `Unsupported` type is not a struct/enum this crate declares at all is
+/// left exactly as it was, silently: the generic "type neither engine
+/// builds inputs for" diagnostic already names it honestly, and reporting
+/// "not found" about something that was never a candidate in the first
+/// place would not be true.
+pub fn enrich_contract_fn_user_types(
+    cf: &mut ContractFn,
+    crate_dir: &Path,
+) -> Vec<(String, String, String)> {
+    let locations = scan_crate_type_locations(crate_dir);
+    let mut refused = Vec::new();
+    for p in &mut cf.params {
+        let RustType::Unsupported(src) = &p.ty else {
+            continue;
+        };
+        if !is_bare_ident(src) {
+            continue;
+        }
+        let src = src.clone();
+        match resolve_user_type(crate_dir, &locations, &src, 0) {
+            Ok(ty) => p.ty = ty,
+            Err(UserTypeError::NotFound) => {}
+            Err(e) => refused.push((p.name.clone(), src, e.to_string())),
+        }
+    }
+    refused
 }
 
 /// One callee stubbed out of a proof under D5's second branch (§5.5): its
@@ -2902,20 +3648,37 @@ pub fn scalar(x: u32) -> u32 { x }
     }
 
     #[test]
-    fn instant_struct_and_enum_stay_refused_by_name_unchanged() {
-        // Explicitly out of scope for this task -- Instant's construction
-        // question (a monotonic clock the harness cannot rewind or fake)
-        // needs its own design, same as structs/enums
-        // (docs/review-self-construction.md). This must not regress.
+    fn instant_stays_refused_by_name_struct_and_enum_no_longer_do() {
+        // `Instant` is explicitly out of scope, permanently rather than
+        // pending: a monotonic clock the harness cannot rewind or fake
+        // needs its own design, unrelated to struct/enum parameters. This
+        // must not regress.
         //
         // `String` used to sit in this same list -- it no longer does (task,
         // 2026-08-27, the sampling/proving split's second headline case):
         // see `string_is_fuzz_supported_but_never_bounded_supported` below
         // for its own, now-supported, behaviour.
+        //
+        // `Foo`/`Bar` used to stay `Unsupported` too (struct/enum
+        // parameters were out of scope) -- this task changes that, but only
+        // through the enrichment pass `verify` runs after `discover_fn`
+        // (`enrich_contract_fn_user_types`), never inside `discover_fn`
+        // itself (used directly by D5's same-crate-callee path, which this
+        // task does not touch). So `discover_fn` alone still reports both
+        // `Unsupported` here, honestly reflecting what it does on its own;
+        // the second half of this test proves enrichment resolves them both.
+        // `write_crate` (not `write_src`): enrichment scans `<crate_dir>/src/`
+        // for struct/enum declarations, so this test needs the real
+        // crate-directory layout that convention assumes, not `write_src`'s
+        // single loose file (fine for `discover_fn` alone, which just reads
+        // one path, but not for `enrich_contract_fn_user_types`'s own
+        // crate-wide scan).
         let dir = tempfile::tempdir().unwrap();
-        let path = write_src(
+        let path = write_crate(
             dir.path(),
-            r#"
+            &[(
+                "lib.rs",
+                r#"
 use std::time::Instant;
 #[derive(Clone, Copy)]
 pub struct Foo { pub x: u32 }
@@ -2923,8 +3686,9 @@ pub enum Bar { A, B }
 #[ply::ensures(|result| *result >= 0)]
 pub fn f(t: Instant, foo: Foo, bar: Bar) -> i64 { 0 }
 "#,
+            )],
         );
-        let cf = discover_fn(&path, "f").unwrap();
+        let mut cf = discover_fn(&path, "f").unwrap();
         assert!(
             matches!(cf.params[0].ty, RustType::Unsupported(_)),
             "Instant: {:?}",
@@ -2932,12 +3696,31 @@ pub fn f(t: Instant, foo: Foo, bar: Bar) -> i64 { 0 }
         );
         assert!(
             matches!(cf.params[1].ty, RustType::Unsupported(_)),
-            "struct: {:?}",
+            "struct, before enrichment: {:?}",
             cf.params[1].ty
         );
         assert!(
             matches!(cf.params[2].ty, RustType::Unsupported(_)),
-            "enum: {:?}",
+            "enum, before enrichment: {:?}",
+            cf.params[2].ty
+        );
+
+        enrich_contract_fn_user_types(&mut cf, dir.path());
+        assert!(
+            matches!(cf.params[0].ty, RustType::Unsupported(_)),
+            "Instant must still be unsupported after enrichment -- it is not a struct/enum this \
+             crate declares: {:?}",
+            cf.params[0].ty
+        );
+        assert!(
+            matches!(cf.params[1].ty, RustType::UserTypeFields(_)),
+            "Foo's fields are all public -- enrichment must resolve it: {:?}",
+            cf.params[1].ty
+        );
+        assert!(
+            matches!(cf.params[2].ty, RustType::UserTypeFields(_)),
+            "Bar's variants carry no fields at all, so nothing is private -- enrichment must \
+             resolve it too: {:?}",
             cf.params[2].ty
         );
         assert!(!cf.is_bounded_supported());
@@ -3538,5 +4321,288 @@ pub mod outer {
         let err =
             discover_method_with_receiver(dir.path(), "outer::inner::Deep::value").unwrap_err();
         assert!(matches!(err, ReceiverError::UnsupportedModulePath));
+    }
+
+    // -- struct/enum parameters (this task, 2026-08-27) --------------------
+    // `resolve_user_type` is the parameter counterpart of receiver
+    // construction: the same constructor-call mechanism (rule 1), plus
+    // direct field/variant construction when nothing is private (rule 2),
+    // otherwise refused by name (rule 3). See the module doc above
+    // `MAX_USER_TYPE_DEPTH` for the full section.
+
+    fn discover_fn_in(dir: &Path, files: &[(&str, &str)], fn_name: &str) -> ContractFn {
+        let lib = write_crate(dir, files);
+        let mut cf = discover_fn(&lib, fn_name).unwrap();
+        // `discover_fn` alone never enriches a struct/enum parameter --
+        // that is `verify`'s own job (`enrich_contract_fn_user_types`,
+        // called once `cf` is resolved), same as it is for a real run.
+        enrich_contract_fn_user_types(&mut cf, dir);
+        cf
+    }
+
+    /// Rule 1: a private-field struct with a usable constructor becomes a
+    /// `UserTypeCtor` parameter, and the fn earns a real verdict path
+    /// (`is_fuzz_supported`).
+    #[test]
+    fn a_parameter_of_a_private_field_type_with_a_constructor_resolves_via_rule_1() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct TicketPool { capacity: u32 }
+impl TicketPool {
+    pub fn new(capacity: u32) -> Self { TicketPool { capacity } }
+    pub fn capacity(&self) -> u32 { self.capacity }
+}
+#[ply::ensures(|result| *result % 2 == 0)]
+pub fn doubled(p: TicketPool) -> u64 { p.capacity() as u64 * 2 }
+"#,
+            )],
+            "doubled",
+        );
+        let RustType::UserTypeCtor(plan) = &cf.params[0].ty else {
+            panic!("expected UserTypeCtor, got {:?}", cf.params[0].ty);
+        };
+        assert_eq!(plan.type_name, "TicketPool");
+        assert_eq!(plan.constructor, "TicketPool::new");
+        assert!(
+            plan.operations.is_empty(),
+            "a parameter's build carries no operation pool"
+        );
+        assert_eq!(plan.max_sequence_len, 0);
+        assert!(cf.is_fuzz_supported());
+        assert!(
+            !cf.is_bounded_supported(),
+            "struct/enum parameters are fuzz-tier only, matching the receiver mechanism they reuse"
+        );
+    }
+
+    /// Rule 2: an all-public-fields struct becomes a `UserTypeFields`
+    /// parameter.
+    #[test]
+    fn a_parameter_of_an_all_public_fields_struct_resolves_via_rule_2() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Point { pub x: i32, pub y: i32 }
+#[ply::ensures(|result| *result >= 0)]
+pub fn norm(p: Point) -> i64 { (p.x as i64).abs() + (p.y as i64).abs() }
+"#,
+            )],
+            "norm",
+        );
+        let RustType::UserTypeFields(plan) = &cf.params[0].ty else {
+            panic!("expected UserTypeFields, got {:?}", cf.params[0].ty);
+        };
+        assert_eq!(plan.type_name, "Point");
+        let UserTypeShape::Struct(fields) = &plan.shape else {
+            panic!("expected a struct shape");
+        };
+        assert_eq!(fields.len(), 2);
+        assert!(cf.is_fuzz_supported());
+    }
+
+    /// Rule 2 for an enum: every variant's own fields, named, all
+    /// resolved.
+    #[test]
+    fn a_parameter_of_an_all_public_enum_resolves_via_rule_2() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub enum Shape { Circle { radius: u32 }, Square { side: u32 }, Origin }
+#[ply::ensures(|result| *result >= 0)]
+pub fn area(s: Shape) -> i64 {
+    match s {
+        Shape::Circle { radius } => radius as i64,
+        Shape::Square { side } => side as i64,
+        Shape::Origin => 0,
+    }
+}
+"#,
+            )],
+            "area",
+        );
+        let RustType::UserTypeFields(plan) = &cf.params[0].ty else {
+            panic!("expected UserTypeFields, got {:?}", cf.params[0].ty);
+        };
+        let UserTypeShape::Enum(variants) = &plan.shape else {
+            panic!("expected an enum shape");
+        };
+        assert_eq!(variants.len(), 3);
+        assert_eq!(variants[0].0, "Circle");
+        assert_eq!(variants[2].1.len(), 0, "a unit variant has no fields");
+    }
+
+    /// Rule 3: no usable constructor and a private field -- refused by
+    /// name, naming the type and the reason.
+    #[test]
+    fn a_parameter_with_no_constructor_and_a_private_field_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Locked { secret: u32 }
+impl Locked {
+    pub fn secret(&self) -> u32 { self.secret }
+}
+#[ply::ensures(|result| *result >= 0)]
+pub fn read(l: Locked) -> u32 { l.secret() }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&src, "read").unwrap();
+        assert!(
+            matches!(cf.params[0].ty, RustType::Unsupported(_)),
+            "unresolved until enrichment runs"
+        );
+        let crate_dir = dir.path();
+        let refused = enrich_contract_fn_user_types(&mut cf, crate_dir);
+        assert_eq!(refused.len(), 1);
+        let (param_name, type_name, reason) = &refused[0];
+        assert_eq!(param_name, "l");
+        assert_eq!(type_name, "Locked");
+        assert!(
+            reason.contains("Locked") && reason.contains("private"),
+            "must name the type and say why: {reason}"
+        );
+        assert!(
+            matches!(cf.params[0].ty, RustType::Unsupported(_)),
+            "a refused type is left exactly as it was, not silently guessed at"
+        );
+    }
+
+    /// The never-impossible-value proof, at the unit level: a type whose
+    /// invariant is maintained by its constructor (both fields private)
+    /// resolves *only* through the constructor -- rule 2 never even gets a
+    /// chance, because the fields are not public.
+    #[test]
+    fn a_constructor_maintained_invariant_type_never_resolves_via_direct_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Bucket { capacity: u32, tokens: u32 }
+impl Bucket {
+    pub fn new(capacity: u32) -> Self { Bucket { capacity, tokens: capacity } }
+}
+#[ply::ensures(|result| *result)]
+pub fn ok(b: Bucket) -> bool { b.tokens <= b.capacity }
+"#,
+            )],
+            "ok",
+        );
+        match &cf.params[0].ty {
+            RustType::UserTypeCtor(plan) => assert_eq!(plan.constructor, "Bucket::new"),
+            other => {
+                panic!("expected UserTypeCtor (the only route private fields allow), got {other:?}")
+            }
+        }
+    }
+
+    /// A bare name that is not a struct/enum this crate declares at all
+    /// (a generic, or simply unknown) is left `Unsupported` silently --
+    /// `NotFound` is not itself reported, since it was never a candidate.
+    #[test]
+    fn a_type_name_this_crate_does_not_declare_is_left_unsupported_silently() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Whatever;
+#[ply::ensures(|result| *result >= 0)]
+pub fn f(x: NotDeclaredAnywhere) -> u32 { 0 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&src, "f").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path());
+        assert!(
+            refused.is_empty(),
+            "a name that is not a struct/enum this crate declares must not be reported as a \
+             refused struct/enum -- it was never a candidate: {refused:?}"
+        );
+        assert!(matches!(cf.params[0].ty, RustType::Unsupported(_)));
+    }
+
+    /// A bare name declared in more than one file is refused as ambiguous,
+    /// never guessed at.
+    #[test]
+    fn a_bare_name_declared_twice_is_ambiguous_not_guessed_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_crate(
+            dir.path(),
+            &[
+                (
+                    "lib.rs",
+                    r#"
+mod a;
+mod b;
+#[ply::ensures(|result| *result >= 0)]
+pub fn f(x: Dup) -> u32 { 0 }
+"#,
+                ),
+                ("a.rs", r#"pub struct Dup { pub n: u32 }"#),
+                ("b.rs", r#"pub struct Dup { pub n: u32 }"#),
+            ],
+        );
+        let mut cf = discover_fn(&src, "f").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path());
+        assert_eq!(refused.len(), 1);
+        assert!(
+            refused[0].2.contains("more than one"),
+            "must name the ambiguity: {:?}",
+            refused[0]
+        );
+    }
+
+    /// Recursion: a constructor argument that is itself another buildable
+    /// user type resolves too (`Quota::new`'s own `RefillRate` argument, in
+    /// the rate-limiter fixture, is exactly this shape).
+    #[test]
+    fn a_constructor_argument_that_is_itself_a_user_type_resolves_recursively() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct RefillRate { tokens: u32 }
+impl RefillRate {
+    pub fn per_second(tokens: u32) -> Self { RefillRate { tokens } }
+}
+pub struct Quota { capacity: u32, refill: RefillRate }
+impl Quota {
+    pub fn new(capacity: u32, refill: RefillRate) -> Self { Quota { capacity, refill } }
+}
+#[ply::ensures(|result| *result >= 0)]
+pub fn f(q: Quota) -> u32 { q.capacity }
+"#,
+            )],
+            "f",
+        );
+        let RustType::UserTypeCtor(plan) = &cf.params[0].ty else {
+            panic!("expected UserTypeCtor for Quota, got {:?}", cf.params[0].ty);
+        };
+        assert_eq!(plan.type_name, "Quota");
+        assert_eq!(plan.ctor_params.len(), 2);
+        assert!(
+            matches!(plan.ctor_params[1].ty, RustType::UserTypeCtor(_)),
+            "`refill`'s own type must have resolved recursively, not stayed `Unsupported`: {:?}",
+            plan.ctor_params[1].ty
+        );
     }
 }

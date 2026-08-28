@@ -401,7 +401,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             // reader needs a different sentence for. `discover_fn_with`
             // still sees exactly the same three outcomes it always has
             // (found, opaque, not-found) for everything that reaches it.
-            let cf = match resolver.lookup_fn(fn_name) {
+            let mut cf = match resolver.lookup_fn(fn_name) {
                 Resolution::Refused(reason) => {
                     // A `&self` method is exactly this refusal's own shape
                     // (`callgraph::receiver_refusal_reason`) -- before
@@ -480,6 +480,30 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     }
                 }
             };
+
+            // Struct/enum parameters (this task, 2026-08-27): a parameter
+            // whose type parsed to `Unsupported` may still be a struct/enum
+            // Ply itself knows how to build -- via the type's own
+            // constructor (rule 1), or by direct field/variant construction
+            // when nothing is private (rule 2), per
+            // `docs/review-self-construction.md`. Applied here, after `cf`
+            // is resolved and before any check decision reads its params,
+            // so `default_checks_for`/`is_fuzz_supported` see the upgraded
+            // type from this point on. A parameter this scan recognised as
+            // a real struct/enum declaration but still could not build
+            // (rule 3) earns its own named diagnostic rather than the
+            // generic "type neither engine builds inputs for" one.
+            for (param_name, type_name, reason) in
+                harness::enrich_contract_fn_user_types(&mut cf, crate_dir)
+            {
+                diagnostics.push(user_type_param_refused_diag(
+                    &node_id,
+                    fn_name,
+                    &param_name,
+                    &type_name,
+                    &reason,
+                ));
+            }
 
             let explicit = governing
                 .unwrap_or(&[])
@@ -2615,6 +2639,21 @@ fn run_fn_checks(
                             &format!("fuzz({n})"),
                         ));
                     }
+                    // The public-fields assumption's own disclosure
+                    // (docs/review-self-construction.md's rule 2, this
+                    // task): gated identically to the float/string ones
+                    // just above -- a run that actually built at least one
+                    // parameter by direct field/variant construction, never
+                    // merely the check being declared.
+                    let public_field_types = cf.public_fields_param_type_names();
+                    if !public_field_types.is_empty() {
+                        diagnostics.push(public_fields_assumed_diag(
+                            node_id,
+                            fn_name,
+                            &format!("fuzz({n})"),
+                            &public_field_types,
+                        ));
+                    }
                     // The sequence-length honesty requirement
                     // (docs/review-self-construction.md's "fourth option",
                     // 2026-08-27): a receiver method's verdict rests on a
@@ -3288,6 +3327,90 @@ fn receiver_sequence_diag(
             constructor = plan.constructor,
             max = plan.max_sequence_len,
             next = plan.max_sequence_len + 2,
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
+/// Struct/enum parameters (this task, 2026-08-27): `param_name`'s type is a
+/// real struct/enum `type_name` this scan found declared in the crate, but
+/// Ply could not build a value of it either way
+/// (`docs/review-self-construction.md`'s rule 3, "otherwise refuse by
+/// name") -- `reason` is already the complete, type-naming sentence
+/// `resolve_user_type` built at the point of refusal (no usable
+/// constructor, a private field, a nested type Ply cannot build). Distinct
+/// from the generic `V0505`/`V0508` "type neither engine builds inputs
+/// for": that message is true but generic; this one says *why*, which is
+/// what a reader needs to fix it (declare a constructor, make the fields
+/// public, or add a generator hook).
+fn user_type_param_refused_diag(
+    node_id: &str,
+    fn_name: &str,
+    param_name: &str,
+    type_name: &str,
+    reason: &str,
+) -> Diagnostic {
+    Diagnostic {
+        code: "V0509".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}`'s parameter `{param_name}: {type_name}` cannot be built. {reason} \
+             (V0509)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: Some("unsupported_signature".into()),
+    }
+}
+
+/// The named assumption `docs/review-self-construction.md` requires for
+/// rule 2 (direct field/variant construction): "Ply assumes a public-field
+/// type has no invariant" is false in general (the review's own
+/// `SweepReport`/`Decision` counterexamples), so every verdict resting on
+/// it says so, the same way the float/string sampling choices disclose
+/// themselves rather than staying implicit. `info`, not a warning -- this is
+/// not wrong or owed, it is a fact about what the evidence assumed. Fires
+/// once per fuzz run that actually built at least one parameter this way
+/// (gated on a run that happened, matching `float_sampling_diag`'s own
+/// discipline), naming every such parameter together.
+fn public_fields_assumed_diag(
+    node_id: &str,
+    fn_name: &str,
+    check_label: &str,
+    type_names: &[String],
+) -> Diagnostic {
+    let names = type_names
+        .iter()
+        .map(|n| format!("`{n}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Diagnostic {
+        code: "W0522".into(),
+        severity: "info".into(),
+        phase: "verify".into(),
+        engine: "proptest".into(),
+        check: check_label.into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` takes {names} by value, built by filling in its fields/variant data \
+             directly (every one of them is already public, so nothing here restricts what a \
+             caller could build). Ply assumes that means there is no hidden invariant among \
+             those fields -- but a type's own methods can maintain a relationship between public \
+             fields that nothing in the type itself enforces, so a value this run built could, in \
+             principle, be one the real program never produces. This run's evidence rests on that \
+             assumption; it is not proved. (W0522, §5.4b)"
         ),
         pointer: None,
         primary_span: None,
