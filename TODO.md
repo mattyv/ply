@@ -47,6 +47,15 @@ Nothing below jumps that queue.
 
 ## Bug fixes after 0.1.0 — branch `claude/bugfix-post-0-1-0`
 
+- [x] **The README says how to install it.** There was no install path written down at
+      all, which is a strange gap in a tool someone is about to try on a real project.
+      Every command in the new section was run before it was written: installing the
+      CLI straight from the repo, adding the attribute crate to a project that had
+      never seen Ply, and getting a real `fuzzed(64)` out of `cargo ply verify` -- with
+      the project's `Cargo.toml` byte-identical afterwards. The engine prerequisites
+      (`kani-verifier` for `bounded`, `cargo-mutants` for `mutate`) are named, along
+      with what Ply leaves on disk and what it does not.
+
 - [x] **A constructor in a qualified `impl` block was invisible on the parameter path,
       and Ply said the type had none.** The receiver path learned in 2026-08-27 that
       `impl super::T`, `impl crate::T` and `impl Alias` name the same type as
