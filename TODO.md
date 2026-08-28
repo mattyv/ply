@@ -5,16 +5,19 @@
 **Order the maintainer set: land the release, then the bug backlog, then suite speed.**
 Nothing below jumps that queue.
 
-- [ ] **Shard the end-to-end CI job across a matrix.** Agreed with the maintainer as
-      the cheap half of the speed problem, to be done after the bug backlog and
-      alongside (before) the refactor below. The suite is 82 independent test binaries
-      run as one job on one 4-core runner; splitting them across four parallel jobs
-      takes the wall clock to roughly the slowest quarter -- ten minutes rather than
-      forty -- with no change to any test, product code, or what is actually checked.
-      Purely `.github/workflows/ci.yml`. The honest caveat: every shard pays the Kani
-      and cargo-mutants install, which is only partly cached, so the real figure sits
-      above total/4. Measured starting point: CI's `product-e2e` was still running at
-      15.5 minutes on 2026-08-28 and a full local run takes ~40.
+- [x] **The end-to-end CI job is sharded across a matrix of four.** The suite is 84
+      independent test binaries that ran as one job for over an hour, which was most of
+      the wait on every pull request. No test, no product code and nothing about what is
+      checked changed. The split is computed at run time from the files on disk rather
+      than written into the workflow, so a test added later lands in a shard by its
+      position and cannot be silently left out of all of them -- a hand-maintained list
+      would rot the first time someone forgot it, and a test nobody runs is the kind of
+      absence this project treats as a defect. Round-robin rather than contiguous
+      blocks, so the slow Kani-backed tests, which sit together alphabetically, spread
+      3/2/2/3 instead of landing in one shard. Verified before pushing: the four shards
+      are disjoint and cover all 84 files, and the exact command the workflow runs
+      compiles a real shard. The honest cost: every shard pays the engine install, only
+      partly cached, so the real figure sits above total/4.
 
 - [ ] **Cut the duplicate proofs out of the end-to-end suite.** Measured today: 137
       fixture copies across 71 distinct fixtures, so the same code is proved many times
