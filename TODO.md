@@ -712,6 +712,15 @@ adversarial review, none by the suite.
 
 ## Agreed with the maintainer, not yet started
 
+- [ ] **The "your filter hid nothing" notice is written out twice.** `cargo ply render`
+      and the standalone renderer each build the same read-parse-draw-and-warn sequence,
+      so the notice a first-time user relies on lives in two places and can drift out of
+      one of them. Closed PR #8 already factors it into one shared helper: fetch it with
+      `git fetch origin refs/pull/8/head` (commit `968a274`; that reference outlives the
+      branch being deleted) and lift the helper onto current `main` rather than rewriting
+      it. Recorded 2026-08-28 when #8 was closed as superseded, so the one good idea in it
+      is not lost with the branch.
+
 - [x] **DECIDED 2026-08-26: the architecture verdict is code, never a model.** The
       question was raised and settled: since the architecture tier is *approximate* by
       nature — warnings by default, an escape hatch that takes a written reason — would a
