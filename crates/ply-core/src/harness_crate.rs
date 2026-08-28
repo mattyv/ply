@@ -288,23 +288,26 @@ impl ManifestRegistration {
 
 impl Drop for ManifestRegistration {
     fn drop(&mut self) {
-        match std::fs::read_to_string(&self.path) {
-            Ok(now) if now == self.written => {
-                if std::fs::write(&self.path, &self.restore_to).is_ok() {
-                    // Only once the membership is actually gone: an
-                    // unwritable manifest means the harness is still a
-                    // member, and a member may not declare `[workspace]`.
-                    let _ = write_harness_cargo_toml(
-                        &self.harness_dir,
-                        &self.harness_package,
-                        &self.target_names,
-                        true,
-                    );
-                }
-            }
-            // Changed under us, or unreadable: not ours to put back.
-            _ => {}
+        // Unreadable, or changed under us: not ours to put back.
+        let Ok(now) = std::fs::read_to_string(&self.path) else {
+            return;
+        };
+        if now != self.written {
+            return;
         }
+        // Standing the harness up on its own happens only once the
+        // membership is actually gone: a manifest Ply could not rewrite
+        // means the harness is still a member, and a member may not declare
+        // `[workspace]` of its own.
+        if std::fs::write(&self.path, &self.restore_to).is_err() {
+            return;
+        }
+        let _ = write_harness_cargo_toml(
+            &self.harness_dir,
+            &self.harness_package,
+            &self.target_names,
+            true,
+        );
     }
 }
 

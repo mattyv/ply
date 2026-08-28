@@ -2,6 +2,14 @@
 
 ## Agreed 2026-08-28, not yet done
 
+- [ ] **Consider pinning the Rust toolchain (`rust-toolchain.toml`).** CI installs
+      `stable`, which was 1.98.0; this container had 1.94.1, four releases behind, and
+      clippy gained lints in between. Two `-D warnings` failures therefore could not be
+      reproduced locally and were pushed red. Installing `stable` here and running
+      `cargo +stable clippy` reproduces CI exactly and is the working practice from now
+      on, but a pinned toolchain would make the two agree by construction rather than
+      by remembering.
+
 - [ ] **Make CI a required check on `main`, so a red pull request cannot be merged.**
       Asked for by the maintainer after PR #4 offered a merge button while all three
       jobs were failing -- twice, on two different causes. GitHub will not block a merge

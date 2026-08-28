@@ -1268,7 +1268,7 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
         RustType::Vec(inner) => {
             let n = inner.scalar_rust_name().unwrap_or("i64");
             vec![
-                format!("vec![]"),
+                "vec![]".to_string(),
                 format!("vec![0{n}]"),
                 format!("vec![1{n}; 8]"),
             ]
