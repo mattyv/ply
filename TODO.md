@@ -2,6 +2,21 @@
 
 ## Agreed 2026-08-28, not yet done
 
+**Order the maintainer set: land the release, then the bug backlog, then suite speed.**
+Nothing below jumps that queue.
+
+- [ ] **Cut the duplicate proofs out of the end-to-end suite.** Measured today: 137
+      fixture copies across 71 distinct fixtures, so the same code is proved many times
+      over -- `resultreuse` and `implmethod` nine times each, `structenumparam` and
+      `clamp` eight, `reusehelper` seven. Kani-heavy binaries alone are 1,020s of the
+      3,053s of test time. The fix is test design, not infrastructure: several tests
+      that each prove one fixture to assert on different parts of the same run become
+      one test making several assertions about one run. Caching was already tried and
+      measured (docs/suite-speed-finding.md): 2,533s before, 2,569s after, no speed-up,
+      because those tests run concurrently and all miss together. Deferred by the
+      maintainer until after the bug backlog -- a large refactor of the tests that
+      vouch for a release is the wrong thing to do while landing one.
+
 - [ ] **Consider pinning the Rust toolchain (`rust-toolchain.toml`).** CI installs
       `stable`, which was 1.98.0; this container had 1.94.1, four releases behind, and
       clippy gained lints in between. Two `-D warnings` failures therefore could not be
