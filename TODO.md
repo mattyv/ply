@@ -109,11 +109,22 @@ Nothing below jumps that queue.
       derived one; and when a type has no operations at all the sequence degenerates
       back to a single value, which needs the count clamped or the disclosure escalated
       rather than the general sentence quietly covering it.
-- [ ] **A constructor that is found and then found unusable is still reported as absent.**
-      A constructor whose own argument cannot be built (`fn new(x: impl Into<u32>)`)
-      earns "it has no constructor Ply can call" -- the found-but-skipped note is only
-      ever attached when direct field construction succeeds, so every refusal path drops
-      it. Same false-sentence family; the plumbing already exists.
+- [x] **A constructor found and then found unusable is no longer reported as absent.**
+      Every refusal opened "it has no constructor Ply can call", which is true only
+      while nothing was found. A constructor Ply found and could not use -- private, or
+      with an argument it cannot build, `fn new(n: impl Into<u32>)` being the ordinary
+      case -- was recorded and then dropped by every refusal arm. The note now replaces
+      that clause wherever it exists, so the sentence names what was found and why.
+- [x] Fixed alongside: types were quoted with token-stream spacing (`impl Into < u32 >`,
+      `Vec < u8 >`) in every message that fell back to that rendering; and
+      `NotFound`'s wording told someone whose parameter was `impl Into<u32>` that Ply
+      found no such struct declared, sending them to look for a declaration they never
+      wrote.
+- [x] **The Default-only sentence is corrected**, as the reviewer said to do regardless
+      of the construction work. A type whose only constructor is `Default` -- written by
+      hand or derived, both now recognised -- is told exactly that, and told why Ply
+      does not build through it yet: one value is not many sampled cases, however many
+      times it is run. Construction itself (option (iii)) stays open below.
 - [x] **A type declared inside an inline `pub mod` was invisible to the type index.**
       The blindness fixed in the constructor scan was still in
       `scan_crate_type_locations`, which walked only each file's top-level items and so

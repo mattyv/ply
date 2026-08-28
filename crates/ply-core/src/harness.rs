@@ -927,6 +927,36 @@ pub fn return_rust_type_from_syn(output: &syn::ReturnType, aliases: &AliasMap) -
     }
 }
 
+/// A type rendered back to something a person wrote. `to_token_stream()`
+/// separates every token, so `impl Into<u32>` comes back as
+/// `impl Into < u32 >` and `Vec<u8>` as `Vec < u8 >` -- accurate, and not a
+/// spelling any reader recognises. Diagnostics quote these strings
+/// directly, and the newbie bar applies to every one of them.
+fn normalise_type_source(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != ' ' {
+            out.push(c);
+            continue;
+        }
+        // Drop a space that sits next to punctuation on either side.
+        let before = out.chars().last();
+        let after = chars.peek().copied();
+        let tight = |ch: Option<char>| {
+            matches!(
+                ch,
+                Some('<' | '>' | ',' | '(' | ')' | '[' | ']' | ':' | '&')
+            )
+        };
+        if tight(before) || tight(after) {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustType {
     match ty {
         Type::Array(arr) => {
@@ -935,21 +965,27 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                 ..
             }) = &arr.len
             else {
-                return RustType::Unsupported(ty.to_token_stream().to_string());
+                return RustType::Unsupported(normalise_type_source(
+                    &ty.to_token_stream().to_string(),
+                ));
             };
             let Ok(n) = n.base10_parse::<u32>() else {
-                return RustType::Unsupported(ty.to_token_stream().to_string());
+                return RustType::Unsupported(normalise_type_source(
+                    &ty.to_token_stream().to_string(),
+                ));
             };
             let elem = rust_type_from_syn_at(&arr.elem, aliases, depth);
             if elem.is_leaf() || elem.is_composite_constructible() {
                 RustType::Array(Box::new(elem), n)
             } else {
-                RustType::Unsupported(ty.to_token_stream().to_string())
+                RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
             }
         }
         Type::Path(tp) => {
             let Some(seg) = tp.path.segments.last() else {
-                return RustType::Unsupported(ty.to_token_stream().to_string());
+                return RustType::Unsupported(normalise_type_source(
+                    &ty.to_token_stream().to_string(),
+                ));
             };
             // An alias resolves to whatever it names, by its last segment
             // (`ledger::AccountId` and `AccountId` are the same alias).
@@ -970,7 +1006,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                             return RustType::Option(Box::new(inner));
                         }
                     }
-                    RustType::Unsupported(ty.to_token_stream().to_string())
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
                 }
                 "Result" => {
                     if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
@@ -992,7 +1028,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                             }
                         }
                     }
-                    RustType::Unsupported(ty.to_token_stream().to_string())
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
                 }
                 "u8" => RustType::U8,
                 "u16" => RustType::U16,
@@ -1065,7 +1101,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                             return RustType::Vec(Box::new(inner));
                         }
                     }
-                    RustType::Unsupported(ty.to_token_stream().to_string())
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
                 }
                 // Fuzz-only (§5.4b measured exclusion): proptest has no
                 // trouble generating a BTreeSet of scalars; Kani does, past
@@ -1079,7 +1115,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                             return RustType::BTreeSet(Box::new(inner));
                         }
                     }
-                    RustType::Unsupported(ty.to_token_stream().to_string())
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
                 }
                 // Not a type this module knows by name. Reported by the
                 // *bare* name for a plain path, which does two things: the
@@ -1110,7 +1146,9 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                         .collect::<Vec<_>>()
                         .join("::"),
                 ),
-                _ => RustType::Unsupported(ty.to_token_stream().to_string()),
+                _ => {
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
+                }
             }
         }
         // A shared reference is looked through: what matters for building
@@ -1129,7 +1167,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
             rust_type_from_syn_at(&r.elem, aliases, depth).display_name()
         )),
         Type::Reference(r) => rust_type_from_syn_at(&r.elem, aliases, depth),
-        other => RustType::Unsupported(other.to_token_stream().to_string()),
+        other => RustType::Unsupported(normalise_type_source(&other.to_token_stream().to_string())),
     }
 }
 
@@ -2997,9 +3035,15 @@ pub enum UserTypeError {
 impl std::fmt::Display for UserTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // Reached both for a struct Ply genuinely could not find and
+            // for a type that was never a struct at all -- `impl Into<u32>`,
+            // a trait object, a generic parameter. The old wording ("not a
+            // struct or enum found declared anywhere") sent the second
+            // group looking for a missing declaration they never wrote.
             UserTypeError::NotFound => write!(
                 f,
-                "not a struct or enum Ply found declared anywhere under this crate's `src/`"
+                "not a type Ply builds values of: neither one of the shapes its generators \
+                 cover nor a struct or enum declared under this crate's `src/`"
             ),
             UserTypeError::Ambiguous => write!(
                 f,
@@ -3366,6 +3410,69 @@ fn resolve_param_type(
 /// module doc's three rules, in order. Recursive through
 /// [`resolve_param_type`] for a constructor argument or a field that is
 /// itself another user type, bounded by [`MAX_USER_TYPE_DEPTH`].
+/// Whether the type has a `Default` -- hand-written as `impl Default for T`
+/// or produced by `#[derive(Default)]`. Both count: the derive writes no
+/// `fn default` into the source, so a scan reading only `impl` blocks would
+/// find the hand-written one and miss the derived one, which is the same
+/// false sentence one attribute away.
+fn type_declares_default(file: &syn::File, type_name: &str, inline_mods: &[String]) -> bool {
+    fn walk(items: &[syn::Item], type_name: &str) -> bool {
+        for item in items {
+            match item {
+                syn::Item::Impl(imp) => {
+                    let is_default = imp
+                        .trait_
+                        .as_ref()
+                        .and_then(|(_, path, _)| path.segments.last())
+                        .is_some_and(|seg| seg.ident == "Default");
+                    if is_default
+                        && let Type::Path(tp) = imp.self_ty.as_ref()
+                        && tp
+                            .path
+                            .segments
+                            .last()
+                            .is_some_and(|s| s.ident == type_name)
+                    {
+                        return true;
+                    }
+                }
+                syn::Item::Struct(s) if s.ident == type_name => {
+                    if derives_default(&s.attrs) {
+                        return true;
+                    }
+                }
+                syn::Item::Enum(e) if e.ident == type_name => {
+                    if derives_default(&e.attrs) {
+                        return true;
+                    }
+                }
+                syn::Item::Mod(m) => {
+                    if let Some((_, inner)) = &m.content
+                        && walk(inner, type_name)
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let _ = inline_mods;
+    walk(&file.items, type_name)
+}
+
+fn derives_default(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        a.path().is_ident("derive")
+            && a.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+            )
+            .map(|paths| paths.iter().any(|p| p.is_ident("Default")))
+            .unwrap_or(false)
+    })
+}
+
 fn resolve_user_type(
     crate_dir: &Path,
     locations: &TypeLocations,
@@ -3471,6 +3578,21 @@ fn resolve_user_type(
     // No": the old wording ("it has no constructor Ply can call") is true
     // only when this stays `None`).
     let mut skipped_constructor: Option<String> = None;
+    // `impl Default for T` is a constructor anyone can call, and the scans
+    // above skip every trait `impl`, so a type whose only way to be built
+    // is `T::default()` was told it had none -- false, and the whole family
+    // of bug this file has been correcting today. Building through it is
+    // separate, larger work (a single value is not 256 cases, however many
+    // times it is run: TODO.md carries the design), so what changes here is
+    // the sentence, which was wrong regardless of whether the construction
+    // ever lands.
+    if type_declares_default(&file, type_name, &decl.inline_mods) {
+        skipped_constructor = Some(format!(
+            "`{type_name}::default()`, which Ply does not build values through yet: it \
+             produces a single value, and reporting that as many sampled cases would \
+             overstate what was checked"
+        ));
+    }
     for (ctor_path, raw_params, ctor_requires, ctor_return, ctor_is_pub) in
         scan_ctor_candidates_crate_wide(crate_dir, &file_path, type_name)
     {
@@ -3524,25 +3646,42 @@ fn resolve_user_type(
             }
             Some(reason) if skipped_constructor.is_none() => {
                 skipped_constructor = Some(format!(
-                    "Ply also found `{ctor_path}`, a constructor for `{type_name}`, but could \
-                     not use it: {reason}"
+                    "`{ctor_path}`, which Ply could not use because {reason}"
                 ));
             }
             Some(_) => {}
         }
     }
 
+    // Every refusal below used to open "it has no constructor Ply can
+    // call". That is true only while `skipped_constructor` is `None`. A
+    // constructor Ply found and could not use -- private, or with an
+    // argument it cannot build, `fn new(n: impl Into<u32>)` being the
+    // ordinary case -- was recorded here and then dropped by every refusal
+    // arm, so a user with a perfectly public `new` two lines away was told
+    // it did not exist (2026-08-28, review finding). The note now replaces
+    // that clause wherever it exists, so the sentence names what was found
+    // and why it could not be used.
+    let no_ctor = |extra: &str| -> UserTypeError {
+        let opening = match &skipped_constructor {
+            None => format!("it has no constructor Ply can call, {extra}"),
+            Some(note) => format!("the only constructor it has is {note}; and {extra}"),
+        };
+        UserTypeError::Refused(format!(
+            "Ply cannot build a value of `{type_name}`: {opening}"
+        ))
+    };
+
     // Rule 2: direct construction, only when nothing is private and
     // nothing is a shape this reader does not recognise.
     match item {
         syn::Item::Struct(s) => {
             if has_non_exhaustive(&s.attrs) {
-                return Err(UserTypeError::Refused(format!(
-                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                     call, and it is marked `#[non_exhaustive]`, which blocks a field literal \
-                     from outside its own crate -- the fuzz harness Ply generates is exactly \
-                     such an outside crate"
-                )));
+                return Err(no_ctor(
+                    "it is marked `#[non_exhaustive]`, which blocks a field literal from \
+                     outside its own crate -- the fuzz harness Ply generates is exactly such \
+                     an outside crate",
+                ));
             }
             if !all_fields_public(&s.fields) {
                 let private: Vec<String> = s
@@ -3556,25 +3695,22 @@ fn resolve_user_type(
                 } else {
                     format!("field(s) {} are", private.join(", "))
                 };
-                return Err(UserTypeError::Refused(format!(
-                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                     call, and {which} private, so building it field by field would risk a \
-                     value the real program could never produce"
+                return Err(no_ctor(&format!(
+                    "{which} private, so building it field by field would risk a value the \
+                     real program could never produce"
                 )));
             }
             let Some(fields) = named_fields_as_params(&s.fields, &aliases) else {
-                return Err(UserTypeError::Refused(format!(
-                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                     call, and its fields are positional (a tuple struct), a shape direct \
-                     construction does not read yet"
-                )));
+                return Err(no_ctor(
+                    "its fields are positional (a tuple struct), a shape direct construction \
+                     does not read yet",
+                ));
             };
             if fields.len() > MAX_DIRECT_CONSTRUCTION_FIELDS {
-                return Err(UserTypeError::Refused(format!(
-                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                     call, and it has {} public fields -- direct field construction's generated \
-                     strategy is a tuple of one value per field, and the trait proptest builds \
-                     that on stops being implemented past {MAX_DIRECT_CONSTRUCTION_FIELDS} \
+                return Err(no_ctor(&format!(
+                    "it has {} public fields -- direct field construction's generated strategy \
+                     is a tuple of one value per field, and the trait proptest builds that on \
+                     stops being implemented past {MAX_DIRECT_CONSTRUCTION_FIELDS} \
                      (2026-08-28, docs/review-structs-enums.md's \"Also fix\" list)",
                     fields.len()
                 )));
@@ -3584,9 +3720,8 @@ fn resolve_user_type(
                 match resolve_param_type(crate_dir, locations, &f.ty, depth + 1) {
                     Ok(ty) => resolved.push(Param { ty, ..f }),
                     Err(e) => {
-                        return Err(UserTypeError::Refused(format!(
-                            "Ply cannot build a value of `{type_name}`: it has no constructor \
-                             Ply can call, and field `{}` has type `{}`, which is {}",
+                        return Err(no_ctor(&format!(
+                            "field `{}` has type `{}`, which is {}",
                             f.name,
                             f.ty.display_name(),
                             e
@@ -3603,12 +3738,11 @@ fn resolve_user_type(
         }
         syn::Item::Enum(e) => {
             if has_non_exhaustive(&e.attrs) {
-                return Err(UserTypeError::Refused(format!(
-                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                     call, and it is marked `#[non_exhaustive]`, which blocks building a variant \
-                     from outside its own crate -- the fuzz harness Ply generates is exactly \
-                     such an outside crate"
-                )));
+                return Err(no_ctor(
+                    "it is marked `#[non_exhaustive]`, which blocks building a variant from \
+                     outside its own crate -- the fuzz harness Ply generates is exactly such \
+                     an outside crate",
+                ));
             }
             if e.variants.is_empty() {
                 return Err(UserTypeError::Refused(format!(
@@ -3630,11 +3764,10 @@ fn resolve_user_type(
                 // harness that silently drops one variant under-represents
                 // the type without saying so.
                 if has_non_exhaustive(&v.attrs) {
-                    return Err(UserTypeError::Refused(format!(
-                        "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
-                         call, and variant `{}` is marked `#[non_exhaustive]`, which blocks \
-                         building that variant from outside its own crate -- refusing the whole \
-                         enum rather than silently building only some of its variants",
+                    return Err(no_ctor(&format!(
+                        "variant `{}` is marked `#[non_exhaustive]`, which blocks building that \
+                         variant from outside its own crate -- refusing the whole enum rather \
+                         than silently building only some of its variants",
                         v.ident
                     )));
                 }
