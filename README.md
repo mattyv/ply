@@ -31,12 +31,26 @@ Ply is designed for a human-directed agent workflow:
 This is review compression, not review elimination. Experienced developers still decide
 what matters and inspect code where mechanical evidence stops.
 
-## You declare, Ply checks — and the line between them is explicit
+## A declarative grammar, and the line where it stops
 
-Everything you tell Ply is **data, not code**. Components, the dependencies they may have,
-each function's promises, and which checks must earn them are declared in `ply.yaml` and in
-attributes on the functions themselves. There is no verification language to learn, and
-nothing to write in one.
+Ply gives you a **declarative grammar** for describing a system: components and how they
+nest, which may depend on which, what data flows between them, what capabilities each is
+allowed, which types it alone may change, what each function promises, and what evidence
+must be produced to earn that promise.
+
+It is a grammar rather than a config format, and the difference is that you can **write a
+system in it before the code exists**. Every scenario in [`vetting/`](vetting/) was designed
+that way — the structure argued out in the grammar first, and the implementation written
+against it afterwards.
+
+Every construct in it is designed to be drawn. That is enforced rather than aspirational:
+**a proposed feature with no clear visual form does not enter the grammar.** Each construct
+has exactly one visual meaning, and the mapping runs both ways — the picture shows nothing
+that was not declared, and everything declared can be shown. So the grammar cannot grow a
+corner that is expressible but invisible.
+
+And it is not a verification language. There is nothing to learn beyond the grammar itself,
+and no part of your program gets rewritten in it.
 
 That matters because of where it stops. Every function has a line across it — the project
 calls it the **watermark**, because it marks the level declaration reaches:
