@@ -1,0 +1,8 @@
+# A virtual workspace (no root package of its own) with two ordinary
+# members -- the N1 "member of a multi-crate workspace" reproduction from
+# docs/review-caveats.md. Neither member carries its own `[workspace]`
+# table (that would be the broken workaround the review found: it makes
+# Cargo report "multiple workspace roots" for this very file).
+[workspace]
+resolver = "2"
+members = ["alpha", "beta"]

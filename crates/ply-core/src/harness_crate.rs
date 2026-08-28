@@ -3,8 +3,45 @@
 //! per `tests/spike/mutants/MUTANTS-FINDINGS.md`'s verified mechanism, is
 //! what `mutate` names via `--test-package`.
 //!
-//! The mechanism has three load-bearing parts, all confirmed in the spike
-//! and reproduced here as real codegen rather than a hand-written fixture:
+//! **Two placements, chosen per target crate, never by user request.** The
+//! original mechanism (below, still exactly what happens when the target
+//! crate already declares `[workspace]` itself) idempotently registers the
+//! harness as a member of *that same* workspace, because `mutate`'s
+//! `--test-package` genuinely needs it there (part 1 below). But that
+//! registration requires a `[workspace]` table to add a member *to*, and
+//! adding one to a crate that doesn't have it either does nothing (an
+//! ordinary `cargo new --lib` crate) or actively breaks the enclosing
+//! project (a crate that is already a member of someone else's workspace --
+//! Cargo refuses "multiple workspace roots" the moment a second
+//! `[workspace]` table appears inside the first one's member tree). Both
+//! were reproduced against a real `cargo-ply verify` run
+//! (docs/review-caveats.md N1) and are why this module never edits a
+//! target crate's `Cargo.toml` unless that file already opted in by
+//! carrying `[workspace]` itself.
+//!
+//! When it doesn't (`crate_has_workspace_table` is false -- an ordinary
+//! crate, or a member of a bigger workspace with no `[workspace]` table of
+//! its own), the harness crate instead gets **its own** `[workspace]`
+//! table (`write_harness_cargo_toml`'s `standalone` flag) -- the exact
+//! shape every M3/M4 fixture crate already uses for itself: `[workspace]`
+//! with no `members` key makes a crate its own workspace root, stopping
+//! Cargo's upward search for an enclosing one dead at that file, so it
+//! never joins -- and never risks colliding with -- whatever workspace (if
+//! any) contains the target crate. The target crate is reached purely as
+//! an ordinary path dependency (`../../../..`, unchanged), which needs no
+//! shared workspace at all. `fuzz`/`test` (`engines::fuzz::run_harness_tests`
+//! et al.) are invoked with *that* directory as their own working directory
+//! in this case (`ply-cli/src/verify.rs`), never the target crate's, so
+//! `cargo test -p <harness>` resolves the harness against its own
+//! single-crate workspace instead of failing to find it in the target's.
+//! `mutate` cannot make the same move -- see its own module
+//! (`engines::mutants`) for why -- so a crate in this shape earns an honest
+//! "not supported for this crate's layout yet" the moment `mutate` is
+//! declared, rather than a cargo-mutants error nobody could act on.
+//!
+//! The registered-member mechanism (only reached once `crate_has_workspace_table`
+//! is true) has three load-bearing parts, all confirmed in the spike and
+//! reproduced here as real codegen rather than a hand-written fixture:
 //!
 //! 1. The harness must be a *proper workspace member* -- `cargo metadata`
 //!    (which both `cargo test -p` and `cargo mutants -p`/`--test-package`
@@ -87,6 +124,16 @@ fn find_key_after_section(text: &str, section: &str, key: &str) -> Option<String
         }
     }
     None
+}
+
+/// Whether the target crate's own `Cargo.toml` already declares a
+/// `[workspace]` table -- the fact this whole module now branches on
+/// (module doc above). `find_key_after_section`'s line-scan convention:
+/// deliberately not a full TOML parser, matching every other reader in this
+/// file, and matching exactly what `ensure_workspace_member` itself already
+/// looks for.
+pub fn crate_has_workspace_table(cargo_toml_text: &str) -> bool {
+    cargo_toml_text.lines().any(|l| l.trim() == "[workspace]")
 }
 
 /// The harness crate's package name for a given target package name --
@@ -189,17 +236,36 @@ fn insert_before_closing_bracket(line: &str, new_item: &str) -> String {
 /// target crate's root are fixed by the generated layout
 /// (`target/ply/fuzz/<name>/`, four levels down) and written inline below,
 /// not passed in.
+///
+/// `standalone` (module doc above): when true, the harness crate carries
+/// its **own** `[workspace]` table, exactly the shape every M3/M4 fixture
+/// already uses for itself -- a crate that is its own workspace root needs
+/// no membership in, and never touches, whatever workspace (if any)
+/// contains the target crate it depends on by path. When false (the target
+/// crate already declared its own `[workspace]`), the harness carries no
+/// `[workspace]` table of its own, unchanged from before this module grew
+/// the standalone path: `ensure_workspace_member` registers it as a member
+/// of the target's existing workspace instead.
 pub fn write_harness_cargo_toml(
     harness_dir: &Path,
     harness_package: &str,
     target_names: &CrateNames,
+    standalone: bool,
 ) -> Result<()> {
     std::fs::create_dir_all(harness_dir)
         .with_context(|| format!("creating {}", harness_dir.display()))?;
+    let workspace_table = if standalone {
+        "[workspace]\n# Empty table: this generated harness is its own workspace root, so it\n\
+         # never needs to join -- or risk colliding with -- whatever workspace (if\n\
+         # any) contains the target crate it depends on by path below.\n\n"
+    } else {
+        ""
+    };
     let toml = format!(
         "# Generated by Ply -- do not edit. The M4 fuzz/test/mutate harness\n\
          # crate for `{target}` (The-Ply-Spec.md §5.4c). Ply regenerates this\n\
          # file on every `verify` run.\n\
+         {workspace_table}\
          [package]\n\
          name = \"{harness_package}\"\n\
          version = \"0.0.0\"\n\
@@ -308,6 +374,55 @@ path = "src/lib.rs"
         let toml = "[package]\nname = \"my-crate\"\n";
         let names = read_crate_names(toml).unwrap();
         assert_eq!(names.lib_ident, "my_crate");
+    }
+
+    #[test]
+    fn crate_has_workspace_table_detects_presence_and_absence() {
+        assert!(crate_has_workspace_table(
+            "[workspace]\n\n[package]\nname = \"x\"\n"
+        ));
+        assert!(!crate_has_workspace_table(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n"
+        ));
+        // A member crate of someone else's workspace carries no
+        // `[workspace]` table of its own -- only the root does.
+        assert!(!crate_has_workspace_table(
+            "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n"
+        ));
+    }
+
+    #[test]
+    fn write_harness_cargo_toml_standalone_gets_its_own_workspace_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let harness_dir = dir.path().join("harness");
+        let target_names = CrateNames {
+            package_name: "plain".to_string(),
+            lib_ident: "plain".to_string(),
+        };
+        write_harness_cargo_toml(&harness_dir, "plain-ply-harness", &target_names, true).unwrap();
+        let text = std::fs::read_to_string(harness_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            text.lines().any(|l| l.trim() == "[workspace]"),
+            "standalone harness must be its own workspace root:\n{text}"
+        );
+        assert!(text.contains("path = \"../../../..\""));
+    }
+
+    #[test]
+    fn write_harness_cargo_toml_non_standalone_has_no_workspace_table_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let harness_dir = dir.path().join("harness");
+        let target_names = CrateNames {
+            package_name: "plain".to_string(),
+            lib_ident: "plain".to_string(),
+        };
+        write_harness_cargo_toml(&harness_dir, "plain-ply-harness", &target_names, false).unwrap();
+        let text = std::fs::read_to_string(harness_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            !text.lines().any(|l| l.trim() == "[workspace]"),
+            "non-standalone harness must rely on being registered into the \
+             target's own workspace instead:\n{text}"
+        );
     }
 
     #[test]

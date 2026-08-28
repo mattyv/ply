@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  plainmutate:
+    anchor: ply_fixture_plainmutate
+    fns:
+      strong_target:
+        checks: [fuzz(64), mutate]

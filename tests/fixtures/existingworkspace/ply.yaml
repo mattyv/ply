@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  existingworkspace:
+    anchor: ply_fixture_existingworkspace
+    fns:
+      seeded_bug:
+        checks: [fuzz(256)]

@@ -83,6 +83,67 @@ pub fn copy_fixture(name: &str) -> FixtureCopy {
     FixtureCopy { dir }
 }
 
+/// Copies a *multi-crate* fixture tree verbatim (`wsmember`: a workspace
+/// root plus member crates), rewriting the `ply-attrs` path dependency to
+/// an absolute path in every `Cargo.toml` under the copy, whatever depth
+/// each member sits at -- `copy_fixture` above only handles the common
+/// single-crate-at-the-root shape (one fixed relative depth). Returns the
+/// scratch dir itself; callers join the member subdirectory they want to
+/// point `cargo-ply verify` or `cargo build`/`cargo test` at.
+pub fn copy_fixture_tree(name: &str) -> TempDir {
+    let src = repo_root().join("tests/fixtures").join(name);
+    assert!(src.is_dir(), "no such fixture: {}", src.display());
+    let dir = tempfile::tempdir().expect("tempdir");
+    copy_dir_recursive(&src, dir.path());
+    let ply_attrs_abs = repo_root().join("crates/ply-attrs");
+    let rewrote = rewrite_ply_attrs_paths(dir.path(), &ply_attrs_abs);
+    assert!(
+        rewrote > 0,
+        "no Cargo.toml under {} referenced crates/ply-attrs by relative path",
+        src.display()
+    );
+    dir
+}
+
+/// Walks `dir` for every `Cargo.toml` and replaces the quoted path value on
+/// any `path = "..."` line that mentions `crates/ply-attrs` with `abs`.
+/// Returns how many files were rewritten, so the caller can assert it found
+/// at least one (the same sanity check `copy_fixture` does with `assert_ne!`).
+fn rewrite_ply_attrs_paths(dir: &Path, abs: &Path) -> u32 {
+    let mut rewritten_count = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_dir() {
+            rewritten_count += rewrite_ply_attrs_paths(&path, abs);
+            continue;
+        }
+        if path.file_name().and_then(|n| n.to_str()) != Some("Cargo.toml") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        if !text.contains("crates/ply-attrs") {
+            continue;
+        }
+        let mut out = String::with_capacity(text.len());
+        for line in text.lines() {
+            if line.contains("crates/ply-attrs") && line.contains("path = \"") {
+                let start = line.find("path = \"").unwrap() + "path = \"".len();
+                let end = start + line[start..].find('"').unwrap();
+                out.push_str(&line[..start]);
+                out.push_str(&abs.display().to_string());
+                out.push_str(&line[end..]);
+            } else {
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+        std::fs::write(&path, out).unwrap();
+        rewritten_count += 1;
+    }
+    rewritten_count
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path) {
     for entry in std::fs::read_dir(src).unwrap() {
         let entry = entry.unwrap();
@@ -166,6 +227,28 @@ pub fn run_cargo_test(crate_dir: &Path) -> CargoTestRun {
         .args(["test", "--lib"])
         .output()
         .expect("spawning cargo test");
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    CargoTestRun {
+        success: output.status.success(),
+        combined_output: combined,
+    }
+}
+
+/// Runs plain `cargo build` in `crate_dir` -- no `--lib` restriction, so
+/// pointed at a *workspace root* it builds every member. Used to prove a
+/// multi-crate workspace still builds after `cargo ply verify` ran against
+/// one of its members (docs/review-caveats.md N1: the only prior
+/// workaround broke exactly this).
+pub fn run_cargo_build(crate_dir: &Path) -> CargoTestRun {
+    let output = Command::new("cargo")
+        .current_dir(crate_dir)
+        .arg("build")
+        .output()
+        .expect("spawning cargo build");
     let combined = format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),

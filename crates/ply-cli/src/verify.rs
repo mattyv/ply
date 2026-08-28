@@ -766,9 +766,31 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         let target_names = harness_crate::read_crate_names(&cargo_toml_text)?;
         let harness_pkg = harness_crate::harness_package_name(&target_names.package_name);
         let harness_rel = harness_crate::harness_rel_path(&target_names.package_name);
-        harness_crate::ensure_workspace_member(&cargo_toml_path, &harness_rel)?;
         let harness_dir = crate_dir.join(&harness_rel);
-        harness_crate::write_harness_cargo_toml(&harness_dir, &harness_pkg, &target_names)?;
+        // docs/review-caveats.md N1: registering the harness as a member of
+        // the target crate's own workspace only happens when that crate
+        // already opted into having one. Otherwise (an ordinary crate, or a
+        // member of someone else's workspace with no `[workspace]` table of
+        // its own) Ply never edits the target's `Cargo.toml` at all -- the
+        // harness gets its own isolated `[workspace]` table instead
+        // (`harness_crate` module doc), and every `cargo test`/`cargo
+        // mutants` invocation against it below runs from *its own*
+        // directory, never the target crate's.
+        let standalone = !harness_crate::crate_has_workspace_table(&cargo_toml_text);
+        if !standalone {
+            harness_crate::ensure_workspace_member(&cargo_toml_path, &harness_rel)?;
+        }
+        let harness_workspace_root: PathBuf = if standalone {
+            harness_dir.clone()
+        } else {
+            crate_dir.to_path_buf()
+        };
+        harness_crate::write_harness_cargo_toml(
+            &harness_dir,
+            &harness_pkg,
+            &target_names,
+            standalone,
+        )?;
 
         let mut modules: Vec<harness_crate::HarnessModule> = Vec::new();
         for (plan, reused) in plans.iter().zip(&reused) {
@@ -856,7 +878,8 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             if modules.is_empty() {
                 break;
             }
-            let check = fuzz_engine::check_harness_builds(crate_dir, &harness_pkg, timeout)?;
+            let check =
+                fuzz_engine::check_harness_builds(&harness_workspace_root, &harness_pkg, timeout)?;
             if check.build_ok || check.timed_out {
                 break;
             }
@@ -894,6 +917,8 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
             package: harness_pkg,
             broken,
             unattributed_cause,
+            workspace_root: harness_workspace_root,
+            standalone,
         });
     }
 
@@ -2293,6 +2318,18 @@ struct HarnessInfo {
     /// (§1) rather than either reporting a clean pass on an unbuilt harness
     /// or guessing which one function is at fault.
     unattributed_cause: Option<String>,
+    /// Where `fuzz`/`test` cargo invocations against this harness must run
+    /// from (docs/review-caveats.md N1): the target crate's own root when
+    /// it was already registered into that crate's existing workspace, or
+    /// the harness crate's own directory when it was instead given an
+    /// isolated `[workspace]` table of its own (`standalone` below).
+    workspace_root: PathBuf,
+    /// Whether the harness was placed in its own isolated `[workspace]`
+    /// (true) rather than registered as a member of the target crate's own
+    /// (false). `mutate` needs the registered-member shape specifically
+    /// (`engines::mutants`' own module doc) and cannot be attempted at all
+    /// when this is true -- see its call site in `run_fn_checks`.
+    standalone: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2527,7 +2564,7 @@ fn run_fn_checks(
                     cf,
                     src_dir,
                     lib_path,
-                    crate_dir,
+                    &info.workspace_root,
                     &info.package,
                     node_id,
                     fn_name,
@@ -2607,6 +2644,7 @@ fn run_fn_checks(
                 let (outcome, mut d) = run_mutate_check(
                     crate_dir,
                     &info.package,
+                    info.standalone,
                     node_id,
                     fn_name,
                     &harness_test_filter(cf),
@@ -3773,7 +3811,7 @@ fn run_fuzz_and_test_checks(
     cf: &ContractFn,
     src_dir: &Path,
     lib_path: &Path,
-    crate_dir: &Path,
+    harness_workspace_root: &Path,
     harness_pkg: &str,
     node_id: &str,
     fn_name: &str,
@@ -3800,7 +3838,8 @@ fn run_fuzz_and_test_checks(
     // `tested`/held instead of a violation, because the filter below
     // matched zero of the harness crate's tests). See `harness_module_name`.
     let filter = harness_test_filter(cf);
-    let run = fuzz_engine::run_harness_tests(crate_dir, harness_pkg, &filter, timeout)?;
+    let run =
+        fuzz_engine::run_harness_tests(harness_workspace_root, harness_pkg, &filter, timeout)?;
     let module_prefix = format!("{}::", harness_module_name(cf));
     // The harness ever having *run* at all is judged from the actual libtest
     // per-test lines Ply's own module contributed, never from the process
@@ -4775,9 +4814,11 @@ fn apply_mutate_outcome(verdict: &mut String, statuses: &mut Vec<String>, outcom
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_mutate_check(
     crate_dir: &Path,
     harness_pkg: &str,
+    standalone: bool,
     node_id: &str,
     fn_name: &str,
     test_filter: &str,
@@ -4785,6 +4826,61 @@ fn run_mutate_check(
     opts: &VerifyOptions,
 ) -> Result<(MutateOutcome, Vec<Diagnostic>)> {
     let _ = checks;
+    if standalone {
+        // docs/review-caveats.md N1: `cargo mutants -p <target> --test-package
+        // <harness>` (`engines::mutants`) resolves both names against one
+        // `cargo metadata` call rooted at the target crate, so it only works
+        // when the harness is a member of *that* workspace. Ply no longer
+        // makes it one uninvited (that used to mean either editing a crate
+        // that had no workspace at all, or breaking a crate that already
+        // belonged to someone else's -- both reproduced in the review this
+        // fixes). So on this crate's layout, `mutate` is refused by name,
+        // honestly, rather than handed to cargo-mutants to fail on a package
+        // spec it cannot resolve.
+        return Ok((
+            MutateOutcome::Inconclusive("unsupported"),
+            vec![Diagnostic {
+                code: "V0505".into(),
+                severity: "warning".into(),
+                phase: "verify".into(),
+                engine: "cargo-mutants".into(),
+                check: "mutate".into(),
+                node_id: node_id.into(),
+                title: format!(
+                    "`{fn_name}` declares `mutate`, but this crate's layout doesn't support it yet: \
+                     mutation testing needs the crate under test and Ply's generated test harness \
+                     to sit in one shared Cargo workspace, and this crate has no `[workspace]` table \
+                     of its own for Ply to register the harness into. Ply does not add one \
+                     automatically -- doing that used to either do nothing or break a project that \
+                     already belonged to a different workspace. This is reported as unsupported, not \
+                     attempted, so nothing here says the spec is weak; it does mean `mutate` produced \
+                     no evidence, so the run does not pass."
+                ),
+                pointer: None,
+                primary_span: None,
+                counterexample: None,
+                fixes: vec![
+                    Fix {
+                        title:
+                            "add an empty `[workspace]` table to this crate's own Cargo.toml to \
+                                enable `mutate` (only safe when this crate is not already a member \
+                                of a different workspace)"
+                                .into(),
+                        edits: vec![],
+                    },
+                    Fix {
+                        title: format!(
+                            "or drop `mutate` from `{fn_name}`'s checks for now -- `fuzz`/`test` run \
+                             on this crate's layout already"
+                        ),
+                        edits: vec![],
+                    },
+                ],
+                assumptions: vec![],
+                open_item: Some("unsupported".into()),
+            }],
+        ));
+    }
     if !mutants::is_available() {
         return Ok((
             MutateOutcome::Inconclusive("engine-missing"),
