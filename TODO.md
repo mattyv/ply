@@ -64,10 +64,16 @@ Nothing below jumps that queue.
       named as decoration, so a new construct fails until someone decides which it is.
 - [x] Inverting it found exactly one real gap: the `ply.yaml` title on the canvas had no
       tooltip. It has one now.
-- [ ] **Tooltips should say why a thing is the colour it is.** The frame tooltip
-      explains the scale ("the weakest function sets the whole box's shade") but an
-      individual box never says which function set its own. Agreed with the maintainer;
-      next.
+- [x] **Every box now says why it is the colour it is.** The canvas tooltip explained
+      the scale; no box said which function set its own shade, so finding the drag meant
+      opening every chip in turn. Each box now names the weakest thing inside it and
+      what that thing declares -- by path, so a function several components down is
+      findable rather than merely blamed. A box that is white says which claim declares
+      nothing at all.
+- [x] The words cannot drift from the colour: a test walks every component in six
+      documents and fails if the level the sentence names is not the level the box is
+      painted. Watched red by making the search pick the strongest declaration instead
+      of the weakest.
 
 ## Smoke test on a real project — 2026-08-28
 

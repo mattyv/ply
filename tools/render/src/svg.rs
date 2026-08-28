@@ -815,6 +815,70 @@ fn ceiling_level_prose(e: Evidence) -> &'static str {
     }
 }
 
+/// The name of the weakest thing inside `comp`, and what it declares --
+/// which is *why* the box is the shade it is.
+///
+/// The canvas tooltip already explains the scale ("the weakest function
+/// sets the whole box's shade"), but no box said which function that was,
+/// so a reader who wanted a deeper green had to work out where the drag
+/// was coming from by opening every chip in turn (maintainer, 2026-08-28).
+/// Recursive, because the weakest thing may be a function several
+/// components down; the path is reported so it can be found.
+///
+/// Returns `None` when nothing is declared anywhere inside -- there is no
+/// weakest link in an empty chain, and the unclaimed sentence already says
+/// so.
+fn weakest_declaration<'a>(
+    comp: &'a Component,
+    inherited: Option<InheritedChecks<'a>>,
+    prefix: &str,
+    default_name: &str,
+) -> Option<(String, Evidence)> {
+    let this_default = component_default_checks(default_name, comp, inherited);
+    let mut worst: Option<(String, Evidence)> = None;
+    let mut consider = |path: String, e: Evidence| {
+        let better = match &worst {
+            None => true,
+            Some((_, seen)) => (e as u8) < (*seen as u8),
+        };
+        if better {
+            worst = Some((path, e));
+        }
+    };
+    for (fname, fc) in &comp.fns {
+        let e = fn_declared_ceiling(effective_checks(fc, this_default).unwrap_or(&[]));
+        consider(format!("{prefix}{fname}"), e);
+    }
+    for (cname, child) in &comp.components {
+        if let Some((path, e)) =
+            weakest_declaration(child, this_default, &format!("{prefix}{cname}."), cname)
+        {
+            consider(path, e);
+        }
+    }
+    worst
+}
+
+/// The tooltip line naming why this box is the colour it is.
+fn colour_reason_line(
+    comp: &Component,
+    inherited: Option<InheritedChecks<'_>>,
+    name: &str,
+) -> Option<String> {
+    let (path, e) = weakest_declaration(comp, inherited, "", name)?;
+    Some(match e {
+        Evidence::Violation | Evidence::Unclaimed => format!(
+            "this box is white because `{path}` declares no checks at all — one unchecked \
+             thing inside sets the shade of everything around it"
+        ),
+        other => format!(
+            "this box is this shade because `{path}` is the weakest thing in it: it declares \
+             {} — nothing here is drawn stronger than its weakest part",
+            ceiling_level_prose(other)
+        ),
+    })
+}
+
 /// The component tooltip's declared-ceiling line (§7.1: "its tooltip says
 /// none of it has run"). `unclaimed` gets its own plain sentence rather than
 /// the "declares checks up to unclaimed" template, which would read as a
@@ -1374,6 +1438,9 @@ fn render_collapsed_component(
         if n_fns == 1 { "" } else { "s" },
     ));
     tip.push(ceiling_tooltip_line(ceiling));
+    if let Some(why) = colour_reason_line(comp, inherited, name) {
+        tip.push(why);
+    }
 
     let component_box_class = format!(
         "{} {}",
@@ -1721,6 +1788,9 @@ fn render_component<'a>(
 
     let mut tip = component_tip_lines(name, comp, profiles, &findings);
     tip.push(ceiling_tooltip_line(ceiling));
+    if let Some(why) = colour_reason_line(comp, inherited, name) {
+        tip.push(why);
+    }
 
     // §7.1 "hollow component": derived from absence — nothing declared
     // inside means a dashed sketch outline, the opposite claim to a

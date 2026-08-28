@@ -3369,3 +3369,75 @@ fn text_elements(svg: &str) -> Vec<(f64, f64, String)> {
     }
     out
 }
+
+/// The sentence explaining a box's colour must agree with the colour the
+/// box is actually painted.
+///
+/// A tooltip that explains the shade is only worth having if it cannot
+/// drift from the shade. The canvas already says "the weakest function
+/// sets the whole box's shade"; each box now names which one, and this
+/// checks the level it names is the level the box is filled with -- so a
+/// change to either the aggregation or the wording that separates them
+/// fails here rather than quietly misinforming a reader.
+#[test]
+fn the_sentence_explaining_a_box_colour_agrees_with_the_colour_drawn() {
+    // The ceiling class a box carries, and the words a reader would have to
+    // read in the tooltip for that class to be honest.
+    const LEVEL_WORDS: &[(&str, &str)] = &[
+        ("ceiling-unclaimed", "declares no checks at all"),
+        ("ceiling-tested", "it declares tested"),
+        ("ceiling-fuzzed", "it declares fuzzed"),
+        ("ceiling-bounded", "it declares bounded"),
+        ("ceiling-proved", "it declares proved"),
+    ];
+
+    let mut checked = 0usize;
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "tests/fixtures/full.ply.yaml",
+        "tests/fixtures/visual_forms.ply.yaml",
+        "tests/fixtures/checks_inheritance.ply.yaml",
+    ] {
+        let svg = render_fixture(fixture);
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        for node in doc.descendants().filter(|n| n.is_element()) {
+            if node.attribute("class") != Some("component") {
+                continue;
+            }
+            let title = node
+                .children()
+                .find(|c| c.tag_name().name() == "title")
+                .and_then(|t| t.text())
+                .unwrap_or("");
+            // A hollow component declares nothing anywhere inside; the
+            // unclaimed sentence covers it and there is no weakest link to
+            // name, so there is no colour sentence to check.
+            let Some(why) = title.lines().find(|l| l.starts_with("this box is")) else {
+                continue;
+            };
+            let box_class = node
+                .descendants()
+                .filter_map(|d| d.attribute("class"))
+                .find(|c| c.contains("component-box"))
+                .unwrap_or_else(|| panic!("{fixture}: a component with no box"));
+            let level = LEVEL_WORDS
+                .iter()
+                .find(|(class, _)| box_class.contains(*class))
+                .unwrap_or_else(|| panic!("{fixture}: unknown ceiling class in {box_class:?}"));
+            assert!(
+                why.contains(level.1),
+                "{fixture}: this box is painted {} but its tooltip says {why:?} -- the words \
+                 and the colour disagree, so one of them is lying to the reader",
+                level.0
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 15,
+        "only {checked} boxes carried a colour explanation; these fixtures should exercise \
+         several levels, so this test is checking less than it looks"
+    );
+}
