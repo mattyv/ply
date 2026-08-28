@@ -1,11 +1,20 @@
 //! N1 regression (docs/review-caveats.md): a crate that already declares
-//! its own `[workspace]` table must keep the *original* mechanism exactly
-//! -- the harness registered as a member of that same workspace
-//! (`harness_crate::ensure_workspace_member`) -- never routed onto the new
-//! standalone-harness path the N1 fix adds for crates that have no
+//! its own `[workspace]` table still gets the harness registered as a
+//! member of that same workspace while the run needs it
+//! (`harness_crate::ensure_workspace_member`), rather than being routed
+//! onto the standalone-harness path used for crates that have no
 //! `[workspace]` of their own. Same seeded bug as `plain`/`wsmember`, so
 //! all three fixtures earn the identical verdict and only the mechanism
 //! underneath differs.
+//!
+//! What this test pins hardest is what the *user* is left holding. The
+//! registration edits a file they own, so it lasts exactly as long as the
+//! run: afterwards their `Cargo.toml` is byte-for-byte what they wrote, and
+//! the harness -- no longer a member of anything -- has been given its own
+//! `[workspace]` table so the failing test Ply just generated is still
+//! runnable. Both halves matter. Restoring the manifest without standing
+//! the harness back up would orphan it, and a counterexample you cannot run
+//! is a counterexample you have to take on trust.
 
 use ply_e2e::{build_cargo_ply, copy_fixture, run_cargo_build, run_cargo_test, run_verify};
 
@@ -13,6 +22,8 @@ use ply_e2e::{build_cargo_ply, copy_fixture, run_cargo_build, run_cargo_test, ru
 fn a_crate_that_already_has_workspace_keeps_the_original_registered_member_mechanism() {
     let cargo_ply = build_cargo_ply();
     let fixture = copy_fixture("existingworkspace");
+    let pristine_manifest =
+        std::fs::read_to_string(fixture.path().join("Cargo.toml")).unwrap();
 
     let run = run_verify(&cargo_ply, fixture.path(), 120);
     assert_eq!(
@@ -25,32 +36,31 @@ fn a_crate_that_already_has_workspace_keeps_the_original_registered_member_mecha
         "must catch the genuinely seeded bug"
     );
 
-    // Unchanged behaviour: the harness is registered as a member of the
-    // crate's own existing workspace...
+    // The run is over, so the user's manifest is the user's again. Byte
+    // equality, not "the entry is gone": whitespace and key order they
+    // wrote count too.
     let cargo_toml = std::fs::read_to_string(fixture.path().join("Cargo.toml")).unwrap();
-    assert!(
-        cargo_toml.contains(
-            "members = [\".\", \"target/ply/fuzz/ply-fixture-existingworkspace-ply-harness\"]"
-        ),
-        "the harness must still be registered into the crate's existing workspace, exactly as \
-         before this fix:\n{cargo_toml}"
+    assert_eq!(
+        cargo_toml, pristine_manifest,
+        "verify must leave the crate's own Cargo.toml exactly as it found it"
     );
 
-    // ...and, unlike the `plain`/`wsmember` fixtures, the harness crate
-    // itself carries *no* `[workspace]` table of its own -- it relies on
-    // being a member of the target's, not on standing alone.
-    let harness_cargo_toml = fixture
+    // The harness was a member for the duration and is not one now, so it
+    // has to have been stood back up as its own workspace root -- otherwise
+    // it belongs to nothing and cannot be built.
+    let harness_dir = fixture
         .path()
-        .join("target/ply/fuzz/ply-fixture-existingworkspace-ply-harness/Cargo.toml");
-    let harness_text = std::fs::read_to_string(&harness_cargo_toml).unwrap();
+        .join("target/ply/fuzz/ply-fixture-existingworkspace-ply-harness");
+    let harness_text = std::fs::read_to_string(harness_dir.join("Cargo.toml")).unwrap();
     assert!(
-        !harness_text.lines().any(|l| l.trim() == "[workspace]"),
-        "a harness registered into an existing workspace must not also declare its own:\n{harness_text}"
+        harness_text.lines().any(|l| l.trim() == "[workspace]"),
+        "a harness that is no longer a member must stand on its own, or the generated test \
+         cannot be run at all:\n{harness_text}"
     );
 
     let build = run_cargo_build(fixture.path());
     assert!(build.success, "{}", build.combined_output);
-    let test = run_cargo_test(fixture.path());
+    let test = run_cargo_test(&harness_dir);
     assert!(
         !test.success,
         "the rendered cex test must fail before the fix:\n{}",
@@ -71,8 +81,14 @@ fn a_crate_that_already_has_workspace_keeps_the_original_registered_member_mecha
     );
     assert_eq!(run2.json["diagnostics"].as_array().unwrap().len(), 0);
 
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("Cargo.toml")).unwrap(),
+        pristine_manifest,
+        "the second run must leave it alone too -- once is luck, twice is the guard"
+    );
+
     let build2 = run_cargo_build(fixture.path());
     assert!(build2.success, "{}", build2.combined_output);
-    let test2 = run_cargo_test(fixture.path());
+    let test2 = run_cargo_test(&harness_dir);
     assert!(test2.success, "{}", test2.combined_output);
 }

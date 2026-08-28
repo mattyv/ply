@@ -1,5 +1,30 @@
 # TODO
 
+## Ply borrows the user's Cargo.toml and gives it back — 2026-08-28
+
+- [x] **A run on a crate with its own workspace no longer leaves an edit behind.**
+      Found while cleaning up a stray modified file in this checkout, which turned out
+      to be a Ply run artifact, then reproduced on a scratch crate outside the repo.
+      Registering the generated harness as a workspace member is still how the mutate
+      engine finds it, but the registration is now held by a guard that puts the
+      original manifest back byte-for-byte when the run ends, error paths included.
+      Confirmed end to end: a real crate with `members = ["."]`, checked with both
+      `fuzz` and `mutate`, comes back `fuzzed(64)·spec-strong` with its `Cargo.toml`
+      byte-identical to what was there before.
+- [x] **The generated failing test survives the cleanup.** Removing the membership
+      alone would orphan the harness -- neither a workspace root nor a member of one,
+      so unbuildable -- and the counterexample Ply just rendered would be unrunnable.
+      The same guard release rewrites the harness manifest into the standalone shape;
+      `cargo test` in `target/ply/fuzz/<name>/` fails on the seeded bug afterwards,
+      checked directly rather than assumed.
+- [x] Four unit tests, each watched red against the specific defect it names (restore,
+      whole-line removal, don't-touch-what-changed, clear a stale entry), plus the
+      `existingworkspace` end-to-end test rewritten to assert the new contract.
+      The-Ply-Spec.md §5.4c amended.
+- KNOWN GAP (in the spec, deliberately): a run killed outright runs no guard, so the
+  `members` entry survives a `SIGKILL` or a crashed container. The next run clears it,
+  since the restore target is always the original minus the harness entry.
+
 ## D5's first branch lands: `stub_verified` — 2026-08-26
 
 Full write-up of both red-first passes (the feature, then the reuse gap an adversarial

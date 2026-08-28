@@ -878,6 +878,28 @@ in this session's `weakspec` fixture; a real, size-dependent cost, not a free fi
 open item for M5 (moving the harness crate to a location outside `target/` entirely would
 remove the need for this flag, at the cost of its own git-ignore entry).
 
+**Ply borrows the user's `Cargo.toml`; it does not keep it.** Package targeting above
+only resolves if the generated harness is a member of the same workspace `cargo metadata`
+sees, so on a crate that declares its own `[workspace]` table Ply adds the harness to that
+table's `members` list before running any engine. That is an edit to a file the user owns
+and did not ask to have changed, so it lasts exactly as long as the run that needs it: the
+registration is held by a guard whose release — including on the error paths — writes the
+original manifest back byte-for-byte. A run therefore leaves nothing in `git status`.
+
+Two conditions keep the undo honest. It never restores over a manifest whose bytes changed
+while the run was in flight; a file that moved under the guard is not the guard's to
+rewrite, so it is left exactly as found. And because taking the harness out of `members`
+would otherwise orphan it — a crate that is neither a workspace root nor a member of one
+cannot be built at all — the same release rewrites the harness's own manifest into the
+standalone shape. The counterexample test Ply just generated stays runnable from
+`target/ply/fuzz/<name>/` afterwards. A counterexample you cannot run is one you have to
+take on trust, which is the opposite of the point.
+
+The one gap, stated rather than left to be found: a run killed outright (`SIGKILL`, a
+crashed container) runs no guard, so the `members` entry survives it. The next run removes
+it — the restore target is always the original *minus* the harness entry, and no human
+hand-writes a member path under `target/ply/fuzz/`.
+
 `W0502`'s surviving-mutant count is not a pure weak-spec measure: an *equivalent* mutant —
 one whose change cannot alter observable behaviour — survives any spec, however strong.
 The spike found one in a 14-mutant run on a three-line function. The diagnostic must not

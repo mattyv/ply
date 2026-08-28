@@ -791,6 +791,10 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                 .any(|c| matches!(c, Check::Fuzz(_) | Check::Test | Check::Mutate))
     });
     let mut harness_info: Option<HarnessInfo> = None;
+    // Lives until `verify_crate` returns, so the harness stays a member for
+    // every engine invocation below and the user's `Cargo.toml` goes back to
+    // what they wrote the moment the run ends -- on the error paths too.
+    let _manifest_registration: Option<harness_crate::ManifestRegistration>;
     if needs_harness {
         let cargo_toml_path = crate_dir.join("Cargo.toml");
         let cargo_toml_text = std::fs::read_to_string(&cargo_toml_path)
@@ -809,9 +813,17 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         // mutants` invocation against it below runs from *its own*
         // directory, never the target crate's.
         let standalone = !harness_crate::crate_has_workspace_table(&cargo_toml_text);
-        if !standalone {
-            harness_crate::ensure_workspace_member(&cargo_toml_path, &harness_rel)?;
-        }
+        _manifest_registration = if standalone {
+            None
+        } else {
+            Some(harness_crate::ManifestRegistration::register(
+                &cargo_toml_path,
+                &harness_rel,
+                &harness_dir,
+                &harness_pkg,
+                &target_names,
+            )?)
+        };
         let harness_workspace_root: PathBuf = if standalone {
             harness_dir.clone()
         } else {

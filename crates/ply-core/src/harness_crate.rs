@@ -216,6 +216,164 @@ pub fn ensure_workspace_member(crate_cargo_toml: &Path, harness_rel: &str) -> Re
     Ok(())
 }
 
+/// The harness registration above, made temporary.
+///
+/// Registering the harness edits a file the user owns. Before this guard
+/// existed, that edit stayed on disk after the run: someone who ran Ply
+/// once on their own workspace was left with a `members` entry pointing
+/// into `target/` that they never wrote and would have to notice in `git
+/// status` to remove. Ply reports on code; it does not leave changes in it.
+///
+/// So the registration lives exactly as long as the run that needs it. The
+/// guard captures the manifest as it was, adds the member, and on drop --
+/// including on the `?` of a failed engine run -- writes the original back
+/// with the harness entry gone.
+///
+/// Two things it deliberately does *not* do. It never restores over a file
+/// that changed since it wrote: if the bytes on disk are not the ones the
+/// guard left, someone else owns that file now and the guard steps away
+/// rather than overwriting an edit it cannot see. And its restore target is
+/// the original *minus* the harness entry, so a stale entry left by an
+/// earlier crashed run gets cleaned up too -- nobody hand-writes a member
+/// path under `target/ply/fuzz/`.
+pub struct ManifestRegistration {
+    path: PathBuf,
+    /// What the guard wrote, so drop can tell "unchanged" from "someone
+    /// else edited this".
+    written: String,
+    /// What drop puts back.
+    restore_to: String,
+    /// Where the harness crate lives, so drop can leave it standing on its
+    /// own once it stops being a member (see [`Self::register`]).
+    harness_dir: PathBuf,
+    harness_package: String,
+    target_names: CrateNames,
+}
+
+impl ManifestRegistration {
+    /// Adds the harness as a workspace member for the lifetime of the
+    /// returned guard.
+    ///
+    /// Dropping the guard has to do two things, not one. Taking the harness
+    /// out of the `members` list without anything else would orphan it: a
+    /// crate that is neither a workspace of its own nor a member of one
+    /// cannot be built at all, and the failing test Ply just generated
+    /// would be unrunnable. So drop also rewrites the harness's own
+    /// manifest into the standalone shape, the same one a crate with no
+    /// `[workspace]` of its own gets from the start. The result is that
+    /// `cargo test` in `target/ply/fuzz/<name>/` works after the run either
+    /// way, and the user's manifest is untouched either way.
+    pub fn register(
+        crate_cargo_toml: &Path,
+        harness_rel: &str,
+        harness_dir: &Path,
+        harness_package: &str,
+        target_names: &CrateNames,
+    ) -> Result<Self> {
+        let original = std::fs::read_to_string(crate_cargo_toml)
+            .with_context(|| format!("reading {}", crate_cargo_toml.display()))?;
+        ensure_workspace_member(crate_cargo_toml, harness_rel)?;
+        let written = std::fs::read_to_string(crate_cargo_toml)
+            .with_context(|| format!("reading {}", crate_cargo_toml.display()))?;
+        Ok(Self {
+            path: crate_cargo_toml.to_path_buf(),
+            written,
+            restore_to: remove_workspace_member(&original, harness_rel),
+            harness_dir: harness_dir.to_path_buf(),
+            harness_package: harness_package.to_string(),
+            target_names: target_names.clone(),
+        })
+    }
+}
+
+impl Drop for ManifestRegistration {
+    fn drop(&mut self) {
+        match std::fs::read_to_string(&self.path) {
+            Ok(now) if now == self.written => {
+                if std::fs::write(&self.path, &self.restore_to).is_ok() {
+                    // Only once the membership is actually gone: an
+                    // unwritable manifest means the harness is still a
+                    // member, and a member may not declare `[workspace]`.
+                    let _ = write_harness_cargo_toml(
+                        &self.harness_dir,
+                        &self.harness_package,
+                        &self.target_names,
+                        true,
+                    );
+                }
+            }
+            // Changed under us, or unreadable: not ours to put back.
+            _ => {}
+        }
+    }
+}
+
+/// The inverse of [`ensure_workspace_member`]: `text` with `harness_rel`
+/// gone from the `[workspace]` `members` list. A `members` line that held
+/// nothing but the harness and `"."` is left as `members = ["."]` rather
+/// than deleted, because deleting it would change which packages the
+/// workspace contains -- `members` absent means "discover them", which is
+/// not what was there before.
+pub fn remove_workspace_member(text: &str, harness_rel: &str) -> String {
+    let quoted = format!("\"{harness_rel}\"");
+    if !text.contains(&quoted) {
+        return text.to_string();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(ws_line_idx) = lines.iter().position(|l| l.trim() == "[workspace]") else {
+        return text.to_string();
+    };
+    let mut out_lines: Vec<String> = Vec::with_capacity(lines.len());
+    // Was the `members` line one Ply itself inserted (`members = [".",
+    // "<harness>"]`, written by the `None` arm above)? Then the whole line
+    // goes; anything else keeps the line and loses one item.
+    let ply_inserted = format!("members = [\".\", {quoted}]");
+    let mut in_workspace = false;
+    let mut done = false;
+    for (i, line) in lines.iter().enumerate() {
+        if i == ws_line_idx {
+            in_workspace = true;
+            out_lines.push((*line).to_string());
+            continue;
+        }
+        if in_workspace && line.trim().starts_with('[') {
+            in_workspace = false;
+        }
+        if in_workspace && !done && line.trim().starts_with("members") && line.contains(&quoted) {
+            done = true;
+            if line.trim() == ply_inserted {
+                continue; // the line existed only to hold the harness
+            }
+            out_lines.push(strip_item(line, &quoted));
+            continue;
+        }
+        out_lines.push((*line).to_string());
+    }
+    let mut out = out_lines.join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Removes `item` from a TOML inline array line, along with whichever
+/// comma joined it to its neighbours.
+fn strip_item(line: &str, item: &str) -> String {
+    let Some(pos) = line.find(item) else {
+        return line.to_string();
+    };
+    let before = &line[..pos];
+    let after = &line[pos + item.len()..];
+    // Prefer eating the comma that precedes us; fall back to the one after.
+    if let Some(comma) = before.rfind(',') {
+        format!("{}{}", &before[..comma], after)
+    } else {
+        let after = after.trim_start();
+        let after = after.strip_prefix(',').unwrap_or(after);
+        format!("{before}{}", after.trim_start())
+    }
+}
+
 fn insert_before_closing_bracket(line: &str, new_item: &str) -> String {
     match line.rfind(']') {
         Some(pos) => {
@@ -439,6 +597,117 @@ path = "src/lib.rs"
         assert!(
             text.contains("[package]"),
             "must not disturb the rest of the file:\n{text}"
+        );
+    }
+
+    #[test]
+    fn registration_puts_the_user_manifest_back_when_the_run_ends() {
+        // The guard exists so a user who runs Ply once on their own
+        // workspace is not left with an edit in `git status` they never
+        // made. The assertion is byte equality with what was there before,
+        // not "the entry is gone" -- whitespace the user wrote counts too.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.toml");
+        let original = "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\nresolver = \"2\"\n\n[package]\nname = \"x\"\n";
+        std::fs::write(&path, original).unwrap();
+
+        {
+            let _guard = ManifestRegistration::register(
+                &path,
+                "target/ply/fuzz/x-ply-harness",
+                &dir.path().join("target/ply/fuzz/x-ply-harness"),
+                "x-ply-harness",
+                &CrateNames { package_name: "x".into(), lib_ident: "x".into() },
+            )
+                .unwrap();
+            let during = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                during.contains("\"target/ply/fuzz/x-ply-harness\""),
+                "the harness has to be a member while the run needs it, got:\n{during}"
+            );
+        }
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after, original,
+            "after the run the user's Cargo.toml must be exactly what they wrote"
+        );
+    }
+
+    #[test]
+    fn registration_removes_a_members_line_it_created_itself() {
+        // A `[workspace]` with no `members` key means "discover members".
+        // Ply writes the whole line in that case, so the whole line has to
+        // go again -- leaving `members = ["."]` behind would silently stop
+        // that discovery.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.toml");
+        let original = "[workspace]\n\n[package]\nname = \"x\"\n";
+        std::fs::write(&path, original).unwrap();
+        {
+            let _guard =
+                ManifestRegistration::register(
+                &path,
+                "target/ply/fuzz/x-ply-harness",
+                &dir.path().join("target/ply/fuzz/x-ply-harness"),
+                "x-ply-harness",
+                &CrateNames { package_name: "x".into(), lib_ident: "x".into() },
+            ).unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn registration_leaves_a_manifest_someone_else_edited_alone() {
+        // If the bytes on disk are not the ones the guard left, the guard
+        // cannot know what it would be destroying, so it destroys nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.toml");
+        std::fs::write(&path, "[workspace]\n\n[package]\nname = \"x\"\n").unwrap();
+        let edited = "[workspace]\nmembers = [\".\", \"target/ply/fuzz/x-ply-harness\"]\n\n[package]\nname = \"x\"\nversion = \"9.9.9\"\n";
+        {
+            let _guard =
+                ManifestRegistration::register(
+                &path,
+                "target/ply/fuzz/x-ply-harness",
+                &dir.path().join("target/ply/fuzz/x-ply-harness"),
+                "x-ply-harness",
+                &CrateNames { package_name: "x".into(), lib_ident: "x".into() },
+            ).unwrap();
+            std::fs::write(&path, edited).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            edited,
+            "a manifest that changed under the guard is not the guard's to rewrite"
+        );
+    }
+
+    #[test]
+    fn registration_clears_a_stale_entry_left_by_an_earlier_crashed_run() {
+        // Nobody hand-writes a member under `target/ply/fuzz/`, so an entry
+        // already there when the guard starts is Ply's own litter and goes
+        // out with the rest.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.toml");
+        std::fs::write(
+            &path,
+            "[workspace]\nmembers = [\".\", \"target/ply/fuzz/x-ply-harness\"]\n\n[package]\nname = \"x\"\n",
+        )
+        .unwrap();
+        {
+            let _guard =
+                ManifestRegistration::register(
+                &path,
+                "target/ply/fuzz/x-ply-harness",
+                &dir.path().join("target/ply/fuzz/x-ply-harness"),
+                "x-ply-harness",
+                &CrateNames { package_name: "x".into(), lib_ident: "x".into() },
+            ).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[workspace]\n\n[package]\nname = \"x\"\n"
         );
     }
 
