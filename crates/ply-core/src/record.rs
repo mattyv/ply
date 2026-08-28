@@ -162,8 +162,9 @@ pub struct FingerprintInputs {
 /// hashed on its own, so a run that could not carry a result forward can
 /// say **which** of them moved instead of silently re-paying engine cost
 /// (§5.2a).
-pub const INPUT_GROUPS: [&str; 12] = [
+pub const INPUT_GROUPS: [&str; 13] = [
     "which claim this is",
+    "the build of Ply that checked it",
     "the function's own source",
     "its contract",
     "the code it runs",
@@ -197,9 +198,18 @@ impl FingerprintInputs {
         match name {
             "which claim this is" => {
                 put("ply-fingerprint", "2");
-                put("ply-version", &self.ply_version);
                 put("node", &self.node_id);
                 put("fn-path", &self.fn_path);
+            }
+            // Its own group, not folded in with the claim's identity. Both
+            // invalidate, so the fingerprint is unchanged either way -- but
+            // a run that could not carry a result forward NAMES the group
+            // that moved, and "which claim this is changed" is a baffling
+            // thing to read after upgrading Ply, when nothing about the
+            // claim changed at all. Found by upgrading Ply and reading the
+            // sentence (2026-08-28).
+            "the build of Ply that checked it" => {
+                put("ply-version", &self.ply_version);
             }
             "the function's own source" => put("fn-source", &self.fn_source),
             "its contract" => {
@@ -998,9 +1008,17 @@ mod tests {
     fn the_fingerprint_of_the_reference_fixture_is_pinned() {
         assert_eq!(
             fingerprint(&inputs()),
-            "b871446bca4bb77c08f1365dd373a43129b56822042f9da5215d146666b95a36",
+            "188fabb251f5cb7dbee50c0bf519c7a9f2099f4ac64da5bb21ad98aa67e53a17",
             "the encoding did not change, so this must not move; if it moved on purpose, every \
-             ply.lock committed against the old encoding is now stale"
+             ply.lock committed against the old encoding is now stale. Moved once deliberately, \
+             2026-08-28: Ply's own build identity was split out of the claim-identity group into \
+             a group of its own, which changes the canonical bytes. No input was added or \
+             removed, and nothing invalidates now that did not invalidate before -- the split \
+             exists so a run that could not carry a result forward can say `the build of Ply \
+             that checked it changed` rather than `which claim this is changed`, which is what \
+             it said after an upgrade and is baffling, because nothing about the claim had \
+             changed. Free in practice: Ply's build identity already invalidates every stored \
+             result whenever Ply's own source moves, and this edit is one such move"
         );
     }
 
