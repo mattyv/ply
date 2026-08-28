@@ -31,6 +31,45 @@ Ply is designed for a human-directed agent workflow:
 This is review compression, not review elimination. Experienced developers still decide
 what matters and inspect code where mechanical evidence stops.
 
+## You declare, Ply checks — and the line between them is explicit
+
+Everything you tell Ply is **data, not code**. Components, the dependencies they may have,
+each function's promises, and which checks must earn them are declared in `ply.yaml` and in
+attributes on the functions themselves. There is no verification language to learn, and
+nothing to write in one.
+
+That matters because of where it stops. Every function has a line across it — the project
+calls it the **watermark**, because it marks the level declaration reaches:
+
+- **Above the line** — the signature and its contract. This is yours. You declare what the
+  function takes, what it returns, and what must be true of the result. It is data, it is
+  reviewable, and it is what the picture draws.
+- **Below the line** — the body. The loops, the arithmetic, the data structures. **Ply
+  verifies below the line; it never specifies there.** The implementation is ordinary Rust
+  and stays ordinary Rust, whether a person or an agent wrote it.
+
+```rust
+#[ply::requires(amount <= 1_000)]                  // ─┐  declared: yours, and drawable
+#[ply::ensures(|result| *result >= amount)]        //  │
+pub fn total(amount: u32, tier: u8) -> u32 {       // ─┘  the line
+    amount + legacy_rate(tier)                     //      verified, never dictated
+}
+```
+
+The line can move **down** — a future grammar may let you declare more than a signature and
+a contract, if it can be drawn and checked. It can never move into the algorithm itself.
+Specifying the body would mean building a verification language, which is the path this
+project exists to avoid: those languages ask you to rewrite your program in their terms,
+and most teams stop.
+
+So the deal is narrow on purpose. **You say what must be true. Ply reports what was
+actually checked, and where checking stopped.** Anything it could not reach is named rather
+than assumed, which is why a green result is worth something.
+
+The watermark is also why the picture above is worth drawing: it shows the level intent
+reaches, per function, across a whole codebase at once — where promises are made, and where
+code simply begins.
+
 ## Visual development
 
 The rendered specification is part of the development surface, not a diagram produced
