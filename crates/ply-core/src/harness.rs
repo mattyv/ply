@@ -293,6 +293,17 @@ pub struct UserTypeFieldsPlan {
     /// `fuzz_gen::wrap_fn_harness_module` needs this.
     pub import_path: String,
     pub shape: UserTypeShape,
+    /// A complete sentence naming a constructor `resolve_user_type` found
+    /// for this type but could not use -- `None` when no constructor
+    /// candidate existed at all (2026-08-28,
+    /// docs/review-structs-enums.md finding 2: "is the disclosure enough?
+    /// -- No", because the old wording claimed no constructor existed even
+    /// when one did, just not a usable one). `verify`'s
+    /// `public_fields_assumed_diag` (W0522) surfaces this alongside the
+    /// public-fields assumption it already discloses, rather than staying
+    /// silent about a constructor a reader could have written a bug report
+    /// about.
+    pub skipped_constructor: Option<String>,
 }
 
 /// **Deliberately narrow** (2026-08-27, struct/enum parameters): only a
@@ -795,6 +806,59 @@ fn is_bare_self_type(ty: &Type) -> bool {
             && tp.path.segments[0].arguments.is_empty())
 }
 
+/// Whether a receiverless associated fn's return type is a shape
+/// [`scan_ctor_candidates`] accepts as a usable constructor: bare `Self`, or
+/// -- widened 2026-08-28, docs/review-structs-enums.md finding 2, "a
+/// violation reported on correct code" -- `Result<Self, E>`, the ordinary
+/// fallible-constructor shape (`Range::new(lo, hi) -> Result<Self,
+/// String>`, rejecting `lo > hi`). Before this widening, a `Result`-
+/// returning constructor was invisible to every constructor scan, so a type
+/// with one and nothing else fell straight through to rule 2 (direct field
+/// construction) and Ply built exactly the state the constructor exists to
+/// forbid, then reported the function that reads it as violating its own
+/// promise.
+///
+/// Deliberately narrow, matching `return_rust_type_from_syn`'s own doc:
+/// `Result<Self, E>` behind a type alias, or nested inside another
+/// `Option`/`Result`, is not recognised -- only the bare, written shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtorReturn {
+    /// `fn new(..) -> Self`.
+    Bare,
+    /// `fn new(..) -> Result<Self, E>` -- calling it can fail, and a case
+    /// where it does is not a usable value, so codegen must reject that
+    /// draw rather than treat the `Err` as if it were one.
+    ResultSelf,
+}
+
+fn ctor_return_kind(output: &syn::ReturnType, _aliases: &AliasMap) -> Option<CtorReturn> {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return None;
+    };
+    if is_bare_self_type(ty) {
+        return Some(CtorReturn::Bare);
+    }
+    if let Type::Path(tp) = ty.as_ref()
+        && tp.qself.is_none()
+        && let Some(seg) = tp.path.segments.last()
+        && seg.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(ab) = &seg.arguments
+    {
+        let args: Vec<&Type> = ab
+            .args
+            .iter()
+            .filter_map(|a| match a {
+                syn::GenericArgument::Type(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        if args.len() == 2 && is_bare_self_type(args[0]) {
+            return Some(CtorReturn::ResultSelf);
+        }
+    }
+    None
+}
+
 /// Classifies a function's *return* type -- never a parameter's, and a
 /// genuinely different question from `rust_type_from_syn` even though it
 /// reuses that parser for every shape but one. A parameter must be
@@ -1171,6 +1235,23 @@ impl ContractFn {
             .collect()
     }
 
+    /// Every `UserTypeFieldsPlan::skipped_constructor` note among this fn's
+    /// own parameters, in parameter order (2026-08-28,
+    /// docs/review-structs-enums.md finding 2): a type built by direct
+    /// field construction may still have a constructor Ply found but could
+    /// not use, and `verify`'s `public_fields_assumed_diag` (W0522) must say
+    /// so rather than reading as though direct construction were the only
+    /// route available. Empty when no such parameter carries one.
+    pub fn skipped_constructor_notes(&self) -> Vec<String> {
+        self.params
+            .iter()
+            .filter_map(|p| match &p.ty {
+                RustType::UserTypeFields(plan) => plan.skipped_constructor.clone(),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The expression generated code calls this fn by (added 2026-08-27,
     /// method resolution): the bare final identifier for a free function
     /// (`legacy_rate`), unchanged from before methods existed -- or, for a
@@ -1522,6 +1603,31 @@ pub const MAX_RECEIVER_SEQUENCE_LEN: u32 = 3;
 /// touched. Each operation now generates its own arguments from its own
 /// strategy (`fuzz_gen::receiver_pattern_and_strategy`), so a mixed-shape
 /// pool is exactly what the sequence now builds.
+/// One of the type's own `&self`/`&mut self` operations that was found
+/// alongside the checked method but left out of [`ReceiverPlan::operations`]
+/// because one of its own parameters is a type the fuzz tier cannot build a
+/// value for (docs/review-structs-enums.md finding 1, "the fourteenth false
+/// clean", 2026-08-28). Before this, such an operation simply vanished from
+/// the pool -- correct on its own terms (codegen cannot call it without an
+/// argument), but silent: the receiver-sequence disclosure (`verify`'s
+/// `receiver_sequence_diag`, W0520) went on asserting "every value this run
+/// saw was reachable by calling the type's own code, nothing else, so
+/// nothing here was assumed", which is exactly backwards when the one
+/// operation that changes the receiver's state is the one that got dropped.
+/// Recording *what* was excluded and *why*, rather than only shrinking the
+/// pool, is what lets that disclosure say something true.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExcludedOperation {
+    /// Same spelling convention as [`Operation::call_path`].
+    pub call_path: String,
+    /// A complete, newbie-bar sentence fragment naming the parameter and
+    /// its type, e.g. "its `s: str` argument uses a type Ply cannot build a
+    /// value for" -- built once here so every caller (today, only the one
+    /// disclosure) renders the same wording rather than re-deriving it from
+    /// the raw type.
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Operation {
     /// The full path as the checked method's own is spelled (`module::Type::name`
@@ -1587,7 +1693,24 @@ pub struct ReceiverPlan {
     /// method's own promise breaking -- a violation on code that cannot be
     /// false.
     pub ctor_requires: Option<Expr>,
+    /// Whether `constructor` returns bare `Self` or `Result<Self, E>`
+    /// (2026-08-28, docs/review-structs-enums.md finding 2) -- codegen
+    /// (`fuzz_gen::build_user_value_stmt`) reads this to decide whether the
+    /// constructor call needs a rejecting `match` around it. Always
+    /// [`CtorReturn::Bare`] for a receiver's own plan (`scan_impls_for_receiver`
+    /// does not (yet) recognise a fallible receiver constructor -- see that
+    /// fn's own doc comment), so this changes nothing for the receiver path.
+    pub ctor_return: CtorReturn,
     pub operations: Vec<Operation>,
+    /// Every other `&self`/`&mut self` operation this scan found in the same
+    /// `impl` block(s) but could not admit to `operations` because one of
+    /// its own parameters is not a type the fuzz tier can build
+    /// (2026-08-28, docs/review-structs-enums.md finding 1). Named here,
+    /// never merely dropped, so `receiver_sequence_diag` can say which
+    /// operations this run never called and why -- the honesty fix for
+    /// "the fourteenth false clean": a mutator this list names is a mutator
+    /// this run's history cannot contain, however many cases it ran.
+    pub excluded_operations: Vec<ExcludedOperation>,
     /// [`MAX_RECEIVER_SEQUENCE_LEN`], carried alongside the plan so a
     /// caller building the verdict-visibility disclosure never has to
     /// import the constant under a different name than what codegen used.
@@ -1637,6 +1760,16 @@ pub enum ReceiverError {
         ctor_name: String,
         bad_type: String,
     },
+    /// The only constructor candidate(s) found are private -- unusable from
+    /// the fuzz harness Ply generates outside this crate, exactly like an
+    /// unbuildable-argument one (2026-08-28, docs/review-structs-enums.md's
+    /// "Also fix" list, "a private constructor"). Distinct from
+    /// `UnsupportedConstructorParam` so the message never claims "private"
+    /// is a *type*.
+    PrivateConstructor {
+        type_name: String,
+        ctor_name: String,
+    },
     /// The checked method's own parameter list contains a shape this scan's
     /// simple pattern reader does not recognise (a destructuring pattern
     /// rather than a plain identifier) -- the same limit `build_contract_fn`
@@ -1675,6 +1808,15 @@ impl std::fmt::Display for ReceiverError {
                 "Ply cannot build a receiver for `{type_name}`: its constructor `{ctor_name}` \
                  takes a parameter of type `{bad_type}`, which is a shape Ply's checkers do not \
                  build values for yet, so the constructor itself cannot be called"
+            ),
+            ReceiverError::PrivateConstructor {
+                type_name,
+                ctor_name,
+            } => write!(
+                f,
+                "Ply cannot build a receiver for `{type_name}`: its only constructor \
+                 (`{ctor_name}`) is private, and the fuzz harness Ply generates lives outside \
+                 this crate, so it cannot call it"
             ),
             ReceiverError::UnsupportedParamPattern => write!(
                 f,
@@ -1805,6 +1947,14 @@ fn extract_requires_expr(attrs: &[syn::Attribute]) -> Result<Option<Expr>> {
 /// `scan_impls_for_receiver`.
 type CtorCandidate = (String, Vec<Param>, Option<String>, Option<Expr>);
 
+/// One constructor candidate found by [`scan_ctor_candidates`]/
+/// [`scan_ctor_candidates_crate_wide`] for a **parameter's** own type (never
+/// a receiver's -- see [`CtorCandidate`] for that): its call path, its own
+/// raw (not yet recursively resolved) parameters, its own declared
+/// `#[ply::requires]` (if any), which of the two constructor-return shapes
+/// it has ([`CtorReturn`]), and whether it is `pub`.
+type ParamCtorCandidate = (String, Vec<Param>, Option<Expr>, CtorReturn, bool);
+
 /// Scans every non-generic, trait-free `impl {type_name} { .. }` block in
 /// `file` for: the checked method itself (must exist, must take `&self`),
 /// a constructor (a receiverless associated function returning bare `Self`,
@@ -1823,6 +1973,7 @@ fn scan_impls_for_receiver(
     let mut target: Option<syn::ImplItemFn> = None;
     let mut ctor_candidates: Vec<CtorCandidate> = Vec::new();
     let mut other_ops: Vec<Operation> = Vec::new();
+    let mut excluded_ops: Vec<ExcludedOperation> = Vec::new();
 
     for item in &file.items {
         let syn::Item::Impl(imp) = item else {
@@ -1854,10 +2005,22 @@ fn scan_impls_for_receiver(
                 let Some(params) = params_from_inputs(m.sig.inputs.iter(), aliases) else {
                     continue;
                 };
-                let bad = params
-                    .iter()
-                    .find(|p| !p.ty.is_fuzz_supported())
-                    .map(|p| p.ty.display_name());
+                // A private constructor is unusable from the fuzz harness
+                // Ply generates outside this crate, exactly like an
+                // unbuildable-argument one -- checked first so a private
+                // constructor never wins over a public one further down
+                // this scan (2026-08-28, docs/review-structs-enums.md's
+                // "Also fix" list, "a private constructor": "I confirmed the
+                // same blindness on the object-construction path, so this is
+                // one shared gap, not two").
+                let bad = if !is_pub(&m.vis) {
+                    Some("private".to_string())
+                } else {
+                    params
+                        .iter()
+                        .find(|p| !p.ty.is_fuzz_supported())
+                        .map(|p| p.ty.display_name())
+                };
                 let path = format!("{type_name}::{}", m.sig.ident);
                 // A constructor's own `#[ply::requires]`, if it declares
                 // one, travels with the candidate so the chosen
@@ -1877,13 +2040,27 @@ fn scan_impls_for_receiver(
                 // can build a value for. An unbuildable-type operation is
                 // left out of the pool rather than guessed at, the same
                 // discipline the constructor candidates already use just
-                // above.
-                if params.iter().all(|p| p.ty.is_fuzz_supported()) {
-                    other_ops.push(Operation {
-                        call_path: format!("{type_name}::{}", m.sig.ident),
+                // above -- but never *silently*: an operation excluded here
+                // is exactly the operation this type's state depends on
+                // changing (docs/review-structs-enums.md finding 1, "the
+                // fourteenth false clean", 2026-08-28), so it is recorded
+                // by name and reason rather than only vanishing from
+                // `other_ops`.
+                let call_path = format!("{type_name}::{}", m.sig.ident);
+                match params.iter().find(|p| !p.ty.is_fuzz_supported()) {
+                    None => other_ops.push(Operation {
+                        call_path,
                         params,
                         takes_mut_self: r.mutability.is_some(),
-                    });
+                    }),
+                    Some(bad) => excluded_ops.push(ExcludedOperation {
+                        call_path,
+                        reason: format!(
+                            "its `{}: {}` argument uses a type Ply cannot build a value for",
+                            bad.name,
+                            bad.ty.display_name()
+                        ),
+                    }),
                 }
             }
         }
@@ -1944,6 +2121,12 @@ fn scan_impls_for_receiver(
     let (ctor_path, ctor_params, ctor_requires) = match buildable {
         Some((path, params, _, req)) => (path.clone(), params.clone(), req.clone()),
         None => match ctor_candidates.first() {
+            Some((path, _, Some(bad), _)) if bad == "private" => {
+                return Err(ReceiverError::PrivateConstructor {
+                    type_name: type_name.to_string(),
+                    ctor_name: path.clone(),
+                });
+            }
             Some((path, _, Some(bad), _)) => {
                 return Err(ReceiverError::UnsupportedConstructorParam {
                     type_name: type_name.to_string(),
@@ -1979,7 +2162,16 @@ fn scan_impls_for_receiver(
         constructor: ctor_path,
         ctor_params,
         ctor_requires,
+        // `scan_impls_for_receiver`'s own ctor-candidate scan (just above)
+        // still gates on bare `Self` only, so every receiver's own plan is
+        // always `Bare` here -- widening the receiver path to `Result<Self,
+        // E>` and to a cross-file constructor search is real, adjacent
+        // scope this task did not ask for (docs/review-structs-enums.md's
+        // two reproductions are both a *parameter*, never a receiver), left
+        // for the user to decide whether it is wanted.
+        ctor_return: CtorReturn::Bare,
         operations,
+        excluded_operations: excluded_ops,
         max_sequence_len: MAX_RECEIVER_SEQUENCE_LEN,
     };
     Ok((target, plan))
@@ -2101,6 +2293,17 @@ pub fn discover_method_with_receiver(
 /// unexpected input, the same role [`MAX_ALIAS_DEPTH`] plays for a type
 /// alias chain.
 const MAX_USER_TYPE_DEPTH: usize = 6;
+
+/// The most public fields direct field construction (rule 2) will build a
+/// struct out of -- measured, not guessed (2026-08-28, docs/review-structs-
+/// enums.md's "Also fix" list, "a struct with 13 or more fields"): the
+/// generated strategy is a tuple of one value per field, and proptest's own
+/// tuple `Strategy` impls (like the standard library's own tuple trait
+/// impls) stop being generated past 12 elements, so a 13-field struct's
+/// harness fails to compile with "the trait bound (…13 types…): Strategy is
+/// not satisfied" -- raw compiler output about Ply's own generated code,
+/// for a shape Ply had every field it needed to refuse by name instead.
+const MAX_DIRECT_CONSTRUCTION_FIELDS: usize = 12;
 
 /// Where Ply found a bare struct/enum name declared, scanning every `.rs`
 /// file under a crate's `src/` directory (recursing into subdirectories,
@@ -2250,22 +2453,36 @@ fn all_fields_public(fields: &syn::Fields) -> bool {
         .all(|f| matches!(f.vis, syn::Visibility::Public(_)))
 }
 
+/// Whether a visibility is plain `pub` -- never `pub(crate)`,
+/// `pub(super)`, or bare (private): the fuzz harness Ply generates is a
+/// separate crate (or, for the receiver path, calls back in from outside
+/// the declaring module), so anything less than full `pub` is not callable
+/// from it (2026-08-28, docs/review-structs-enums.md's "Also fix" list,
+/// "a private constructor").
+fn is_pub(vis: &syn::Visibility) -> bool {
+    matches!(vis, syn::Visibility::Public(_))
+}
+
 /// Rule 1's own candidate scan, narrowed from [`scan_impls_for_receiver`]'s
 /// (which also looks for a *target* method and an operation pool -- neither
 /// applies to a parameter, which has no receiver to call further methods
 /// on): every receiverless associated fn of `type_name` returning bare
-/// `Self`, with its raw (not yet recursively resolved) parameters and its
-/// own `#[ply::requires]`. **Unfiltered by buildability on purpose** --
-/// unlike the older per-type scans, a candidate whose parameter is itself
-/// an unresolved user type must not be discarded here, or `resolve_user_type`
-/// below would never get the chance to resolve it (exactly the bug fixed in
+/// `Self` *or* `Result<Self, E>` (widened 2026-08-28, see [`ctor_return_kind`]),
+/// with its raw (not yet recursively resolved) parameters, its own
+/// `#[ply::requires]`, which of the two return shapes it has, and whether
+/// it is `pub` -- **unfiltered by publicness or buildability on purpose**:
+/// unlike the older per-type scans, a candidate that turns out unusable
+/// (a private fn, or a parameter that is itself an unresolved user type)
+/// must not be discarded here, or `resolve_user_type` below could neither
+/// resolve a nested candidate parameter (exactly the bug fixed in
 /// `scan_impls_for_receiver` alongside this task, for `Quota::new`'s own
-/// `RefillRate` argument).
+/// `RefillRate` argument) nor report a private one as *found but skipped*
+/// rather than silently invisible (2026-08-28, "a private constructor").
 fn scan_ctor_candidates(
     file: &syn::File,
     aliases: &AliasMap,
     type_name: &str,
-) -> Vec<(String, Vec<Param>, Option<Expr>)> {
+) -> Vec<ParamCtorCandidate> {
     let mut out = Vec::new();
     for item in &file.items {
         let syn::Item::Impl(imp) = item else {
@@ -2285,9 +2502,9 @@ fn scan_ctor_candidates(
             if !is_receiverless {
                 continue;
             }
-            if return_rust_type_from_syn(&m.sig.output, aliases) != RustType::SelfType {
+            let Some(ctor_return) = ctor_return_kind(&m.sig.output, aliases) else {
                 continue;
-            }
+            };
             let Some(params) = params_from_inputs(m.sig.inputs.iter(), aliases) else {
                 continue;
             };
@@ -2298,8 +2515,64 @@ fn scan_ctor_candidates(
                 format!("{type_name}::{}", m.sig.ident),
                 params,
                 ctor_requires,
+                ctor_return,
+                is_pub(&m.vis),
             ));
         }
+    }
+    out
+}
+
+/// [`scan_ctor_candidates`], run over every `.rs` file under `crate_dir`'s
+/// `src/` rather than only `declaring_file` -- 2026-08-28,
+/// docs/review-structs-enums.md finding 2, "the constructor lives in a
+/// different file from the type": splitting a type's declaration from its
+/// `impl` block across modules is an ordinary way to organise a Rust crate,
+/// and the single-file scan used to miss any constructor placed anywhere
+/// else, silently falling through to rule 2 (direct field construction) and
+/// building the state the constructor exists to forbid. `declaring_file` is
+/// scanned first, matching `scan_ctor_candidates`'s own source-order
+/// preference within one file; every other file follows in a deterministic
+/// (sorted-path) order, never re-scanning `declaring_file` itself.
+fn scan_ctor_candidates_crate_wide(
+    crate_dir: &Path,
+    declaring_file: &Path,
+    type_name: &str,
+) -> Vec<ParamCtorCandidate> {
+    let mut out = Vec::new();
+    let parse_and_scan = |path: &Path, out: &mut Vec<ParamCtorCandidate>| {
+        let Ok(src) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(file) = syn::parse_file(&src) else {
+            return;
+        };
+        let aliases = alias_map(&file);
+        out.extend(scan_ctor_candidates(&file, &aliases, type_name));
+    };
+    parse_and_scan(declaring_file, &mut out);
+
+    let mut files = Vec::new();
+    let mut stack = vec![crate_dir.join("src")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    for path in files {
+        if path == declaring_file {
+            continue;
+        }
+        parse_and_scan(&path, &mut out);
     }
     out
 }
@@ -2334,6 +2607,83 @@ fn qualified_type_path(crate_dir: &Path, file_path: &Path, type_name: &str) -> S
     } else {
         format!("{}::{type_name}", segs.join("::"))
     }
+}
+
+/// Whether `file_path`'s type sits behind a private module somewhere
+/// between it and the crate root -- `None` when every ancestor `mod`
+/// declaration is `pub` (or there is none, because the type is declared at
+/// the crate root), `Some(name)` naming the first (closest to the root)
+/// private one otherwise (2026-08-28, docs/review-structs-enums.md's "Also
+/// fix" list, "a private module"): `mod quota;` with no `pub` hides
+/// `quota::Quota` from any harness Ply generates outside this crate, even
+/// though `Quota` itself is `pub` and even though a `pub use` elsewhere may
+/// re-export it under a different, public path -- this scan does not
+/// follow re-exports, so it refuses rather than risk emitting a harness
+/// that names an inaccessible path.
+///
+/// Segment derivation mirrors [`qualified_type_path`] exactly, so the two
+/// never disagree about which module a file belongs to. **Fails open**
+/// (`None`) whenever a `mod` declaration cannot be found or read -- an
+/// inline `mod name { .. }` body (rather than a separate `name.rs`/
+/// `name/mod.rs` file) is the one ordinary shape this narrow, one-file-per-
+/// module scan does not follow (matching `scan_crate_type_locations`'s own
+/// narrowing); refusing an ordinary crate on a scan gap would be a worse
+/// mistake than missing this one refusal.
+fn private_ancestor_module(crate_dir: &Path, file_path: &Path) -> Option<String> {
+    let src_dir = crate_dir.join("src");
+    let rel = file_path.strip_prefix(&src_dir).ok()?;
+    let mut segs: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
+    if let Some(last) = segs.last().cloned() {
+        if last == "lib.rs" || last == "main.rs" || last == "mod.rs" {
+            segs.pop();
+        } else if let Some(stem) = last.strip_suffix(".rs") {
+            *segs.last_mut().unwrap() = stem.to_string();
+        }
+    }
+    for i in 0..segs.len() {
+        let mod_name = &segs[i];
+        let parent_file = if i == 0 {
+            let lib = src_dir.join("lib.rs");
+            let main = src_dir.join("main.rs");
+            if lib.is_file() {
+                lib
+            } else if main.is_file() {
+                main
+            } else {
+                return None;
+            }
+        } else {
+            let parent_rel = segs[..i].join("/");
+            let as_file = src_dir.join(format!("{parent_rel}.rs"));
+            let as_mod_dir = src_dir.join(&parent_rel).join("mod.rs");
+            if as_file.is_file() {
+                as_file
+            } else if as_mod_dir.is_file() {
+                as_mod_dir
+            } else {
+                return None;
+            }
+        };
+        let Ok(src) = std::fs::read_to_string(&parent_file) else {
+            return None;
+        };
+        let Ok(file) = syn::parse_file(&src) else {
+            return None;
+        };
+        let declared_vis = file.items.iter().find_map(|it| match it {
+            syn::Item::Mod(m) if m.ident == *mod_name => Some(m.vis.clone()),
+            _ => None,
+        });
+        match declared_vis {
+            Some(vis) if !is_pub(&vis) => return Some(mod_name.clone()),
+            Some(_) => {}
+            None => return None,
+        }
+    }
+    None
 }
 
 /// If `ty` is already something Ply knows how to build, returns it
@@ -2393,32 +2743,105 @@ fn resolve_user_type(
         return Err(UserTypeError::Unreadable);
     };
 
+    // Neither rule can name a type the fuzz harness cannot see at all
+    // (2026-08-28, docs/review-structs-enums.md's "Also fix" list, "a
+    // non-public type" and "a private module"): checked once, before either
+    // rule runs, rather than letting a `pub(crate)` type or one sitting
+    // behind an unexported module reach codegen and fail to compile there.
+    let item_vis = match item {
+        syn::Item::Struct(s) => &s.vis,
+        syn::Item::Enum(e) => &e.vis,
+        _ => unreachable!("the search above only ever matches a Struct or an Enum"),
+    };
+    if !is_pub(item_vis) {
+        return Err(UserTypeError::Refused(format!(
+            "Ply cannot build a value of `{type_name}`: the type itself is not `pub`, so the \
+             fuzz harness Ply generates -- which sits outside this module -- cannot name it"
+        )));
+    }
+    if let Some(private_mod) = private_ancestor_module(crate_dir, &file_path) {
+        return Err(UserTypeError::Refused(format!(
+            "Ply cannot build a value of `{type_name}`: it is declared inside the `{private_mod}` \
+             module, which is not `pub`, so the fuzz harness Ply generates cannot name `{type_name}` \
+             by its module path even though the type itself is public -- a `pub use` elsewhere in \
+             the crate may re-export it under a different, public path, but this scan does not \
+             follow re-exports yet"
+        )));
+    }
+
     // Rule 1: the type's own constructor, recursively -- the first
-    // candidate (source order) whose every parameter itself resolves wins,
-    // matching `scan_impls_for_receiver`'s own "first fully-buildable one"
-    // preference.
-    for (ctor_path, raw_params, ctor_requires) in scan_ctor_candidates(&file, &aliases, type_name) {
+    // candidate (source order, declaring file first) whose every parameter
+    // itself resolves wins, matching `scan_impls_for_receiver`'s own "first
+    // fully-buildable one" preference. Searched across every file in the
+    // crate, not only the one `type_name` is declared in (2026-08-28,
+    // docs/review-structs-enums.md finding 2, "the constructor lives in a
+    // different file from the type") -- and a candidate returning
+    // `Result<Self, E>` is a real constructor too (finding 2's other half),
+    // never just `Self`.
+    // Tracked across the loop so a later rule-2 success can say honestly
+    // that a constructor exists but was not used, rather than silently
+    // building field-by-field as though none did (2026-08-28,
+    // docs/review-structs-enums.md finding 2, "is the disclosure enough? --
+    // No": the old wording ("it has no constructor Ply can call") is true
+    // only when this stays `None`).
+    let mut skipped_constructor: Option<String> = None;
+    for (ctor_path, raw_params, ctor_requires, ctor_return, ctor_is_pub) in
+        scan_ctor_candidates_crate_wide(crate_dir, &file_path, type_name)
+    {
+        // A private constructor is never callable from the fuzz harness Ply
+        // generates outside this crate (2026-08-28, docs/review-structs-
+        // enums.md's "Also fix" list, "a private constructor"): checked
+        // before spending any recursion on its parameters, and reported
+        // through the same `skipped_constructor` channel as an unbuildable
+        // one -- found, named, and explained, never silently treated as
+        // though no constructor existed.
+        let mut fail_reason = if ctor_is_pub {
+            None
+        } else {
+            Some(
+                "it is private, and the harness Ply generates lives outside this crate, so it \
+                  cannot call it"
+                    .to_string(),
+            )
+        };
         let mut resolved_params = Vec::with_capacity(raw_params.len());
-        let mut all_ok = true;
-        for p in &raw_params {
-            match resolve_param_type(crate_dir, locations, &p.ty, depth + 1) {
-                Ok(ty) => resolved_params.push(Param { ty, ..p.clone() }),
-                Err(_) => {
-                    all_ok = false;
-                    break;
+        if fail_reason.is_none() {
+            for p in &raw_params {
+                match resolve_param_type(crate_dir, locations, &p.ty, depth + 1) {
+                    Ok(ty) => resolved_params.push(Param { ty, ..p.clone() }),
+                    Err(e) => {
+                        fail_reason = Some(format!(
+                            "its `{}: {}` parameter is {}",
+                            p.name,
+                            p.ty.display_name(),
+                            e
+                        ));
+                        break;
+                    }
                 }
             }
         }
-        if all_ok {
-            return Ok(RustType::UserTypeCtor(Box::new(ReceiverPlan {
-                type_name: type_name.to_string(),
-                import_path: import_path.clone(),
-                constructor: ctor_path,
-                ctor_params: resolved_params,
-                ctor_requires,
-                operations: vec![],
-                max_sequence_len: 0,
-            })));
+        match fail_reason {
+            None => {
+                return Ok(RustType::UserTypeCtor(Box::new(ReceiverPlan {
+                    type_name: type_name.to_string(),
+                    import_path: import_path.clone(),
+                    constructor: ctor_path,
+                    ctor_params: resolved_params,
+                    ctor_requires,
+                    ctor_return,
+                    operations: vec![],
+                    excluded_operations: vec![],
+                    max_sequence_len: 0,
+                })));
+            }
+            Some(reason) if skipped_constructor.is_none() => {
+                skipped_constructor = Some(format!(
+                    "Ply also found `{ctor_path}`, a constructor for `{type_name}`, but could \
+                     not use it: {reason}"
+                ));
+            }
+            Some(_) => {}
         }
     }
 
@@ -2459,6 +2882,16 @@ fn resolve_user_type(
                      construction does not read yet"
                 )));
             };
+            if fields.len() > MAX_DIRECT_CONSTRUCTION_FIELDS {
+                return Err(UserTypeError::Refused(format!(
+                    "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
+                     call, and it has {} public fields -- direct field construction's generated \
+                     strategy is a tuple of one value per field, and the trait proptest builds \
+                     that on stops being implemented past {MAX_DIRECT_CONSTRUCTION_FIELDS} \
+                     (2026-08-28, docs/review-structs-enums.md's \"Also fix\" list)",
+                    fields.len()
+                )));
+            }
             let mut resolved = Vec::with_capacity(fields.len());
             for f in fields {
                 match resolve_param_type(crate_dir, locations, &f.ty, depth + 1) {
@@ -2478,6 +2911,7 @@ fn resolve_user_type(
                 type_name: type_name.to_string(),
                 import_path: import_path.clone(),
                 shape: UserTypeShape::Struct(resolved),
+                skipped_constructor: skipped_constructor.clone(),
             })))
         }
         syn::Item::Enum(e) => {
@@ -2496,6 +2930,27 @@ fn resolve_user_type(
             }
             let mut variants = Vec::with_capacity(e.variants.len());
             for v in &e.variants {
+                // `#[non_exhaustive]` on a *variant* rather than the enum
+                // itself (2026-08-28, docs/review-structs-enums.md's "Also
+                // fix" list): `has_non_exhaustive(&e.attrs)` above only ever
+                // reads the enum's own attributes, so this ordinary Rust
+                // shape (a stable enum whose newer variants are individually
+                // marked unstable) reached codegen unrefused and failed to
+                // compile there (`error[E0639]: cannot create non-exhaustive
+                // variant using struct expression`). Refusing the whole
+                // enum, not just this variant, matches the enum-level
+                // discipline just above and `UserTypeShape`'s own doc: a
+                // harness that silently drops one variant under-represents
+                // the type without saying so.
+                if has_non_exhaustive(&v.attrs) {
+                    return Err(UserTypeError::Refused(format!(
+                        "Ply cannot build a value of `{type_name}`: it has no constructor Ply can \
+                         call, and variant `{}` is marked `#[non_exhaustive]`, which blocks \
+                         building that variant from outside its own crate -- refusing the whole \
+                         enum rather than silently building only some of its variants",
+                        v.ident
+                    )));
+                }
                 let Some(fields) = named_fields_as_params(&v.fields, &aliases) else {
                     return Err(UserTypeError::Refused(format!(
                         "Ply cannot build a value of `{type_name}`: variant `{}` has positional \
@@ -2527,6 +2982,7 @@ fn resolve_user_type(
                 type_name: type_name.to_string(),
                 import_path: import_path.clone(),
                 shape: UserTypeShape::Enum(variants),
+                skipped_constructor,
             })))
         }
         _ => unreachable!("the search above only ever matches a Struct or an Enum"),

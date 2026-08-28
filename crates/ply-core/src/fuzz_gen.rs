@@ -509,9 +509,31 @@ fn build_user_value_stmt(
             }
             let ctor_call = harness::last_two_segments(&plan.constructor);
             let ctor_args = call_args_for(&plan.ctor_params).join(", ");
-            preamble.push_str(&format!(
-                "                {ctor_call}({ctor_args})\n            }};\n"
-            ));
+            // A fallible constructor (docs/review-structs-enums.md finding
+            // 2, "a violation reported on correct code", 2026-08-28): a
+            // `Result<Self, E>`-returning `new` rejects some inputs by
+            // design (`Range::new(lo, hi)` when `lo > hi`), and an `Err` is
+            // not a usable value -- the case that produced it is discarded,
+            // the same way an unsatisfied `requires` is, never unwrapped
+            // (which would panic on Ply's own generated code, reported as
+            // the checked function's fault) and never treated as though the
+            // `Err` payload were a `Self`.
+            match plan.ctor_return {
+                harness::CtorReturn::Bare => {
+                    preamble.push_str(&format!(
+                        "                {ctor_call}({ctor_args})\n            }};\n"
+                    ));
+                }
+                harness::CtorReturn::ResultSelf => {
+                    preamble.push_str(&format!(
+                        "                match {ctor_call}({ctor_args}) {{\n                    \
+                         Ok(__ply_ctor_ok) => __ply_ctor_ok,\n                    Err(_) => {{ \
+                         __ply_rejected.set(__ply_rejected.get() + 1); return \
+                         Err(proptest::test_runner::TestCaseError::reject(\"constructor \
+                         returned Err\")); }}\n                }}\n            }};\n"
+                    ));
+                }
+            }
             Ok(())
         }
         RustType::UserTypeFields(plan) => match &plan.shape {

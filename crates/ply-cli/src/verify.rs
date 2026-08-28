@@ -434,6 +434,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                         Err(
                             err @ (harness::ReceiverError::NoConstructor { .. }
                             | harness::ReceiverError::UnsupportedConstructorParam { .. }
+                            | harness::ReceiverError::PrivateConstructor { .. }
                             | harness::ReceiverError::UnsupportedParamPattern),
                         ) => {
                             diagnostics.push(refused_anchor_diag(&node_id, &err.to_string()));
@@ -2652,6 +2653,7 @@ fn run_fn_checks(
                             fn_name,
                             &format!("fuzz({n})"),
                             &public_field_types,
+                            &cf.skipped_constructor_notes(),
                         ));
                     }
                     // The sequence-length honesty requirement
@@ -2665,6 +2667,30 @@ fn run_fn_checks(
                     // declared.
                     if let Some(plan) = &cf.receiver {
                         diagnostics.push(receiver_sequence_diag(node_id, fn_name, plan));
+                        // "the fourteenth false clean" (docs/review-structs-
+                        // enums.md finding 1, 2026-08-28): a verdict resting
+                        // on a receiver history that could not include one
+                        // of the type's own operations is narrower than a
+                        // `fuzzed(n)` verdict alone reads. `partial-history`
+                        // travels beside the verdict rather than replacing
+                        // it -- real cases really ran, against the
+                        // operations that could be called, so this is not
+                        // an absence of evidence (D6's closed vocabulary,
+                        // `is_absence`, is deliberately not extended here);
+                        // it is a fact about what that evidence does and
+                        // does not cover, the same role `weak-spec` already
+                        // plays for a passing check with a weak spec behind
+                        // it. Distinct status from `weak-spec` because it is
+                        // a distinct fact (D6: "a proof in one corner must
+                        // not hide a merely-tested boundary in another") --
+                        // one is about the spec's strength, this is about
+                        // how much of the type's own behaviour the run
+                        // could even attempt.
+                        if !plan.excluded_operations.is_empty()
+                            && !statuses.iter().any(|s| s == "partial-history")
+                        {
+                            statuses.push("partial-history".into());
+                        }
                     }
                 }
             }
@@ -3278,11 +3304,42 @@ fn string_sampling_diag(node_id: &str, fn_name: &str, check_label: &str) -> Diag
 /// check's own loop bound already is (§5.4c) -- "checked on receivers
 /// reachable in at most N operations from a fresh one" is the honest reading
 /// of what this run does and does not cover, and a reader must be able to
-/// see it without reading source. `info`, not a warning, for the same reason
-/// `float_sampling_diag` is: nothing here is wrong or owed, it is a fact
-/// about the evidence that needs naming. Fires once per fuzz run that
-/// actually built a receiver (gated the same way the float disclosure is,
-/// on a run that happened, never merely on the check being declared).
+/// see it without reading source.
+///
+/// **Extended 2026-08-28** (docs/review-structs-enums.md finding 1, "the
+/// fourteenth false clean") to name the operations `plan.excluded_operations`
+/// records: an operation Ply could not build an argument for is not merely
+/// missing from the pool, it is missing from *history* -- no case this run
+/// generated ever called it, so no case ever explored what it does to the
+/// receiver's state. The old wording ("every value this run saw was
+/// reachable by calling the type's own code, nothing else, so nothing here
+/// was assumed") is true only when nothing was excluded; said over an
+/// excluded mutator it asserts the opposite of what happened, which is
+/// exactly the shape of the false clean this fixes. So the sentence now
+/// splits: when nothing was excluded, it keeps the old, true claim; when
+/// something was, it names every excluded operation and its reason instead,
+/// and drops the completeness claim entirely rather than leave a milder
+/// version of it standing.
+///
+/// **Severity escalates to `warning` when an operation was excluded.** An
+/// excluded operation is not a deliberate, documented design choice the way
+/// the float/string sampling exclusions are (there `info` is right: nothing
+/// is wrong, a choice was made on purpose and is being disclosed). Here a
+/// mutator that exists in the user's own code was left out of the run for a
+/// reason that has nothing to do with the promise being checked, and that is
+/// a real gap in what the verdict covers -- serious enough that
+/// `--fail-on warn` should be able to catch it, the same lever `weak-spec`
+/// already gives a stricter caller (§5.4c's own "a finding beside real
+/// evidence, not an absence of it" precedent). It does not join the D6
+/// absence-of-evidence vocabulary and does not change the verdict string:
+/// real cases really did run, against the operations that could be called,
+/// so calling the *fuzzed(n)* verdict itself an absence would overclaim in
+/// the other direction. See this fn's caller for the `partial-history`
+/// status this pairs with on the node.
+///
+/// Fires once per fuzz run that actually built a receiver (gated the same
+/// way the float disclosure is, on a run that happened, never merely on the
+/// check being declared).
 fn receiver_sequence_diag(
     node_id: &str,
     fn_name: &str,
@@ -3306,9 +3363,43 @@ fn receiver_sequence_diag(
                 .join(", ")
         )
     };
+    let (coverage_sentence, severity) = if plan.excluded_operations.is_empty() {
+        (
+            "Every value this run saw was reachable by calling `{type_name}`'s own code, \
+             nothing else, so nothing here was assumed."
+                .replace("{type_name}", &plan.type_name),
+            "info",
+        )
+    } else {
+        let excluded_list = plan
+            .excluded_operations
+            .iter()
+            .map(|op| format!("`{}` ({})", op.call_path, op.reason))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let plural = if plan.excluded_operations.len() == 1 {
+            "an operation"
+        } else {
+            "operations"
+        };
+        (
+            format!(
+                "`{type_name}` has {plural} this run never called at all and never will: {excluded_list}. \
+                 Ply could not build an argument for it, so it was left out of the pool of calls tried \
+                 before the checked call -- no case this run generated changed `{type_name}`'s state \
+                 that way, however many cases ran. If `{fn_name}`'s promise depends on what that \
+                 operation does to `{type_name}`, this run says nothing about it.",
+                type_name = plan.type_name,
+                plural = plural,
+                excluded_list = excluded_list,
+                fn_name = fn_name,
+            ),
+            "warning",
+        )
+    };
     Diagnostic {
         code: "W0520".into(),
-        severity: "info".into(),
+        severity: severity.into(),
         phase: "verify".into(),
         engine: "proptest".into(),
         check: "fuzz".into(),
@@ -3317,12 +3408,11 @@ fn receiver_sequence_diag(
             "`{fn_name}` needs a `{type_name}` value to call it on, and Ply built one itself: it \
              called `{type_name}`'s own constructor (`{constructor}`), then ran up to {max} more \
              calls to `{type_name}`'s own operations before the checked call -- each run picking \
-             a random number of steps from 0 to {max}, {pool_sentence}. Every value this run saw \
-             was reachable by calling `{type_name}`'s own code, nothing else, so nothing here was \
-             assumed. But this run only covers receivers reached in at most {max} such calls from \
-             a freshly built one -- a bug that only shows up on the {next}th call is outside what \
-             this run checked, and this is the sentence that says so rather than leaving a reader \
-             to assume the check covers every possible history. (W0520, §5.4c)",
+             a random number of steps from 0 to {max}, {pool_sentence}. {coverage_sentence} But \
+             this run only covers receivers reached in at most {max} such calls from a freshly \
+             built one -- a bug that only shows up on the {next}th call is outside what this run \
+             checked, and this is the sentence that says so rather than leaving a reader to assume \
+             the check covers every possible history. (W0520, §5.4c)",
             type_name = plan.type_name,
             constructor = plan.constructor,
             max = plan.max_sequence_len,
@@ -3385,17 +3475,33 @@ fn user_type_param_refused_diag(
 /// once per fuzz run that actually built at least one parameter this way
 /// (gated on a run that happened, matching `float_sampling_diag`'s own
 /// discipline), naming every such parameter together.
+///
+/// **Extended 2026-08-28** (docs/review-structs-enums.md finding 2, "is the
+/// disclosure enough? -- No") to carry `skipped_constructor_notes`: this
+/// route is only ever taken when rule 1 (the type's own constructor) could
+/// not build a value, and the old wording never said whether that was
+/// because no constructor exists at all or because one exists and was
+/// found but could not be used -- the second case is a materially different
+/// fact (a value the constructor exists to forbid may now be built), and a
+/// reader deciding whether to trust this run needs to know which one
+/// happened.
 fn public_fields_assumed_diag(
     node_id: &str,
     fn_name: &str,
     check_label: &str,
     type_names: &[String],
+    skipped_constructor_notes: &[String],
 ) -> Diagnostic {
     let names = type_names
         .iter()
         .map(|n| format!("`{n}`"))
         .collect::<Vec<_>>()
         .join(", ");
+    let skipped_sentence = if skipped_constructor_notes.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", skipped_constructor_notes.join(" "))
+    };
     Diagnostic {
         code: "W0522".into(),
         severity: "info".into(),
@@ -3410,7 +3516,7 @@ fn public_fields_assumed_diag(
              those fields -- but a type's own methods can maintain a relationship between public \
              fields that nothing in the type itself enforces, so a value this run built could, in \
              principle, be one the real program never produces. This run's evidence rests on that \
-             assumption; it is not proved. (W0522, §5.4b)"
+             assumption; it is not proved.{skipped_sentence} (W0522, §5.4b)"
         ),
         pointer: None,
         primary_span: None,
@@ -4672,6 +4778,37 @@ fn render_fuzz_violation(
                 m.insert("__ply_receiver_and_sequence".to_string(), values.join(", "));
                 m
             }),
+        // A struct/enum parameter (2026-08-28, docs/review-structs-enums.md's
+        // "Also fix" list, "a crash in a function whose only parameter is a
+        // struct loses its witness"): proptest's shrunk minimal input
+        // describes the struct's own *leaf fields* -- `(lo, hi)` for a
+        // two-field `Window`, say -- never a single value per entry in
+        // `cf.params`, so a one-struct-parameter fn has one declared
+        // parameter and two (or more, or zero) recovered values. The plain
+        // zip below requires the counts to match and silently discards the
+        // witness the moment they do not, which is every time a struct
+        // parameter's own field count is not exactly one -- the same
+        // mismatch the receiver arm just above was already taught to carry
+        // through as one opaque field instead of losing, in this same
+        // window (2026-08-27), and this arm was not. Any struct/enum
+        // parameter routes here, matching that same discipline: carried as
+        // one opaque field, which naturally fails `decode_marker_fields`'s
+        // per-parameter decode below and falls through to the honest
+        // witness-only (`W0541`) branch, never a renderer that would guess
+        // wrong about which leaf belongs to which field.
+        None if cf.params.iter().any(|p| {
+            matches!(
+                p.ty,
+                RustType::UserTypeCtor(_) | RustType::UserTypeFields(_)
+            )
+        }) =>
+        {
+            fuzz_engine::parse_proptest_minimal_input(combined_output).map(|values| {
+                let mut m = BTreeMap::new();
+                m.insert("__ply_struct_params_raw".to_string(), values.join(", "));
+                m
+            })
+        }
         None => fuzz_engine::parse_proptest_minimal_input(combined_output)
             .filter(|values| values.len() == cf.params.len())
             .map(|values| {
@@ -4839,6 +4976,12 @@ fn render_fuzz_violation(
             // against `tests/fixtures/receiverseq`).
             if let Some(raw) = fields.get("__ply_receiver_and_sequence") {
                 inputs.insert("receiver_and_sequence".to_string(), raw.clone());
+            }
+            // A struct/enum parameter's raw shrunk witness, carried under
+            // its own synthetic key exactly like the receiver case just
+            // above -- same reason, same fix (2026-08-28).
+            if let Some(raw) = fields.get("__ply_struct_params_raw") {
+                inputs.insert("params_raw".to_string(), raw.clone());
             }
             Ok((
                 "violation".to_string(),
