@@ -301,6 +301,27 @@ fn render_command(
     let svg = render_svg_with_options(&document, options)
         .map_err(|error| anyhow::anyhow!("could not render {}: {error}", input.display()))?;
 
+    // A selection that selects nothing is worth saying out loud. On a flat
+    // document `--depth 1` and `--focus x` produce exactly the default
+    // drawing, and silence there reads as "the flag did nothing visible, so
+    // something is broken" -- a smoke test on a real project recorded it as
+    // a bug before deciding it was correct behaviour. The check is the
+    // honest one: render the default too, and compare. It costs one extra
+    // layout pass and cannot disagree with what was actually drawn. The
+    // note goes to stderr, so it can never contaminate an SVG on stdout.
+    if options.depth.is_some() || options.focus.is_some() || !options.collapse.is_empty() {
+        let plain = render_svg_with_options(&document, &RenderOptions::default());
+        if plain.as_deref().ok() == Some(svg.as_str()) {
+            eprintln!(
+                "note: this drawing is identical to the one with no --depth/--focus/--collapse \
+                 at all. Nothing in {} nests deeply enough for that selection to fold anything \
+                 away, so the flag had nothing to do -- not an error, and not a sign the flag \
+                 was ignored.",
+                input.display()
+            );
+        }
+    }
+
     if let Some(path) = output {
         std::fs::write(path, svg)
             .map_err(|error| anyhow::anyhow!("could not write {}: {error}", path.display()))?;
@@ -716,6 +737,7 @@ mod tests {
                 reused: false,
                 evidence: None,
                 children: vec![],
+                ..Default::default()
             })
             .collect();
         Envelope {
@@ -729,6 +751,7 @@ mod tests {
                 reused: false,
                 evidence: None,
                 children,
+                ..Default::default()
             },
             diagnostics: vec![],
             coverage: None,

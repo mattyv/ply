@@ -1128,20 +1128,26 @@ fn verify_loaded_crate(
             component_nodes
                 .entry(plan.component_path.clone())
                 .or_default()
-                .push(Node {
-                    id: plan.fn_name.to_string(),
-                    kind: "fn".into(),
-                    verdict: entry.verdict.clone(),
-                    statuses: entry.statuses.clone(),
-                    reused: true,
-                    evidence: entry.evidence.clone(),
-                    children: vec![],
+                .push({
+                    let mut n = Node {
+                        id: plan.fn_name.to_string(),
+                        kind: "fn".into(),
+                        verdict: entry.verdict.clone(),
+                        statuses: entry.statuses.clone(),
+                        reused: true,
+                        evidence: entry.evidence.clone(),
+                        children: vec![],
+                        ..Default::default()
+                    };
+                    attach_claim_text(&mut n, &plan.cf, plan.claim);
+                    n
                 });
             continue;
         }
-        let (node, mut fn_diags) = results[idx]
+        let (mut node, mut fn_diags) = results[idx]
             .take()
             .expect("every fresh plan was processed above");
+        attach_claim_text(&mut node, &plan.cf, plan.claim);
         // Recorded only when this run earned evidence: a violation, a
         // timeout or any other absence is never stored, so nothing that
         // failed can ever be carried forward (§5.2a).
@@ -1198,6 +1204,7 @@ fn verify_loaded_crate(
         reused: false,
         evidence: None,
         children: components,
+        ..Default::default()
     };
 
     let envelope = Envelope {
@@ -1362,6 +1369,7 @@ fn component_node(
         statuses: union_statuses(&children),
         evidence: None,
         children,
+        ..Default::default()
     })
 }
 
@@ -2831,6 +2839,7 @@ fn run_fn_checks(
             reused: false,
             evidence: fuzz_evidence,
             children: vec![],
+            ..Default::default()
         },
         diagnostics,
     ))
@@ -5604,6 +5613,34 @@ fn earned_evidence(node: &Node, diagnostics: &[Diagnostic]) -> bool {
 /// file (always the untouched `fn_name`). Harmless before method support,
 /// since no free-function key ever contained `::` where this fired; live
 /// the moment one does.
+/// What a claim promised, and what rests on a human's word -- attached to
+/// the node that carries its verdict.
+///
+/// Set from the plan rather than from the run, and therefore identical
+/// whether the verdict was earned this time or carried forward. A promise
+/// is a property of the claim; it does not stop existing because the result
+/// was reused. Wired to the run first, the second run came back bare --
+/// which is how that was found.
+fn attach_claim_text(node: &mut Node, cf: &ContractFn, claim: &FnClaim) {
+    let mut requires: Vec<String> = claim.requires.clone();
+    if let Some((_, src)) = &cf.requires {
+        requires.push(src.clone());
+    }
+    let mut ensures: Vec<String> = claim.ensures.clone();
+    if let Some((_, src)) = &cf.ensures {
+        ensures.push(src.clone());
+    }
+    node.contract = ply_core::diag::Contract { requires, ensures };
+    node.trusted = claim
+        .trusted
+        .iter()
+        .map(|t| ply_core::diag::TrustedClaim {
+            claim: t.claim.clone(),
+            evidence: Some(t.evidence.clone()),
+        })
+        .collect();
+}
+
 fn leaf_node(fn_name: &str, verdict: &str) -> Node {
     Node {
         id: fn_name.to_string(),
@@ -5613,6 +5650,7 @@ fn leaf_node(fn_name: &str, verdict: &str) -> Node {
         reused: false,
         evidence: None,
         children: vec![],
+        ..Default::default()
     }
 }
 
@@ -5744,6 +5782,7 @@ mod tests {
             reused: false,
             evidence: None,
             children: vec![],
+            ..Default::default()
         }
     }
 
@@ -6104,6 +6143,7 @@ mod tests {
                 reused: false,
                 evidence: None,
                 children: vec![],
+                ..Default::default()
             },
             Node {
                 id: "b".into(),
@@ -6113,6 +6153,7 @@ mod tests {
                 reused: false,
                 evidence: None,
                 children: vec![],
+                ..Default::default()
             },
         ];
         assert_eq!(

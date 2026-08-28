@@ -122,7 +122,7 @@ pub struct Evidence {
     pub cases: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Default, Debug, Clone, Serialize)]
 pub struct Node {
     pub id: String,
     pub kind: String,
@@ -142,8 +142,50 @@ pub struct Node {
     pub reused: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Evidence>,
+    /// What this node *promised*, as written -- the effective `requires`
+    /// and `ensures` behind the verdict.
+    ///
+    /// The tree used to carry only what came out, never what was claimed,
+    /// so a consumer reading the envelope could see `fuzzed(256)` and had
+    /// no way to know what was fuzzed *for*. §7.1 already assumed
+    /// otherwise -- it says inline attributes "join when `cargo ply` emits
+    /// the §8 envelope", which only means something if the envelope
+    /// carries clauses. Additive, so a reader of the old shape is
+    /// unaffected (§8's stability rule).
+    #[serde(default, skip_serializing_if = "Contract::is_empty")]
+    pub contract: Contract,
+    /// Claims a human vouched for and no engine checked (§5.4d), with the
+    /// evidence named for each. `audit` has always reported the trust
+    /// surface; the tree a machine reads never said which node stood on
+    /// someone's word.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted: Vec<TrustedClaim>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Node>,
+}
+
+/// The promises behind one node's verdict, as the author wrote them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Contract {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ensures: Vec<String>,
+}
+
+impl Contract {
+    pub fn is_empty(&self) -> bool {
+        self.requires.is_empty() && self.ensures.is_empty()
+    }
+}
+
+/// One externally-attested claim: believed on the strength of the evidence
+/// named beside it, never machine-checked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrustedClaim {
+    pub claim: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {

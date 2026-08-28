@@ -1,0 +1,17 @@
+ply: 1
+
+components:
+  envelopecontract:
+    anchor: ply_fixture_envelopecontract
+    note: >-
+      Exists to prove the envelope carries the reasoning, not just the
+      verdict. This note is itself part of that: read by people and agents,
+      checked by nothing.
+    fns:
+      add:
+        checks: [fuzz(64)]
+        ensures:
+          - "result <= 10_000"
+        trusted:
+          - claim: "the saturating add matches the venue's own rounding"
+            evidence: "hand-checked against vendor docs"
