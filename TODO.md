@@ -712,6 +712,26 @@ adversarial review, none by the suite.
 
 ## Agreed with the maintainer, not yet started
 
+- [x] **Automatic bug-planting now runs against the kernel on every build** (2026-08-28).
+      Fable's call, taken: the exhaustive tree check is the gate, but whether it can SEE
+      is a measured property that can regress, and nothing was keeping the 2026-08-25
+      repair true. First run: 35 planted bugs, 24 caught, **6 survived** -- none in the
+      aggregation logic, all six in the status-set helper, and every one genuine rather
+      than an artefact. Three were an unused `union` the merge site was hand-rolling
+      around (now called, so the duplication is gone and those die by construction); one
+      an unpinned `FromIterator`; one `is_empty`, whose only behaviour-changing consumer
+      is the renderer in another crate; and one the `Debug` impl, which could be blanked
+      leaving every test green while every future counterexample printed unreadable.
+      After the fixes: **30 caught, 5 unviable, 0 survivors.** The CI job requires zero
+      and deliberately carries no excused-failures list.
+
+- [ ] **Mutation coverage stops at the kernel.** Fable's second recommendation, not yet
+      done: an occasional (not gating) run over the model/check parsing and validation
+      code -- the surface neither the exhaustive check nor the unbounded proof reaches,
+      and where the third hand-planted fault of 2026-08-25 lived ("check 0 examples"
+      accepted). Expect a noisy first survivor list; triage into this file rather than
+      gating on it, because a gate with a hastily-blessed baseline is theatre.
+
 - [ ] **The "your filter hid nothing" notice is written out twice.** `cargo ply render`
       and the standalone renderer each build the same read-parse-draw-and-warn sequence,
       so the notice a first-time user relies on lives in two places and can drift out of
