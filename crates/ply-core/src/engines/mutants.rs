@@ -187,11 +187,11 @@ pub fn run(cfg: &MutantsRunConfig) -> Result<MutantsRunOutcome> {
             )
         })?;
 
-    let combined = format!(
+    let combined = super::strip_ansi(&format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    );
+    ));
 
     Ok(classify_run(output.status.code(), combined, &mutants_out))
 }
@@ -265,7 +265,7 @@ pub fn version() -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let text = super::strip_ansi(String::from_utf8_lossy(&out.stdout).trim());
     if text.is_empty() { None } else { Some(text) }
 }
 

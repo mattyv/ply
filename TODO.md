@@ -1,5 +1,35 @@
 # TODO
 
+## Agreed 2026-08-28, not yet done
+
+- [ ] **Make CI a required check on `main`, so a red pull request cannot be merged.**
+      Asked for by the maintainer after PR #4 offered a merge button while all three
+      jobs were failing -- twice, on two different causes. GitHub will not block a merge
+      on a failing check unless the branch is protected and the check is named as
+      required. Needs a branch protection rule on `main` requiring `product`,
+      `product-e2e` and `tools` to pass. This is a repository setting, not a code
+      change, so it needs doing in GitHub's settings by the repository owner (or via
+      the API with admin rights) -- Ply cannot set it from here.
+
+## Forced colour made Ply blind to its own engines — 2026-08-28
+
+- [x] **Every compiler error reached Ply as `\x1b[1m\x1b[91merror\x1b[0m: ...` under
+      `CARGO_TERM_COLOR=always`, and nothing matched.** Ply reads its engines'
+      output line-first -- a compiler error is a line beginning `error`, attributed to
+      a function by the `-->` span under it -- so forced colour meant it could neither
+      pin a build failure to the function that caused it nor quote the compiler. It
+      fell back to "the compiler gave no specific error line": a sentence written for a
+      failure genuinely beyond attribution, printed for one that was entirely
+      attributable. A true sentence in the wrong place, which reads like the tool
+      working.
+- [x] Found by CI, which sets that variable, on a test that had been green locally for
+      months. Engine output is now stripped of ANSI escapes (CSI and OSC, including
+      terminal hyperlinks) before anything parses it -- at every engine, not just
+      cargo, so the next tool to add colour costs nothing.
+- [x] Regression test runs the real fixture with the variable set and asserts the
+      compiler's own message survives; watched red, and the pre-existing test stayed
+      green under the same sabotage, which is why it never caught this.
+
 ## Ply's own architecture, rendered and checked — 2026-08-28
 
 - [x] **ARCHITECTURE.md**, with the diagram rendered from the root `ply.yaml` rather

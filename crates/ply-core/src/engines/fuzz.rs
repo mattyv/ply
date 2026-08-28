@@ -65,11 +65,11 @@ pub fn run_harness_tests(
             )
         })?;
 
-    let combined = format!(
+    let combined = super::strip_ansi(&format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    );
+    ));
     // GNU `timeout` exits 124 when it had to kill the child.
     let timed_out = output.status.code() == Some(124);
     let failed_tests = parse_failed_test_names(&combined);
@@ -122,11 +122,11 @@ pub fn check_harness_builds(
                 workspace_root.display()
             )
         })?;
-    let combined = format!(
+    let combined = super::strip_ansi(&format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    );
+    ));
     let timed_out = output.status.code() == Some(124);
     Ok(HarnessBuildCheck {
         timed_out,

@@ -109,7 +109,7 @@ pub fn version() -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let text = super::strip_ansi(String::from_utf8_lossy(&out.stdout).trim());
     if text.is_empty() { None } else { Some(text) }
 }
 
@@ -143,11 +143,11 @@ fn invoke(cfg: &KaniRunConfig) -> Result<String> {
         .output()
         .with_context(|| format!("spawning `cargo kani` in {}", cfg.crate_dir.display()))?;
 
-    Ok(format!(
+    Ok(super::strip_ansi(&format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    ))
+    )))
 }
 
 /// Runs one **probe**: a harness asked a yes/no question about an assertion,
