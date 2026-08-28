@@ -5,6 +5,12 @@
 **Order the maintainer set: land the release, then the bug backlog, then suite speed.**
 Nothing below jumps that queue.
 
+- [x] **Put the pre-code renderer on the installed command (`15adc47`).** The documented loop says
+      Ply can render a `ply.yaml` before code exists, but the working renderer is shipped
+      only as a separate development tool. `cargo ply render` must use that same renderer,
+      accept its existing depth/focus/collapse controls, and write either stdout or an
+      explicit SVG path. A second renderer is refused.
+
 - [x] **The end-to-end CI job is sharded across a matrix of four.** The suite is 84
       independent test binaries that ran as one job for over an hour, which was most of
       the wait on every pull request. No test, no product code and nothing about what is
