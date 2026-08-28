@@ -1,5 +1,37 @@
 # TODO
 
+## Component notes, and the envelope's reasoning — 2026-08-28
+
+Both from a second person's smoke test of the grammar, decided by review rather than on
+the spot: the first instinct -- add a free-text `description` -- would have been wrong.
+
+- [x] **A component may carry a `note:`.** Every prose slot in this grammar already sits
+      where checking is impossible, and `externals`' note is *required* on exactly the
+      reporter's own argument -- "a bare name tells a newbie nothing". A component's
+      rationale is the fourth of those. Ply's own three load-bearing rules moved out of
+      comments and into notes, so the file keeps its reasoning instead of discarding it.
+- [x] **Not on functions.** The reporter had written a real invariant as an `examples`
+      string because no better slot was visible; the answer there is `ensures`. A note
+      beside it makes that mistake comfortable -- the next invariant lands in the note
+      and never becomes a promise.
+- [x] **The envelope carries the contract and the trusted claims.** The tree said only
+      what came out, so an agent could read `fuzzed(64)` and not know what it was fuzzed
+      for -- and §7.1 already assumed otherwise. Set from the claim rather than the run,
+      so a reused verdict carries it too; wiring it to the run first and watching the
+      second run come back bare is how that gap was found.
+- [x] **`cargo ply render` says when a selection folded nothing away.** The subcommand
+      that landed on main does not carry that notice; the standalone binary did. It was
+      written for a first-time reader -- one of them recorded the silence as a bug before
+      deciding it was correct behaviour -- and delivering it from one entry point and not
+      the other would be a poor joke.
+- [x] Half the report was wrong and is recorded as such rather than quietly fixed:
+      `audit --json` has always carried the trust surface. What was missing was the tree.
+- [ ] Comments still evaporate, deliberately: making them survive needs a position-aware
+      second parse this codebase does not have, and would let prose reach output without
+      passing validation. The component note is the declared home instead.
+- [ ] `cargo ply render --help` advertises the global `--json` flag, which does nothing
+      for a command that emits an SVG.
+
 ## Agreed 2026-08-28, not yet done
 
 **Order the maintainer set: land the release, then the bug backlog, then suite speed.**
