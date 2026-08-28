@@ -671,6 +671,16 @@ fn no_library_diag(node_id: &str, fn_name: &str, lib_path: &Path) -> Diagnostic 
 }
 
 fn anchor_detail(t: &AnchorTally) -> String {
+    if t.no_library && t.unresolved == 0 {
+        // A document with no fn claims at all has nothing to resolve, so
+        // the missing library cost it nothing. Saying "NOT RESOLVED" here
+        // would report a failure that did not happen -- the mirror of the
+        // bug this branch is otherwise about. Ply's own root `ply.yaml`,
+        // which declares only architecture, is exactly this case.
+        return "This document declares no fn claims, so there was nothing for this tier to \
+                resolve."
+            .to_string();
+    }
     if t.no_library {
         let claims = if t.unresolved == 1 {
             "the one fn claim in this document was never looked for".to_string()

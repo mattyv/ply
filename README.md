@@ -159,6 +159,12 @@ unchecked code begins, so an unverified boundary is visible rather than implied.
 Four more rendered scenarios live in [`vetting/`](vetting/), each a design written in the
 grammar before the tool could check it.
 
+Ply's own crate structure is specified the same way, in the [`ply.yaml`](ply.yaml) at the
+root of this repository, and checked by `cargo ply check .` like anyone else's.
+[**ARCHITECTURE.md**](ARCHITECTURE.md) is that spec rendered and explained — including the
+rule this codebase was found to be breaking when the checker was pointed at it, and what
+declaring the exception cost.
+
 ### What is not built yet
 
 The live intended-versus-actual view, evidence overlays, and interactive editing workflow

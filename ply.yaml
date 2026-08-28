@@ -22,16 +22,31 @@ ply: 1
 #   cli    is the only component allowed to depend on core, and nothing may
 #          depend on cli. It is the top of the stack by construction.
 #
-# The one edge below is therefore the whole permitted graph. Anything else
-# between these three is a violation, including the cycle a well-meaning
-# refactor would create by moving a diagnostic's wording into core's caller.
+# The edges at the foot of this file are therefore the whole permitted
+# graph. Anything else between these crates is a violation, including the
+# cycle a well-meaning refactor would create by moving a diagnostic's
+# wording into core's caller. The second edge is an exception argued for
+# where it is declared, not a loosening of the three rules above.
 
 components:
-  # The end-to-end suite. It carries no dependency on any of the three crates
-  # below, and that is the rule rather than an accident: it drives the real
-  # built binary the way a user does. The day it links the library directly it
-  # stops testing what ships, and the checker will say so -- there is no edge
-  # from `e2e` to anything, so any such dependency is a violation.
+  # The end-to-end suite. It drives the real built binary the way a user
+  # does, which is the point: a suite that links the library instead stops
+  # testing what ships.
+  #
+  # It had no edge at all until 2026-08-28, when this checker -- run on its
+  # own repository while writing ARCHITECTURE.md -- reported that `ply_e2e`
+  # had grown a dependency on `ply_core` and nothing allowed it. The
+  # dependency is real and wanted: one measurement test reads `ply_core`'s
+  # own type classifier directly, so the count of what Ply accepts can never
+  # drift into a second, hand-maintained idea of the same fact.
+  #
+  # The edge below is therefore an exception declared out loud rather than a
+  # rule quietly abandoned, and it is wider than the exception deserves: the
+  # crate tier can say "e2e may depend on core", not "one test file may".
+  # Narrowing it to the single file is an item-tier fact, and the item tier
+  # is not built. Until it is, this edge is load-bearing on a convention no
+  # tool enforces -- everything in e2e except that one measurement must keep
+  # driving the binary.
   e2e:
     anchor: ply_e2e
   attrs:
@@ -43,3 +58,4 @@ components:
 
 edges:
   - "cli -> core"
+  - "e2e -> core"

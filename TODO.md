@@ -1,5 +1,23 @@
 # TODO
 
+## Ply's own architecture, rendered and checked — 2026-08-28
+
+- [x] **ARCHITECTURE.md**, with the diagram rendered from the root `ply.yaml` rather
+      than drawn by hand, and linked from the README. A test in the render tools fails
+      if the committed SVG stops matching what the spec renders to, so the page cannot
+      go stale quietly; watched red by adding a crate to the spec.
+- [x] **Running Ply on Ply found a real violation of Ply's own rule.** `ply_e2e` had
+      grown a dependency on `ply_core` that no edge allowed -- the type-coverage
+      measurement reads core's classifier directly so the published count cannot drift.
+      The edge is now declared with the argument for it written where it is declared,
+      including the honest cost: crate-tier edges cannot say "one test file may", so
+      the rest of e2e keeps driving the binary on convention alone until the item tier
+      exists.
+- [x] Fixed while there: a document that declares no fn claims at all was told "NOT
+      RESOLVED ... none of the 0 fn claims were ever looked for" -- a failure that did
+      not happen, the mirror image of the bug the previous entry fixed. It now says
+      there were no fn claims to resolve.
+
 ## `check` on a crate with no library stops reading clean — 2026-08-28
 
 - [x] **A binary-only crate got a clean `check` and a refusal from `verify`.** Found
