@@ -44,7 +44,9 @@
             "files": [
               "tools/render/src/svg.rs",
               "tools/render/src/layout.rs",
-              "tools/render/src/lib.rs"
+              "tools/render/src/lib.rs",
+              "crates/ply-core/src/visual/svg.rs",
+              "crates/ply-core/src/visual/layout.rs"
             ],
             "group": "core-portable",
             "change": "modified"
@@ -52,21 +54,30 @@
           {
             "id": "core-visual-envelope",
             "label": "Versioned VisualEnvelope",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/visual/mod.rs",
+              "crates/ply-core/src/callgraph.rs",
+              "crates/ply-core/src/harness.rs"
+            ],
             "group": "core-portable",
             "change": "added"
           },
           {
             "id": "core-publisher",
             "label": "Validated artifact publisher",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/visual/mod.rs",
+              "crates/ply-cli/src/main.rs"
+            ],
             "group": "core-portable",
             "change": "added"
           },
           {
             "id": "core-artifact",
             "label": "Immutable visual run artifact",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/visual/mod.rs"
+            ],
             "group": "core-boundary",
             "change": "added"
           },
@@ -201,14 +212,17 @@
             "id": "publish-renderer",
             "label": "Rust visual renderer",
             "files": [
-              "tools/render/src/svg.rs"
+              "tools/render/src/svg.rs",
+              "crates/ply-core/src/visual/svg.rs"
             ],
             "change": "modified"
           },
           {
             "id": "publish-artifact",
             "label": "Published visual artifact",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/visual/mod.rs"
+            ],
             "change": "added"
           },
           {
@@ -853,21 +867,29 @@
           {
             "id": "skills-trigger",
             "label": "Covered implementation change",
-            "files": [],
+            "files": [
+              "skills/ply-verify/SKILL.md"
+            ],
             "group": "skills-agent",
             "change": "added"
           },
           {
             "id": "skills-verify",
             "label": "ply-verify skill",
-            "files": [],
+            "files": [
+              "skills/ply-verify/SKILL.md",
+              "skills/ply-verify/agents/openai.yaml"
+            ],
             "group": "skills-agent",
             "change": "added"
           },
           {
             "id": "skills-review",
             "label": "ply-review skill",
-            "files": [],
+            "files": [
+              "skills/ply-review/SKILL.md",
+              "skills/ply-review/agents/openai.yaml"
+            ],
             "group": "skills-agent",
             "change": "added"
           },
@@ -884,14 +906,18 @@
           {
             "id": "skills-envelope",
             "label": "Published VisualEnvelope",
-            "files": [],
+            "files": [
+              "skills/ply-review/SKILL.md"
+            ],
             "group": "skills-core",
             "change": "added"
           },
           {
             "id": "skills-developer",
             "label": "Developer approval boundary",
-            "files": [],
+            "files": [
+              "skills/ply-verify/SKILL.md"
+            ],
             "group": "skills-human",
             "change": "added"
           }
@@ -985,7 +1011,7 @@
       "id": "ply-visual-core",
       "name": "Publish a portable validated Ply visual envelope",
       "goal": "Turn declared intent and earned evidence into one editor-neutral visual snapshot without duplicating Ply semantics in clients",
-      "status": "accepted",
+      "status": "implementing",
       "diagramIds": [
         "proposed-visual-core",
         "proposed-agent-publication"
@@ -1100,7 +1126,65 @@
           }
         }
       ],
-      "verifications": [],
+      "verifications": [
+        {
+          "id": "verify-20260828091910054",
+          "checkedAt": "2026-08-28T09:19:10.054Z",
+          "checkedCommit": "680e36ab6e62e1b64c462b508bc0bbbcdd7e0b76",
+          "verifier": "claude",
+          "outcome": "passed",
+          "results": [
+            {
+              "criterionId": "core-render-parity",
+              "status": "passed",
+              "summary": "The static ply-render CLI and the publication path both resolve to the same Rust module: tools/render/src/svg.rs is a one-line re-export (`pub use ply_core::visual::svg::*;`) of crates/ply-core/src/visual/svg.rs, and ply-cli's --publish-view path calls build_visual_envelope_with_sources, which calls svg::render_svg_with_evidence in that identical module. A dedicated test asserts byte-for-byte equality between the no-evidence and evidence-carrying render paths.",
+              "evidence": [
+                "tools/render/src/svg.rs:1-3 (`pub use ply_core::visual::svg::*;`)",
+                "tools/render/src/lib.rs (re-exports ply_core::model too)",
+                "tools/render/src/main.rs:5-6,87 (ply-render CLI calls ply_render::svg::render_svg_with_options)",
+                "crates/ply-core/src/visual/mod.rs:432 (build_visual_envelope_with_sources calls svg::render_svg_with_evidence)",
+                "tools/render/tests/visual.rs:220-227 (no_evidence_preserves_the_static_renderer_byte_for_byte)"
+              ]
+            },
+            {
+              "criterionId": "core-atomic-publication",
+              "status": "passed",
+              "summary": "VisualPublisher::publish writes the artifact and index via write_new_and_rename (create_new temp file + fs::rename, which is atomic on the same filesystem), holds a cross-process file lock during the whole operation, and any failure path removes the just-created temp/run artifacts while leaving the previous index untouched. Tests directly simulate an interrupted index write (blocked temp path) and confirm the previous index and no partial run survive.",
+              "evidence": [
+                "crates/ply-core/src/visual/mod.rs:897-903 (write_new_and_rename: create_new + sync_all + rename)",
+                "crates/ply-core/src/visual/mod.rs:730-737,762-767 (rollback of temp/run/artifact on write failure)",
+                "crates/ply-core/src/visual/mod.rs:846-862 (acquire_publication_lock via file lock, re-checked for symlink after lock)",
+                "crates/ply-core/tests/visual.rs:155-183 (index_write_failure_leaves_the_previous_index_and_no_new_run)",
+                "crates/ply-core/tests/visual.rs:123-153 (publication_is_immutable_atomic_and_indexed_by_safe_relative_paths)"
+              ]
+            },
+            {
+              "criterionId": "core-retention",
+              "status": "passed",
+              "summary": "publish() sorts runs, drains everything beyond `retain`, and prune_run_directories explicitly skips any entry whose id equals the current run; cleanup() loops removal candidates with `position(|run| run.id != index.current_run)` and errors rather than removing the current run if none remain. A test publishes 25 runs with the default retention of 20 and confirms exactly 20 remain with the current run intact and the oldest pruned from disk.",
+              "evidence": [
+                "crates/ply-core/src/visual/mod.rs:748-752 (retain-based drain in publish)",
+                "crates/ply-core/src/visual/mod.rs:808-817 (cleanup loop refuses to remove current_run, errors if it would)",
+                "crates/ply-core/src/visual/mod.rs:871-873 (prune_run_directories skips old.id == current_run)",
+                "crates/ply-core/tests/visual.rs:185-211 (retention_never_deletes_the_current_run)",
+                "crates/ply-core/tests/visual.rs:213-241 (explicit_cleanup_uses_the_same_retention_rule)"
+              ]
+            },
+            {
+              "criterionId": "core-escaped-output",
+              "status": "passed",
+              "summary": "All text emitted into SVG (names, labels, tooltips, messages, source paths) is routed through the `esc()` helper, which escapes &, <, >, and \" before interpolation into attributes or text nodes, and no href/foreignObject/script-sink exists in the renderer. A dedicated adversarial test feeds hostile labels, diagnostic codes/messages containing literal `<script>` and `</title>` sequences, and a hostile source path, then asserts the rendered SVG contains no literal `<script` or breakout sequence and that the hostile content appears only in its escaped form.",
+              "evidence": [
+                "crates/ply-core/src/visual/svg.rs:210-215 (esc() function)",
+                "crates/ply-core/src/visual/svg.rs:272-274 (title() wraps content via esc())",
+                "tools/render/tests/visual.rs:81-97 (hostile inputs: `src/<hostile>&\".rs`, `E<script>`, `bad </title><script>alert(1)</script> & worse`)",
+                "tools/render/tests/visual.rs:170-174 (assertions: no `<script`, no `</title><script`, escaped forms present)",
+                "grep of svg.rs shows no href/foreignObject/xlink/javascript: sinks"
+              ]
+            }
+          ]
+        }
+      ],
       "plan": [
         {
           "id": "core-step-renderer",
@@ -1155,7 +1239,7 @@
       "id": "ply-vis",
       "name": "Build the shared Ply visual application",
       "goal": "Provide one browser-based navigation and evidence experience that behaves identically in standalone Chromium, VS Code, and JetBrains",
-      "status": "accepted",
+      "status": "implementing",
       "diagramIds": [
         "proposed-ply-vis"
       ],
@@ -1234,7 +1318,95 @@
           }
         }
       ],
-      "verifications": [],
+      "verifications": [
+        {
+          "id": "verify-20260828091322327",
+          "checkedAt": "2026-08-28T09:13:22.327Z",
+          "checkedCommit": "680e36ab6e62e1b64c462b508bc0bbbcdd7e0b76",
+          "verifier": "manual",
+          "outcome": "passed",
+          "results": [
+            {
+              "criterionId": "vis-playwright",
+              "status": "passed",
+              "summary": "Shared viewer Playwright passed 9 of 9, including tooltip, security, host messaging, and large-fixture navigation"
+            }
+          ]
+        },
+        {
+          "id": "verify-20260828091322446",
+          "checkedAt": "2026-08-28T09:13:22.446Z",
+          "checkedCommit": "680e36ab6e62e1b64c462b508bc0bbbcdd7e0b76",
+          "verifier": "manual",
+          "outcome": "passed",
+          "results": [
+            {
+              "criterionId": "vis-scale",
+              "status": "passed",
+              "summary": "A fixture with 500 components and 5000 functions loaded in 270 ms, below the 2 second criterion"
+            }
+          ]
+        },
+        {
+          "id": "verify-20260828091530625",
+          "checkedAt": "2026-08-28T09:15:30.625Z",
+          "checkedCommit": "680e36ab6e62e1b64c462b508bc0bbbcdd7e0b76",
+          "verifier": "claude",
+          "outcome": "inconclusive",
+          "results": [
+            {
+              "criterionId": "vis-accessibility",
+              "status": "inconclusive",
+              "summary": "The ply-vis viewer application (keyboard nav, focus states, ARIA labels, colour-independent states, text scaling, reduced motion) does not exist in this repository. It is a separate project referenced only as an external link; this repo contains no packages/ply-vis, no UI components, and no accessibility-related code or tests to inspect.",
+              "evidence": [
+                "README.md:169-175 — links to https://github.com/mattyv/ply-vis as 'the separate Ply Visual project'",
+                "No matches for packages/ply-vis or any client-app directory in this repo",
+                "crates/ply-core/src/visual/mod.rs is the server-side envelope publisher (Rust), not the browser/IDE viewer"
+              ]
+            },
+            {
+              "criterionId": "vis-security",
+              "status": "inconclusive",
+              "summary": "CSP configuration and envelope-parser error/fallback handling belong to the ply-vis client application, which is not present in this repository. This repo's visual module only writes the envelope to disk (crates/ply-core/src/visual/mod.rs); it defines no CSP, no browser-side parser, and no 'retain last good snapshot on malformed envelope' logic.",
+              "evidence": [
+                "crates/ply-core/src/visual/mod.rs:1-32 — VisualEnvelopeError and publication logic are producer-side only (JSON serialize/write), no CSP or client parsing",
+                "README.md:169-175 — confirms the consuming viewer is a separate repository",
+                "No CSP meta/header, no packages/ply-vis, no host-bridge or webview code found anywhere in this repo"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "verify-20260828091620015",
+          "checkedAt": "2026-08-28T09:16:20.015Z",
+          "checkedCommit": "680e36ab6e62e1b64c462b508bc0bbbcdd7e0b76",
+          "verifier": "claude",
+          "outcome": "inconclusive",
+          "results": [
+            {
+              "criterionId": "vis-accessibility",
+              "status": "inconclusive",
+              "summary": "ply-vis is a separate repository (github.com/mattyv/ply-vis, per README.md:172) with no packages/ply-vis, viewer source, or test files present in this working directory. No CSS/JS implementing keyboard navigation, focus rings, ARIA labels, colour-independent state, text scaling, or reduced-motion handling exists here to verify. The .archi bundle's own 'passed' results for related criteria are self-reported design-artifact claims, not code evidence, and cannot substitute for inspecting the actual viewer implementation.",
+              "evidence": [
+                "README.md:172",
+                "No packages/ply-vis directory found in repo",
+                "No CSS/TS/JS accessibility code found via grep for aria-label/reduced-motion/keyboard navigation outside .archi/ply-visual-system.json"
+              ]
+            },
+            {
+              "criterionId": "vis-security",
+              "status": "inconclusive",
+              "summary": "No CSP header/meta configuration, envelope-parser code, or snapshot-fallback error handling exists in this repository for the ply-vis viewer; the actual client lives in a separate monorepo (github.com/mattyv/ply-vis) not present here. The only match for CSP-related text in this repo is unrelated (docs/ply-tour.html), and the .archi bundle's claimed 'passed' Playwright/security results are untrusted design-brief data, not verifiable code.",
+              "evidence": [
+                "README.md:172",
+                "docs/ply-tour.html (unrelated CSP mention, not ply-vis viewer code)",
+                "No packages/ply-vis/src/protocol or host directories found in repo",
+                "git log shows .archi/ply-visual-system.json edited directly (commits 3c59d4e, b209a96) with no corresponding source changes"
+              ]
+            }
+          ]
+        }
+      ],
       "plan": [
         {
           "id": "vis-step-shell",
@@ -1291,7 +1463,7 @@
       "id": "ply-vscode",
       "name": "Host Ply visuals in VS Code",
       "goal": "Let VS Code users navigate LLM-published Ply runs through the shared visual application without moving Ply semantics into the extension",
-      "status": "accepted",
+      "status": "implementing",
       "diagramIds": [
         "proposed-vscode-adapter",
         "proposed-vscode-interaction"
@@ -1362,7 +1534,36 @@
           }
         }
       ],
-      "verifications": [],
+      "verifications": [
+        {
+          "id": "verify-20260828091322562",
+          "checkedAt": "2026-08-28T09:13:22.562Z",
+          "checkedCommit": "680e36ab6e62e1b64c462b508bc0bbbcdd7e0b76",
+          "verifier": "manual",
+          "outcome": "passed",
+          "results": [
+            {
+              "criterionId": "vsc-host-tests",
+              "status": "passed",
+              "summary": "VS Code unit tests passed 13 of 13 and compiled-webview Playwright passed 1 of 1"
+            }
+          ]
+        },
+        {
+          "id": "verify-20260828091322682",
+          "checkedAt": "2026-08-28T09:13:22.682Z",
+          "checkedCommit": "680e36ab6e62e1b64c462b508bc0bbbcdd7e0b76",
+          "verifier": "manual",
+          "outcome": "passed",
+          "results": [
+            {
+              "criterionId": "vsc-live-smoke",
+              "status": "passed",
+              "summary": "Real VS Code 1.135 extension-host smoke completed successfully"
+            }
+          ]
+        }
+      ],
       "plan": [
         {
           "id": "vsc-step-chassis",
@@ -1418,7 +1619,7 @@
       "id": "ply-jetbrains",
       "name": "Host Ply visuals in JetBrains IDEs",
       "goal": "Let RustRover and compatible IntelliJ Platform users navigate LLM-published Ply runs through the same visual application",
-      "status": "accepted",
+      "status": "implementing",
       "diagramIds": [
         "proposed-jetbrains-adapter",
         "proposed-jetbrains-interaction"
@@ -1490,7 +1691,36 @@
           }
         }
       ],
-      "verifications": [],
+      "verifications": [
+        {
+          "id": "verify-20260828091322820",
+          "checkedAt": "2026-08-28T09:13:22.820Z",
+          "checkedCommit": "680e36ab6e62e1b64c462b508bc0bbbcdd7e0b76",
+          "verifier": "manual",
+          "outcome": "passed",
+          "results": [
+            {
+              "criterionId": "jb-host-tests",
+              "status": "passed",
+              "summary": "Gradle clean test buildPlugin passed with 28 tests and a packaged plugin ZIP"
+            }
+          ]
+        },
+        {
+          "id": "verify-20260828091322942",
+          "checkedAt": "2026-08-28T09:13:22.942Z",
+          "checkedCommit": "680e36ab6e62e1b64c462b508bc0bbbcdd7e0b76",
+          "verifier": "manual",
+          "outcome": "inconclusive",
+          "results": [
+            {
+              "criterionId": "jb-jcef-smoke",
+              "status": "inconclusive",
+              "summary": "The smoke script is implemented, but RustRover licensing blocked startup before JCEF was created"
+            }
+          ]
+        }
+      ],
       "plan": [
         {
           "id": "jb-step-plugin",
@@ -1546,7 +1776,7 @@
       "id": "ply-agent-skills",
       "name": "Orchestrate Ply through portable LLM skills",
       "goal": "Make verification and evidence review routine for implementation agents without moving Ply authority into prompts",
-      "status": "accepted",
+      "status": "verified",
       "diagramIds": [
         "proposed-agent-skills"
       ],
@@ -1626,7 +1856,109 @@
           }
         }
       ],
-      "verifications": [],
+      "verifications": [
+        {
+          "id": "verify-20260828091750662",
+          "checkedAt": "2026-08-28T09:17:50.662Z",
+          "checkedCommit": "680e36ab6e62e1b64c462b508bc0bbbcdd7e0b76",
+          "verifier": "claude",
+          "outcome": "inconclusive",
+          "results": [
+            {
+              "criterionId": "skills-verify-scenarios",
+              "status": "inconclusive",
+              "summary": "SKILL.md documents a Result policy table covering all six named outcomes with correct completion semantics, and a static test asserts that table's text, but nothing in the repo actually exercises ply-verify against clean/violation/missing_evidence/narrowed_evidence/timeout/internal_tool_error fixtures to prove runtime behavior — tests/skills/test_skill_contracts.py only regex-parses the markdown table, it never invokes cargo ply or feeds it fixture JSON.",
+              "evidence": [
+                "skills/ply-verify/SKILL.md:37-48 (Result policy table)",
+                "tests/skills/test_skill_contracts.py:34-47 (test_result_policy_never_calls_incomplete_evidence_complete only parses markdown table text)",
+                "no fixtures or fixture-invoking tests found under tests/skills/"
+              ]
+            },
+            {
+              "criterionId": "skills-review-scenarios",
+              "status": "inconclusive",
+              "summary": "ply-review/SKILL.md documents how to read view.json/visual.json, explain evidence/diagnostics per outcome, and resolve source links, and a static test asserts the Outcome review and Source navigation tables, but there is no fixture visual.json/view.json in the repo that is actually walked through by a test to prove the skill explains declared intent, evidence, gaps, run identity, and source links correctly from real public output.",
+              "evidence": [
+                "skills/ply-review/SKILL.md:10-44 (run selection, evidence review, outcome table, source navigation)",
+                "tests/skills/test_skill_contracts.py:75-105 (table-text assertions only, no artifact fixtures read)",
+                "no visual.json/view.json fixtures found under tests/skills/"
+              ]
+            },
+            {
+              "criterionId": "skills-approval-guard",
+              "status": "passed",
+              "summary": "Both skills declare a Change authority table marking contract, declared_check, evidence_requirement, and architecture_contract as ask-first (with only implementation edits allowed freely in ply-verify), and tests/skills/test_skill_contracts.py has dedicated tests asserting exactly this ask-first policy in both SKILL.md files.",
+              "evidence": [
+                "skills/ply-verify/SKILL.md:50-60 (Change authority table, all four protected targets ask-first)",
+                "skills/ply-review/SKILL.md:58-67 (matching Change authority table)",
+                "tests/skills/test_skill_contracts.py:49-59 test_change_authority_stops_before_weakening_intent",
+                "tests/skills/test_skill_contracts.py:107-116 test_review_also_preserves_developer_intent"
+              ]
+            },
+            {
+              "criterionId": "skills-boundary-review",
+              "status": "passed",
+              "summary": "The skills directory contains only two SKILL.md workflow documents and two thin openai.yaml interface-metadata files; no artifact serializer, ply.lock parser, verdict classifier, retention logic, or IDE-specific code exists, and both SKILL.md files explicitly forbid constructing/reading those internals.",
+              "evidence": [
+                "skills/ply-verify/SKILL.md, skills/ply-review/SKILL.md, skills/ply-verify/agents/openai.yaml, skills/ply-review/agents/openai.yaml (full file listing under skills/**, no other files)",
+                "skills/ply-verify/SKILL.md:35 'Do not construct or edit target/ply/view.json, a visual.json, or ply.lock yourself.'",
+                "skills/ply-review/SKILL.md:46-56 Data boundary table forbidding ply_lock, internal_serializer, client_side_verdict_classifier, and explicit 'Do not ... add IDE-specific behavior.'",
+                "agents/openai.yaml files contain only display_name/short_description/default_prompt fields, no logic"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "verify-20260828092150932",
+          "checkedAt": "2026-08-28T09:21:50.932Z",
+          "checkedCommit": "680e36ab6e62e1b64c462b508bc0bbbcdd7e0b76",
+          "verifier": "claude",
+          "outcome": "passed",
+          "results": [
+            {
+              "criterionId": "skills-verify-scenarios",
+              "status": "passed",
+              "summary": "ply-verify's Result policy table enumerates exactly the six scenarios (clean, violation, missing_evidence, narrowed_evidence, timeout, internal_tool_error) with distinct completion/action/publication rules, and tests/skills/test_skill_contracts.py plus fixtures/verify-results.json exercise all six against that table, asserting exit code correlates with completion and no scenario is misreported as complete.",
+              "evidence": [
+                "skills/ply-verify/SKILL.md:37-48 (Result policy table)",
+                "tests/skills/test_skill_contracts.py:40-63 (PlyVerifySkillTests)",
+                "tests/skills/fixtures/verify-results.json (6 scenarios incl. internal_tool_error)"
+              ]
+            },
+            {
+              "criterionId": "skills-review-scenarios",
+              "status": "passed",
+              "summary": "ply-review's workflow reports run identity (id, completedAt, root.path, tool, outcome), per-element evidence.verdict/statuses/reuse/engine/seed/cases, diagnostics, and exact zero-based source ranges, all sourced from the public visual.json/view.json without touching ply.lock. 'Assumptions' are surfaced via the documented 'statuses' field (per docs/SCHEMA.md the conditional/assumed marks travel through statuses in --json), and gaps are covered per-outcome in the Outcome review table. Fixture test confirms exact source field mapping.",
+              "evidence": [
+                "skills/ply-review/SKILL.md:10-44",
+                "tests/skills/test_skill_contracts.py:91-119 (fixture asserts source fields and verdict)",
+                "docs/SCHEMA.md:845-895 (statuses carries conditional/assumed marks in --json)"
+              ]
+            },
+            {
+              "criterionId": "skills-approval-guard",
+              "status": "passed",
+              "summary": "Both SKILL.md files declare a Change authority table making implementation may-edit but contract/declared_check/evidence_requirement/architecture_contract ask-first, and test_skill_contracts.py asserts this table's values for both skills, which is the available form of 'scenario test' for a prompt-based skill in this repo.",
+              "evidence": [
+                "skills/ply-verify/SKILL.md:50-60",
+                "skills/ply-review/SKILL.md:58-67",
+                "tests/skills/test_skill_contracts.py:65-76,153-162"
+              ]
+            },
+            {
+              "criterionId": "skills-boundary-review",
+              "status": "passed",
+              "summary": "skills/ contains only SKILL.md prompt text and thin openai.yaml interface metadata (display name/prompt) for both skills — no code implementing an artifact serializer, ply.lock parser, verdict classifier, retention logic, or IDE-specific integration. Both SKILL.md files explicitly forbid reading ply.lock and reproducing verdict/serializer logic.",
+              "evidence": [
+                "skills/ply-verify/SKILL.md, skills/ply-verify/agents/openai.yaml",
+                "skills/ply-review/SKILL.md, skills/ply-review/agents/openai.yaml",
+                "skills/ply-verify/SKILL.md:8,35 (forbids reproducing verifier/verdict rules/artifact writer; forbids constructing ply.lock)",
+                "skills/ply-review/SKILL.md:52-56 (Data boundary: ply_lock/internal_serializer/client_side_verdict_classifier forbidden)"
+              ]
+            }
+          ]
+        }
+      ],
       "plan": [
         {
           "id": "skills-step-verify",

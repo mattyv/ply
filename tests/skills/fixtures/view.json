@@ -1,0 +1,10 @@
+{
+  "protocolVersion": 1,
+  "currentRun": "run-fixture-001",
+  "runs": [
+    {
+      "id": "run-fixture-001",
+      "path": "views/run-fixture-001/visual.json"
+    }
+  ]
+}

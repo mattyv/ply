@@ -10,7 +10,7 @@ reports concrete counterexamples when a claim fails. The developer reviews the i
 the boundaries, and the uncovered risk instead of treating plausible code as proof.
 
 > **Project status: active early-alpha development.** The CLI, schema, checking pipeline,
-> result records, and static SVG renderer exist. Rust coverage remains narrow, and
+> result records, static SVG renderer, and interactive visual clients exist. Rust coverage remains narrow, and
 > adversarial testing continues to find and close gaps between what a result says and what
 > ran. Capabilities may change quickly; Ply is not ready to serve as production assurance.
 > See [Current status](#current-status).
@@ -163,24 +163,25 @@ code simply begins.
 ## Visual development
 
 The rendered specification is part of the development surface, not a diagram produced
-after the work is done. It should let a developer answer four questions at a glance:
+after the work is done. It lets a developer answer four questions at a glance:
 
 - What did we intend to build?
-- What did the agent actually build?
-- Where do the two differ?
-- What evidence supports each claim?
+- What evidence did each claim earn?
+- Where is evidence missing, narrowed, or stale?
+- Which exact source range should I inspect next?
 
-The intended visual model has three layers:
+The visual model has three layers:
 
 1. **Intent** comes from `ply.yaml` and function contracts.
-2. **Implementation** comes from mechanically extracted code facts.
-3. **Evidence** comes from test, fuzz, bounded-checking, mutation, and later proof
+2. **Evidence** comes from test, fuzz, bounded-checking, mutation, and later proof
    results.
+3. **Diagnostics** identify violations, unsupported areas, timeouts, assumptions, and
+   exact source locations.
 
-One diagram can then show declared and observed dependencies, missing components,
-forbidden edges, violated contracts, unsupported functions, stale results, assumptions,
-and evidence owed. Developers should be able to zoom from workspace to component to
-function, then open the relevant contract, counterexample, or source.
+One view can then show dependencies, forbidden edges, violated contracts, unsupported
+functions, stale results, assumptions, and evidence owed. Developers can zoom from a
+workspace to a component or function, inspect the completed run, then open the recorded
+source range.
 
 Every visual mark must have one stable meaning. Colour alone must never carry that
 meaning, and an unknown or unsupported fact must never look verified. A diagram that
@@ -241,11 +242,16 @@ root of this repository, and checked by `cargo ply check .` like anyone else's.
 rule this codebase was found to be breaking when the checker was pointed at it, and what
 declaring the exception cost.
 
-### What is not built yet
+### Interactive evidence views
 
-The live intended-versus-actual view, evidence overlays, and interactive editing workflow
-remain product direction rather than finished features. Today's renderer draws intent
-only — it does not yet colour a function by the evidence it earned.
+`cargo ply verify <dir> --publish-view` publishes an immutable visual envelope under
+`target/ply`. The separate [Ply Visual](https://github.com/mattyv/ply-vis) project renders
+that envelope in a shared browser viewer, VS Code, and JetBrains IDEs. These clients show
+the exact outcome Ply recorded; they never recalculate verdicts.
+
+The interactive clients remain extremely beta. Visual spec editing is still future work.
+Ply Visual also omits code-change highlighting: version-control tools already show diffs,
+while Ply shows declared structure and verification evidence.
 
 ## A portable core with optional extensions
 
@@ -257,9 +263,10 @@ Ply's source of truth should remain independent of any editor. The portable core
 - result fingerprints, verdicts, diagnostics, and counterexamples; and
 - a machine-readable result envelope that visual clients can render.
 
-A VS Code extension is a natural first visual client. It could render the model, navigate
-from a node to source, run checks, show counterexamples, and propose reviewed spec edits.
-It must remain an extension of Ply rather than the only way to use Ply.
+A shared browser viewer now powers thin VS Code and JetBrains extensions. They discover
+completed artifacts, render them, preserve view state, and navigate from evidence to exact
+source ranges. They do not run Ply, parse `ply.yaml` or `ply.lock`, or interpret verdicts.
+The LLM-facing workflow runs Ply and publishes a completed view only when requested.
 
 The same core should support other clients: a browser application, another editor or IDE,
 CI reports, static HTML or SVG, and the terminal. No client should keep private evidence
@@ -274,7 +281,7 @@ implement it afterward.
 ## What Ply does today
 
 Ply is a Cargo subcommand backed by a YAML specification and Rust contract attributes.
-Four commands exist:
+Five commands exist:
 
 | Command | Purpose |
 | --- | --- |
@@ -282,9 +289,10 @@ Four commands exist:
 | `cargo ply verify <dir>` | Run declared checks and report the evidence each function earned. |
 | `cargo ply audit <dir>` | List the trust surface: assumptions and declarations Ply does not verify. |
 | `cargo ply worklist <dir>` | List unresolved decisions and evidence still owed. |
+| `cargo ply clean-views <dir>` | Remove older published visual runs while preserving the current run. |
 
-All four commands support `--json`. That output is the stable integration surface for
-editor extensions, CI, and future visual clients.
+The inspection and verification commands support `--json`. Published visual envelopes
+are the stable integration surface for editor extensions and other visual clients.
 
 Ply delegates checking rather than building its own solver. Depending on the declared
 check, it uses Cargo's test runner, property testing, Kani, or `cargo-mutants`. Passing

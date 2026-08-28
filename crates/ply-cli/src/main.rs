@@ -14,6 +14,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 // next absence gets missed by one of them, which is the exact shape of the
 // defect that put this rule here.
 use ply_core::diag::is_absence;
+use ply_core::visual::{
+    DEFAULT_RETAINED_RUNS, VisualPublisher, build_visual_envelope_with_sources,
+    completed_run_metadata, outcome_of,
+};
 use verify::VerifyOptions;
 
 // The `about` string below is what `--help` prints, so it is written for
@@ -94,6 +98,21 @@ enum Commands {
         /// still identical run to run for identical source (§5.4c).
         #[arg(long)]
         seed: Option<String>,
+        /// Publish this completed run for visual clients. This is explicit:
+        /// editors never start verification themselves.
+        #[arg(long)]
+        publish_view: bool,
+        /// Number of completed visual runs to retain for this Ply root.
+        #[arg(long, default_value_t = DEFAULT_RETAINED_RUNS)]
+        retain_views: usize,
+    },
+    /// Remove older published visual runs without deleting the current run.
+    CleanViews {
+        /// Path to the crate directory containing `ply.yaml`.
+        path: PathBuf,
+        /// Number of completed visual runs to keep.
+        #[arg(long, default_value_t = DEFAULT_RETAINED_RUNS)]
+        keep: usize,
     },
 }
 
@@ -154,6 +173,8 @@ fn main() -> anyhow::Result<()> {
             engine_timeout,
             fail_on,
             seed,
+            publish_view,
+            retain_views,
         } => {
             let seed = match seed {
                 Some(text) => match ply_core::fuzz_gen::seed_from_hex(&text) {
@@ -174,7 +195,21 @@ fn main() -> anyhow::Result<()> {
                 engine_timeout_secs: engine_timeout,
                 seed,
             };
-            let envelope = verify::verify_crate(&path, &opts)?;
+            let verification = verify::verify_crate_result(&path, &opts)?;
+            let envelope = verification.envelope;
+            if publish_view {
+                let run = completed_run_metadata(&path, verify::PLY_VERSION, outcome_of(&envelope));
+                let visual = build_visual_envelope_with_sources(
+                    &verification.document,
+                    &envelope,
+                    run,
+                    &verification.source_map,
+                )?;
+                let publication = VisualPublisher::new(&path).publish(&visual, retain_views)?;
+                if let Some(warning) = publication.warning {
+                    eprintln!("warning: {warning}");
+                }
+            }
             if cli.json {
                 println!("{}", envelope.to_json_pretty());
             } else {
@@ -182,7 +217,20 @@ fn main() -> anyhow::Result<()> {
             }
             std::process::exit(exit_code_for(&envelope, fail_on));
         }
+        Commands::CleanViews { path, keep } => {
+            let cleanup = VisualPublisher::new(path).cleanup(keep)?;
+            println!(
+                "Removed {} older visual run{} from the index; the current run was kept.",
+                cleanup.removed,
+                if cleanup.removed == 1 { "" } else { "s" }
+            );
+            if let Some(warning) = cleanup.warning {
+                eprintln!("warning: {warning}");
+            }
+        }
     }
+
+    Ok(())
 }
 
 /// The marks a node line carries beside its verdict.
@@ -442,6 +490,31 @@ fn exit_code_for(envelope: &ply_core::diag::Envelope, fail_on: FailOn) -> i32 {
 mod tests {
     use super::*;
     use ply_core::diag::{Envelope, Node};
+
+    #[test]
+    fn publishing_a_view_is_explicit_and_retains_twenty_by_default() {
+        let cli = Cli::try_parse_from(["cargo-ply", "verify", ".", "--publish-view"]).unwrap();
+        match cli.command {
+            Commands::Verify {
+                publish_view,
+                retain_views,
+                ..
+            } => {
+                assert!(publish_view);
+                assert_eq!(retain_views, DEFAULT_RETAINED_RUNS);
+            }
+            _ => panic!("verify should parse as verify"),
+        }
+
+        let cli = Cli::try_parse_from(["cargo-ply", "verify", "."]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Verify {
+                publish_view: false,
+                ..
+            }
+        ));
+    }
 
     fn envelope(verdicts: &[&str]) -> Envelope {
         envelope_with_statuses(verdicts, &[])

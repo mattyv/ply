@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ply Verify"
+  short_description: "Verify changes without weakening intent"
+  default_prompt: "Use $ply-verify to verify this change and report any unresolved evidence."

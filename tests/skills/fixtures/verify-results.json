@@ -1,0 +1,44 @@
+[
+  {
+    "scenario": "clean",
+    "exitCode": 0,
+    "expectedCompletion": "may-complete",
+    "expectedPublication": "only-by-explicit-flag",
+    "expectedActionFragment": "earned evidence"
+  },
+  {
+    "scenario": "violation",
+    "exitCode": 2,
+    "expectedCompletion": "must-not-complete",
+    "expectedPublication": "only-by-explicit-flag",
+    "expectedActionFragment": "repair implementation"
+  },
+  {
+    "scenario": "missing_evidence",
+    "exitCode": 2,
+    "expectedCompletion": "must-not-complete",
+    "expectedPublication": "only-by-explicit-flag",
+    "expectedActionFragment": "restore evidence"
+  },
+  {
+    "scenario": "narrowed_evidence",
+    "exitCode": 2,
+    "expectedCompletion": "must-not-complete",
+    "expectedPublication": "only-by-explicit-flag",
+    "expectedActionFragment": "remove the narrowing"
+  },
+  {
+    "scenario": "timeout",
+    "exitCode": 2,
+    "expectedCompletion": "must-not-complete",
+    "expectedPublication": "only-by-explicit-flag",
+    "expectedActionFragment": "diagnose the check"
+  },
+  {
+    "scenario": "internal_tool_error",
+    "exitCode": 1,
+    "expectedCompletion": "must-not-complete",
+    "expectedPublication": "unavailable",
+    "expectedActionFragment": "report the tool failure"
+  }
+]

@@ -1,0 +1,39 @@
+{
+  "protocolVersion": 1,
+  "run": {
+    "id": "run-fixture-001",
+    "completedAt": "2026-08-28T08:30:00Z",
+    "root": { "path": "." },
+    "tool": { "name": "cargo-ply", "version": "0.1.0" },
+    "outcome": "missing_evidence"
+  },
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+  "elements": {
+    "component:billing::charge": {
+      "id": "component:billing::charge",
+      "kind": "function",
+      "label": "charge",
+      "evidence": {
+        "verdict": "missing_evidence",
+        "statuses": [],
+        "reused": false
+      },
+      "diagnosticIds": ["diagnostic:missing-charge"],
+      "source": {
+        "file": "src/billing.rs",
+        "startLine": 12,
+        "startColumn": 4,
+        "endLine": 18,
+        "endColumn": 5
+      }
+    }
+  },
+  "diagnostics": [
+    {
+      "id": "diagnostic:missing-charge",
+      "code": "PLY-MISSING-EVIDENCE",
+      "severity": "error",
+      "message": "No verification evidence was produced for billing::charge"
+    }
+  ]
+}

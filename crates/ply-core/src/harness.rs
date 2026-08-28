@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use quote::ToTokens;
+use syn::spanned::Spanned;
 use syn::{Expr, ExprClosure, FnArg, ItemFn, Pat, Type};
 
 /// The type vocabulary Ply's codegen recognizes. `VecU8` is the only
@@ -1221,6 +1222,10 @@ pub struct ContractFn {
     /// and re-running a four-minute proof for a reflowed line is how a
     /// record earns a reputation for being wrong.
     pub source: String,
+    /// Exact source location for a function resolved from first-party source.
+    /// Direct callers of [`build_contract_fn`] do not have file context and
+    /// therefore leave this absent; resolver-backed discovery always sets it.
+    pub source_span: Option<crate::diag::Span>,
     /// Whether `path` is `Type::method` rather than a free function (added
     /// 2026-08-27, method resolution) -- see `call_expr`/`import_path`,
     /// which are the only things that need to know.
@@ -1490,13 +1495,16 @@ pub fn resolve_anchor(
             if let Some(reason) = found.unnameable {
                 return Err(AnchorError::Private(reason));
             }
-            build_contract_fn(
+            let source_span = found.source_span.clone();
+            let mut contract = build_contract_fn(
                 &found.item,
                 &alias_map(&found.file),
                 &found.canonical,
                 found.is_method,
             )
-            .map_err(AnchorError::Shape)
+            .map_err(AnchorError::Shape)?;
+            contract.source_span = Some(source_span);
+            Ok(contract)
         }
         crate::callgraph::Resolution::Opaque(reason) => Err(AnchorError::Unreadable(reason)),
         crate::callgraph::Resolution::NotFound => Err(AnchorError::NotFound),
@@ -1608,6 +1616,7 @@ pub fn build_contract_fn(
         ensures,
         calls: crate::callgraph::call_sites(f),
         source: f.to_token_stream().to_string(),
+        source_span: None,
         is_method,
         return_type,
         receiver: None,
@@ -2803,6 +2812,11 @@ pub fn discover_method_with_receiver(
     let item_fn = strip_receiver_to_item_fn(&target);
     let mut cf = build_contract_fn(&item_fn, &aliases, fn_path, true)
         .map_err(|_| ReceiverError::UnsupportedParamPattern)?;
+    cf.source_span = Some(crate::callgraph::source_span(
+        crate_dir,
+        &file_path,
+        target.span(),
+    ));
     cf.receiver = Some(plan);
     // Struct/enum parameters (2026-08-27): the checked method's own
     // parameters (not the receiver, not the constructor's own arguments --

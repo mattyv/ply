@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "createdAt": 1787492636508,
   "situations": {
-    "seq": 1,
+    "seq": 2,
     "items": {
       "sit-1": {
         "id": "sit-1",
@@ -599,6 +599,414 @@
         "obsSeq": 10,
         "clusterSeq": 10,
         "lastObservationAt": 1787494479398
+      },
+      "sit-2": {
+        "id": "sit-2",
+        "entityRef": null,
+        "question": "Why does Ply product-e2e take much longer on CI than the first local timing?",
+        "status": "resolved",
+        "createdAt": 1787903167267,
+        "resolvedAt": 1787907451789,
+        "resolution": "h-2",
+        "hypotheses": [
+          {
+            "id": "other",
+            "statement": "The true explanation is not in the current candidate set",
+            "prior": 0.15,
+            "posterior": 0.05,
+            "status": "active",
+            "predictedEvidence": [],
+            "generation": 0
+          },
+          {
+            "id": "h-1",
+            "statement": "The first local run was short because it aborted before any real engine-backed suite could complete",
+            "prior": 0.3825,
+            "posterior": 0.14739349966827028,
+            "status": "active",
+            "predictedEvidence": [
+              "local run stops at the first Kani test with cargo-kani missing",
+              "only a small fraction of declared tests execute"
+            ],
+            "generation": 0
+          },
+          {
+            "id": "h-2",
+            "statement": "The completed E2E suite is intrinsically slow because many tests launch real Kani proofs and mutation runs",
+            "prior": 0.255,
+            "posterior": 0.8017648205387113,
+            "status": "active",
+            "predictedEvidence": [
+              "workflow explicitly installs Kani and cargo-mutants",
+              "tests invoke cargo-ply and bounded proofs repeatedly",
+              "full local run with engines takes minutes"
+            ],
+            "generation": 0
+          },
+          {
+            "id": "h-3",
+            "statement": "CI setup and cold caches dominate more than test execution",
+            "prior": 0.1275,
+            "posterior": 4.239208375416437e-09,
+            "status": "active",
+            "predictedEvidence": [
+              "engine installation consumes most job duration",
+              "warm local full run is far faster than CI"
+            ],
+            "generation": 0
+          },
+          {
+            "id": "h-4",
+            "statement": "GitHub-hosted runner CPU or resource contention makes the same proof workload substantially slower",
+            "prior": 0.085,
+            "posterior": 0.0008416755538099552,
+            "status": "active",
+            "predictedEvidence": [
+              "full local and CI runs execute equivalent steps but CI proof durations are much higher",
+              "runner has fewer cores or lower sustained CPU"
+            ],
+            "generation": 0
+          }
+        ],
+        "observations": [
+          {
+            "id": "obs-1",
+            "text": "The 6.71 second local run executed 18 of 156 declared E2E tests and aborted at arraycard_fixture because cargo-kani was absent",
+            "timestamp": 1787903184497,
+            "provenance": {
+              "sourceType": "firsthand",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-1",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-2",
+            "text": "CI explicitly installs Kani and cargo-mutants and the E2E source repeatedly invokes cargo-ply verification with bounded checks and engine timeouts",
+            "timestamp": 1787903191074,
+            "provenance": {
+              "sourceType": "firsthand",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-2",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-3",
+            "text": "Installing Kani launcher took about five seconds, Kani setup about thirty seconds, and cargo-mutants about twenty-three seconds locally",
+            "timestamp": 1787903191112,
+            "provenance": {
+              "sourceType": "intervention",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-3",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-4",
+            "text": "A successful current CI run spent 2 minutes 22 seconds installing engines and 54 minutes 32 seconds in cargo test -p ply-e2e",
+            "timestamp": 1787903284722,
+            "provenance": {
+              "sourceType": "firsthand",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-4",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-5",
+            "text": "CI logs show individual engine-backed test binaries taking roughly 59, 76, and 131 seconds while ordinary architecture tests take tenths of a second",
+            "timestamp": 1787903284767,
+            "provenance": {
+              "sourceType": "firsthand",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-5",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-6",
+            "text": "With engines installed and sandbox networking aligned to CI, the first local Kani-backed E2E case passed in 60.81 seconds, matching the order of CI proof durations",
+            "timestamp": 1787903739034,
+            "provenance": {
+              "sourceType": "intervention",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-6",
+            "clusterMethod": "new"
+          },
+          {
+            "id": "obs-7",
+            "text": "With Kani and cargo-mutants installed and fixture network access enabled, the complete local product E2E suite passed all 156 tests in 23 minutes 56.47 seconds; warm top-level compilation took 0.05 seconds, proof-heavy binaries took up to 92.13 seconds, average CPU was 308 percent, and peak RSS was about 3.38 GiB",
+            "timestamp": 1787907374787,
+            "provenance": {
+              "sourceType": "intervention",
+              "reliability": 1.0,
+              "sourceRef": null
+            },
+            "clusterId": "c-7",
+            "clusterMethod": "new"
+          }
+        ],
+        "posteriorHistory": [
+          {
+            "timestamp": 1787903306774,
+            "posteriors": {
+              "other": 0.05,
+              "h-1": 0.03209517546770272,
+              "h-2": 0.9148058388398163,
+              "h-3": 2.8656406667591774e-05,
+              "h-4": 0.003070329285813398
+            },
+            "trigger": "manual"
+          },
+          {
+            "timestamp": 1787907421469,
+            "posteriors": {
+              "other": 0.05,
+              "h-1": 0.14739349966827028,
+              "h-2": 0.8017648205387113,
+              "h-3": 4.239208375416437e-09,
+              "h-4": 0.0008416755538099552
+            },
+            "trigger": "final-local-e2e"
+          }
+        ],
+        "lastScoring": {
+          "timestamp": 1787907421469,
+          "matrix": [
+            {
+              "clusterId": "c-1",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.99,
+                  "rationale": "Directly observed the short run abort after only 18 tests"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.45,
+                  "rationale": "Intrinsic workload exists but did not execute in this observation"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.15,
+                  "rationale": "The run stopped for a missing tool, not setup duration"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.1,
+                  "rationale": "No runner performance was involved in the early abort"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.2,
+                  "rationale": "A missing tool fully explains the observation"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-2",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.65,
+                  "rationale": "The workflow tool difference is consistent with why the first local run aborted"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.95,
+                  "rationale": "Repeated real proofs and mutations directly predict a long completed suite"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.55,
+                  "rationale": "Engine installation exists but this observation does not establish its duration"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.4,
+                  "rationale": "Equivalent engine work is required on either runner"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.2,
+                  "rationale": "The named engine workload already explains the observation"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-3",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.5,
+                  "rationale": "Installing the missing tools enables the formerly aborted run"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.8,
+                  "rationale": "Sub-minute local setup leaves room for the proof workload to dominate"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.05,
+                  "rationale": "Measured setup is far too short to dominate a 57-minute job"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.35,
+                  "rationale": "Local setup timing says little about CI runner proof speed"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.15,
+                  "rationale": "The measured durations are already explained by named causes"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-4",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.55,
+                  "rationale": "A complete CI run contrasts with the aborted first local run"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.99,
+                  "rationale": "Test execution accounts for nearly the entire CI duration"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.01,
+                  "rationale": "Setup is only 2m22s versus 54m32s of tests"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.6,
+                  "rationale": "A slower runner could lengthen the dominant test workload"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.1,
+                  "rationale": "The timing breakdown strongly names the cause"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-5",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.35,
+                  "rationale": "These cases were never reached by the aborted first run"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.98,
+                  "rationale": "The slow cases are precisely the real engine-backed tests"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.05,
+                  "rationale": "Ordinary tests are fast and setup is not part of per-binary time"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.65,
+                  "rationale": "Runner speed can amplify expensive proofs"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.12,
+                  "rationale": "The engine correlation is highly specific"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-6",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.65,
+                  "rationale": "Enabling the missing engine turns the six-second abort into a minute-long proof"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.95,
+                  "rationale": "A single local proof already costs about a minute"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.08,
+                  "rationale": "The measured time is proof execution after setup"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.25,
+                  "rationale": "Local and CI individual proof durations are the same order"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.12,
+                  "rationale": "The controlled engine run explains the delay"
+                }
+              ]
+            },
+            {
+              "clusterId": "c-7",
+              "likelihoods": [
+                {
+                  "hypothesisId": "h-1",
+                  "likelihood": 0.95,
+                  "rationale": "The full local run proves the original six-second result was only an early abort"
+                },
+                {
+                  "hypothesisId": "h-2",
+                  "likelihood": 0.99,
+                  "rationale": "A warm completed suite still takes 23m56s and individual proofs up to 92s"
+                },
+                {
+                  "hypothesisId": "h-3",
+                  "likelihood": 0.02,
+                  "rationale": "Warm compilation was 0.05s while execution consumed almost 24 minutes"
+                },
+                {
+                  "hypothesisId": "h-4",
+                  "likelihood": 0.72,
+                  "rationale": "Equivalent CI execution takes 54m32s versus 23m56s locally, so runner throughput contributes"
+                },
+                {
+                  "hypothesisId": "other",
+                  "likelihood": 0.08,
+                  "rationale": "The intervention directly identifies workload and runner throughput"
+                }
+              ]
+            }
+          ],
+          "entropy": 0.38217977253602564
+        },
+        "lastSurfacedTopId": "h-2",
+        "calibration": [
+          {
+            "claimedTopId": "h-2",
+            "claimedConfidence": 0.8017648205387113,
+            "correct": true,
+            "resolvedAt": 1787907451789
+          }
+        ],
+        "hSeq": 4,
+        "obsSeq": 7,
+        "clusterSeq": 7,
+        "lastObservationAt": 1787907374787
       }
     }
   }

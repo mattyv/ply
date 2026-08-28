@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ply Review"
+  short_description: "Explain a completed Ply visual run"
+  default_prompt: "Use $ply-review to explain the current Ply visual run and its source-linked evidence."

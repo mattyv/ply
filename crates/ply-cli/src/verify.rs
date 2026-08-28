@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use ply_core::callgraph::{CalleeStatus, Resolution, Resolver};
 use ply_core::config;
 use ply_core::contract_rt::{self, RenderedTest};
-use ply_core::diag::{Assumption, Counterexample, Diagnostic, Envelope, Evidence, Fix, Node};
+use ply_core::diag::{Assumption, Counterexample, Diagnostic, Envelope, Evidence, Fix, Node, Span};
 use ply_core::engines::fuzz as fuzz_engine;
 use ply_core::engines::kani::ProbeOutcome;
 use ply_core::engines::kani::{self, KaniOutcome, KaniRunConfig};
@@ -21,7 +21,8 @@ use ply_core::engines::mutants::{self, MutantsRunConfig, MutantsRunOutcome};
 use ply_core::harness::{self, ContractFn, Param, RustType, StubKind, StubSpec};
 use ply_core::harness_crate;
 use ply_core::model::{
-    Check, Component, FnClaim, InheritedChecks, component_default_checks, effective_checks,
+    Check, Component, Document, FnClaim, InheritedChecks, component_default_checks,
+    effective_checks,
 };
 use ply_core::promise::{ClauseKind, ClauseVerdict, HarnessAnswer, PromiseFinding, PromisePlan};
 use ply_core::reach;
@@ -282,9 +283,31 @@ fn declared_features(crate_dir: &Path) -> String {
     }
 }
 
-pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> {
+/// The completed verification together with the immutable inputs publication
+/// needs but the editor-neutral §8 envelope deliberately does not contain.
+#[derive(Debug, Clone)]
+pub struct VerificationResult {
+    /// The exact parsed document this verification used. Callers must render
+    /// this value, never reload `ply.yaml` after verification completes.
+    pub document: Document,
+    pub envelope: Envelope,
+    /// Qualified claim id (`component.path::function-key`) to exact source.
+    pub source_map: BTreeMap<String, Span>,
+}
+
+/// Verifies one config snapshot and returns that same parsed document for
+/// publication. This is the integration API for visual publication.
+pub fn verify_crate_result(crate_dir: &Path, opts: &VerifyOptions) -> Result<VerificationResult> {
     let yaml_path = crate_dir.join("ply.yaml");
     let file = config::load(&yaml_path)?;
+    verify_loaded_crate(crate_dir, opts, file)
+}
+
+fn verify_loaded_crate(
+    crate_dir: &Path,
+    opts: &VerifyOptions,
+    file: Document,
+) -> Result<VerificationResult> {
     let src_dir = crate_dir.join("src");
     let lib_path = src_dir.join("lib.rs");
 
@@ -323,6 +346,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
     let mut plans: Vec<Plan> = Vec::new();
     let mut early_nodes_by_component: BTreeMap<String, Vec<Node>> = BTreeMap::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut source_map: BTreeMap<String, Span> = BTreeMap::new();
 
     // `anchor:` is finally consumed (vetting 004 finding 7: it was parsed
     // and ignored, so *every* component's fns were looked for in this
@@ -511,6 +535,10 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
                     &type_name,
                     &reason,
                 ));
+            }
+
+            if let Some(span) = cf.source_span.clone() {
+                source_map.insert(node_id.clone(), span);
             }
 
             let explicit = governing
@@ -1172,7 +1200,7 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         children: components,
     };
 
-    Ok(Envelope {
+    let envelope = Envelope {
         command: "verify".into(),
         ply_version: PLY_VERSION.into(),
         root,
@@ -1181,6 +1209,11 @@ pub fn verify_crate(crate_dir: &Path, opts: &VerifyOptions) -> Result<Envelope> 
         trust_surface: None,
         open_items: None,
         not_carried_forward,
+    };
+    Ok(VerificationResult {
+        document: file,
+        envelope,
+        source_map,
     })
 }
 
@@ -5589,6 +5622,55 @@ fn unused(_p: &PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verification_returns_the_loaded_snapshot_and_qualified_source_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"snapshot-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn quote() -> u32 {\n    7\n}\n",
+        )
+        .unwrap();
+        let yaml_path = dir.path().join("ply.yaml");
+        std::fs::write(
+            &yaml_path,
+            "ply: 1\ncomponents:\n  alpha:\n    anchor: snapshot_demo\n    fns:\n      quote:\n        checks: []\n  beta:\n    anchor: snapshot_demo\n    fns:\n      quote:\n        checks: []\n",
+        )
+        .unwrap();
+        let loaded = config::load(&yaml_path).unwrap();
+        std::fs::write(&yaml_path, "this is no longer valid ply yaml: [").unwrap();
+
+        let result = verify_loaded_crate(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: None,
+                seed: None,
+            },
+            loaded.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.document, loaded,
+            "the API must return its input snapshot"
+        );
+        assert_eq!(
+            result.source_map.keys().cloned().collect::<Vec<_>>(),
+            vec!["alpha::quote", "beta::quote"],
+            "same-named functions in separate components need distinct qualified keys"
+        );
+        for span in result.source_map.values() {
+            assert_eq!(span.file, "src/lib.rs");
+            assert_eq!(span.start, [0, 0]);
+            assert_eq!(span.end, [2, 1]);
+        }
+    }
 
     /// §5.2a input 11: `PLY_VERSION` must be a real digest `build.rs`
     /// computed, never a placeholder or a hand-edited constant. This cannot

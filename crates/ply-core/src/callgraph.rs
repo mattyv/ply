@@ -32,6 +32,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use quote::ToTokens;
+use syn::spanned::Spanned;
 use syn::visit::Visit;
 
 /// One free-function call in a body: the path as written, and where.
@@ -177,6 +178,8 @@ pub struct Resolver {
 struct SourceFile {
     ast: std::rc::Rc<syn::File>,
     dir: PathBuf,
+    /// The source file on disk. Inline modules inherit this unchanged.
+    path: PathBuf,
 }
 
 /// A free function the resolver found, with everything a caller of the
@@ -193,6 +196,9 @@ pub struct FoundFn {
     /// The parsed file the fn was declared in, so its `type` aliases are the
     /// ones read when the signature is interpreted.
     pub file: std::rc::Rc<syn::File>,
+    /// Exact, zero-based range of the complete function item in its source
+    /// file. The path is relative to the crate being verified.
+    pub source_span: crate::diag::Span,
     /// `Some(reason)` when the fn is real but a generated harness sitting at
     /// the crate root could not *name* it: a private `mod` or a private `fn`
     /// somewhere below the crate root. Stated rather than discovered as a
@@ -289,6 +295,7 @@ impl Resolver {
             local: SourceFile {
                 ast: std::rc::Rc::new(syn::parse_file(lib_src)?),
                 dir: crate_dir.join("src"),
+                path: crate_dir.join("src/lib.rs"),
             },
             crate_dir: crate_dir.to_path_buf(),
             declared,
@@ -436,6 +443,7 @@ impl Resolver {
                                 items: inner.clone(),
                             }),
                             dir: file.dir.join(&name),
+                            path: file.path.clone(),
                         }),
                         None => self.module_file(&file.dir, &name),
                     };
@@ -487,6 +495,7 @@ impl Resolver {
                             items: inner.clone(),
                         }),
                         dir: file.dir.join(&name),
+                        path: file.path.clone(),
                     }),
                     None => self.module_file(&file.dir, &name),
                 };
@@ -545,6 +554,7 @@ impl Resolver {
                             items: inner.clone(),
                         }),
                         dir: file.dir.join(head),
+                        path: file.path.clone(),
                     },
                     None => self.module_file(&file.dir, head)?,
                 };
@@ -594,6 +604,7 @@ impl Resolver {
                             items: inner.clone(),
                         }),
                         dir: file.dir.join(head),
+                        path: file.path.clone(),
                     },
                     None => self.module_file(&file.dir, head)?,
                 };
@@ -799,6 +810,7 @@ impl Resolver {
                         )
                     });
                     Resolution::Found(Box::new(FoundFn {
+                        source_span: source_span(&self.crate_dir, &file.path, f.span()),
                         item: f,
                         canonical: head.clone(),
                         file: file.ast.clone(),
@@ -825,6 +837,7 @@ impl Resolver {
                                 items: inner.clone(),
                             }),
                             dir: file.dir.join(head),
+                            path: file.path.clone(),
                         };
                         self.resolve_in_file(&nested, rest, depth + 1)
                     }
@@ -1055,6 +1068,7 @@ impl Resolver {
             )
         });
         Resolution::Found(Box::new(FoundFn {
+            source_span: source_span(&self.crate_dir, &file.path, m.span()),
             item: impl_fn_to_item_fn(&m),
             canonical: format!("{type_text}::{method_name}"),
             file: file.ast.clone(),
@@ -1156,9 +1170,49 @@ impl Resolver {
             .map(|ast| SourceFile {
                 ast: std::rc::Rc::new(ast),
                 dir: child_dir.to_path_buf(),
+                path: path.to_path_buf(),
             });
         self.files.insert(path.to_path_buf(), parsed.clone());
         parsed
+    }
+}
+
+pub(crate) fn source_span(
+    crate_dir: &Path,
+    path: &Path,
+    span: proc_macro2::Span,
+) -> crate::diag::Span {
+    let relative = path
+        .strip_prefix(crate_dir)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let base: Vec<_> = crate_dir.components().collect();
+            let target: Vec<_> = path.components().collect();
+            let common = base
+                .iter()
+                .zip(&target)
+                .take_while(|(left, right)| left == right)
+                .count();
+            let mut out = PathBuf::new();
+            for _ in common..base.len() {
+                out.push("..");
+            }
+            for component in &target[common..] {
+                out.push(component.as_os_str());
+            }
+            out
+        });
+    let start = span.start();
+    let end = span.end();
+    let start = [start.line.saturating_sub(1) as u32, start.column as u32];
+    let mut end = [end.line.saturating_sub(1) as u32, end.column as u32];
+    if end < start {
+        end = start;
+    }
+    crate::diag::Span {
+        file: relative.to_string_lossy().replace('\\', "/"),
+        start,
+        end,
     }
 }
 
@@ -1535,6 +1589,43 @@ mod tests {
     fn parse_fn(src: &str, name: &str) -> syn::ItemFn {
         let file = syn::parse_file(src).unwrap();
         find_fn(&file, &[name]).unwrap()
+    }
+
+    #[test]
+    fn resolved_functions_keep_exact_workspace_relative_item_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/rates.rs"),
+            "// file module\npub fn quote(x: u32) -> u32 {\n    x + 1\n}\n",
+        )
+        .unwrap();
+        let src = "pub fn root() -> u32 {\n    1\n}\n\npub mod inline {\n    pub fn quote() -> u32 { 2 }\n}\npub mod rates;\n";
+        let mut resolver = Resolver::new(src, dir.path(), BTreeMap::new()).unwrap();
+
+        let root = match resolver.lookup_fn("root") {
+            Resolution::Found(found) => found.source_span,
+            other => panic!("root should resolve, got {}", describe(&other)),
+        };
+        assert_eq!(root.file, "src/lib.rs");
+        assert_eq!(root.start, [0, 0]);
+        assert_eq!(root.end, [2, 1]);
+
+        let inline = match resolver.lookup_fn("inline::quote") {
+            Resolution::Found(found) => found.source_span,
+            other => panic!("inline fn should resolve, got {}", describe(&other)),
+        };
+        assert_eq!(inline.file, "src/lib.rs");
+        assert_eq!(inline.start, [5, 4]);
+        assert_eq!(inline.end, [5, 31]);
+
+        let file_module = match resolver.lookup_fn("rates::quote") {
+            Resolution::Found(found) => found.source_span,
+            other => panic!("file-module fn should resolve, got {}", describe(&other)),
+        };
+        assert_eq!(file_module.file, "src/rates.rs");
+        assert_eq!(file_module.start, [1, 0]);
+        assert_eq!(file_module.end, [3, 1]);
     }
 
     #[test]
