@@ -30,11 +30,34 @@ fn an_inline_module_impl_and_a_qualified_parameter_are_both_ordinary_and_both_ch
             run.json
         );
     }
+    // The third claim must stay refused, and refused for the right reason.
+    // The first attempt at the qualified-path fix trimmed every path to its
+    // last segment, so a parameter naming another crate's type resolved to a
+    // local type of the same name, built the wrong thing, and reported a
+    // compile failure in Ply's own generated code. A calm refusal became an
+    // internal error, which is worse than the bug it was fixing.
     assert_eq!(
-        run.json["diagnostics"].as_array().unwrap().len(),
-        0,
-        "nothing here is refused any more: {}",
+        verdicts.get("foreign_shaped_name").map(String::as_str),
+        Some("unsupported"),
+        "a parameter naming a foreign type must not be built from a same-named local \
+         one: {}",
         run.json
+    );
+    let refusal = run.json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["node_id"] == "ordinaryspellings::foreign_shaped_name")
+        .unwrap_or_else(|| panic!("no diagnostic for the refused claim: {}", run.json));
+    let title = refusal["title"].as_str().unwrap();
+    assert!(
+        title.contains("v: std::net::Ipv4Addr"),
+        "the refusal has to name the path the user wrote, with the spacing they wrote \
+         it in: {title}"
+    );
+    assert_ne!(
+        refusal["code"], "X0901",
+        "a refusal, never a tool error: {title}"
     );
 
     // Green is only worth something if Ply really built the values. Weaken

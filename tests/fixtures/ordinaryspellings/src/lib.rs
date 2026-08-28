@@ -45,3 +45,35 @@ pub fn alpha_inline_mod(v: Alpha) -> u32 {
 pub fn beta_qualified(v: crate::Beta) -> u32 {
     v.n
 }
+
+// --- The qualified spelling must not be trimmed away -------------------------
+//
+// The first attempt at the `crate::Beta` fix trimmed every path to its last
+// segment before looking the type up. That made a parameter naming *another*
+// crate's type resolve to a local type of the same name, build the wrong
+// thing, and report a compile failure in Ply's own generated code -- a calm
+// refusal turned into an internal error. Here the parameter is
+// `std::net::Ipv4Addr` while this crate declares its own `Ipv4Addr`: the two
+// share a last segment and are entirely different types.
+
+/// This crate's own `Ipv4Addr`, which is not the one in the signature below.
+pub struct Ipv4Addr {
+    n: u32,
+}
+
+impl Ipv4Addr {
+    pub fn new(n: u32) -> Self {
+        Ipv4Addr { n: n.max(1) }
+    }
+
+    pub fn get(&self) -> u32 {
+        self.n
+    }
+}
+
+/// Refused, and refused naming the path as written. Building the local
+/// `Ipv4Addr` here would be building a different type than the one asked for.
+#[ply::ensures(|result| *result >= 0)]
+pub fn foreign_shaped_name(v: std::net::Ipv4Addr) -> u32 {
+    v.octets()[0] as u32
+}

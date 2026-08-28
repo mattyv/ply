@@ -1092,9 +1092,24 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                 // anything anyone wrote. Ambiguity is still caught: a bare
                 // name declared in more than one file resolves to
                 // `Ambiguous` and is refused by name.
-                _ if tp.qself.is_none() && seg.arguments.is_empty() => {
-                    RustType::Unsupported(seg.ident.to_string())
-                }
+                // A plain path is kept whole, spelled the way it is
+                // written -- `crate::Beta`, `depx::Thing` -- rather than as
+                // `to_token_stream`'s `crate :: Beta`, which is nobody's
+                // spelling and which no lookup could match. Keeping the
+                // qualifiers (rather than trimming to the last segment, as
+                // a first attempt at this did) is what lets the user-type
+                // resolution below check that the path the user wrote and
+                // the declaration it found are the same type: trimming
+                // made `depx::Thing` resolve to a local `Thing` of the same
+                // name and build the wrong type entirely.
+                _ if tp.qself.is_none() && seg.arguments.is_empty() => RustType::Unsupported(
+                    tp.path
+                        .segments
+                        .iter()
+                        .map(|s| s.ident.to_string())
+                        .collect::<Vec<_>>()
+                        .join("::"),
+                ),
                 _ => RustType::Unsupported(ty.to_token_stream().to_string()),
             }
         }
@@ -3606,6 +3621,60 @@ fn resolve_user_type(
 /// builds inputs for" diagnostic already names it honestly, and reporting
 /// "not found" about something that was never a candidate in the first
 /// place would not be true.
+/// The bare name to look a written parameter type up by, but **only** when
+/// the path as written and the declaration Ply would find are the same
+/// type.
+///
+/// A bare `Beta` is itself. A qualified `crate::Beta` or `bucket::Quota` is
+/// accepted when the qualifiers match the module the type is actually
+/// declared in. Anything else -- `depx::Thing` naming a dependency's type
+/// while this crate declares its own `Thing`, or a `super::` chain with no
+/// module context to resolve it against -- returns `None`, so the parameter
+/// stays refused with the path the user wrote, rather than being built as
+/// some other type that merely shares its last segment.
+///
+/// This exists because the first version of the qualified-path fix trimmed
+/// every path to its last segment. That made `v: depx::Thing` resolve to
+/// the local `Thing`, generate a harness that could not compile, and report
+/// a tool error blaming Ply's own generated code -- turning a calm, correct
+/// refusal into an internal error. Reported by review, reproduced, fixed
+/// here (2026-08-28).
+fn crate_local_type_name(
+    crate_dir: &Path,
+    locations: &TypeLocations,
+    written: &str,
+) -> Option<String> {
+    if is_bare_ident(written) {
+        return Some(written.to_string());
+    }
+    let mut segs: Vec<&str> = written.split("::").collect();
+    let name = segs.pop()?;
+    if !is_bare_ident(name) {
+        return None;
+    }
+    // `crate::`/`self::` at the front just says "from the crate root",
+    // which is where the module walk below starts anyway. `super::` is
+    // relative to the writing module, which this scan does not have here,
+    // so it is refused rather than guessed at.
+    if matches!(segs.first(), Some(&"crate") | Some(&"self")) {
+        segs.remove(0);
+    }
+    if segs
+        .iter()
+        .any(|s| *s == "super" || *s == "crate" || *s == "self")
+    {
+        return None;
+    }
+    // Where the type of that name actually lives. Declared nowhere, or in
+    // more than one file, and no qualified spelling can be confirmed.
+    let declared_in = match locations.get(name) {
+        Some(Some(path)) => path.clone(),
+        _ => return None,
+    };
+    let declared_mod = file_module_segments(crate_dir, &declared_in);
+    (declared_mod == segs).then(|| name.to_string())
+}
+
 pub fn enrich_contract_fn_user_types(
     cf: &mut ContractFn,
     crate_dir: &Path,
@@ -3616,10 +3685,9 @@ pub fn enrich_contract_fn_user_types(
         let RustType::Unsupported(src) = &p.ty else {
             continue;
         };
-        if !is_bare_ident(src) {
+        let Some(src) = crate_local_type_name(crate_dir, &locations, src) else {
             continue;
-        }
-        let src = src.clone();
+        };
         match resolve_user_type(crate_dir, &locations, &src, 0) {
             Ok(ty) => p.ty = ty,
             Err(UserTypeError::NotFound) => {}

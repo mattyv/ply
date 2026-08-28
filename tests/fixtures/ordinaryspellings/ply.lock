@@ -1,9 +1,9 @@
 {
   "format": 2,
-  "written_by": "4e68e059d06dd0c0dc04bfcfec89404dca5bbea76dd6d297c635049f42c7c6e5",
+  "written_by": "eaaa870cdab17ee42c9d41b0a4ee204fe6e75b0135b3e7fa979194e9e28af95c",
   "results": {
     "ordinaryspellings::alpha_inline_mod": {
-      "fingerprint": "c8acf9d02d4406ef92bd1de13785b8c6fa614061cf0d564f1b229e803724e2b5",
+      "fingerprint": "e3dd6659594394c7688024a937070fd81558e58ff0f86bd66f908eb2a322b3f9",
       "verdict": "fuzzed(64)",
       "statuses": [],
       "evidence": {
@@ -13,10 +13,10 @@
       },
       "inputs": {
         "its contract": "181d708ecc568d59",
-        "the build of Ply that checked it": "54fe490a7a397f82",
+        "the build of Ply that checked it": "e387ba8c9c0238f2",
         "the callees it stands on": "4df68c1409b969ed",
         "the checks that ran": "0705c1af3a615ed2",
-        "the code it runs": "1cc9621235d29dc7",
+        "the code it runs": "b71d11a51ab2ef6f",
         "the compiler and the build target": "bf70dd442259ad28",
         "the crate's features": "888ca37d720284f4",
         "the engines behind them": "651a23e37e8789a4",
@@ -28,7 +28,7 @@
       }
     },
     "ordinaryspellings::beta_qualified": {
-      "fingerprint": "c707af0a5e73f147fe97c1a83bd0442bb9ddecf6e1197080174b070406aef0f8",
+      "fingerprint": "f3423b3c15430b5c5826b7846201cffade8770c8332b128da2cfaeab3d7aaec3",
       "verdict": "fuzzed(64)",
       "statuses": [],
       "evidence": {
@@ -38,10 +38,10 @@
       },
       "inputs": {
         "its contract": "181d708ecc568d59",
-        "the build of Ply that checked it": "54fe490a7a397f82",
+        "the build of Ply that checked it": "e387ba8c9c0238f2",
         "the callees it stands on": "4df68c1409b969ed",
         "the checks that ran": "6d20c35c5507b718",
-        "the code it runs": "1cc9621235d29dc7",
+        "the code it runs": "b71d11a51ab2ef6f",
         "the compiler and the build target": "bf70dd442259ad28",
         "the crate's features": "888ca37d720284f4",
         "the engines behind them": "651a23e37e8789a4",

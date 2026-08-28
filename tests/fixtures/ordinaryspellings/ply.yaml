@@ -8,3 +8,5 @@ components:
         checks: [fuzz(64)]
       beta_qualified:
         checks: [fuzz(64)]
+      foreign_shaped_name:
+        checks: [fuzz(64)]

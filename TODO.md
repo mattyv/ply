@@ -73,13 +73,43 @@ Nothing below jumps that queue.
       by-bare-name type lookup could never match and no sentence should quote at a
       reader; a plain path now keeps its bare last segment. `ordinaryspellings` fixture
       and test, both watched red.
+- [x] **REGRESSION I INTRODUCED, found by review and fixed.** The first version of the
+      qualified-parameter fix trimmed every path to its last segment before looking the
+      type up. A parameter naming another crate's type (`v: depx::Thing`) then resolved
+      to a same-named local type, built the wrong thing, and reported a compile failure
+      in Ply's own generated code -- a calm, correct refusal turned into an internal
+      error blaming Ply. Reproduced outside the repo before fixing. A plain path now
+      keeps its qualifiers, and a qualified spelling is accepted only when those
+      qualifiers match the module the type is really declared in; `super::` with no
+      module context to resolve against is refused rather than guessed at. Pinned in
+      `ordinaryspellings` and watched red against the trimming version.
+
 - [ ] **OPEN, out for review: a type whose only constructor is `impl Default`.** Ply
       says "it has no constructor Ply can call", which is false -- `T::default()` is a
       constructor anyone can call. Building via Default yields exactly one value, so a
       `fuzz(256)` claim would report 256 cases having tried one distinct input, which
       is the silent-narrowing failure this project exists to prevent. Three options
       (correct the sentence only; build via Default; build via Default plus the bounded
-      operation sequence the receiver path already uses) are with a reviewer.
+      operation sequence the receiver path already uses) went to a reviewer, whose
+      answer is: take the third, and correct the sentence now regardless, because it is
+      false on both the parameter and the receiver path today. The second option cannot
+      be made honest by disclosure, because the case count in the verdict is itself the
+      claim: 256 runs of one value is one test run 256 times. Two cautions recorded
+      with it -- `#[derive(Default)]` declares no `fn default` in the source, so a scan
+      reading only `impl` blocks would recognise the hand-written one and miss the
+      derived one; and when a type has no operations at all the sequence degenerates
+      back to a single value, which needs the count clamped or the disclosure escalated
+      rather than the general sentence quietly covering it.
+- [ ] **A constructor that is found and then found unusable is still reported as absent.**
+      A constructor whose own argument cannot be built (`fn new(x: impl Into<u32>)`)
+      earns "it has no constructor Ply can call" -- the found-but-skipped note is only
+      ever attached when direct field construction succeeds, so every refusal path drops
+      it. Same false-sentence family; the plumbing already exists.
+- [ ] **A type declared inside an inline `pub mod` is invisible to the type index.** The
+      inline-module blindness fixed in the constructor scan is still present in
+      `scan_crate_type_locations`, which walks only top-level items per file. A fully
+      public type with a public `new` inside `pub mod sub { .. }` in `lib.rs` is refused
+      with the generic message. Reported by review, not yet fixed.
 - [x] KNOWN GAP, unchanged and now written where it is: a `Result<Self, E>`
       constructor is recognised for a parameter and still not for a receiver.
 - [x] `qualifiedctor` fixture and end-to-end test, watched red. The test also weakens
