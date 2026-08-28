@@ -94,6 +94,24 @@ impl FirstParty {
 /// `trait`, a `const`, a `static`, a `macro_rules!`, an `extern` block --
 /// can put first-party code behind a method call, an operator, or an
 /// initializer, none of which a syntactic walk follows.
+/// A plain type path spelled as source (`super::Quota`), not as a token
+/// stream (`super :: Quota`). Any other type shape falls back to the token
+/// rendering, which is at least accurate.
+fn type_path_source(ty: &syn::Type) -> String {
+    if let syn::Type::Path(tp) = ty
+        && tp.qself.is_none()
+    {
+        return tp
+            .path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+    }
+    ty.to_token_stream().to_string()
+}
+
 fn item_is_walkable(item: &syn::Item, label: &str) -> Result<(), String> {
     let named = |what: &str, name: String| {
         Err(format!(
@@ -114,10 +132,10 @@ fn item_is_walkable(item: &syn::Item, label: &str) -> Result<(), String> {
                 Ok(())
             }
         },
-        syn::Item::Impl(i) => named(
-            "an `impl` block for",
-            i.self_ty.to_token_stream().to_string(),
-        ),
+        // Spelled the way the user wrote it. `to_token_stream()` renders a
+        // qualified path as `super :: Quota` -- accurate, and not a phrase
+        // any sentence held to the newbie bar should quote at someone.
+        syn::Item::Impl(i) => named("an `impl` block for", type_path_source(&i.self_ty)),
         syn::Item::Trait(t) => named("a trait", t.ident.to_string()),
         syn::Item::Const(c) => named("a constant", c.ident.to_string()),
         syn::Item::Static(s) => named("a static", s.ident.to_string()),

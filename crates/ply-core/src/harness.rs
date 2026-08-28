@@ -1865,18 +1865,6 @@ fn receiver_module_file(crate_dir: &Path, module_segs: &[&str]) -> Result<PathBu
     Err(ReceiverError::UnsupportedModulePath)
 }
 
-/// The bare name a `self_ty` must equal for an `impl` block to be "for"
-/// `type_name` -- a plain path, one segment, no generic arguments (an
-/// instantiation of a generic type, `impl Foo<u8>`, is left to the
-/// resolver's own generic-`impl` refusal, which already names it correctly).
-fn impl_targets_type(self_ty: &Type, type_name: &str) -> bool {
-    matches!(self_ty, Type::Path(tp)
-        if tp.qself.is_none()
-            && tp.path.segments.len() == 1
-            && tp.path.segments[0].ident == type_name
-            && tp.path.segments[0].arguments.is_empty())
-}
-
 /// `file_path`'s own module path, as a list of segments from the crate
 /// root -- `crate_dir/src/lib.rs`/`main.rs` is `[]`, `crate_dir/src/a.rs`
 /// or `crate_dir/src/a/mod.rs` is `["a"]`, `crate_dir/src/a/b.rs` is
@@ -2969,8 +2957,11 @@ fn scan_ctor_candidates(
     file: &syn::File,
     aliases: &AliasMap,
     type_name: &str,
+    file_mod: &[String],
+    target_absolute: Option<&[String]>,
 ) -> Vec<ParamCtorCandidate> {
     let mut out = Vec::new();
+    let use_aliases = use_aliases_in_file(file);
     for item in &file.items {
         let syn::Item::Impl(imp) = item else {
             continue;
@@ -2978,7 +2969,27 @@ fn scan_ctor_candidates(
         if imp.trait_.is_some() || !imp.generics.params.is_empty() {
             continue;
         }
-        if !impl_targets_type(&imp.self_ty, type_name) {
+        // The same resolution the receiver scan does (2026-08-28,
+        // `classify_impl_self_ty`), rather than this path's older
+        // bare-name-only test. A type declared in one module with its
+        // `impl` block in a submodule has to write `impl super::T` -- there
+        // is no other spelling available in that file -- and the older test
+        // saw no constructor at all, so Ply told the user their type "has
+        // no constructor Ply can call" about a type with a public `new`.
+        // A false sentence, not merely a missing feature.
+        //
+        // `Unconfirmed` is deliberately not accepted: an `impl` ending in
+        // the same bare name that this scan could not resolve to the type's
+        // own canonical module might belong to a different type entirely,
+        // and constructing the wrong type is worse than refusing.
+        if classify_impl_self_ty(
+            &imp.self_ty,
+            type_name,
+            file_mod,
+            &use_aliases,
+            target_absolute,
+        ) != ImplMatch::Confirmed
+        {
             continue;
         }
         for impl_item in &imp.items {
@@ -3027,6 +3038,21 @@ fn scan_ctor_candidates_crate_wide(
     type_name: &str,
 ) -> Vec<ParamCtorCandidate> {
     let mut out = Vec::new();
+    // The type's own canonical absolute path, so a qualified or aliased
+    // `impl` spelling can be resolved back to it -- `None` when the type is
+    // declared nowhere this scan found or in more than one file, in which
+    // case no qualified spelling is confirmable and only the bare one
+    // counts. Computed once for the whole walk, exactly as the receiver
+    // scan does it.
+    let locations = scan_crate_type_locations(crate_dir);
+    let target_absolute: Option<Vec<String>> = match locations.get(type_name) {
+        Some(Some(decl_path)) => {
+            let mut segs = file_module_segments(crate_dir, decl_path);
+            segs.push(type_name.to_string());
+            Some(segs)
+        }
+        _ => None,
+    };
     let parse_and_scan = |path: &Path, out: &mut Vec<ParamCtorCandidate>| {
         let Ok(src) = std::fs::read_to_string(path) else {
             return;
@@ -3035,7 +3061,14 @@ fn scan_ctor_candidates_crate_wide(
             return;
         };
         let aliases = alias_map(&file);
-        out.extend(scan_ctor_candidates(&file, &aliases, type_name));
+        let file_mod = file_module_segments(crate_dir, path);
+        out.extend(scan_ctor_candidates(
+            &file,
+            &aliases,
+            type_name,
+            &file_mod,
+            target_absolute.as_deref(),
+        ));
     };
     parse_and_scan(declaring_file, &mut out);
 

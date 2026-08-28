@@ -45,6 +45,25 @@ Nothing below jumps that queue.
       change, so it needs doing in GitHub's settings by the repository owner (or via
       the API with admin rights) -- Ply cannot set it from here.
 
+## Bug fixes after 0.1.0 — branch `claude/bugfix-post-0-1-0`
+
+- [x] **A constructor in a qualified `impl` block was invisible on the parameter path,
+      and Ply said the type had none.** The receiver path learned in 2026-08-27 that
+      `impl super::T`, `impl crate::T` and `impl Alias` name the same type as
+      `impl T`; the parameter path kept the older bare-name-only rule. So a type
+      declared in `lib.rs` with its `impl` block in a submodule -- which has no other
+      spelling available -- was reported as having "no constructor Ply can call", about
+      a type with a public `new`. A false sentence rather than a missing feature. Both
+      paths now use the same resolution. An `impl` that ends in the same bare name but
+      cannot be resolved to the type's own canonical module is still refused: building
+      the wrong type is worse than refusing to build one.
+- [x] `qualifiedctor` fixture and end-to-end test, watched red. The test also weakens
+      what the constructor guarantees and requires the verdict to go red, so a green
+      run cannot be Ply quietly not calling it.
+- [x] Fixed while there: a diagnostic quoted a type as `super :: Quota` -- token-stream
+      spacing leaking into a sentence held to the newbie bar. It now reads
+      `super::Quota`, as written.
+
 ## Forced colour made Ply blind to its own engines — 2026-08-28
 
 - [x] **Every compiler error reached Ply as `\x1b[1m\x1b[91merror\x1b[0m: ...` under

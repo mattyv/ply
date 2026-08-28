@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  qualifiedctor:
+    anchor: ply_fixture_qualifiedctor
+    fns:
+      refill_per_second:
+        checks: [fuzz(64)]
