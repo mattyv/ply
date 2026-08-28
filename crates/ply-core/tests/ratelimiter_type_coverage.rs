@@ -193,11 +193,21 @@ fn collect_type_uses(file: &syn::File, owner_prefix: &str, out: &mut Vec<TypeUse
     }
 }
 
+/// `crates/ply-core/` -> the repository root -> the shared fixture tree.
+///
+/// This measurement lives beside the classifier it measures rather than in
+/// the end-to-end suite, where it started. `e2e` exists to drive the built
+/// binary the way a user does, so linking the library from it broke the one
+/// rule that suite has -- which Ply itself reported the moment it was
+/// pointed at this repository (`A0401`, ARCHITECTURE.md). Nothing about the
+/// measurement wanted to be end-to-end: it reads one function of
+/// `harness`'s and counts what it returns.
 fn ratelimiter_src_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
-        .join("fixtures/ratelimiter/src")
+        .and_then(|crates| crates.parent())
+        .expect("crates/ply-core lives two levels below the repository root")
+        .join("tests/fixtures/ratelimiter/src")
 }
 
 #[test]

@@ -735,10 +735,18 @@ fn arch_detail(t: &ArchTally) -> String {
             .to_string()
     } else {
         let permitted = t.cross_component_pairs - t.violations;
+        let (n, verb) = if t.cross_component_pairs == 1 {
+            ("1 real crate dependency".to_string(), "crosses")
+        } else {
+            (
+                format!("{} real crate dependencies", t.cross_component_pairs),
+                "cross",
+            )
+        };
         let mut s = format!(
-            "{} real crate dependencies cross between two differently-declared components: {} \
-             permitted by a declared edge or by nesting, {} not permitted (reported below).",
-            t.cross_component_pairs, permitted, t.violations
+            "{n} {verb} between two differently-declared components: {permitted} permitted by a \
+             declared edge or by nesting, {} not permitted (reported below).",
+            t.violations
         );
         if t.deny_violations > 0 {
             s.push_str(&format!(
@@ -927,7 +935,9 @@ mod tests {
             .find(|t| t.tier == "architecture")
             .unwrap_or_else(|| panic!("{:#?}", cov.checked));
         assert!(
-            checked.detail.contains("1 real crate dependencies"),
+            checked
+                .detail
+                .contains("1 real crate dependency crosses between"),
             "{}",
             checked.detail
         );

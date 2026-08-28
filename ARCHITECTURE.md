@@ -7,13 +7,13 @@ own repository — so the shape you are looking at is the shape the checker enfo
 someone adds a dependency this page does not show, the build says so.
 
 <p align="center">
-  <img src="docs/ply-self.svg" alt="Four dashed boxes inside a frame labelled ply.yaml: e2e, attrs, cli and core. Arrows run from cli down to core and from e2e down to core. attrs stands alone with no arrows." width="620">
+  <img src="docs/ply-self.svg" alt="Four dashed boxes inside a frame labelled ply.yaml: e2e, attrs, cli and core. One arrow runs from cli down to core. e2e and attrs stand alone with no arrows." width="620">
 </p>
 
 Each box is a crate. The boxes are **dashed** because none of them declares a function
 contract yet: Ply's own `ply.yaml` says only how the crates may depend on one another, and
-a dashed box is Ply's way of showing code that carries no claims of its own. The arrows are
-the only dependencies permitted between components. Anything else is a violation.
+a dashed box is Ply's way of showing code that carries no claims of its own. That single
+arrow is the only dependency permitted between components. Anything else is a violation.
 
 ## The four crates
 
@@ -42,13 +42,13 @@ unambiguous.
 **`e2e` drives the built binary, not the library.** A suite that links the library instead
 stops testing what ships.
 
-## The exception, declared rather than hidden
+## What happened when Ply was pointed at itself
 
 That last rule is the interesting one, because Ply caught this codebase breaking it.
 
-`e2e` originally had no outgoing edge at all. Running `cargo ply check` on this repository
-while writing this document reported that `ply_e2e` had grown a dependency on `ply_core`
-and that nothing in the spec allowed it:
+`e2e` has no outgoing edge. Running `cargo ply check` on this repository while writing this
+document reported that `ply_e2e` had grown a dependency on `ply_core` anyway, and that
+nothing in the spec allowed it:
 
 ```
 A0401 crate `ply_e2e` depends on crate `ply_core`. `ply_e2e` belongs to the `e2e`
@@ -57,20 +57,28 @@ A0401 crate `ply_e2e` depends on crate `ply_core`. `ply_e2e` belongs to the `e2e
   Add "e2e -> core" under `edges:` if this is intended, or remove the dependency.
 ```
 
-The dependency turned out to be real and wanted. One measurement test reads `core`'s own
-type classifier directly, so the published count of which Rust types Ply can handle can
-never drift into a second, hand-maintained idea of the same fact. The right answer was to
-declare the exception, which is now the second arrow on the diagram.
+Nobody had decided to break the rule. One measurement test — the count of which Rust types
+Ply can actually handle — read `core`'s type classifier directly, so that the published
+number could never drift into a second, hand-maintained idea of the same fact. A good
+reason for the dependency to exist, and no reason at all for it to live in the end-to-end
+suite.
 
-It is worth being precise about what that costs, because the arrow is wider than the
-exception deserves. Ply's architecture checking works at the level of crates today, so the
-strongest thing the spec can say is "`e2e` may depend on `core`" — not "one test file
-may". Narrowing it to the single file is a fact about calls inside functions, and that
-tier is not built. Until it is, this edge rests on a convention no tool enforces:
-everything in `e2e` except that one measurement must keep driving the binary.
+The diagnostic offers two ways out, and it matters which one you take. Adding
+`e2e -> core` would have made the run green by widening the rule to the entire suite in
+order to excuse one file — and Ply's architecture checking works crate by crate today, so
+there is no narrower edge to write. Every other test in `e2e` would have kept driving the
+binary on convention alone, with the checker no longer able to say otherwise. That is a
+rule quietly abandoned, wearing the green tick of a rule enforced.
 
-That is the whole point of writing it down here. A rule that quietly stops being true is
-worse than a rule with a stated exception.
+So the test moved instead. It now lives in `ply-core`'s own tests, next to the classifier
+it measures, where the dependency is native and needs no exception. Nothing about that
+measurement ever wanted to be end-to-end: it reads one function and counts what it
+returns. The rule is intact, the edge is gone, and the diagram above shows one arrow
+rather than two.
+
+The general lesson is the one Ply is built around. A checker earns its keep at the moment
+it disagrees with you — and the useful response is usually to fix the thing it found, not
+to widen the rule until the complaint goes away.
 
 ## Checking it yourself
 
@@ -84,8 +92,8 @@ cargo ply check — ./ply.yaml
                 settled from the document alone.
   anchors       This document declares no fn claims, so there was nothing for this tier to
                 resolve.
-  architecture  2 real crate dependencies cross between two differently-declared components:
-                2 permitted by a declared edge or by nesting, 0 not permitted (reported
+  architecture  1 real crate dependency crosses between two differently-declared components:
+                1 permitted by a declared edge or by nesting, 0 not permitted (reported
                 below). 4 of 4 crates in this workspace belong to a declared component.
 
   No problems found in the document.

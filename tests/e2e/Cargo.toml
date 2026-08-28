@@ -7,10 +7,5 @@ publish = false
 [dependencies]
 tempfile = "3"
 serde_json = "1"
-# Test-only, for the ratelimiter type-coverage measurement
-# (ratelimiter_type_coverage.rs): it reads `ply_core::harness`'s own type
-# classifier directly, so the count of what Ply accepts is never a second,
-# hand-maintained idea of what the first one does.
-ply-core = { path = "../../crates/ply-core" }
 syn = { version = "2", features = ["full", "extra-traits", "visit"] }
 quote = "1"
