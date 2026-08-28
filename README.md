@@ -100,8 +100,8 @@ This is review compression, not review elimination. Experienced developers still
 what matters and inspect code where mechanical evidence stops.
 
 **What step 2 can and cannot do before the code exists.** The drawing is available
-immediately — the renderer reads a `ply.yaml` alone, with no crate behind it. `cargo ply
-check` is only half available: it validates the document's grammar with nothing else
+immediately: `cargo ply render <dir> -o system.svg` reads `ply.yaml` alone, with no crate
+behind it. `cargo ply check` is only half available: it validates the document's grammar with nothing else
 present, but its architecture half reads your real crate dependency graph from `cargo
 metadata`, so before there is a Cargo project to read there is nothing for it to check
 against, and it says so rather than reporting a clean run. Anchors behave the same way:
@@ -189,9 +189,9 @@ hides uncertainty would recreate the problem Ply exists to solve.
 
 ### What it renders today
 
-Ply includes a static `ply.yaml` to SVG renderer under `tools/render`. It draws the spec
-you wrote, before any code is checked — the picture is a view of your intent, not a report
-on a finished run.
+`cargo ply render <dir> -o system.svg` draws the spec you wrote before any code is
+checked. The picture shows your intent, not a finished run. The command also accepts a
+direct `ply.yaml` path; omit `-o` to print SVG to standard output.
 
 This specification, from `vetting/004-legacy-extension/` — a new feature written beside a
 ledger module that carries no promises of its own:
@@ -281,10 +281,11 @@ implement it afterward.
 ## What Ply does today
 
 Ply is a Cargo subcommand backed by a YAML specification and Rust contract attributes.
-Five commands exist:
+Six commands exist:
 
 | Command | Purpose |
 | --- | --- |
+| `cargo ply render <dir>` | Draw `ply.yaml` as SVG before code or a Cargo project exists. |
 | `cargo ply check <dir>` | Validate `ply.yaml`, resolve claims, and run the available architecture checks without starting verification engines. |
 | `cargo ply verify <dir>` | Run declared checks and report the evidence each function earned. |
 | `cargo ply audit <dir>` | List the trust surface: assumptions and declarations Ply does not verify. |

@@ -4,7 +4,8 @@ mod shared;
 mod verify;
 mod worklist;
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 // The absence vocabulary (§1: "an absence is a name, not a slot") lives in
@@ -14,6 +15,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 // next absence gets missed by one of them, which is the exact shape of the
 // defect that put this rule here.
 use ply_core::diag::is_absence;
+use ply_core::model::parse_document;
+use ply_core::visual::svg::{RenderOptions, render_svg_with_options};
 use ply_core::visual::{
     DEFAULT_RETAINED_RUNS, VisualPublisher, build_visual_envelope_with_sources,
     completed_run_metadata, outcome_of,
@@ -56,6 +59,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Draw ply.yaml as SVG. This needs only the declaration file, not code or Cargo.
+    Render {
+        /// A ply.yaml file, or a directory containing one. Defaults to the current directory.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Write the SVG here instead of printing it.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Fold components at this nesting level or deeper (top-level boxes are level 1).
+        #[arg(long, value_parser = parse_render_depth)]
+        depth: Option<usize>,
+        /// Fully expand this component; dotted paths select nested components.
+        #[arg(long)]
+        focus: Option<String>,
+        /// Fold this component; dotted paths select nested components. Repeat as needed.
+        #[arg(long)]
+        collapse: Vec<String>,
+    },
     /// Validate ply.yaml and the anchors it points at (§6). Fast, no engines.
     Check {
         /// Path to the crate directory containing `ply.yaml`.
@@ -141,6 +162,21 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse_from(raw);
 
     match cli.command {
+        Commands::Render {
+            path,
+            output,
+            depth,
+            focus,
+            collapse,
+        } => {
+            let options = RenderOptions {
+                depth,
+                focus,
+                collapse,
+            };
+            let mut stdout = std::io::stdout().lock();
+            render_command(&path, output.as_deref(), &options, &mut stdout)?;
+        }
         Commands::Check { path } => {
             let report = check::check_crate(&path)?;
             if cli.json {
@@ -230,6 +266,49 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn parse_render_depth(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(0) => Err(
+            "--depth 0 does not select anything: nesting levels start at 1 for top-level boxes"
+                .to_string(),
+        ),
+        Ok(depth) => Ok(depth),
+        Err(_) => Err(format!(
+            "--depth needs a whole number of nesting levels; {value:?} is not one"
+        )),
+    }
+}
+
+fn render_command(
+    requested_path: &Path,
+    output: Option<&Path>,
+    options: &RenderOptions,
+    stdout: &mut impl Write,
+) -> anyhow::Result<()> {
+    let input = if requested_path.is_dir() {
+        requested_path.join("ply.yaml")
+    } else {
+        requested_path.to_path_buf()
+    };
+    let yaml = std::fs::read_to_string(&input)
+        .map_err(|error| anyhow::anyhow!("could not read {}: {error}", input.display()))?;
+    let document = parse_document(&yaml).map_err(|error| {
+        anyhow::anyhow!("{} did not parse as ply.yaml: {error}", input.display())
+    })?;
+    let svg = render_svg_with_options(&document, options)
+        .map_err(|error| anyhow::anyhow!("could not render {}: {error}", input.display()))?;
+
+    if let Some(path) = output {
+        std::fs::write(path, svg)
+            .map_err(|error| anyhow::anyhow!("could not write {}: {error}", path.display()))?;
+    } else {
+        stdout
+            .write_all(svg.as_bytes())
+            .map_err(|error| anyhow::anyhow!("could not write the SVG to stdout: {error}"))?;
+    }
     Ok(())
 }
 
@@ -490,6 +569,112 @@ fn exit_code_for(envelope: &ply_core::diag::Envelope, fail_on: FailOn) -> i32 {
 mod tests {
     use super::*;
     use ply_core::diag::{Envelope, Node};
+
+    #[test]
+    fn render_is_available_before_there_is_a_cargo_project() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("ply.yaml"), "ply: 1\n").unwrap();
+
+        let parsed = Cli::try_parse_from(["cargo-ply", "render", root.path().to_str().unwrap()]);
+        if let Err(error) = parsed {
+            panic!("a directory containing only ply.yaml must be renderable: {error}");
+        }
+    }
+
+    #[test]
+    fn render_defaults_to_the_current_directory_and_keeps_all_renderer_controls() {
+        let cli = Cli::try_parse_from([
+            "cargo-ply",
+            "render",
+            "--depth",
+            "2",
+            "--focus",
+            "outer.inner",
+            "--collapse",
+            "left",
+            "--collapse",
+            "right",
+            "-o",
+            "drawing.svg",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Render {
+                path,
+                output,
+                depth,
+                focus,
+                collapse,
+            } => {
+                assert_eq!(path, PathBuf::from("."));
+                assert_eq!(output, Some(PathBuf::from("drawing.svg")));
+                assert_eq!(depth, Some(2));
+                assert_eq!(focus.as_deref(), Some("outer.inner"));
+                assert_eq!(collapse, ["left", "right"]);
+            }
+            _ => panic!("render should parse as render"),
+        }
+    }
+
+    #[test]
+    fn a_directory_with_only_ply_yaml_renders_the_canonical_svg_to_stdout() {
+        let root = tempfile::tempdir().unwrap();
+        let yaml = "ply: 1\n";
+        std::fs::write(root.path().join("ply.yaml"), yaml).unwrap();
+        assert!(!root.path().join("Cargo.toml").exists());
+
+        let mut stdout = Vec::new();
+        render_command(root.path(), None, &RenderOptions::default(), &mut stdout).unwrap();
+
+        let document = parse_document(yaml).unwrap();
+        let canonical = render_svg_with_options(&document, &RenderOptions::default()).unwrap();
+        assert_eq!(String::from_utf8(stdout).unwrap(), canonical);
+        assert!(canonical.starts_with("<svg"));
+    }
+
+    #[test]
+    fn render_writes_the_requested_file_instead_of_stdout() {
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("diagram.ply.yaml");
+        let output = root.path().join("diagram.svg");
+        std::fs::write(&input, "ply: 1\n").unwrap();
+        let mut stdout = Vec::new();
+
+        render_command(
+            &input,
+            Some(&output),
+            &RenderOptions::default(),
+            &mut stdout,
+        )
+        .unwrap();
+
+        assert!(stdout.is_empty());
+        assert!(std::fs::read_to_string(output).unwrap().starts_with("<svg"));
+    }
+
+    #[test]
+    fn render_errors_name_the_actual_input_and_problem() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("ply.yaml");
+        let mut stdout = Vec::new();
+        let error = render_command(root.path(), None, &RenderOptions::default(), &mut stdout)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&missing.display().to_string()), "{error}");
+        assert!(error.contains("could not read"), "{error}");
+        assert!(
+            error.contains("No such file") || error.contains("not found"),
+            "{error}"
+        );
+
+        std::fs::write(&missing, "this is: [not valid yaml").unwrap();
+        let error = render_command(root.path(), None, &RenderOptions::default(), &mut stdout)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&missing.display().to_string()), "{error}");
+        assert!(error.contains("did not parse as ply.yaml"), "{error}");
+    }
 
     #[test]
     fn publishing_a_view_is_explicit_and_retains_twenty_by_default() {

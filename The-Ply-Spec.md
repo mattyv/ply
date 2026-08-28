@@ -1413,6 +1413,9 @@ No streaming, no IDE integration, no multi-fn synthesis in v1.
 ## 6. CLI
 
 ```
+cargo ply render [path]      # draw ply.yaml as SVG; needs no code or Cargo project
+                             # --output/-o writes a file; otherwise prints to stdout
+                             # --depth/--focus/--collapse control folding
 cargo ply check              # schema + anchors + architecture. Fast, no engines.
                              # IMPLEMENTED: schema + anchors only (see below).
 cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts
@@ -1428,6 +1431,12 @@ cargo ply doctor             # engine presence + versions vs pins; prints the ex
 cargo ply synth <fn>         # M6
 cargo ply skill              # (re)generate docs/PLY.skill.md from schema + diag registry
 ```
+
+**`render` is the pre-code command.** It accepts a `ply.yaml` file or a directory that
+contains one, and defaults to the current directory. It parses the same document model
+and calls the same SVG renderer used by published visual artifacts. It runs no checks,
+reads no result record, creates no `target/ply` files, and needs no `Cargo.toml`. An
+output path writes one SVG file; without one, the command writes SVG to standard output.
 
 **`check` implements two of its three tiers (2026-08-25, Phase 1a), and says so in its own
 output.** Schema (the document against `schema/ply.schema.json` — `E0201`, `E0204` — then
@@ -1494,7 +1503,7 @@ nothing off. Like `check`, `audit` runs no engines, so every node in its envelop
 `unclaimed`, and its last line says so. The surface itself rides in the envelope as
 `trust_surface`, an additive §8 field.
 
-Global flags: `--json` (schema §8, the agent surface — every command supports it),
+Inspection and verification flags: `--json` (schema §8, the agent surface),
 `--engine-timeout=<s>` (shape-aware default, not a flat number — see below),
 `--only-changed` (scope to the git diff), `--fail-on=warn|evidence|error` (default
 `evidence`, see the exit codes below), `--seed=<hex>` (replay a recorded `fuzz(n)` run —
