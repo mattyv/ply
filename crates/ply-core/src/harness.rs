@@ -1877,6 +1877,248 @@ fn impl_targets_type(self_ty: &Type, type_name: &str) -> bool {
             && tp.path.segments[0].arguments.is_empty())
 }
 
+/// `file_path`'s own module path, as a list of segments from the crate
+/// root -- `crate_dir/src/lib.rs`/`main.rs` is `[]`, `crate_dir/src/a.rs`
+/// or `crate_dir/src/a/mod.rs` is `["a"]`, `crate_dir/src/a/b.rs` is
+/// `["a", "b"]`. Shared by [`qualified_type_path`] (which appends a type's
+/// own bare name to this) and by the receiver scan's own qualified-`impl`
+/// resolution ([`resolve_absolute_path`]), so the two can never derive a
+/// module path two different ways.
+fn file_module_segments(crate_dir: &Path, file_path: &Path) -> Vec<String> {
+    let src_dir = crate_dir.join("src");
+    let rel = file_path.strip_prefix(&src_dir).unwrap_or(file_path);
+    let mut segs: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
+    if let Some(last) = segs.last().cloned() {
+        if last == "lib.rs" || last == "main.rs" || last == "mod.rs" {
+            segs.pop();
+        } else if let Some(stem) = last.strip_suffix(".rs") {
+            let stem = stem.to_string();
+            *segs.last_mut().unwrap() = stem;
+        }
+    }
+    segs
+}
+
+/// Resolves a path's segments (an `impl` block's own `self_ty`, or a `use`
+/// tree leaf's path -- both are ordinary item-position paths) to an
+/// absolute, crate-root-relative sequence of segments, the same "uniform
+/// paths" rule Rust 2018+ item paths already follow: `crate::`/`self::`/
+/// `super::` are relative keywords resolved against `file_mod` (the
+/// scanning file's own module path, from [`file_module_segments`]);
+/// anything else is already absolute from the crate root (or names an
+/// external crate this scan does not track, in which case treating it as
+/// absolute-from-root is a harmless best effort -- it will simply fail to
+/// match any in-crate canonical path and read as [`ImplMatch::Unconfirmed`],
+/// never as a false [`ImplMatch::Confirmed`]).
+///
+/// `None` only for a `super::` chain that pops past the crate root (a
+/// shape that does not compile in the real crate either, so this scan will
+/// never see it fed a valid file, but a parser is not a compiler and must
+/// not panic on one).
+fn resolve_absolute_path(file_mod: &[String], segs: &[String]) -> Option<Vec<String>> {
+    let mut base: Vec<String>;
+    let mut rest = segs;
+    match rest.first().map(|s| s.as_str()) {
+        Some("crate") => {
+            base = Vec::new();
+            rest = &rest[1..];
+        }
+        Some("self") => {
+            base = file_mod.to_vec();
+            rest = &rest[1..];
+        }
+        Some("super") => {
+            base = file_mod.to_vec();
+            while rest.first().map(|s| s.as_str()) == Some("super") {
+                if base.is_empty() {
+                    return None;
+                }
+                base.pop();
+                rest = &rest[1..];
+            }
+        }
+        _ => base = Vec::new(),
+    }
+    base.extend(rest.iter().cloned());
+    Some(base)
+}
+
+/// Every local binding a top-level `use` item introduces in `file`, mapped
+/// to the raw path segments (exactly as written, `crate`/`self`/`super`
+/// kept literal) it names -- `use crate::till::Till as T;` contributes
+/// `"T" -> ["crate", "till", "Till"]`; a plain `use till::Till;` (no
+/// rename) contributes `"Till" -> ["till", "Till"]`. Built once per file so
+/// [`classify_impl_self_ty`] can resolve `impl T { .. }` back to whatever
+/// `T` actually names, the one shape a bare identifier comparison against
+/// `type_name` cannot see on its own (2026-08-28, coordinator review of
+/// docs/review-silent-narrowing.md's own fix, "a `use ... as` alias").
+/// Glob imports (`use a::b::*;`) name nothing specific and contribute
+/// nothing.
+fn use_aliases_in_file(file: &syn::File) -> std::collections::BTreeMap<String, Vec<String>> {
+    fn walk(
+        tree: &syn::UseTree,
+        prefix: &mut Vec<String>,
+        out: &mut std::collections::BTreeMap<String, Vec<String>>,
+    ) {
+        match tree {
+            syn::UseTree::Path(p) => {
+                prefix.push(p.ident.to_string());
+                walk(&p.tree, prefix, out);
+                prefix.pop();
+            }
+            syn::UseTree::Name(n) => {
+                let mut full = prefix.clone();
+                full.push(n.ident.to_string());
+                out.insert(n.ident.to_string(), full);
+            }
+            syn::UseTree::Rename(r) => {
+                let mut full = prefix.clone();
+                full.push(r.ident.to_string());
+                out.insert(r.rename.to_string(), full);
+            }
+            syn::UseTree::Glob(_) => {}
+            syn::UseTree::Group(g) => {
+                for item in &g.items {
+                    walk(item, prefix, out);
+                }
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    for item in &file.items {
+        if let syn::Item::Use(u) = item {
+            let mut prefix = Vec::new();
+            walk(&u.tree, &mut prefix, &mut out);
+        }
+    }
+    out
+}
+
+/// Whether an `impl` block's own `self_ty` is the same type as `type_name`
+/// (2026-08-28, coordinator review of docs/review-silent-narrowing.md's own
+/// fix: cross-file widening caught the plain `impl Till` spelling and
+/// missed every qualified one -- `impl super::Till`, `impl crate::Till`,
+/// `impl self::Till`, and an `impl` reached only through a `use ... as`
+/// alias, every one of them exactly what a real submodule-split crate
+/// writes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImplMatch {
+    /// The same type, and this scan is sure of it: either the ordinary
+    /// bare-name spelling (`impl Till`), or a qualified/aliased spelling
+    /// this scan resolved to the type's own canonical, unambiguous
+    /// declaring module.
+    Confirmed,
+    /// This `impl` block's own self type ends in the same bare identifier
+    /// as `type_name`, but this scan could not confirm the two name the
+    /// same declared type -- the type's own declaration is ambiguous
+    /// crate-wide, or this scan's own resolution of the qualified/aliased
+    /// path did not land on the type's canonical module. Never silently
+    /// folded into `Confirmed` (a wrong merge) or into `NotThisType` (a
+    /// silent absence): named as an exclusion instead, by the caller.
+    Unconfirmed,
+    /// An ordinary `impl` block for a different type entirely (a different
+    /// bare name at the end of the path) -- not this scan's concern.
+    NotThisType,
+}
+
+/// A plain type path's segments joined with `::`, no extra whitespace --
+/// `imp.self_ty.to_token_stream().to_string()` renders `super :: Till`
+/// (spaced, `quote`'s own token-stream style), which is accurate but not a
+/// sentence a newbie-bar message should quote. Falls back to the
+/// token-stream rendering for any shape other than a plain path (should
+/// not occur here: every caller already matched `Type::Path` first).
+fn render_type_path(ty: &Type) -> String {
+    if let Type::Path(tp) = ty {
+        tp.path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::")
+    } else {
+        ty.to_token_stream().to_string()
+    }
+}
+
+/// Classifies one `impl` block's `self_ty` against `type_name`, using
+/// `file_mod` (the scanning file's own module path) and `use_aliases` (that
+/// file's own `use ... as` bindings) to resolve `super::`/`crate::`/
+/// `self::` qualifiers and aliases the same way `rustc` would, and
+/// `target_absolute` (the type's own canonical absolute path -- module
+/// segments plus its bare name -- when [`scan_crate_type_locations`] found
+/// it declared in exactly one file crate-wide, `None` when it is declared
+/// nowhere this scan found or in more than one file) to decide whether a
+/// qualified/aliased spelling really lands on the same declaration.
+fn classify_impl_self_ty(
+    self_ty: &Type,
+    type_name: &str,
+    file_mod: &[String],
+    use_aliases: &std::collections::BTreeMap<String, Vec<String>>,
+    target_absolute: Option<&[String]>,
+) -> ImplMatch {
+    let Type::Path(tp) = self_ty else {
+        return ImplMatch::NotThisType;
+    };
+    if tp.qself.is_some() {
+        return ImplMatch::NotThisType;
+    }
+    let Some(last_seg) = tp.path.segments.last() else {
+        return ImplMatch::NotThisType;
+    };
+    if !last_seg.arguments.is_empty() {
+        // A generic instantiation (`impl Till<u8>`, or `impl mod::Wrapper<Till>`
+        // whose *last* segment carries the args) -- a different question
+        // from plain-name resolution, left entirely to the resolver's own
+        // generic-`impl` handling, exactly as `impl_targets_type` already
+        // left it.
+        return ImplMatch::NotThisType;
+    }
+
+    let raw_segs: Vec<String> = tp
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+
+    // The ordinary, overwhelmingly common shape: bare, one segment, the
+    // same identifier as `type_name` -- always confirmed, exactly as
+    // `impl_targets_type` already decided it, and checked first so it never
+    // pays for alias/path resolution it does not need.
+    if raw_segs.len() == 1 && raw_segs[0] == type_name {
+        return ImplMatch::Confirmed;
+    }
+
+    // A single-segment self type that is *not* `type_name` itself can only
+    // still be our type through a local `use ... as` alias -- resolve it to
+    // whatever that alias's own path names before going further. A
+    // multi-segment path is never itself an alias target (its first
+    // segment is a module qualifier, not a local binding).
+    let effective_segs: Vec<String> = if raw_segs.len() == 1 {
+        match use_aliases.get(&raw_segs[0]) {
+            Some(aliased) => aliased.clone(),
+            None => raw_segs.clone(),
+        }
+    } else {
+        raw_segs.clone()
+    };
+
+    if effective_segs.last().map(|s| s.as_str()) != Some(type_name) {
+        return ImplMatch::NotThisType;
+    }
+
+    let Some(target_absolute) = target_absolute else {
+        return ImplMatch::Unconfirmed;
+    };
+    match resolve_absolute_path(file_mod, &effective_segs) {
+        Some(resolved) if resolved == target_absolute => ImplMatch::Confirmed,
+        _ => ImplMatch::Unconfirmed,
+    }
+}
+
 /// Every non-`self` argument of `inputs` as a [`Param`], the same shape
 /// `build_contract_fn` already reads for a free function's whole parameter
 /// list -- `None` on the one pattern shape it refuses (anything but a plain
@@ -2038,14 +2280,55 @@ fn scan_file_for_receiver(
     aliases: &AliasMap,
     type_name: &str,
     method_name: &str,
+    file_mod: &[String],
+    target_absolute: Option<&[String]>,
 ) -> std::result::Result<FileReceiverScan, ReceiverError> {
     let mut out = FileReceiverScan::default();
+    let use_aliases = use_aliases_in_file(file);
 
     for item in &file.items {
         let syn::Item::Impl(imp) = item else {
             continue;
         };
-        if !impl_targets_type(&imp.self_ty, type_name) {
+        let match_kind = classify_impl_self_ty(
+            &imp.self_ty,
+            type_name,
+            file_mod,
+            &use_aliases,
+            target_absolute,
+        );
+        if match_kind == ImplMatch::NotThisType {
+            continue;
+        }
+        if match_kind == ImplMatch::Unconfirmed {
+            // Ends in the same bare name as `type_name`, reached through a
+            // qualifier or alias this scan could not resolve to the type's
+            // own canonical module (2026-08-28, coordinator review of
+            // docs/review-silent-narrowing.md's own fix) -- named as an
+            // exclusion by the exact spelling written, never silently
+            // folded into the pool (a wrong merge) or silently dropped (a
+            // false claim of completeness), the same discipline the trait
+            // branch below already applies to a different reason.
+            let self_ty_src = render_type_path(&imp.self_ty);
+            for impl_item in &imp.items {
+                let syn::ImplItem::Fn(m) = impl_item else {
+                    continue;
+                };
+                let has_ref_receiver = matches!(
+                    m.sig.inputs.first(),
+                    Some(FnArg::Receiver(r)) if r.reference.is_some()
+                );
+                if has_ref_receiver {
+                    out.excluded_ops.push(ExcludedOperation {
+                        call_path: format!("{type_name}::{}", m.sig.ident),
+                        reason: format!(
+                            "it is defined in `impl {self_ty_src}`, and this scan could not \
+                             confirm that `{self_ty_src}` names the same `{type_name}` this \
+                             receiver was built for"
+                        ),
+                    });
+                }
+            }
             continue;
         }
         if imp.trait_.is_some() {
@@ -2179,6 +2462,27 @@ fn scan_impls_for_receiver(
     let mut other_ops: Vec<Operation> = Vec::new();
     let mut excluded_ops: Vec<ExcludedOperation> = Vec::new();
 
+    // Computed once, up front, and reused twice below: first (here) to
+    // resolve a qualified/aliased `impl` self type against the type's own
+    // canonical declaring module (2026-08-28, coordinator review, "which
+    // other spellings resolve to the same type"), then again (further
+    // down, unchanged from before this fix) to resolve a constructor
+    // argument's own struct/enum type. One crate-wide scan, two consumers,
+    // rather than two scans that could disagree.
+    let locations = scan_crate_type_locations(crate_dir);
+    let target_absolute: Option<Vec<String>> = match locations.get(type_name) {
+        Some(Some(decl_path)) => {
+            let mut segs = file_module_segments(crate_dir, decl_path);
+            segs.push(type_name.to_string());
+            Some(segs)
+        }
+        // Declared nowhere this scan found, or declared in more than one
+        // file (ambiguous) -- either way, no qualified/aliased spelling can
+        // be confirmed against it, so every one becomes `Unconfirmed`
+        // rather than silently trusted.
+        _ => None,
+    };
+
     let mut merge = |scan: FileReceiverScan| {
         if target.is_none() {
             target = scan.target;
@@ -2187,11 +2491,14 @@ fn scan_impls_for_receiver(
         other_ops.extend(scan.other_ops);
         excluded_ops.extend(scan.excluded_ops);
     };
+    let declaring_mod = file_module_segments(crate_dir, declaring_file);
     merge(scan_file_for_receiver(
         file,
         aliases,
         type_name,
         method_name,
+        &declaring_mod,
+        target_absolute.as_deref(),
     )?);
 
     for path in crate_source_files(crate_dir) {
@@ -2205,11 +2512,14 @@ fn scan_impls_for_receiver(
             continue;
         };
         let other_aliases = alias_map(&other_file);
+        let other_mod = file_module_segments(crate_dir, &path);
         merge(scan_file_for_receiver(
             &other_file,
             &other_aliases,
             type_name,
             method_name,
+            &other_mod,
+            target_absolute.as_deref(),
         )?);
     }
 
@@ -2233,8 +2543,8 @@ fn scan_impls_for_receiver(
     // recursion ever ran, which is exactly the bug this re-resolution
     // fixes: without it, a receiver whose constructor takes another
     // buildable user type is refused for a type that was never actually
-    // unbuildable, just not resolved yet at scan time.
-    let locations = scan_crate_type_locations(crate_dir);
+    // unbuildable, just not resolved yet at scan time. `locations` is the
+    // same crate-wide scan computed once, above, for `target_absolute`.
     let resolve_or_keep = |p: &Param| -> Param {
         match resolve_param_type(crate_dir, &locations, &p.ty, 0) {
             Ok(ty) => Param { ty, ..(*p).clone() },
@@ -2765,20 +3075,7 @@ fn scan_ctor_candidates_crate_wide(
 /// in, never themselves; any other file name is its own last module
 /// segment.
 fn qualified_type_path(crate_dir: &Path, file_path: &Path, type_name: &str) -> String {
-    let src_dir = crate_dir.join("src");
-    let rel = file_path.strip_prefix(&src_dir).unwrap_or(file_path);
-    let mut segs: Vec<String> = rel
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().to_string())
-        .collect();
-    if let Some(last) = segs.last().cloned() {
-        if last == "lib.rs" || last == "main.rs" || last == "mod.rs" {
-            segs.pop();
-        } else if let Some(stem) = last.strip_suffix(".rs") {
-            let stem = stem.to_string();
-            *segs.last_mut().unwrap() = stem;
-        }
-    }
+    let segs = file_module_segments(crate_dir, file_path);
     if segs.is_empty() {
         type_name.to_string()
     } else {

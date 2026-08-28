@@ -1,5 +1,4 @@
 [workspace]
-members = [".", "target/ply/fuzz/ply-fixture-crossfilemutator-ply-harness"]
 # Empty table: this fixture is its own workspace root, per tests/fixtures'
 # convention -- it must never be swept into the product workspace.
 

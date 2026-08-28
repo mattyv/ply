@@ -185,14 +185,20 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
     if node.statuses.iter().any(|s| s == "owed-evidence") {
         marks.push("evidence owed");
     }
-    // A run that could not build an argument for one of a type's own
-    // operations leaves that operation out of the histories it explores, so
-    // a promise this run never had the chance to break can still read as a
-    // clean pass. The verdict carries that fact, and until now it carried
-    // it only into `--json` -- the tree, which is the line most people
-    // actually read, showed a bare `fuzzed(n)` (found by hand, 2026-08-28).
-    // Making the narrowing visible everywhere except where it is read is
-    // the same failure this status exists to end.
+    // A run that left one of a type's own operations or constructors out
+    // of the histories it explores -- an unbuildable argument, a trait
+    // method, a spelling it could not confirm names the same type, or a
+    // constructor it never started from -- can still read as a clean pass
+    // on a promise it never had the chance to break. The verdict carries
+    // that fact, and until now it carried it only into `--json` -- the
+    // tree, which is the line most people actually read, showed a bare
+    // `fuzzed(n)` (found by hand, 2026-08-28). Making the narrowing visible
+    // everywhere except where it is read is the same failure this status
+    // exists to end. The gloss below was written for the first of these
+    // causes only (the unbuildable argument) and quietly stopped being
+    // true the moment the other three were added to the same status
+    // (coordinator review, 2026-08-28) -- it now names all four in the one
+    // sentence a reader who has never seen this status gets.
     if node.statuses.iter().any(|s| s == "partial-history") {
         marks.push("narrower than it looks");
     }
@@ -222,10 +228,11 @@ const MARK_GLOSS: [(&str, &str); 4] = [
     ),
     (
         "narrower than it looks",
-        "real cases ran and this result is real, but Ply could not build an argument for one of \
-         this type's own operations, so no case it generated ever called that operation — if the \
-         promise depends on what that operation does, this run says nothing about it. The lines \
-         below name which one",
+        "real cases ran and this result is real, but this run could not call every one of this \
+         type's own operations or build every one of its constructors — one had an argument it \
+         could not build, belonged to a trait or a piece of code it could not confirm is this \
+         same type, or was simply never the one this run started from — so it says nothing about \
+         what the ones it skipped would have done. The lines below name which, and why",
     ),
     (
         "reused",

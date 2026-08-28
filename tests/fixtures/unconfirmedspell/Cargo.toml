@@ -3,13 +3,13 @@
 # convention -- it must never be swept into the product workspace.
 
 [package]
-name = "ply-fixture-secondctor"
+name = "ply-fixture-unconfirmedspell"
 version = "0.0.0"
 edition = "2021"
 publish = false
 
 [lib]
-name = "ply_fixture_secondctor"
+name = "ply_fixture_unconfirmedspell"
 path = "src/lib.rs"
 
 [dependencies]
