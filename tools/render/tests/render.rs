@@ -3249,3 +3249,115 @@ mod frame_boundary {
         );
     }
 }
+
+/// Every drawn edge label lies inside the drawing.
+///
+/// Written after a smoke test on a real project found two flow labels
+/// misplaced at `--depth 1`: one sitting up in the title band with no line
+/// under it, and one at y=162 on a canvas 152 tall -- outside the image
+/// entirely, so the reader is not told the flow's type at all. The label
+/// placement escalates away from its line until it finds a spot clear of
+/// every box, and between two boxes sitting side by side there is no such
+/// spot, so the search ran to the end of its budget and off the page.
+///
+/// This is an invariant rather than a spot-check on that one document: it
+/// walks whatever the renderer actually emitted and fails on the first
+/// label outside the canvas, so a layout change that reintroduces the
+/// problem somewhere else cannot pass.
+#[test]
+fn every_drawn_label_lies_inside_the_canvas() {
+    let docs: Vec<(&str, &str)> = vec![
+        ("side by side, folded", SIDE_BY_SIDE_FOLDED),
+        (
+            "vetting 002",
+            include_str!("../../../vetting/002-ingest-pipeline.ply.yaml"),
+        ),
+        (
+            "vetting 003",
+            include_str!("../../../vetting/003-trading-system.ply.yaml"),
+        ),
+    ];
+    for (name, yaml) in docs {
+        let doc = ply_render::model::parse_document(yaml)
+            .unwrap_or_else(|e| panic!("{name} must parse: {e}"));
+        for depth in [None, Some(1), Some(2)] {
+            let opts = ply_render::svg::RenderOptions {
+                depth,
+                focus: None,
+                collapse: Vec::new(),
+            };
+            let svg = ply_render::svg::render_svg_with_options(&doc, &opts)
+                .unwrap_or_else(|e| panic!("{name} must render: {e}"));
+            let (w, h) = canvas_size(&svg);
+            for (x, y, text) in text_elements(&svg) {
+                assert!(
+                    x >= 0.0 && x <= w && y >= 0.0 && y <= h,
+                    "{name} at depth {depth:?}: the label {text:?} is drawn at ({x}, {y}), \
+                     outside the {w}x{h} canvas -- a reader never sees it"
+                );
+            }
+        }
+    }
+}
+
+/// A document with two top-level components, each holding children, and
+/// flows between those children. At `--depth 1` both ends of every flow
+/// fold into their parents, which is the shape that stranded the labels.
+const SIDE_BY_SIDE_FOLDED: &str = "\
+ply: 1
+
+components:
+  scheduling:
+    anchor: sched
+    components:
+      queue:
+        anchor: sched::queue
+      poller:
+        anchor: sched::poller
+  edge:
+    anchor: edge
+    components:
+      mapper:
+        anchor: edge::mapper
+      sink:
+        anchor: edge::sink
+
+edges:
+  - \"scheduling.queue ~> edge.mapper : MappedRecord\"
+  - \"edge.sink ~> scheduling.poller : PollAttempt\"
+";
+
+fn canvas_size(svg: &str) -> (f64, f64) {
+    let grab = |key: &str| -> f64 {
+        let at = svg
+            .find(&format!("{key}=\""))
+            .expect("svg carries width/height");
+        let rest = &svg[at + key.len() + 2..];
+        let end = rest.find('"').expect("attribute is closed");
+        rest[..end].parse().expect("a number")
+    };
+    (grab("width"), grab("height"))
+}
+
+/// Every `<text ...>` element's position and content.
+fn text_elements(svg: &str) -> Vec<(f64, f64, String)> {
+    let mut out = Vec::new();
+    for chunk in svg.split("<text").skip(1) {
+        let Some(close) = chunk.find('>') else {
+            continue;
+        };
+        let attrs = &chunk[..close];
+        let body = &chunk[close + 1..];
+        let text = body.split('<').next().unwrap_or("").to_string();
+        let num = |key: &str| -> Option<f64> {
+            let at = attrs.find(&format!(" {key}=\""))?;
+            let rest = &attrs[at + key.len() + 3..];
+            let end = rest.find('"')?;
+            rest[..end].parse().ok()
+        };
+        if let (Some(x), Some(y)) = (num("x"), num("y")) {
+            out.push((x, y, text));
+        }
+    }
+    out
+}

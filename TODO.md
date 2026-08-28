@@ -45,6 +45,44 @@ Nothing below jumps that queue.
       change, so it needs doing in GitHub's settings by the repository owner (or via
       the API with admin rights) -- Ply cannot set it from here.
 
+## Smoke test on a real project — 2026-08-28
+
+The maintainer ran Ply against a project of their own and reported what broke. Findings
+in their words, and what happened to each.
+
+- [x] **`cargo ply --version` did not exist.** It reports two numbers now, because they
+      answer different questions: the release, and the build identity -- the content
+      hash that decides whether a stored result may be carried forward, so the number a
+      run means when it says "the build of Ply that checked it changed".
+- [x] **The help text contradicted itself**, describing the CLI as a slice that
+      "implements only `verify`" while listing four working commands under it.
+- [x] **`--depth`/`--focus` on a flat document emitted identical output silently**, which
+      the maintainer initially recorded as a bug before deciding it was correct. It now
+      says so: the note is earned by rendering the default drawing and comparing, so it
+      cannot disagree with what was drawn.
+- [x] **Flow labels stranded at `--depth 1`** -- one in the title band, one at y=162 on a
+      canvas 152 tall, invisible. Reproduced exactly. The label placement escalates away
+      from its line until it clears every box, and between two boxes side by side there
+      is no such spot, so the search ran off the page. A position outside the drawn
+      content is no longer a candidate. Pinned by an invariant test that walks the real
+      output of several documents at several depths and fails on the first label outside
+      the canvas.
+- [ ] **KNOWN GAP, reproduced and not yet fixed: edge lines strike through box text.**
+      An edge between two boxes with a third between them is drawn as a straight line
+      through the middle box. Repro: three top-level components in a row, an edge from
+      the first to the third. Fixing it means routing a line around obstacles -- a
+      waypoint on the path and an obstacle test -- rather than the single straight
+      segment `render_edge` draws today.
+- [ ] **The architecture summary counts crates it never names.** "1 of 2 crates in this
+      workspace belong to a declared component" is honest but not actionable: the crate
+      that belongs to nothing is not named, so the reader cannot tell which. Found while
+      checking a reviewer's claim that an undeclared dependency is skipped silently --
+      it is skipped, but the coverage count does disclose it, so the fix is naming
+      rather than counting.
+- [ ] **`check` cannot check architecture without a Cargo workspace**, so the pre-code
+      half of the loop is render-only. True, and the README implies otherwise; say so
+      there.
+
 ## Bug fixes after 0.1.0 — branch `claude/bugfix-post-0-1-0`
 
 - [x] **The README says how to install it.** There was no install path written down at

@@ -16,10 +16,31 @@ use clap::{Parser, Subcommand, ValueEnum};
 use ply_core::diag::is_absence;
 use verify::VerifyOptions;
 
-/// cargo-ply -- the Ply CLI. This M3 thin slice implements only `verify`
-/// (plus the global `--json`), per the M3 brief's explicit scope.
+// The `about` string below is what `--help` prints, so it is written for
+// someone who has never seen Ply rather than for this file's reader. It used
+// to say the CLI "implements only `verify`", which stopped being true
+// several milestones ago and read as a flat contradiction beside the four
+// commands listed under it (found by a smoke test on a real project,
+// 2026-08-28).
+//
+// `--version` reports two numbers because they answer different questions.
+// The package version says which release this is. The build identity is the
+// content hash of the source it was built from, and it is what decides
+// whether a stored result may be carried forward -- so when a run says a
+// claim was re-checked because "the build of Ply that checked it changed",
+// this is the number that changed.
 #[derive(Parser)]
-#[command(name = "cargo-ply", bin_name = "cargo-ply")]
+#[command(
+    name = "cargo-ply",
+    bin_name = "cargo-ply",
+    about = "cargo-ply -- declare what your code promises, and get evidence for it",
+    version = concat!(
+        env!("CARGO_PKG_VERSION"),
+        " (build identity ",
+        env!("PLY_BUILD_ID"),
+        ")"
+    )
+)]
 struct Cli {
     /// Emit the §8 JSON envelope instead of human-readable text.
     #[arg(long, global = true)]
