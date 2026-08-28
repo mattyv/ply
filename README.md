@@ -57,9 +57,60 @@ Every visual mark must have one stable meaning. Colour alone must never carry th
 meaning, and an unknown or unsupported fact must never look verified. A diagram that
 hides uncertainty would recreate the problem Ply exists to solve.
 
-Ply already includes a static `ply.yaml` to SVG renderer under `tools/render`. The live
-intended-versus-actual view, evidence overlays, and interactive editing workflow remain
-product direction rather than finished features.
+### What it renders today
+
+Ply includes a static `ply.yaml` to SVG renderer under `tools/render`. It draws the spec
+you wrote, before any code is checked — the picture is a view of your intent, not a report
+on a finished run.
+
+This specification, from `vetting/004-legacy-extension/` — a new feature written beside a
+ledger module that carries no promises of its own:
+
+```yaml
+ply: 1
+components:
+  ledger:                       # old code: no claims, nothing checked
+    anchor: ledger
+  withdrawal:                   # the new feature
+    anchor: withdrawal
+    pure: true
+    fns:
+      fee_cents:          { checks: [bounded(2)] }
+      total_debit_cents:  { checks: [bounded(2)] }
+      tier_fee_cents:     { checks: [bounded(2)] }
+      approve_withdrawal:
+        checks: [fuzz(256), test]
+        examples:
+          - "approve_withdrawal(1000, 5000, 3) == true"
+          - "approve_withdrawal(5000, 5000, 0) == false"
+      withdraw:           { checks: [bounded(2)] }
+edges:
+  - withdrawal -> ledger        # the one crossing that is allowed
+```
+
+renders as:
+
+<p align="center">
+  <img src="vetting/004-legacy-extension.svg" alt="The withdrawal component drawn as a solid box listing its five functions, each badged with the checks it declares; an arrow crosses to a dashed box for the ledger it depends on." width="330">
+</p>
+
+The reading is meant to be immediate. A **solid** box is code that makes claims; the
+**dashed** box is code that does not, so nothing about it has been checked. Each function
+carries the checks it declares — `B2` for bounded to depth 2, `F256` for 256 sampled
+cases, `T` for worked examples, `e×2` for how many. The arrow is the one dependency the
+spec permits; anything else between these two would be a violation.
+
+That distinction is the point. The picture shows where the checked code ends and the
+unchecked code begins, so an unverified boundary is visible rather than implied.
+
+Four more rendered scenarios live in [`vetting/`](vetting/), each a design written in the
+grammar before the tool could check it.
+
+### What is not built yet
+
+The live intended-versus-actual view, evidence overlays, and interactive editing workflow
+remain product direction rather than finished features. Today's renderer draws intent
+only — it does not yet colour a function by the evidence it earned.
 
 ## A portable core with optional extensions
 
