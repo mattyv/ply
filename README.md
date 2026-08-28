@@ -99,6 +99,14 @@ Ply is designed for a human-directed agent workflow:
 This is review compression, not review elimination. Experienced developers still decide
 what matters and inspect code where mechanical evidence stops.
 
+**What step 2 can and cannot do before the code exists.** The drawing is available
+immediately — the renderer reads a `ply.yaml` alone, with no crate behind it. `cargo ply
+check` is only half available: it validates the document's grammar with nothing else
+present, but its architecture half reads your real crate dependency graph from `cargo
+metadata`, so before there is a Cargo project to read there is nothing for it to check
+against, and it says so rather than reporting a clean run. Anchors behave the same way:
+point it at a crate whose promised functions are not written yet and it names each one.
+
 ## A declarative grammar, and the line where it stops
 
 Ply gives you a **declarative grammar** for describing a system: components and how they

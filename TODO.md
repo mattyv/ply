@@ -79,9 +79,11 @@ in their words, and what happened to each.
       checking a reviewer's claim that an undeclared dependency is skipped silently --
       it is skipped, but the coverage count does disclose it, so the fix is naming
       rather than counting.
-- [ ] **`check` cannot check architecture without a Cargo workspace**, so the pre-code
-      half of the loop is render-only. True, and the README implies otherwise; say so
-      there.
+- [x] **`check` cannot check architecture without a Cargo workspace**, so the pre-code
+      half of the loop is render-only. True, and the README implied otherwise. The
+      development-loop section now says which half of step 2 works before the code
+      exists: the drawing always, the document's grammar always, the architecture check
+      not until there is a Cargo project to read a dependency graph from.
 
 ## Bug fixes after 0.1.0 — branch `claude/bugfix-post-0-1-0`
 
