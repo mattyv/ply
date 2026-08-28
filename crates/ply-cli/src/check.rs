@@ -303,16 +303,38 @@ fn check_anchors(
         // run that looked and was satisfied (§1), and the two commands have
         // to agree about the same fact, so every claim is unresolved and
         // says why.
-        for (name, comp) in &doc.components {
+        // Nested components carry claims too, so this walks the same tree
+        // `count_fn_claims` does rather than only the top level -- a claim
+        // Ply cannot look for must be reported wherever it was written.
+        fn walk_no_library(
+            qualified: &str,
+            comp: &Component,
+            lib_path: &Path,
+            diagnostics: &mut Vec<Diagnostic>,
+            tally: &mut AnchorTally,
+        ) {
             for fn_name in comp.fns.keys() {
                 tally.unresolved += 1;
                 diagnostics.push(no_library_diag(
-                    &format!("{name}::{fn_name}"),
+                    &format!("{qualified}::{fn_name}"),
                     fn_name,
-                    &lib_path,
+                    lib_path,
                 ));
             }
+            for (child, sub) in &comp.components {
+                walk_no_library(
+                    &format!("{qualified}::{child}"),
+                    sub,
+                    lib_path,
+                    diagnostics,
+                    tally,
+                );
+            }
         }
+        for (name, comp) in &doc.components {
+            walk_no_library(name, comp, &lib_path, diagnostics, &mut tally);
+        }
+        debug_assert_eq!(tally.unresolved, count_fn_claims(doc));
         tally.no_library = true;
         return tally;
     };
