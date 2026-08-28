@@ -1,7 +1,7 @@
 # Ply
 
 Ply is a specification, verification, and visual-development layer for plain Rust.
-It aims to bridge the gap between blind "trust me bro~!" agent 'vibe' coding and reviewing every
+It aims to bridge the gap between blind "trust me bro!" agent 'vibe' coding and reviewing every
 generated line by hand.
 
 A developer states what the program must do. An agent writes the implementation. Ply
