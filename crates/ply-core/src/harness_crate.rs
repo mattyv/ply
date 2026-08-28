@@ -617,9 +617,12 @@ path = "src/lib.rs"
                 "target/ply/fuzz/x-ply-harness",
                 &dir.path().join("target/ply/fuzz/x-ply-harness"),
                 "x-ply-harness",
-                &CrateNames { package_name: "x".into(), lib_ident: "x".into() },
+                &CrateNames {
+                    package_name: "x".into(),
+                    lib_ident: "x".into(),
+                },
             )
-                .unwrap();
+            .unwrap();
             let during = std::fs::read_to_string(&path).unwrap();
             assert!(
                 during.contains("\"target/ply/fuzz/x-ply-harness\""),
@@ -645,14 +648,17 @@ path = "src/lib.rs"
         let original = "[workspace]\n\n[package]\nname = \"x\"\n";
         std::fs::write(&path, original).unwrap();
         {
-            let _guard =
-                ManifestRegistration::register(
+            let _guard = ManifestRegistration::register(
                 &path,
                 "target/ply/fuzz/x-ply-harness",
                 &dir.path().join("target/ply/fuzz/x-ply-harness"),
                 "x-ply-harness",
-                &CrateNames { package_name: "x".into(), lib_ident: "x".into() },
-            ).unwrap();
+                &CrateNames {
+                    package_name: "x".into(),
+                    lib_ident: "x".into(),
+                },
+            )
+            .unwrap();
         }
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
@@ -666,14 +672,17 @@ path = "src/lib.rs"
         std::fs::write(&path, "[workspace]\n\n[package]\nname = \"x\"\n").unwrap();
         let edited = "[workspace]\nmembers = [\".\", \"target/ply/fuzz/x-ply-harness\"]\n\n[package]\nname = \"x\"\nversion = \"9.9.9\"\n";
         {
-            let _guard =
-                ManifestRegistration::register(
+            let _guard = ManifestRegistration::register(
                 &path,
                 "target/ply/fuzz/x-ply-harness",
                 &dir.path().join("target/ply/fuzz/x-ply-harness"),
                 "x-ply-harness",
-                &CrateNames { package_name: "x".into(), lib_ident: "x".into() },
-            ).unwrap();
+                &CrateNames {
+                    package_name: "x".into(),
+                    lib_ident: "x".into(),
+                },
+            )
+            .unwrap();
             std::fs::write(&path, edited).unwrap();
         }
         assert_eq!(
@@ -696,14 +705,17 @@ path = "src/lib.rs"
         )
         .unwrap();
         {
-            let _guard =
-                ManifestRegistration::register(
+            let _guard = ManifestRegistration::register(
                 &path,
                 "target/ply/fuzz/x-ply-harness",
                 &dir.path().join("target/ply/fuzz/x-ply-harness"),
                 "x-ply-harness",
-                &CrateNames { package_name: "x".into(), lib_ident: "x".into() },
-            ).unwrap();
+                &CrateNames {
+                    package_name: "x".into(),
+                    lib_ident: "x".into(),
+                },
+            )
+            .unwrap();
         }
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),

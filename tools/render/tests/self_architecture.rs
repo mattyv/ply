@@ -40,8 +40,7 @@ fn the_architecture_diagram_matches_the_spec_it_claims_to_be_rendered_from() {
     });
 
     assert_eq!(
-        committed,
-        fresh,
+        committed, fresh,
         "docs/ply-self.svg no longer matches what ply.yaml renders to, so the diagram in \
          ARCHITECTURE.md is showing a structure this repository no longer has. Regenerate it \
          from the tools workspace, then look at the result before committing it:\n  \

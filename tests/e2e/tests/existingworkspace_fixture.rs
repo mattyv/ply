@@ -22,8 +22,7 @@ use ply_e2e::{build_cargo_ply, copy_fixture, run_cargo_build, run_cargo_test, ru
 fn a_crate_that_already_has_workspace_keeps_the_original_registered_member_mechanism() {
     let cargo_ply = build_cargo_ply();
     let fixture = copy_fixture("existingworkspace");
-    let pristine_manifest =
-        std::fs::read_to_string(fixture.path().join("Cargo.toml")).unwrap();
+    let pristine_manifest = std::fs::read_to_string(fixture.path().join("Cargo.toml")).unwrap();
 
     let run = run_verify(&cargo_ply, fixture.path(), 120);
     assert_eq!(

@@ -96,10 +96,10 @@ fn collect_type_uses(file: &syn::File, owner_prefix: &str, out: &mut Vec<TypeUse
 
     let mut pub_types: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for item in &file.items {
-        if let Item::Struct(s) = item {
-            if is_pub(&s.vis) {
-                pub_types.insert(s.ident.to_string());
-            }
+        if let Item::Struct(s) = item
+            && is_pub(&s.vis)
+        {
+            pub_types.insert(s.ident.to_string());
         }
     }
 
@@ -176,15 +176,15 @@ fn collect_type_uses(file: &syn::File, owner_prefix: &str, out: &mut Vec<TypeUse
                     continue;
                 }
                 for ii in &imp.items {
-                    if let syn::ImplItem::Fn(m) = ii {
-                        if is_trait_impl || is_pub_or_crate_visible(&m.vis) {
-                            push_sig(
-                                format!("{owner_prefix}{self_ty}::{}", m.sig.ident),
-                                &m.sig.inputs,
-                                &m.sig.output,
-                                out,
-                            );
-                        }
+                    if let syn::ImplItem::Fn(m) = ii
+                        && (is_trait_impl || is_pub_or_crate_visible(&m.vis))
+                    {
+                        push_sig(
+                            format!("{owner_prefix}{self_ty}::{}", m.sig.ident),
+                            &m.sig.inputs,
+                            &m.sig.output,
+                            out,
+                        );
                     }
                 }
             }
@@ -274,7 +274,7 @@ fn ratelimiter_public_surface_type_mapping_coverage() {
         unsupported
     );
     let mut rows: Vec<(&String, &(usize, &str))> = by_type.iter().collect();
-    rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then(a.0.cmp(b.0)));
+    rows.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(b.0)));
     for (ty_src, (count, bucket)) in rows {
         eprintln!("PLY_TYPE_COVERAGE_ROW|{ty_src}|{count}|{bucket}");
     }

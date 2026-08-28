@@ -223,7 +223,11 @@ fn a_binary_only_crate_is_told_nothing_was_searched_rather_than_given_a_clean_ru
     // same crate.
     let cargo_ply = build_cargo_ply();
     let verify = run_verify(&cargo_ply, root, 120);
-    assert_eq!(verify.json["root"]["verdict"], "unclaimed", "{}", verify.json);
+    assert_eq!(
+        verify.json["root"]["verdict"], "unclaimed",
+        "{}",
+        verify.json
+    );
     assert!(
         verify.json["diagnostics"]
             .as_array()
