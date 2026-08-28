@@ -17,10 +17,19 @@ impl Gauge {
     }
 }
 
-/// Stands in for "a type Ply's parser does not model at all" -- the same
-/// role `Elsewhere` plays in `tests/fixtures/implmethod`.
+/// Stands in for "a type Ply's checkers cannot build a value of".
+///
+/// Its field is PRIVATE and it has no constructor of its own, so neither
+/// route can produce one: there is nothing to call, and nothing outside
+/// this module could write the literal either. It was a public-field struct
+/// until 2026-08-28, when struct parameters landed and made that shape
+/// buildable -- at which point this fixture stopped testing what its own
+/// name says and started asserting a limitation that no longer existed. The
+/// capability grew and the fixture did not, which is worth a comment rather
+/// than a silent edit: a test that pins an absence has to be re-checked
+/// every time the absence might have ended.
 pub struct Tag {
-    pub label: u32,
+    label: u32,
 }
 
 /// `Labelled`'s only constructor takes a `Tag`, which Ply's checkers cannot
