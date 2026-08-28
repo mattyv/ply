@@ -5,6 +5,17 @@
 **Order the maintainer set: land the release, then the bug backlog, then suite speed.**
 Nothing below jumps that queue.
 
+- [ ] **Shard the end-to-end CI job across a matrix.** Agreed with the maintainer as
+      the cheap half of the speed problem, to be done after the bug backlog and
+      alongside (before) the refactor below. The suite is 82 independent test binaries
+      run as one job on one 4-core runner; splitting them across four parallel jobs
+      takes the wall clock to roughly the slowest quarter -- ten minutes rather than
+      forty -- with no change to any test, product code, or what is actually checked.
+      Purely `.github/workflows/ci.yml`. The honest caveat: every shard pays the Kani
+      and cargo-mutants install, which is only partly cached, so the real figure sits
+      above total/4. Measured starting point: CI's `product-e2e` was still running at
+      15.5 minutes on 2026-08-28 and a full local run takes ~40.
+
 - [ ] **Cut the duplicate proofs out of the end-to-end suite.** Measured today: 137
       fixture copies across 71 distinct fixtures, so the same code is proved many times
       over -- `resultreuse` and `implmethod` nine times each, `structenumparam` and
