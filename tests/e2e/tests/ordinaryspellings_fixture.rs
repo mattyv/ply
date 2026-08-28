@@ -8,7 +8,13 @@
 //! rendering of a token stream, `crate :: Beta`, which the by-bare-name
 //! lookup could never match.
 //!
-//! Neither is exotic. Both were found by writing the code an ordinary Rust
+//! A third joined them: a fully public type with a public constructor,
+//! declared inside an inline `pub mod`. The index recording where each type
+//! lives walked only each file's top-level items, so it placed the type at
+//! the crate root, where it did not match the `holder::Gauge` a caller
+//! writes -- and Ply refused it as if it had never heard of the type.
+//!
+//! None of these is exotic. Both were found by writing the code an ordinary Rust
 //! programmer writes and watching Ply be wrong about it, which is also why
 //! the assertions below are per-claim: a worst-of root verdict would go
 //! green as soon as either one worked.
@@ -22,7 +28,7 @@ fn an_inline_module_impl_and_a_qualified_parameter_are_both_ordinary_and_both_ch
 
     let run = run_verify(&cargo_ply, fixture.path(), 120);
     let verdicts = leaf_verdicts(&run.json);
-    for fn_name in ["alpha_inline_mod", "beta_qualified"] {
+    for fn_name in ["alpha_inline_mod", "beta_qualified", "gauge_reading"] {
         assert_eq!(
             verdicts.get(fn_name).map(String::as_str),
             Some("fuzzed(64)"),
@@ -73,7 +79,7 @@ fn an_inline_module_impl_and_a_qualified_parameter_are_both_ordinary_and_both_ch
 
     let run2 = run_verify(&cargo_ply, fixture.path(), 120);
     let after = leaf_verdicts(&run2.json);
-    for fn_name in ["alpha_inline_mod", "beta_qualified"] {
+    for fn_name in ["alpha_inline_mod", "beta_qualified", "gauge_reading"] {
         assert_eq!(
             after.get(fn_name).map(String::as_str),
             Some("violation"),

@@ -77,3 +77,32 @@ impl Ipv4Addr {
 pub fn foreign_shaped_name(v: std::net::Ipv4Addr) -> u32 {
     v.octets()[0] as u32
 }
+
+// --- A type declared inside an inline module ---------------------------------
+//
+// `pub mod` written inline in a file is ordinary Rust, and the index that
+// records where each type is declared walked only each file's top-level
+// items -- so a fully public type with a public constructor was placed at the
+// crate root, did not match the `holder::Gauge` a caller writes, and was
+// refused as if Ply had never heard of it.
+
+pub mod holder {
+    pub struct Gauge {
+        n: u32,
+    }
+
+    impl Gauge {
+        pub fn new(n: u32) -> Self {
+            Gauge { n: n.max(1) }
+        }
+
+        pub fn get(&self) -> u32 {
+            self.n
+        }
+    }
+}
+
+#[ply::ensures(|result| *result >= 1)]
+pub fn gauge_reading(v: holder::Gauge) -> u32 {
+    v.get()
+}

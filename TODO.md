@@ -105,11 +105,16 @@ Nothing below jumps that queue.
       earns "it has no constructor Ply can call" -- the found-but-skipped note is only
       ever attached when direct field construction succeeds, so every refusal path drops
       it. Same false-sentence family; the plumbing already exists.
-- [ ] **A type declared inside an inline `pub mod` is invisible to the type index.** The
-      inline-module blindness fixed in the constructor scan is still present in
-      `scan_crate_type_locations`, which walks only top-level items per file. A fully
-      public type with a public `new` inside `pub mod sub { .. }` in `lib.rs` is refused
-      with the generic message. Reported by review, not yet fixed.
+- [x] **A type declared inside an inline `pub mod` was invisible to the type index.**
+      The blindness fixed in the constructor scan was still in
+      `scan_crate_type_locations`, which walked only each file's top-level items and so
+      recorded an inline-module type as living at the crate root -- where it matched
+      neither the `holder::Gauge` a caller writes nor the path the generated harness
+      has to import. A fully public type with a public `new` was refused as if Ply had
+      never heard of it. The index now records the inline `mod` chain alongside the
+      file, and the harness imports the type by its real path. A type inside a
+      *private* inline module is real and unreachable, which is a different answer
+      again, and now gets its own sentence rather than the generic refusal.
 - [x] KNOWN GAP, unchanged and now written where it is: a `Result<Self, E>`
       constructor is recognised for a parameter and still not for a receiver.
 - [x] `qualifiedctor` fixture and end-to-end test, watched red. The test also weakens

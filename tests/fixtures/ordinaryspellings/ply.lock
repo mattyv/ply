@@ -1,9 +1,9 @@
 {
   "format": 2,
-  "written_by": "eaaa870cdab17ee42c9d41b0a4ee204fe6e75b0135b3e7fa979194e9e28af95c",
+  "written_by": "c15c869e98332535f1208f2e7beb74725850e7e5e8366d7febbc1518285569e7",
   "results": {
     "ordinaryspellings::alpha_inline_mod": {
-      "fingerprint": "e3dd6659594394c7688024a937070fd81558e58ff0f86bd66f908eb2a322b3f9",
+      "fingerprint": "82172127b1ada5d429cf7c6b83113f4a3aeef081fc560c07e50992b8440596b8",
       "verdict": "fuzzed(64)",
       "statuses": [],
       "evidence": {
@@ -13,10 +13,10 @@
       },
       "inputs": {
         "its contract": "181d708ecc568d59",
-        "the build of Ply that checked it": "e387ba8c9c0238f2",
+        "the build of Ply that checked it": "8f66b622f770e443",
         "the callees it stands on": "4df68c1409b969ed",
         "the checks that ran": "0705c1af3a615ed2",
-        "the code it runs": "b71d11a51ab2ef6f",
+        "the code it runs": "ad6a19c52cec1d36",
         "the compiler and the build target": "bf70dd442259ad28",
         "the crate's features": "888ca37d720284f4",
         "the engines behind them": "651a23e37e8789a4",
@@ -28,7 +28,7 @@
       }
     },
     "ordinaryspellings::beta_qualified": {
-      "fingerprint": "f3423b3c15430b5c5826b7846201cffade8770c8332b128da2cfaeab3d7aaec3",
+      "fingerprint": "b2add4db4d2382e3bf42a5795e3073d18c8b683cc35fc9ef05bff044ad6ae765",
       "verdict": "fuzzed(64)",
       "statuses": [],
       "evidence": {
@@ -38,10 +38,10 @@
       },
       "inputs": {
         "its contract": "181d708ecc568d59",
-        "the build of Ply that checked it": "e387ba8c9c0238f2",
+        "the build of Ply that checked it": "8f66b622f770e443",
         "the callees it stands on": "4df68c1409b969ed",
         "the checks that ran": "6d20c35c5507b718",
-        "the code it runs": "b71d11a51ab2ef6f",
+        "the code it runs": "ad6a19c52cec1d36",
         "the compiler and the build target": "bf70dd442259ad28",
         "the crate's features": "888ca37d720284f4",
         "the engines behind them": "651a23e37e8789a4",
@@ -50,6 +50,31 @@
         "the versions of everything outside this workspace": "0fabd3141f2a2b8e",
         "the worked examples it asserts": "7d5529f841102c10",
         "which claim this is": "035966f4e62f20da"
+      }
+    },
+    "ordinaryspellings::gauge_reading": {
+      "fingerprint": "337eac5d769f14f9a652b575f38ae99bd9c86a450317b3009888552d445870e4",
+      "verdict": "fuzzed(64)",
+      "statuses": [],
+      "evidence": {
+        "engine": "proptest",
+        "seed": "8cdd92fc40793487f7502b45eed9cb3b0e7c64e55494f64bd9f8adbea29699ff",
+        "cases": 64
+      },
+      "inputs": {
+        "its contract": "181d708ecc568d59",
+        "the build of Ply that checked it": "8f66b622f770e443",
+        "the callees it stands on": "4df68c1409b969ed",
+        "the checks that ran": "f1bb59a87a87c902",
+        "the code it runs": "ad6a19c52cec1d36",
+        "the compiler and the build target": "bf70dd442259ad28",
+        "the crate's features": "888ca37d720284f4",
+        "the engines behind them": "651a23e37e8789a4",
+        "the function's own source": "d7d8e2129bc0d3c6",
+        "the promises it assumes": "d972c487c26e7547",
+        "the versions of everything outside this workspace": "0fabd3141f2a2b8e",
+        "the worked examples it asserts": "7d5529f841102c10",
+        "which claim this is": "bfe0b6785f106e5c"
       }
     }
   }

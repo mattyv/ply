@@ -2543,8 +2543,8 @@ fn scan_impls_for_receiver(
     // rather than two scans that could disagree.
     let locations = scan_crate_type_locations(crate_dir);
     let target_absolute: Option<Vec<String>> = match locations.get(type_name) {
-        Some(Some(decl_path)) => {
-            let mut segs = file_module_segments(crate_dir, decl_path);
+        Some(Some(decl)) => {
+            let mut segs = decl.module_segments(crate_dir);
             segs.push(type_name.to_string());
             Some(segs)
         }
@@ -2870,7 +2870,40 @@ const MAX_DIRECT_CONSTRUCTION_FIELDS: usize = 12;
 /// `None` records that the same bare name was found declared in more than
 /// one file: ambiguous, refused by name (`UserTypeError::Ambiguous`) rather
 /// than picking one arbitrarily.
-pub type TypeLocations = std::collections::BTreeMap<String, Option<PathBuf>>;
+/// Where one type is declared: the file, plus the inline `mod` blocks it
+/// sits inside within that file.
+///
+/// The inline part is not decoration. `pub mod sub { pub struct Only; }`
+/// written inside `lib.rs` is ordinary Rust, and an index that recorded
+/// only the file put `Only` at the crate root -- so a parameter written
+/// `sub::Only` did not match where Ply thought the type was, and a fully
+/// public type with a public constructor was refused as if Ply had never
+/// heard of it (2026-08-28, review finding: the inline-module blindness the
+/// constructor scan had lost was still here).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeDecl {
+    pub file: PathBuf,
+    /// The inline `mod` names between the file's own module and the type,
+    /// outermost first. Empty for a type at the top level of its file.
+    pub inline_mods: Vec<String>,
+    /// Whether every inline `mod` in that chain is `pub`. A type inside a
+    /// private inline module is real, and unreachable from outside -- which
+    /// is a different answer from "not found" and has to stay
+    /// distinguishable.
+    pub inline_mods_all_pub: bool,
+}
+
+impl TypeDecl {
+    /// The type's module path from the crate root: the file's own module
+    /// segments, then the inline `mod` names.
+    pub fn module_segments(&self, crate_dir: &Path) -> Vec<String> {
+        let mut segs = file_module_segments(crate_dir, &self.file);
+        segs.extend(self.inline_mods.iter().cloned());
+        segs
+    }
+}
+
+pub type TypeLocations = std::collections::BTreeMap<String, Option<TypeDecl>>;
 
 /// Builds [`TypeLocations`] for `crate_dir` -- a name -> file index, not a
 /// resolver: a bare parameter type carries no hint about which module its
@@ -2901,15 +2934,35 @@ pub fn scan_crate_type_locations(crate_dir: &Path) -> TypeLocations {
             let Ok(file) = syn::parse_file(&src) else {
                 continue;
             };
-            for item in &file.items {
-                let name = match item {
-                    syn::Item::Struct(s) => s.ident.to_string(),
-                    syn::Item::Enum(e) => e.ident.to_string(),
-                    _ => continue,
-                };
-                out.entry(name)
-                    .and_modify(|slot| *slot = None)
-                    .or_insert_with(|| Some(path.clone()));
+            // Inline modules count: the walk carries the `mod` chain down
+            // with it, so a type inside `pub mod sub { .. }` is indexed at
+            // `sub`, not at the crate root.
+            let mut work: Vec<(&Vec<syn::Item>, Vec<String>, bool)> =
+                vec![(&file.items, Vec::new(), true)];
+            while let Some((items, mods, all_pub)) = work.pop() {
+                for item in items {
+                    if let syn::Item::Mod(m) = item
+                        && let Some((_, inner)) = &m.content
+                    {
+                        let mut child = mods.clone();
+                        child.push(m.ident.to_string());
+                        work.push((inner, child, all_pub && is_pub(&m.vis)));
+                        continue;
+                    }
+                    let name = match item {
+                        syn::Item::Struct(s) => s.ident.to_string(),
+                        syn::Item::Enum(e) => e.ident.to_string(),
+                        _ => continue,
+                    };
+                    let decl = TypeDecl {
+                        file: path.clone(),
+                        inline_mods: mods.clone(),
+                        inline_mods_all_pub: all_pub,
+                    };
+                    out.entry(name)
+                        .and_modify(|slot| *slot = None)
+                        .or_insert(Some(decl));
+                }
             }
         }
     }
@@ -3159,8 +3212,8 @@ fn scan_ctor_candidates_crate_wide(
     // scan does it.
     let locations = scan_crate_type_locations(crate_dir);
     let target_absolute: Option<Vec<String>> = match locations.get(type_name) {
-        Some(Some(decl_path)) => {
-            let mut segs = file_module_segments(crate_dir, decl_path);
+        Some(Some(decl)) => {
+            let mut segs = decl.module_segments(crate_dir);
             segs.push(type_name.to_string());
             Some(segs)
         }
@@ -3208,25 +3261,6 @@ fn scan_ctor_candidates_crate_wide(
         parse_and_scan(&path, &mut out);
     }
     out
-}
-
-/// `type_name`'s crate-root-qualified path, derived from the file it was
-/// found declared in (`crate_dir/src/bucket.rs` -> `bucket::{type_name}`;
-/// `crate_dir/src/lib.rs` -> bare `{type_name}`; `crate_dir/src/a/b.rs` or
-/// `crate_dir/src/a/b/mod.rs` -> `a::b::{type_name}`) -- what
-/// `fuzz_gen::wrap_fn_harness_module` needs to `use` a nested constructor
-/// argument's own type, since nothing else in the generated harness names
-/// its module the way `ContractFn::import_path` does for the checked
-/// function itself. `main.rs`/`mod.rs`/`lib.rs` name the directory they sit
-/// in, never themselves; any other file name is its own last module
-/// segment.
-fn qualified_type_path(crate_dir: &Path, file_path: &Path, type_name: &str) -> String {
-    let segs = file_module_segments(crate_dir, file_path);
-    if segs.is_empty() {
-        type_name.to_string()
-    } else {
-        format!("{}::{type_name}", segs.join("::"))
-    }
 }
 
 /// Whether `file_path`'s type sits behind a private module somewhere
@@ -3345,16 +3379,36 @@ fn resolve_user_type(
              risk it not terminating"
         )));
     }
-    let file_path = match locations.get(type_name) {
-        Some(Some(p)) => p.clone(),
+    let decl = match locations.get(type_name) {
+        Some(Some(d)) => d.clone(),
         Some(None) => return Err(UserTypeError::Ambiguous),
         None => return Err(UserTypeError::NotFound),
     };
+    let file_path = decl.file.clone();
     let src = std::fs::read_to_string(&file_path).map_err(|_| UserTypeError::Unreadable)?;
     let file: syn::File = syn::parse_file(&src).map_err(|_| UserTypeError::Unreadable)?;
     let aliases = alias_map(&file);
-    let import_path = qualified_type_path(crate_dir, &file_path, type_name);
-    let item = file.items.iter().find(|it| match it {
+    // The path the generated harness has to write to name this type, which
+    // now includes any inline `mod` it is nested in -- `p8::sub::Only`, not
+    // `p8::Only`, which would not compile.
+    let import_path = {
+        let mut segs = decl.module_segments(crate_dir);
+        segs.push(type_name.to_string());
+        segs.join("::")
+    };
+    // Descend the same inline `mod` chain the index recorded, so the
+    // declaration found here is the one the index pointed at.
+    let mut items: &Vec<syn::Item> = &file.items;
+    for m in &decl.inline_mods {
+        let Some(next) = items.iter().find_map(|it| match it {
+            syn::Item::Mod(md) if md.ident == m.as_str() => md.content.as_ref().map(|(_, i)| i),
+            _ => None,
+        }) else {
+            return Err(UserTypeError::Unreadable);
+        };
+        items = next;
+    }
+    let item = items.iter().find(|it| match it {
         syn::Item::Struct(s) => s.ident == type_name,
         syn::Item::Enum(e) => e.ident == type_name,
         _ => false,
@@ -3377,6 +3431,18 @@ fn resolve_user_type(
         return Err(UserTypeError::Refused(format!(
             "Ply cannot build a value of `{type_name}`: the type itself is not `pub`, so the \
              fuzz harness Ply generates -- which sits outside this module -- cannot name it"
+        )));
+    }
+    // A type inside a private inline module is real and unreachable from
+    // outside, which is a different answer from "not found" and is said as
+    // such rather than folded into the generic refusal.
+    if !decl.inline_mods_all_pub {
+        return Err(UserTypeError::Refused(format!(
+            "Ply cannot build a value of `{type_name}`: it is declared inside an inline `mod` \
+             that is not `pub`, so the fuzz harness Ply generates -- which sits outside this \
+             crate -- cannot name it by its module path even though the type itself is public. \
+             A `pub use` elsewhere may re-export it under a public path; this scan does not \
+             follow re-exports yet."
         )));
     }
     if let Some(private_mod) = private_ancestor_module(crate_dir, &file_path) {
@@ -3671,7 +3737,7 @@ fn crate_local_type_name(
         Some(Some(path)) => path.clone(),
         _ => return None,
     };
-    let declared_mod = file_module_segments(crate_dir, &declared_in);
+    let declared_mod = declared_in.module_segments(crate_dir);
     (declared_mod == segs).then(|| name.to_string())
 }
 

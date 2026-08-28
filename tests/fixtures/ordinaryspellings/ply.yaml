@@ -10,3 +10,5 @@ components:
         checks: [fuzz(64)]
       foreign_shaped_name:
         checks: [fuzz(64)]
+      gauge_reading:
+        checks: [fuzz(64)]
