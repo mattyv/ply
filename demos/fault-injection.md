@@ -1,5 +1,13 @@
 # Fault injection — watch the suite catch seeded bugs
 
+> **As of 2026-08-28 this demo is frozen, and can only be replayed against the commit it
+> was cut from.** Its third seeded bug edits a file that no longer exists — that code
+> moved into the product crates — so the branch cannot be rebased forward. Preserve it as
+> a tag rather than a branch. What it demonstrates is still true and still worth showing;
+> it is a narrated, minimal, human-readable proof that specific meaningful bugs get
+> caught, which is a different job from the bulk `cargo mutants` sweep that now runs over
+> the kernel on every build.
+
 Three deliberate bugs live on the branch [`checkpoint/fault-injection`](https://github.com/mattyv/ply/pull/new/checkpoint/fault-injection),
 one commit ahead of the fixed state. Check it out, run the suite, watch each get
 caught, then diff against this branch to see the fixes:

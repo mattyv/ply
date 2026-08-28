@@ -4,6 +4,14 @@
 `tools/kernel`, and both are about the same thing: not letting the kernel claim more
 evidence than it has.
 
+> **As of 2026-08-28:** file paths below are as they stood on 2026-08-25 and are left
+> unrewritten, because this is a dated record of what was done, not a live map. The
+> kernel has since moved to `crates/ply-core/src/kernel.rs` (`tools/kernel` is now a
+> thin re-export that keeps the enumeration's imports working); read every
+> `tools/kernel/src/lib.rs` below as pointing there. The enumeration itself is still at
+> `tools/kernel/tests/enumeration.rs`. Mutant M6 still survives and is now recorded as
+> an open gap in TODO.md.
+
 1. The three Kani harnesses that never terminated are **retired** — deleted, with the
    investigation kept as a narrowed historical note, and the crate now says plainly where
    the four standing obligations are actually proved today.

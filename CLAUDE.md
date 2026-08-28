@@ -34,21 +34,38 @@ That enumeration is not a consolation prize for a failed proof — it is the sam
 evidence Ply calls `bounded`: exhaustive within a stated bound, checked against an
 independent oracle. It covers strictly more than the Kani harness would have (which was
 scoped to depth 2, ≤2 children). Two honesty conditions attach: the enumeration uses a
-reduced configuration set (one representative status, one fixed assumption string), so the
-argument for why that reduction loses nothing — per-bit uniformity of `StatusSet`,
-content-independence of the assumption merge — must be written alongside the claim, or
-"exhaustive" is overclaiming by quotient.
+reduced configuration set, so the argument for why that reduction loses nothing must
+travel with the claim, or "exhaustive" is overclaiming by quotient. That argument was
+written on 2026-08-25 (`docs/kernel-honesty-cleanups.md` part 2) and **one of its two
+legs did not hold**: six one-line breakages of the real kernel were run against the
+enumeration and four survived, because a single fixed assumption string makes "drop half
+the assumptions on every merge" byte-identical to correct behaviour. The test data was
+repaired and those four now die; a fifth — a node carrying a flag and a conditional at
+once — still survives, recorded as an open gap in TODO.md. The lesson generalises:
+the enumeration is exhaustive over *tree shape* and only representative over *what the
+nodes carry*, so its adequacy is a measured property that can regress, not a standing
+one. That is why `cargo mutants` runs against the kernel in CI.
 
-Kani harnesses for the same four invariants exist and are `#[cfg(kani)]`-gated, but as
-of 2026-08-23 **none of them terminate**: CBMC symbolically unwinds `BTreeMap`'s generic
-clone algorithm on every recursive call because the kernel's real types use
-`BTreeSet`/`Vec`, and no unwind bound, solver, or object-bits setting tried changed that.
-The investigation is documented in the module. Do not report the kernel as
-"Kani-proved" until a harness actually returns a verdict. The scale spike later showed
-why it never will: the kernel is a recursive tree, and recursive shapes are outside
-Kani's measured reach (§5.4b). Reshaping the kernel to suit the verifier is refused on
-evidence as well as principle — the stall simply moves to the next unbounded field, and
-"Ply proposes, never rewrites" applies most strictly where we are our own user. The standing obligations:
+The Kani harnesses for the same four invariants were **deleted on 2026-08-25**, not
+gated — `docs/kernel-honesty-cleanups.md` part 1 has the full argument, and
+`crates/ply-core/src/kernel.rs`'s doc comment keeps the investigation as a historical
+note. None of them ever terminated: CBMC symbolically unwinds `BTreeMap`'s generic clone
+algorithm on every recursive call, and no unwind bound, solver, or object-bits setting
+tried changed that. The scale spike showed why none ever would: the kernel is a recursive
+tree, and recursive shapes are outside Kani's measured reach (§5.4b) — a shape Ply's own
+rule says to refuse with a named status rather than route to an engine that will time
+out, so carrying Kani harnesses for it was the tool not taking its own advice. Never
+report the kernel as "Kani-proved". Reshaping the kernel to suit the verifier is refused
+on evidence as well as principle — the stall simply moves to the next unbounded field,
+and "Ply proposes, never rewrites" applies most strictly where we are our own user.
+
+What replaced them is stronger, not weaker: `tests/spike/verus/` proves all four
+obligations **unbounded, by structural induction, in ~2 seconds** — over a faithful
+shadow of the kernel rather than its literal source, tied back to production by a
+differential test over generated trees. That reduction (shadow, not source) is the
+honesty condition attached to *this* claim, and must travel with it.
+
+The standing obligations:
 
 - aggregation never reports evidence stronger than the weakest child
 - `conditional` never disappears without its assumptions being discharged
