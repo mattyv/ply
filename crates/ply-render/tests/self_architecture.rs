@@ -13,12 +13,14 @@ use std::path::PathBuf;
 use ply_render::model::parse_document;
 use ply_render::svg::{RenderOptions, render_svg_with_options};
 
-/// `tools/render/tests/` -> the repository root.
+/// `crates/ply-render/tests/` -> the repository root. Still two levels up
+/// after the crate moved in from the tools workspace, so the walk is
+/// unchanged; only this sentence needed correcting.
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
-        .expect("tools/render lives two levels below the repository root")
+        .expect("crates/ply-render lives two levels below the repository root")
         .to_path_buf()
 }
 
@@ -43,7 +45,7 @@ fn the_architecture_diagram_matches_the_spec_it_claims_to_be_rendered_from() {
         committed, fresh,
         "docs/ply-self.svg no longer matches what ply.yaml renders to, so the diagram in \
          ARCHITECTURE.md is showing a structure this repository no longer has. Regenerate it \
-         from the tools workspace, then look at the result before committing it:\n  \
+         and look at the result before committing it:\n  \
          cargo run --release -p ply-render -- ply.yaml -o docs/ply-self.svg"
     );
 }

@@ -643,9 +643,9 @@ fn every_painted_element_resolves_a_style_rule() {
         "tests/fixtures/externals.ply.yaml",
         // §7.1 finding coverage: these fixtures each carry a real finding
         // that must resolve through `FINDING_STYLE`, not just parse clean.
-        "../check/tests/fixtures/bad_check_syntax.ply.yaml",
-        "../check/tests/fixtures/bad_path_form.ply.yaml",
-        "../check/tests/fixtures/duplicate_unresolved_id.ply.yaml",
+        "../../tools/check/tests/fixtures/bad_check_syntax.ply.yaml",
+        "../../tools/check/tests/fixtures/bad_path_form.ply.yaml",
+        "../../tools/check/tests/fixtures/duplicate_unresolved_id.ply.yaml",
         "../../demos/fault3.ply.yaml",
         "tests/fixtures/strict_with_finding.ply.yaml",
     ] {

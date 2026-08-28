@@ -41,11 +41,11 @@ fn code_counts<I: IntoIterator<Item = String>>(codes: I) -> BTreeMap<String, usi
 /// fault-injection demo this feature exists to fix. Each must report at
 /// least one finding — otherwise it's not exercising this test at all.
 const FIXTURES: &[&str] = &[
-    "../check/tests/fixtures/bad_check_syntax.ply.yaml",
-    "../check/tests/fixtures/bad_edge_syntax.ply.yaml",
-    "../check/tests/fixtures/bad_path_form.ply.yaml",
-    "../check/tests/fixtures/duplicate_unresolved_id.ply.yaml",
-    "../check/tests/fixtures/mutate_without_test_or_fuzz.ply.yaml",
+    "../../tools/check/tests/fixtures/bad_check_syntax.ply.yaml",
+    "../../tools/check/tests/fixtures/bad_edge_syntax.ply.yaml",
+    "../../tools/check/tests/fixtures/bad_path_form.ply.yaml",
+    "../../tools/check/tests/fixtures/duplicate_unresolved_id.ply.yaml",
+    "../../tools/check/tests/fixtures/mutate_without_test_or_fuzz.ply.yaml",
     "../../demos/fault3.ply.yaml",
 ];
 

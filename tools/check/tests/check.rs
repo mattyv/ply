@@ -22,15 +22,15 @@ const KNOWN_CODES: &[&str] = &[
 fn clean_render_fixtures_produce_no_diagnostics() {
     for path in [
         "../../vetting/001-spsc-disruptor.ply.yaml",
-        "../render/tests/fixtures/full.ply.yaml",
-        "../render/tests/fixtures/qualified_refs.ply.yaml",
+        "../../crates/ply-render/tests/fixtures/full.ply.yaml",
+        "../../crates/ply-render/tests/fixtures/qualified_refs.ply.yaml",
         // §5.1 checks inheritance: every fn here either declares its own
         // checks or inherits a *valid* ancestor default, so nothing about
         // resolving the inheritance itself should raise a diagnostic.
-        "../render/tests/fixtures/checks_inheritance.ply.yaml",
+        "../../crates/ply-render/tests/fixtures/checks_inheritance.ply.yaml",
         // docs/plans/external-elements.md: a well-formed external, named by
         // both flow edges and an `entry:`.
-        "../render/tests/fixtures/externals.ply.yaml",
+        "../../crates/ply-render/tests/fixtures/externals.ply.yaml",
         "../../vetting/003-trading-system.ply.yaml",
     ] {
         let diags = diagnostics_for(path);
@@ -199,7 +199,7 @@ fn duplicate_unresolved_id_is_e0205() {
 /// whether anything ever renders it.
 #[test]
 fn ambiguous_bare_reference_is_e0206() {
-    let diags = diagnostics_for("../render/tests/fixtures/ambiguous_ref.ply.yaml");
+    let diags = diagnostics_for("../../crates/ply-render/tests/fixtures/ambiguous_ref.ply.yaml");
     let d = diags
         .iter()
         .find(|d| d.code == "E0206")
@@ -340,9 +340,9 @@ fn cross_container_descendant_edge_is_not_w0409() {
 fn every_diagnostic_carries_a_known_spec_code() {
     for path in [
         "../../vetting/001-spsc-disruptor.ply.yaml",
-        "../render/tests/fixtures/full.ply.yaml",
-        "../render/tests/fixtures/qualified_refs.ply.yaml",
-        "../render/tests/fixtures/ambiguous_ref.ply.yaml",
+        "../../crates/ply-render/tests/fixtures/full.ply.yaml",
+        "../../crates/ply-render/tests/fixtures/qualified_refs.ply.yaml",
+        "../../crates/ply-render/tests/fixtures/ambiguous_ref.ply.yaml",
         "tests/fixtures/mutate_without_test_or_fuzz.ply.yaml",
         "tests/fixtures/bad_check_syntax.ply.yaml",
         "tests/fixtures/bad_edge_syntax.ply.yaml",
@@ -352,7 +352,7 @@ fn every_diagnostic_carries_a_known_spec_code() {
         "tests/fixtures/cross_container_descendant_edge.ply.yaml",
         "tests/fixtures/mutate_inherited_default_is_broken.ply.yaml",
         "tests/fixtures/mutate_own_list_ignores_inherited_test.ply.yaml",
-        "../render/tests/fixtures/checks_inheritance.ply.yaml",
+        "../../crates/ply-render/tests/fixtures/checks_inheritance.ply.yaml",
         "tests/fixtures/external_in_call_edge.ply.yaml",
         "tests/fixtures/external_in_deny.ply.yaml",
         "tests/fixtures/external_to_external.ply.yaml",

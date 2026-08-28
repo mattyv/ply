@@ -12,8 +12,8 @@ name = "ply-render"
 path = "src/main.rs"
 
 [dependencies]
-ply-core = { path = "../../crates/ply-core" }
-ply-kernel = { path = "../kernel" }
+ply-core = { path = "../ply-core" }
+ply-kernel = { path = "../ply-kernel" }
 clap = { version = "4", features = ["derive"] }
 indexmap = { version = "2", features = ["serde"] }
 

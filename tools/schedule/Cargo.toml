@@ -8,4 +8,4 @@ name = "ply_schedule"
 path = "src/lib.rs"
 
 [dependencies]
-ply-kernel = { path = "../kernel" }
+ply-kernel = { path = "../../crates/ply-kernel" }

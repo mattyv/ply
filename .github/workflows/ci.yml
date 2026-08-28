@@ -36,11 +36,6 @@ jobs:
           cargo run -q -p ply-check -- ../vetting/001-spsc-disruptor.ply.yaml
           cargo run -q -p ply-check -- ../vetting/002-ingest-pipeline.ply.yaml
 
-      - name: rendered-artifact drift check
-        run: |
-          cargo run -q -p ply-render -- ../vetting/001-spsc-disruptor.ply.yaml -o ../vetting/001-spsc-disruptor.svg
-          cargo run -q -p ply-render -- ../vetting/002-ingest-pipeline.ply.yaml -o ../vetting/002-ingest-pipeline.svg
-          git diff --exit-code ../vetting
 
   # The product itself (crates/ply-attrs, ply-core, ply-cli). Fast signal: no
   # engines needed, so it stays a couple of minutes. ply-e2e is excluded here
@@ -62,6 +57,15 @@ jobs:
 
       - name: cargo test (unit, engine-free)
         run: cargo test --workspace --exclude ply-e2e
+
+      # Follows the renderer into this workspace. Regenerating the committed
+      # drawings and diffing them is the only thing that catches a picture
+      # that has quietly stopped matching the document it is drawn from.
+      - name: rendered-artifact drift check
+        run: |
+          cargo run -q -p ply-render -- vetting/001-spsc-disruptor.ply.yaml -o vetting/001-spsc-disruptor.svg
+          cargo run -q -p ply-render -- vetting/002-ingest-pipeline.ply.yaml -o vetting/002-ingest-pipeline.svg
+          git diff --exit-code vetting
 
   # End-to-end: drives real Kani, proptest and cargo-mutants, so it is slow
   # (minutes per proof) and needs a ~1GB toolchain. Separated so the fast

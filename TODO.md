@@ -115,6 +115,32 @@ in their words, and what happened to each.
       exists: the drawing always, the document's grammar always, the architecture check
       not until there is a Cargo project to read a dependency graph from.
 
+## `cargo ply render` — the renderer moves into the product — 2026-08-28
+
+Reviewed as a structural question rather than decided on the spot, because it grows the
+declared architecture graph and the page describing that graph was written this morning.
+
+- [x] **Step 1, the move, no behaviour change.** `tools/render` and `tools/kernel` are
+      now `crates/ply-render` and `crates/ply-kernel`. The kernel travelled with the
+      renderer because the renderer calls its aggregation to decide what it draws;
+      leaving it behind would have pointed the product at the tooling, which is the one
+      direction this repository's own rules exist to prevent. The tools workspace keeps
+      `check` and `schedule`, both of which depend *into* the product, as before.
+- [x] `ply.yaml` declares `render` and `kernel` with edges `render -> core` and
+      `render -> kernel`; `cargo ply check .` reports 3 crossings, 3 permitted, 0 not,
+      and 6 of 6 crates accounted for. Diagram regenerated and looked at; ARCHITECTURE.md
+      updated including its captured transcript, which is diffed against live output
+      rather than retyped.
+- [x] CI: the drift check follows the renderer into the product job and runs from the
+      root; the tools job keeps the vetting-scenario check. Still three jobs.
+- [x] Two test-fixture paths crossed the old workspace boundary in both directions and
+      needed correcting -- the renderer read `check`'s fixtures, and `check` read the
+      renderer's.
+- [ ] **Step 2: the `render` subcommand**, with the edge `cli -> render`, so the loop's
+      own step 2 stops meaning "build a second binary and invoke it by path".
+- [ ] Optional step 3: retire the standalone `ply-render` binary so there is exactly one
+      user-facing entry point.
+
 ## Bug fixes after 0.1.0 — branch `claude/bugfix-post-0-1-0`
 
 - [x] **The README says how to install it.** There was no install path written down at

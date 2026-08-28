@@ -7,13 +7,14 @@ own repository — so the shape you are looking at is the shape the checker enfo
 someone adds a dependency this page does not show, the build says so.
 
 <p align="center">
-  <img src="docs/ply-self.svg" alt="Four dashed boxes inside a frame labelled ply.yaml: e2e, attrs, cli and core. One arrow runs from cli down to core. e2e and attrs stand alone with no arrows." width="620">
+  <img src="docs/ply-self.svg" alt="Six dashed boxes inside a frame labelled ply.yaml: e2e, attrs, cli, render, core and kernel. Arrows run from cli to core, and from render to both core and kernel. e2e and attrs stand alone with no arrows." width="760">
 </p>
 
 Each box is a crate. The boxes are **dashed** because none of them declares a function
 contract yet: Ply's own `ply.yaml` says only how the crates may depend on one another, and
-a dashed box is Ply's way of showing code that carries no claims of its own. That single
-arrow is the only dependency permitted between components. Anything else is a violation.
+a dashed box is Ply's way of showing code that carries no claims of its own. Those three
+arrows are the only dependencies permitted between components. Anything else is a
+violation.
 
 ## The four crates
 
@@ -23,6 +24,8 @@ arrow is the only dependency permitted between components. Anything else is a vi
 | `core` | `ply-core` | The model, the schema, the call graph, the engine adapters (Kani, proptest, cargo-mutants), the result records, and the verdict kernel. Everything Ply knows how to do, with no terminal attached. |
 | `cli` | `ply-cli` | The `cargo ply` commands — `check`, `verify`, `audit`, `worklist` — and every sentence a user reads. |
 | `e2e` | `ply-e2e` | The end-to-end suite. It builds the real binary and drives it the way a user would. |
+| `render` | `ply-render` | The §7.1 renderer: a `ply.yaml` becomes the picture, with every drawn thing carrying a tooltip that says what it is. Behind `cargo ply render`. |
+| `kernel` | `ply-kernel` | The pure verdict kernel: the evidence order and the worst-of aggregation, as a model whose four invariants are checked by exhaustive enumeration over every verdict tree up to a small bound. **Not the verdict logic the binary ships** — nothing under `cli` links it yet; it is the proved model the product is converging on, and describing it otherwise would overclaim. |
 
 ## The rules, and why each one exists
 
@@ -41,6 +44,15 @@ unambiguous.
 
 **`e2e` drives the built binary, not the library.** A suite that links the library instead
 stops testing what ships.
+
+**`render` may reach into `core` and `kernel`, and nothing may reach into `render`.** It
+reads the same document model the checker reads and asks the kernel to aggregate, so the
+shape it draws is the one the kernel proves rather than a second implementation that
+could disagree. Both crates moved in from a separate tools workspace on 2026-08-28, so
+that `cargo ply render` could exist: the development loop's own step 2 says "Ply renders
+that intent", and until then that meant building a second binary and invoking it by path.
+The kernel came with the renderer because the renderer calls it — leaving it behind would
+have pointed the product at the tooling, the one direction this file exists to prevent.
 
 ## What happened when Ply was pointed at itself
 
@@ -92,9 +104,9 @@ cargo ply check — ./ply.yaml
                 settled from the document alone.
   anchors       This document declares no fn claims, so there was nothing for this tier to
                 resolve.
-  architecture  1 real crate dependency crosses between two differently-declared components:
-                1 permitted by a declared edge or by nesting, 0 not permitted (reported
-                below). 4 of 4 crates in this workspace belong to a declared component.
+  architecture  3 real crate dependencies cross between two differently-declared components:
+                3 permitted by a declared edge or by nesting, 0 not permitted (reported
+                below). 6 of 6 crates in this workspace belong to a declared component.
 
   No problems found in the document.
 
@@ -118,7 +130,7 @@ otherwise.
 The SVG is committed, and a test fails if it stops matching the spec it was rendered from:
 
 ```console
-$ cargo run --release -p ply-render -- ply.yaml -o docs/ply-self.svg   # from tools/
+$ cargo run --release -p ply-render -- ply.yaml -o docs/ply-self.svg
 ```
 
 ## Where the rest is written down
