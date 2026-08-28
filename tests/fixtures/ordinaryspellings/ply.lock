@@ -1,0 +1,56 @@
+{
+  "format": 2,
+  "written_by": "4e68e059d06dd0c0dc04bfcfec89404dca5bbea76dd6d297c635049f42c7c6e5",
+  "results": {
+    "ordinaryspellings::alpha_inline_mod": {
+      "fingerprint": "c8acf9d02d4406ef92bd1de13785b8c6fa614061cf0d564f1b229e803724e2b5",
+      "verdict": "fuzzed(64)",
+      "statuses": [],
+      "evidence": {
+        "engine": "proptest",
+        "seed": "19d363eb9014a281640cae698c1c5dddf3181349320926c986b45dd3cab05449",
+        "cases": 64
+      },
+      "inputs": {
+        "its contract": "181d708ecc568d59",
+        "the build of Ply that checked it": "54fe490a7a397f82",
+        "the callees it stands on": "4df68c1409b969ed",
+        "the checks that ran": "0705c1af3a615ed2",
+        "the code it runs": "1cc9621235d29dc7",
+        "the compiler and the build target": "bf70dd442259ad28",
+        "the crate's features": "888ca37d720284f4",
+        "the engines behind them": "651a23e37e8789a4",
+        "the function's own source": "7fa0281acf33ce97",
+        "the promises it assumes": "d972c487c26e7547",
+        "the versions of everything outside this workspace": "0fabd3141f2a2b8e",
+        "the worked examples it asserts": "7d5529f841102c10",
+        "which claim this is": "57a96307c193072c"
+      }
+    },
+    "ordinaryspellings::beta_qualified": {
+      "fingerprint": "c707af0a5e73f147fe97c1a83bd0442bb9ddecf6e1197080174b070406aef0f8",
+      "verdict": "fuzzed(64)",
+      "statuses": [],
+      "evidence": {
+        "engine": "proptest",
+        "seed": "89725975b001f3abe423bf3cec5658725b2dda4a5cf9a9e0ee1831a018d8b8c4",
+        "cases": 64
+      },
+      "inputs": {
+        "its contract": "181d708ecc568d59",
+        "the build of Ply that checked it": "54fe490a7a397f82",
+        "the callees it stands on": "4df68c1409b969ed",
+        "the checks that ran": "6d20c35c5507b718",
+        "the code it runs": "1cc9621235d29dc7",
+        "the compiler and the build target": "bf70dd442259ad28",
+        "the crate's features": "888ca37d720284f4",
+        "the engines behind them": "651a23e37e8789a4",
+        "the function's own source": "5b59009ccf8520fb",
+        "the promises it assumes": "d972c487c26e7547",
+        "the versions of everything outside this workspace": "0fabd3141f2a2b8e",
+        "the worked examples it asserts": "7d5529f841102c10",
+        "which claim this is": "035966f4e62f20da"
+      }
+    }
+  }
+}

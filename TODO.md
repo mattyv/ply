@@ -64,6 +64,22 @@ Nothing below jumps that queue.
       "none was found". Found by probing the same family rather than by the suite. Both
       paths now accept the type's own name, resolved to its canonical declaration
       (`Confirmed` only -- another module's same-named type is a different type).
+- [x] **Two more causes of the same sentence, found by writing ordinary Rust and
+      watching Ply be wrong about it.** An `impl` block inside an inline `mod` in the
+      same file was never looked at -- the scan walked only the file's top-level items;
+      it now flattens inline modules, carrying the module path down so `super::` still
+      resolves to the right place. And a parameter spelled `crate::Beta` rather than
+      `Beta` was carried as the rendering of a token stream, `crate :: Beta`, which the
+      by-bare-name type lookup could never match and no sentence should quote at a
+      reader; a plain path now keeps its bare last segment. `ordinaryspellings` fixture
+      and test, both watched red.
+- [ ] **OPEN, out for review: a type whose only constructor is `impl Default`.** Ply
+      says "it has no constructor Ply can call", which is false -- `T::default()` is a
+      constructor anyone can call. Building via Default yields exactly one value, so a
+      `fuzz(256)` claim would report 256 cases having tried one distinct input, which
+      is the silent-narrowing failure this project exists to prevent. Three options
+      (correct the sentence only; build via Default; build via Default plus the bounded
+      operation sequence the receiver path already uses) are with a reviewer.
 - [x] KNOWN GAP, unchanged and now written where it is: a `Result<Self, E>`
       constructor is recognised for a parameter and still not for a receiver.
 - [x] `qualifiedctor` fixture and end-to-end test, watched red. The test also weakens

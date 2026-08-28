@@ -1081,6 +1081,20 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                     }
                     RustType::Unsupported(ty.to_token_stream().to_string())
                 }
+                // Not a type this module knows by name. Reported by the
+                // *bare* name for a plain path, which does two things: the
+                // user-type resolution below looks a type up by its bare
+                // name, so `v: crate::Beta` used to resolve to nothing and
+                // be refused as unbuildable while `v: Beta` worked
+                // (2026-08-28, same family as the qualified-`impl` fixes);
+                // and the diagnostic stops quoting `crate :: Beta` at the
+                // reader, which is `to_token_stream`'s spacing rather than
+                // anything anyone wrote. Ambiguity is still caught: a bare
+                // name declared in more than one file resolves to
+                // `Ambiguous` and is refused by name.
+                _ if tp.qself.is_none() && seg.arguments.is_empty() => {
+                    RustType::Unsupported(seg.ident.to_string())
+                }
                 _ => RustType::Unsupported(ty.to_token_stream().to_string()),
             }
         }
@@ -3017,7 +3031,29 @@ fn scan_ctor_candidates(
 ) -> Vec<ParamCtorCandidate> {
     let mut out = Vec::new();
     let use_aliases = use_aliases_in_file(file);
-    for item in &file.items {
+    // Inline modules count. `mod inner { impl super::Alpha { .. } }` in the
+    // same file is ordinary Rust, and walking only `file.items` skipped
+    // every `impl` block written inside one -- so Ply again said a type
+    // "has no constructor Ply can call" about a type with a public `new`
+    // (2026-08-28, third cause of that same sentence). The module path is
+    // carried down so `super::` inside the inline module resolves against
+    // the module it is actually written in, not the file's own.
+    let mut work: Vec<(&Vec<syn::Item>, Vec<String>)> = vec![(&file.items, file_mod.to_vec())];
+    let mut flat: Vec<(&syn::Item, Vec<String>)> = Vec::new();
+    while let Some((items, module)) = work.pop() {
+        for item in items {
+            if let syn::Item::Mod(m) = item
+                && let Some((_, inner)) = &m.content
+            {
+                let mut child = module.clone();
+                child.push(m.ident.to_string());
+                work.push((inner, child));
+            }
+            flat.push((item, module.clone()));
+        }
+    }
+    for (item, item_mod) in &flat {
+        let file_mod: &[String] = item_mod;
         let syn::Item::Impl(imp) = item else {
             continue;
         };
