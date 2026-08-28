@@ -5,3 +5,8 @@ target/
 .claude/worktrees/
 __pycache__/
 *.py[cod]
+
+# cargo-mutants run output (regenerated every run; the reviewed artifact is
+# the accepted-survivors list, not this directory).
+mutants.out/
+mutants.out.old/

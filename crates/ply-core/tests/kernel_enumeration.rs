@@ -59,7 +59,7 @@
 //! keeping only the first non-empty status set in the upward union -- all
 //! left this test green. The period-2 cycles are what kill them, at the same
 //! 991,389 trees and the same runtime.
-use ply_kernel::{
+use ply_core::kernel::{
     AggregatedNode, Evidence, NodeKind, StatusKind, StatusSet, VerdictNode, aggregate,
 };
 use std::collections::BTreeSet;

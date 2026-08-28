@@ -63,6 +63,51 @@ jobs:
       - name: cargo test (unit, engine-free)
         run: cargo test --workspace --exclude ply-e2e
 
+  # Plants bugs in the verdict kernel one at a time and checks the exhaustive
+  # tree check notices each one. This does not check the kernel -- the
+  # exhaustive check does that. It checks THE CHECK: whether the gate that
+  # must stay green can actually see. That is a measured property, not a
+  # standing one. It was measured once by hand on 2026-08-25, four planted
+  # bugs walked straight past, and nothing kept the repair true afterwards;
+  # this job is what keeps it true. Every surviving bug is a real gap or a
+  # real piece of dead code, so the bar is zero survivors and there is
+  # deliberately no excused-failures list -- such a list is where genuine
+  # gaps go to be forgotten. If a survivor appears, read it before silencing
+  # it: the first run found an unused method, an unpinned constructor, and a
+  # blanked failure message that would have left every future counterexample
+  # unreadable while every test still passed.
+  #
+  # --in-place rather than the default copy: the copy pulls in gigabytes of
+  # unrelated fixture build output and filled a 250GB disk mid-run.
+  # --profile release because the exhaustive check walks 991,389 trees --
+  # 2.3s optimised, far longer unoptimised, once per planted bug.
+  kernel-mutants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: kernel-mutants
+
+      - name: Install cargo-mutants
+        run: cargo install --locked --version 27.1.0 cargo-mutants
+
+      - name: Plant bugs in the kernel and require the check to catch every one
+        run: |
+          cargo mutants --in-place --profile release \
+            --file crates/ply-core/src/kernel.rs \
+            --test-package ply-core
+
+      - name: Name any bug that survived
+        if: failure()
+        run: |
+          echo "These planted bugs were not caught. Each is a real gap or"
+          echo "real dead code -- triage it, do not add it to an ignore list:"
+          cat mutants.out/missed.txt || true
+
   # End-to-end: drives real Kani, proptest and cargo-mutants, so it is slow
   # (minutes per proof) and needs a ~1GB toolchain. Separated so the fast
   # signal above is not held hostage to it; still gates merges to main.

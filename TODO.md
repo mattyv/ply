@@ -712,6 +712,26 @@ adversarial review, none by the suite.
 
 ## Agreed with the maintainer, not yet started
 
+- [x] **Automatic bug-planting now runs against the kernel on every build** (2026-08-28).
+      Fable's call, taken: the exhaustive tree check is the gate, but whether it can SEE
+      is a measured property that can regress, and nothing was keeping the 2026-08-25
+      repair true. First run: 35 planted bugs, 24 caught, **6 survived** -- none in the
+      aggregation logic, all six in the status-set helper, and every one genuine rather
+      than an artefact. Three were an unused `union` the merge site was hand-rolling
+      around (now called, so the duplication is gone and those die by construction); one
+      an unpinned `FromIterator`; one `is_empty`, whose only behaviour-changing consumer
+      is the renderer in another crate; and one the `Debug` impl, which could be blanked
+      leaving every test green while every future counterexample printed unreadable.
+      After the fixes: **30 caught, 5 unviable, 0 survivors.** The CI job requires zero
+      and deliberately carries no excused-failures list.
+
+- [ ] **Mutation coverage stops at the kernel.** Fable's second recommendation, not yet
+      done: an occasional (not gating) run over the model/check parsing and validation
+      code -- the surface neither the exhaustive check nor the unbounded proof reaches,
+      and where the third hand-planted fault of 2026-08-25 lived ("check 0 examples"
+      accepted). Expect a noisy first survivor list; triage into this file rather than
+      gating on it, because a gate with a hastily-blessed baseline is theatre.
+
 - [ ] **The "your filter hid nothing" notice is written out twice.** `cargo ply render`
       and the standalone renderer each build the same read-parse-draw-and-warn sequence,
       so the notice a first-time user relies on lives in two places and can drift out of
@@ -1432,12 +1452,29 @@ wall clock, 72 tests (was 53), zero warnings on `cargo check --workspace --tests
       within a stated bound, independent oracle, covering more than the Kani harness
       would have). CLAUDE.md reframed rather than apologised. Reshaping the kernel was
       rejected on evidence — the stall just moves to the next unbounded field.
-- [ ] Write down the enumeration's REDUCTION ARGUMENT (per-bit uniformity of StatusSet,
-      content-independence of the assumption merge) — without it, "exhaustive" is
-      overclaiming by quotient.
-- [ ] Decide whether the three non-terminating Kani harnesses should stay invocable by
-      default: `cargo kani` on the workspace now costs ~15 min of guaranteed timeouts,
-      and they contradict our own rule about not routing recursive shapes to Kani.
+- [x] **Enumeration REDUCTION ARGUMENT written 2026-08-25** (`docs/kernel-honesty-cleanups.md`
+      part 2). One leg held (per-bit uniformity of StatusSet). The other — content-independence
+      of the assumption merge — **did not**, and was measured not holding: six one-line
+      breakages of the real kernel, four survived the corpus as it then stood. The corpus was
+      repaired in the same change (period-2 payload cycles in `tools/kernel/tests/enumeration.rs`)
+      and those four now die. See the KNOWN GAP below for the fifth.
+- [x] **Kani harnesses DELETED 2026-08-25**, not gated (`docs/kernel-honesty-cleanups.md`
+      part 1). They contradicted our own §5.4b rule — a recursive shape is one Ply refuses
+      by name rather than routing to an engine that times out — and the role they filled is
+      now filled better by `tests/spike/verus/`, which proves all four obligations unbounded
+      by induction in ~2s. The investigation survives as a historical note in
+      `crates/ply-core/src/kernel.rs`'s doc comment.
+
+- [ ] **KNOWN GAP — one kernel mutant still survives the enumeration.** A node carrying
+      BOTH a status flag AND a conditional at once is not in the enumerated corpus, so a
+      breakage that treats the two as mutually exclusive (miscounting what is still owed)
+      goes unnoticed. Left open deliberately: closing it costs 3,117,996 trees, roughly
+      tripling the gate's runtime. Recorded 2026-08-28 — it was measured on 2026-08-25 and
+      never written down, which is exactly the failure this list exists to prevent.
+
+- [ ] **KNOWN GAP — is an empty assumption list representable, and should it be?** Raised
+      by the same 2026-08-25 reduction work and never carried into this list. A spec
+      question, not a bug: decide and write it into The-Ply-Spec.md either way.
 - [ ] **Pull a thin M3 vertical slice ahead of M1/M2** (fable's sequencing call, and the
       external review's undone recommendation #2): one hand-written ply.yaml, one
       contracted fn, generated harness WITH the unwind emission, one real cex, the D7
