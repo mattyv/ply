@@ -71,5 +71,6 @@ components:
 
 edges:
   - "cli -> core"
+  - "cli -> render"
   - "render -> core"
   - "render -> kernel"

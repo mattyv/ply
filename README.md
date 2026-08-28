@@ -100,7 +100,8 @@ This is review compression, not review elimination. Experienced developers still
 what matters and inspect code where mechanical evidence stops.
 
 **What step 2 can and cannot do before the code exists.** The drawing is available
-immediately — the renderer reads a `ply.yaml` alone, with no crate behind it. `cargo ply
+immediately — `cargo ply render <file>` reads a `ply.yaml` alone, with no crate behind
+it. `cargo ply
 check` is only half available: it validates the document's grammar with nothing else
 present, but its architecture half reads your real crate dependency graph from `cargo
 metadata`, so before there is a Cargo project to read there is nothing for it to check
@@ -188,8 +189,7 @@ hides uncertainty would recreate the problem Ply exists to solve.
 
 ### What it renders today
 
-Ply includes a static `ply.yaml` to SVG renderer under `tools/render`. It draws the spec
-you wrote, before any code is checked — the picture is a view of your intent, not a report
+`cargo ply render` draws the spec you wrote, before any code is checked — the picture is a view of your intent, not a report
 on a finished run.
 
 This specification, from `vetting/004-legacy-extension/` — a new feature written beside a

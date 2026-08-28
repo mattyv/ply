@@ -11,6 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 ply-core = { path = "../ply-core" }
+# §7.1's renderer, so `cargo ply render` is a real subcommand rather than a
+# second binary the reader has to find and invoke by path.
+ply-render = { path = "../ply-render" }
 clap = { version = "4", features = ["derive"] }
 indexmap = "2"
 serde_json = "1"

@@ -321,6 +321,7 @@ dependencies = [
  "clap",
  "indexmap",
  "ply-core",
+ "ply-render",
  "serde_json",
  "tempfile",
 ]

@@ -2,28 +2,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use ply_render::model::parse_document;
-use ply_render::svg::{RenderOptions, render_svg_with_options};
-
-/// `--depth` is 1-indexed (top-level boxes are level 1, per §7.1), so 0
-/// names no real level and a non-numeric value isn't a level at all. Both
-/// get a plain-language message naming what's wrong and what to do, rather
-/// than clap's default `invalid digit found in string` (which never says
-/// what a depth *is*, let alone a valid one).
-fn parse_depth(s: &str) -> Result<usize, String> {
-    match s.parse::<usize>() {
-        Ok(0) => Err(
-            "--depth 0 doesn't select anything: nesting levels start at 1 for the top-level \
-             boxes — pass --depth 1 or higher, or drop --depth to render everything expanded"
-                .to_string(),
-        ),
-        Ok(n) => Ok(n),
-        Err(_) => Err(format!(
-            "--depth wants a whole number of nesting levels, counting the top-level boxes as \
-             1 — {s:?} is not a number"
-        )),
-    }
-}
+use ply_render::svg::RenderOptions;
+use ply_render::{parse_depth, render_document, write_rendering};
 
 /// Minimal static renderer: `ply.yaml` -> SVG. Proves the §7.1 visual
 /// grammar is total. Not a GUI, not the future canvas — see The-Ply-Spec.md §7.1.
@@ -59,70 +39,22 @@ struct Cli {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-
-    let yaml = match std::fs::read_to_string(&cli.input) {
-        Ok(y) => y,
-        Err(e) => {
-            eprintln!("error: could not read {}: {e}", cli.input.display());
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let doc = match parse_document(&yaml) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!(
-                "error: {} did not parse as ply.yaml: {e}",
-                cli.input.display()
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-
     let options = RenderOptions {
         depth: cli.depth,
         focus: cli.focus,
         collapse: cli.collapse,
     };
-    let svg = match render_svg_with_options(&doc, &options) {
+    let mut notice = |m: &str| eprintln!("{m}");
+    let svg = match render_document(&cli.input, &options, &mut notice) {
         Ok(svg) => svg,
         Err(e) => {
-            eprintln!("error: {} could not be rendered: {e}", cli.input.display());
+            eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-
-    // A selection that selects nothing is worth saying out loud. On a flat
-    // document `--depth 1` and `--focus x` produce exactly the default
-    // drawing, and silence there reads as "the flag did nothing visible, so
-    // something is broken" -- a smoke test on a real project recorded it as
-    // a bug before deciding it was correct behaviour (2026-08-28). The
-    // check is the honest one: render the default too, and compare. It
-    // costs one extra layout pass and cannot disagree with what was drawn.
-    if options.depth.is_some() || options.focus.is_some() || !options.collapse.is_empty() {
-        let plain = render_svg_with_options(&doc, &RenderOptions::default());
-        if plain.as_deref().ok() == Some(svg.as_str()) {
-            eprintln!(
-                "note: this drawing is identical to the one with no --depth/--focus/--collapse \
-                 at all. Nothing in {} nests deeply enough for that selection to fold anything \
-                 away, so the flag had nothing to do -- not an error, and not a sign the flag \
-                 was ignored.",
-                cli.input.display()
-            );
-        }
+    if let Err(e) = write_rendering(&svg, cli.out.as_deref()) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
     }
-
-    match cli.out {
-        Some(path) => {
-            if let Err(e) = std::fs::write(&path, svg) {
-                eprintln!("error: could not write {}: {e}", path.display());
-                return ExitCode::FAILURE;
-            }
-        }
-        None => {
-            print!("{svg}");
-        }
-    }
-
     ExitCode::SUCCESS
 }

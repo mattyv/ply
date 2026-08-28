@@ -7,12 +7,12 @@ own repository — so the shape you are looking at is the shape the checker enfo
 someone adds a dependency this page does not show, the build says so.
 
 <p align="center">
-  <img src="docs/ply-self.svg" alt="Six dashed boxes inside a frame labelled ply.yaml: e2e, attrs, cli, render, core and kernel. Arrows run from cli to core, and from render to both core and kernel. e2e and attrs stand alone with no arrows." width="760">
+  <img src="docs/ply-self.svg" alt="Six dashed boxes inside a frame labelled ply.yaml: e2e, attrs, cli, render, core and kernel. Arrows run from cli to render and core, and from render to core and kernel. e2e and attrs stand alone with no arrows." width="700">
 </p>
 
 Each box is a crate. The boxes are **dashed** because none of them declares a function
 contract yet: Ply's own `ply.yaml` says only how the crates may depend on one another, and
-a dashed box is Ply's way of showing code that carries no claims of its own. Those three
+a dashed box is Ply's way of showing code that carries no claims of its own. Those four
 arrows are the only dependencies permitted between components. Anything else is a
 violation.
 
@@ -45,7 +45,7 @@ unambiguous.
 **`e2e` drives the built binary, not the library.** A suite that links the library instead
 stops testing what ships.
 
-**`render` may reach into `core` and `kernel`, and nothing may reach into `render`.** It
+**`render` may reach into `core` and `kernel`, and only `cli` may reach into `render`.** It
 reads the same document model the checker reads and asks the kernel to aggregate, so the
 shape it draws is the one the kernel proves rather than a second implementation that
 could disagree. Both crates moved in from a separate tools workspace on 2026-08-28, so
@@ -104,8 +104,8 @@ cargo ply check — ./ply.yaml
                 settled from the document alone.
   anchors       This document declares no fn claims, so there was nothing for this tier to
                 resolve.
-  architecture  3 real crate dependencies cross between two differently-declared components:
-                3 permitted by a declared edge or by nesting, 0 not permitted (reported
+  architecture  4 real crate dependencies cross between two differently-declared components:
+                4 permitted by a declared edge or by nesting, 0 not permitted (reported
                 below). 6 of 6 crates in this workspace belong to a declared component.
 
   No problems found in the document.
@@ -130,7 +130,7 @@ otherwise.
 The SVG is committed, and a test fails if it stops matching the spec it was rendered from:
 
 ```console
-$ cargo run --release -p ply-render -- ply.yaml -o docs/ply-self.svg
+$ cargo ply render ply.yaml -o docs/ply-self.svg
 ```
 
 ## Where the rest is written down

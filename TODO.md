@@ -136,8 +136,20 @@ declared architecture graph and the page describing that graph was written this 
 - [x] Two test-fixture paths crossed the old workspace boundary in both directions and
       needed correcting -- the renderer read `check`'s fixtures, and `check` read the
       renderer's.
-- [ ] **Step 2: the `render` subcommand**, with the edge `cli -> render`, so the loop's
-      own step 2 stops meaning "build a second binary and invoke it by path".
+- [x] **Step 2: `cargo ply render` exists.** The whole run -- read, draw, and the
+      "this selection folded nothing away" notice -- moved into the renderer's own
+      library, so the subcommand and the standalone binary cannot drift. That notice was
+      written for a first-time reader and would be a poor joke delivered from only one
+      of the two commands someone might type. Edge `cli -> render` declared; the graph
+      is four crossings, all permitted, six of six crates accounted for.
+- [x] Pinned end to end: the subcommand's output is byte-identical to the committed
+      drawing the standalone binary produces; it renders a document in a directory with
+      no crate, no manifest and no Rust at all, which is what "renders intent before
+      implementation begins" has to mean; and the folded-nothing notice reaches this
+      entry point too.
+- [ ] `cargo ply render --help` advertises the global `--json` flag, which does nothing
+      for a command that emits an SVG. A flag offered and ignored is the small end of
+      the same family as everything else fixed this week.
 - [ ] Optional step 3: retire the standalone `ply-render` binary so there is exactly one
       user-facing entry point.
 
