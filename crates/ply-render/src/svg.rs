@@ -1223,6 +1223,13 @@ fn component_tip_lines(
         "component {name} — maps to Rust module {}",
         comp.anchor
     ));
+    // The author's own reason for this component, straight after what it
+    // is and before anything Ply worked out for itself -- so a reader gets
+    // the intent before the machinery. Nothing checks it, which is why it
+    // reads as commentary rather than as one of the claims below it.
+    if let Some(note) = &comp.note {
+        tip.push(note.clone());
+    }
     if comp.pure {
         tip.push(
             "pure — the double border is the seal: this component declares no capabilities \

@@ -43,6 +43,26 @@ pub struct Document {
 #[serde(deny_unknown_fields)]
 pub struct Component {
     pub anchor: String,
+    /// Why this component exists and why its rules are what they are --
+    /// read by people and by agents, checked by nothing.
+    ///
+    /// Every other prose slot in this grammar sits exactly where checking
+    /// is impossible: an outside party (`externals`), an unmade decision
+    /// (`unresolved`), a human's word (`trusted`). This is the fourth of
+    /// those, and it was argued for rather than assumed (review,
+    /// 2026-08-28). A component's *rules* -- why the macro crate must stand
+    /// alone, why the core must never reach up into the command-line layer
+    /// -- have no contract form and no engine will ever consume them, yet
+    /// they are exactly what a reader or an agent needs and what the format
+    /// currently discards: Ply's own document is forty lines of comment to
+    /// twelve of configuration, and the parser drops every one of them.
+    ///
+    /// Deliberately **not** offered on a function. There the answer to
+    /// "what does this do" is a contract: a promise both a reader and an
+    /// engine can act on, where a note would be a place for the next
+    /// invariant to go and never become one.
+    #[serde(default)]
+    pub note: Option<String>,
     #[serde(default)]
     pub pure: bool,
     #[serde(default)]

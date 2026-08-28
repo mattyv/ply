@@ -510,6 +510,7 @@ mod tests {
                 reused: false,
                 evidence: None,
                 children: vec![],
+                ..Default::default()
             })
             .collect();
         Envelope {
@@ -523,6 +524,7 @@ mod tests {
                 reused: false,
                 evidence: None,
                 children,
+                ..Default::default()
             },
             diagnostics: vec![],
             coverage: None,

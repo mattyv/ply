@@ -115,6 +115,29 @@ in their words, and what happened to each.
       exists: the drawing always, the document's grammar always, the architecture check
       not until there is a Cargo project to read a dependency graph from.
 
+## The reasoning reaches the machine, and components may say why — 2026-08-28
+
+Both from a second person's smoke test, decided by review rather than on the spot.
+
+- [x] **A component may carry a `note:`.** Argued for, not assumed: every prose slot in
+      this grammar already sits where checking is impossible, and `externals`' note is
+      *required* on exactly the reporter's own argument -- "a bare name tells a newbie
+      nothing". A component's rationale is the fourth of those. Ply's own three
+      load-bearing rules moved out of comments and into notes.
+- [x] **Not on functions**, and the reason is a failure seen in use: the reporter had
+      written an invariant as an `examples` string because no better slot was visible.
+      The answer there is `ensures`. A note beside it makes that mistake comfortable.
+- [x] **The envelope carries the contract and the trusted claims.** The tree said only
+      what came out, never what was claimed -- so an agent could read `fuzzed(64)` and
+      not know what it was fuzzed for. §7.1 already assumed otherwise. Set from the
+      claim rather than the run, so a reused verdict carries it too; that was a real gap
+      caught by wiring it to the run first and watching the second run come back bare.
+- [x] Half the reporter's claim was wrong and is recorded as such: `audit --json` has
+      always carried the trust surface. What was missing was the verdict tree.
+- [ ] Comments still evaporate, deliberately. Making them survive needs a position-aware
+      second parse this codebase does not have, and would let prose reach output without
+      passing validation. The component note is the declared home instead.
+
 ## `cargo ply render` — the renderer moves into the product — 2026-08-28
 
 Reviewed as a structural question rather than decided on the spot, because it grows the
