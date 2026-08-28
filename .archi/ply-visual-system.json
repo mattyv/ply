@@ -2,9 +2,9 @@
   "version": 1,
   "bundleId": "8d967d4e-12f9-4b3d-9a1a-6f4d5b8c2e71",
   "revision": {
-    "number": 4,
-    "updatedAt": "2026-08-28T06:47:19.000Z",
-    "summary": "Consolidate ply-vis, VS Code, and JetBrains into the temporary ply-vscode client monorepo"
+    "number": 5,
+    "updatedAt": "2026-08-28T06:49:38.000Z",
+    "summary": "Name ply-vis as the canonical client monorepo for the shared viewer and both IDE adapters"
   },
   "activeId": "proposed-agent-skills",
   "diagrams": [
@@ -539,7 +539,7 @@
           "__diagram__": [
             {
               "id": "note-vsc-proposal",
-              "text": "This view is a proposed design; it is not current behavior. The extension is a read-only observer in the ply-vscode client monorepo. Reuse Archi-Techture's extension chassis and host patterns, but no Archi diagram model or Ply semantics enter this adapter.",
+              "text": "This view is a proposed design; it is not current behavior. The extension is a read-only observer in the ply-vis client monorepo. Reuse Archi-Techture's extension chassis and host patterns, but no Archi diagram model or Ply semantics enter this adapter.",
               "ts": 1787892870000
             }
           ]
@@ -1180,8 +1180,8 @@
       "decisions": [
         {
           "id": "vis-client-monorepo",
-          "text": "Own the shared visual application as packages/ply-vis inside the temporary ply-vscode client monorepo",
-          "rationale": "Neither IDE becomes the reference implementation, while one repository can be renamed later without moving code"
+          "text": "Own the shared visual application as packages/ply-vis inside the ply-vis client monorepo",
+          "rationale": "Neither IDE becomes the reference implementation, and both adapters consume one package in the same repository"
         },
         {
           "id": "vis-semantic-zoom",
@@ -1335,7 +1335,7 @@
         }
       ],
       "assumptions": [
-        "The existing empty ply-vscode repository is the temporary client monorepo and may be renamed later",
+        "The ply-vis repository is the client monorepo for the shared viewer and both IDE adapters",
         "The core publication contract can be watched through standard VS Code workspace APIs"
       ],
       "openQuestions": [],
@@ -1463,7 +1463,7 @@
         }
       ],
       "assumptions": [
-        "The JetBrains package lives at packages/jetbrains in the temporary ply-vscode client monorepo, which may be renamed later",
+        "The JetBrains package lives at packages/jetbrains in the ply-vis client monorepo",
         "Supported IDE builds expose JCEF and a configurable CDP debug endpoint for smoke testing"
       ],
       "openQuestions": [],
