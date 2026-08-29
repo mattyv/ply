@@ -712,6 +712,95 @@ adversarial review, none by the suite.
 
 ## Agreed with the maintainer, not yet started
 
+- [x] **Four more of the visual-language items applied** (2026-08-29), after the maintainer
+      correctly pointed out that the first three changed almost nothing visible: they were
+      all *subtractive* (green removed, red removed, two labels moved), and every additive
+      idea was still outstanding. (a) **Absence is now hatched** rather than left blank --
+      the single biggest visible change, and the document's sharpest perceptual point.
+      (b) **A verdict strip** opens every render with what is declared and how much of it
+      promises nothing. (c) **Checks read as words when zoomed in** -- `B3 F4096 M` becomes
+      "proves for all inputs, loops up to 3 / tries 4096 random inputs / plants bugs; the
+      checks must catch them", following the same zoom rule the contract clauses use.
+      (d) **A colour-blindness gate in CI.** Its first version was nearly vacuous -- the
+      distance metric passed pure red against pure green, the textbook confusion -- so it
+      was rewritten around the guarantee that actually holds: every meaning also carries a
+      non-colour mark. The weak floor is kept, documented as weak.
+
+- [ ] **KNOWN GAP -- five of the document's items are blocked on one missing thing.**
+      `render_svg_with_evidence` calls `render_svg(doc)` and then post-processes the
+      finished string, so run results cannot affect a single pixel. Broken, evolving, the
+      promise/earned split, "working well", and the result-side counts in the strip all
+      need evidence to reach the drawing stage. That plumbing, not any individual glyph, is
+      the next real piece of work, and the research document never mentions it.
+
+- [ ] **Judgement call to revisit: at focus, a fn chip now shows both `B3 F4096 M` and the
+      spelled-out lines.** The document wanted the letters confined to hover. Kept both so
+      the chip looks the same at either zoom, with the words as the expansion -- but it is
+      redundant, and if the band gets busier the letters should go.
+
+- [ ] **Decided against: making the strict notch and pure seal more visible.** The document
+      asks for one or the other (amplify or demote); demote is the honest answer. "Strict"
+      means findings here are errors rather than warnings, which only matters when there IS
+      a finding -- at which point red already shouts. Spending a glance-level channel on a
+      modifier only legible alongside another signal is a poor trade. Hover-tier.
+
+- [x] **The diagram no longer paints promises green** (2026-08-29, from
+      `docs/visual-language-research.md` via Fable's review). Two of the review's three
+      "land now" items done. (a) Capability tags were red — the same red as a real
+      failure — though a declared capability is neither forbidden nor wrong; they are now
+      neutral, and the deny lines visibly alarm for the first time. (b) The promise ramp
+      moved off green onto ordered neutral greys, so a project where nothing has run no
+      longer renders as a field of healthy green. That was §1's absence-of-evidence
+      failure drawn in pixels, by the tool that exists to prevent it. Both are guarded by
+      invariants over the emitted stylesheet, not spot-checks: red must belong to
+      something forbidden or wrong, and un-run work must contain no green. The-Ply-Spec.md's
+      channel-discipline rule is amended, retracting "pastel = promised, saturated = earned"
+      with the argument for why it neither held nor could hold.
+
+- [x] **Edge lines no longer strike through labels** (2026-08-29). The third and last of
+      the review's "land now" items, and the longest-standing recorded render defect. The
+      ratchet that pinned this debt at 13 collisions is now at **0**. Two causes, both
+      real: the placement search checked candidate positions against the canvas edge and
+      the boxes but never against the *lines*, and it ran before the forbidden-call routes
+      existed, so a label could not avoid a line not yet routed. Placement now runs as a
+      second pass once every line exists, and candidates vary where along the edge the
+      label sits as well as how far out it is pushed -- without that second axis a steep
+      edge's perpendicular is nearly horizontal, so every candidate slid the label *along*
+      the horizontal line it was stuck under. Exactly 2 labels moved across the whole
+      corpus; 001 and 002 are byte-identical.
+
+- [ ] **Deferred with a bug to fix first: the two-part promise/earned meter.** Good idea,
+      wrong arithmetic as written — it folds by *summing*, so a collapsed box with nine
+      earned functions and one untouched reads 90% healthy, which is exactly what the
+      kernel's first standing obligation forbids. Fold by weakest-descendant plus a count
+      instead. Also needs earned-result data to reach pixels, a path that today exists only
+      as tooltip text — that, not the drawing, is the real lift.
+
+- [ ] **Cut from the proposal, recorded so it is not re-proposed:** rank-band layout
+      (position already means containment; a second meaning breaks the one-meaning rule and
+      would draw layers nobody declared), demoting deny bars to a lock glyph (a red barred
+      line is the most instinctive form in the grammar, and it draws a *rule*, not an
+      alarm), and a third amber corner flag (two markers for that already exist, one in the
+      same corner as the strict notch). Also: the document claims the check badges carry no
+      tooltip — false, verified in the renderer; the defensible version is that hover is
+      not glanceable.
+
+- [x] **A focused function now draws its promise, instead of hiding it in hover** (2026-08-29).
+      Prompted by the maintainer's question of whether the visual language is sufficient --
+      "at a glance it is not always obvious what a function does". It already was declared:
+      `requires`/`ensures` are contract clauses, and unlike free pseudocode they cannot drift
+      into fiction, because a check stands behind them. They were simply hover-only. Now
+      `--focus` draws them as `needs`/`gives` lines under the fn name. Rejected in the same
+      breath: adding a separate unchecked pseudocode block, which would put the only ink on
+      the canvas with no evidence behind it -- the exact failure Ply exists to prevent.
+
+- [ ] **KNOWN GAP -- only one function in the whole vetting corpus declares a contract.**
+      Found while looking for an example to render: 001 and 002 declare none at all, 003
+      declares exactly one (`check_order`). So the clause band is real but barely exercised
+      by our own scenarios, and the vetting corpus is not currently evidence that contracts
+      are pleasant to write at scale. Worth writing clauses into 001/002 as a grammar
+      exercise in their own right -- that is what `vetting/` is for.
+
 - [x] **Automatic bug-planting now runs against the kernel on every build** (2026-08-28).
       Fable's call, taken: the exhaustive tree check is the gate, but whether it can SEE
       is a measured property that can regress, and nothing was keeping the 2026-08-25

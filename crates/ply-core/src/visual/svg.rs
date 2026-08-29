@@ -48,6 +48,12 @@ const STACK_OFFSET: f64 = 5.0;
 // existing `PAD` margin so it adds new geometry (its own few pixels) without
 // shifting anything else already positioned by `cursor_x`.
 const CONTRACT_MARK_W: f64 = 3.0;
+/// Height of one drawn contract-clause line, and the character width its
+/// text is measured at. The clauses render smaller than the fn name: they
+/// are the detail a reader zoomed in *for*, but the name still has to win
+/// the glance within the chip.
+const CLAUSE_H: f64 = 13.0;
+const CLAUSE_CHAR_W: f64 = 6.7;
 
 // ---- §7.1 "strict" — the corner notch --------------------------------------
 //
@@ -133,6 +139,7 @@ const EXTERNAL_GAP: f64 = NODESEP;
 pub const STYLE: &str = "\
 .workspace-frame{fill:#fbfbfd;stroke:#c8ccd4;stroke-width:2.5}\
 .workspace-title{fill:#6b7280}\
+.verdict-strip-text{fill:#4b5563;font-size:11px}\
 .component-box{stroke:#3b4252;stroke-width:1.5}\
 .hollow-box{stroke-dasharray:6 4}\
 .collapsed-stack{stroke:#3b4252;stroke-width:1.5}\
@@ -141,20 +148,21 @@ pub const STYLE: &str = "\
 .component-name{fill:#1f2430;font-weight:bold}\
 .component-anchor{fill:#6b7280;font-size:10px}\
 .component-owns{fill:#6b7280;font-size:10px;font-style:italic}\
-.ceiling-unclaimed{fill:#fff}\
-.ceiling-tested{fill:#eaf6ec}\
-.ceiling-fuzzed{fill:#cdeed3}\
-.ceiling-bounded{fill:#a3e0b3}\
-.ceiling-proved{fill:#78d194}\
+.ceiling-unclaimed{fill:url(#unclaimed-hatch)}\
+.ceiling-tested{fill:#f0f1f2}\
+.ceiling-fuzzed{fill:#dfe1e4}\
+.ceiling-bounded{fill:#c7cad0}\
+.ceiling-proved{fill:#aab0b9}\
 .contract-mark{fill:#1f2430}\
-.cap-badge rect{fill:#fdecec;stroke:#c9534f}\
-.cap-badge text{fill:#8f2f2c;font-size:10px}\
+.fn-clause{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#3c4658}\
+.cap-badge rect{fill:#eceef2;stroke:#9aa2b1}\
+.cap-badge text{fill:#4b5563;font-size:10px}\
 .profile-tag rect{fill:#eef2fb;stroke:#5570a8}\
 .profile-tag text{fill:#334b78;font-size:10px}\
 .fn-chip-box{fill:#f6f7f9;stroke:#9aa2b1}\
 .fn-chip-box-synth{fill:#ecdff5;stroke:#9aa2b1}\
 .fn-name{fill:#1f2430}\
-.fn-checks{fill:#2f6f4f;font-size:11px}\
+.fn-checks{fill:#4b5563;font-size:11px}\
 .fn-check-with{fill:#6b7280;font-size:10px}\
 .fn-examples{fill:#6b7280;font-size:10px}\
 .fn-shield{fill:none;stroke:#9a7a1f;font-size:13px}\
@@ -217,6 +225,23 @@ fn esc(s: &str) -> String {
 /// One glyph token per check, in declaration order: `test`->T, `fuzz(n)`->Fn,
 /// `bounded(k)`->Bk, `prove`->P, `mutate`->M. Unparseable strings are shown
 /// verbatim so a malformed check is visible rather than silently dropped.
+/// The same facts as [`check_prose`], written short enough to sit on the
+/// canvas. The tooltip version is a full sentence per check -- right for
+/// hover, far too wide for a chip -- so this keeps the plain English and
+/// drops the explanatory clause. Drawn only inside a `--focus` target, for
+/// the same reason the contract clauses are: `B3 F4096 M` is unreadable to
+/// a newcomer, and hovering is not glancing.
+fn check_prose_compact(c: &str) -> Option<String> {
+    match parse_check(c) {
+        Ok(Check::Test) => Some("runs the declared examples".into()),
+        Ok(Check::Fuzz(n)) => Some(format!("tries {n} random inputs")),
+        Ok(Check::Bounded(k)) => Some(format!("proves for all inputs, loops up to {k}")),
+        Ok(Check::Prove) => Some("proves for all inputs, no bound".into()),
+        Ok(Check::Mutate) => Some("plants bugs; the checks must catch them".into()),
+        Err(_) => None,
+    }
+}
+
 fn checks_glyph_row(checks: &[String]) -> String {
     checks
         .iter()
@@ -632,6 +657,19 @@ impl<'a> CollapseCtx<'a> {
     /// explicitly named component always folds, and names nothing else, so
     /// used alone (no `--depth`/`--focus`) it folds exactly what it names
     /// and leaves everything else exactly as the fully-expanded default.
+    /// True when this component is the `--focus` target or sits inside it.
+    /// Ancestors are deliberately excluded: they stay expanded only so the
+    /// reader can see the path down to the target, and filling them with
+    /// clause text would drown the thing actually being focused on.
+    fn is_focused_subtree(&self, qualified: &str) -> bool {
+        self.focus.is_some_and(|focus| {
+            matches!(
+                path_relation(qualified, focus),
+                PathRelation::Focus | PathRelation::Descendant
+            )
+        })
+    }
+
     fn should_collapse(&self, qualified: &str, level: usize) -> bool {
         if self.explicit.iter().any(|p| p == qualified) {
             return true;
@@ -979,6 +1017,12 @@ fn render_fn_chip(
     component_path: &str,
     ctx: &FindingCtx,
     inherited: Option<InheritedChecks>,
+    // §7.1: draw the contract clauses as text under the fn name, rather than
+    // leaving them to hover. True only inside a `--focus` target, because
+    // this is what focus is *for*: the overview answers "where does attention
+    // go", the focused view answers "what exactly is promised here". Drawing
+    // clauses at overview zoom would bury that first question in prose.
+    show_contract: bool,
 ) -> FnChip {
     // §5.1: the list that actually governs this fn — its own if it declared
     // one, else the nearest ancestor component's default (or nothing, if it
@@ -997,6 +1041,24 @@ fn render_fn_chip(
     let has_contract = !fc.requires.is_empty() || !fc.ensures.is_empty();
     let findings = ctx.fn_findings(component_path, name);
 
+    // The clause band: one drawn line per `requires`/`ensures`, each
+    // prefixed so a first-time reader knows which way it points -- "needs"
+    // is what the caller must guarantee going in, "gives" is what the
+    // function guarantees coming out. The spelled-out words rather than the
+    // schema's keywords, because the diagram is read by people who have not
+    // opened the spec.
+    let clauses: Vec<String> = if show_contract {
+        fc.requires
+            .iter()
+            .map(|r| format!("needs {r}"))
+            .chain(fc.ensures.iter().map(|e| format!("gives {e}")))
+            .chain(effective.iter().filter_map(|c| check_prose_compact(c)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let height = CHIP_H + (clauses.len() as f64) * CLAUSE_H;
+
     let mut cursor_x = PAD;
     let mut inner = String::new();
     let text_y = CHIP_H / 2.0 + 4.0;
@@ -1005,7 +1067,7 @@ fn render_fn_chip(
     // flush at the left edge. The original 6x6 square was too easy to miss.
     if has_contract {
         inner.push_str(&format!(
-            "<rect class=\"contract-mark\" x=\"0\" y=\"0\" width=\"{CONTRACT_MARK_W:.1}\" height=\"{CHIP_H:.1}\" />"
+            "<rect class=\"contract-mark\" x=\"0\" y=\"0\" width=\"{CONTRACT_MARK_W:.1}\" height=\"{height:.1}\" />"
         ));
     }
 
@@ -1155,7 +1217,24 @@ fn render_fn_chip(
         tip.push("no checks declared — nothing about this function is verified (unclaimed)".into());
     }
 
-    let width = cursor_x + PAD - BADGE_GAP;
+    let clause_w = clauses
+        .iter()
+        .map(|c| text_w(c, CLAUSE_CHAR_W))
+        .fold(0.0_f64, f64::max);
+    let width = (cursor_x + PAD - BADGE_GAP).max(if clauses.is_empty() {
+        0.0
+    } else {
+        CONTRACT_MARK_W + PAD + clause_w + PAD
+    });
+    for (i, clause) in clauses.iter().enumerate() {
+        inner.push_str(&format!(
+            "<text class=\"fn-clause\" x=\"{x:.1}\" y=\"{y:.1}\">{}</text>",
+            esc(clause),
+            x = CONTRACT_MARK_W + PAD,
+            y = CHIP_H + (i as f64) * CLAUSE_H + CLAUSE_H - 4.0,
+        ));
+    }
+
     // §7.1 `mode: synth`: the chip's fill turns light violet, unless a
     // finding is present — red (forbidden/wrong) always wins over the
     // authorship channel, matching the channel-discipline priority every
@@ -1177,16 +1256,12 @@ fn render_fn_chip(
         )
     };
     let svg = format!(
-        "<g class=\"fn-chip\" data-fn=\"{}\">{}<rect class=\"{box_class}\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{CHIP_H:.1}\" rx=\"4\" />{inner}{badge_svg}</g>",
+        "<g class=\"fn-chip\" data-fn=\"{}\">{}<rect class=\"{box_class}\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{height:.1}\" rx=\"4\" />{inner}{badge_svg}</g>",
         esc(name),
         title(&tip.join("\n"))
     );
 
-    FnChip {
-        width,
-        height: CHIP_H,
-        svg,
-    }
+    FnChip { width, height, svg }
 }
 
 /// The component tooltip lines that depend only on this node's own declared
@@ -1596,7 +1671,14 @@ fn render_component<'a>(
         .map(|(fname, fc)| {
             (
                 fname.clone(),
-                render_fn_chip(fname, fc, qualified, ctx, this_default),
+                render_fn_chip(
+                    fname,
+                    fc,
+                    qualified,
+                    ctx,
+                    this_default,
+                    walk.collapse.is_focused_subtree(qualified),
+                ),
             )
         })
         .collect();
@@ -2212,6 +2294,32 @@ fn lane_offset(idx: usize, total: usize, gap: f64) -> f64 {
 /// flow-edge label centered at `pos`, checked against every real component
 /// box for overlap — used to pick whichever side of the line a label's
 /// perpendicular push actually lands clear on.
+/// Would a label centred at `pos` be struck through by any already-drawn
+/// line? The sibling of [`label_clashes_with_any_box`], and the reason
+/// labels used to land on top of edges: the placement search escalated
+/// through candidate positions checking the canvas edge and the boxes, and
+/// never asked whether a line ran through the text. A label with a line
+/// through it is harder to read than one slightly further from its edge, so
+/// this joins the same filter rather than becoming a later correction pass.
+///
+/// Shares the bbox convention of [`label_clashes_with_any_box`] exactly --
+/// half-width from the worst-case character width, and the same ascender /
+/// descender band around the baseline -- so the two agree about what "the
+/// label occupies this space" means.
+fn label_struck_by_any_line(pos: (f64, f64), text: &str, lines: &[Vec<(f64, f64)>]) -> bool {
+    let half_w = text_w(text, NAME_CHAR_W) / 2.0;
+    let rect = Rect {
+        x: pos.0 - half_w,
+        y: pos.1 - 11.0,
+        w: half_w * 2.0,
+        h: 14.0,
+    };
+    lines.iter().any(|pts| {
+        pts.windows(2)
+            .any(|seg| segment_crosses_rect_interior(seg[0], seg[1], rect, 1.0))
+    })
+}
+
 fn label_clashes_with_any_box(
     pos: (f64, f64),
     text: &str,
@@ -3030,6 +3138,14 @@ pub fn render_svg_with_options(
     // docs/external-elements-adoption.md), not something this collector
     // fixes.
     let mut lines_drawn_so_far: Vec<Vec<(f64, f64)>> = Vec::new();
+    // Regular edges' geometry, held back so their labels can be placed in a
+    // second pass once the deny lines exist. Placing them in the first pass
+    // is what put labels under deny lines: a label cannot avoid a line that
+    // has not been routed yet, and denies route after this loop because
+    // their own routing avoids these lines.
+    #[allow(clippy::type_complexity)]
+    let mut deferred_edges: Vec<(&ResolvedEdge, (f64, f64), (f64, f64), (f64, f64), f64)> =
+        Vec::new();
     for re in &resolved_edges {
         let key = pair_key(&re.from_q, &re.to_q);
         let total = pair_total[&key];
@@ -3074,6 +3190,19 @@ pub fn render_svg_with_options(
             offset,
         );
 
+        // Pass one stops here: geometry only. Labels are placed in pass
+        // two, after the deny lines exist -- see `deferred_edges`.
+        lines_drawn_so_far.push(vec![(fx, fy), (tx, ty)]);
+        deferred_edges.push((re, (fx, fy), (tx, ty), (px, py), lane));
+    }
+
+    let place_label = |re: &ResolvedEdge,
+                       (fx, fy): (f64, f64),
+                       (tx, ty): (f64, f64),
+                       (px, py): (f64, f64),
+                       lane: f64,
+                       all_lines: &[Vec<(f64, f64)>]|
+     -> (f64, f64) {
         // The label sits `LABEL_T` of the way along the (already offset)
         // line — never at the midpoint, so it stays clear of the arrowhead
         // — then pushed out past the line by its own half-width plus a
@@ -3083,9 +3212,7 @@ pub fn render_svg_with_options(
         // label's own text matters: a fixed push clears the line at the
         // label's *center* but a `text-anchor:middle` label still reaches
         // back over the line by half its own width otherwise.
-        let label_pos = if let EdgeKind::Flow(ty_label) = &re.edge.kind {
-            let bx = fx + (tx - fx) * LABEL_T;
-            let by = fy + (ty - fy) * LABEL_T;
+        if let EdgeKind::Flow(ty_label) = &re.edge.kind {
             // Reserved with the worst-case character width (`NAME_CHAR_W`),
             // not the narrower width the label is actually drawn at
             // (`SUB_CHAR_W`) — same reasoning as the deny-except margin fix
@@ -3093,7 +3220,19 @@ pub fn render_svg_with_options(
             // real clearance.
             let clear = LABEL_SIDE_GAP + text_w(ty_label, NAME_CHAR_W) / 2.0;
             let sign = if lane < 0.0 { -1.0 } else { 1.0 };
-            let at = |mult: f64, s: f64| (bx + px * clear * mult * s, by + py * clear * mult * s);
+            // Sliding perpendicular is not always an escape. When the edge
+            // is steep, its perpendicular is nearly horizontal, so every
+            // candidate slides the label *along* a horizontal line it is
+            // stuck under, and the whole budget is spent without ever
+            // leaving it. So a candidate varies two things: how far along
+            // the edge the label sits, and how far out it is pushed.
+            // `LABEL_T` stays first, so a label that was already fine does
+            // not move.
+            let at = |t: f64, mult: f64, s: f64| {
+                let bx = fx + (tx - fx) * t;
+                let by = fy + (ty - fy) * t;
+                (bx + px * clear * mult * s, by + py * clear * mult * s)
+            };
             // The perpendicular push that clears the *line* can still land
             // the label on top of an unrelated box that happens to sit on
             // that side (vetting 003's "same clearance family" as finding
@@ -3106,30 +3245,24 @@ pub fn render_svg_with_options(
             // original (lane-consistent, unscaled) placement rather than
             // drifting arbitrarily far.
             let bounds = drawn_content_bounds(&positions);
-            [1.0, 1.5, 2.0, 2.5, 3.0]
+            [LABEL_T, 0.25, 0.52, 0.66, 0.15, 0.78]
                 .into_iter()
-                .flat_map(|mult| [(mult, sign), (mult, -sign)])
-                .map(|(mult, s)| at(mult, s))
+                .flat_map(|t| {
+                    [1.0, 1.5, 2.0, 2.5, 3.0]
+                        .into_iter()
+                        .flat_map(move |mult| [(t, mult, sign), (t, mult, -sign)])
+                })
+                .map(|(t, mult, s)| at(t, mult, s))
                 .find(|&pos| {
                     label_within_bounds(pos, ty_label, bounds)
                         && !label_clashes_with_any_box(pos, ty_label, &positions)
+                        && !label_struck_by_any_line(pos, ty_label, all_lines)
                 })
-                .unwrap_or_else(|| at(1.0, sign))
+                .unwrap_or_else(|| at(LABEL_T, 1.0, sign))
         } else {
             (0.0, 0.0) // unused: EdgeKind::Call never renders a label
-        };
-
-        lines_drawn_so_far.push(vec![(fx, fy), (tx, ty)]);
-        let findings = ctx.edge_findings(re.edge_index);
-        render_edge(
-            &re.edge,
-            (fx, fy),
-            (tx, ty),
-            label_pos,
-            &findings,
-            &mut edges_svg,
-        );
-    }
+        }
+    };
 
     // Deny rules. §7.1 (amended): `*` has no shared identity, so each rule
     // that names it draws its own pseudo-node — never one shared node that
@@ -3181,12 +3314,71 @@ pub fn render_svg_with_options(
         )?;
     }
 
+    // Pass two: every line that will be drawn now exists, so each regular
+    // edge's label can be placed knowing about the deny routes as well as
+    // its siblings. Output layering is unaffected -- the final document
+    // concatenates `deny_svg` before `edges_svg` regardless of the order the
+    // two strings were built in.
+    for (re, from, to, perp, lane) in deferred_edges {
+        let label_pos = place_label(re, from, to, perp, lane, &lines_drawn_so_far);
+        let findings = ctx.edge_findings(re.edge_index);
+        render_edge(&re.edge, from, to, label_pos, &findings, &mut edges_svg);
+    }
+
     // §7.1: "a finding with no drawable item attaches a red count next to
     // the workspace title." Checked last, once every render call above has
     // had its chance to mark a diagnostic attached — a clean document
     // (`findings` empty) always has `unattached_count() == 0`, so this is a
     // no-op and the title is untouched.
     let unattached = ctx.unattached_count();
+    // The glance before the glance: how much is here, and how much of it is
+    // claimed. Every number is already in the document -- it was simply
+    // never stated, so a reader had to scan every box to find out. Counts
+    // only what is *promised*, because nothing has been run: a strip that
+    // reported results would be inventing them.
+    let (total_components, total_fns) = doc
+        .components
+        .values()
+        .map(|c| {
+            let (nested, fns) = count_subtree(c);
+            (nested + 1, fns)
+        })
+        .fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
+    let unclaimed_fns = {
+        fn walk(c: &Component, inherited: bool, out: &mut usize) {
+            let has_default = c.checks.as_ref().is_some_and(|d| !d.is_empty());
+            let covered = inherited || has_default;
+            for fc in c.fns.values() {
+                let declares = fc.checks.as_ref().is_some_and(|c| !c.is_empty());
+                if !declares && !(covered && fc.checks.is_none()) {
+                    *out += 1;
+                }
+            }
+            for child in c.components.values() {
+                walk(child, covered, out);
+            }
+        }
+        let mut n = 0;
+        for c in doc.components.values() {
+            walk(c, false, &mut n);
+        }
+        n
+    };
+    fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
+        if n == 1 { one } else { many }
+    }
+    let strip_text = format!(
+        "{total_components} {} · {total_fns} {} · {unclaimed_fns} {} nothing",
+        plural(total_components, "component", "components"),
+        plural(total_fns, "function", "functions"),
+        plural(unclaimed_fns, "promises", "promise"),
+    );
+    let strip_tip = title(&format!(
+        "What this document declares, before anything has been run. \"{} {} nothing\"          counts functions with no checks against them at all -- code the diagram is          showing you but says nothing about. Running `cargo ply verify` is what turns          promises into results; this line never reports results.",
+        unclaimed_fns,
+        plural(unclaimed_fns, "function promises", "functions promise"),
+    ));
+
     let (title_extra, title_min_w) = if unattached > 0 {
         let count_text = format!(
             "{unattached} finding{} — run ply-check",
@@ -3210,7 +3402,15 @@ pub fn render_svg_with_options(
     // never the frame itself — the frame stays exactly "the workspace",
     // and externals draw strictly outside it (§4's extended "inside the
     // frame = part of the system").
-    let frame_content_w = frame_w.max(title_min_w);
+    // The strip shares the title's line, so a narrow diagram must widen to
+    // hold it — found by `everything_renders_inside_the_canvas` when the
+    // strip first ran off a 350px canvas by 122px.
+    let strip_min_w = FRAME_PAD
+        + text_w("ply.yaml", NAME_CHAR_W)
+        + 24.0
+        + text_w(&strip_text, NAME_CHAR_W)
+        + FRAME_PAD;
+    let frame_content_w = frame_w.max(title_min_w).max(strip_min_w);
     // A tall stack of wildcard any-nodes (several `*` rules anchoring in
     // one margin column, `place_clear` pushing each below the last) can
     // run past the box layout's bottom edge; the canvas and frame grow so
@@ -3428,11 +3628,13 @@ pub fn render_svg_with_options(
         "This diagram is drawn from ply.yaml, the file describing this codebase's \
          architecture and verification claims. Each box is a component; chips are \
          functions with their declared checks; arrows are permitted calls (solid) and \
-         data flows (dashed); red bars are forbidden calls. A box's green depth is the \
-         strength of the checks it declares — white means something inside declares \
-         none, deeper green means stronger checks, and the weakest function sets the \
-         whole box's shade. It is a promise scale, not results: none of it has run \
-         yet. Hover anything for its meaning.",
+         data flows (dashed); red bars are forbidden calls. A box's grey depth is how \
+         strongly it promises to be checked — white means something inside promises \
+         nothing, deeper grey means stronger checks promised, and the weakest \
+         function sets the whole box's shade. Nothing here is green: green is kept \
+         for evidence a run has actually earned, and nothing has been run yet, so a \
+         picture full of promises should not look like a picture full of results. \
+         Hover anything for its meaning.",
     );
 
     Ok(format!(
@@ -3440,17 +3642,23 @@ pub fn render_svg_with_options(
          viewBox=\"0 0 {width:.1} {height:.1}\" font-family=\"monospace\" font-size=\"12\">\
          <style>{style}</style>\
          <defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\">\
-         <path d=\"M 0 0 L 10 5 L 0 10 z\" /></marker></defs>\
+         <path d=\"M 0 0 L 10 5 L 0 10 z\" /></marker>\
+         <pattern id=\"unclaimed-hatch\" patternUnits=\"userSpaceOnUse\" width=\"8\" height=\"8\" patternTransform=\"rotate(45)\">\
+         <rect width=\"8\" height=\"8\" fill=\"#fff\" />\
+         <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#c8ccd4\" stroke-width=\"2\" /></pattern></defs>\
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\">{workspace_tip}</rect>\
          <g><title>ply.yaml — the document this picture is drawn from. Everything you \
 see here was declared in it; nothing was inferred from code. What each box has actually \
 been checked for is what `cargo ply verify` reports, not this drawing.</title>\
          <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text></g>\
+         <g class=\"verdict-strip\">{strip_tip}<text class=\"verdict-strip-text\" x=\"{strip_x:.1}\" y=\"20\">{strip_text}</text></g>\
          {title_extra}\
          {deny_svg}{registry_svg}{body}{edges_svg}{external_edges_svg}{external_svg}\
          </svg>",
         frame_inner_w = frame_content_w - 2.0,
         frame_inner_h = frame_content_h - 2.0,
+        strip_x = FRAME_PAD + text_w("ply.yaml", NAME_CHAR_W) + 24.0,
+        strip_text = esc(&strip_text),
     ))
 }
 
