@@ -3827,23 +3827,41 @@ fn every_colour_coded_meaning_is_also_carried_by_a_mark() {
         ((x - p).powi(2) + (y - q).powi(2) + (z - r).powi(2)).sqrt()
     }
 
-    // Just above the confusable band measured above.
+    // Just above the confusable band measured above. Both palettes are held to
+    // it: a dark theme that quietly collapses two meanings into one colour is
+    // the same defect as a light one that does, and only ever gets looked at by
+    // whoever is not using the default.
     const FLOOR: f64 = 0.28;
     for (a, b, what) in [
         (
             "#c9534f",
             "#b08900",
-            "a rule being broken vs a human being needed",
+            "light: a rule broken vs a human needed",
         ),
         (
             "#c9534f",
             "#3b4252",
-            "a rule being broken vs ordinary structure",
+            "light: a rule broken vs ordinary structure",
         ),
         (
             "#b08900",
             "#3b4252",
-            "a human being needed vs ordinary structure",
+            "light: a human needed vs ordinary structure",
+        ),
+        (
+            "#e8524b",
+            "#d4a72c",
+            "dark: a rule broken vs a human needed",
+        ),
+        (
+            "#e8524b",
+            "#98a0ae",
+            "dark: a rule broken vs ordinary structure",
+        ),
+        (
+            "#d4a72c",
+            "#98a0ae",
+            "dark: a human needed vs ordinary structure",
         ),
     ] {
         let d = apart(a, b);
@@ -3999,5 +4017,59 @@ fn no_two_drawn_lines_cross_at_a_shallow_angle() {
          rule goes invisible:\n  {}",
         overlapping.len(),
         overlapping.join("\n  ")
+    );
+}
+
+/// These diagrams are read on GitHub and in editors, where dark is a common
+/// default, and the render paints its own near-white background — so a dark
+/// reader got a bright panel rather than a diagram. One alternative palette,
+/// not a theming hook: the meanings are fixed and CI enforces them, so a
+/// palette a user could redefine would make those guarantees unenforceable.
+/// Two expressions of one set of meanings, both held to the same rules.
+#[test]
+fn the_dark_palette_carries_every_meaning_the_light_one_does() {
+    let svg = render_fixture("../../vetting/003-trading-system.ply.yaml");
+    let style = svg
+        .split("<style>")
+        .nth(1)
+        .and_then(|s| s.split("</style>").next())
+        .expect("every render embeds a stylesheet");
+
+    let dark = style
+        .split("@media (prefers-color-scheme: dark)")
+        .nth(1)
+        .expect(
+            "the stylesheet carries no dark-mode block, so a reader in dark mode gets a \
+             bright panel rather than a diagram",
+        );
+
+    // The background must actually invert; a dark block that leaves the frame
+    // near-white has changed nothing that matters.
+    assert!(
+        dark.contains(".workspace-frame"),
+        "the dark block must repaint the frame — it is the surface everything else sits on"
+    );
+
+    // Every meaning that survives without colour must still be nameable in
+    // dark: absence still marked, forbidden still distinct from attention.
+    for needed in [".ceiling-unclaimed", ".deny-line", ".fn-clause"] {
+        assert!(
+            dark.contains(needed),
+            "`{needed}` carries meaning in the light palette but is not restated for dark, \
+             so it will render at its light value against a dark ground"
+        );
+    }
+
+    // Absence must remain a drawn mark in dark, not revert to a flat fill.
+    let unclaimed_dark = dark
+        .split(".ceiling-unclaimed")
+        .nth(1)
+        .and_then(|s| s.split('}').next())
+        .expect("dark block should define the unclaimed fill");
+    assert!(
+        unclaimed_dark.contains("url(#"),
+        "in dark mode a component promising nothing is filled with `{unclaimed_dark}` — a \
+         flat colour. The hatch is the whole point: absence drawn as blank reads as \
+         background in either palette."
     );
 }

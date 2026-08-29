@@ -1777,6 +1777,18 @@ are worse than any crossing and are a defect in their own right: the reader sees
 where the document declared two, so a rule goes invisible. Four such overlaps exist today
 among the forbidden-call routes and are pinned as a ratchet, not tolerated silently.
 
+**One alternative palette, never a theming hook (added 2026-08-29).** These diagrams are
+read where dark is a common default, and the render paints its own near-white background,
+so a dark reader got a bright panel rather than a diagram. A second palette now follows
+`prefers-color-scheme`. It is deliberately *not* configurable: the meanings above are
+enforced — red must belong to something forbidden or wrong, nothing un-run may be green,
+absence must carry a mark — and a palette a reader could redefine would make every one of
+those guarantees unenforceable. A diagram whose colours mean whatever was configured
+cannot also be a diagram whose colours can be trusted. So: two expressions of one set of
+meanings, both held to the same tests, including the colour-blindness floor — which
+caught the first dark red proposed, at 0.200 against ordinary structure, inside the range
+where real confusions live.
+
 **The strip (added 2026-08-29).** Every render opens with one line stating what the
 document declares and how much of it promises nothing — `11 components · 14 functions ·
 2 promise nothing`. It counts promises only, never results, because nothing has run; a

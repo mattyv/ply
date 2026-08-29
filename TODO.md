@@ -712,6 +712,15 @@ adversarial review, none by the suite.
 
 ## Agreed with the maintainer, not yet started
 
+- [x] **A dark palette, following the reader's system setting** (2026-08-29). The render
+      paints its own near-white background, so a dark-mode reader got a bright panel. One
+      alternative palette, explicitly **not** a theming hook: the colour meanings are
+      enforced by CI, and a user-redefinable palette would make every one of those
+      guarantees unenforceable. The colour-blindness floor now runs against both palettes
+      and immediately earned its keep -- it rejected the first dark red proposed, which sat
+      0.200 from ordinary structure, inside the measured confusable band. Replaced with one
+      that clears the floor against both structure and the attention amber.
+
 - [x] **Diagram-layout and cartography evidence applied** (2026-08-29). The research doc
       cited perception and notation theory but no experimental work on diagram *layout*.
       Two fields have it. Landed: (a) **a shallow-crossing invariant** — crossings are the

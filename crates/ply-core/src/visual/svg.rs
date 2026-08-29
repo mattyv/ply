@@ -177,6 +177,41 @@ pub const STYLE: &str = "\
 .any-label{fill:#4b5563;text-anchor:middle}\
 .external-box{fill:none;stroke:#3b4252;stroke-width:1.5}\
 #arrow path{fill:#3b4252}\
+@media (prefers-color-scheme: dark){\
+.workspace-frame{fill:#15171c;stroke:#333947}\
+.workspace-title{fill:#8b93a1}\
+.verdict-strip-text{fill:#a3abb9}\
+.component-box,.collapsed-stack,.external-box{stroke:#8891a3}\
+.component-name{fill:#e6e9ef}\
+.component-anchor,.component-owns{fill:#98a0ae}\
+.ceiling-unclaimed{fill:url(#unclaimed-hatch-dark)}\
+.ceiling-tested{fill:#242832}\
+.ceiling-fuzzed{fill:#333947}\
+.ceiling-bounded{fill:#464e60}\
+.ceiling-proved{fill:#5b6479}\
+.contract-mark{fill:#c8cede}\
+.fn-clause{fill:#aab3c4}\
+.cap-badge rect{fill:#252a35;stroke:#6d7686}\
+.cap-badge text{fill:#b6bdca}\
+.profile-tag rect{fill:#1d2532;stroke:#5570a8}\
+.profile-tag text{fill:#9fb6dd}\
+.fn-chip-box{fill:#1c1f27;stroke:#6d7686}\
+.fn-chip-box-synth{fill:#2a2033;stroke:#6d7686}\
+.fn-name{fill:#e6e9ef}\
+.fn-checks{fill:#a3abb9}\
+.fn-check-with,.fn-examples{fill:#8b93a1}\
+.pure-seal,.strict-notch{fill:#c8cede}\
+.pure-seal{fill:none;stroke:#c8cede}\
+.edge-line{stroke:#98a0ae}\
+.edge-label{fill:#a3abb9}\
+.deny-line,.deny-bar{stroke:#e8524b}\
+.deny-except{fill:#e8524b}\
+.any-node circle{fill:#252a35;stroke:#6d7686}\
+.any-label{fill:#a3abb9}\
+.unresolved-pin circle,.registry-pin circle{fill:#2e2814;stroke:#d4a72c}\
+.pin-label{fill:#e3c66b}\
+#arrow path{fill:#98a0ae}\
+}\
 ";
 
 /// Rules for the §7.1 "finding" classes, kept separate from `STYLE` and
@@ -3645,7 +3680,10 @@ pub fn render_svg_with_options(
          <path d=\"M 0 0 L 10 5 L 0 10 z\" /></marker>\
          <pattern id=\"unclaimed-hatch\" patternUnits=\"userSpaceOnUse\" width=\"8\" height=\"8\" patternTransform=\"rotate(45)\">\
          <rect width=\"8\" height=\"8\" fill=\"#fff\" />\
-         <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#c8ccd4\" stroke-width=\"2\" /></pattern></defs>\
+         <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#c8ccd4\" stroke-width=\"2\" /></pattern>\
+         <pattern id=\"unclaimed-hatch-dark\" patternUnits=\"userSpaceOnUse\" width=\"8\" height=\"8\" patternTransform=\"rotate(45)\">\
+         <rect width=\"8\" height=\"8\" fill=\"#15171c\" />\
+         <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#4a5262\" stroke-width=\"2\" /></pattern></defs>\
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\">{workspace_tip}</rect>\
          <g><title>ply.yaml — the document this picture is drawn from. Everything you \
 see here was declared in it; nothing was inferred from code. What each box has actually \
