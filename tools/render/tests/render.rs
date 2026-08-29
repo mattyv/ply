@@ -2423,7 +2423,7 @@ mod no_overlap {
         // test is read by nobody. Pinning makes the debt a ratchet: it can
         // only be paid down, never silently grow. Lower this number when you
         // fix one; if it rises, you added one and the test says so.
-        const KNOWN_LABEL_LINE_GAPS: usize = 13;
+        const KNOWN_LABEL_LINE_GAPS: usize = 0;
         if !known_pre_existing_gaps.is_empty() {
             eprintln!(
                 "no_drawn_element_intersects_a_box_it_is_not_inside: {} known pre-existing \

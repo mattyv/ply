@@ -2275,6 +2275,32 @@ fn lane_offset(idx: usize, total: usize, gap: f64) -> f64 {
 /// flow-edge label centered at `pos`, checked against every real component
 /// box for overlap — used to pick whichever side of the line a label's
 /// perpendicular push actually lands clear on.
+/// Would a label centred at `pos` be struck through by any already-drawn
+/// line? The sibling of [`label_clashes_with_any_box`], and the reason
+/// labels used to land on top of edges: the placement search escalated
+/// through candidate positions checking the canvas edge and the boxes, and
+/// never asked whether a line ran through the text. A label with a line
+/// through it is harder to read than one slightly further from its edge, so
+/// this joins the same filter rather than becoming a later correction pass.
+///
+/// Shares the bbox convention of [`label_clashes_with_any_box`] exactly --
+/// half-width from the worst-case character width, and the same ascender /
+/// descender band around the baseline -- so the two agree about what "the
+/// label occupies this space" means.
+fn label_struck_by_any_line(pos: (f64, f64), text: &str, lines: &[Vec<(f64, f64)>]) -> bool {
+    let half_w = text_w(text, NAME_CHAR_W) / 2.0;
+    let rect = Rect {
+        x: pos.0 - half_w,
+        y: pos.1 - 11.0,
+        w: half_w * 2.0,
+        h: 14.0,
+    };
+    lines.iter().any(|pts| {
+        pts.windows(2)
+            .any(|seg| segment_crosses_rect_interior(seg[0], seg[1], rect, 1.0))
+    })
+}
+
 fn label_clashes_with_any_box(
     pos: (f64, f64),
     text: &str,
@@ -3093,6 +3119,14 @@ pub fn render_svg_with_options(
     // docs/external-elements-adoption.md), not something this collector
     // fixes.
     let mut lines_drawn_so_far: Vec<Vec<(f64, f64)>> = Vec::new();
+    // Regular edges' geometry, held back so their labels can be placed in a
+    // second pass once the deny lines exist. Placing them in the first pass
+    // is what put labels under deny lines: a label cannot avoid a line that
+    // has not been routed yet, and denies route after this loop because
+    // their own routing avoids these lines.
+    #[allow(clippy::type_complexity)]
+    let mut deferred_edges: Vec<(&ResolvedEdge, (f64, f64), (f64, f64), (f64, f64), f64)> =
+        Vec::new();
     for re in &resolved_edges {
         let key = pair_key(&re.from_q, &re.to_q);
         let total = pair_total[&key];
@@ -3137,6 +3171,19 @@ pub fn render_svg_with_options(
             offset,
         );
 
+        // Pass one stops here: geometry only. Labels are placed in pass
+        // two, after the deny lines exist -- see `deferred_edges`.
+        lines_drawn_so_far.push(vec![(fx, fy), (tx, ty)]);
+        deferred_edges.push((re, (fx, fy), (tx, ty), (px, py), lane));
+    }
+
+    let place_label = |re: &ResolvedEdge,
+                       (fx, fy): (f64, f64),
+                       (tx, ty): (f64, f64),
+                       (px, py): (f64, f64),
+                       lane: f64,
+                       all_lines: &[Vec<(f64, f64)>]|
+     -> (f64, f64) {
         // The label sits `LABEL_T` of the way along the (already offset)
         // line — never at the midpoint, so it stays clear of the arrowhead
         // — then pushed out past the line by its own half-width plus a
@@ -3146,9 +3193,7 @@ pub fn render_svg_with_options(
         // label's own text matters: a fixed push clears the line at the
         // label's *center* but a `text-anchor:middle` label still reaches
         // back over the line by half its own width otherwise.
-        let label_pos = if let EdgeKind::Flow(ty_label) = &re.edge.kind {
-            let bx = fx + (tx - fx) * LABEL_T;
-            let by = fy + (ty - fy) * LABEL_T;
+        if let EdgeKind::Flow(ty_label) = &re.edge.kind {
             // Reserved with the worst-case character width (`NAME_CHAR_W`),
             // not the narrower width the label is actually drawn at
             // (`SUB_CHAR_W`) — same reasoning as the deny-except margin fix
@@ -3156,7 +3201,19 @@ pub fn render_svg_with_options(
             // real clearance.
             let clear = LABEL_SIDE_GAP + text_w(ty_label, NAME_CHAR_W) / 2.0;
             let sign = if lane < 0.0 { -1.0 } else { 1.0 };
-            let at = |mult: f64, s: f64| (bx + px * clear * mult * s, by + py * clear * mult * s);
+            // Sliding perpendicular is not always an escape. When the edge
+            // is steep, its perpendicular is nearly horizontal, so every
+            // candidate slides the label *along* a horizontal line it is
+            // stuck under, and the whole budget is spent without ever
+            // leaving it. So a candidate varies two things: how far along
+            // the edge the label sits, and how far out it is pushed.
+            // `LABEL_T` stays first, so a label that was already fine does
+            // not move.
+            let at = |t: f64, mult: f64, s: f64| {
+                let bx = fx + (tx - fx) * t;
+                let by = fy + (ty - fy) * t;
+                (bx + px * clear * mult * s, by + py * clear * mult * s)
+            };
             // The perpendicular push that clears the *line* can still land
             // the label on top of an unrelated box that happens to sit on
             // that side (vetting 003's "same clearance family" as finding
@@ -3169,30 +3226,24 @@ pub fn render_svg_with_options(
             // original (lane-consistent, unscaled) placement rather than
             // drifting arbitrarily far.
             let bounds = drawn_content_bounds(&positions);
-            [1.0, 1.5, 2.0, 2.5, 3.0]
+            [LABEL_T, 0.25, 0.52, 0.66, 0.15, 0.78]
                 .into_iter()
-                .flat_map(|mult| [(mult, sign), (mult, -sign)])
-                .map(|(mult, s)| at(mult, s))
+                .flat_map(|t| {
+                    [1.0, 1.5, 2.0, 2.5, 3.0]
+                        .into_iter()
+                        .flat_map(move |mult| [(t, mult, sign), (t, mult, -sign)])
+                })
+                .map(|(t, mult, s)| at(t, mult, s))
                 .find(|&pos| {
                     label_within_bounds(pos, ty_label, bounds)
                         && !label_clashes_with_any_box(pos, ty_label, &positions)
+                        && !label_struck_by_any_line(pos, ty_label, all_lines)
                 })
-                .unwrap_or_else(|| at(1.0, sign))
+                .unwrap_or_else(|| at(LABEL_T, 1.0, sign))
         } else {
             (0.0, 0.0) // unused: EdgeKind::Call never renders a label
-        };
-
-        lines_drawn_so_far.push(vec![(fx, fy), (tx, ty)]);
-        let findings = ctx.edge_findings(re.edge_index);
-        render_edge(
-            &re.edge,
-            (fx, fy),
-            (tx, ty),
-            label_pos,
-            &findings,
-            &mut edges_svg,
-        );
-    }
+        }
+    };
 
     // Deny rules. §7.1 (amended): `*` has no shared identity, so each rule
     // that names it draws its own pseudo-node — never one shared node that
@@ -3242,6 +3293,17 @@ pub fn render_svg_with_options(
             &mut deny_svg,
             &mut lines_drawn_so_far,
         )?;
+    }
+
+    // Pass two: every line that will be drawn now exists, so each regular
+    // edge's label can be placed knowing about the deny routes as well as
+    // its siblings. Output layering is unaffected -- the final document
+    // concatenates `deny_svg` before `edges_svg` regardless of the order the
+    // two strings were built in.
+    for (re, from, to, perp, lane) in deferred_edges {
+        let label_pos = place_label(re, from, to, perp, lane, &lines_drawn_so_far);
+        let findings = ctx.edge_findings(re.edge_index);
+        render_edge(&re.edge, from, to, label_pos, &findings, &mut edges_svg);
     }
 
     // §7.1: "a finding with no drawable item attaches a red count next to

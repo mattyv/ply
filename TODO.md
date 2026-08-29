@@ -725,9 +725,17 @@ adversarial review, none by the suite.
       channel-discipline rule is amended, retracting "pastel = promised, saturated = earned"
       with the argument for why it neither held nor could hold.
 
-- [ ] **Third "land now" item still open: edge lines strike through box text.** Needs
-      routing, is the one remaining item Fable said to land now, and is the longest-standing
-      recorded render defect.
+- [x] **Edge lines no longer strike through labels** (2026-08-29). The third and last of
+      the review's "land now" items, and the longest-standing recorded render defect. The
+      ratchet that pinned this debt at 13 collisions is now at **0**. Two causes, both
+      real: the placement search checked candidate positions against the canvas edge and
+      the boxes but never against the *lines*, and it ran before the forbidden-call routes
+      existed, so a label could not avoid a line not yet routed. Placement now runs as a
+      second pass once every line exists, and candidates vary where along the edge the
+      label sits as well as how far out it is pushed -- without that second axis a steep
+      edge's perpendicular is nearly horizontal, so every candidate slid the label *along*
+      the horizontal line it was stuck under. Exactly 2 labels moved across the whole
+      corpus; 001 and 002 are byte-identical.
 
 - [ ] **Deferred with a bug to fix first: the two-part promise/earned meter.** Good idea,
       wrong arithmetic as written — it folds by *summing*, so a collapsed box with nine
