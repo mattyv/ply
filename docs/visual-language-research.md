@@ -1,5 +1,21 @@
 # Making the render land at a glance: research and a proposed visual language
 
+> **As of 2026-08-29 this document has been acted on and partly superseded.** Most
+> of its recommendations are implemented; three items were cut with reasons and one
+> deferred, all recorded in TODO.md. Two corrections belong with the original text
+> rather than only in the commit log. First, its claim that the check badges carry
+> "no text expansion and no tooltip" is **false** — the renderer expands every glyph
+> into a plain-English sentence in hover text, and an invariant test pins that; the
+> defensible version of the point is that hover is not glanceable, which is why the
+> badges now also read as words when zoomed in. Second, its two-part meter folds by
+> *summing*, which would let a box with nine earned functions and one untouched read
+> as 90% healthy — precisely what the kernel's first standing obligation forbids.
+>
+> A later review (see the graph-drawing and cartography findings in TODO.md) also
+> found this document cites no experimental work on diagram layout at all. The one
+> layout property with a large replicated effect — lines crossing at shallow angles —
+> appears nowhere in it.
+
 Reviewed against a real external spec (a 4-group, 15-component, 29-fn trading-service
 design) rendered with the current `ply-render`, and against the visual-notation and
 perception literature. The goal stated by the user: *a trained human glances at the
@@ -106,8 +122,18 @@ Supporting changes that make the table work:
 6. **Layout: let position mean something.** Enforce rank bands (app / edge / domain
    layers) so vertical position encodes architecture depth — position is the
    strongest channel there is, and it is currently spent on nothing. Route edges
-   orthogonally with collision avoidance; an edge striking through a label (current
+   with collision avoidance; an edge striking through a label (current
    `--depth 1` bug) costs more trust than any single feature adds.
+
+   > **Retracted 2026-08-29: "route edges orthogonally".** The collision-avoidance
+   > half is evidence-backed and has landed. The *orthogonal* half is folklore: in
+   > Purchase's controlled experiments, increasing orthogonal structure showed no
+   > measurable benefit to comprehension, and eye-tracking work argues it would
+   > actively hurt here, since orthogonal routing manufactures the long shallow
+   > near-parallel runs that cost a reader most. Struck before anyone builds it.
+   > The rank-band half of this item was separately cut — position already means
+   > containment, and a second meaning on one channel breaks the rule this
+   > document exists to defend.
 7. **One-line verdict strip.** Top of every render: `2 broken · 5 unverified ·
    1 trusted (stale) · 3 unresolved · 21 quiet`. The glance before the glance.
    Colorblind-safe because each count carries its icon.

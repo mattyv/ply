@@ -3884,3 +3884,120 @@ fn every_colour_coded_meaning_is_also_carried_by_a_mark() {
          the amber does not."
     );
 }
+
+/// The one layout property with a large, replicated experimental effect on how
+/// fast people read a diagram: lines crossing each other. Purchase's controlled
+/// studies rank it well above symmetry, bends or node placement.
+///
+/// But the useful form of the rule is the refinement, not the headline. Eye
+/// tracking shows a crossing near a right angle is essentially ignored, while a
+/// shallow one sends the eye back and forth and costs measurable accuracy —
+/// the penalty falls away as the angle opens toward 90°. So this does not
+/// forbid crossings, which would over-constrain the layout for no measured
+/// gain; it forbids the shallow ones that actually cost the reader.
+///
+/// **This currently guards rather than fixes.** Every committed diagram has
+/// zero line crossings at any angle, so nothing here is red today. That is the
+/// point: the property is held by luck, and nothing stopped a later layout
+/// change from quietly losing it. Measured before writing this, so the claim
+/// is not an assumption.
+#[test]
+fn no_two_drawn_lines_cross_at_a_shallow_angle() {
+    // Below this, crossings measurably slow a reader down; above it, the
+    // reported penalty has largely gone.
+    const SHALLOW_DEGREES: f64 = 25.0;
+
+    fn crossing_angle(a: ((f64, f64), (f64, f64)), b: ((f64, f64), (f64, f64))) -> f64 {
+        let (ax, ay) = (a.1.0 - a.0.0, a.1.1 - a.0.1);
+        let (bx, by) = (b.1.0 - b.0.0, b.1.1 - b.0.1);
+        let (la, lb) = ((ax * ax + ay * ay).sqrt(), (bx * bx + by * by).sqrt());
+        if la < 1e-9 || lb < 1e-9 {
+            return 90.0; // degenerate: nothing to read
+        }
+        let cos = ((ax * bx + ay * by) / (la * lb)).clamp(-1.0, 1.0);
+        let deg = cos.acos().to_degrees();
+        // 170° between directions is a 10° crossing to the eye.
+        if deg > 90.0 { 180.0 - deg } else { deg }
+    }
+
+    // Two different defects, deliberately reported apart. A shallow crossing
+    // costs reading speed; two lines lying *along* each other cost information
+    // — the reader sees one line where the document declared two.
+    let mut shallow = Vec::new();
+    let mut overlapping = Vec::new();
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "../../ply.yaml",
+    ] {
+        let svg = render_fixture(fixture);
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        // Collected here rather than reusing the helper in the layout module,
+        // so this test's view of "what lines were drawn" stays independent of
+        // the one the other invariants use.
+        let lines: Vec<Vec<(f64, f64)>> = doc
+            .descendants()
+            .filter(|n| n.is_element() && n.has_tag_name("path"))
+            .filter(|n| !n.ancestors().any(|a| a.has_tag_name("defs")))
+            .filter(|n| {
+                n.attribute("class")
+                    .is_some_and(|c| c.starts_with("edge-line") || c.starts_with("deny-line"))
+            })
+            .filter_map(|n| n.attribute("d").map(parse_path_points))
+            .filter(|pts| pts.len() >= 2)
+            .collect();
+
+        for i in 0..lines.len() {
+            for j in (i + 1)..lines.len() {
+                for a in lines[i].windows(2) {
+                    for b in lines[j].windows(2) {
+                        let (sa, sb) = ((a[0], a[1]), (b[0], b[1]));
+                        if !segments_cross(sa, sb) {
+                            continue;
+                        }
+                        let deg = crossing_angle(sa, sb);
+                        if deg < 1.0 {
+                            overlapping.push(format!("{fixture}: {sa:?} lies along {sb:?}"));
+                        } else if deg < SHALLOW_DEGREES {
+                            shallow.push(format!(
+                                "{fixture}: {sa:?} crosses {sb:?} at {deg:.0}° — shallow \
+                                 enough that a reader tracing either one loses it at the \
+                                 junction"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        shallow.is_empty(),
+        "lines crossing at a shallow angle are the costliest thing a layout can do to a \
+         reader. Spread the endpoints along the box borders so these meet nearer a right \
+         angle, or route one of them clear:\n  {}",
+        shallow.join("\n  ")
+    );
+
+    // Found by writing this test, not known before: three forbidden-call lines
+    // share one vertical corridor in 003 and two share a horizontal run, so
+    // they are drawn along each other and read as one line. Worse than a
+    // crossing — a crossing slows you down, an overlap hides a rule. Fixing it
+    // means giving deny routes their own lanes the way regular edges already
+    // have them, which is its own piece of work.
+    //
+    // PINNED, not merely printed, for the reason the label/line ratchet gives:
+    // a green test that knows about N defects and says nothing is the "gate
+    // debt: none" over-claim this project has retracted once already. Lower
+    // this when you fix one; if it rises, this change added one.
+    const KNOWN_OVERLAPPING_LINES: usize = 4;
+    assert!(
+        overlapping.len() <= KNOWN_OVERLAPPING_LINES,
+        "overlapping drawn lines grew from {KNOWN_OVERLAPPING_LINES} to {} — this change \
+         added one. Two lines along the same path read as a single line, so a declared \
+         rule goes invisible:\n  {}",
+        overlapping.len(),
+        overlapping.join("\n  ")
+    );
+}
