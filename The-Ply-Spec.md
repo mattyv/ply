@@ -1734,6 +1734,22 @@ The ramp stays ordered rather than collapsing to a single quiet state, because t
 evidence ladder is this tool's main lever: "barely tested" and "proved" must not draw
 identically merely because neither has failed.
 
+**Position and size, named (added 2026-08-29).** The channels above were disciplined and
+position was not, which left the strongest channel on the canvas carrying whatever a
+reader chose to read into it. Measured evidence that this is not hypothetical: on the
+London Underground map, the drawn geometry influenced travellers' route choices roughly
+*twice* as strongly as their own experienced journey times, with about 30% taking a
+slower route the map merely drew as shorter. A reader trusts the geometry whether or not
+it was meant to mean anything. So each is now named, including the ones that mean nothing:
+
+- **Vertical position = call depth.** Callers sit above what they call. This is real and
+  may be relied on.
+- **Horizontal order = declaration order in `ply.yaml`, and nothing else.** It is not
+  importance, not sequence, not layering. If a future feature wants this channel it must
+  claim it here first.
+- **Box size = how much is declared inside it, and nothing else.** A large box is a box
+  with many functions, never a more important or riskier one.
+
 **Absence is drawn, never implied (added 2026-08-29).** A component promising nothing was
 filled plain white, and blank space reads as background rather than as a state — so the
 riskiest thing on the canvas, code the diagram is showing you while saying nothing about
@@ -1748,6 +1764,30 @@ call carries its crossbar, an item owed a human carries its number. Checked in C
 with a colour-distance floor under simulated red-green colour blindness — the floor is a
 blunt instrument and is documented as such, the marks are what actually make the palette
 safe.
+
+**Lines must not cross shallowly, and must never lie along each other (added
+2026-08-29).** The one layout property with a large, replicated experimental effect on
+reading speed is lines crossing — ranked well above symmetry, bends, or node placement in
+controlled studies. The useful form is the refinement rather than the headline: eye
+tracking finds a crossing near a right angle is essentially ignored, while a shallow one
+sends the eye back and forth and costs accuracy, the penalty fading as the angle opens.
+So crossings are not forbidden — forbidding them would over-constrain the layout for no
+measured gain — but shallow ones are, and CI holds it. Two lines drawn *along* each other
+are worse than any crossing and are a defect in their own right: the reader sees one line
+where the document declared two, so a rule goes invisible. Four such overlaps exist today
+among the forbidden-call routes and are pinned as a ratchet, not tolerated silently.
+
+**One alternative palette, never a theming hook (added 2026-08-29).** These diagrams are
+read where dark is a common default, and the render paints its own near-white background,
+so a dark reader got a bright panel rather than a diagram. A second palette now follows
+`prefers-color-scheme`. It is deliberately *not* configurable: the meanings above are
+enforced — red must belong to something forbidden or wrong, nothing un-run may be green,
+absence must carry a mark — and a palette a reader could redefine would make every one of
+those guarantees unenforceable. A diagram whose colours mean whatever was configured
+cannot also be a diagram whose colours can be trusted. So: two expressions of one set of
+meanings, both held to the same tests, including the colour-blindness floor — which
+caught the first dark red proposed, at 0.200 against ordinary structure, inside the range
+where real confusions live.
 
 **The strip (added 2026-08-29).** Every render opens with one line stating what the
 document declares and how much of it promises nothing — `11 components · 14 functions ·

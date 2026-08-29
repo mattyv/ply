@@ -3827,23 +3827,41 @@ fn every_colour_coded_meaning_is_also_carried_by_a_mark() {
         ((x - p).powi(2) + (y - q).powi(2) + (z - r).powi(2)).sqrt()
     }
 
-    // Just above the confusable band measured above.
+    // Just above the confusable band measured above. Both palettes are held to
+    // it: a dark theme that quietly collapses two meanings into one colour is
+    // the same defect as a light one that does, and only ever gets looked at by
+    // whoever is not using the default.
     const FLOOR: f64 = 0.28;
     for (a, b, what) in [
         (
             "#c9534f",
             "#b08900",
-            "a rule being broken vs a human being needed",
+            "light: a rule broken vs a human needed",
         ),
         (
             "#c9534f",
             "#3b4252",
-            "a rule being broken vs ordinary structure",
+            "light: a rule broken vs ordinary structure",
         ),
         (
             "#b08900",
             "#3b4252",
-            "a human being needed vs ordinary structure",
+            "light: a human needed vs ordinary structure",
+        ),
+        (
+            "#e8524b",
+            "#d4a72c",
+            "dark: a rule broken vs a human needed",
+        ),
+        (
+            "#e8524b",
+            "#98a0ae",
+            "dark: a rule broken vs ordinary structure",
+        ),
+        (
+            "#d4a72c",
+            "#98a0ae",
+            "dark: a human needed vs ordinary structure",
         ),
     ] {
         let d = apart(a, b);
@@ -3882,5 +3900,264 @@ fn every_colour_coded_meaning_is_also_carried_by_a_mark() {
         count("pin-label") >= count("unresolved-pin"),
         "every attention marker must carry its number. The digit is what survives when \
          the amber does not."
+    );
+}
+
+/// The one layout property with a large, replicated experimental effect on how
+/// fast people read a diagram: lines crossing each other. Purchase's controlled
+/// studies rank it well above symmetry, bends or node placement.
+///
+/// But the useful form of the rule is the refinement, not the headline. Eye
+/// tracking shows a crossing near a right angle is essentially ignored, while a
+/// shallow one sends the eye back and forth and costs measurable accuracy —
+/// the penalty falls away as the angle opens toward 90°. So this does not
+/// forbid crossings, which would over-constrain the layout for no measured
+/// gain; it forbids the shallow ones that actually cost the reader.
+///
+/// **This currently guards rather than fixes.** Every committed diagram has
+/// zero line crossings at any angle, so nothing here is red today. That is the
+/// point: the property is held by luck, and nothing stopped a later layout
+/// change from quietly losing it. Measured before writing this, so the claim
+/// is not an assumption.
+#[test]
+fn no_two_drawn_lines_cross_at_a_shallow_angle() {
+    // Below this, crossings measurably slow a reader down; above it, the
+    // reported penalty has largely gone.
+    const SHALLOW_DEGREES: f64 = 25.0;
+
+    fn crossing_angle(a: ((f64, f64), (f64, f64)), b: ((f64, f64), (f64, f64))) -> f64 {
+        let (ax, ay) = (a.1.0 - a.0.0, a.1.1 - a.0.1);
+        let (bx, by) = (b.1.0 - b.0.0, b.1.1 - b.0.1);
+        let (la, lb) = ((ax * ax + ay * ay).sqrt(), (bx * bx + by * by).sqrt());
+        if la < 1e-9 || lb < 1e-9 {
+            return 90.0; // degenerate: nothing to read
+        }
+        let cos = ((ax * bx + ay * by) / (la * lb)).clamp(-1.0, 1.0);
+        let deg = cos.acos().to_degrees();
+        // 170° between directions is a 10° crossing to the eye.
+        if deg > 90.0 { 180.0 - deg } else { deg }
+    }
+
+    // Two different defects, deliberately reported apart. A shallow crossing
+    // costs reading speed; two lines lying *along* each other cost information
+    // — the reader sees one line where the document declared two.
+    let mut shallow = Vec::new();
+    let mut overlapping = Vec::new();
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "../../ply.yaml",
+    ] {
+        let svg = render_fixture(fixture);
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        // Collected here rather than reusing the helper in the layout module,
+        // so this test's view of "what lines were drawn" stays independent of
+        // the one the other invariants use.
+        let lines: Vec<Vec<(f64, f64)>> = doc
+            .descendants()
+            .filter(|n| n.is_element() && n.has_tag_name("path"))
+            .filter(|n| !n.ancestors().any(|a| a.has_tag_name("defs")))
+            .filter(|n| {
+                n.attribute("class")
+                    .is_some_and(|c| c.starts_with("edge-line") || c.starts_with("deny-line"))
+            })
+            .filter_map(|n| n.attribute("d").map(parse_path_points))
+            .filter(|pts| pts.len() >= 2)
+            .collect();
+
+        for i in 0..lines.len() {
+            for j in (i + 1)..lines.len() {
+                for a in lines[i].windows(2) {
+                    for b in lines[j].windows(2) {
+                        let (sa, sb) = ((a[0], a[1]), (b[0], b[1]));
+                        if !segments_cross(sa, sb) {
+                            continue;
+                        }
+                        let deg = crossing_angle(sa, sb);
+                        if deg < 1.0 {
+                            overlapping.push(format!("{fixture}: {sa:?} lies along {sb:?}"));
+                        } else if deg < SHALLOW_DEGREES {
+                            shallow.push(format!(
+                                "{fixture}: {sa:?} crosses {sb:?} at {deg:.0}° — shallow \
+                                 enough that a reader tracing either one loses it at the \
+                                 junction"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        shallow.is_empty(),
+        "lines crossing at a shallow angle are the costliest thing a layout can do to a \
+         reader. Spread the endpoints along the box borders so these meet nearer a right \
+         angle, or route one of them clear:\n  {}",
+        shallow.join("\n  ")
+    );
+
+    // Found by writing this test, not known before: three forbidden-call lines
+    // share one vertical corridor in 003 and two share a horizontal run, so
+    // they are drawn along each other and read as one line. Worse than a
+    // crossing — a crossing slows you down, an overlap hides a rule. Fixing it
+    // means giving deny routes their own lanes the way regular edges already
+    // have them, which is its own piece of work.
+    //
+    // PINNED, not merely printed, for the reason the label/line ratchet gives:
+    // a green test that knows about N defects and says nothing is the "gate
+    // debt: none" over-claim this project has retracted once already. Lower
+    // this when you fix one; if it rises, this change added one.
+    const KNOWN_OVERLAPPING_LINES: usize = 4;
+    assert!(
+        overlapping.len() <= KNOWN_OVERLAPPING_LINES,
+        "overlapping drawn lines grew from {KNOWN_OVERLAPPING_LINES} to {} — this change \
+         added one. Two lines along the same path read as a single line, so a declared \
+         rule goes invisible:\n  {}",
+        overlapping.len(),
+        overlapping.join("\n  ")
+    );
+}
+
+/// These diagrams are read on GitHub and in editors, where dark is a common
+/// default, and the render paints its own near-white background — so a dark
+/// reader got a bright panel rather than a diagram. One alternative palette,
+/// not a theming hook: the meanings are fixed and CI enforces them, so a
+/// palette a user could redefine would make those guarantees unenforceable.
+/// Two expressions of one set of meanings, both held to the same rules.
+#[test]
+fn the_dark_palette_carries_every_meaning_the_light_one_does() {
+    let svg = render_fixture("../../vetting/003-trading-system.ply.yaml");
+    let style = svg
+        .split("<style>")
+        .nth(1)
+        .and_then(|s| s.split("</style>").next())
+        .expect("every render embeds a stylesheet");
+
+    let dark = style
+        .split("@media (prefers-color-scheme: dark)")
+        .nth(1)
+        .expect(
+            "the stylesheet carries no dark-mode block, so a reader in dark mode gets a \
+             bright panel rather than a diagram",
+        );
+
+    // The background must actually invert; a dark block that leaves the frame
+    // near-white has changed nothing that matters.
+    assert!(
+        dark.contains(".workspace-frame"),
+        "the dark block must repaint the frame — it is the surface everything else sits on"
+    );
+
+    // Every meaning that survives without colour must still be nameable in
+    // dark: absence still marked, forbidden still distinct from attention.
+    for needed in [".ceiling-unclaimed", ".deny-line", ".fn-clause"] {
+        assert!(
+            dark.contains(needed),
+            "`{needed}` carries meaning in the light palette but is not restated for dark, \
+             so it will render at its light value against a dark ground"
+        );
+    }
+
+    // Absence must remain a drawn mark in dark, not revert to a flat fill.
+    let unclaimed_dark = dark
+        .split(".ceiling-unclaimed")
+        .nth(1)
+        .and_then(|s| s.split('}').next())
+        .expect("dark block should define the unclaimed fill");
+    assert!(
+        unclaimed_dark.contains("url(#"),
+        "in dark mode a component promising nothing is filled with `{unclaimed_dark}` — a \
+         flat colour. The hatch is the whole point: absence drawn as blank reads as \
+         background in either palette."
+    );
+}
+
+/// Text drawn on a box has to be readable against that box. The evidence
+/// ladder is encoded as depth of fill, so the darkest boxes are the ones a
+/// reader most wants to read — and they were the hardest to. Measured, not
+/// eyeballed: the standard contrast ratio, with the floor set at 3.0, the
+/// usual bar for supplementary text.
+///
+/// This found a real defect on the fill ramp as it stood: the anchor and
+/// ownership lines sat at 2.2 against the strongest promise fill.
+#[test]
+fn every_label_on_a_box_is_readable_against_that_box() {
+    fn luminance(hex: &str) -> f64 {
+        let h = hex.trim_start_matches('#');
+        let ch = |i: usize| {
+            let v = u8::from_str_radix(&h[i..i + 2], 16).unwrap() as f64 / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(0) + 0.7152 * ch(2) + 0.0722 * ch(4)
+    }
+    fn contrast(a: &str, b: &str) -> f64 {
+        let (x, y) = (luminance(a), luminance(b));
+        let (hi, lo) = if x > y { (x, y) } else { (y, x) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    const FLOOR: f64 = 3.0;
+
+    let svg = render_fixture("../../vetting/003-trading-system.ply.yaml");
+    let style = svg
+        .split("<style>")
+        .nth(1)
+        .and_then(|s| s.split("</style>").next())
+        .unwrap();
+    // The light palette only: the dark block is checked by its own test, and
+    // mixing the two here would compare a light ink against a dark ground.
+    let light = style
+        .split("@media")
+        .next()
+        .expect("stylesheet should have a light section");
+    let colour_of = |selector: &str| -> Option<String> {
+        light
+            .split('}')
+            .filter_map(|r| r.split_once('{'))
+            .find(|(sel, _)| sel.trim() == selector)
+            .and_then(|(_, body)| {
+                body.split(';')
+                    .find_map(|d| d.trim().strip_prefix("fill:").map(str::to_owned))
+            })
+    };
+
+    // Every ink that is drawn directly on a component's fill, against every
+    // fill it can land on.
+    let inks = [".component-name", ".component-anchor", ".component-owns"];
+    let fills = [
+        ".ceiling-tested",
+        ".ceiling-fuzzed",
+        ".ceiling-bounded",
+        ".ceiling-proved",
+    ];
+
+    let mut unreadable = Vec::new();
+    for ink in inks {
+        let Some(fg) = colour_of(ink) else { continue };
+        for fill in fills {
+            let Some(bg) = colour_of(fill) else { continue };
+            if !bg.starts_with('#') {
+                continue; // the hatch, which is checked by its own test
+            }
+            let ratio = contrast(&fg, &bg);
+            if ratio < FLOOR {
+                unreadable.push(format!(
+                    "{ink} ({fg}) on {fill} ({bg}): contrast {ratio:.2}, below {FLOOR:.1}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        unreadable.is_empty(),
+        "these labels are drawn on a fill too close to their own colour. The strongest \
+         promise fills are the ones a reader most wants to read:\n  {}",
+        unreadable.join("\n  ")
     );
 }

@@ -712,6 +712,91 @@ adversarial review, none by the suite.
 
 ## Agreed with the maintainer, not yet started
 
+- [x] **The promise ramp widened, and a contrast invariant added** (2026-08-29). The
+      maintainer said the render had gone monotone. Measured, and he was right for a
+      reason worth recording: adjacent rungs of the ramp sat 1.13-1.33 contrast apart,
+      close to indistinguishable, so the evidence ladder -- this tool's main lever -- was
+      encoded in the least readable way available. Now 1.27-1.54 per step, full range
+      2.18 -> 3.15. Writing the check also found a real legibility defect that predated
+      it: the anchor and ownership lines sat at 2.2 against the strongest fill, i.e.
+      unreadable on exactly the boxes a reader most wants to read. Both fixed, and held by
+      a contrast floor over every ink/fill pair.
+
+- [ ] **KNOWN GAP -- the render is monotone by construction until results reach pixels.**
+      The palette is a two-state design: grey means promised, green means earned. Only the
+      first state can be drawn today, because `render_svg_with_evidence` post-processes a
+      finished string, so no run result can change a pixel. That means every diagram
+      anyone sees is the "before" half, permanently, and the moment the design pays off
+      never arrives. The colour was removed and the thing that puts it back was deferred.
+      This is the strongest argument yet for doing the evidence plumbing next: it is not
+      one blocked feature among five, it is the half of the palette that makes the other
+      half worth having.
+
+- [x] **A dark palette, following the reader's system setting** (2026-08-29). The render
+      paints its own near-white background, so a dark-mode reader got a bright panel. One
+      alternative palette, explicitly **not** a theming hook: the colour meanings are
+      enforced by CI, and a user-redefinable palette would make every one of those
+      guarantees unenforceable. The colour-blindness floor now runs against both palettes
+      and immediately earned its keep -- it rejected the first dark red proposed, which sat
+      0.200 from ordinary structure, inside the measured confusable band. Replaced with one
+      that clears the floor against both structure and the attention amber.
+
+- [x] **Diagram-layout and cartography evidence applied** (2026-08-29). The research doc
+      cited perception and notation theory but no experimental work on diagram *layout*.
+      Two fields have it. Landed: (a) **a shallow-crossing invariant** — crossings are the
+      one layout property with a large replicated effect on reading speed, and the useful
+      form is the refinement (a near-90° crossing is ignored by the eye; a shallow one
+      costs accuracy), so shallow ones are now forbidden in CI while ordinary ones are
+      not; (b) **"route edges orthogonally" struck from the research doc** as folklore --
+      controlled studies found no measurable benefit, and it manufactures exactly the
+      shallow near-parallel runs the eye-tracking work condemns; (c) **position and size
+      named in the spec's channel table**, including the ones that mean nothing. Evidence
+      for (c): on the Underground map the drawn geometry moved route choice about twice as
+      much as travellers' own journey times, so readers trust geometry whether or not it
+      was meant to carry meaning.
+
+- [ ] **KNOWN GAP, newly measured: four forbidden-call lines are drawn along each other.**
+      Found by writing the crossing invariant, not known before. Three share one vertical
+      corridor in vetting 003 and two share a horizontal run, so they render as a single
+      line and a declared rule goes invisible. Worse than a crossing: a crossing slows a
+      reader, an overlap hides a rule. Pinned at 4 as a ratchet. The fix is giving deny
+      routes their own lanes, the way regular edges already have them.
+      **Correction worth recording:** an earlier measurement in-session reported "zero
+      crossings in every diagram". That was true of X-shaped crossings and completely
+      missed these overlaps, because the detector used treated collinear segments as
+      non-crossing. The repo's own `segments_cross` does not, which is how they surfaced.
+
+- [ ] **When results can reach the drawing: the chips are the promise/earned encoding,
+      not a meter.** Supersedes the research doc's two-part meter *and* the split-fill idea
+      proposed in-session. Both were wrong for the same reason, from opposite directions:
+      a small meter is small first and an encoding second (size is the most detectable
+      visual variable, so a tiny track is the least noticeable thing available); and a
+      split box fill creates a second enclosed region, and enclosure is the strongest
+      grouping cue there is -- it would perceptually sort the chips inside into "earned"
+      and "not", which is a lie unless made true. The evidence favours discrete countable
+      units over continuous fills for part-whole reading, with the advantage largest for
+      untrained readers -- which is the newbie bar. So: colour earned *chips*, sort them
+      together so the grouping the eye infers is true, and use a split fill only on
+      collapsed boxes where no chips can contradict it. Invariant when it lands: a
+      collapsed box's split must equal the earned-over-promised count folded beneath it,
+      and no chip may be coloured earned without a result behind it.
+
+- [ ] **If a diff view is ever wanted: side-by-side, with changes drawn as marks.** A
+      reader comparing two renders by eye *will* miss changes -- change blindness is among
+      the most robust findings in vision science, and two separately-opened files are its
+      worst case. Small multiples measured faster than animation on every comprehension
+      task; animation won only on "what was added just now". Never ship "spot the
+      difference".
+
+- [ ] **Decided against, with reasons, so they are not re-proposed:** crossing-*count*
+      minimisation in the layout (effect sizes come from dense abstract graphs; Ply's are
+      single-digit box counts, and reordering rows trades away the version-to-version
+      stability a diff view would want); symmetry as a layout goal (a weak effect, weaker
+      still in the study closest to Ply); a fold-prominence test (marks already draw at
+      fixed size at every depth -- verified -- so the test would compare two constants);
+      and Lynch's *Image of the City* as evidence (thirty sketch-map interviews per city,
+      no tasks, no measurements -- useful vocabulary, not a source you can test against).
+
 - [x] **Four more of the visual-language items applied** (2026-08-29), after the maintainer
       correctly pointed out that the first three changed almost nothing visible: they were
       all *subtractive* (green removed, red removed, two labels moved), and every additive
