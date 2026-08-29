@@ -7,7 +7,7 @@ own repository — so the shape you are looking at is the shape the checker enfo
 someone adds a dependency this page does not show, the build says so.
 
 <p align="center">
-  <img src="docs/ply-self.svg" alt="Four dashed boxes inside a frame labelled ply.yaml: e2e, attrs, cli and core. One arrow runs from cli down to core. e2e and attrs stand alone with no arrows." width="620">
+  <img src="docs/ply-self.svg" alt="A frame labelled ply.yaml, with a line reading 4 components, 0 functions, 0 promise nothing. Inside are four boxes: e2e, attrs, cli and core, each dashed and filled with diagonal hatching to mark that nothing is promised about them. One arrow runs from cli down to core. e2e and attrs stand alone with no arrows." width="620">
 </p>
 
 Each box is a crate. The boxes are **dashed** because none of them declares a function

@@ -221,14 +221,25 @@ edges:
 renders as:
 
 <p align="center">
-  <img src="vetting/004-legacy-extension.svg" alt="The withdrawal component drawn as a solid box listing its five functions, each badged with the checks it declares; an arrow crosses to a dashed box for the ledger it depends on." width="330">
+  <img src="vetting/004-legacy-extension.svg" alt="A line at the top reads: 2 components, 5 functions, 0 promise nothing. The withdrawal component is a solid box listing its five functions, each badged with the checks it declares. An arrow crosses to the ledger it depends on, drawn as a dashed box filled with diagonal hatching to mark that nothing is promised about it." width="330">
 </p>
 
 The reading is meant to be immediate. A **solid** box is code that makes claims; the
-**dashed** box is code that does not, so nothing about it has been checked. Each function
-carries the checks it declares — `B2` for bounded to depth 2, `F256` for 256 sampled
-cases, `T` for worked examples, `e×2` for how many. The arrow is the one dependency the
+**hatched** box is code that does not, so nothing about it has been checked. The hatching
+is deliberate: absence drawn as blank space reads as background, and the one thing that
+should worry you would be the quietest thing on the page. Each function carries the checks
+it declares — `B2` for bounded to depth 2, `F256` for 256 sampled cases, `T` for worked
+examples, `e×2` for how many; zoom into a component with `--focus` and those read out in
+words, alongside what each function needs and gives. The arrow is the one dependency the
 spec permits; anything else between these two would be a violation.
+
+The line across the top says what the whole document declares and how much of it promises
+nothing. It counts promises only, never results — nothing here has been run, and a picture
+full of promises should not look like a picture full of results.
+
+Nothing on this diagram is green, and that is the rule rather than an accident of this
+example: green means evidence a run has actually earned, so before `cargo ply verify` has
+run there is none to show. Grey depth is how strongly something promises to be checked.
 
 That distinction is the point. The picture shows where the checked code ends and the
 unchecked code begins, so an unverified boundary is visible rather than implied.
