@@ -3670,3 +3670,217 @@ fn a_diagram_of_work_that_has_never_run_contains_no_green() {
         );
     }
 }
+
+/// Absence must be drawn, not implied. A component that declares no checks
+/// at all was filled plain white — and blank does not register as a state,
+/// it reads as background, so the riskiest thing on the canvas (there is
+/// code here and nothing is promised about any of it) was also the quietest.
+/// Perception research is blunt about this: a missing feature does not pop;
+/// only a positive mark does.
+///
+/// This is why the fill is a hatch. The dashed border stays a separate,
+/// narrower statement — "nothing inside at all yet" — so a populated box
+/// that promises nothing and an empty sketch no longer look identical.
+#[test]
+fn a_component_that_promises_nothing_is_drawn_with_a_mark_not_left_blank() {
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "../../ply.yaml",
+    ] {
+        let svg = render_fixture(fixture);
+        let style = svg
+            .split("<style>")
+            .nth(1)
+            .and_then(|s| s.split("</style>").next())
+            .expect("every render embeds a stylesheet");
+
+        let rule = style
+            .split('}')
+            .find_map(|r| r.split_once('{'))
+            .into_iter()
+            .chain(style.split('}').filter_map(|r| r.split_once('{')))
+            .find(|(sel, _)| sel.trim() == ".ceiling-unclaimed")
+            .map(|(_, body)| body.to_owned())
+            .expect("the unclaimed ceiling must have a style rule");
+
+        assert!(
+            rule.contains("url(#"),
+            "{fixture}: a component promising nothing is filled with `{rule}` — a flat \
+             colour. Absence drawn as blank space reads as background, so the one state \
+             that should worry a reader is the one they will not see. It needs a mark."
+        );
+    }
+}
+
+/// The glance before the glance. A reader opening a diagram cold has to
+/// scan every box to learn how much of it is actually claimed; the counts
+/// exist in the document and were simply never stated. This is the line
+/// that answers "how finished is this?" before the eye goes anywhere.
+///
+/// Asserts on what the line has to *say*, not on its exact phrasing, since
+/// the numbers differ per fixture — but it must name the unclaimed count
+/// specifically, because a strip that reports only totals is a progress bar
+/// with no bad news in it.
+#[test]
+fn the_render_opens_with_a_line_saying_how_much_is_actually_claimed() {
+    // 003 declares 14 functions, of which `Feed::pump` and `Gateway::send`
+    // carry no checks at all -- confirmed against the renderer's own
+    // per-function tooltips, not assumed.
+    let svg = render_fixture("../../vetting/003-trading-system.ply.yaml");
+    let doc = roxmltree::Document::parse(&svg).unwrap();
+
+    let strip = doc
+        .descendants()
+        .find(|n| n.attribute("class") == Some("verdict-strip-text"))
+        .and_then(|n| n.descendants().find(|d| d.is_text()))
+        .and_then(|t| t.text().map(str::to_owned))
+        .expect("every render should open with a verdict strip");
+
+    assert!(
+        strip.contains("14 functions"),
+        "the strip must say how much there is; got {strip:?}"
+    );
+    assert!(
+        strip.contains("2 promise nothing"),
+        "the strip must name what is unclaimed -- a summary carrying only totals is a \
+         progress bar with no bad news in it; got {strip:?}"
+    );
+}
+
+/// `B3 F4096 M` means nothing to someone who has not read the spec, and
+/// hovering is not glancing. The same rule the contract clauses follow
+/// applies: the overview keeps the compact form, and zooming in spells it
+/// out. Not a new construct — the words already exist, as the tooltip prose,
+/// and were simply never drawn.
+#[test]
+fn a_focused_functions_checks_are_spelled_out_in_words() {
+    use ply_render::svg::{RenderOptions, render_svg_with_options};
+
+    let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).expect("fixture should parse");
+    let svg = render_svg_with_options(
+        &doc,
+        &RenderOptions {
+            focus: Some("risk".into()),
+            ..Default::default()
+        },
+    )
+    .expect("focused render should succeed");
+
+    let parsed = roxmltree::Document::parse(&svg).unwrap();
+    let drawn: String = parsed
+        .descendants()
+        .filter(|n| n.has_tag_name("text"))
+        .flat_map(|n| n.descendants())
+        .filter(|n| n.is_text())
+        .filter_map(|n| n.text())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // check_order declares bounded(3), fuzz(4096), mutate.
+    for word in ["proves", "random inputs", "plants"] {
+        assert!(
+            drawn.contains(word),
+            "zoomed in, `check_order`'s checks must be readable as words rather than \
+             the letters B3/F4096/M -- expected to find {word:?}. Drawn: {drawn}"
+        );
+    }
+}
+
+/// Roughly 8% of men cannot separate red from green reliably, and this
+/// canvas spends hue on meaning. Two things are checked, in increasing order
+/// of how much they are worth.
+///
+/// **The weak one, kept honest about being weak:** a colour-distance floor
+/// under simulated deuteranopia. Calibrated by measuring pairs that really
+/// are confusable — red vs olive, red vs dark yellow, our own red vs a
+/// darker amber — which score 0.19 to 0.28 on this metric, against our own
+/// pairs at 0.30 and above. That is a thin margin, and the metric is a blunt
+/// instrument: pure red against pure green scores 0.61 here and would sail
+/// through, though it is the textbook confusion. So the floor catches a
+/// gross regression and nothing subtler.
+///
+/// **The one that actually holds:** every meaning is carried by a mark as
+/// well as a colour, so a reader who sees no colour difference at all still
+/// reads the diagram correctly. That is what makes the palette safe; the
+/// distance floor merely stops it getting worse.
+#[test]
+fn every_colour_coded_meaning_is_also_carried_by_a_mark() {
+    fn deuteranope(hex: &str) -> (f64, f64, f64) {
+        let h = hex.trim_start_matches('#');
+        let c = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).unwrap() as f64 / 255.0;
+        let (r, g, b) = (c(0), c(2), c(4));
+        let l = 17.8824 * r + 43.5161 * g + 4.11935 * b;
+        let s = 0.0299566 * r + 0.184309 * g + 1.46709 * b;
+        let m = 0.494207 * l + 1.24827 * s;
+        (
+            0.080944 * l - 0.130504 * m + 0.116721 * s,
+            -0.0102485 * l + 0.0540193 * m + 0.113615 * s,
+            -0.000365 * l - 0.00412161 * m + 0.693513 * s,
+        )
+    }
+    fn apart(a: &str, b: &str) -> f64 {
+        let (x, y, z) = deuteranope(a);
+        let (p, q, r) = deuteranope(b);
+        ((x - p).powi(2) + (y - q).powi(2) + (z - r).powi(2)).sqrt()
+    }
+
+    // Just above the confusable band measured above.
+    const FLOOR: f64 = 0.28;
+    for (a, b, what) in [
+        (
+            "#c9534f",
+            "#b08900",
+            "a rule being broken vs a human being needed",
+        ),
+        (
+            "#c9534f",
+            "#3b4252",
+            "a rule being broken vs ordinary structure",
+        ),
+        (
+            "#b08900",
+            "#3b4252",
+            "a human being needed vs ordinary structure",
+        ),
+    ] {
+        let d = apart(a, b);
+        assert!(
+            d > FLOOR,
+            "{what}: {a} and {b} are {d:.3} apart for a deuteranope, inside the range \
+             where real confusions live. Separate the hues, or lean harder on the mark."
+        );
+    }
+
+    // The real guarantee. Strip the colour away entirely and each meaning
+    // must still be legible from shape or text alone.
+    let svg = render_fixture("../../vetting/003-trading-system.ply.yaml");
+    let doc = roxmltree::Document::parse(&svg).unwrap();
+    let count = |class: &str| {
+        doc.descendants()
+            .filter(|n| {
+                n.attribute("class")
+                    .is_some_and(|c| c.split(' ').any(|p| p == class))
+            })
+            .count()
+    };
+
+    assert!(
+        count("deny-line") > 0,
+        "003 declares forbidden calls; none were drawn"
+    );
+    assert_eq!(
+        count("deny-bar"),
+        count("deny-line"),
+        "every forbidden-call line must carry its crossbar. The bar is what says \
+         `forbidden` to a reader who cannot see that the line is red — without it the \
+         rule is indistinguishable from an ordinary connection."
+    );
+    assert!(
+        count("pin-label") >= count("unresolved-pin"),
+        "every attention marker must carry its number. The digit is what survives when \
+         the amber does not."
+    );
+}

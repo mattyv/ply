@@ -712,6 +712,38 @@ adversarial review, none by the suite.
 
 ## Agreed with the maintainer, not yet started
 
+- [x] **Four more of the visual-language items applied** (2026-08-29), after the maintainer
+      correctly pointed out that the first three changed almost nothing visible: they were
+      all *subtractive* (green removed, red removed, two labels moved), and every additive
+      idea was still outstanding. (a) **Absence is now hatched** rather than left blank --
+      the single biggest visible change, and the document's sharpest perceptual point.
+      (b) **A verdict strip** opens every render with what is declared and how much of it
+      promises nothing. (c) **Checks read as words when zoomed in** -- `B3 F4096 M` becomes
+      "proves for all inputs, loops up to 3 / tries 4096 random inputs / plants bugs; the
+      checks must catch them", following the same zoom rule the contract clauses use.
+      (d) **A colour-blindness gate in CI.** Its first version was nearly vacuous -- the
+      distance metric passed pure red against pure green, the textbook confusion -- so it
+      was rewritten around the guarantee that actually holds: every meaning also carries a
+      non-colour mark. The weak floor is kept, documented as weak.
+
+- [ ] **KNOWN GAP -- five of the document's items are blocked on one missing thing.**
+      `render_svg_with_evidence` calls `render_svg(doc)` and then post-processes the
+      finished string, so run results cannot affect a single pixel. Broken, evolving, the
+      promise/earned split, "working well", and the result-side counts in the strip all
+      need evidence to reach the drawing stage. That plumbing, not any individual glyph, is
+      the next real piece of work, and the research document never mentions it.
+
+- [ ] **Judgement call to revisit: at focus, a fn chip now shows both `B3 F4096 M` and the
+      spelled-out lines.** The document wanted the letters confined to hover. Kept both so
+      the chip looks the same at either zoom, with the words as the expansion -- but it is
+      redundant, and if the band gets busier the letters should go.
+
+- [ ] **Decided against: making the strict notch and pure seal more visible.** The document
+      asks for one or the other (amplify or demote); demote is the honest answer. "Strict"
+      means findings here are errors rather than warnings, which only matters when there IS
+      a finding -- at which point red already shouts. Spending a glance-level channel on a
+      modifier only legible alongside another signal is a poor trade. Hover-tier.
+
 - [x] **The diagram no longer paints promises green** (2026-08-29, from
       `docs/visual-language-research.md` via Fable's review). Two of the review's three
       "land now" items done. (a) Capability tags were red — the same red as a real

@@ -1732,7 +1732,28 @@ stay loudest.
 
 The ramp stays ordered rather than collapsing to a single quiet state, because the
 evidence ladder is this tool's main lever: "barely tested" and "proved" must not draw
-identically merely because neither has failed. Border: dashed = hollow sketch,
+identically merely because neither has failed.
+
+**Absence is drawn, never implied (added 2026-08-29).** A component promising nothing was
+filled plain white, and blank space reads as background rather than as a state — so the
+riskiest thing on the canvas, code the diagram is showing you while saying nothing about
+it, was also the quietest. It is now filled with a diagonal hatch: a positive mark, which
+a glance can catch, where absence could not be. The dashed border keeps its narrower
+meaning ("nothing inside at all yet"), so an empty sketch and a populated box that
+promises nothing are no longer the same picture.
+
+**Every colour-coded meaning also carries a mark (added 2026-08-29).** Roughly 8% of men
+cannot separate red from green reliably, so no meaning may rest on hue alone: a forbidden
+call carries its crossbar, an item owed a human carries its number. Checked in CI, along
+with a colour-distance floor under simulated red-green colour blindness — the floor is a
+blunt instrument and is documented as such, the marks are what actually make the palette
+safe.
+
+**The strip (added 2026-08-29).** Every render opens with one line stating what the
+document declares and how much of it promises nothing — `11 components · 14 functions ·
+2 promise nothing`. It counts promises only, never results, because nothing has run; a
+strip that reported results would be inventing them. It exists because those numbers were
+always in the document and a reader had to scan every box to recover them. Border: dashed = hollow sketch,
 solid = specified, double = sealed pure. Edge dash: solid = may call (checked),
 dashed = **declared, not machine-checked**, red-barred = must not. The dashed meaning
 was originally stated narrower ("data flows"); externals' `~>` edges and derived

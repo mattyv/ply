@@ -139,6 +139,7 @@ const EXTERNAL_GAP: f64 = NODESEP;
 pub const STYLE: &str = "\
 .workspace-frame{fill:#fbfbfd;stroke:#c8ccd4;stroke-width:2.5}\
 .workspace-title{fill:#6b7280}\
+.verdict-strip-text{fill:#4b5563;font-size:11px}\
 .component-box{stroke:#3b4252;stroke-width:1.5}\
 .hollow-box{stroke-dasharray:6 4}\
 .collapsed-stack{stroke:#3b4252;stroke-width:1.5}\
@@ -147,7 +148,7 @@ pub const STYLE: &str = "\
 .component-name{fill:#1f2430;font-weight:bold}\
 .component-anchor{fill:#6b7280;font-size:10px}\
 .component-owns{fill:#6b7280;font-size:10px;font-style:italic}\
-.ceiling-unclaimed{fill:#fff}\
+.ceiling-unclaimed{fill:url(#unclaimed-hatch)}\
 .ceiling-tested{fill:#f0f1f2}\
 .ceiling-fuzzed{fill:#dfe1e4}\
 .ceiling-bounded{fill:#c7cad0}\
@@ -224,6 +225,23 @@ fn esc(s: &str) -> String {
 /// One glyph token per check, in declaration order: `test`->T, `fuzz(n)`->Fn,
 /// `bounded(k)`->Bk, `prove`->P, `mutate`->M. Unparseable strings are shown
 /// verbatim so a malformed check is visible rather than silently dropped.
+/// The same facts as [`check_prose`], written short enough to sit on the
+/// canvas. The tooltip version is a full sentence per check -- right for
+/// hover, far too wide for a chip -- so this keeps the plain English and
+/// drops the explanatory clause. Drawn only inside a `--focus` target, for
+/// the same reason the contract clauses are: `B3 F4096 M` is unreadable to
+/// a newcomer, and hovering is not glancing.
+fn check_prose_compact(c: &str) -> Option<String> {
+    match parse_check(c) {
+        Ok(Check::Test) => Some("runs the declared examples".into()),
+        Ok(Check::Fuzz(n)) => Some(format!("tries {n} random inputs")),
+        Ok(Check::Bounded(k)) => Some(format!("proves for all inputs, loops up to {k}")),
+        Ok(Check::Prove) => Some("proves for all inputs, no bound".into()),
+        Ok(Check::Mutate) => Some("plants bugs; the checks must catch them".into()),
+        Err(_) => None,
+    }
+}
+
 fn checks_glyph_row(checks: &[String]) -> String {
     checks
         .iter()
@@ -1034,6 +1052,7 @@ fn render_fn_chip(
             .iter()
             .map(|r| format!("needs {r}"))
             .chain(fc.ensures.iter().map(|e| format!("gives {e}")))
+            .chain(effective.iter().filter_map(|c| check_prose_compact(c)))
             .collect()
     } else {
         Vec::new()
@@ -3312,6 +3331,54 @@ pub fn render_svg_with_options(
     // (`findings` empty) always has `unattached_count() == 0`, so this is a
     // no-op and the title is untouched.
     let unattached = ctx.unattached_count();
+    // The glance before the glance: how much is here, and how much of it is
+    // claimed. Every number is already in the document -- it was simply
+    // never stated, so a reader had to scan every box to find out. Counts
+    // only what is *promised*, because nothing has been run: a strip that
+    // reported results would be inventing them.
+    let (total_components, total_fns) = doc
+        .components
+        .values()
+        .map(|c| {
+            let (nested, fns) = count_subtree(c);
+            (nested + 1, fns)
+        })
+        .fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
+    let unclaimed_fns = {
+        fn walk(c: &Component, inherited: bool, out: &mut usize) {
+            let has_default = c.checks.as_ref().is_some_and(|d| !d.is_empty());
+            let covered = inherited || has_default;
+            for fc in c.fns.values() {
+                let declares = fc.checks.as_ref().is_some_and(|c| !c.is_empty());
+                if !declares && !(covered && fc.checks.is_none()) {
+                    *out += 1;
+                }
+            }
+            for child in c.components.values() {
+                walk(child, covered, out);
+            }
+        }
+        let mut n = 0;
+        for c in doc.components.values() {
+            walk(c, false, &mut n);
+        }
+        n
+    };
+    fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
+        if n == 1 { one } else { many }
+    }
+    let strip_text = format!(
+        "{total_components} {} · {total_fns} {} · {unclaimed_fns} {} nothing",
+        plural(total_components, "component", "components"),
+        plural(total_fns, "function", "functions"),
+        plural(unclaimed_fns, "promises", "promise"),
+    );
+    let strip_tip = title(&format!(
+        "What this document declares, before anything has been run. \"{} {} nothing\"          counts functions with no checks against them at all -- code the diagram is          showing you but says nothing about. Running `cargo ply verify` is what turns          promises into results; this line never reports results.",
+        unclaimed_fns,
+        plural(unclaimed_fns, "function promises", "functions promise"),
+    ));
+
     let (title_extra, title_min_w) = if unattached > 0 {
         let count_text = format!(
             "{unattached} finding{} — run ply-check",
@@ -3335,7 +3402,15 @@ pub fn render_svg_with_options(
     // never the frame itself — the frame stays exactly "the workspace",
     // and externals draw strictly outside it (§4's extended "inside the
     // frame = part of the system").
-    let frame_content_w = frame_w.max(title_min_w);
+    // The strip shares the title's line, so a narrow diagram must widen to
+    // hold it — found by `everything_renders_inside_the_canvas` when the
+    // strip first ran off a 350px canvas by 122px.
+    let strip_min_w = FRAME_PAD
+        + text_w("ply.yaml", NAME_CHAR_W)
+        + 24.0
+        + text_w(&strip_text, NAME_CHAR_W)
+        + FRAME_PAD;
+    let frame_content_w = frame_w.max(title_min_w).max(strip_min_w);
     // A tall stack of wildcard any-nodes (several `*` rules anchoring in
     // one margin column, `place_clear` pushing each below the last) can
     // run past the box layout's bottom edge; the canvas and frame grow so
@@ -3567,17 +3642,23 @@ pub fn render_svg_with_options(
          viewBox=\"0 0 {width:.1} {height:.1}\" font-family=\"monospace\" font-size=\"12\">\
          <style>{style}</style>\
          <defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\">\
-         <path d=\"M 0 0 L 10 5 L 0 10 z\" /></marker></defs>\
+         <path d=\"M 0 0 L 10 5 L 0 10 z\" /></marker>\
+         <pattern id=\"unclaimed-hatch\" patternUnits=\"userSpaceOnUse\" width=\"8\" height=\"8\" patternTransform=\"rotate(45)\">\
+         <rect width=\"8\" height=\"8\" fill=\"#fff\" />\
+         <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#c8ccd4\" stroke-width=\"2\" /></pattern></defs>\
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\">{workspace_tip}</rect>\
          <g><title>ply.yaml — the document this picture is drawn from. Everything you \
 see here was declared in it; nothing was inferred from code. What each box has actually \
 been checked for is what `cargo ply verify` reports, not this drawing.</title>\
          <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text></g>\
+         <g class=\"verdict-strip\">{strip_tip}<text class=\"verdict-strip-text\" x=\"{strip_x:.1}\" y=\"20\">{strip_text}</text></g>\
          {title_extra}\
          {deny_svg}{registry_svg}{body}{edges_svg}{external_edges_svg}{external_svg}\
          </svg>",
         frame_inner_w = frame_content_w - 2.0,
         frame_inner_h = frame_content_h - 2.0,
+        strip_x = FRAME_PAD + text_w("ply.yaml", NAME_CHAR_W) + 24.0,
+        strip_text = esc(&strip_text),
     ))
 }
 
