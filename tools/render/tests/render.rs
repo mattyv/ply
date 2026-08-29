@@ -4073,3 +4073,91 @@ fn the_dark_palette_carries_every_meaning_the_light_one_does() {
          background in either palette."
     );
 }
+
+/// Text drawn on a box has to be readable against that box. The evidence
+/// ladder is encoded as depth of fill, so the darkest boxes are the ones a
+/// reader most wants to read — and they were the hardest to. Measured, not
+/// eyeballed: the standard contrast ratio, with the floor set at 3.0, the
+/// usual bar for supplementary text.
+///
+/// This found a real defect on the fill ramp as it stood: the anchor and
+/// ownership lines sat at 2.2 against the strongest promise fill.
+#[test]
+fn every_label_on_a_box_is_readable_against_that_box() {
+    fn luminance(hex: &str) -> f64 {
+        let h = hex.trim_start_matches('#');
+        let ch = |i: usize| {
+            let v = u8::from_str_radix(&h[i..i + 2], 16).unwrap() as f64 / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(0) + 0.7152 * ch(2) + 0.0722 * ch(4)
+    }
+    fn contrast(a: &str, b: &str) -> f64 {
+        let (x, y) = (luminance(a), luminance(b));
+        let (hi, lo) = if x > y { (x, y) } else { (y, x) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    const FLOOR: f64 = 3.0;
+
+    let svg = render_fixture("../../vetting/003-trading-system.ply.yaml");
+    let style = svg
+        .split("<style>")
+        .nth(1)
+        .and_then(|s| s.split("</style>").next())
+        .unwrap();
+    // The light palette only: the dark block is checked by its own test, and
+    // mixing the two here would compare a light ink against a dark ground.
+    let light = style
+        .split("@media")
+        .next()
+        .expect("stylesheet should have a light section");
+    let colour_of = |selector: &str| -> Option<String> {
+        light
+            .split('}')
+            .filter_map(|r| r.split_once('{'))
+            .find(|(sel, _)| sel.trim() == selector)
+            .and_then(|(_, body)| {
+                body.split(';')
+                    .find_map(|d| d.trim().strip_prefix("fill:").map(str::to_owned))
+            })
+    };
+
+    // Every ink that is drawn directly on a component's fill, against every
+    // fill it can land on.
+    let inks = [".component-name", ".component-anchor", ".component-owns"];
+    let fills = [
+        ".ceiling-tested",
+        ".ceiling-fuzzed",
+        ".ceiling-bounded",
+        ".ceiling-proved",
+    ];
+
+    let mut unreadable = Vec::new();
+    for ink in inks {
+        let Some(fg) = colour_of(ink) else { continue };
+        for fill in fills {
+            let Some(bg) = colour_of(fill) else { continue };
+            if !bg.starts_with('#') {
+                continue; // the hatch, which is checked by its own test
+            }
+            let ratio = contrast(&fg, &bg);
+            if ratio < FLOOR {
+                unreadable.push(format!(
+                    "{ink} ({fg}) on {fill} ({bg}): contrast {ratio:.2}, below {FLOOR:.1}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        unreadable.is_empty(),
+        "these labels are drawn on a fill too close to their own colour. The strongest \
+         promise fills are the ones a reader most wants to read:\n  {}",
+        unreadable.join("\n  ")
+    );
+}

@@ -146,13 +146,13 @@ pub const STYLE: &str = "\
 .pure-seal{fill:none;stroke:#3b4252}\
 .strict-notch{fill:#1f2430}\
 .component-name{fill:#1f2430;font-weight:bold}\
-.component-anchor{fill:#6b7280;font-size:10px}\
-.component-owns{fill:#6b7280;font-size:10px;font-style:italic}\
+.component-anchor{fill:#333a45;font-size:10px}\
+.component-owns{fill:#333a45;font-size:10px;font-style:italic}\
 .ceiling-unclaimed{fill:url(#unclaimed-hatch)}\
-.ceiling-tested{fill:#f0f1f2}\
-.ceiling-fuzzed{fill:#dfe1e4}\
-.ceiling-bounded{fill:#c7cad0}\
-.ceiling-proved{fill:#aab0b9}\
+.ceiling-tested{fill:#eef0f3}\
+.ceiling-fuzzed{fill:#d2d7de}\
+.ceiling-bounded{fill:#aeb6c2}\
+.ceiling-proved{fill:#8792a3}\
 .contract-mark{fill:#1f2430}\
 .fn-clause{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#3c4658}\
 .cap-badge rect{fill:#eceef2;stroke:#9aa2b1}\

@@ -712,6 +712,26 @@ adversarial review, none by the suite.
 
 ## Agreed with the maintainer, not yet started
 
+- [x] **The promise ramp widened, and a contrast invariant added** (2026-08-29). The
+      maintainer said the render had gone monotone. Measured, and he was right for a
+      reason worth recording: adjacent rungs of the ramp sat 1.13-1.33 contrast apart,
+      close to indistinguishable, so the evidence ladder -- this tool's main lever -- was
+      encoded in the least readable way available. Now 1.27-1.54 per step, full range
+      2.18 -> 3.15. Writing the check also found a real legibility defect that predated
+      it: the anchor and ownership lines sat at 2.2 against the strongest fill, i.e.
+      unreadable on exactly the boxes a reader most wants to read. Both fixed, and held by
+      a contrast floor over every ink/fill pair.
+
+- [ ] **KNOWN GAP -- the render is monotone by construction until results reach pixels.**
+      The palette is a two-state design: grey means promised, green means earned. Only the
+      first state can be drawn today, because `render_svg_with_evidence` post-processes a
+      finished string, so no run result can change a pixel. That means every diagram
+      anyone sees is the "before" half, permanently, and the moment the design pays off
+      never arrives. The colour was removed and the thing that puts it back was deferred.
+      This is the strongest argument yet for doing the evidence plumbing next: it is not
+      one blocked feature among five, it is the half of the palette that makes the other
+      half worth having.
+
 - [x] **A dark palette, following the reader's system setting** (2026-08-29). The render
       paints its own near-white background, so a dark-mode reader got a bright panel. One
       alternative palette, explicitly **not** a theming hook: the colour meanings are
