@@ -712,6 +712,22 @@ adversarial review, none by the suite.
 
 ## Agreed with the maintainer, not yet started
 
+- [x] **A focused function now draws its promise, instead of hiding it in hover** (2026-08-29).
+      Prompted by the maintainer's question of whether the visual language is sufficient --
+      "at a glance it is not always obvious what a function does". It already was declared:
+      `requires`/`ensures` are contract clauses, and unlike free pseudocode they cannot drift
+      into fiction, because a check stands behind them. They were simply hover-only. Now
+      `--focus` draws them as `needs`/`gives` lines under the fn name. Rejected in the same
+      breath: adding a separate unchecked pseudocode block, which would put the only ink on
+      the canvas with no evidence behind it -- the exact failure Ply exists to prevent.
+
+- [ ] **KNOWN GAP -- only one function in the whole vetting corpus declares a contract.**
+      Found while looking for an example to render: 001 and 002 declare none at all, 003
+      declares exactly one (`check_order`). So the clause band is real but barely exercised
+      by our own scenarios, and the vetting corpus is not currently evidence that contracts
+      are pleasant to write at scale. Worth writing clauses into 001/002 as a grammar
+      exercise in their own right -- that is what `vetting/` is for.
+
 - [x] **Automatic bug-planting now runs against the kernel on every build** (2026-08-28).
       Fable's call, taken: the exhaustive tree check is the gate, but whether it can SEE
       is a measured property that can regress, and nothing was keeping the 2026-08-25

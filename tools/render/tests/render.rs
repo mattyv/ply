@@ -3441,3 +3441,122 @@ fn the_sentence_explaining_a_box_colour_agrees_with_the_colour_drawn() {
          several levels, so this test is checking less than it looks"
     );
 }
+
+/// A focused component is the "what exactly is promised here" view, and a
+/// promise a reader has to hover to discover is not on the diagram. The
+/// contract gutter bar already says "this function promises something";
+/// this is the level at which it must say *what*. Asserted on drawn `<text>`
+/// content with the tooltip stripped out first, because the clauses were
+/// already in hover text before this and a naive substring search over the
+/// whole document passes without a single pixel changing.
+#[test]
+fn a_focused_functions_promise_is_drawn_on_the_canvas_not_only_in_hover() {
+    use ply_render::svg::{RenderOptions, render_svg_with_options};
+
+    let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).expect("fixture should parse");
+    let svg = render_svg_with_options(
+        &doc,
+        &RenderOptions {
+            focus: Some("risk".into()),
+            ..Default::default()
+        },
+    )
+    .expect("focused render should succeed");
+
+    let parsed = roxmltree::Document::parse(&svg).expect("render should be well-formed XML");
+    let drawn: String = parsed
+        .descendants()
+        .filter(|n| n.has_tag_name("text"))
+        .flat_map(|n| n.descendants())
+        .filter(|n| n.is_text())
+        .filter_map(|n| n.text().map(str::to_owned))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    assert!(
+        drawn.contains("order.qty > 0"),
+        "the focused view of `risk` must draw check_order's requires clause as visible text. \
+         Drawn text was: {drawn}"
+    );
+    assert!(
+        drawn.contains("r.is_err()"),
+        "the focused view of `risk` must draw check_order's ensures clause as visible text. \
+         Drawn text was: {drawn}"
+    );
+}
+
+/// The invariant behind the spot-check above. A clause that renders wider
+/// than the chip holding it spills over whatever is drawn to its right —
+/// which is exactly the bug the first cut of this feature shipped, and which
+/// no existing test caught: `every_drawn_label_lies_inside_the_canvas` checks
+/// the outer canvas, so text can escape its own box and still pass. Walks
+/// every chip in every vetting scenario at every focus target, so a clause
+/// added later cannot quietly overflow.
+#[test]
+fn every_drawn_clause_fits_inside_the_chip_that_holds_it() {
+    use ply_render::svg::{RenderOptions, render_svg_with_options};
+
+    // The advance width the drawn 11px monospace actually uses. Kept here
+    // rather than imported so the test fails if the renderer's own estimate
+    // drifts away from reality, instead of drifting along with it.
+    const REAL_CLAUSE_CHAR_W: f64 = 6.6;
+
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+    ] {
+        let yaml = std::fs::read_to_string(fixture).unwrap();
+        let doc = parse_document(&yaml).expect("fixture should parse");
+
+        let targets: Vec<Option<String>> = std::iter::once(None)
+            .chain(doc.components.keys().map(|k| Some(k.clone())))
+            .collect();
+
+        for target in targets {
+            let svg = render_svg_with_options(
+                &doc,
+                &RenderOptions {
+                    focus: target.clone(),
+                    ..Default::default()
+                },
+            )
+            .expect("render should succeed");
+            let parsed = roxmltree::Document::parse(&svg).expect("well-formed");
+
+            for chip in parsed
+                .descendants()
+                .filter(|n| n.attribute("class") == Some("fn-chip"))
+            {
+                let fname = chip.attribute("data-fn").unwrap_or("<unnamed>");
+                let box_w: f64 = chip
+                    .children()
+                    .find(|c| c.has_tag_name("rect"))
+                    .and_then(|r| r.attribute("width"))
+                    .and_then(|w| w.parse().ok())
+                    .expect("every chip draws a box with a width");
+
+                for text in chip
+                    .descendants()
+                    .filter(|n| n.attribute("class") == Some("fn-clause"))
+                {
+                    let content: String = text
+                        .descendants()
+                        .filter(|n| n.is_text())
+                        .filter_map(|n| n.text())
+                        .collect();
+                    let x: f64 = text.attribute("x").unwrap().parse().unwrap();
+                    let right = x + (content.chars().count() as f64) * REAL_CLAUSE_CHAR_W;
+                    assert!(
+                        right <= box_w,
+                        "in {fixture} focused on {target:?}, `{fname}`'s clause \
+                         \"{content}\" is drawn from x={x} and needs {right:.0}px, \
+                         but its chip is only {box_w:.0}px wide — it spills over \
+                         whatever sits to its right"
+                    );
+                }
+            }
+        }
+    }
+}

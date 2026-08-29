@@ -48,6 +48,12 @@ const STACK_OFFSET: f64 = 5.0;
 // existing `PAD` margin so it adds new geometry (its own few pixels) without
 // shifting anything else already positioned by `cursor_x`.
 const CONTRACT_MARK_W: f64 = 3.0;
+/// Height of one drawn contract-clause line, and the character width its
+/// text is measured at. The clauses render smaller than the fn name: they
+/// are the detail a reader zoomed in *for*, but the name still has to win
+/// the glance within the chip.
+const CLAUSE_H: f64 = 13.0;
+const CLAUSE_CHAR_W: f64 = 6.7;
 
 // ---- §7.1 "strict" — the corner notch --------------------------------------
 //
@@ -147,6 +153,7 @@ pub const STYLE: &str = "\
 .ceiling-bounded{fill:#a3e0b3}\
 .ceiling-proved{fill:#78d194}\
 .contract-mark{fill:#1f2430}\
+.fn-clause{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#3c4658}\
 .cap-badge rect{fill:#fdecec;stroke:#c9534f}\
 .cap-badge text{fill:#8f2f2c;font-size:10px}\
 .profile-tag rect{fill:#eef2fb;stroke:#5570a8}\
@@ -632,6 +639,19 @@ impl<'a> CollapseCtx<'a> {
     /// explicitly named component always folds, and names nothing else, so
     /// used alone (no `--depth`/`--focus`) it folds exactly what it names
     /// and leaves everything else exactly as the fully-expanded default.
+    /// True when this component is the `--focus` target or sits inside it.
+    /// Ancestors are deliberately excluded: they stay expanded only so the
+    /// reader can see the path down to the target, and filling them with
+    /// clause text would drown the thing actually being focused on.
+    fn is_focused_subtree(&self, qualified: &str) -> bool {
+        self.focus.is_some_and(|focus| {
+            matches!(
+                path_relation(qualified, focus),
+                PathRelation::Focus | PathRelation::Descendant
+            )
+        })
+    }
+
     fn should_collapse(&self, qualified: &str, level: usize) -> bool {
         if self.explicit.iter().any(|p| p == qualified) {
             return true;
@@ -979,6 +999,12 @@ fn render_fn_chip(
     component_path: &str,
     ctx: &FindingCtx,
     inherited: Option<InheritedChecks>,
+    // §7.1: draw the contract clauses as text under the fn name, rather than
+    // leaving them to hover. True only inside a `--focus` target, because
+    // this is what focus is *for*: the overview answers "where does attention
+    // go", the focused view answers "what exactly is promised here". Drawing
+    // clauses at overview zoom would bury that first question in prose.
+    show_contract: bool,
 ) -> FnChip {
     // §5.1: the list that actually governs this fn — its own if it declared
     // one, else the nearest ancestor component's default (or nothing, if it
@@ -997,6 +1023,23 @@ fn render_fn_chip(
     let has_contract = !fc.requires.is_empty() || !fc.ensures.is_empty();
     let findings = ctx.fn_findings(component_path, name);
 
+    // The clause band: one drawn line per `requires`/`ensures`, each
+    // prefixed so a first-time reader knows which way it points -- "needs"
+    // is what the caller must guarantee going in, "gives" is what the
+    // function guarantees coming out. The spelled-out words rather than the
+    // schema's keywords, because the diagram is read by people who have not
+    // opened the spec.
+    let clauses: Vec<String> = if show_contract {
+        fc.requires
+            .iter()
+            .map(|r| format!("needs {r}"))
+            .chain(fc.ensures.iter().map(|e| format!("gives {e}")))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let height = CHIP_H + (clauses.len() as f64) * CLAUSE_H;
+
     let mut cursor_x = PAD;
     let mut inner = String::new();
     let text_y = CHIP_H / 2.0 + 4.0;
@@ -1005,7 +1048,7 @@ fn render_fn_chip(
     // flush at the left edge. The original 6x6 square was too easy to miss.
     if has_contract {
         inner.push_str(&format!(
-            "<rect class=\"contract-mark\" x=\"0\" y=\"0\" width=\"{CONTRACT_MARK_W:.1}\" height=\"{CHIP_H:.1}\" />"
+            "<rect class=\"contract-mark\" x=\"0\" y=\"0\" width=\"{CONTRACT_MARK_W:.1}\" height=\"{height:.1}\" />"
         ));
     }
 
@@ -1155,7 +1198,24 @@ fn render_fn_chip(
         tip.push("no checks declared — nothing about this function is verified (unclaimed)".into());
     }
 
-    let width = cursor_x + PAD - BADGE_GAP;
+    let clause_w = clauses
+        .iter()
+        .map(|c| text_w(c, CLAUSE_CHAR_W))
+        .fold(0.0_f64, f64::max);
+    let width = (cursor_x + PAD - BADGE_GAP).max(if clauses.is_empty() {
+        0.0
+    } else {
+        CONTRACT_MARK_W + PAD + clause_w + PAD
+    });
+    for (i, clause) in clauses.iter().enumerate() {
+        inner.push_str(&format!(
+            "<text class=\"fn-clause\" x=\"{x:.1}\" y=\"{y:.1}\">{}</text>",
+            esc(clause),
+            x = CONTRACT_MARK_W + PAD,
+            y = CHIP_H + (i as f64) * CLAUSE_H + CLAUSE_H - 4.0,
+        ));
+    }
+
     // §7.1 `mode: synth`: the chip's fill turns light violet, unless a
     // finding is present — red (forbidden/wrong) always wins over the
     // authorship channel, matching the channel-discipline priority every
@@ -1177,16 +1237,12 @@ fn render_fn_chip(
         )
     };
     let svg = format!(
-        "<g class=\"fn-chip\" data-fn=\"{}\">{}<rect class=\"{box_class}\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{CHIP_H:.1}\" rx=\"4\" />{inner}{badge_svg}</g>",
+        "<g class=\"fn-chip\" data-fn=\"{}\">{}<rect class=\"{box_class}\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{height:.1}\" rx=\"4\" />{inner}{badge_svg}</g>",
         esc(name),
         title(&tip.join("\n"))
     );
 
-    FnChip {
-        width,
-        height: CHIP_H,
-        svg,
-    }
+    FnChip { width, height, svg }
 }
 
 /// The component tooltip lines that depend only on this node's own declared
@@ -1596,7 +1652,14 @@ fn render_component<'a>(
         .map(|(fname, fc)| {
             (
                 fname.clone(),
-                render_fn_chip(fname, fc, qualified, ctx, this_default),
+                render_fn_chip(
+                    fname,
+                    fc,
+                    qualified,
+                    ctx,
+                    this_default,
+                    walk.collapse.is_focused_subtree(qualified),
+                ),
             )
         })
         .collect();
