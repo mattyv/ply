@@ -1683,7 +1683,7 @@ grammar.**
 | unresolved marker | numbered pin on the fn or component |
 | trusted claim | hollow shield badge on the node — attested by named evidence, not machine-checked |
 | contract clauses (`requires`/`ensures`) | a contract mark on the fn chip — a solid ink bar the full height of the chip's left edge (a gutter mark: "this row carries something binding"); the tooltip lists each clause verbatim, and inside a `--focus` target the clauses are additionally *drawn* under the fn name, one line each, prefixed `needs` (what the caller must guarantee going in) and `gives` (what the function guarantees coming out). Drawn only at focus, never at overview: the overview answers "where does attention go", the focused view answers "what exactly is promised here", and clause text at overview zoom buries the first question. Ancestors of the focus target are excluded for the same reason — they stay expanded only to show the path down. This draws the §7.2 watermark per function: marked = a promise stands at the mark; bare = signature only. (The renderer sees only YAML-declared clauses; inline attributes join when `cargo ply` emits the §8 envelope.) |
-| declared ceiling | component fill, low-saturation, on the verdict ordinal scale: the strongest verdict the component's declared checks *could* earn — per fn the strongest check kind (`test`→tested … `prove`→proved; `mutate` strengthens, never lifts; no checks = unclaimed, unfilled), folded worst-of by the kernel's container rule. A ceiling is a promise, not proof: it never uses the full-saturation fill reserved for earned verdicts, and its tooltip says none of it has run |
+| declared ceiling | component fill, on the **neutral grey** ramp (never green — see the channel-discipline amendment of 2026-08-29), stepped by the verdict ordinal scale: the strongest verdict the component's declared checks *could* earn — per fn the strongest check kind (`test`→tested … `prove`→proved; `mutate` strengthens, never lifts; no checks = unclaimed, unfilled), folded worst-of by the kernel's container rule. A ceiling is a promise, not proof: it is drawn in grey, never in the green reserved for evidence a run has earned, and its tooltip says none of it has run |
 | `strict` | a solid ink triangle notch in the box's top-right corner — the "flagged, zero tolerance" instinct; tooltip already explains errors-not-warnings |
 | `mode: synth` | the fn chip's fill turns light violet — violet is hereby the authorship channel, its single meaning "machine-written": the body below the watermark is synthesized from the contract, with the checks holding the line. Tooltip says exactly that |
 | `examples` | a gray `e×N` token in the chip's annotation area (next to the `T=...` note); the tooltip already counts and the `test` check runs them |
@@ -1713,8 +1713,26 @@ tool, not the canvas.
 **Channel discipline (the instinct rule).** The diagram must be readable at a glance by
 someone who has learned nothing: every visual channel carries exactly one meaning, and
 each meaning borrows an instinct the viewer already has. Hue: red = forbidden or wrong;
-green = evidence; amber = a human's attention (owed, or vouched); ink = structure.
-Saturation: pastel = promised, saturated = earned. Border: dashed = hollow sketch,
+green = evidence **actually earned by a run**; amber = a human's attention (owed, or
+vouched); ink = structure — and neutral grey, in an ordered ramp, = evidence *promised*.
+Saturation: depth within the grey ramp = how strong the promise is.
+
+**Amended 2026-08-29.** This paragraph previously read "Saturation: pastel = promised,
+saturated = earned", putting promise and evidence on one hue and separating them by
+saturation alone. That is retracted, on two grounds. First it did not hold in practice:
+the top of the promise ramp was a saturated green, so a project where not one check had
+ever run rendered as a field of healthy green — the absence-of-evidence failure (§1)
+drawn in pixels, by the tool that exists to prevent it. Second it could not hold in
+principle: a pastel-versus-saturated step on one hue is exactly the fine discrimination
+that does not survive a glance, so the rule asked the reader to do the one thing the
+channel cannot do. Promise and evidence are now separated by *hue*, which does survive
+a glance. Red is likewise reserved: a declared capability is neither forbidden nor
+wrong, so capability tags are neutral, and red is left free for the one thing that must
+stay loudest.
+
+The ramp stays ordered rather than collapsing to a single quiet state, because the
+evidence ladder is this tool's main lever: "barely tested" and "proved" must not draw
+identically merely because neither has failed. Border: dashed = hollow sketch,
 solid = specified, double = sealed pure. Edge dash: solid = may call (checked),
 dashed = **declared, not machine-checked**, red-barred = must not. The dashed meaning
 was originally stated narrower ("data flows"); externals' `~>` edges and derived

@@ -712,6 +712,39 @@ adversarial review, none by the suite.
 
 ## Agreed with the maintainer, not yet started
 
+- [x] **The diagram no longer paints promises green** (2026-08-29, from
+      `docs/visual-language-research.md` via Fable's review). Two of the review's three
+      "land now" items done. (a) Capability tags were red — the same red as a real
+      failure — though a declared capability is neither forbidden nor wrong; they are now
+      neutral, and the deny lines visibly alarm for the first time. (b) The promise ramp
+      moved off green onto ordered neutral greys, so a project where nothing has run no
+      longer renders as a field of healthy green. That was §1's absence-of-evidence
+      failure drawn in pixels, by the tool that exists to prevent it. Both are guarded by
+      invariants over the emitted stylesheet, not spot-checks: red must belong to
+      something forbidden or wrong, and un-run work must contain no green. The-Ply-Spec.md's
+      channel-discipline rule is amended, retracting "pastel = promised, saturated = earned"
+      with the argument for why it neither held nor could hold.
+
+- [ ] **Third "land now" item still open: edge lines strike through box text.** Needs
+      routing, is the one remaining item Fable said to land now, and is the longest-standing
+      recorded render defect.
+
+- [ ] **Deferred with a bug to fix first: the two-part promise/earned meter.** Good idea,
+      wrong arithmetic as written — it folds by *summing*, so a collapsed box with nine
+      earned functions and one untouched reads 90% healthy, which is exactly what the
+      kernel's first standing obligation forbids. Fold by weakest-descendant plus a count
+      instead. Also needs earned-result data to reach pixels, a path that today exists only
+      as tooltip text — that, not the drawing, is the real lift.
+
+- [ ] **Cut from the proposal, recorded so it is not re-proposed:** rank-band layout
+      (position already means containment; a second meaning breaks the one-meaning rule and
+      would draw layers nobody declared), demoting deny bars to a lock glyph (a red barred
+      line is the most instinctive form in the grammar, and it draws a *rule*, not an
+      alarm), and a third amber corner flag (two markers for that already exist, one in the
+      same corner as the strict notch). Also: the document claims the check badges carry no
+      tooltip — false, verified in the renderer; the defensible version is that hover is
+      not glanceable.
+
 - [x] **A focused function now draws its promise, instead of hiding it in hover** (2026-08-29).
       Prompted by the maintainer's question of whether the visual language is sufficient --
       "at a glance it is not always obvious what a function does". It already was declared:

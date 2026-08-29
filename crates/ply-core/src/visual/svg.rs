@@ -148,20 +148,20 @@ pub const STYLE: &str = "\
 .component-anchor{fill:#6b7280;font-size:10px}\
 .component-owns{fill:#6b7280;font-size:10px;font-style:italic}\
 .ceiling-unclaimed{fill:#fff}\
-.ceiling-tested{fill:#eaf6ec}\
-.ceiling-fuzzed{fill:#cdeed3}\
-.ceiling-bounded{fill:#a3e0b3}\
-.ceiling-proved{fill:#78d194}\
+.ceiling-tested{fill:#f0f1f2}\
+.ceiling-fuzzed{fill:#dfe1e4}\
+.ceiling-bounded{fill:#c7cad0}\
+.ceiling-proved{fill:#aab0b9}\
 .contract-mark{fill:#1f2430}\
 .fn-clause{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#3c4658}\
-.cap-badge rect{fill:#fdecec;stroke:#c9534f}\
-.cap-badge text{fill:#8f2f2c;font-size:10px}\
+.cap-badge rect{fill:#eceef2;stroke:#9aa2b1}\
+.cap-badge text{fill:#4b5563;font-size:10px}\
 .profile-tag rect{fill:#eef2fb;stroke:#5570a8}\
 .profile-tag text{fill:#334b78;font-size:10px}\
 .fn-chip-box{fill:#f6f7f9;stroke:#9aa2b1}\
 .fn-chip-box-synth{fill:#ecdff5;stroke:#9aa2b1}\
 .fn-name{fill:#1f2430}\
-.fn-checks{fill:#2f6f4f;font-size:11px}\
+.fn-checks{fill:#4b5563;font-size:11px}\
 .fn-check-with{fill:#6b7280;font-size:10px}\
 .fn-examples{fill:#6b7280;font-size:10px}\
 .fn-shield{fill:none;stroke:#9a7a1f;font-size:13px}\
@@ -3491,11 +3491,13 @@ pub fn render_svg_with_options(
         "This diagram is drawn from ply.yaml, the file describing this codebase's \
          architecture and verification claims. Each box is a component; chips are \
          functions with their declared checks; arrows are permitted calls (solid) and \
-         data flows (dashed); red bars are forbidden calls. A box's green depth is the \
-         strength of the checks it declares — white means something inside declares \
-         none, deeper green means stronger checks, and the weakest function sets the \
-         whole box's shade. It is a promise scale, not results: none of it has run \
-         yet. Hover anything for its meaning.",
+         data flows (dashed); red bars are forbidden calls. A box's grey depth is how \
+         strongly it promises to be checked — white means something inside promises \
+         nothing, deeper grey means stronger checks promised, and the weakest \
+         function sets the whole box's shade. Nothing here is green: green is kept \
+         for evidence a run has actually earned, and nothing has been run yet, so a \
+         picture full of promises should not look like a picture full of results. \
+         Hover anything for its meaning.",
     );
 
     Ok(format!(

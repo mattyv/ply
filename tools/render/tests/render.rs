@@ -803,11 +803,13 @@ fn workspace_frame_explains_the_whole_picture() {
         "This diagram is drawn from ply.yaml, the file describing this codebase's \
          architecture and verification claims. Each box is a component; chips are \
          functions with their declared checks; arrows are permitted calls (solid) and \
-         data flows (dashed); red bars are forbidden calls. A box's green depth is the \
-         strength of the checks it declares — white means something inside declares \
-         none, deeper green means stronger checks, and the weakest function sets the \
-         whole box's shade. It is a promise scale, not results: none of it has run \
-         yet. Hover anything for its meaning."
+         data flows (dashed); red bars are forbidden calls. A box's grey depth is how \
+         strongly it promises to be checked — white means something inside promises \
+         nothing, deeper grey means stronger checks promised, and the weakest \
+         function sets the whole box's shade. Nothing here is green: green is kept \
+         for evidence a run has actually earned, and nothing has been run yet, so a \
+         picture full of promises should not look like a picture full of results. \
+         Hover anything for its meaning."
     );
 }
 
@@ -3558,5 +3560,113 @@ fn every_drawn_clause_fits_inside_the_chip_that_holds_it() {
                 }
             }
         }
+    }
+}
+
+/// Red means one thing on this canvas: forbidden, or wrong. A deny rule is
+/// forbidden; a finding is wrong. A declared capability is neither — it is a
+/// component saying "I use the network", which is ordinary and expected — yet
+/// it wore the same red family as a real failure, so a reader scanning for
+/// trouble was drawn to boxes that had none, and a genuine finding had to
+/// compete with decoration for the one colour that should have been loudest.
+///
+/// Written as an invariant over the emitted stylesheet rather than as a
+/// spot-check on capability badges, so a construct added later cannot quietly
+/// claim red without this test naming it.
+#[test]
+fn only_forbidden_or_wrong_things_are_drawn_in_red() {
+    // The red family this renderer paints with: border/line, text, and fill.
+    const REDS: [&str; 3] = ["#c9534f", "#8f2f2c", "#fdecec"];
+
+    // The two meanings allowed to use it. `deny-*` draws a rule the design
+    // forbids; `*-finding` draws something actually wrong.
+    fn is_allowed(selector: &str) -> bool {
+        selector.contains("deny") || selector.contains("finding")
+    }
+
+    let svg = render_fixture("../../vetting/003-trading-system.ply.yaml");
+    let style = svg
+        .split("<style>")
+        .nth(1)
+        .and_then(|s| s.split("</style>").next())
+        .expect("every render embeds a stylesheet");
+
+    let mut offenders = Vec::new();
+    for rule in style.split('}') {
+        let Some((selector, body)) = rule.split_once('{') else {
+            continue;
+        };
+        if REDS.iter().any(|r| body.contains(r)) && !is_allowed(selector) {
+            offenders.push(format!("{}{{{}}}", selector.trim(), body.trim()));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "these draw in red without being forbidden or wrong, so they compete \
+         with real findings for the one colour that must stay loudest:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+/// The one the whole visual-language review turns on. Ply's founding rule is
+/// that a run which checked nothing must not read as success — yet the canvas
+/// painted *declared intent* in green, so a project where not one check had
+/// ever executed rendered as a field of healthy green. The spec's own channel
+/// rule already said saturated green means earned, and the top of the promise
+/// ramp was saturated green, so the picture contradicted the words.
+///
+/// Green now means exactly one thing: evidence actually earned. Nothing on
+/// this repository's own diagram has been run, so nothing on it may be green.
+#[test]
+fn a_diagram_of_work_that_has_never_run_contains_no_green() {
+    /// A fill reads as green when its green channel leads the other two by
+    /// enough to be seen as a hue rather than a neutral grey.
+    fn reads_as_green(hex: &str) -> bool {
+        let h = hex.trim_start_matches('#');
+        let full = if h.len() == 3 {
+            h.chars().flat_map(|c| [c, c]).collect::<String>()
+        } else {
+            h.to_owned()
+        };
+        if full.len() != 6 {
+            return false;
+        }
+        let c = |i: usize| u8::from_str_radix(&full[i..i + 2], 16).unwrap_or(0) as i32;
+        let (r, g, b) = (c(0), c(2), c(4));
+        g - r >= 8 && g - b >= 8
+    }
+
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+    ] {
+        let svg = render_fixture(fixture);
+        let style = svg
+            .split("<style>")
+            .nth(1)
+            .and_then(|s| s.split("</style>").next())
+            .expect("every render embeds a stylesheet");
+
+        let mut greens = Vec::new();
+        for rule in style.split('}') {
+            let Some((selector, body)) = rule.split_once('{') else {
+                continue;
+            };
+            for token in body.split(|c: char| !(c.is_ascii_hexdigit() || c == '#')) {
+                if token.starts_with('#') && reads_as_green(token) {
+                    greens.push(format!("{}  ({token})", selector.trim()));
+                }
+            }
+        }
+
+        assert!(
+            greens.is_empty(),
+            "{fixture} has never been verified, so nothing in it has earned \
+             evidence — yet these are drawn green, which is the colour reserved \
+             for evidence actually earned:\n  {}",
+            greens.join("\n  ")
+        );
     }
 }
