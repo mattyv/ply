@@ -7,42 +7,9 @@ on:
     branches: [main]
 
 jobs:
-  # Spec-validation tooling: its own workspace, predates the product.
-  tools:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: tools
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: tools
-
-      - name: cargo fmt --check
-        run: cargo fmt --check
-
-      - name: cargo clippy
-        run: cargo clippy --release -- -D warnings
-
-      - name: cargo test --release
-        run: cargo test --release
-
-      - name: ply-check vetting scenarios
-        run: |
-          cargo run -q -p ply-check -- ../vetting/001-spsc-disruptor.ply.yaml
-          cargo run -q -p ply-check -- ../vetting/002-ingest-pipeline.ply.yaml
-
-      - name: rendered-artifact drift check
-        run: |
-          cargo run -q -p ply-render -- ../vetting/001-spsc-disruptor.ply.yaml -o ../vetting/001-spsc-disruptor.svg
-          cargo run -q -p ply-render -- ../vetting/002-ingest-pipeline.ply.yaml -o ../vetting/002-ingest-pipeline.svg
-          git diff --exit-code ../vetting
-
-  # The product itself (crates/ply-attrs, ply-core, ply-cli). Fast signal: no
+  # The whole workspace: the product (ply-attrs, ply-core, ply-cli) and the
+  # spec-validation tooling (render, check, kernel, schedule), which was a
+  # second workspace until 2026-08-30. Fast signal: no
   # engines needed, so it stays a couple of minutes. ply-e2e is excluded here
   # and gated by the `product-e2e` job below, which has to install Kani.
   product:
@@ -62,6 +29,25 @@ jobs:
 
       - name: cargo test (unit, engine-free)
         run: cargo test --workspace --exclude ply-e2e
+
+      # Folded in from the `tools` job when the two workspaces merged on
+      # 2026-08-30. One `cargo test --workspace` above now runs the
+      # renderer's own suite alongside the code it tests -- they were
+      # separated before, which is how a green test came to pin a sentence
+      # that was false. What survives here is the two things the unit suite
+      # cannot do: run the validator against the vetting scenarios as a user
+      # would, and prove the committed drawings still match what the
+      # renderer produces.
+      - name: ply-check vetting scenarios
+        run: |
+          cargo run -q -p ply-check -- vetting/001-spsc-disruptor.ply.yaml
+          cargo run -q -p ply-check -- vetting/002-ingest-pipeline.ply.yaml
+
+      - name: rendered-artifact drift check
+        run: |
+          cargo run -q -p ply-render -- vetting/001-spsc-disruptor.ply.yaml -o vetting/001-spsc-disruptor.svg
+          cargo run -q -p ply-render -- vetting/002-ingest-pipeline.ply.yaml -o vetting/002-ingest-pipeline.svg
+          git diff --exit-code vetting
 
   # Plants bugs in the verdict kernel one at a time and checks the exhaustive
   # tree check notices each one. This does not check the kernel -- the

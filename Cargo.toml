@@ -1,11 +1,22 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "tests/e2e"]
-# tools/ is its own workspace (spec-validation tooling, predates the product).
-# tests/spike and tests/fixtures are each their own throwaway/per-fixture cargo
-# projects (each carries its own `[workspace]` root marker) and must never be
-# absorbed into the product workspace.
-exclude = ["tools", "tests/spike", "tests/fixtures"]
+members = ["crates/*", "tools/check", "tools/kernel", "tools/render", "tools/schedule", "tests/e2e"]
+# `tools/` was its own workspace until 2026-08-30, on the grounds that the
+# spec-validation tooling predates the product. But every crate in it takes a
+# path dependency on `crates/ply-core`, so it was one dependency graph
+# pretending to be two, and the pretence cost real things: `cargo mutants`
+# could see neither side (pointed at tools it found no members, pointed at the
+# product it ran ply-core's thin suite while the renderer's real 90-test suite
+# sat in the other workspace); the main test suite for
+# `crates/ply-core/src/visual/svg.rs` lived across the boundary, which is how
+# a green test came to pin a sentence that was false; and the two `clippy`
+# invocations differed, so a lint firing in one was invisible in the other.
+#
+# tests/spike and tests/fixtures stay excluded, and that exclusion is
+# principled rather than historical: each is a throwaway or per-fixture cargo
+# project carrying its own `[workspace]` root marker, and several exist
+# precisely to be built in isolation.
+exclude = ["tests/spike", "tests/fixtures"]
 
 [workspace.package]
 edition = "2024"

@@ -1,9 +1,0 @@
-[workspace]
-resolver = "2"
-members = ["render", "check", "kernel", "schedule"]
-
-# `model` and `check`'s library moved into the product in Phase 1a
-# (crates/ply-core: `model` and `check`). The path dependency below points
-# from the spec-validation tooling into the product, which is the honest
-# direction -- the product owns the `ply.yaml` model, and this tooling
-# consumes it.

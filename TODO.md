@@ -62,6 +62,39 @@ across two commits, except the three recorded below as open.
       code this build cannot raise, checked against the codes actually present in the
       checker sources rather than a hand-kept list. Verified to bite by injecting one.
 
+## One workspace, and evidence that reaches the drawing — 2026-08-30
+
+- [x] **`tools/` merged into the product workspace.** The split existed because the
+      tooling "predates the product", while every crate in it already depended on
+      `ply-core` — one dependency graph pretending to be two. It cost three real things:
+      `cargo mutants` could see neither side (pointed at tools it found no members;
+      pointed at the product it ran `ply-core`'s thin suite while the renderer's 91-test
+      suite sat across the boundary), the tests for `visual/svg.rs` lived in the other
+      workspace, which is how a green test came to pin a false sentence, and the two
+      clippy invocations differed so a lint firing in one was invisible in the other.
+      `tests/spike` and `tests/fixtures` stay excluded, and that exclusion is principled:
+      each carries its own workspace root and several exist to be built in isolation.
+- [x] **Ply's own document now describes all eight of its crates**, not four. The four
+      tooling crates and their six real dependency edges were invisible to Ply's
+      self-check while they lived in the second workspace — a file whose entire purpose
+      is that its claims are checked, silently omitting half its own codebase.
+- [x] **Evidence attaches while the picture is drawn.** It used to render the SVG, then
+      search its own output as a string to find the shapes it had just drawn. Its doc
+      comment conceded the consequence — elements "left unattached rather than guessed" —
+      and it was happening: a nested component never attached at all, because the matcher
+      compared a bare function name against a dotted path it could never equal. Top-level
+      components worked by coincidence, which is why every existing test looked right.
+      ~230 lines of re-parsing deleted; output byte-identical with no evidence passed.
+
+### KNOWN GAP that outranks the rest, found 2026-08-30
+
+- [ ] **The check scheduler exists twice.** `tools/schedule` holds one copy with an
+      exhaustive test suite over ~69,000 cases; the copy that actually ships is inside
+      `crates/ply-cli/src/verify.rs` and has no such suite. The docs call this ordering
+      the soundness guarantee. Two implementations of a soundness rule is one more than
+      can be trusted, and nothing downstream can catch them drifting apart. Unify before
+      building anything that depends on check ordering.
+
 ### A fourth review, and the half-fixes it found — 2026-08-30
 
 The pattern in all three: I had fixed the instance in front of me and reported the class
