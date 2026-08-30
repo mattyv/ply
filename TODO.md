@@ -1,19 +1,28 @@
 # TODO
 
-## Verus is two releases behind — 2026-08-30
+## Verus pin moved forward — 2026-08-30
 
-Noted, not acted on. The spike pins **0.2026.08.15.7d4628a**; upstream now has
-0.2026.08.23.fbbbbcf (stable) and a 0.2026.08.30.b432e82 rolling build.
+Done. The spike pinned **0.2026.08.15.7d4628a**; it now pins **0.2026.08.23.fbbbbcf**,
+the current stable. (A 0.2026.08.30.b432e82 rolling build also exists and was not used:
+a rolling build is the wrong thing to rest a recorded proof on.)
 
-- [ ] **Move the kernel proof to a current Verus, as its own change.** Deliberately not
-      a version-string bump. The pin is load-bearing for the same reason ADR-0003 pins
-      Kani -- a drifting engine version silently invalidates recorded evidence -- and this
-      pin carries more weight than Kani's ever did: it is what licenses the claim that all
-      four standing obligations hold unbounded, by structural induction. Changing it means
-      re-obtaining the proof and re-checking the honesty condition that travels with it
-      (the proof runs over a shadow of the kernel, not its source, tied back by a
-      differential test over generated trees). Until that is done, `FINDINGS.md`'s version
-      is the version the claim rests on, and the claim should keep quoting it.
+- [x] **Kernel proof moved to Verus 0.2026.08.23.fbbbbcf.** Re-obtained rather than
+      bumped, because the claim rests on what the verifier said and not on a string:
+      **22 verified, 0 errors**, identical to the old pin, with the proof file needing no
+      edits at all -- no syntax migration, no deprecation, same required toolchain.
+      1.43s against the old ~2s, which is one measurement on one machine and is not
+      claimed as a result.
+- [x] **The vacuity checks were re-run too, and they are the load-bearing half.** A proof
+      that verifies against a broken kernel proves nothing, so both recorded mutations
+      were replanted on the new release: each still produces 20 verified / 2 errors, in
+      the same two obligations as before. Reverted, 22/22 clean afterwards. The newer
+      Verus is not passing this proof more easily -- it fails in the same places.
+- [x] Incidental: `diff/Cargo.lock` was stale (the spike had not run since `ply-core` grew
+      its dependencies) and is refreshed by 248 lines. Not an effect of the upgrade.
+- [ ] **The honesty condition is unchanged and still applies**: the proof runs over a
+      shadow of the kernel, not its production source, and the differential test is what
+      licenses the shadow to speak for `aggregate()`. Re-check it whenever either side is
+      edited. Not a task so much as a standing condition, kept here so it travels.
 
 ## Coverage audit, and the four faults it found — 2026-08-30
 

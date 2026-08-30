@@ -9,13 +9,15 @@ question that gap left open: can a **deductive** verifier (induction over an unb
 tree, not bounded symbolic unrolling) close the four standing obligations (CLAUDE.md)
 for **all** trees, not just the ones small enough to enumerate or symbolically execute?
 
-Run 2026-08-24. **Verus 0.2026.08.15.7d4628a** (commit `7d4628a8543d3e51e6e314c52032c9bab43f0f53`),
-requiring rustup toolchain **1.97.1-x86_64-unknown-linux-gnu** (Verus ships its own
-compiler build; this toolchain install is separate from whatever `tools/` itself
-targets). Linux x86_64, prebuilt release zip, not built from source.
+First run 2026-08-24 on Verus 0.2026.08.15.7d4628a. **Re-obtained 2026-08-30 on Verus
+0.2026.08.23.fbbbbcf** (commit `fbbbbcf`), still requiring rustup toolchain
+**1.97.1-x86_64-unknown-linux-gnu** (Verus ships its own compiler build; this toolchain
+install is separate from whatever `tools/` itself targets). Linux x86_64, prebuilt
+release zip, not built from source. See "Moving to a newer Verus" at the end for what
+that upgrade did and did not change; the short version is *nothing but the clock*.
 
 **Headline result: all four standing obligations verify, unbounded, by structural
-induction, in ~2 seconds — where Kani's bounded model checker could not terminate at
+induction, in ~1.4 seconds — where Kani's bounded model checker could not terminate at
 all on the same shape (SCALE-FINDINGS.md: 60s and 180s timeouts on a 3-node tree,
 64,147 verification conditions and still not enough).** This is not "Verus is faster
 at the same kind of check" — it is a different kind of evidence entirely: induction
@@ -45,7 +47,11 @@ working path, in order:
    URL (`se=...` expiry ~1 hour out).
 4. That signed URL is a *different host* than `github.com`/`api.github.com` and was
    reachable directly via plain `curl` from inside this session — downloaded the
-   301,536,248-byte `verus-0.2026.08.15.7d4628a-x86-linux.zip` in one shot.
+   301,536,248-byte `verus-0.2026.08.15.7d4628a-x86-linux.zip` in one shot. (The
+   2026-08-30 upgrade repeated these four steps verbatim for
+   `verus-0.2026.08.23.fbbbbcf-x86-linux.zip`, 301,751,770 bytes, and every one still
+   worked as written — including the signed-URL step, whose `se=` expiry is about an
+   hour, so the download has to follow the `WebFetch` promptly.)
 
 No second (older) release was attempted — the first one tried worked end to end, so
 per the task's own "try at least: latest, one older, check errors" instruction: only
@@ -279,3 +285,50 @@ convention):
    is what currently justifies calling that safe. Any future spec change to
    `conditional`'s shape (e.g. structured assumption objects instead of strings) should
    re-run the differential test, not assume the abstraction still applies unexamined.
+
+## Moving to a newer Verus (2026-08-30)
+
+The pin was two releases behind (0.2026.08.23.fbbbbcf stable, plus a rolling build from
+2026-08-30). It was moved to the stable one, and the point of writing this section down
+is that **a version bump on an evidence-bearing tool is not a version bump** — the claim
+above rests on what the verifier said, so changing the verifier means asking it again
+rather than editing a string and trusting the old answer.
+
+Asked again, and the answer is identical in every respect that matters:
+
+| | 0.2026.08.15.7d4628a | 0.2026.08.23.fbbbbcf |
+| --- | --- | --- |
+| Verification conditions | 22 verified, 0 errors | 22 verified, 0 errors |
+| Wall clock | ~2s | 1.43s |
+| Required toolchain | 1.97.1-x86_64-unknown-linux-gnu | unchanged |
+| `shadow.rs` source changes needed | — | **none** |
+| Differential test (`diff/`) | 4 passed | 4 passed |
+
+No syntax migration, no deprecation, no new warning: the proof file verified unmodified
+on the newer release. The speed-up is not interesting and is not claimed as a result —
+it is one measurement on one machine.
+
+**The re-run included the vacuity checks, because those are the load-bearing half.** A
+proof that verifies is worthless if it would also verify against a broken kernel, so
+both mutations recorded under "Mutation testing" above were replanted against the new
+release and both reproduce exactly:
+
+- `evidence_min`'s `<=` flipped to `>=` → **20 verified, 2 errors**, the same two
+  worst-of obligations as before.
+- `merge_conditional`'s `(None, Some(w))` arm changed to `None` → **20 verified,
+  2 errors**, the conditional-propagation lemmas.
+
+Reverted, and 22/22 confirmed clean afterwards. So the newer Verus is not passing this
+proof more easily than the old one did; it fails in the same places, for the same
+reasons.
+
+**What still travels with the claim, unchanged by any of this:** the proof runs over a
+*shadow* of the kernel (`proof/shadow.rs`), not its production source, and it is the
+differential test in `diff/` that licenses the shadow to say anything about
+`ply-kernel`'s real `aggregate()`. That honesty condition is the same on this release as
+on the last, and it is the thing to re-check if either side is ever edited.
+
+One incidental repair came out of the re-run: `diff/Cargo.lock` was stale — the spike had
+not been run since `ply-core` grew its dependency set — and running it refreshed the file
+by 248 lines. That is the lockfile catching up with the product, not an effect of the
+Verus upgrade.
