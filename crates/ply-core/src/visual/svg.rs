@@ -322,10 +322,20 @@ pub(super) fn check_prose(c: &str) -> String {
 
 /// §5.6: the wording explaining a fn-level unresolved marker, used both on
 /// the pin glyph itself and in the fn-chip's aggregated tooltip.
-fn unresolved_fn_pin_prose(id: u64, note: &str) -> String {
+///
+/// The last clause is the honest one and was not always. It used to end
+/// "this function's checks cap at `test` (§5.6)", stating an enforcement
+/// this build does not perform: §5.6 says in as many words that the cap is
+/// not enforced -- nothing applies it, and `cargo ply verify` runs the full
+/// claim against a body that panics at the marker. `worklist` has always
+/// said so on every marker line; the two views said the opposite until
+/// 2026-08-30.
+pub(super) fn unresolved_fn_pin_prose(id: u64, note: &str) -> String {
     format!(
         "#{id} marks an unresolved decision — a question this function still owes an \
-         answer: {note}. Until it is resolved, this function's checks cap at `test` (§5.6)"
+         answer: {note}. While it is open, this function's checks are meant to be held down \
+         to the weakest level — but that cap is not applied yet, so everything below still \
+         runs in full (§5.6)"
     )
 }
 
@@ -1354,13 +1364,19 @@ fn component_tip_lines(
     if let Some(note) = &comp.note {
         tip.push(note.clone());
     }
+    // See the matching note in `transcript.rs`: `pure` beside a `uses:` list
+    // is a self-contradicting document, and a view that prints one and drops
+    // the other understates what was declared.
     if comp.pure {
         tip.push(
             "pure — the double border is the seal: this component declares no capabilities \
-             and may not use any; capability use inside it is an error (A0408)"
+             and may not use any. Code inside it that reaches for one anyway is reported as \
+             an architecture finding (§5.3, A0403): a warning by default, and a build error \
+             where the component is also marked `strict`"
                 .into(),
         );
-    } else if !comp.uses.is_empty() {
+    }
+    if !comp.uses.is_empty() {
         tip.push(format!("capabilities: {}", comp.uses.join(", ")));
     }
     if !comp.owns.is_empty() {
@@ -3438,7 +3454,7 @@ pub fn render_svg_with_options(
         plural(unclaimed_fns, "promises", "promise"),
     );
     let strip_tip = title(&format!(
-        "What this document declares, before anything has been run. \"{} {} nothing\"          counts functions with no checks against them at all -- code the diagram is          showing you but says nothing about. Running `cargo ply verify` is what turns          promises into results; this line never reports results.",
+        "What this document declares, before anything has been run. \"{} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose.          Running `cargo ply verify` is what turns promises into results; this line never          reports results.",
         unclaimed_fns,
         plural(unclaimed_fns, "function promises", "functions promise"),
     ));

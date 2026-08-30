@@ -1,5 +1,64 @@
 # TODO
 
+## Review of the transcript, and what it found — 2026-08-30
+
+A second model reviewed the feature below. It was right about almost everything, and the
+headline is bad: **the safety net was largely an illusion.** Thirteen deliberate
+breakages of the text renderer were run against the whole suite and only one died. All
+are now fixed and all die.
+
+- [x] **The worst one: the feature lied in the exact place it was sold on.** A function
+      that wrote no checks line at all, and inherited an empty list from an ancestor, was
+      told it had *written* an empty list. Same sentence, byte for byte, as a function
+      that really did write one — the two opposite statements this view exists to keep
+      apart. It now says which ancestor switched checking off, and says the function did
+      not ask for it.
+- [x] **The completeness test skipped four fields it never mentioned:** the seal, the
+      build-fails-here flag, machine-written functions, and worked examples. Deleting the
+      entire worked-examples block left every test green. Both structures are now bound
+      field by field with no catch-all, so a field added later stops the test compiling
+      rather than being quietly unchecked. Two fixtures that exercise those fields were
+      added to the set it reads; there was no `mode: synth` in any of them before.
+- [x] **The derived sentences had no test at all.** They restate no field, so a walk over
+      fields cannot see them — deleting how strongly a component is checked, or why, or
+      that it declares nothing yet, all passed. Every component block must now answer both
+      questions, and each of the sentences that answers them is pinned word for word.
+- [x] **Wrong rule, wrong severity, in the sentence a reader would quote.** Both views
+      said a sealed component touching a capability "is an error (A0408)". It is A0403,
+      and a warning unless the component is also marked to fail the build. A0408 is a
+      different rule about helpers used inside contracts. Pre-existing in the drawing; the
+      text form copied it onto a second surface instead of catching it.
+- [x] **A component marked sealed *and* declaring capabilities silently lost the
+      capability list** — the view telling a reader the document said less than it did,
+      and dropping the half that would explain a surprising finding.
+- [x] **Two header sentences were false.** "Nothing here has been run" is not something a
+      renderer handed a parsed document can know, and is flatly wrong for anyone who just
+      ran a verification; it now says no result reaches this page. And the summary's gloss
+      called the counted functions "code this document says nothing about" — in the
+      trading-system example both counted functions wrote `checks: []`, so the document
+      says something very deliberate about 2 of the 2 it described.
+- [x] **Both views claimed an enforcement that does not exist.** An open question was said
+      to cap a function's checks; §5.6 says in as many words that the cap is not enforced,
+      and a verification runs the full claim anyway. `worklist` has always said so on
+      every marker line. The two views now do too, and share one copy of the sentence
+      instead of two.
+- [x] Newbie bar: "contract at the watermark" (jargon, glossed by more jargon) and "the
+      level above" (reads as the parent component, not the previous line) rewritten.
+- [x] **`plural()` leaked a fresh allocation on every call**, under a comment claiming no
+      allocation could enter. In this repo of all repos.
+- [x] Spec §7.1a said the walk "visits every field" and that there is "only one wording"
+      of a shared fact. Neither was true when written; both are retracted and replaced
+      with what actually holds, including the day the seal sentence was worded two ways.
+
+Goldens moved and were read, not accepted: the three vetting drawings and the
+architecture diagram changed by exactly the three corrected sentences, no geometry.
+
+**KNOWN GAP, left open on purpose.** A component's stated level ignores open questions,
+so a component can say it declares checks up to the strongest level while a function
+inside it says an open question holds it down. Both sentences are individually true and
+they sit four lines apart. The fix belongs in the shared ceiling computation and changes
+the drawing too, so it is its own change rather than a rider on this one.
+
 ## The transcript: the render as text — 2026-08-30
 
 Measured, not assumed: on the committed trading-system diagram 474 characters are drawn

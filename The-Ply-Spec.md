@@ -1823,10 +1823,15 @@ a real diagram can see the construct, so a row is not enough.
 
 ### 7.1a The transcript: the same grammar, written out
 
-`ply-render --text` writes the document as prose instead of as a picture. It is not a
-second format and carries no information the drawing lacks; it is the §7.1 grammar
-serialised into sentences rather than into shapes, from the same functions that word the
-drawing's tooltips.
+`ply-render --text` (and `cargo ply render --text`) writes the document as prose instead
+of as a picture: the §7.1 grammar serialised into sentences rather than into shapes.
+
+It is **not** merely the drawing transcribed. It states two things the drawing does not,
+both from §5.4c: whether a function's checks were written on it or inherited, and which
+ancestor they were inherited from. Those are invisible in a picture whose only channel
+for "checked this strongly" is a fill, and the earlier version of this section claimed
+the text "carries no information the drawing lacks" while the code carried a comment
+saying the opposite — corrected 2026-08-30.
 
 It exists because of a measurement, not a preference. On the committed trading-system
 diagram, 474 characters of text are drawn on the canvas and 9,923 are reachable only by
@@ -1851,18 +1856,32 @@ Three properties are load-bearing:
   pin.
 - **Generated, never stored.** It is written on demand like a compiler's output and never
   committed, so it cannot go stale against the document it describes.
-- **One derivation, two serializations.** Every sentence comes from the same functions the
-  drawing uses. The two views cannot word a shared fact differently because there is only
-  one wording of it.
+- **One derivation where there is one fact.** The sentences both views share come from
+  shared functions — the check glosses, the ceiling line, the profile rules, the deny
+  rules, the open-question sentence — so those cannot drift. This is a discipline, not a
+  mechanism: nothing stops a future sentence being written twice, and the `pure` sentence
+  was worded differently in the two views for a day before review caught it. Where a fact
+  belongs to only one view (the drawing's glyph key; the text's inherited-from
+  attribution) there is nothing to share.
 
 The two views do not agree verbatim, and should not: about a third of what the picture
 says is glyph shorthand — `B2 F1024`, `e×1`, `⛉`, `*` — that the text spells out in
 words. Demanding verbatim agreement would force the text to be as terse as the picture.
 The invariant that holds instead is stronger and drives from the document: **every
 component, function, check, contract clause, capability, owned type, profile rule,
-default `checks:` list, trusted claim, worked example, edge, forbidden rule, external and
-open question in the document is findable in the transcript.** A construct added to the
-grammar later cannot quietly skip it, because the walk visits every field.
+default `checks:` list, trusted claim, worked example, entry point, machine-written
+marker, seal, `strict` flag, edge, forbidden rule, external and open question in the
+document is findable in the transcript.** A construct added to the grammar later cannot
+quietly skip it, because the walk binds every field of `Component` and `FnClaim` by name
+with no rest pattern: a new field stops the test compiling.
+
+That last sentence was written before it was true. The first version of the walk read the
+fields its author remembered and silently skipped four — `pure`, `strict`, `mode` and
+`examples` — so deleting the entire worked-examples block, or the seal sentence, left
+every test green. It was found by review on 2026-08-30, along with the graver failure it
+was supposed to prevent: a function that inherited an empty `checks:` list was told it
+had *written* one, collapsing the very §5.4c distinction quoted above. Thirteen deliberate
+breakages now run against these tests; before the repair, one died.
 
 `--text` cannot be combined with `--depth`, `--focus` or `--collapse`. Those fold parts of
 a drawing away to fit a screen; the text has no screen to fit and always states the whole

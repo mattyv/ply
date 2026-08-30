@@ -20,12 +20,15 @@
 //!
 //! ## Two rules this module lives under
 //!
-//! **One derivation, two serializations.** Every sentence here comes from the
-//! same functions the drawing uses ([`super::svg::check_prose`],
-//! [`super::svg::ceiling_tooltip_line`], and the rest). The two views cannot
-//! word a fact differently because there is only one wording. Anything that
-//! needs restating here rather than sharing is a design smell to raise, not
-//! to route around.
+//! **One derivation where there is one fact.** The sentences both views share
+//! come from shared functions ([`super::svg::check_prose`],
+//! [`super::svg::ceiling_tooltip_line`], [`super::svg::unresolved_fn_pin_prose`]
+//! and the rest), so those cannot drift. This is a discipline, not a
+//! mechanism, and it has already slipped once: the seal sentence was worded
+//! differently in the two views, and the open-question sentence existed here
+//! as a byte-for-byte copy, one edit from disagreeing (review, 2026-08-30).
+//! Anything that needs restating here rather than sharing is a design smell
+//! to raise, not to route around.
 //!
 //! **Deterministic by construction, not by testing.** [`render_transcript`]
 //! takes the parsed document and returns a string: no filesystem, no clock,
@@ -40,7 +43,7 @@
 
 use super::svg::{
     ceiling_tooltip_line, check_prose, component_ceiling, deny_rule_prose, profile_rules_prose,
-    weakest_declaration,
+    unresolved_fn_pin_prose, weakest_declaration,
 };
 use crate::model::{
     Component, Document, EdgeKind, FnClaim, InheritedChecks, Mode, component_default_checks,
@@ -55,22 +58,32 @@ fn pad(level: usize) -> String {
 
 /// `1 component` / `2 components` — the summary line reads as English or it
 /// reads as a machine's output, and this one is the first thing anybody sees.
-fn plural(n: usize, one: &str, many: &str) -> &'static str where {
-    // Returned as a literal so no allocation and no locale can enter.
-    if n == 1 {
-        Box::leak(one.to_string().into_boxed_str())
-    } else {
-        Box::leak(many.to_string().into_boxed_str())
-    }
+///
+/// Both arms are used for verb agreement as well as noun number, which is
+/// why one call site reads `plural(n, "promises", "promise")` with the
+/// singular in the `many` slot: "1 promises nothing" / "2 promise nothing".
+///
+/// It borrows from its arguments and allocates nothing. It previously
+/// returned `&'static str` by `Box::leak`-ing a fresh `String` on every
+/// call, directly under a comment claiming no allocation could enter --
+/// a leak per component, per function, per render (review, 2026-08-30).
+fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
+    if n == 1 { one } else { many }
 }
 
 pub fn render_transcript(doc: &Document) -> String {
     let mut out = String::new();
 
     // The header earns its three lines: what this is, that editing it does
-    // nothing, and that nothing has been run. The third is the summary
+    // nothing, and that no result reaches it. The third is the summary
     // strip's own rule applied to the whole document -- a reader who meets a
     // page of promises without that sentence will read them as results.
+    //
+    // It says "no result reaches this page", not "nothing has been run".
+    // This function is handed a parsed document and nothing else, so whether
+    // anyone has run a verification is outside what it can see; the earlier
+    // wording asserted it anyway, and was a flat falsehood to anyone who had
+    // just run one (review, 2026-08-30).
     out.push_str(
         "This is a Ply transcript: everything the diagram of ply.yaml shows — every box, \
          arrow, and rule, and all the text that is otherwise visible only by hovering — \
@@ -81,8 +94,9 @@ pub fn render_transcript(doc: &Document) -> String {
          text changes nothing; edit the ply.yaml document and generate it again.\n",
     );
     out.push_str(
-        "Nothing here has been run. Every line is a declaration or a promise, never a result \
-         — running `cargo ply verify` is what turns promises into results.\n\n",
+        "No result reaches this page. Every line below is a declaration or a promise, never \
+         a result — whatever `cargo ply verify` has found, it is reported there and never \
+         here.\n\n",
     );
 
     let (components, functions, unclaimed) = counts(doc);
@@ -93,8 +107,13 @@ pub fn render_transcript(doc: &Document) -> String {
         plural(unclaimed, "promises", "promise"),
     ));
     out.push_str(
-        "(\"promise nothing\" counts functions with no checks against them at all — code this \
-         document describes but says nothing about)\n\n",
+        // Not "code this document says nothing about": a function that wrote
+        // `checks: []` is counted here, and the document says something very
+        // deliberate about it. In vetting 003 both counted functions are that
+        // kind, so the old gloss was wrong about every function it described.
+        "(\"promise nothing\" counts functions that end up with nothing checked — whether \
+         nobody wrote any checks for them, or the document switched checking off for them on \
+         purpose)\n\n",
     );
 
     out.push_str("components:\n");
@@ -270,12 +289,21 @@ fn write_component(
     if let Some(note) = &comp.note {
         out.push_str(&format!("{q}note: {note}\n"));
     }
+    // Not `else if`: a document that says `pure: true` and also lists
+    // capabilities is contradicting itself, and dropping either half tells
+    // the reader the document says less than it does -- the dropped half
+    // being exactly the one that would explain a finding they did not
+    // expect. Both are stated; which one wins is `ply check`'s call, not a
+    // view's.
     if comp.pure {
         out.push_str(&format!(
             "{q}pure — a sealed promise: this component declares no capabilities and may not \
-             use any; capability use inside it is an error (A0408)\n"
+             use any. Code inside it that reaches for one anyway is reported as an \
+             architecture finding (§5.3, A0403): a warning by default, and a build error \
+             where the component is also marked `strict`\n"
         ));
-    } else if !comp.uses.is_empty() {
+    }
+    if !comp.uses.is_empty() {
         out.push_str(&format!(
             "{q}capabilities: {} — this component may use only the capabilities it declares; \
              using an undeclared one is an architecture finding (§5.3, A0404)\n",
@@ -341,7 +369,8 @@ fn write_component(
         ));
         if let Some((path, _)) = weakest_declaration(comp, inherited, "", name) {
             out.push_str(&format!(
-                "{q}the level above is set by its weakest declaration, {path}\n"
+                "{q}that level comes from its weakest part, {path} — nothing here counts as \
+                 checked more strongly than the weakest thing inside it\n"
             ));
         }
     }
@@ -368,24 +397,35 @@ fn write_fn(
     let q = pad(level + 1);
     out.push_str(&format!("{p}fn {name}\n"));
 
+    // Where the list came from decides the sentence, not just what is in it.
+    // Two functions can both end up with nothing verified -- one wrote
+    // `checks: []`, one wrote no line at all and an ancestor's empty list
+    // reached it -- and those are opposite statements about the document
+    // (§5.4c). Telling the second one it "wrote an empty list" is a false
+    // claim about what the author typed, made in the exact place this view
+    // was argued for; it read that way until 2026-08-30.
+    let from = if fc.checks.is_none() {
+        inherited.map(|i| i.from_component)
+    } else {
+        None
+    };
+
     match effective_checks(fc, inherited) {
         None => out.push_str(&format!(
             "{q}no checks declared — nothing about this function is verified (unclaimed)\n"
         )),
-        Some(list) if list.is_empty() => out.push_str(&format!(
-            "{q}checks: [] — a written empty list: this document says to check nothing here, \
-             so nothing about this function is verified (unclaimed)\n"
-        )),
+        Some(list) if list.is_empty() => match from {
+            Some(source) => out.push_str(&format!(
+                "{q}nothing is checked here, and this function did not ask for that: it \
+                 declares no checks of its own, and component {source} sets an empty default \
+                 list, which switches checking off for everything inside it (unclaimed)\n"
+            )),
+            None => out.push_str(&format!(
+                "{q}checks: [] — a written empty list: this document says to check nothing \
+                 here, so nothing about this function is verified (unclaimed)\n"
+            )),
+        },
         Some(list) => {
-            // A written empty list and no list at all are different statements
-            // (§5.4c) and the transcript keeps them apart -- the drawing
-            // currently does not, which is a difference worth stating rather
-            // than hiding.
-            let from = if fc.checks.is_none() {
-                inherited.map(|i| i.from_component)
-            } else {
-                None
-            };
             for c in list {
                 match from {
                     Some(source) => out.push_str(&format!(
@@ -413,8 +453,8 @@ fn write_fn(
 
     if !fc.requires.is_empty() || !fc.ensures.is_empty() {
         out.push_str(&format!(
-            "{q}contract at the watermark — the line where declaration stops and the body \
-             begins:\n"
+            "{q}what this function promises — the last thing the document states before the \
+             code itself takes over:\n"
         ));
         let r = pad(level + 2);
         for c in &fc.requires {
@@ -460,11 +500,11 @@ fn write_fn(
     }
 
     for u in &fc.unresolved {
-        out.push_str(&format!(
-            "{q}#{} marks an unresolved decision — a question this function still owes an \
-             answer: {}. Until it is resolved, this function's checks cap at `test` (§5.6)\n",
-            u.id, u.note
-        ));
+        // Shared with the drawing rather than restated. This sentence existed
+        // here as a byte-for-byte copy of the drawing's, which is one edit
+        // away from the two views disagreeing about the same fact -- the
+        // thing this module's own doc comment says cannot happen.
+        out.push_str(&format!("{q}{}\n", unresolved_fn_pin_prose(u.id, &u.note)));
     }
 
     for ext in &fc.entry {

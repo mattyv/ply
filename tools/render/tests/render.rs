@@ -4197,8 +4197,10 @@ fn the_transcript_states_what_it_is_and_what_the_document_declares() {
         // What it is, and that it is a rendering rather than a source.
         "Ply transcript",
         "Editing this text changes nothing",
-        // The strip's own rule, extended to the whole document.
-        "Nothing here has been run",
+        // The strip's own rule, extended to the whole document. Worded as
+        // what this renderer can actually know from a parsed document --
+        // see `the_transcript_only_claims_what_it_can_actually_know`.
+        "No result reaches this page",
     ] {
         assert!(
             text.contains(required),
@@ -4351,6 +4353,42 @@ fn the_transcript_and_the_drawing_state_the_same_facts() {
 /// the text to be as terse as the picture.
 #[test]
 fn the_transcript_leaves_nothing_in_the_document_out() {
+    /// The lines belonging to one `fn NAME` or `component NAME` heading: the
+    /// heading itself plus everything indented under it. Needles are looked
+    /// for in here rather than in the whole transcript, because the document
+    /// repeats names across sections -- an `entry: [venue]` needle is
+    /// satisfied by the externals section naming `venue`, which proves
+    /// nothing about the function.
+    fn block<'a>(text: &'a str, heading: &str) -> String {
+        let mut lines = text.lines();
+        let head = loop {
+            match lines.next() {
+                None => return String::new(),
+                Some(l) if l.trim_start().starts_with(heading) => break l,
+                _ => {}
+            }
+        };
+        let depth = head.len() - head.trim_start().len();
+        let mut out = String::from(head);
+        for l in lines {
+            let d = l.len() - l.trim_start().len();
+            if !l.trim().is_empty() && d <= depth {
+                break;
+            }
+            out.push('\n');
+            out.push_str(l);
+        }
+        out
+    }
+
+    // Every field of both structs is bound by name, and neither pattern
+    // carries a `..` rest: a field added to the grammar later stops this
+    // file compiling until someone decides what the text form owes it. The
+    // first version of this walk read the fields it happened to remember and
+    // silently skipped four -- deleting the whole worked-examples block, or
+    // the `pure` sentence, left every test green (found by review,
+    // 2026-08-30). A walk that claims to visit every field has to be made of
+    // something stronger than the author's memory.
     fn walk(
         prefix: &str,
         comps: &indexmap::IndexMap<String, ply_render::model::Component>,
@@ -4363,21 +4401,34 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
             } else {
                 format!("{prefix}.{name}")
             };
+            let ply_render::model::Component {
+                anchor,
+                note,
+                pure,
+                strict,
+                uses,
+                owns,
+                profile,
+                checks,
+                components,
+                fns,
+            } = comp;
+
             let mut want = vec![(format!("component `{path}`"), name.clone())];
-            want.push((format!("{path}'s anchor"), comp.anchor.clone()));
-            for u in &comp.uses {
+            want.push((format!("{path}'s anchor"), anchor.clone()));
+            for u in uses {
                 want.push((format!("{path}'s capability `{u}`"), u.clone()));
             }
-            for o in &comp.owns {
+            for o in owns {
                 want.push((format!("{path} owns `{o}`"), o.clone()));
             }
-            if let Some(p) = &comp.profile {
+            if let Some(p) = profile {
                 want.push((format!("{path}'s profile `{p}`"), p.clone()));
             }
-            if let Some(n) = &comp.note {
+            if let Some(n) = note {
                 want.push((format!("{path}'s note"), n.clone()));
             }
-            for c in comp.checks.iter().flatten() {
+            for c in checks.iter().flatten() {
                 want.push((format!("{path}'s default check `{c}`"), c.clone()));
             }
             for (label, needle) in want {
@@ -4386,41 +4437,85 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
                 }
             }
 
-            for (fname, fc) in &comp.fns {
+            // A flag has no text of its own to search for, so what is checked
+            // is that the sentence it owes appears in this component's own
+            // block -- scoped, or one `pure` component anywhere in the
+            // document would satisfy every other component's check.
+            let comp_block = block(text, &format!("component {name} "));
+            if *pure && !comp_block.contains("pure") {
+                missing.push(format!(
+                    "{path} is sealed `pure` and its block never says so"
+                ));
+            }
+            if *strict && !comp_block.contains("strict") {
+                missing.push(format!(
+                    "{path} is `strict` -- findings inside it fail the build rather than warn -- \
+                     and its block never says so"
+                ));
+            }
+
+            for (fname, fc) in fns {
+                let ply_render::model::FnClaim {
+                    checks,
+                    mode,
+                    requires,
+                    ensures,
+                    examples,
+                    check_with,
+                    trusted,
+                    unresolved,
+                    entry,
+                } = fc;
+
                 let mut want = vec![(format!("fn `{fname}`"), fname.clone())];
-                for c in fc.checks.iter().flatten() {
+                for c in checks.iter().flatten() {
                     want.push((format!("`{fname}`'s check `{c}`"), c.clone()));
                 }
-                for r in &fc.requires {
+                for r in requires {
                     want.push((format!("`{fname}`'s requires `{r}`"), r.clone()));
                 }
-                for e in &fc.ensures {
+                for e in ensures {
                     want.push((format!("`{fname}`'s ensures `{e}`"), e.clone()));
                 }
-                for (k, v) in &fc.check_with {
+                for e in examples {
+                    want.push((format!("`{fname}`'s worked example `{e}`"), e.clone()));
+                }
+                for (k, v) in check_with {
                     want.push((format!("`{fname}`'s {k} binding"), format!("{k}={v}")));
                 }
-                for t in &fc.trusted {
+                for t in trusted {
                     want.push((format!("`{fname}`'s trusted claim"), t.claim.clone()));
                     want.push((format!("`{fname}`'s trusted evidence"), t.evidence.clone()));
                 }
-                for u in &fc.unresolved {
+                for u in unresolved {
                     want.push((
                         format!("`{fname}`'s open question #{}", u.id),
                         u.note.clone(),
                     ));
-                }
-                for e in &fc.entry {
-                    want.push((format!("`{fname}`'s entry point `{e}`"), e.clone()));
                 }
                 for (label, needle) in want {
                     if !text.contains(&needle) {
                         missing.push(label);
                     }
                 }
+
+                let fn_block = block(text, &format!("fn {fname}"));
+                for e in entry {
+                    if !fn_block.contains(e.as_str()) {
+                        missing.push(format!("`{fname}`'s entry point `{e}`"));
+                    }
+                }
+                if matches!(mode, ply_render::model::Mode::Synth)
+                    && !fn_block.contains("machine-written")
+                {
+                    missing.push(format!(
+                        "`{fname}` is a function Ply writes the body of rather than one whose \
+                         human-written body it checks, and its block never says so"
+                    ));
+                }
             }
 
-            walk(&path, &comp.components, text, missing);
+            walk(&path, components, text, missing);
         }
     }
 
@@ -4430,6 +4525,13 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
         "../../vetting/003-trading-system.ply.yaml",
         "../../ply.yaml",
         "tests/fixtures/full.ply.yaml",
+        // Carries the only `mode: synth` in the repo, plus `strict`, `pure`
+        // and worked examples -- without it those four fields are checked
+        // against nothing, which is how they went unnoticed the first time.
+        "tests/fixtures/visual_forms.ply.yaml",
+        "tests/fixtures/checks_inheritance.ply.yaml",
+        "tests/fixtures/inherited_empty.ply.yaml",
+        "tests/fixtures/externals.ply.yaml",
     ] {
         let yaml = std::fs::read_to_string(fixture).unwrap();
         let doc = parse_document(&yaml).unwrap();
@@ -4493,4 +4595,383 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
             missing.join("\n  ")
         );
     }
+}
+
+/// A function that wrote `checks: []` and a function that wrote nothing and
+/// inherited an empty list from an ancestor both end up with nothing
+/// verified — but the document says so in opposite ways, and the transcript
+/// exists to keep §5.4c's two statements apart. Telling a reader that a
+/// function "wrote an empty list" when it wrote nothing at all is a false
+/// statement about the document, in the one place this whole feature was
+/// argued for.
+#[test]
+fn a_function_is_never_told_it_wrote_a_list_it_did_not_write() {
+    let yaml = std::fs::read_to_string("tests/fixtures/inherited_empty.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+
+    let line_for = |name: &str| -> String {
+        let mut lines = text
+            .lines()
+            .skip_while(|l| l.trim() != format!("fn {name}"));
+        lines.next();
+        lines
+            .next()
+            .unwrap_or_else(|| panic!("no line under `fn {name}` in:\n{text}"))
+            .trim()
+            .to_string()
+    };
+
+    let silent = line_for("silent");
+    let spelt_out = line_for("spelt_out");
+
+    assert_ne!(
+        silent, spelt_out,
+        "a function that wrote nothing and one that wrote `checks: []` are given the same \
+         sentence. They are different statements (§5.4c) and the transcript is the view that \
+         is supposed to tell them apart."
+    );
+    assert!(
+        !silent.contains("written"),
+        "`silent` wrote no checks line at all, and the transcript calls what it has written: \
+         {silent:?}"
+    );
+    assert!(
+        silent.contains("switched_off"),
+        "`silent` is unchecked because an ancestor switched checking off, and a reader cannot \
+         act on that without being told which ancestor: {silent:?}"
+    );
+    assert!(
+        spelt_out.contains("written"),
+        "`spelt_out` did write an empty list, and the transcript should say so: {spelt_out:?}"
+    );
+
+    // The non-empty inherited case already names its source; this pins that
+    // the empty case is not the odd one out.
+    assert!(
+        line_for("inherits").contains("handed_down"),
+        "an inherited check names the component it came from"
+    );
+}
+
+/// Every component block has to answer "how strongly is this checked, and
+/// why that strongly" — and every one of the sentences that answers it is
+/// pinned word for word. These are the transcript's *derived* sentences:
+/// they restate no field of the document, so the field walk in
+/// `the_transcript_leaves_nothing_in_the_document_out` cannot see them, and
+/// deleting any of them left every test green until this existed (review,
+/// 2026-08-30).
+///
+/// Pinning the exact words is the project rule for user-facing wording, and
+/// it earns its keep here twice over: these four sentences carry the whole
+/// evidence ladder to a reader who has never seen Ply, and three of them are
+/// the only place the document's §5.4c distinctions are ever spelled out.
+#[test]
+fn every_component_says_how_strongly_it_is_checked_and_why() {
+    // The complete set. A component block matches exactly one of these, and
+    // a new one added later shows up as an unexplained block below.
+    const HOLLOW: &str = "hollow — declares nothing inside yet: no functions, no nested \
+                          components. A sketch waiting for claims.";
+    const UNCLAIMED: &str = "promises nothing as a whole — something inside declares no checks, \
+                             and one unchecked thing sets the level of everything around it \
+                             (unclaimed)";
+    const DECLARES: &str = "declares checks up to ";
+    const WEAKEST: &str = "that level comes from its weakest part, ";
+
+    let mut seen_hollow = false;
+    let mut seen_unclaimed = false;
+    let mut seen_declares = false;
+
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "../../ply.yaml",
+        "tests/fixtures/full.ply.yaml",
+        "tests/fixtures/visual_forms.ply.yaml",
+        "tests/fixtures/hollow.ply.yaml",
+        "tests/fixtures/checks_inheritance.ply.yaml",
+        "tests/fixtures/inherited_empty.ply.yaml",
+    ] {
+        let yaml = std::fs::read_to_string(fixture).unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let text = ply_render::transcript::render_transcript(&doc);
+
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with("component ") {
+                continue;
+            }
+            let name = trimmed
+                .trim_start_matches("component ")
+                .split(' ')
+                .next()
+                .unwrap();
+            let depth = line.len() - trimmed.len();
+            // The sentences that belong to this component, not to a child:
+            // everything indented under it, stopping at the first nested
+            // `component` heading.
+            let own: String = text
+                .lines()
+                .skip_while(|l| *l != line)
+                .skip(1)
+                .take_while(|l| {
+                    let d = l.len() - l.trim_start().len();
+                    !l.trim().is_empty() && d > depth && !l.trim_start().starts_with("component ")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let hollow = own.contains(HOLLOW);
+            let unclaimed = own.contains(UNCLAIMED);
+            let declares = own.contains(DECLARES);
+            seen_hollow |= hollow;
+            seen_unclaimed |= unclaimed;
+            seen_declares |= declares;
+
+            assert_eq!(
+                [hollow, unclaimed, declares].iter().filter(|b| **b).count(),
+                1,
+                "{fixture}: component `{name}` should say exactly one of: it declares nothing \
+                 yet, it promises nothing because something inside does not, or how strongly it \
+                 is checked. A reader with none of those cannot tell whether an empty-looking \
+                 box is unfinished or unchecked, and those are not the same worry. Its block \
+                 was:\n{own}"
+            );
+            if !hollow {
+                assert!(
+                    own.contains(WEAKEST),
+                    "{fixture}: component `{name}` states a level and never says which \
+                     declaration set it. The whole point of worst-of is that one weak thing \
+                     drags the rest down, and a reader who is not told which one cannot go and \
+                     fix it. Its block was:\n{own}"
+                );
+            }
+        }
+    }
+
+    // A pinned sentence nothing exercises is a pinned sentence that can rot.
+    assert!(
+        seen_hollow,
+        "no fixture exercises a component that declares nothing yet"
+    );
+    assert!(
+        seen_unclaimed,
+        "no fixture exercises a component dragged to unclaimed by something inside it"
+    );
+    assert!(
+        seen_declares,
+        "no fixture exercises a component that declares checks"
+    );
+}
+
+/// The two ways a function can end up with nothing checked, and the one way
+/// it can inherit something, each get their own words — pinned, because
+/// these three sentences are where §5.4c either survives into plain English
+/// or dies. `silent` and `spelt_out` in the fixture are the pair a reader
+/// most easily conflates: same outcome, opposite statements.
+#[test]
+fn the_three_sentences_that_carry_the_inheritance_rules_are_pinned() {
+    let yaml = std::fs::read_to_string("tests/fixtures/inherited_empty.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+
+    for expected in [
+        // A component that switches checking off for everything inside it.
+        "checks: [] — an empty list written on purpose: a function in here that writes no \
+         checks of its own is checked by nothing at all, and does not fall back to any outer \
+         default",
+        // A function that wrote the empty list itself.
+        "checks: [] — a written empty list: this document says to check nothing here, so \
+         nothing about this function is verified (unclaimed)",
+        // A function that wrote nothing and had the empty list handed to it.
+        "nothing is checked here, and this function did not ask for that: it declares no checks \
+         of its own, and component switched_off sets an empty default list, which switches \
+         checking off for everything inside it (unclaimed)",
+        // A function that wrote nothing and had a real list handed to it.
+        "inherited from component handed_down: bounded(2) — proves the contract for every \
+         input, unrolling loops at most 2 times",
+    ] {
+        assert!(
+            text.contains(expected),
+            "this sentence is how a reader learns what the document actually said about a \
+             function's checks, and it is not in the output:\n  {expected}\n\ngot:\n{text}"
+        );
+    }
+}
+
+/// A sealed component's sentence names the rule that catches a breach, and
+/// a reader acts on it — so naming the wrong rule, or the wrong severity,
+/// sends them to the wrong place with the wrong urgency. Both views said
+/// "capability use inside it is an error (A0408)". The spec says a `pure`
+/// component touching a capability is `A0403`, warning-severity by default
+/// and an error only under `strict`; `A0408` is a different rule about
+/// helper functions used inside contracts. Wrong code, wrong severity, in
+/// the one sentence a reader would quote.
+#[test]
+fn a_sealed_component_names_the_rule_that_actually_catches_a_breach() {
+    let yaml = std::fs::read_to_string("tests/fixtures/visual_forms.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+    let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+    for (view, body) in [("the text form", &text), ("the drawing", &svg)] {
+        assert!(
+            !body.contains("A0408"),
+            "{view} tells a reader to look up A0408 for a sealed component that touches a \
+             capability. A0408 is about helper functions used inside contracts — they would \
+             read the wrong rule and find it does not describe their problem."
+        );
+        assert!(
+            body.contains("A0403"),
+            "{view} never names the rule that actually catches this, so a reader has nothing \
+             to look up."
+        );
+    }
+
+    assert!(
+        text.contains(
+            "pure — a sealed promise: this component declares no capabilities and may not use \
+             any. Code inside it that reaches for one anyway is reported as an architecture \
+             finding (§5.3, A0403): a warning by default, and a build error where the \
+             component is also marked `strict`"
+        ),
+        "the sealed-component sentence is not what it should be:\n{text}"
+    );
+}
+
+/// `pure: true` beside a `uses:` list is a document contradicting itself.
+/// Both halves have to be stated: a view that silently prints one and drops
+/// the other is telling the reader the document says less than it does, and
+/// the half it dropped is the one that would explain a surprising finding.
+#[test]
+fn a_component_that_both_seals_itself_and_declares_capabilities_has_both_stated() {
+    let yaml = "ply: 1\ncomponents:\n  muddle:\n    anchor: app::muddle\n    pure: true\n    \
+                uses: [net]\n";
+    let doc = parse_document(yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+
+    assert!(
+        text.contains("pure"),
+        "the document says this component is sealed and the text does not:\n{text}"
+    );
+    assert!(
+        text.contains("net"),
+        "the document declares `net` on this component and the text never mentions it — a \
+         reader would believe nothing was declared:\n{text}"
+    );
+}
+
+/// The opening summary counts functions that end up with nothing checked,
+/// and both views glossed that as "code this document says nothing about".
+/// For a function that wrote `checks: []` that is backwards: the document
+/// says something very deliberate about it — check nothing here. In the
+/// trading-system fixture both counted functions are that kind, so the gloss
+/// was wrong about 2 of the 2 functions it described.
+#[test]
+fn the_summary_gloss_is_true_of_the_functions_it_counts() {
+    let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+    let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+    // Both functions this fixture counts wrote `checks: []` on purpose.
+    for (view, body) in [("the text form", &text), ("the drawing", &svg)] {
+        assert!(
+            !body.contains("says nothing about"),
+            "{view} says the counted functions are ones the document says nothing about. Both \
+             of them wrote `checks: []` — the document says exactly what it wants for them, \
+             and a reader told otherwise will go looking for an omission that is not there."
+        );
+    }
+    assert!(
+        text.contains(
+            "(\"promise nothing\" counts functions that end up with nothing checked — whether \
+             nobody wrote any checks for them, or the document switched checking off for them \
+             on purpose)"
+        ),
+        "the summary gloss is not what it should be:\n{text}"
+    );
+}
+
+/// The renderer is handed a parsed document and nothing else. It cannot see
+/// whether `cargo ply verify` has ever run, so "Nothing here has been run"
+/// is a claim about the world outside its inputs — and flatly false for
+/// anyone who has just run a verification. What it can honestly say is that
+/// no result reaches this page.
+#[test]
+fn the_transcript_only_claims_what_it_can_actually_know() {
+    let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+
+    assert!(
+        !text.contains("Nothing here has been run"),
+        "the text form asserts that nothing has been run. It is built from the document alone \
+         and has no way to know that; a reader who has just run a verification is told a plain \
+         falsehood on line three."
+    );
+    assert!(
+        text.contains(
+            "No result reaches this page. Every line below is a declaration or a promise, never \
+             a result — whatever `cargo ply verify` has found, it is reported there and never \
+             here."
+        ),
+        "the header does not say what it can honestly say:\n{text}"
+    );
+}
+
+/// Four sentences that a reader who has never seen Ply has to be able to
+/// act on. Three were jargon or ambiguous; the fourth asserted an
+/// enforcement this build does not perform.
+///
+/// The last is the one that matters most. The spec is explicit that the
+/// cap on a function with an open question "is not enforced" — nothing
+/// applies it, and a verification runs whatever the claim asked for. Both
+/// views told the reader the cap was in effect. `worklist` says the true
+/// thing on every marker line; these two now say it too.
+#[test]
+fn the_sentences_a_first_time_reader_has_to_act_on_say_what_they_mean() {
+    let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+    let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+    for (view, body) in [("the text form", &text), ("the drawing", &svg)] {
+        assert!(
+            !body.contains("checks cap at `test`"),
+            "{view} tells a reader an open question caps this function's checks. The spec is \
+             explicit that the cap is not enforced — nothing applies it, and a verification \
+             runs the full claim anyway. A reader who believes it will think a risk is \
+             contained when it is not."
+        );
+        assert!(
+            body.contains("that cap is not applied yet"),
+            "{view} drops the caveat entirely instead of stating it. Saying nothing about the \
+             cap leaves the same false impression as claiming it works."
+        );
+    }
+
+    assert!(
+        !text.contains("contract at the watermark"),
+        "the text form heads a function's promise with `watermark`, a word that means nothing \
+         outside this project and is not glossed by what follows it"
+    );
+    assert!(
+        text.contains(
+            "what this function promises — the last thing the document states before the code \
+             itself takes over:"
+        ),
+        "the contract heading does not say, in plain words, what the block under it is:\n{text}"
+    );
+    assert!(
+        !text.contains("the level above is set by"),
+        "\"the level above\" reads as the parent component rather than as the line printed \
+         immediately before, and after a `promises nothing` line there is no level above at all"
+    );
+    assert!(
+        text.contains("that level comes from its weakest part, "),
+        "the sentence explaining where a component's level came from is not what it should \
+         be:\n{text}"
+    );
 }
