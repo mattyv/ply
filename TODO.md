@@ -1,5 +1,46 @@
 # TODO
 
+## Verification results now change what the drawing looks like — 2026-08-30
+
+Left in the working tree, not committed (explicit constraint for this session) —
+`crates/ply-core/src/visual/svg.rs` and `tools/render/tests/visual.rs` only.
+
+- [x] Fn chips now colour by the five display states (declared/earned/violated/
+      unanswered/stale), computed purely from the stored evidence a run already
+      reported — never fabricated. Each state pairs its own fill/border with its own
+      drawn character (a reader with no colour vision still tells them apart), and
+      "earned on assumptions" reuses the earned colour with an attached mark rather
+      than inventing a sixth state, per the settled state model. `violated` is the
+      only new red; `unanswered`/`stale` are neither red nor the existing findings-red.
+- [x] The opening verdict strip now states result counts ("2 earned, 1 broken, ...")
+      alongside its existing promise counts, only once a run's evidence actually
+      settles something — a document with no evidence, or evidence that resolves to
+      nothing beyond "declared", renders its strip exactly as before (checked, not
+      assumed: `the_strip_states_no_results_when_evidence_settles_nothing`).
+- [x] A collapsed box now states its earned-over-promised split as a plain count
+      (`"1 of 3 earned"`), never a percentage — the rejected two-part-meter design
+      that would let nine-earned-one-untouched read as "90% healthy" stays rejected.
+      `a_collapsed_boxs_earned_split_equals_the_counts_folded_beneath_it` renders the
+      same evidence both expanded and collapsed and checks the two counts agree.
+- [x] New public API: `render_svg_with_evidence_and_options`, so evidence and
+      `--depth`/`--focus`/`--collapse` can be exercised together (previously only
+      `render_svg_with_evidence`, always fully expanded, existed). Not wired into
+      `cargo ply verify`'s own publish path — out of scope for this change, which is
+      the renderer only.
+- [x] 12 new tests in `tools/render/tests/visual.rs`, including the two invariants
+      named above and one confirming red still means only `violated`/`deny`/`finding`
+      for evidence-drawn output specifically (the pre-existing red test only ever
+      renders fixtures with no evidence, so it could not have caught a regression
+      here). `cargo test --workspace --exclude ply-e2e`: 616 passed, 0 failed (604
+      baseline + 12). `cargo fmt --all` and `cargo clippy --all-targets -- -D
+      warnings` both clean. `git diff --stat -- vetting/ docs/` is empty — no
+      committed artifact changed.
+- [ ] Not attempted, named rather than silently skipped: wiring
+      `render_svg_with_evidence_and_options` into `cargo ply verify`'s actual publish
+      path (`visual::build_visual_envelope_with_sources` still always renders fully
+      expanded); a CLI flag to preview a folded evidence render outside of `verify`.
+      Neither was asked for.
+
 ## Verus pin moved forward — 2026-08-30
 
 Done. The spike pinned **0.2026.08.15.7d4628a**; it now pins **0.2026.08.23.fbbbbcf**,

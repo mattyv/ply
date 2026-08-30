@@ -235,6 +235,45 @@ pub const FINDING_STYLE: &str = "\
 .finding-count{fill:#c9534f;font-size:11px;font-weight:bold}\
 ";
 
+/// Rules for the display states a verify run's evidence attaches to a fn
+/// chip (`classify_evidence`), kept separate from `STYLE` for the same
+/// reason `FINDING_STYLE` is: a render with no evidence — every existing
+/// caller of `render_svg`/`render_svg_with_options` — must keep emitting
+/// exactly `STYLE`, byte-for-byte, so these rules are appended only when a
+/// run's evidence actually put a fn in one of these states
+/// (`render_svg_impl`'s `evidence_style` local).
+///
+/// Each state pairs its own fill with its own border treatment (solid,
+/// dashed short, dashed long) and its own mark glyph
+/// (`.fn-evidence-mark-*`, drawn by `render_fn_chip`) — two channels beside
+/// colour, so a reader who cannot see the colour at all still tells the
+/// five states apart by shape and by the character drawn on the chip.
+/// `-violated` is red on purpose: The-Ply-Spec.md reserves red for a broken
+/// promise or a forbidden call, and a violation is exactly the first of
+/// those (`only_forbidden_or_wrong_things_are_drawn_in_red` names it an
+/// allowed red family alongside `deny`/`finding`).
+pub const EVIDENCE_STYLE: &str = "\
+.fn-chip-box-earned{fill:#e0f2e6;stroke:#3f8a5c}\
+.fn-chip-box-violated{fill:#fdecec;stroke:#c9534f;stroke-width:2.5}\
+.fn-chip-box-unanswered{fill:#eaf1fb;stroke:#4d6d99;stroke-dasharray:2 2}\
+.fn-chip-box-stale{fill:#f3efe2;stroke:#9a7a1f;stroke-dasharray:5 3}\
+.fn-evidence-mark{font-size:11px;font-weight:bold}\
+.fn-evidence-mark-earned{fill:#2f6b45}\
+.fn-evidence-mark-violated{fill:#8f2f2c}\
+.fn-evidence-mark-unanswered{fill:#3c5980}\
+.fn-evidence-mark-stale{fill:#7a5c00}\
+@media (prefers-color-scheme: dark){\
+.fn-chip-box-earned{fill:#173821;stroke:#4caf6f}\
+.fn-chip-box-violated{fill:#3a1f1e;stroke:#e8524b;stroke-width:2.5}\
+.fn-chip-box-unanswered{fill:#1c2836;stroke:#6f93c2;stroke-dasharray:2 2}\
+.fn-chip-box-stale{fill:#2e2814;stroke:#d4a72c;stroke-dasharray:5 3}\
+.fn-evidence-mark-earned{fill:#7fdba0}\
+.fn-evidence-mark-violated{fill:#ff8a84}\
+.fn-evidence-mark-unanswered{fill:#9dc0ee}\
+.fn-evidence-mark-stale{fill:#e3c66b}\
+}\
+";
+
 /// Plain-language "A or B" / "A, B, or C" list, for naming every candidate
 /// an ambiguous reference could mean without reading like a data dump.
 fn join_or(items: &[String]) -> String {
@@ -1319,6 +1358,36 @@ fn render_fn_chip(
         cursor_x += text_w(&glyphs, CHIP_CHAR_W) + BADGE_GAP;
     }
 
+    // The state a run's evidence backs for this fn, if any resolved —
+    // `None` draws nothing new at all, which is what keeps a chip with no
+    // evidence attached byte-for-byte unchanged. The mark is the
+    // non-colour channel for whatever `box_class` below paints in colour
+    // (The-Ply-Spec.md colourblind-safety rule): a reader who cannot see
+    // colour at all still reads a distinct character for each state. The
+    // "on assumptions" variant of `Earned` adds a second character rather
+    // than a colour of its own — it is a marked variant of earned, not a
+    // sixth state.
+    let evidence_state = evidence.map(|(element, _)| classify_evidence(&element.evidence));
+    let evidence_mark = match evidence_state {
+        Some(DisplayState::Earned {
+            on_assumptions: false,
+        }) => Some(("fn-evidence-mark-earned", "\u{2713}")),
+        Some(DisplayState::Earned {
+            on_assumptions: true,
+        }) => Some(("fn-evidence-mark-earned", "\u{2713}\u{2020}")),
+        Some(DisplayState::Violated) => Some(("fn-evidence-mark-violated", "\u{2717}")),
+        Some(DisplayState::Unanswered) => Some(("fn-evidence-mark-unanswered", "?")),
+        Some(DisplayState::Stale) => Some(("fn-evidence-mark-stale", "\u{21BB}")),
+        Some(DisplayState::Declared) | None => None,
+    };
+    if let Some((mark_class, glyph)) = evidence_mark {
+        inner.push_str(&format!(
+            "<text class=\"fn-evidence-mark {mark_class}\" x=\"{cursor_x:.1}\" y=\"{text_y:.1}\">{}</text>",
+            esc(glyph)
+        ));
+        cursor_x += text_w(glyph, CHIP_CHAR_W) + BADGE_GAP;
+    }
+
     if let Some(n) = &note {
         inner.push_str(&format!(
             "<text class=\"fn-check-with\" x=\"{cursor_x:.1}\" y=\"{text_y:.1}\">{}</text>",
@@ -1456,6 +1525,12 @@ fn render_fn_chip(
     }
     // Last, as everywhere else this attaches: a run's outcome is a
     // postscript to what the document promised, not a replacement for it.
+    // The plain sentence comes before the raw fields, exactly like every
+    // other gloss-then-detail pair in this tooltip — a reader gets the
+    // meaning of the mark before the verdict string that backs it.
+    if let Some(state) = evidence_state {
+        tip.push(display_state_prose(state));
+    }
     if let Some((element, diagnostics)) = evidence {
         tip.push(completed_evidence_tooltip(element, diagnostics));
     }
@@ -1479,16 +1554,28 @@ fn render_fn_chip(
         ));
     }
 
-    // §7.1 `mode: synth`: the chip's fill turns light violet, unless a
-    // finding is present — red (forbidden/wrong) always wins over the
-    // authorship channel, matching the channel-discipline priority every
-    // other red-vs-cosmetic combination already follows in this renderer.
+    // §7.1 `mode: synth`: the chip's fill turns light violet; a run's own
+    // evidence state (`Violated`/`Stale`/`Unanswered`/`Earned`) takes over
+    // the fill once it resolves, since it is a stronger, more specific fact
+    // than "machine-written" — and a finding (a rule this document itself
+    // broke) still wins over all of it, matching the channel-discipline
+    // priority every other red-vs-cosmetic combination in this renderer
+    // already follows. `Declared` (no evidence, or evidence that settled
+    // nothing) draws exactly as a chip with no evidence at all always has —
+    // this is what keeps a document with no evidence attached byte-for-byte
+    // unchanged (The-Ply-Spec.md's own honesty rule: no display state may
+    // exist unless the stored record holds the fact it displays).
     let box_class = if !findings.is_empty() {
         "fn-chip-box-finding"
-    } else if fc.mode == Mode::Synth {
-        "fn-chip-box-synth"
     } else {
-        "fn-chip-box"
+        match evidence_state {
+            Some(DisplayState::Violated) => "fn-chip-box-violated",
+            Some(DisplayState::Stale) => "fn-chip-box-stale",
+            Some(DisplayState::Unanswered) => "fn-chip-box-unanswered",
+            Some(DisplayState::Earned { .. }) => "fn-chip-box-earned",
+            Some(DisplayState::Declared) | None if fc.mode == Mode::Synth => "fn-chip-box-synth",
+            Some(DisplayState::Declared) | None => "fn-chip-box",
+        }
     };
     let badge_svg = if findings.is_empty() {
         String::new()
@@ -1684,10 +1771,31 @@ fn render_collapsed_component(
     let findings = collect_findings_subtree(qualified, comp, ctx);
     let ceiling = component_ceiling(name, comp, inherited);
     let (n_components, n_fns) = count_subtree(comp);
+    // Resolved here, ahead of `contents_line`, rather than at its usual
+    // place right before the tooltip is built: this box's earned-over-
+    // promised split (below) needs it, and the tooltip push further down
+    // reuses this same binding rather than looking it up twice.
+    let resolved = resolved_component(evidence_parent, name);
+    // §7 "chips, not meters": a plain count, `{earned} of {n_fns}`, never a
+    // percentage or a summed proportion — folding nine earned and one
+    // untouched into "90%" is exactly the reading the kernel's worst-of
+    // rule forbids. `.min(n_fns)` is defensive only: a well-formed
+    // evidence view walked from this same document can never actually
+    // exceed it (the invariant this exists to uphold), but a stale
+    // evidence view built from a since-edited document must not be allowed
+    // to claim more earned than this box's own contents hold.
+    let earned_of_promised = resolved
+        .zip(evidence_parent)
+        .and_then(|((element, _), (ev, _))| {
+            (n_fns > 0).then(|| ev.fn_state_counts(&element.id).earned.min(n_fns))
+        });
     let contents_line = format!(
-        "{n_components} component{} \u{b7} {n_fns} fn{}",
+        "{n_components} component{} \u{b7} {n_fns} fn{}{}",
         if n_components == 1 { "" } else { "s" },
         if n_fns == 1 { "" } else { "s" },
+        earned_of_promised
+            .map(|earned| format!(" \u{b7} {earned} of {n_fns} earned"))
+            .unwrap_or_default(),
     );
     let badges = union_badges_subtree(comp);
     let unresolved = collect_unresolved_subtree(comp);
@@ -1788,7 +1896,13 @@ fn render_collapsed_component(
     // The evidence line always comes last, after every declared-tooltip
     // line above -- a run's outcome reads as a postscript to what the
     // document promised, never ahead of it.
-    let resolved = resolved_component(evidence_parent, name);
+    if let Some(earned) = earned_of_promised {
+        tip.push(format!(
+            "{earned} of {n_fns} function{} folded inside have a real result behind them from \
+             the last run; the rest are still just promises, or checks that could not settle",
+            if n_fns == 1 { "" } else { "s" },
+        ));
+    }
     if let Some((element, diagnostics)) = resolved {
         tip.push(completed_evidence_tooltip(element, diagnostics));
     }
@@ -2714,6 +2828,139 @@ struct EvidenceView<'a> {
     diagnostics: &'a [super::VisualDiagnostic],
 }
 
+/// The five states a reader-facing chip can be drawn in, computed from what
+/// a run actually reported (`ElementEvidence`) rather than from what the
+/// document merely declares — the generative rule behind all five is that
+/// none of them may be drawn unless the evidence handed to this renderer
+/// holds the fact it displays.
+///
+/// `Declared` covers both "no evidence element resolved for this fn at all"
+/// and a resolved element whose verdict is `unclaimed` (a run reached this
+/// fn and found nothing to check) — both mean exactly the same thing to a
+/// reader: no promise has been answered yet, so both draw identically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayState {
+    Declared,
+    /// `on_assumptions` is the §5.5 `conditional` status: the verdict rests
+    /// on an assumed contract for a callee, not on that callee's own body.
+    /// Still `Earned` — a marked variant, never a colour of its own
+    /// (The-Ply-Spec.md: "show the string attached, do not invent a
+    /// colour").
+    Earned {
+        on_assumptions: bool,
+    },
+    Violated,
+    Unanswered,
+    Stale,
+}
+
+/// Classifies one resolved element's stored evidence into the display state
+/// it backs. Order matters: `violation` is checked first because it must
+/// never be hidden behind another mark; `stale` next because it can sit
+/// beside any verdict and means "this answer may no longer be true"
+/// regardless of what that verdict once said; `unclaimed` is `Declared`
+/// rather than `Unanswered` because it means "nothing was ever asked", not
+/// "something was asked and could not be settled" — the same distinction
+/// `crate::diag::is_absence`'s own vocabulary draws for everything after it.
+fn classify_evidence(evidence: &super::ElementEvidence) -> DisplayState {
+    if evidence.verdict == "violation" {
+        return DisplayState::Violated;
+    }
+    if evidence.statuses.iter().any(|s| s == "stale") {
+        return DisplayState::Stale;
+    }
+    if evidence.verdict == "unclaimed" {
+        return DisplayState::Declared;
+    }
+    if crate::diag::is_absence(&evidence.verdict) {
+        return DisplayState::Unanswered;
+    }
+    DisplayState::Earned {
+        on_assumptions: evidence.statuses.iter().any(|s| s == "conditional"),
+    }
+}
+
+/// The plain-language sentence a chip's evidence mark stands for, written
+/// for a reader who has never seen Ply — the mark itself is only a
+/// character (`render_fn_chip`'s `evidence_mark`), and a character alone
+/// never explains itself.
+fn display_state_prose(state: DisplayState) -> String {
+    match state {
+        DisplayState::Declared => "no run has answered this promise yet".to_string(),
+        DisplayState::Earned {
+            on_assumptions: false,
+        } => "a run actually checked this and the promise held — this is a real result, not \
+              just a plan"
+            .to_string(),
+        DisplayState::Earned {
+            on_assumptions: true,
+        } => "a run checked this and the promise held, but only by trusting another \
+              function's own unchecked promise instead of looking inside it — that trust is \
+              itself unproven debt"
+            .to_string(),
+        DisplayState::Violated => "a run checked this and found a concrete case where the code \
+                                    does not do what it claims — the promise is broken"
+            .to_string(),
+        DisplayState::Unanswered => "a run tried to check this and could not say either way — a \
+                                      tool ran out of time, broke, or refused; this is neither a \
+                                      pass nor a failure"
+            .to_string(),
+        DisplayState::Stale => "a result exists from an earlier run, but the code has changed \
+                                 since then — treat it as unconfirmed until it runs again"
+            .to_string(),
+    }
+}
+
+/// Tally of every `fn`-kind element's display state under one root. Used by
+/// both the verdict strip (root = the workspace) and a collapsed box's
+/// earned-over-promised split (root = that box's own resolved element) —
+/// the same walk in both places, so the two can never disagree about what
+/// is folded beneath a box.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct StateCounts {
+    earned: usize,
+    violated: usize,
+    unanswered: usize,
+    stale: usize,
+}
+
+impl StateCounts {
+    fn total(&self) -> usize {
+        self.earned + self.violated + self.unanswered + self.stale
+    }
+}
+
+/// The verdict strip's result clause, e.g. `" — 9 earned, 1 broken, 2 could \
+/// not be checked, 1 needs a re-check"` — only the non-zero categories, in a
+/// fixed order, so a document with nothing broken never states "0 broken"
+/// as though that were news. Plain English throughout: this is drawn on the
+/// canvas, not hidden in a tooltip, so it must clear the newbie bar with no
+/// gloss at all.
+fn result_counts_suffix(counts: StateCounts) -> String {
+    let mut parts = Vec::new();
+    if counts.earned > 0 {
+        parts.push(format!("{} earned", counts.earned));
+    }
+    if counts.violated > 0 {
+        parts.push(format!("{} broken", counts.violated));
+    }
+    if counts.unanswered > 0 {
+        parts.push(format!("{} could not be checked", counts.unanswered));
+    }
+    if counts.stale > 0 {
+        parts.push(format!(
+            "{} need{} a re-check",
+            counts.stale,
+            if counts.stale == 1 { "s" } else { "" }
+        ));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" — {}", parts.join(", "))
+    }
+}
+
 impl<'a> EvidenceView<'a> {
     /// The one element matching `matches`, or `None` if zero or more than
     /// one do — an ambiguous match is left unattached rather than guessed,
@@ -2761,6 +3008,35 @@ impl<'a> EvidenceView<'a> {
                 && element.parent_id.as_deref() == Some(parent_id)
                 && (element.label == name || element.label == qualified_label)
         })
+    }
+
+    /// Walks every element reachable from `root_id` down its `parent_id`
+    /// chain, however many component levels deep, and tallies the display
+    /// state of each `fn`-kind one found along the way. A non-`fn` element
+    /// (workspace or component) is only ever a waypoint down to the fns
+    /// nested inside it — it contributes nothing of its own to the count.
+    fn fn_state_counts(&self, root_id: &str) -> StateCounts {
+        let mut counts = StateCounts::default();
+        let mut frontier = vec![root_id];
+        while let Some(id) = frontier.pop() {
+            for element in self.elements.values() {
+                if element.parent_id.as_deref() != Some(id) {
+                    continue;
+                }
+                if element.kind == "fn" {
+                    match classify_evidence(&element.evidence) {
+                        DisplayState::Earned { .. } => counts.earned += 1,
+                        DisplayState::Violated => counts.violated += 1,
+                        DisplayState::Unanswered => counts.unanswered += 1,
+                        DisplayState::Stale => counts.stale += 1,
+                        DisplayState::Declared => {}
+                    }
+                } else {
+                    frontier.push(&element.id);
+                }
+            }
+        }
+        counts
     }
 }
 
@@ -2879,11 +3155,25 @@ pub fn render_svg_with_evidence(
     elements: &BTreeMap<String, super::VisualElement>,
     diagnostics: &[super::VisualDiagnostic],
 ) -> Result<String, RenderError> {
+    render_svg_with_evidence_and_options(doc, elements, diagnostics, &RenderOptions::default())
+}
+
+/// `render_svg_with_evidence`, plus §7.1's `--depth`/`--focus`/`--collapse`
+/// collapsing — the combination that lets a collapsed box's
+/// earned-over-promised split (`render_collapsed_component`) actually be
+/// exercised with real evidence attached, rather than only ever seeing the
+/// fully expanded tree evidence is otherwise threaded through.
+pub fn render_svg_with_evidence_and_options(
+    doc: &Document,
+    elements: &BTreeMap<String, super::VisualElement>,
+    diagnostics: &[super::VisualDiagnostic],
+    options: &RenderOptions,
+) -> Result<String, RenderError> {
     let evidence = EvidenceView {
         elements,
         diagnostics,
     };
-    render_svg_impl(doc, &RenderOptions::default(), Some(&evidence))
+    render_svg_impl(doc, options, Some(&evidence))
 }
 
 /// `render_svg`, plus The-Ply-Spec.md §7.1's `--depth`/`--focus`/`--collapse`
@@ -3592,17 +3882,47 @@ fn render_svg_impl(
         if n == 1 { one } else { many }
     }
     let version_line = esc(&format_version_line(doc.ply));
+
+    // Alongside what is *promised*: what a run's evidence actually
+    // returned, if any was handed to this render at all. `None` whenever
+    // there is nothing to say — no evidence, evidence whose workspace
+    // element never resolved, or evidence that resolved nothing beyond
+    // plain declared/unclaimed fns — which is what keeps a render with no
+    // evidence attached byte-for-byte unchanged.
+    let result_counts = workspace_evidence
+        .zip(evidence)
+        .map(|((workspace, _), ev)| ev.fn_state_counts(&workspace.id))
+        .filter(|counts| counts.total() > 0);
     let strip_text = format!(
-        "{total_components} {} · {total_fns} {} · {unclaimed_fns} {} nothing",
+        "{total_components} {} · {total_fns} {} · {unclaimed_fns} {} nothing{}",
         plural(total_components, "component", "components"),
         plural(total_fns, "function", "functions"),
         plural(unclaimed_fns, "promises", "promise"),
+        result_counts.map(result_counts_suffix).unwrap_or_default(),
     );
-    let strip_tip = title(&format!(
-        "What this document declares. \"{} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose.          Running `cargo ply verify` is what turns promises into results; this line never          reports results.",
-        unclaimed_fns,
-        plural(unclaimed_fns, "function promises", "functions promise"),
-    ));
+    // Two full strings rather than one with a conditionally-appended tail:
+    // the no-evidence sentence ends "this line never reports results", and
+    // once evidence is attached that sentence would be false the moment
+    // results follow it — the honesty rule this whole feature exists to
+    // enforce applies to its own tooltip too. Everything up to that last
+    // sentence is identical either way; only the final clause differs.
+    let strip_tip = title(&if let Some(counts) = result_counts {
+        format!(
+            "What this document declares. \"{unclaimed_fns} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose.          Running `cargo ply verify` is what turns promises into results, and its last run \
+             reported: {} the promise held, {} broken, {} a tool could not settle either way, \
+             {} out of date since that run.",
+            plural(unclaimed_fns, "function promises", "functions promise"),
+            counts.earned,
+            counts.violated,
+            counts.unanswered,
+            counts.stale,
+        )
+    } else {
+        format!(
+            "What this document declares. \"{unclaimed_fns} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose.          Running `cargo ply verify` is what turns promises into results; this line never          reports results.",
+            plural(unclaimed_fns, "function promises", "functions promise"),
+        )
+    });
 
     let (title_extra, title_min_w) = if unattached > 0 {
         let count_text = format!(
@@ -3837,13 +4157,26 @@ fn render_svg_impl(
         )
     };
 
-    // A clean document (no findings at all) gets exactly `STYLE`, unchanged
-    // — see `FINDING_STYLE`'s doc comment for why this is conditional
-    // rather than always-appended.
-    let style: std::borrow::Cow<str> = if findings.is_empty() {
-        std::borrow::Cow::Borrowed(STYLE)
-    } else {
-        std::borrow::Cow::Owned(format!("{STYLE}{FINDING_STYLE}"))
+    // A run with no evidence at all draws no `fn-chip-box-{earned,
+    // violated, unanswered, stale}` (see `render_fn_chip`'s `box_class`),
+    // so appending `EVIDENCE_STYLE` unconditionally would grow every
+    // existing document's stylesheet text for classes it never emits —
+    // exactly the leak `FINDING_STYLE`'s own doc comment already refuses.
+    let evidence_style_used = evidence.is_some_and(|ev| {
+        ev.elements.values().any(|element| {
+            element.kind == "fn"
+                && !matches!(classify_evidence(&element.evidence), DisplayState::Declared)
+        })
+    });
+
+    // A clean document (no findings, no drawn evidence state) gets exactly
+    // `STYLE`, unchanged — see `FINDING_STYLE`'s doc comment for why this is
+    // conditional rather than always-appended.
+    let style: std::borrow::Cow<str> = match (findings.is_empty(), evidence_style_used) {
+        (true, false) => std::borrow::Cow::Borrowed(STYLE),
+        (true, true) => std::borrow::Cow::Owned(format!("{STYLE}{EVIDENCE_STYLE}")),
+        (false, true) => std::borrow::Cow::Owned(format!("{STYLE}{FINDING_STYLE}{EVIDENCE_STYLE}")),
+        (false, false) => std::borrow::Cow::Owned(format!("{STYLE}{FINDING_STYLE}")),
     };
 
     // §7.1 / newbie bar: the frame is the first thing anyone sees, so its
