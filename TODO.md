@@ -1,5 +1,24 @@
 # TODO
 
+## The source copy followed a hand-written list — 2026-08-30 (2c9e343)
+
+The first CI run after the workspace merge went red, and it was the merge's
+fault. One test builds Ply from a private copy of its own source tree, and
+which directories that copy took was written out by hand. Four crates joined
+the workspace; the copy did not get them; cargo refused to load a workspace
+root naming members that are not on disk.
+
+What made it expensive is what CI reported: `cargo build ... failed`, from a
+test about result caching. Three layers from the cause and saying nothing
+about it. The copy now reads the member list out of the root manifest it is
+already copying, and a new test states the invariant rather than trusting the
+routine — every member the manifest declares has a manifest in the copy. Run
+against the old code it names the four missing crates.
+
+The class of defect is worth naming: a second, hand-kept list of something the
+build system already knows. It was silent until the first change in eight
+months touched it.
+
 ## Verification results now change what the drawing looks like — 2026-08-30
 
 Left in the working tree, not committed (explicit constraint for this session) —
