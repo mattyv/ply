@@ -1,5 +1,74 @@
 # TODO
 
+## What widening the types is actually worth — decided 2026-08-30
+
+Agreed with the maintainer: **stop treating "support more types" as the roadmap.** The
+evidence against it is already in this repository and it is unusually direct.
+
+On the one outside library anyone measured against -- eleven properties its own author
+had written down and cared about -- the share of supported types went from 21% to about
+80%, and the number of those properties that became checkable went from zero to zero.
+Sixty points of work, no movement in the thing the work was for. The number was counting
+how often a type appears on a public surface, which turned out to be nearly unrelated to
+whether anything could be proved. It was also dominated by getters and configuration,
+while the type that library's whole correctness argument rested on had a public-surface
+count of zero, because it was internal state.
+
+What actually blocked those eleven: finding the function at all, building the object a
+method needs before it can be called, mutation, and floating point. Floats have since
+landed (`2443b85`), which is the strongest form of the argument -- the single
+highest-ranked blocker is discharged, so "more types" is not what stands between Ply and
+the next real property.
+
+**The replacement question, to be answered before any further type work is scheduled:**
+take a library whose author enumerated their own properties, and for each one record
+whether it is a single-function property at all, what specifically stops it, and whether
+the author flagged it as risky. Then rank by *which single missing capability unblocks
+the most properties*. That ranking put structs and enums last on the one library it was
+run against -- the opposite of what type coverage implied.
+
+**Two reasons a function cannot be checked, and they are not the same thing.** Conflating
+them is what makes "Ply's checkable subset is too narrow" sound damning when it mostly is
+not:
+
+- **Out of shape, permanently.** A sixteen-thread stress test is better evidence than
+  anything a single-function checker could produce. Refusing by name is the product
+  working. This category should be counted and reported, never quietly widened toward.
+- **In shape, unplumbed.** A genuine single-function property over a value Ply could
+  sample, blocked only by not being able to build the argument. This is a gap.
+
+Only the second is measurable, so effort drifts toward it whether or not it is where the
+value is. That drift is exactly what the 21%-to-80% episode was.
+
+**Consequence for the plan:** the honesty machinery (the rule registry, staleness
+reporting, the "what was NOT checked" output) outranks the type work, not the other way
+round. The ledger -- what is claimed, what is checked, how strongly, and what nobody
+checked -- works across a whole codebase regardless of types. The proof engine is a bonus
+on the slice where it happens to be cheap.
+
+### KNOWN GAP: Ply's own file does not record what Ply's own evidence is
+
+- [ ] **Ply's self-declaration is silent about both halves of its own honesty.** `ply.yaml`
+      declares which crates exist and which may depend on which, and stops. It does not
+      record that the verdict kernel and the check scheduler carry the strongest evidence
+      in the repository -- exhaustive enumeration over every tree to a bound, an unbounded
+      inductive proof for the kernel, a mutation run in CI that checks the check can still
+      see. Nor does it record that the parsing, rendering and process-driving shell is out
+      of reach and always will be.
+
+      Both omissions matter, and the second more. Ply's own argument is that saying "I
+      cannot see this" is the whole premise, and that the count of out-of-reach things
+      should be reported proudly rather than hidden. Ply does not do that for itself: a
+      reader of its self-portrait sees neither the proof nor the gap.
+
+      Sharpest form of it: **Ply cannot check its own most-proved code.** The kernel's
+      entry point takes a reference to a recursive tree; the scheduler takes a set of
+      numbers, a slice of strings and a map of sets. Ply can build a value for none of
+      those. Pointed at its own core, it would report that it cannot see it.
+
+      This is a gap in the one file whose entire purpose is that its claims are checked,
+      and it was not written down anywhere before today.
+
 ## The source copy followed a hand-written list — 2026-08-30 (2c9e343)
 
 The first CI run after the workspace merge went red, and it was the merge's
@@ -1074,8 +1143,11 @@ project existed. Every number below is measured against it.
       that Ply never invents one.
 
 - [ ] **Strings and collections on the sampling tier.** Did not land; the mechanism now
-      exists. This is where parsing and validation bugs live, so it is the highest-value
-      remaining type work.
+      exists. **Demoted 2026-08-30, and the old justification here was withdrawn** -- it
+      read "this is where parsing and validation bugs live, so it is the highest-value
+      remaining type work", which is a guess dressed as a ranking. Build it when a
+      property somebody wrote down is blocked on it and nothing else, not as a programme.
+      See "What widening the types is actually worth" below.
 - [ ] KNOWN GAP: a constructor returning `Result<Self, E>` — a real shape in the yardstick
       — is still refused.
 - [ ] KNOWN GAP: `NonZero` and `Duration` are top-level only, never nested inside `Option`,
