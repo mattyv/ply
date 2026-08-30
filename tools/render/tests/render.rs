@@ -4280,10 +4280,10 @@ fn the_transcript_does_not_depend_on_where_the_file_lives() {
 }
 
 /// The two views must not drift apart on the one thing they word identically:
-/// the names. There is no committed transcript to diff against — it is
-/// generated on demand like a compiler's output — so this generates both from
-/// the same document and checks that every component and function the drawing
-/// labels is also named in the text.
+/// the names. This generates both from the same document and checks that
+/// every component and function the drawing labels is also named in the text
+/// — a live comparison, so it holds for any document, not only the ones with
+/// a committed copy in `vetting/`.
 ///
 /// Names only, and deliberately so. The rest of what the picture says is
 /// glyph shorthand the text form spells out in words instead, so demanding

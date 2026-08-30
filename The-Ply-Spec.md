@@ -1854,8 +1854,12 @@ Three properties are load-bearing:
   scope. Every collection walked is insertion-ordered, so iteration is document order.
   There are no sorts and no computed non-integers, so there is no float formatting to
   pin.
-- **Generated, never stored.** It is written on demand like a compiler's output and never
-  committed, so it cannot go stale against the document it describes.
+- **Generated, never hand-written.** It is produced from the document like a compiler's
+  output; no one edits it. A copy is committed beside each vetting scenario, for the same
+  reason the drawings are: a change to the wording then arrives in review as a diff a
+  person can read, rather than as an invisible shift in what the tool tells people. Those
+  copies are gated against a live render, because a stale one would do the opposite of
+  what it is for. Nothing in the build depends on them.
 - **One derivation where there is one fact.** The sentences both views share come from
   shared functions — the check glosses, the ceiling line, the profile rules, the deny
   rules, the open-question sentence — so those cannot drift. This is a discipline, not a

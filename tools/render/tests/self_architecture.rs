@@ -47,3 +47,54 @@ fn the_architecture_diagram_matches_the_spec_it_claims_to_be_rendered_from() {
          cargo run --release -p ply-render -- ply.yaml -o docs/ply-self.svg"
     );
 }
+
+/// The committed text forms beside each vetting scenario, checked the same
+/// way and for the same reason as the drawings next to them.
+///
+/// A saved transcript is exactly the artifact this project distrusts: it is
+/// generated output, it is easy to read as authoritative, and it goes stale
+/// silently. The point of committing it anyway is that a change to the
+/// wording shows up in review as a diff a person can read — the seal
+/// sentence naming the wrong rule for months would have been visible in one
+/// of these. That only holds while the file is regenerated whenever the
+/// renderer changes, which is what this test is for.
+#[test]
+fn the_committed_text_forms_still_match_what_the_documents_render_to() {
+    let root = repo_root();
+    for (yaml_path, text_path) in [
+        (
+            "vetting/001-spsc-disruptor.ply.yaml",
+            "vetting/001-spsc-disruptor.txt",
+        ),
+        (
+            "vetting/002-ingest-pipeline.ply.yaml",
+            "vetting/002-ingest-pipeline.txt",
+        ),
+        (
+            "vetting/003-trading-system.ply.yaml",
+            "vetting/003-trading-system-full.txt",
+        ),
+        ("ply.yaml", "docs/ply-self.txt"),
+    ] {
+        let yaml = std::fs::read_to_string(root.join(yaml_path))
+            .unwrap_or_else(|e| panic!("reading {yaml_path}: {e}"));
+        let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{yaml_path} must parse: {e}"));
+        let fresh = ply_render::transcript::render_transcript(&doc);
+
+        let committed = std::fs::read_to_string(root.join(text_path)).unwrap_or_else(|e| {
+            panic!(
+                "{text_path} could not be read ({e}). Regenerate it from the tools workspace \
+                 with:\n  cargo run -q -p ply-render -- ../{yaml_path} --text -o ../{text_path}"
+            )
+        });
+
+        assert_eq!(
+            committed, fresh,
+            "{text_path} no longer matches what {yaml_path} renders to. These files are \
+             committed so that a change to the words shows up in review as a readable diff; a \
+             stale one does the opposite, presenting last month's wording as current. \
+             Regenerate it from the tools workspace, then read the diff before committing \
+             it:\n  cargo run -q -p ply-render -- ../{yaml_path} --text -o ../{text_path}"
+        );
+    }
+}

@@ -38,8 +38,13 @@
 //! document order. There are no sorts (nothing here has geometry to sort by)
 //! and no computed non-integers, so there is no float formatting to pin.
 //!
-//! It is never written to disk by the build and never committed: it is
-//! generated on demand like a compiler's output, so it cannot go stale.
+//! Nothing here is written by hand. The build never writes it, and it is
+//! never needed on disk to be read -- but one is committed beside each
+//! vetting scenario, so that a change to the wording arrives in review as a
+//! diff a person can read rather than as an invisible shift in what the
+//! tool says. Those copies are pinned against a live render
+//! (`the_committed_text_forms_still_match_what_the_documents_render_to`),
+//! because a stale one would do the exact opposite of what it is for.
 
 use super::svg::{
     ceiling_tooltip_line, check_prose, component_ceiling, deny_rule_prose, profile_rules_prose,
@@ -85,13 +90,25 @@ pub fn render_transcript(doc: &Document) -> String {
     // wording asserted it anyway, and was a flat falsehood to anyone who had
     // just run one (review, 2026-08-30).
     out.push_str(
-        "This is a Ply transcript: everything the diagram of ply.yaml shows — every box, \
+        // "the diagram of this document", not "of ply.yaml": these are
+        // rendered from files called `003-trading-system.ply.yaml` as often
+        // as from a plain `ply.yaml`, and the renderer is handed a parsed
+        // document with no filename in it at all (deliberately -- where the
+        // file sits must not reach the output). Committing a sample beside
+        // each vetting scenario is what made the mismatch visible.
+        "This is a Ply transcript: everything the diagram of this document shows — every box, \
          arrow, and rule, and all the text that is otherwise visible only by hovering — \
          written out in full.\n",
     );
+    // Not "never saved": the repository commits one of these beside each
+    // vetting scenario so a change to the wording shows up in review as a
+    // readable diff, and a reader holding one of those files would catch the
+    // contradiction immediately. What is true either way is that no one
+    // edits it by hand.
     out.push_str(
-        "It is generated on demand and never saved, like a compiler's output. Editing this \
-         text changes nothing; edit the ply.yaml document and generate it again.\n",
+        "It is generated from that document, like a compiler's output, and nothing in it is \
+         written by hand. Editing this text changes nothing; edit the ply.yaml document and \
+         generate it again.\n",
     );
     out.push_str(
         "No result reaches this page. Every line below is a declaration or a promise, never \

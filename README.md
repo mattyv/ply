@@ -241,10 +241,12 @@ Most of what a diagram says is only reachable by hovering: on the trading-system
 474 characters are drawn on the canvas and 9,923 sit in hover text — 95% of the render,
 and all of the reasoning. `cargo ply render <dir> --text` writes the whole thing out as
 prose instead, for reading in a terminal, piping into another tool, or handing to a model,
-none of which can hover. It is generated on demand and never committed, so it cannot go
-stale, and it is not a summary: every check, contract clause, capability, profile rule,
-inherited default, trusted claim, edge, forbidden rule and open question in the document
-appears in it, and a test walks the document to prove it.
+none of which can hover. Nothing in it is written by hand, and it is not a summary: every
+check, contract clause, capability, profile rule, inherited default, trusted claim, edge,
+forbidden rule and open question in the document appears in it, and a test walks the
+document to prove it. One is committed beside each scenario in `vetting/`, kept in step
+with the renderer by a test, so a change to the wording shows up in review as a diff
+rather than passing unseen.
 
 Nothing on this diagram is green, and that is the rule rather than an accident of this
 example: green means evidence a run has actually earned, so before `cargo ply verify` has
