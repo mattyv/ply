@@ -1,0 +1,22 @@
+ply: 1
+
+# `fuzz` and `test` run in one subprocess under one deadline. The example
+# below is wrong on purpose and fails within milliseconds; fuzzing 32 cases
+# of a 400ms function cannot finish inside a short `--engine-timeout`, so the
+# shared process is still alive when the kill arrives.
+#
+# Both classifiers used to check `timed_out` before their own failure lists,
+# so the kill relabelled an observed, reported violation as a timeout -- and
+# the diagnostic said, in as many words, "never as a violation". The failure
+# was sitting in the captured output the whole time.
+#
+# A concrete failure must dominate. `timeout` is only honest for a check
+# that produced no failure of its own before the clock ran out.
+components:
+  slowfailingexample:
+    anchor: ply_fixture_slowfailingexample
+    fns:
+      slow_identity:
+        checks: [fuzz(32), test]
+        examples:
+          - "slow_identity(1) == 2"
