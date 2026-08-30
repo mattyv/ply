@@ -781,6 +781,38 @@ refused by name rather than hanging or silently returning weaker evidence under 
 stronger word. The refusal says what would work instead: such a function is not
 unchecked, it needs a different check.
 
+**How the list grows is measured too, and not by counting types.** The same discipline
+that justifies each entry above governs which entry comes next, because the obvious
+instrument for that turned out to be the wrong one. Measured 2026-08-30 against a real
+outside library whose author had enumerated eleven properties they cared about
+(`docs/invariant-reachability.md`): the share of that library's public-surface types Ply
+could construct rose from 21% to roughly 80%, and the number of those eleven properties
+that became checkable went from **zero to zero**. The metric moved sixty points while the
+outcome did not move at all, because it counted how often a type appears rather than
+whether any property could be reached; it was dominated by getters and configuration,
+while the type that library's whole correctness argument rested on had a public-surface
+count of zero, being internal state. Its own denominator was soft enough that two
+paragraphs of one commit quoted different totals for the same measurement without anyone
+noticing -- a percentage invites comparison against its own history rather than scrutiny
+of what is underneath it.
+
+Additions to this list are therefore ranked by **which single missing capability unblocks
+the most properties somebody independently wrote down**, recorded per property as: whether
+it is a single-function property at all, what specifically stops it, and whether its
+author flagged it as risky. On the library measured, that ranking put floating point first
+(built since, `2443b85`) and put `struct`s and `enum`s last -- the reverse of what type
+coverage implied. It also separates two things a coverage share cannot: a property that is
+**out of this tool's shape entirely** (a sixteen-thread stress test is better evidence than
+any single-function check could produce) from one that is in shape but unreachable for want
+of plumbing. Only the second is a gap. The first is what `coverage.not_checked` (§5.6, §5.7)
+exists to report, and its count is a result to state plainly rather than a deficit to close.
+
+None of this demotes proof itself. The evidence ladder means something only because its
+strongest rungs are sometimes reached; a record of claims with no engine behind it is a
+list of assertions. What the measurement demotes is the expectation that reach should
+spread *evenly* -- proof earns its cost where consequence is concentrated in a small pure
+surface, which is the shape §5.4b's cheapest entries already describe.
+
 v1 supports functions whose parameters and return type are, recursively:
 
 - **integers, `bool`, `char`, `Option<T>`, `Result<T,E>`** of supported types — cheap
