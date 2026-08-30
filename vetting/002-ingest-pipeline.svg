@@ -20,7 +20,7 @@ this box is this shade because `decode` is the weakest thing in it: it declares 
 bounded(2) — proves the contract for every input, unrolling loops at most 2 times
 fuzz(4096) — runs the function on 4096 random inputs, checking the contract on each
 mutate — plants small deliberate bugs; the test/fuzz checks must catch every one, or the contract is flagged weak
-1 worked example(s), each compiled into a test</title><rect class="fn-chip-box" x="0" y="0" width="172.6" height="24.0" rx="4" /><text class="fn-name" x="10.0" y="16.0">decode</text><text class="fn-checks" x="60.4" y="16.0">B2 F4096 M</text><text class="fn-examples" x="140.4" y="16.0">e×1</text></g></g></g></g><g transform="translate(254.5,694.0)"><g class="component" data-name="book"><title>component book — maps to Rust module ingest::book
+1 worked example, written down but not run: no check here asks for the declared examples, so nothing compiles them</title><rect class="fn-chip-box" x="0" y="0" width="172.6" height="24.0" rx="4" /><text class="fn-name" x="10.0" y="16.0">decode</text><text class="fn-checks" x="60.4" y="16.0">B2 F4096 M</text><text class="fn-examples" x="140.4" y="16.0">e×1</text></g></g></g></g><g transform="translate(254.5,694.0)"><g class="component" data-name="book"><title>component book — maps to Rust module ingest::book
 owns ingest::book::OrderBook — only this component may mutate them
 profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
 strict — this component asks that architecture findings inside it fail the build rather than warn. Nothing acts on that yet: no check this build runs reads the flag

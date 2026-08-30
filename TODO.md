@@ -1,5 +1,65 @@
 # TODO
 
+## The source copy followed a hand-written list — 2026-08-30 (2c9e343)
+
+The first CI run after the workspace merge went red, and it was the merge's
+fault. One test builds Ply from a private copy of its own source tree, and
+which directories that copy took was written out by hand. Four crates joined
+the workspace; the copy did not get them; cargo refused to load a workspace
+root naming members that are not on disk.
+
+What made it expensive is what CI reported: `cargo build ... failed`, from a
+test about result caching. Three layers from the cause and saying nothing
+about it. The copy now reads the member list out of the root manifest it is
+already copying, and a new test states the invariant rather than trusting the
+routine — every member the manifest declares has a manifest in the copy. Run
+against the old code it names the four missing crates.
+
+The class of defect is worth naming: a second, hand-kept list of something the
+build system already knows. It was silent until the first change in eight
+months touched it.
+
+## Verification results now change what the drawing looks like — 2026-08-30
+
+Left in the working tree, not committed (explicit constraint for this session) —
+`crates/ply-core/src/visual/svg.rs` and `tools/render/tests/visual.rs` only.
+
+- [x] Fn chips now colour by the five display states (declared/earned/violated/
+      unanswered/stale), computed purely from the stored evidence a run already
+      reported — never fabricated. Each state pairs its own fill/border with its own
+      drawn character (a reader with no colour vision still tells them apart), and
+      "earned on assumptions" reuses the earned colour with an attached mark rather
+      than inventing a sixth state, per the settled state model. `violated` is the
+      only new red; `unanswered`/`stale` are neither red nor the existing findings-red.
+- [x] The opening verdict strip now states result counts ("2 earned, 1 broken, ...")
+      alongside its existing promise counts, only once a run's evidence actually
+      settles something — a document with no evidence, or evidence that resolves to
+      nothing beyond "declared", renders its strip exactly as before (checked, not
+      assumed: `the_strip_states_no_results_when_evidence_settles_nothing`).
+- [x] A collapsed box now states its earned-over-promised split as a plain count
+      (`"1 of 3 earned"`), never a percentage — the rejected two-part-meter design
+      that would let nine-earned-one-untouched read as "90% healthy" stays rejected.
+      `a_collapsed_boxs_earned_split_equals_the_counts_folded_beneath_it` renders the
+      same evidence both expanded and collapsed and checks the two counts agree.
+- [x] New public API: `render_svg_with_evidence_and_options`, so evidence and
+      `--depth`/`--focus`/`--collapse` can be exercised together (previously only
+      `render_svg_with_evidence`, always fully expanded, existed). Not wired into
+      `cargo ply verify`'s own publish path — out of scope for this change, which is
+      the renderer only.
+- [x] 12 new tests in `tools/render/tests/visual.rs`, including the two invariants
+      named above and one confirming red still means only `violated`/`deny`/`finding`
+      for evidence-drawn output specifically (the pre-existing red test only ever
+      renders fixtures with no evidence, so it could not have caught a regression
+      here). `cargo test --workspace --exclude ply-e2e`: 616 passed, 0 failed (604
+      baseline + 12). `cargo fmt --all` and `cargo clippy --all-targets -- -D
+      warnings` both clean. `git diff --stat -- vetting/ docs/` is empty — no
+      committed artifact changed.
+- [ ] Not attempted, named rather than silently skipped: wiring
+      `render_svg_with_evidence_and_options` into `cargo ply verify`'s actual publish
+      path (`visual::build_visual_envelope_with_sources` still always renders fully
+      expanded); a CLI flag to preview a folded evidence render outside of `verify`.
+      Neither was asked for.
+
 ## Verus pin moved forward — 2026-08-30
 
 Done. The spike pinned **0.2026.08.15.7d4628a**; it now pins **0.2026.08.23.fbbbbcf**,
@@ -62,7 +122,114 @@ across two commits, except the three recorded below as open.
       code this build cannot raise, checked against the codes actually present in the
       checker sources rather than a hand-kept list. Verified to bite by injecting one.
 
+## One workspace, and evidence that reaches the drawing — 2026-08-30
+
+- [x] **`tools/` merged into the product workspace.** The split existed because the
+      tooling "predates the product", while every crate in it already depended on
+      `ply-core` — one dependency graph pretending to be two. It cost three real things:
+      `cargo mutants` could see neither side (pointed at tools it found no members;
+      pointed at the product it ran `ply-core`'s thin suite while the renderer's 91-test
+      suite sat across the boundary), the tests for `visual/svg.rs` lived in the other
+      workspace, which is how a green test came to pin a false sentence, and the two
+      clippy invocations differed so a lint firing in one was invisible in the other.
+      `tests/spike` and `tests/fixtures` stay excluded, and that exclusion is principled:
+      each carries its own workspace root and several exist to be built in isolation.
+- [x] **Ply's own document now describes all eight of its crates**, not four. The four
+      tooling crates and their six real dependency edges were invisible to Ply's
+      self-check while they lived in the second workspace — a file whose entire purpose
+      is that its claims are checked, silently omitting half its own codebase.
+- [x] **Evidence attaches while the picture is drawn.** It used to render the SVG, then
+      search its own output as a string to find the shapes it had just drawn. Its doc
+      comment conceded the consequence — elements "left unattached rather than guessed" —
+      and it was happening: a nested component never attached at all, because the matcher
+      compared a bare function name against a dotted path it could never equal. Top-level
+      components worked by coincidence, which is why every existing test looked right.
+      ~230 lines of re-parsing deleted; output byte-identical with no evidence passed.
+
+### The two schedulers order cycles differently — analysis, 2026-08-30
+
+Before anyone unifies these, the mapping is not vocabulary. The two implementations
+disagree about **where a call cycle goes**, and only one of them is tested.
+
+**Shipped** (`crates/ply-cli/src/verify.rs`, `topological_order`, ~50 lines): returns
+`(order, cyclic)` — a linear order of everything it could place, plus the set it could
+not. The caller concatenates them, so **every cycle member is processed last, in a
+lump**, no matter where the cycle sits in the dependency graph.
+
+**Pure** (`tools/schedule`, `plan`): collapses strongly-connected components and returns
+layered batches, so **a cycle is processed at its own layer** — early if things depend on
+it, late if it depends on things.
+
+The pure version is the more defensible ordering: a cycle that half the codebase depends
+on should not be verified after its dependents. But the shipped version is the one that
+has absorbed real review fixes — the `domain` restriction (adversarial review,
+2026-08-26) exists because an earlier version sized everything off `node_ids.len()` and
+silently admitted reused and fuzz-only claims into the ordered pass. The pure copy never
+saw that class of bug because nothing calls it.
+
+So unification is a decision, not a move:
+
+- [ ] **Decide which ordering ships**, then unify toward it. Adopting `plan`'s layering
+      changes the order real verification runs in, which is a behaviour change to the
+      soundness-relevant path and wants its own review. Keeping the shipped ordering
+      means bringing its semantics into the pure module and re-deriving the two
+      enumerations against it — the enumerations currently prove properties of an
+      ordering nobody runs.
+- [ ] Whichever wins, carry the shipped copy's review fixes across deliberately and name
+      them in the commit. There are at least six; the `domain` restriction is the one
+      with a comment explaining itself, and the others will need finding.
+- [ ] The exhaustive checks come with it: 65,536 graphs (every edge mask on 4 nodes)
+      against an independent oracle, and 4,096 graph-plus-config combinations for the
+      stub gate. Two tests, 3.9 seconds — not "69,000 tests", which is how this was
+      described earlier today before anyone checked.
+
+### KNOWN GAP that outranks the rest, found 2026-08-30
+
+- [ ] **The check scheduler exists twice.** `tools/schedule` holds one copy with an
+      exhaustive test suite over ~69,000 cases; the copy that actually ships is inside
+      `crates/ply-cli/src/verify.rs` and has no such suite. The docs call this ordering
+      the soundness guarantee. Two implementations of a soundness rule is one more than
+      can be trusted, and nothing downstream can catch them drifting apart. Unify before
+      building anything that depends on check ordering.
+
+### A fourth review, and the half-fixes it found — 2026-08-30
+
+The pattern in all three: I had fixed the instance in front of me and reported the class
+as done.
+
+- [x] **The drawing still told both lies the text form had been taught out of.** The
+      morning's fix landed on the transcript only, and a green test *required* the
+      drawing to say an example was "compiled into a test" against a function declaring
+      `[bounded(3), fuzz(1024)]` — a passing test pinning a false sentence in exactly the
+      configuration where it is false. Both sentences now come from two shared helpers,
+      and both are future-conditional: neither view runs a compiler, so neither may say
+      one ran. The TODO tick claiming otherwise was an overclaim about my own work.
+- [x] **`SCHEMA.md` §8 still opened "None of the rules in this section is enforced"** while
+      §2 and §14, corrected earlier the same day, said crate-level `edges:`/`deny:` are
+      checked. Replaced with a tier matrix stating row by row what is enforced (`A0401`,
+      `A0405`) and what is only recorded, verified against the code rather than the prose.
+- [x] **The malformed-example refusal wore the wrong identity**: `V0507` (a code in no
+      documentation anywhere), `severity: "warning"` for something that refuses a claim
+      and exits non-zero, and `open_item: "unsupported_signature"` — false, since the
+      signature is fine and the document is malformed. A dedicated constructor emits a
+      real `E0501` at error severity now. The regression asserted on a substring of the
+      human title, so it passed with the code wrong; it asserts the `code` field.
+
 ### KNOWN GAPS, left open deliberately
+
+- [ ] **The doc test is a substring ratchet, and its weakness is measured, not assumed.**
+      A reworded blanket lie inserted under §8 alongside an intact matrix passes all three
+      assertions. The real fix is the rule registry below; until it exists this catches
+      the historical sentence and the matrix vanishing, which is worth having and is not
+      a proof.
+- [ ] **The malformed-example diagnostic carries no pointer at the offending YAML line.**
+      `diag.rs` documents pointers as present only on E0201/E0204, so this is consistent —
+      but that rationale ("a diagnostic about a function points at source, not at YAML")
+      argues a diagnostic that *is* about a YAML line deserves one. Follow-up, not a
+      defect; the title quotes the entry.
+- [ ] **The tier matrix omits a `profile:` row** that §8 documents in its own subsection.
+      Nothing is claimed enforced that is not, but the honest summary skips one construct.
+
 
 - [ ] **The rule registry.** The ratchet above catches a phantom *code*; it cannot catch a
       phantom claim with no code in it ("compiled into a test" had none). The real fix is
@@ -283,7 +450,11 @@ Nothing below jumps that queue.
       maintainer until after the bug backlog -- a large refactor of the tests that
       vouch for a release is the wrong thing to do while landing one.
 
-- [ ] **Consider pinning the Rust toolchain (`rust-toolchain.toml`).** CI installs
+- [x] **The Rust toolchain is pinned (`rust-toolchain.toml`, 1.98.0).** Done 2026-08-30:
+      CI and a contributor's machine now agree by construction rather than by anyone
+      remembering to type `cargo +stable`. Raising it is deliberate — bump the line, run
+      the suite, and fix the lints the new release brings in the same change.
+- [ ] ~~Consider pinning the Rust toolchain (`rust-toolchain.toml`).~~ CI installs
       `stable`, which was 1.98.0; this container had 1.94.1, four releases behind, and
       clippy gained lints in between. Two `-D warnings` failures therefore could not be
       reproduced locally and were pushed red. Installing `stable` here and running

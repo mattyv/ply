@@ -47,9 +47,9 @@
 //! because a stale one would do the exact opposite of what it is for.
 
 use super::svg::{
-    ceiling_tooltip_line, check_prose, component_ceiling, declared_not_checked, deny_rule_prose,
-    document_counts, format_version_line, profile_rules_prose, tame, unresolved_fn_pin_prose,
-    weakest_declaration,
+    ceiling_tooltip_line, check_prose, component_ceiling, contract_close_prose,
+    declared_not_checked, deny_rule_prose, document_counts, examples_prose, format_version_line,
+    profile_rules_prose, tame, unresolved_fn_pin_prose, weakest_declaration,
 };
 use crate::model::{
     Component, Document, EdgeKind, FnClaim, InheritedChecks, Mode, component_default_checks,
@@ -476,15 +476,7 @@ fn write_fn(
         // review, 2026-08-30).
         let effective = effective_checks(fc, inherited);
         let nothing_runs = effective.is_none_or(|e| e.is_empty());
-        out.push_str(&format!(
-            "{r}{}\n",
-            if nothing_runs {
-                "nothing above checks this promise — it is written down, and this document \
-                 asks for no check that would test it"
-            } else {
-                "the checks above test the function against exactly this promise"
-            }
-        ));
+        out.push_str(&format!("{r}{}\n", contract_close_prose(nothing_runs)));
     }
 
     if fc.mode == Mode::Synth {
@@ -502,29 +494,11 @@ fn write_fn(
     }
 
     if !fc.examples.is_empty() {
-        let n = fc.examples.len();
-        // The verifier generates example tests only inside `if has_test`, so
-        // examples under (say) `checks: [fuzz(64)]` are never compiled into
-        // anything. Calling them tests told an author they were protected by
-        // something inert (external review, 2026-08-30).
         let runs_examples =
             effective_checks(fc, inherited).is_some_and(|e| e.iter().any(|c| c.trim() == "test"));
-        if !runs_examples {
-            out.push_str(&format!(
-                "{q}{n} worked {}, written down but not run: no check here asks for the \
-                 declared examples, so nothing compiles them:\n",
-                plural(n, "example", "examples"),
-            ));
-            let r = pad(level + 2);
-            for e in &fc.examples {
-                out.push_str(&format!("{r}{e}\n"));
-            }
-            return;
-        }
         out.push_str(&format!(
-            "{q}{n} worked {}{} compiled into a test:\n",
-            plural(n, "example", "examples"),
-            if n == 1 { "," } else { ", each" },
+            "{q}{}:\n",
+            examples_prose(fc.examples.len(), runs_examples)
         ));
         let r = pad(level + 2);
         for e in &fc.examples {

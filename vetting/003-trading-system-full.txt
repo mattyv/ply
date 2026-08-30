@@ -81,7 +81,7 @@ components:
       what this function promises — the last thing the document states before the code itself takes over:
         requires: order.qty > 0 && order.px > 0 (what the caller must guarantee going in)
         ensures: |r| r.is_err() == (order.qty > limits.max_qty) (what the function guarantees coming out)
-        the checks above test the function against exactly this promise
+        the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
 
   component oms — maps to Rust module oms
     owns oms::OrderStore — only this component may mutate them

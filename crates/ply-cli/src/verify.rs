@@ -791,7 +791,7 @@ fn verify_loaded_crate(
                     .err()
                     .map(|e| e.to_string())
             }) {
-                diagnostics.push(refused_anchor_diag(&node_id, &bad));
+                diagnostics.push(malformed_example_diag(&node_id, &bad));
                 early_nodes_by_component
                     .entry(comp_name.clone())
                     .or_default()
@@ -3130,6 +3130,52 @@ pub(crate) fn refused_anchor_diag(node_id: &str, reason: &str) -> Diagnostic {
         fixes: vec![],
         assumptions: vec![],
         open_item: Some("unsupported_signature".into()),
+    }
+}
+
+/// An `examples:` entry that is not a Rust expression at all -- `syn` never
+/// even parses it, so it dies before the compiler or an engine ever sees it
+/// (§14: "the contract expression subset is documented but not validated;
+/// an expression outside it fails later" -- this is that failure, for the
+/// one clause exempt from the subset, `examples`, per §5.4a). Deliberately a
+/// separate constructor from [`refused_anchor_diag`] rather than a second
+/// call site for it: that one's `V0507`/`unsupported_signature` describes a
+/// real function this task's *scope* declines to check (a receiver method,
+/// a generic `impl`) -- the signature is fine. Here the signature is not
+/// the problem at all; the document is malformed, the author wrote a typo,
+/// and `generate_example_test`'s own error message already names the
+/// offending entry (`bad`, formatted as `E0501: could not parse ...`), so
+/// reusing `V0507`/`warning`/`unsupported_signature` for it told the wrong
+/// story on all three axes: the wrong code (one no documentation names),
+/// the wrong severity (a warning, for something that refuses the claim and
+/// exits non-zero), and a false reason (`unsupported_signature`, when
+/// nothing about the signature is unsupported).
+fn malformed_example_diag(node_id: &str, bad: &str) -> Diagnostic {
+    Diagnostic {
+        code: "E0501".into(),
+        severity: "error".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        // `bad` already is a complete sentence naming the offending entry
+        // (`generate_example_test`'s own `E0501: could not parse
+        // `examples` entry `...` as a Rust expression: ...`), so this wraps
+        // it exactly the way `refused_anchor_diag` wraps `reason` rather
+        // than re-deriving the same fact in different words.
+        // `bad` opens with its own `E0501: ` prefix (the generator words the
+        // whole sentence), and the renderer already prints `[E0501]` in
+        // front of every diagnostic -- so wrapping it verbatim printed the
+        // code twice on one line. The prefix is stripped here rather than
+        // dropped at the source, because `generate_example_test`'s message
+        // is also surfaced where nothing prepends a code.
+        title: format!("{}.", bad.strip_prefix("E0501: ").unwrap_or(bad)),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: Some("malformed_example".into()),
     }
 }
 

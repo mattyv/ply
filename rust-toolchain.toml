@@ -1,0 +1,16 @@
+# Pinned so a contributor's machine and CI cannot disagree by construction.
+#
+# The alternative is what this repo did until 2026-08-30: CI installed
+# `stable` while a development container carried whatever it was built with.
+# The two drifted four releases apart, clippy gained lints in between, and two
+# `-D warnings` failures were pushed red because they were unreproducible
+# locally. "Remember to run `cargo +stable`" is a practice; this is a
+# guarantee.
+#
+# Raising it is a deliberate act: bump this line, run the full suite, and
+# expect new clippy lints to want fixing in the same change. That is the point
+# -- the lints arrive when someone chose to accept them, not on the morning a
+# release happens to land.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]

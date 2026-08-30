@@ -1676,8 +1676,8 @@ grammar.**
 | capabilities / `pure` | badge row on the box; `pure` = a sealed border, no badges |
 | profile | tag on the box |
 | checks list | glyph row on the fn chip |
-| verdict | node fill on the ordinal scale: `violation` red → `proved` deepest green; `unclaimed` unfilled |
-| statuses | corner markers on the node (conditional, weak-spec, …) |
+| verdict | fn-chip fill by discrete display state, never a continuous ordinal ramp — see the amendment below. Five states: `declared` (no evidence resolved, or evidence that settled nothing — drawn exactly as a chip with no evidence always has), `earned` (green — the one hue reserved for evidence a run actually produced), `violated` (red — the only red besides `deny`/finding), `unanswered` (a run tried and could not say; distinct, never red), `stale` (a stored result exists but the code moved since; distinct, never red). "Earned on assumptions" (§5.5's `conditional`) is a marked variant of `earned`, not a sixth hue — the mark is an attached character, never a new colour |
+| statuses | corner markers on the node (conditional, weak-spec, …) — `tools/render`'s own SVG realizes the colourblind-safety half of this today folded into the five display states above (`✓`/`✓†`/`✗`/`?`/`↻` beside the fn's check glyphs, not yet one marker per individual status kind) |
 | worst_descendant | a collapsed box takes its weakest descendant's fill — D6 made visible |
 | assumption chain | thin dotted arrows from a verdict to the contracts it assumed |
 | unresolved marker | numbered pin on the fn or component |
@@ -1691,6 +1691,26 @@ grammar.**
 | finding (tool-computed, not declared) | the offending item drawn in error red with an `E####` badge; its tooltip leads with the diagnostic. A finding with no drawable item attaches a red count to the workspace title. A document with findings still renders — a picture that refuses to draw hides the problem it should be showing (origin: fault-injection demo, where a faulted toolchain drew `bounded(0)` as legitimate evidence) |
 | external | a solid-bordered, unfilled, anchor-less, badge-less box **outside the workspace frame** — position extends its one declared meaning (containment) from "inside the box = part of the component" to "inside the frame = part of the system"; no new channel. Never on the verdict scale, not even `unclaimed`. Tooltip: "⟨name⟩ — a system or person outside this codebase: ⟨note⟩. Ply draws it so the boundary is visible, but checks nothing about it — every arrow touching it is a declaration, not a verified fact." |
 | `entry:` (derived edge) | a dashed arrow, labeled `entry`, from the reachable fn to the external that can reach it — crossing the frame border like any `~>` edge. Not a declared edge (fn claims are not edge endpoints, §5.3); the renderer derives it the same way it derives the ceiling fill. Tooltip names the fn, the external, and lists each `requires` clause now standing as an environmental assumption |
+
+**Amended 2026-08-30 (verdict fill is now real, and it is discrete, not a ramp).**
+Until `9ab9fb7` a verdict could only append hover text; the `verdict` row above ("node
+fill on the ordinal scale") was therefore aspirational, describing a future canvas
+rather than anything `tools/render` actually drew. That refactor made a run's evidence
+a real input to the SVG renderer (`EvidenceView`, consulted inline as each component box
+and fn chip is drawn), and this amendment is what the renderer does with it: five
+discrete display states — `declared`, `earned`, `violated`, `unanswered`, `stale` — never
+a continuous green ramp from `violation` to `proved`. The generative rule behind all
+five: no display state may exist unless the evidence handed to the renderer holds the
+fact it displays. `earned` still means exactly what the channel-discipline paragraph
+above says (green = evidence actually earned), but it is now one fixed hue rather than a
+scale — "earned on assumptions" (§5.5's `conditional`) adds an attached mark, never a
+second green. This retraction is scoped to `verdict`; `declared ceiling`'s neutral grey
+ramp (a promise, never proof) is unchanged by it, and a collapsed box's fill still comes
+from that same ceiling, not from evidence — a collapsed box states its
+earned-over-promised fraction as a plain count (`"6 of 10 earned"`) alongside that fill,
+never as a second fill or a percentage, per the rejected-meter finding in
+`docs/visual-language-research.md`'s own header: summing evidence into one proportion is
+exactly what the kernel's worst-of rule forbids.
 
 A collapsed component is one solid-bordered box (never dashed — hollow means *nothing*
 inside; collapsed means *plenty* inside, folded) showing its name, anchor, a contents

@@ -68,5 +68,46 @@ components:
   cli:
     anchor: ply_cli
 
+  # The spec-validation tooling, which lived in a second cargo workspace
+  # until 2026-08-30 and so was absent from this document entirely -- Ply's
+  # own file describing half of Ply's own crates. The workspaces were merged
+  # because the split was historical rather than principled (every crate here
+  # already depended on `core`), and these four arrive with it.
+  #
+  # Each depends on `core`, which is the honest direction: the product owns
+  # the `ply.yaml` model and this tooling consumes it. `render` additionally
+  # depends on `kernel`, and `schedule` depends on `kernel` alone.
+  render:
+    anchor: ply_render
+    note: >-
+      Draws a document before any code exists, and writes the same facts as
+      prose. It is the surface a reader judges the whole tool by, which is
+      why its wording is tested by exact string rather than by shape.
+  check:
+    anchor: ply_check
+    note: >-
+      The standalone spec validator, which predates the installed `cargo ply
+      check` command and overlaps it. Retiring one of the two is recorded
+      work, not a decision taken here.
+  kernel:
+    anchor: ply_kernel
+    note: >-
+      The verdict kernel's own crate: the evidence order, worst-of
+      aggregation and status propagation, kept apart from everything that
+      might tempt it to grow a special case. Its invariants are checked by
+      exhaustive enumeration over every tree up to a bound.
+  schedule:
+    anchor: ply_schedule
+    note: >-
+      Check ordering. A second implementation of this ordering also lives
+      inside the verify command, and only this copy has the exhaustive test
+      suite -- recorded as a known gap, because two implementations of a
+      soundness rule is one more than can be trusted.
+
 edges:
   - "cli -> core"
+  - "render -> core"
+  - "render -> kernel"
+  - "check -> core"
+  - "kernel -> core"
+  - "schedule -> kernel"

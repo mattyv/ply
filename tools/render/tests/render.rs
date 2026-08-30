@@ -720,7 +720,15 @@ fn glyphs_are_explained_by_a_hover_title() {
         "trusted (a human vouches for this; no machine checks it): SPSC cross-thread safety"
     ));
     assert!(push.contains("loom test tests/loom_spsc.rs"));
-    assert!(push.contains("1 worked example(s), each compiled into a test"));
+    // `Spsc::try_push` declares `[bounded(3), fuzz(1024)]` and no `test`, so
+    // nothing here ever compiles its example. This line used to require the
+    // drawing to say it had been "compiled into a test" -- a green test
+    // pinning a false sentence in exactly the configuration where it is
+    // false (external review, 2026-08-30).
+    assert!(push.contains(
+        "1 worked example, written down but not run: no check here asks for the declared \
+         examples, so nothing compiles them"
+    ));
 
     // The component tooltip expands its profile — the tag alone shows only a
     // name. Each rule name is glossed in plain language too: a newbie who
@@ -1196,7 +1204,8 @@ mod contract_mark {
                     }
                     assert!(
                         tooltip.contains(
-                            "the checks above test the function against exactly this promise"
+                            "the checks above are what will test the function against \
+                             exactly this promise when `cargo ply verify` runs"
                         ),
                         "{fixture}: tooltip is missing the closing line, got: {tooltip:?}"
                     );
@@ -5263,7 +5272,7 @@ fn worked_examples_are_only_called_tests_when_something_runs_them() {
     let not = ply_render::transcript::render_transcript(&parse_document(without).unwrap());
 
     assert!(
-        ran.contains("1 worked example, compiled into a test:"),
+        ran.contains("compiles each into a test when `cargo ply verify` runs"),
         "with `test` in the list the example really is compiled and run:\n{ran}"
     );
     assert!(
@@ -5554,5 +5563,86 @@ fn neither_view_cites_a_diagnostic_code_this_build_cannot_raise() {
                 );
             }
         }
+    }
+}
+
+/// The two views must not disagree about whether a check ran, and neither
+/// may claim one did.
+///
+/// This is the second half of a fix that only landed on the first half. The
+/// text form was taught in the morning to say "written down but not run"
+/// for an example no check compiles, and to stop claiming "the checks above
+/// test this promise" on a function with no checks — and the drawing was
+/// left saying both of the original falsehoods, with a green test at
+/// `render.rs` *requiring* one of them against a function whose declared
+/// checks are `[bounded(3), fuzz(1024)]`. A passing test mandating a false
+/// sentence in exactly the case where it is false (external review,
+/// 2026-08-30).
+///
+/// Both sentences are future-conditional now, which is what makes them
+/// honest in a view that has run nothing: the drawing and the text are
+/// generated from a document, and no compiler is invoked by either.
+#[test]
+fn neither_view_says_a_check_has_happened_that_has_not() {
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "tests/fixtures/full.ply.yaml",
+        "tests/fixtures/visual_forms.ply.yaml",
+    ] {
+        let yaml = std::fs::read_to_string(fixture).unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let text = ply_render::transcript::render_transcript(&doc);
+        let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+        for (view, body) in [("the text form", &text), ("the drawing", &svg)] {
+            assert!(
+                !body.contains("compiled into a test"),
+                "{fixture}: {view} says an example was compiled into a test. Neither view runs \
+                 a compiler — they are generated from the document — so this is a claim about \
+                 something that has not happened, in a view whose own header promises every \
+                 line is a declaration."
+            );
+            assert!(
+                !body.contains("the checks above test the function against exactly this promise"),
+                "{fixture}: {view} asserts the checks above test this promise. On a function \
+                 with no checks that contradicts its own neighbouring sentence, and on any \
+                 function it describes a run that has not happened."
+            );
+        }
+    }
+
+    // A function that asks for `test` and one that does not, side by side.
+    let doc = parse_document(concat!(
+        "ply: 1\n",
+        "components:\n",
+        "  a:\n",
+        "    anchor: app::a\n",
+        "    fns:\n",
+        "      runs_them:\n",
+        "        checks: [test]\n",
+        "        examples:\n",
+        "          - \"runs_them(1) == 2\"\n",
+        "      never_runs_them:\n",
+        "        checks: [fuzz(64)]\n",
+        "        examples:\n",
+        "          - \"never_runs_them(1) == 2\"\n",
+    ))
+    .unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+    let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+    for (view, body) in [("the text form", &text), ("the drawing", &svg)] {
+        assert!(
+            body.contains("compiles each into a test when `cargo ply verify` runs"),
+            "{view} should say, in the future tense, what will happen to an example the \
+             `test` check will pick up"
+        );
+        assert!(
+            body.contains("no check here asks for the declared examples"),
+            "{view} should say plainly that an example nothing runs is inert — this is the \
+             sentence a reader needs to notice their example is decorative"
+        );
     }
 }
