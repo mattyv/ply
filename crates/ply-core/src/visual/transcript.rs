@@ -431,7 +431,10 @@ fn write_fn(
         None => out.push_str(&format!(
             "{q}no checks declared — nothing about this function is verified (unclaimed)\n"
         )),
-        Some(list) if list.is_empty() => match from {
+        // `Some([])` rather than a guard on `is_empty()`: the empty slice is
+        // the whole condition, and saying it as a pattern keeps this arm the
+        // same shape as the two around it.
+        Some([]) => match from {
             Some(source) => out.push_str(&format!(
                 "{q}nothing is checked here, and this function did not ask for that: it \
                  declares no checks of its own, and component {source} sets an empty default \
