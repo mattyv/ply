@@ -327,11 +327,55 @@ fn render_command(
     } else {
         requested_path.to_path_buf()
     };
+    // Refuse before reading anything. The document is the only artifact here
+    // that cannot be regenerated -- the drawing and the text form are both
+    // outputs -- and `-o` pointed at it used to overwrite it with prose, exit
+    // 0, and say nothing (external review, 2026-08-30).
+    //
+    // Compared after canonicalizing, so a symlink, a `./` prefix, or the
+    // directory form of the same path is still recognised as the same file.
+    // A path that cannot be canonicalized (the output does not exist yet, the
+    // usual case) falls back to comparing what we have.
+    if let Some(out) = output {
+        let same = match (input.canonicalize(), out.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => input == out,
+        };
+        if same {
+            anyhow::bail!(
+                "{} would overwrite the document it is rendering, and that document is the \
+                 only thing here that cannot be regenerated -- the drawing and the text form \
+                 are both outputs of it. Write to a different path, or drop -o to send the \
+                 result to stdout.",
+                out.display()
+            );
+        }
+    }
+
     let yaml = std::fs::read_to_string(&input)
         .map_err(|error| anyhow::anyhow!("could not read {}: {error}", input.display()))?;
     let document = parse_document(&yaml).map_err(|error| {
         anyhow::anyhow!("{} did not parse as ply.yaml: {error}", input.display())
     })?;
+
+    // Render draws documents `check` would refuse -- a picture is most useful
+    // while the document is still wrong -- so this is deliberately not full
+    // validation. The version is the one exception: every other invalid field
+    // still renders faithfully, but this one selects the rules every other
+    // line is read under, so drawing an unsupported version means applying
+    // v1's inheritance and check semantics to a document that does not use
+    // them, while looking exactly as authoritative (external review,
+    // 2026-08-30).
+    if document.ply != 1 {
+        anyhow::bail!(
+            "{} declares `ply: {}`, a version of the ply.yaml format this build of Ply does \
+             not speak. Rendering it under version 1's rules could state every line below \
+             wrong, so it is refused rather than guessed at. This build reads version 1; \
+             upgrade Ply, or set `ply: 1`. `cargo ply check` reports this as E0201.",
+            input.display(),
+            document.ply
+        );
+    }
     if text {
         let transcript = render_transcript(&document);
         return match output {
@@ -790,6 +834,96 @@ mod tests {
              get a folded drawing."
         );
         assert!(stdout.is_empty(), "a refused run must write nothing");
+    }
+
+    /// `cargo ply render ply.yaml --text -o ply.yaml` used to read the
+    /// document, render it, and write the prose straight over the source --
+    /// exit 0, no warning, specification gone. One plausible typo (`-o` where
+    /// you meant nothing at all) destroys the file the whole tool exists to
+    /// serve, and it is unrecoverable outside version control.
+    #[test]
+    fn rendering_over_the_document_being_rendered_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("ply.yaml");
+        let yaml = "ply: 1\ncomponents:\n  a:\n    anchor: app::a\n";
+        std::fs::write(&input, yaml).unwrap();
+
+        for text in [true, false] {
+            let mut stdout = Vec::new();
+            let error = render_command(
+                &input,
+                Some(&input),
+                &RenderOptions::default(),
+                text,
+                &mut stdout,
+            )
+            .expect_err("writing over the input must be refused");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("would overwrite the document it is rendering"),
+                "got: {error}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&input).unwrap(),
+                yaml,
+                "the source must be untouched after a refused render"
+            );
+        }
+    }
+
+    /// The same file reached through a directory argument, a symlink, or a
+    /// non-normalised path is still the same file.
+    #[test]
+    fn the_overwrite_check_sees_through_a_directory_argument() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("ply.yaml"), "ply: 1\n").unwrap();
+        let mut stdout = Vec::new();
+
+        let error = render_command(
+            root.path(),
+            Some(&root.path().join("ply.yaml")),
+            &RenderOptions::default(),
+            true,
+            &mut stdout,
+        )
+        .expect_err("a directory input resolves to ply.yaml inside it");
+        assert!(
+            error.to_string().contains("would overwrite the document"),
+            "got: {error}"
+        );
+    }
+
+    /// Render deliberately draws documents `check` would refuse — a picture
+    /// is most useful while the document is still wrong. The `ply:` version
+    /// is the one exception, because it is not a wrong field among right
+    /// ones: it selects the rules every other line is read under, so drawing
+    /// a version this build does not speak means applying the wrong
+    /// semantics to all of it while looking exactly as authoritative.
+    #[test]
+    fn a_format_version_this_build_does_not_speak_is_refused_not_guessed_at() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("ply.yaml"), "ply: 2\n").unwrap();
+
+        for text in [true, false] {
+            let mut stdout = Vec::new();
+            let error = render_command(
+                root.path(),
+                None,
+                &RenderOptions::default(),
+                text,
+                &mut stdout,
+            )
+            .expect_err("an unsupported version must be refused");
+            assert!(
+                error
+                    .to_string()
+                    .contains("a version of the ply.yaml format this build of Ply does not speak"),
+                "got: {error}"
+            );
+            assert!(stdout.is_empty(), "a refused render must draw nothing");
+        }
     }
 
     #[test]

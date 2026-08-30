@@ -10,7 +10,7 @@
 #      licenses claim 1 to say anything about the production kernel.
 #
 # Pinned toolchain (see FINDINGS.md for the exact install steps): Verus
-# 0.2026.08.15.7d4628a, which requires rustup toolchain
+# 0.2026.08.23.fbbbbcf, which requires rustup toolchain
 # 1.97.1-x86_64-unknown-linux-gnu to be installed (Verus ships its own
 # compiler build; the toolchain install is a one-time `rustup toolchain
 # install 1.97.1-x86_64-unknown-linux-gnu`, independent of whatever

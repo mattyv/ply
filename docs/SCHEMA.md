@@ -124,7 +124,7 @@ purpose. Section 6 has the measured example and what to do about it.
 
 ## 2. The commands that exist
 
-Four are built. Each takes a crate directory and supports `--json`, which emits a
+Six are built. Each takes a crate directory and supports `--json`, which emits a
 machine-readable envelope with a node per claim and a list of diagnostics.
 
 | Command | What it does | Runs engines? |
@@ -133,9 +133,16 @@ machine-readable envelope with a node per claim and a list of diagnostics.
 | `cargo ply verify <dir>` | Runs the declared checks and reports a verdict per function. | Yes |
 | `cargo ply audit <dir>` | Lists the trust surface: every place your evidence rests on something Ply never checked. | No |
 | `cargo ply worklist <dir>` | Lists what is owed: open decisions you recorded, and promises nothing has tested yet. | No |
+| `cargo ply render <dir>` | Draws `ply.yaml` before any code exists; `--text` writes it as prose instead. | No |
+| `cargo ply clean-views <dir>` | Removes older published visual runs, keeping the current one. | No |
 
-`check` covers two of its three intended jobs, and says so at the bottom of its own
-output: it does not check the architecture rules described in section 8 below.
+`check` covers the architecture rules at **crate** level: it compares your declared
+`edges:` and `deny:` against the real dependency graph from `cargo metadata`
+(`A0401`, `A0405`). It does **not** yet look inside functions — a call from one
+function into another component, use of a capability, or a change to a type another
+component owns can still cross a declared line with nothing noticing. `check` says
+exactly this at the bottom of its own output, and that paragraph is the authority if
+this one ever drifts from it again.
 
 `verify`'s useful flags:
 
@@ -1416,8 +1423,10 @@ Collected in one place, so nothing here has to be discovered at minute eleven.
 
 **Not built at all**
 
-- The architecture tier. `uses`, `pure`, `owns`, `profile`, `strict`, `edges:` and
-  `deny:` are validated and then compared against nothing.
+- The **item** tier of the architecture rules. `uses`, `pure`, `owns`, `profile` and
+  `strict` are validated and then compared against nothing; only `edges:` and `deny:`
+  are checked, and only at crate level (see section 2). `strict` in particular is read
+  by nothing but the renderers today.
 - `cargo ply tree`, `doctor`, `synth`, `skill`; `verify --only-changed`.
 - The `prove` check — no engine.
 - The attributes `#[ply::allow]`, `#[ply::pure]` and `#[ply::derived]`. They are read
@@ -1427,10 +1436,12 @@ Collected in one place, so nothing here has to be discovered at minute eleven.
 
 **Built, with a limit worth knowing**
 
-- Only top-level functions in `src/lib.rs` can be verified. Functions in modules and
-  methods in `impl` blocks validate but cannot be checked, and a crate with no
-  `src/lib.rs` at all (a binary-only crate) has nothing for Ply to resolve claims
-  against. *(Actively changing.)*
+- Function shapes have widened since this section was first written: methods in `impl`
+  blocks and functions in modules can be verified today (the `falsereceivertest` and
+  `implmultimod` fixtures cover them). A crate with no `src/lib.rs` at all (a
+  binary-only crate) still has nothing for Ply to resolve claims against.
+  *(Actively changing — check the fixtures under `tests/fixtures/` for what is
+  actually covered rather than trusting this list.)*
 - `check_with` is parsed and unused; generic functions are unsupported shapes.
 - `ply.yaml` `requires`/`ensures` are not merged into the described function's own check
   (`W0510`). They work as boundary promises for callers.

@@ -80,6 +80,26 @@ fn main() {
         "Cargo.lock",
         &workspace_root.join("Cargo.lock"),
     );
+    // The normative schema, which `ply-core` embeds with `include_str!` and
+    // validates every document against. Editing it changes what the binary
+    // accepts and rejects; leaving it out let a behaviour change ship under
+    // an unchanged build identity, which is the exact silent narrowing this
+    // identity exists to refuse (external review, 2026-08-30, demonstrated
+    // by editing the schema and watching the id hold still).
+    hash_file(
+        &mut hasher,
+        "schema/ply.schema.json",
+        &workspace_root.join("schema/ply.schema.json"),
+    );
+    // This script decides what all of the above means. A change to the input
+    // set is a change to what the identity is worth, so it has to move the
+    // identity too -- otherwise dropping an input from the digest would go
+    // unrecorded by the very number meant to notice it.
+    hash_file(
+        &mut hasher,
+        "ply-cli/build.rs",
+        &manifest_dir.join("build.rs"),
+    );
 
     let build_id = hasher.finalize().to_hex().to_string();
     println!("cargo:rustc-env=PLY_BUILD_ID={build_id}");
@@ -107,6 +127,10 @@ fn main() {
     println!(
         "cargo:rerun-if-changed={}",
         ply_core_dir.join("src").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        workspace_root.join("schema/ply.schema.json").display()
     );
 }
 

@@ -807,7 +807,7 @@ fn workspace_frame_explains_the_whole_picture() {
          strongly it promises to be checked — white means something inside promises \
          nothing, deeper grey means stronger checks promised, and the weakest \
          function sets the whole box's shade. Nothing here is green: green is kept \
-         for evidence a run has actually earned, and nothing has been run yet, so a \
+         for evidence a run has actually earned, which this render never sees, so a \
          picture full of promises should not look like a picture full of results. \
          Hover anything for its meaning."
     );
@@ -4359,7 +4359,7 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
     /// repeats names across sections -- an `entry: [venue]` needle is
     /// satisfied by the externals section naming `venue`, which proves
     /// nothing about the function.
-    fn block<'a>(text: &'a str, heading: &str) -> String {
+    fn block(text: &str, heading: &str) -> String {
         let mut lines = text.lines();
         let head = loop {
             match lines.next() {
@@ -4537,10 +4537,29 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
         let doc = parse_document(&yaml).unwrap();
         let text = ply_render::transcript::render_transcript(&doc);
 
-        let mut missing = Vec::new();
-        walk("", &doc.components, &text, &mut missing);
+        // Bound field by field with no `..`, for the same reason `Component`
+        // and `FnClaim` are below: a top-level field added later stops this
+        // compiling until someone decides what the text form owes it. Its
+        // absence is why `ply` -- the field that decides which rules every
+        // other line is read under -- went unrendered and unnoticed
+        // (external review, 2026-08-30).
+        let ply_render::model::Document {
+            ply,
+            components,
+            externals,
+            edges,
+            deny,
+            profiles,
+            unresolved,
+        } = &doc;
 
-        for (name, ext) in &doc.externals {
+        let mut missing = Vec::new();
+        if !text.contains(&format!("ply: {ply}")) {
+            missing.push(format!("the document's format version, `ply: {ply}`"));
+        }
+        walk("", components, &text, &mut missing);
+
+        for (name, ext) in externals {
             if !text.contains(name) {
                 missing.push(format!("external `{name}`"));
             }
@@ -4548,7 +4567,7 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
                 missing.push(format!("external `{name}`'s note"));
             }
         }
-        for e in &doc.edges {
+        for e in edges {
             // An edge is restated in words, not echoed: the arrow itself is
             // what has to survive, so both endpoints must be findable in one
             // line of the text.
@@ -4561,7 +4580,7 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
                 missing.push(format!("edge `{e}`"));
             }
         }
-        for d in &doc.deny {
+        for d in deny {
             if !text.lines().any(|l| {
                 d.split(['-', '>', '!', ' '])
                     .map(str::trim)
@@ -4571,7 +4590,7 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
                 missing.push(format!("forbidden call `{d}`"));
             }
         }
-        for (name, rules) in &doc.profiles {
+        for (name, rules) in profiles {
             if !text.contains(name) {
                 missing.push(format!("profile `{name}`"));
             }
@@ -4581,7 +4600,7 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
                 }
             }
         }
-        for u in &doc.unresolved {
+        for u in unresolved {
             if !text.contains(&u.note) {
                 missing.push(format!("open question #{}", u.id));
             }
@@ -4822,19 +4841,24 @@ fn a_sealed_component_names_the_rule_that_actually_catches_a_breach() {
              capability. A0408 is about helper functions used inside contracts — they would \
              read the wrong rule and find it does not describe their problem."
         );
+        // This test used to *require* `A0403` here, on the reasoning that a
+        // reader needs the rule to look up. That was half right and half
+        // wrong: A0403 is the correct code in the spec, and no checker emits
+        // it, so printing it beside a sealed component implied a diagnostic
+        // that cannot fire. The section reference stays (the rule is
+        // specified); the code goes until something raises it.
         assert!(
-            body.contains("A0403"),
-            "{view} never names the rule that actually catches this, so a reader has nothing \
-             to look up."
+            !body.contains("A0403"),
+            "{view} cites a diagnostic code for a rule nothing in this build raises. A code \
+             beside a sentence reads as 'this is what you will see when it fires', and \
+             nothing fires."
         );
     }
 
     assert!(
         text.contains(
-            "pure — a sealed promise: this component declares no capabilities and may not use \
-             any. Code inside it that reaches for one anyway is reported as an architecture \
-             finding (§5.3, A0403): a warning by default, and a build error where the \
-             component is also marked `strict`"
+            "pure — a sealed promise: this component declares no capabilities and may not \
+             use any. That is declared here, and not checked by this build"
         ),
         "the sealed-component sentence is not what it should be:\n{text}"
     );
@@ -5145,4 +5169,390 @@ fn focus_spells_out_what_is_inside_the_target_and_not_what_is_above_it() {
     // A component off the path entirely is folded away and draws no chips at
     // all, so there is nothing to ask about it here -- that is `--focus`'s
     // collapse behaviour, pinned by the tests in `mod collapse`.
+}
+
+/// Neither view may describe a rule as enforced that this build does not
+/// enforce. `ply check` inspects crate-level dependencies from Cargo
+/// metadata and says so plainly in its own output: it "does not yet look
+/// inside your functions". The rules for calls between components,
+/// capability use, and `strict` escalation are declared in the grammar and
+/// implemented nowhere — `A0402`, `A0403` and `A0404` appear in no checker.
+///
+/// Both views stated them in the present tense anyway, which is this
+/// project's defining failure mode reproduced inside its own reporting: a
+/// reader — or the model these are written for — concludes a boundary is
+/// guarded when nothing guards it (external review, 2026-08-30).
+#[test]
+fn neither_view_claims_a_rule_is_enforced_that_nothing_enforces() {
+    let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+    let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+    for (view, body) in [("the text form", &text), ("the drawing", &svg)] {
+        for phantom in [
+            // Present-tense claims that a finding fires today.
+            "is an architecture finding",
+            "is reported as an architecture finding",
+            // `strict` is read by these two renderers and by nothing else.
+            "architecture findings inside this component fail the build",
+            // The one rule that IS implemented is always an error, so even
+            // the half-true version was wrong about its severity.
+            "a warning by default",
+        ] {
+            assert!(
+                !body.contains(phantom),
+                "{view} says {phantom:?}. Nothing in this build does that: the checker looks at \
+                 crate-level dependencies only, and says so itself. A reader told a boundary is \
+                 guarded will stop guarding it."
+            );
+        }
+    }
+
+    // What it should say instead: declared here, and honest about the gap.
+    assert!(
+        text.contains(
+            "declared here, and not checked by this build: Ply currently compares crate-level \
+             dependencies and does not yet look inside functions, so a call that crosses this \
+             line can still go unnoticed (§5.3)"
+        ),
+        "the text form does not carry the honest wording:\n{text}"
+    );
+}
+
+/// A contract closes with "the checks above test the function against
+/// exactly this promise". When the function's effective check list is
+/// empty there are no checks above, and the transcript had already said so
+/// four lines earlier — two sentences contradicting each other on one
+/// screen, on exactly the shape (a legacy boundary that declares intent and
+/// verifies nothing) where the distinction matters most.
+#[test]
+fn a_contract_with_nothing_checking_it_is_not_described_as_checked() {
+    let yaml = "ply: 1\ncomponents:\n  legacy:\n    anchor: app::legacy\n    fns:\n      \
+                rate:\n        checks: []\n        ensures:\n          - \"|r| *r <= 10000\"\n";
+    let doc = parse_document(yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+
+    assert!(
+        !text.contains("the checks above test the function against exactly this promise"),
+        "this function declares no checks at all, and the transcript still says the checks \
+         above test it. There are none:\n{text}"
+    );
+    assert!(
+        text.contains(
+            "nothing above checks this promise — it is written down, and this document asks \
+             for no check that would test it"
+        ),
+        "an unchecked contract should be named as one:\n{text}"
+    );
+}
+
+/// Worked examples are compiled into tests only when the effective check
+/// list contains `test` — the verifier's example codegen sits inside that
+/// branch. The transcript said "compiled into a test" for any non-empty
+/// `examples:`, so a document asking only for fuzzing was told its examples
+/// run when they never do.
+#[test]
+fn worked_examples_are_only_called_tests_when_something_runs_them() {
+    let with_test = "ply: 1\ncomponents:\n  a:\n    anchor: app::a\n    fns:\n      f:\n        \
+                     checks: [test]\n        examples:\n          - \"f(1) == 2\"\n";
+    let without = "ply: 1\ncomponents:\n  a:\n    anchor: app::a\n    fns:\n      f:\n        \
+                   checks: [fuzz(64)]\n        examples:\n          - \"f(1) == 2\"\n";
+
+    let ran = ply_render::transcript::render_transcript(&parse_document(with_test).unwrap());
+    let not = ply_render::transcript::render_transcript(&parse_document(without).unwrap());
+
+    assert!(
+        ran.contains("1 worked example, compiled into a test:"),
+        "with `test` in the list the example really is compiled and run:\n{ran}"
+    );
+    assert!(
+        !not.contains("compiled into a test"),
+        "this function asks only for fuzzing, so its example is never compiled into \
+         anything. Saying otherwise tells an author their example is protecting them when \
+         it is inert:\n{not}"
+    );
+    assert!(
+        not.contains(
+            "1 worked example, written down but not run: no check here asks for the declared \
+             examples, so nothing compiles them"
+        ),
+        "an example nothing runs should say so:\n{not}"
+    );
+}
+
+/// The headline number must not depend on which view you are looking at.
+/// The drawing computed it with a boolean — "is there a non-empty default
+/// somewhere above" — which can never go back to false, so a component that
+/// switches checking off under a parent that set it was invisible. The text
+/// form used the real inheritance machinery and got a different answer, and
+/// the drawing disagreed with its own component tooltips at the same time
+/// (external review, 2026-08-30).
+#[test]
+fn both_views_report_the_same_count_of_functions_promising_nothing() {
+    for yaml in [
+        // The shape that broke it: an explicit empty override, nested under a
+        // parent that does declare a default.
+        concat!(
+            "ply: 1\n",
+            "components:\n",
+            "  parent:\n",
+            "    anchor: parent\n",
+            "    checks: [test]\n",
+            "    fns:\n",
+            "      p_fn: {}\n",
+            "    components:\n",
+            "      child:\n",
+            "        anchor: parent::child\n",
+            "        checks: []\n",
+            "        fns:\n",
+            "          untested: {}\n",
+        ),
+        // Two levels of override, switching back on again.
+        concat!(
+            "ply: 1\n",
+            "components:\n",
+            "  a:\n",
+            "    anchor: a\n",
+            "    checks: [test]\n",
+            "    components:\n",
+            "      b:\n",
+            "        anchor: a::b\n",
+            "        checks: []\n",
+            "        fns:\n",
+            "          switched_off: {}\n",
+            "        components:\n",
+            "          c:\n",
+            "            anchor: a::b::c\n",
+            "            checks: [test]\n",
+            "            fns:\n",
+            "              back_on: {}\n",
+        ),
+    ] {
+        let doc = parse_document(yaml).unwrap();
+        let text = ply_render::transcript::render_transcript(&doc);
+        let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+        let strip = |s: &str| -> String {
+            s.lines()
+                .chain(s.split('>'))
+                .find(|l| l.contains("promise nothing") || l.contains("promises nothing"))
+                .map(|l| {
+                    l.split('<')
+                        .next()
+                        .unwrap_or(l)
+                        .trim()
+                        .trim_start_matches(|c: char| !c.is_ascii_digit())
+                        .to_string()
+                })
+                .unwrap_or_else(|| panic!("no summary line in:\n{s}"))
+        };
+
+        let from_text = text
+            .lines()
+            .find(|l| l.contains("promise nothing") || l.contains("promises nothing"))
+            .unwrap()
+            .trim()
+            .to_string();
+        let from_svg = strip(&svg);
+
+        assert!(
+            from_text.starts_with(&from_svg) || from_svg.starts_with(&from_text),
+            "the two views report different summaries for one document. Whichever is wrong, a \
+             reader who opens both is told two different things about how much of this \
+             codebase promises nothing:\n  text: {from_text}\n  drawing: {from_svg}"
+        );
+    }
+}
+
+/// The `ply:` version is the one field whose wrongness is not survivable.
+/// Every other invalid field still renders faithfully — the picture stays a
+/// true account of what was written, which is the point of being able to
+/// draw a half-finished document. The version is different in kind: it
+/// selects which rulebook gives every other line its meaning, so rendering
+/// a version this build does not speak is not drawing a half-written
+/// document, it is confidently applying the wrong rules to all of it.
+///
+/// It also has to be stated. A v1 and an unsupported v2 document used to
+/// produce byte-identical, equally authoritative output (external review,
+/// 2026-08-30).
+#[test]
+fn the_format_version_is_stated_and_an_unknown_one_is_refused() {
+    let doc = parse_document("ply: 1\ncomponents:\n  a:\n    anchor: app::a\n").unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+    let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+    for (view, body) in [("the text form", &text), ("the drawing", &svg)] {
+        assert!(
+            body.contains(
+                "ply: 1 — the format version every rule below is read under; a version this \
+                 build does not speak is refused, never guessed at"
+            ),
+            "{view} never says which rulebook it read the document under, so a reader cannot \
+             tell a supported document from one whose every line was interpreted wrongly"
+        );
+    }
+}
+
+/// No sentence in either view may assert anything about whether a
+/// verification has happened. The renderer is a function of a parsed
+/// document; run state is outside its arguments, so any such claim is a
+/// guess. The header was fixed once and its siblings were left standing,
+/// including one three lines below it (external review, 2026-08-30).
+///
+/// The replacement wording is conditional rather than negative — "if every
+/// declared check ran and passed" — because a negation like "no result is
+/// here" is one feature away from being false again: this repo already has
+/// an evidence-overlay path that attaches real results onto a rendered SVG.
+#[test]
+fn no_sentence_in_either_view_claims_anything_about_what_has_been_run() {
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "../../ply.yaml",
+    ] {
+        let yaml = std::fs::read_to_string(fixture).unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let text = ply_render::transcript::render_transcript(&doc);
+        let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+        for (view, body) in [("the text form", &text), ("the drawing", &svg)] {
+            for claim in [
+                "has been run",
+                "have been run",
+                "none of it has been run",
+                "before anything has been run",
+            ] {
+                assert!(
+                    !body.contains(claim),
+                    "{fixture}: {view} says {claim:?}. This renderer is handed a parsed \
+                     document and nothing else — whether a verification ran is not a fact it \
+                     has access to, so the sentence is a guess dressed as a statement."
+                );
+            }
+        }
+    }
+
+    let doc = parse_document(
+        "ply: 1\ncomponents:\n  a:\n    anchor: app::a\n    fns:\n      f:\n        checks: [test]\n",
+    )
+    .unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+    assert!(
+        text.contains(
+            "declares checks up to tested — checked once against the declared examples and \
+             generated inputs — the strongest verdict this could earn if every declared check \
+             ran and passed; a promise, never a result"
+        ),
+        "the level sentence should say what it would be worth, conditionally, without \
+         claiming anything about the world:\n{text}"
+    );
+}
+
+/// Author-controlled strings reach both views. A note or a piece of trusted
+/// evidence containing terminal control bytes could retitle a reader's
+/// terminal window or repaint its output, and the transcript is explicitly
+/// meant to be piped and read in terminals. Neutralised on the way in.
+///
+/// This is the cheap half of the problem. The expensive half — a multi-line
+/// note rendering at column 0 and impersonating a transcript heading — is a
+/// layout question and is recorded as a known gap rather than half-solved.
+#[test]
+fn author_controlled_text_cannot_reach_a_terminal_as_control_bytes() {
+    let yaml = "ply: 1\ncomponents:\n  a:\n    anchor: app::a\n    note: \"before\\u001b]0;pwned\\u0007\\u001b[31mafter\"\n";
+    let doc = parse_document(yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+    let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+    for (view, body) in [("the text form", &text), ("the drawing", &svg)] {
+        assert!(
+            !body.chars().any(|c| c.is_control() && c != '\n'),
+            "{view} passes a raw control byte through from the document. A note can then \
+             retitle or repaint the terminal of anyone who cats this."
+        );
+    }
+    assert!(
+        text.contains("before") && text.contains("after"),
+        "the surrounding text must survive; only the control bytes go:\n{text}"
+    );
+}
+
+/// The ratchet for the failure that has now been found three times: a
+/// sentence that is true of the design and false of this build.
+///
+/// A diagnostic code printed beside a sentence reads as "this is what you
+/// will see when this fires". So every code either view mentions must be one
+/// this build can actually raise. `A0402`, `A0403` and `A0404` were printed
+/// for months and appear in no checker; that is not a wording slip, it is a
+/// category of claim nothing was checking.
+///
+/// This is the weak, implementable half of what the reviewer proposed. The
+/// strong version is a rule registry that both the checker and the views
+/// derive from, so an unenforced rule cannot be described as enforced by
+/// construction — a design change, recorded in TODO.md rather than smuggled
+/// in here. Until then this catches the same thing one step later.
+#[test]
+fn neither_view_cites_a_diagnostic_code_this_build_cannot_raise() {
+    fn codes_in(body: &str) -> Vec<String> {
+        let b = body.as_bytes();
+        let mut out = Vec::new();
+        for i in 0..b.len() {
+            if !matches!(b[i], b'A' | b'E' | b'W') || i + 5 > b.len() {
+                continue;
+            }
+            if b[i + 1..i + 5].iter().all(|c| c.is_ascii_digit()) {
+                out.push(String::from_utf8_lossy(&b[i..i + 5]).into_owned());
+            }
+        }
+        out
+    }
+
+    // Read from the sources that emit them, not a hand-kept list — a list
+    // would drift the first time someone implemented a rule and forgot it.
+    let mut raisable = std::collections::BTreeSet::new();
+    for src in [
+        "../../crates/ply-core/src/arch.rs",
+        "../../crates/ply-core/src/check.rs",
+        "../../crates/ply-core/src/config.rs",
+        "../../crates/ply-cli/src/check.rs",
+        "../../crates/ply-cli/src/verify.rs",
+        "../../crates/ply-cli/src/worklist.rs",
+    ] {
+        if let Ok(body) = std::fs::read_to_string(src) {
+            raisable.extend(codes_in(&body));
+        }
+    }
+    assert!(
+        raisable.len() > 3,
+        "almost no diagnostic codes found in the checker sources — this test is reading the \
+         wrong files and would pass vacuously: {raisable:?}"
+    );
+
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "../../ply.yaml",
+        "tests/fixtures/full.ply.yaml",
+        "tests/fixtures/visual_forms.ply.yaml",
+    ] {
+        let yaml = std::fs::read_to_string(fixture).unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let text = ply_render::transcript::render_transcript(&doc);
+        let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+        for (view, body) in [("the text form", &text), ("the drawing", &svg)] {
+            for cited in codes_in(body) {
+                assert!(
+                    raisable.contains(&cited),
+                    "{fixture}: {view} cites {cited}, and nothing in this build raises it. A \
+                     code beside a sentence tells a reader what they will see when that rule \
+                     fires; citing one that cannot fire promises a guard that does not exist. \
+                     Either implement it, or describe the rule without a code — see \
+                     `declared_not_checked`."
+                );
+            }
+        }
+    }
 }

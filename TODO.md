@@ -1,19 +1,82 @@
 # TODO
 
-## Verus is two releases behind — 2026-08-30
+## Verus pin moved forward — 2026-08-30
 
-Noted, not acted on. The spike pins **0.2026.08.15.7d4628a**; upstream now has
-0.2026.08.23.fbbbbcf (stable) and a 0.2026.08.30.b432e82 rolling build.
+Done. The spike pinned **0.2026.08.15.7d4628a**; it now pins **0.2026.08.23.fbbbbcf**,
+the current stable. (A 0.2026.08.30.b432e82 rolling build also exists and was not used:
+a rolling build is the wrong thing to rest a recorded proof on.)
 
-- [ ] **Move the kernel proof to a current Verus, as its own change.** Deliberately not
-      a version-string bump. The pin is load-bearing for the same reason ADR-0003 pins
-      Kani -- a drifting engine version silently invalidates recorded evidence -- and this
-      pin carries more weight than Kani's ever did: it is what licenses the claim that all
-      four standing obligations hold unbounded, by structural induction. Changing it means
-      re-obtaining the proof and re-checking the honesty condition that travels with it
-      (the proof runs over a shadow of the kernel, not its source, tied back by a
-      differential test over generated trees). Until that is done, `FINDINGS.md`'s version
-      is the version the claim rests on, and the claim should keep quoting it.
+- [x] **Kernel proof moved to Verus 0.2026.08.23.fbbbbcf.** Re-obtained rather than
+      bumped, because the claim rests on what the verifier said and not on a string:
+      **22 verified, 0 errors**, identical to the old pin, with the proof file needing no
+      edits at all -- no syntax migration, no deprecation, same required toolchain.
+      1.43s against the old ~2s, which is one measurement on one machine and is not
+      claimed as a result.
+- [x] **The vacuity checks were re-run too, and they are the load-bearing half.** A proof
+      that verifies against a broken kernel proves nothing, so both recorded mutations
+      were replanted on the new release: each still produces 20 verified / 2 errors, in
+      the same two obligations as before. Reverted, 22/22 clean afterwards. The newer
+      Verus is not passing this proof more easily -- it fails in the same places.
+- [x] Incidental: `diff/Cargo.lock` was stale (the spike had not run since `ply-core` grew
+      its dependencies) and is refreshed by 248 lines. Not an effect of the upgrade.
+- [ ] **The honesty condition is unchanged and still applies**: the proof runs over a
+      shadow of the kernel, not its production source, and the differential test is what
+      licenses the shadow to speak for `aggregate()`. Re-check it whenever either side is
+      edited. Not a task so much as a standing condition, kept here so it travels.
+
+## External review, and the honesty boundary — 2026-08-30
+
+A third review (Codex) read the merged transcript work; a second model verified every
+finding by building and running the counterexamples. **All nine held.** They are fixed
+across two commits, except the three recorded below as open.
+
+- [x] **Both views described enforcement this build does not perform.** They said an
+      undeclared cross-component call, capability use in a sealed component, and `strict`
+      escalation were architecture findings that fail the build. Those rules are
+      implemented nowhere — their codes appear in no checker — and `ply check` already
+      says so in its own output. The views contradicted the tool they belong to. One
+      shared sentence now says declared-and-unchecked, and the codes are gone.
+- [x] **Two sentences claimed checks that never ran**, both now derived from the
+      function's effective list: a contract on a function with no checks said "the checks
+      above test this promise" four lines under "nothing about this function is verified";
+      and worked examples were called "compiled into a test" when the verifier only
+      compiles them under `test`. The committed sample shows the second landing.
+- [x] **The two views printed different headline counts** for the same document. One
+      shared calculation now; the drawing's boolean walk is deleted.
+- [x] **`render ply.yaml -o ply.yaml` destroyed the document.** Refused before reading,
+      on canonicalized paths.
+- [x] **An unsupported `ply:` version rendered confidently.** Refused now, and the version
+      is printed in both views. Deliberately *not* full validation: render draws
+      half-written documents on purpose, and the version is the one field whose wrongness
+      is not survivable, because it selects the rules every other line is read under.
+- [x] **Every remaining "has been run" claim is gone.** Reworded conditionally ("if every
+      declared check ran and passed") rather than negatively, because a negation is one
+      feature away from false — this repo already has an evidence-overlay path.
+- [x] **Terminal control bytes from author-written text are neutralised** at a single
+      choke point on each renderer's output, so a future insertion site cannot forget it.
+- [x] **The completeness walk now binds `Document` field by field.** Its absence is why
+      the format version went unrendered and unnoticed.
+- [x] **A committed transcript for vetting 004 exists** and is drift-gated. README and the
+      module doc claimed one sat beside every scenario; making that true beat softening it.
+- [x] **A ratchet for the whole class**: no sentence in either view may cite a diagnostic
+      code this build cannot raise, checked against the codes actually present in the
+      checker sources rather than a hand-kept list. Verified to bite by injecting one.
+
+### KNOWN GAPS, left open deliberately
+
+- [ ] **The rule registry.** The ratchet above catches a phantom *code*; it cannot catch a
+      phantom claim with no code in it ("compiled into a test" had none). The real fix is
+      a table of rules as data — code, tier, implemented, severity, gloss — that the
+      checker, its NOT-CHECKED paragraph, and both views all derive from, so an unenforced
+      rule cannot be described as enforced by construction. That is a design change and
+      wants review, not an agent's initiative.
+- [ ] **Multi-line author text can still impersonate transcript structure.** A note
+      containing a newline renders at column 0 and can look like a heading the renderer
+      wrote. Control bytes are handled; layout is not. Re-flowing multi-line prose legibly
+      has real design questions (indent, wrap, quoting) and the threat model today is a
+      trusted author, so half-solving it would be churn.
+- [ ] **`block()` finds the first heading with a given name**, so two functions sharing a
+      name across components remain a blind spot in the scoped needle checks.
 
 ## Coverage audit, and the four faults it found — 2026-08-30
 

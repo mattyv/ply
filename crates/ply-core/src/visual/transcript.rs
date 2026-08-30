@@ -47,8 +47,9 @@
 //! because a stale one would do the exact opposite of what it is for.
 
 use super::svg::{
-    ceiling_tooltip_line, check_prose, component_ceiling, deny_rule_prose, profile_rules_prose,
-    unresolved_fn_pin_prose, weakest_declaration,
+    ceiling_tooltip_line, check_prose, component_ceiling, declared_not_checked, deny_rule_prose,
+    document_counts, format_version_line, profile_rules_prose, tame, unresolved_fn_pin_prose,
+    weakest_declaration,
 };
 use crate::model::{
     Component, Document, EdgeKind, FnClaim, InheritedChecks, Mode, component_default_checks,
@@ -116,7 +117,9 @@ pub fn render_transcript(doc: &Document) -> String {
          here.\n\n",
     );
 
-    let (components, functions, unclaimed) = counts(doc);
+    out.push_str(&format!("{}\n\n", format_version_line(doc.ply)));
+
+    let (components, functions, unclaimed) = document_counts(doc);
     out.push_str(&format!(
         "{components} {} · {functions} {} · {unclaimed} {} nothing\n",
         plural(components, "component", "components"),
@@ -161,10 +164,10 @@ pub fn render_transcript(doc: &Document) -> String {
     } else {
         out.push_str("edges — who may call whom, and what data flows where:\n");
         out.push_str(&format!(
-            "{}(\"a -> b\" means a may call b; an undeclared cross-component call is an \
-             architecture finding — a warning by default, an error if the calling component is \
-             `strict` (§5.3, A0402))\n",
-            pad(1)
+            "{}(\"a -> b\" means a may call b; that an undeclared cross-component call is \
+             forbidden is {})\n",
+            pad(1),
+            declared_not_checked("a call that crosses this line")
         ));
         out.push_str(&format!(
             "{}(\"a ~> b : T\" means T data flows from a to b — declared so the flow is visible; \
@@ -256,38 +259,15 @@ pub fn render_transcript(doc: &Document) -> String {
         }
     }
 
-    out
+    // Author-written strings reach this output: notes, contract clauses,
+    // trusted claims and evidence, worked examples, unresolved notes. Tamed
+    // once here rather than at each insertion site, so a future one cannot
+    // forget it. See `tame` for what is removed and what deliberately is not.
+    tame(&out)
 }
 
 /// Components, functions, and functions promising nothing — the summary
 /// strip's three numbers, counted the same way it counts them.
-fn counts(doc: &Document) -> (usize, usize, usize) {
-    fn walk(
-        comp: &Component,
-        inherited: Option<InheritedChecks>,
-        c: &mut usize,
-        f: &mut usize,
-        u: &mut usize,
-    ) {
-        *c += 1;
-        let default = component_default_checks("", comp, inherited);
-        for fc in comp.fns.values() {
-            *f += 1;
-            if effective_checks(fc, default).is_none_or(|e| e.is_empty()) {
-                *u += 1;
-            }
-        }
-        for child in comp.components.values() {
-            walk(child, default, c, f, u);
-        }
-    }
-    let (mut c, mut f, mut u) = (0, 0, 0);
-    for comp in doc.components.values() {
-        walk(comp, None, &mut c, &mut f, &mut u);
-    }
-    (c, f, u)
-}
-
 fn write_component(
     out: &mut String,
     name: &str,
@@ -314,17 +294,17 @@ fn write_component(
     // view's.
     if comp.pure {
         out.push_str(&format!(
-            "{q}pure — a sealed promise: this component declares no capabilities and may not \
-             use any. Code inside it that reaches for one anyway is reported as an \
-             architecture finding (§5.3, A0403): a warning by default, and a build error \
-             where the component is also marked `strict`\n"
+            "{q}pure — a sealed promise: this component declares no capabilities and may \
+             not use any. That is {}\n",
+            declared_not_checked("capability use inside this sealed component")
         ));
     }
     if !comp.uses.is_empty() {
         out.push_str(&format!(
-            "{q}capabilities: {} — this component may use only the capabilities it declares; \
-             using an undeclared one is an architecture finding (§5.3, A0404)\n",
-            comp.uses.join(", ")
+            "{q}capabilities: {} — this component may use only the capabilities it \
+             declares. That limit is {}\n",
+            comp.uses.join(", "),
+            declared_not_checked("use of a capability this component never declared")
         ));
     }
     if !comp.owns.is_empty() {
@@ -347,8 +327,9 @@ fn write_component(
     }
     if comp.strict {
         out.push_str(&format!(
-            "{q}strict — architecture findings inside this component fail the build (errors, \
-             not warnings)\n"
+            "{q}strict — this component asks that architecture findings inside it fail the \
+             build rather than warn. Nothing acts on that yet: no check this build runs \
+             reads the flag\n"
         ));
     }
 
@@ -487,8 +468,22 @@ fn write_fn(
                 "{r}ensures: {c} (what the function guarantees coming out)\n"
             ));
         }
+        // Derived from the effective list, not from the contract existing.
+        // A function can declare a promise and ask for nothing that would
+        // test it -- a legacy boundary is exactly that shape -- and the
+        // transcript used to say "the checks above test..." four lines under
+        // its own "nothing about this function is verified" (external
+        // review, 2026-08-30).
+        let effective = effective_checks(fc, inherited);
+        let nothing_runs = effective.is_none_or(|e| e.is_empty());
         out.push_str(&format!(
-            "{r}the checks above test the function against exactly this promise\n"
+            "{r}{}\n",
+            if nothing_runs {
+                "nothing above checks this promise — it is written down, and this document \
+                 asks for no check that would test it"
+            } else {
+                "the checks above test the function against exactly this promise"
+            }
         ));
     }
 
@@ -508,6 +503,24 @@ fn write_fn(
 
     if !fc.examples.is_empty() {
         let n = fc.examples.len();
+        // The verifier generates example tests only inside `if has_test`, so
+        // examples under (say) `checks: [fuzz(64)]` are never compiled into
+        // anything. Calling them tests told an author they were protected by
+        // something inert (external review, 2026-08-30).
+        let runs_examples =
+            effective_checks(fc, inherited).is_some_and(|e| e.iter().any(|c| c.trim() == "test"));
+        if !runs_examples {
+            out.push_str(&format!(
+                "{q}{n} worked {}, written down but not run: no check here asks for the \
+                 declared examples, so nothing compiles them:\n",
+                plural(n, "example", "examples"),
+            ));
+            let r = pad(level + 2);
+            for e in &fc.examples {
+                out.push_str(&format!("{r}{e}\n"));
+            }
+            return;
+        }
         out.push_str(&format!(
             "{q}{n} worked {}{} compiled into a test:\n",
             plural(n, "example", "examples"),

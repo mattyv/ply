@@ -1,0 +1,11 @@
+ply: 1
+
+# Deliberately a plain `test` check: this fixture exists to exercise the
+# compiler probe and the record's reuse decision, not any one engine, so it
+# should compile and run as cheaply as possible.
+components:
+  toolchainprobe:
+    anchor: ply_fixture_toolchainprobe
+    fns:
+      safe_increment:
+        checks: [test]

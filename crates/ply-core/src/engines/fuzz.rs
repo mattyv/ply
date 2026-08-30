@@ -155,13 +155,35 @@ pub fn check_harness_builds(
 /// this summary) -- the summary is always the *last* one.
 fn parse_failed_test_names(combined: &str) -> Vec<String> {
     let lines: Vec<&str> = combined.lines().collect();
-    let Some(start) = lines.iter().rposition(|l| l.trim() == "failures:") else {
-        return Vec::new();
-    };
-    lines[start + 1..]
+    if let Some(start) = lines.iter().rposition(|l| l.trim() == "failures:") {
+        return lines[start + 1..]
+            .iter()
+            .take_while(|l| !l.trim().is_empty())
+            .map(|l| l.trim().to_string())
+            .collect();
+    }
+
+    // No summary block. libtest prints `failures:` only when the run
+    // *finishes*, so a process killed at the deadline never emits one --
+    // and this function used to return nothing for it, which meant a test
+    // that had already failed and printed its own line was invisible to
+    // every caller. That is how a timeout came to outrank an observed
+    // violation: not because the classifiers preferred the timeout, but
+    // because by the time they looked, the failure had been thrown away
+    // here (external review 2026-08-30; the review and the first fix for it
+    // both misplaced the loss in the classifier, which is why this needed a
+    // reproduction rather than a reading).
+    //
+    // The per-test lines survive the kill, because libtest writes each one
+    // as it completes. `test <name> ... FAILED` is that line.
+    lines
         .iter()
-        .take_while(|l| !l.trim().is_empty())
-        .map(|l| l.trim().to_string())
+        .filter_map(|l| {
+            let l = l.trim();
+            let rest = l.strip_prefix("test ")?;
+            let name = rest.strip_suffix(" ... FAILED")?;
+            Some(name.trim().to_string())
+        })
         .collect()
 }
 
