@@ -4822,19 +4822,24 @@ fn a_sealed_component_names_the_rule_that_actually_catches_a_breach() {
              capability. A0408 is about helper functions used inside contracts — they would \
              read the wrong rule and find it does not describe their problem."
         );
+        // This test used to *require* `A0403` here, on the reasoning that a
+        // reader needs the rule to look up. That was half right and half
+        // wrong: A0403 is the correct code in the spec, and no checker emits
+        // it, so printing it beside a sealed component implied a diagnostic
+        // that cannot fire. The section reference stays (the rule is
+        // specified); the code goes until something raises it.
         assert!(
-            body.contains("A0403"),
-            "{view} never names the rule that actually catches this, so a reader has nothing \
-             to look up."
+            !body.contains("A0403"),
+            "{view} cites a diagnostic code for a rule nothing in this build raises. A code \
+             beside a sentence reads as 'this is what you will see when it fires', and \
+             nothing fires."
         );
     }
 
     assert!(
         text.contains(
-            "pure — a sealed promise: this component declares no capabilities and may not use \
-             any. Code inside it that reaches for one anyway is reported as an architecture \
-             finding (§5.3, A0403): a warning by default, and a build error where the \
-             component is also marked `strict`"
+            "pure — a sealed promise: this component declares no capabilities and may not \
+             use any. That is declared here, and not checked by this build"
         ),
         "the sealed-component sentence is not what it should be:\n{text}"
     );
@@ -5145,4 +5150,198 @@ fn focus_spells_out_what_is_inside_the_target_and_not_what_is_above_it() {
     // A component off the path entirely is folded away and draws no chips at
     // all, so there is nothing to ask about it here -- that is `--focus`'s
     // collapse behaviour, pinned by the tests in `mod collapse`.
+}
+
+/// Neither view may describe a rule as enforced that this build does not
+/// enforce. `ply check` inspects crate-level dependencies from Cargo
+/// metadata and says so plainly in its own output: it "does not yet look
+/// inside your functions". The rules for calls between components,
+/// capability use, and `strict` escalation are declared in the grammar and
+/// implemented nowhere — `A0402`, `A0403` and `A0404` appear in no checker.
+///
+/// Both views stated them in the present tense anyway, which is this
+/// project's defining failure mode reproduced inside its own reporting: a
+/// reader — or the model these are written for — concludes a boundary is
+/// guarded when nothing guards it (external review, 2026-08-30).
+#[test]
+fn neither_view_claims_a_rule_is_enforced_that_nothing_enforces() {
+    let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+    let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+    for (view, body) in [("the text form", &text), ("the drawing", &svg)] {
+        for phantom in [
+            // Present-tense claims that a finding fires today.
+            "is an architecture finding",
+            "is reported as an architecture finding",
+            // `strict` is read by these two renderers and by nothing else.
+            "architecture findings inside this component fail the build",
+            // The one rule that IS implemented is always an error, so even
+            // the half-true version was wrong about its severity.
+            "a warning by default",
+        ] {
+            assert!(
+                !body.contains(phantom),
+                "{view} says {phantom:?}. Nothing in this build does that: the checker looks at \
+                 crate-level dependencies only, and says so itself. A reader told a boundary is \
+                 guarded will stop guarding it."
+            );
+        }
+    }
+
+    // What it should say instead: declared here, and honest about the gap.
+    assert!(
+        text.contains(
+            "declared here, and not checked by this build: Ply currently compares crate-level \
+             dependencies and does not yet look inside functions, so a call that crosses this \
+             line can still go unnoticed (§5.3)"
+        ),
+        "the text form does not carry the honest wording:\n{text}"
+    );
+}
+
+/// A contract closes with "the checks above test the function against
+/// exactly this promise". When the function's effective check list is
+/// empty there are no checks above, and the transcript had already said so
+/// four lines earlier — two sentences contradicting each other on one
+/// screen, on exactly the shape (a legacy boundary that declares intent and
+/// verifies nothing) where the distinction matters most.
+#[test]
+fn a_contract_with_nothing_checking_it_is_not_described_as_checked() {
+    let yaml = "ply: 1\ncomponents:\n  legacy:\n    anchor: app::legacy\n    fns:\n      \
+                rate:\n        checks: []\n        ensures:\n          - \"|r| *r <= 10000\"\n";
+    let doc = parse_document(yaml).unwrap();
+    let text = ply_render::transcript::render_transcript(&doc);
+
+    assert!(
+        !text.contains("the checks above test the function against exactly this promise"),
+        "this function declares no checks at all, and the transcript still says the checks \
+         above test it. There are none:\n{text}"
+    );
+    assert!(
+        text.contains(
+            "nothing above checks this promise — it is written down, and this document asks \
+             for no check that would test it"
+        ),
+        "an unchecked contract should be named as one:\n{text}"
+    );
+}
+
+/// Worked examples are compiled into tests only when the effective check
+/// list contains `test` — the verifier's example codegen sits inside that
+/// branch. The transcript said "compiled into a test" for any non-empty
+/// `examples:`, so a document asking only for fuzzing was told its examples
+/// run when they never do.
+#[test]
+fn worked_examples_are_only_called_tests_when_something_runs_them() {
+    let with_test = "ply: 1\ncomponents:\n  a:\n    anchor: app::a\n    fns:\n      f:\n        \
+                     checks: [test]\n        examples:\n          - \"f(1) == 2\"\n";
+    let without = "ply: 1\ncomponents:\n  a:\n    anchor: app::a\n    fns:\n      f:\n        \
+                   checks: [fuzz(64)]\n        examples:\n          - \"f(1) == 2\"\n";
+
+    let ran = ply_render::transcript::render_transcript(&parse_document(with_test).unwrap());
+    let not = ply_render::transcript::render_transcript(&parse_document(without).unwrap());
+
+    assert!(
+        ran.contains("1 worked example, compiled into a test:"),
+        "with `test` in the list the example really is compiled and run:\n{ran}"
+    );
+    assert!(
+        !not.contains("compiled into a test"),
+        "this function asks only for fuzzing, so its example is never compiled into \
+         anything. Saying otherwise tells an author their example is protecting them when \
+         it is inert:\n{not}"
+    );
+    assert!(
+        not.contains(
+            "1 worked example, written down but not run: no check here asks for the declared \
+             examples, so nothing compiles them"
+        ),
+        "an example nothing runs should say so:\n{not}"
+    );
+}
+
+/// The headline number must not depend on which view you are looking at.
+/// The drawing computed it with a boolean — "is there a non-empty default
+/// somewhere above" — which can never go back to false, so a component that
+/// switches checking off under a parent that set it was invisible. The text
+/// form used the real inheritance machinery and got a different answer, and
+/// the drawing disagreed with its own component tooltips at the same time
+/// (external review, 2026-08-30).
+#[test]
+fn both_views_report_the_same_count_of_functions_promising_nothing() {
+    for yaml in [
+        // The shape that broke it: an explicit empty override, nested under a
+        // parent that does declare a default.
+        concat!(
+            "ply: 1\n",
+            "components:\n",
+            "  parent:\n",
+            "    anchor: parent\n",
+            "    checks: [test]\n",
+            "    fns:\n",
+            "      p_fn: {}\n",
+            "    components:\n",
+            "      child:\n",
+            "        anchor: parent::child\n",
+            "        checks: []\n",
+            "        fns:\n",
+            "          untested: {}\n",
+        ),
+        // Two levels of override, switching back on again.
+        concat!(
+            "ply: 1\n",
+            "components:\n",
+            "  a:\n",
+            "    anchor: a\n",
+            "    checks: [test]\n",
+            "    components:\n",
+            "      b:\n",
+            "        anchor: a::b\n",
+            "        checks: []\n",
+            "        fns:\n",
+            "          switched_off: {}\n",
+            "        components:\n",
+            "          c:\n",
+            "            anchor: a::b::c\n",
+            "            checks: [test]\n",
+            "            fns:\n",
+            "              back_on: {}\n",
+        ),
+    ] {
+        let doc = parse_document(yaml).unwrap();
+        let text = ply_render::transcript::render_transcript(&doc);
+        let svg = ply_render::svg::render_svg(&doc).unwrap();
+
+        let strip = |s: &str| -> String {
+            s.lines()
+                .chain(s.split('>'))
+                .find(|l| l.contains("promise nothing") || l.contains("promises nothing"))
+                .map(|l| {
+                    l.split('<')
+                        .next()
+                        .unwrap_or(l)
+                        .trim()
+                        .trim_start_matches(|c: char| !c.is_ascii_digit())
+                        .to_string()
+                })
+                .unwrap_or_else(|| panic!("no summary line in:\n{s}"))
+        };
+
+        let from_text = text
+            .lines()
+            .find(|l| l.contains("promise nothing") || l.contains("promises nothing"))
+            .unwrap()
+            .trim()
+            .to_string();
+        let from_svg = strip(&svg);
+
+        assert!(
+            from_text.starts_with(&from_svg) || from_svg.starts_with(&from_text),
+            "the two views report different summaries for one document. Whichever is wrong, a \
+             reader who opens both is told two different things about how much of this \
+             codebase promises nothing:\n  text: {from_text}\n  drawing: {from_svg}"
+        );
+    }
 }

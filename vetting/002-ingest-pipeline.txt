@@ -8,14 +8,14 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 components:
 
   component feed — maps to Rust module ingest::feed
-    capabilities: net — this component may use only the capabilities it declares; using an undeclared one is an architecture finding (§5.3, A0404)
+    capabilities: net — this component may use only the capabilities it declares. That limit is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so use of a capability this component never declared can still go unnoticed (§5.3)
     promises nothing as a whole — something inside declares no checks, and one unchecked thing sets the level of everything around it (unclaimed)
     that level comes from its weakest part, Feed::pump — nothing here counts as checked more strongly than the weakest thing inside it
     fn Feed::pump
       checks: [] — a written empty list: this document says to check nothing here, so nothing about this function is verified (unclaimed)
 
   component ring — maps to Rust module disruptor::spsc
-    capabilities: unsafe — this component may use only the capabilities it declares; using an undeclared one is an architecture finding (§5.3, A0404)
+    capabilities: unsafe — this component may use only the capabilities it declares. That limit is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so use of a capability this component never declared can still go unnoticed (§5.3)
     owns disruptor::spsc::Spsc — only this component may mutate them
     profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
@@ -28,7 +28,7 @@ components:
       generic — every check runs with T=ingest::feed::RawFrame; whatever they earn covers only that type
 
   component decoder — maps to Rust module ingest::decode
-    pure — a sealed promise: this component declares no capabilities and may not use any. Code inside it that reaches for one anyway is reported as an architecture finding (§5.3, A0403): a warning by default, and a build error where the component is also marked `strict`
+    pure — a sealed promise: this component declares no capabilities and may not use any. That is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so capability use inside this sealed component can still go unnoticed (§5.3)
     profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
     that level comes from its weakest part, decode — nothing here counts as checked more strongly than the weakest thing inside it
@@ -36,13 +36,13 @@ components:
       bounded(2) — proves the contract for every input, unrolling loops at most 2 times
       fuzz(4096) — runs the function on 4096 random inputs, checking the contract on each
       mutate — plants small deliberate bugs; the test/fuzz checks must catch every one, or the contract is flagged weak
-      1 worked example, compiled into a test:
+      1 worked example, written down but not run: no check here asks for the declared examples, so nothing compiles them:
         decode(&RawFrame::of(&[2, 1, 0, 100, 0, 42])).is_ok() == true
 
   component book — maps to Rust module ingest::book
     owns ingest::book::OrderBook — only this component may mutate them
     profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
-    strict — architecture findings inside this component fail the build (errors, not warnings)
+    strict — this component asks that architecture findings inside it fail the build rather than warn. Nothing acts on that yet: no check this build runs reads the flag
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
     that level comes from its weakest part, OrderBook::apply — nothing here counts as checked more strongly than the weakest thing inside it
     fn OrderBook::apply
@@ -57,7 +57,7 @@ components:
 externals — systems and people outside this codebase: none declared
 
 edges — who may call whom, and what data flows where:
-  ("a -> b" means a may call b; an undeclared cross-component call is an architecture finding — a warning by default, an error if the calling component is `strict` (§5.3, A0402))
+  ("a -> b" means a may call b; that an undeclared cross-component call is forbidden is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so a call that crosses this line can still go unnoticed (§5.3))
   ("a ~> b : T" means T data flows from a to b — declared so the flow is visible; nothing checks flows in v1)
   feed -> ring
   decoder -> ring

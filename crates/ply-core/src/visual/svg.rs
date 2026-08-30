@@ -320,6 +320,67 @@ pub(super) fn check_prose(c: &str) -> String {
     }
 }
 
+/// How much this document declares, and how much of it promises nothing --
+/// the numbers both views open with.
+///
+/// Shared because they were not: the drawing used to walk the tree with a
+/// boolean ("is there a non-empty default above me"), which cannot represent
+/// a component switching checking back off, so an explicit `checks: []`
+/// nested under a parent that declares one was invisible to it. On such a
+/// document the two views printed different totals, and the drawing
+/// contradicted its own component tooltips, which were computed correctly
+/// (external review, 2026-08-30). One derivation, or the number is a guess.
+pub(super) fn document_counts(doc: &Document) -> (usize, usize, usize) {
+    fn walk(
+        comp: &Component,
+        inherited: Option<InheritedChecks>,
+        c: &mut usize,
+        f: &mut usize,
+        u: &mut usize,
+    ) {
+        *c += 1;
+        let default = component_default_checks("", comp, inherited);
+        for fc in comp.fns.values() {
+            *f += 1;
+            if effective_checks(fc, default).is_none_or(|e| e.is_empty()) {
+                *u += 1;
+            }
+        }
+        for child in comp.components.values() {
+            walk(child, default, c, f, u);
+        }
+    }
+    let (mut c, mut f, mut u) = (0, 0, 0);
+    for comp in doc.components.values() {
+        walk(comp, None, &mut c, &mut f, &mut u);
+    }
+    (c, f, u)
+}
+
+/// The one sentence both views use for a rule this grammar declares and this
+/// build does not enforce.
+///
+/// `ply check` compares crate-level dependencies from Cargo metadata. The
+/// item-level rules -- a call from one function into another component
+/// (`A0402`), capability use (`A0403`/`A0404`), `strict` escalation -- are
+/// implemented nowhere: those codes appear in no checker. Both views stated
+/// them in the present tense anyway ("is an architecture finding", "fail the
+/// build"), which is this project's defining failure reproduced inside its
+/// own reporting -- a reader told a boundary is guarded stops guarding it,
+/// and these transcripts are written to be handed to models.
+///
+/// `check` already says the honest thing in its own output ("does not yet
+/// look inside your functions"); this makes the two agree. Found by external
+/// review, 2026-08-30. Delete this and say "is checked" the day something
+/// checks it.
+pub(super) fn declared_not_checked(slips: &str) -> String {
+    format!(
+        "declared here, and not checked by this build: Ply currently compares crate-level \
+         dependencies and does not yet look inside functions, so {slips} can still go \
+         unnoticed (§5.3)"
+    )
+}
+
 /// §5.6: the wording explaining a fn-level unresolved marker, used both on
 /// the pin glyph itself and in the fn-chip's aggregated tooltip.
 ///
@@ -1368,13 +1429,11 @@ fn component_tip_lines(
     // is a self-contradicting document, and a view that prints one and drops
     // the other understates what was declared.
     if comp.pure {
-        tip.push(
-            "pure — the double border is the seal: this component declares no capabilities \
-             and may not use any. Code inside it that reaches for one anyway is reported as \
-             an architecture finding (§5.3, A0403): a warning by default, and a build error \
-             where the component is also marked `strict`"
-                .into(),
-        );
+        tip.push(format!(
+            "pure — the double border is the seal: this component declares no \
+                 capabilities and may not use any. That is {}",
+            declared_not_checked("capability use inside this sealed component")
+        ));
     }
     if !comp.uses.is_empty() {
         tip.push(format!("capabilities: {}", comp.uses.join(", ")));
@@ -1395,9 +1454,13 @@ fn component_tip_lines(
         });
     }
     if comp.strict {
+        // Not "findings here fail the build": nothing reads this flag but
+        // the two renderers. It is a declaration with no effect on any check
+        // this build runs (external review, 2026-08-30).
         tip.push(
-            "strict — architecture findings inside this component fail the build \
-             (errors, not warnings)"
+            "strict — this component asks that architecture findings inside it fail the \
+             build rather than warn. Nothing acts on that yet: no check this build runs \
+             reads the flag"
                 .into(),
         );
     }
@@ -1551,8 +1614,8 @@ fn render_collapsed_component(
                 label = esc(b),
                 tip = title(&format!(
                     "this component may use `{b}` somewhere in its folded subtree. A \
-                     component may use only the capabilities it declares — using an \
-                     undeclared one is an architecture finding (§5.3, A0404)."
+                     component may use only the capabilities it declares — that limit is {}",
+                    declared_not_checked("use of a capability this component never declared")
                 ))
             ));
             bx += bw + BADGE_GAP;
@@ -1813,9 +1876,9 @@ fn render_component<'a>(
                 ty = y + BADGE_H - 6.0,
                 label = esc(b),
                 tip = title(&format!(
-                    "this component may use `{b}`. A component may use only the capabilities \
-                     it declares — using an undeclared one is an architecture finding \
-                     (§5.3, A0404)."
+                    "this component may use `{b}`. A component may use only the \
+                     capabilities it declares — that limit is {}",
+                    declared_not_checked("use of a capability this component never declared")
                 ))
             ));
             bx += bw + BADGE_GAP;
@@ -3424,26 +3487,8 @@ pub fn render_svg_with_options(
             (nested + 1, fns)
         })
         .fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
-    let unclaimed_fns = {
-        fn walk(c: &Component, inherited: bool, out: &mut usize) {
-            let has_default = c.checks.as_ref().is_some_and(|d| !d.is_empty());
-            let covered = inherited || has_default;
-            for fc in c.fns.values() {
-                let declares = fc.checks.as_ref().is_some_and(|c| !c.is_empty());
-                if !declares && !(covered && fc.checks.is_none()) {
-                    *out += 1;
-                }
-            }
-            for child in c.components.values() {
-                walk(child, covered, out);
-            }
-        }
-        let mut n = 0;
-        for c in doc.components.values() {
-            walk(c, false, &mut n);
-        }
-        n
-    };
+    // Was a second, wrong walk over the same tree. See `document_counts`.
+    let (_, _, unclaimed_fns) = document_counts(doc);
     fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
         if n == 1 { one } else { many }
     }
@@ -3784,11 +3829,11 @@ fn render_edge(
         EdgeKind::Call => {
             let mut tip = finding_tooltip_lines(findings);
             tip.push(format!(
-                "{a} -> {b} — {a} may call {b}. An undeclared cross-component call is \
-                 flagged as an architecture finding — a warning by default, an error if \
-                 the calling component is `strict` (§5.3, A0402).",
+                "{a} -> {b} — {a} may call {b}. That an undeclared cross-component call is \
+                 forbidden is {caveat}",
                 a = edge.from,
-                b = edge.to
+                b = edge.to,
+                caveat = declared_not_checked("a call that crosses this line")
             ));
             out.push_str(&format!(
                 "<g class=\"edge-call\">{tip}<path class=\"{line_class}\" d=\"M {fx:.1} {fy:.1} L {tx:.1} {ty:.1}\" marker-end=\"url(#arrow)\" />{badge_svg}</g>",

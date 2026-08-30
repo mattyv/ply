@@ -25,7 +25,7 @@ components:
 externals — systems and people outside this codebase: none declared
 
 edges — who may call whom, and what data flows where:
-  ("a -> b" means a may call b; an undeclared cross-component call is an architecture finding — a warning by default, an error if the calling component is `strict` (§5.3, A0402))
+  ("a -> b" means a may call b; that an undeclared cross-component call is forbidden is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so a call that crosses this line can still go unnoticed (§5.3))
   ("a ~> b : T" means T data flows from a to b — declared so the flow is visible; nothing checks flows in v1)
   cli -> core
 

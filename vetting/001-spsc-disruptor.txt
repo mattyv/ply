@@ -8,7 +8,7 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 components:
 
   component ring — maps to Rust module disruptor::spsc
-    capabilities: unsafe — this component may use only the capabilities it declares; using an undeclared one is an architecture finding (§5.3, A0404)
+    capabilities: unsafe — this component may use only the capabilities it declares. That limit is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so use of a capability this component never declared can still go unnoticed (§5.3)
     owns disruptor::spsc::Spsc — only this component may mutate them
     profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
@@ -25,7 +25,7 @@ components:
       fuzz(1024) — runs the function on 1024 random inputs, checking the contract on each
       generic — every check runs with T=u64; whatever they earn covers only that type
       trusted (a human vouches for this; no machine checks it): SPSC cross-thread safety (happens-before between cursors) — evidence: loom test tests/loom_spsc.rs
-      1 worked example, compiled into a test:
+      1 worked example, written down but not run: no check here asks for the declared examples, so nothing compiles them:
         { let q = Spsc::with_capacity(2); q.try_push(7).is_ok() } == true
     fn Spsc::try_pop
       bounded(3) — proves the contract for every input, unrolling loops at most 3 times
