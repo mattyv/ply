@@ -353,7 +353,11 @@ Nothing below jumps that queue.
       maintainer until after the bug backlog -- a large refactor of the tests that
       vouch for a release is the wrong thing to do while landing one.
 
-- [ ] **Consider pinning the Rust toolchain (`rust-toolchain.toml`).** CI installs
+- [x] **The Rust toolchain is pinned (`rust-toolchain.toml`, 1.98.0).** Done 2026-08-30:
+      CI and a contributor's machine now agree by construction rather than by anyone
+      remembering to type `cargo +stable`. Raising it is deliberate — bump the line, run
+      the suite, and fix the lints the new release brings in the same change.
+- [ ] ~~Consider pinning the Rust toolchain (`rust-toolchain.toml`).~~ CI installs
       `stable`, which was 1.98.0; this container had 1.94.1, four releases behind, and
       clippy gained lints in between. Two `-D warnings` failures therefore could not be
       reproduced locally and were pushed red. Installing `stable` here and running
