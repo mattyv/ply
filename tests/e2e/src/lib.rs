@@ -267,10 +267,11 @@ pub fn run_cargo_build(crate_dir: &Path) -> CargoTestRun {
 /// from.
 ///
 /// Copies everything a workspace build of `ply-cli` reads: the root
-/// manifest and lockfile, every crate under `crates/`, and `schema/`
-/// (`ply_core::schema` embeds `schema/ply.schema.json` via `include_str!`
-/// at a path relative to `ply-core`'s own manifest, so it must exist at the
-/// same relative depth in the copy). `target/` lives *inside* the copy too,
+/// manifest and lockfile, every crate the root manifest declares as a
+/// workspace member, and `schema/` (`ply_core::schema` embeds
+/// `schema/ply.schema.json` via `include_str!` at a path relative to
+/// `ply-core`'s own manifest, so it must exist at the same relative depth
+/// in the copy). `target/` lives *inside* the copy too,
 /// deliberately -- not shared with this repo's own `target/` -- so the
 /// whole thing, source and every build artifact alike, is one tempdir that
 /// vanishes on drop and never touches this checkout's build state.
@@ -279,6 +280,11 @@ pub struct PlySourceCopy {
 }
 
 impl PlySourceCopy {
+    /// The copy's own root -- the directory holding its `Cargo.toml`.
+    pub fn root(&self) -> &Path {
+        self.dir.path()
+    }
+
     /// `crates/ply-core/src` inside the copy -- edit a file under here
     /// between two calls to `build()` to change what the next build's
     /// identity hashes, honestly: a real second build from real changed
@@ -306,31 +312,72 @@ impl PlySourceCopy {
 
 /// Copies Ply's own source tree into a fresh tempdir. See
 /// [`PlySourceCopy`]'s own doc for exactly what is copied and why.
+///
+/// Which directories come along is read out of the root manifest rather
+/// than listed here. It was listed here until 2026-08-30, and the day four
+/// crates joined the workspace the copy became one cargo refuses to load --
+/// a root manifest naming members that were not on disk. The only symptom
+/// was `cargo build ... failed` from a test about build identity, which
+/// says nothing about the real cause.
 pub fn copy_ply_source() -> PlySourceCopy {
     let root = repo_root();
     let dir = tempfile::tempdir().expect("tempdir");
-    for name in ["crates", "schema"] {
-        let dst = dir.path().join(name);
+
+    // `schema/` is not a workspace member but a build of `ply-cli` reads it:
+    // `ply_core::schema` embeds `schema/ply.schema.json` with `include_str!`
+    // at a path relative to `ply-core`'s manifest, so it has to sit at the
+    // same relative depth in the copy.
+    let mut to_copy = vec!["schema".to_string()];
+    to_copy.extend(workspace_member_dirs(&root));
+
+    for name in to_copy {
+        let dst = dir.path().join(&name);
         std::fs::create_dir_all(&dst).unwrap();
-        copy_dir_recursive(&root.join(name), &dst);
+        copy_dir_recursive(&root.join(&name), &dst);
     }
     for name in ["Cargo.toml", "Cargo.lock"] {
         std::fs::copy(root.join(name), dir.path().join(name)).unwrap();
     }
-    // The workspace root declares `tests/e2e` as an explicit member --
-    // cargo requires that manifest to exist even though building `-p
-    // ply-cli` never compiles its test binaries -- so its library half
-    // (never the `tests/` integration tests, which are not needed to
-    // build the binary) comes along too.
-    std::fs::create_dir_all(dir.path().join("tests/e2e/src")).unwrap();
-    std::fs::copy(
-        root.join("tests/e2e/Cargo.toml"),
-        dir.path().join("tests/e2e/Cargo.toml"),
-    )
-    .unwrap();
-    copy_dir_recursive(
-        &root.join("tests/e2e/src"),
-        &dir.path().join("tests/e2e/src"),
-    );
     PlySourceCopy { dir }
+}
+
+/// Every directory the root manifest's `members` list resolves to, with
+/// `crates/*`-style patterns expanded against what is actually on disk.
+fn workspace_member_dirs(root: &Path) -> Vec<String> {
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    let list = manifest
+        .split_once("members")
+        .expect("root manifest declares no workspace members")
+        .1
+        .split_once('[')
+        .expect("`members` is not followed by a list")
+        .1
+        .split_once(']')
+        .expect("`members` list is never closed")
+        .0;
+
+    let mut dirs = Vec::new();
+    for pattern in list.split('"').skip(1).step_by(2) {
+        match pattern.strip_suffix("/*") {
+            Some(parent) => {
+                for entry in std::fs::read_dir(root.join(parent)).unwrap() {
+                    let entry = entry.unwrap();
+                    if entry.path().join("Cargo.toml").exists() {
+                        dirs.push(format!(
+                            "{}/{}",
+                            parent,
+                            entry.file_name().to_string_lossy()
+                        ));
+                    }
+                }
+            }
+            None => dirs.push(pattern.to_string()),
+        }
+    }
+    assert!(
+        !dirs.is_empty(),
+        "read no workspace members out of {}",
+        root.join("Cargo.toml").display()
+    );
+    dirs
 }
