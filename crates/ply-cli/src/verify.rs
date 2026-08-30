@@ -1071,20 +1071,23 @@ fn verify_loaded_crate(
         }
     }
     let node_ids: Vec<String> = plans.iter().map(|p| p.node_id.clone()).collect();
-    let (topo_order, cyclic) = topological_order(&bounded_eligible, &node_ids, &edges);
+    let (topo_order, tainted) = ply_core::schedule::order(&bounded_eligible, &node_ids, &edges);
     // Processing order: callees before callers among the orderable
-    // bounded-eligible claims, then the ones a cycle left unorderable (D5's
-    // second branch covers every one of their contracted-callee edges, so
-    // their own place relative to each other cannot matter -- and no cycle
-    // is introduced by this graph itself: `g` never depends on `f` under
-    // callees-first construction, edges only ever point callee-to-caller,
-    // so the only way an index lands in `cyclic` is a genuine call cycle in
-    // the source, exactly D5's own "`f` and `g` in a cycle" case), then
-    // every other fresh claim in the order Pass 1 already produced --
-    // fuzz/test/mutate claims and unsupported/unclaimed ones never consult
-    // `known_bounded` at all, so nothing about their order is load-bearing.
+    // bounded-eligible claims, then the ones a cycle (or a transitive
+    // dependency on one -- see `ply_core::schedule`'s module doc comment for
+    // why `tainted` holds more than just the cycle's own members) left
+    // unorderable (D5's second branch covers every one of their
+    // contracted-callee edges, so their own place relative to each other
+    // cannot matter -- and no cycle is introduced by this graph itself: `g`
+    // never depends on `f` under callees-first construction, edges only
+    // ever point callee-to-caller, so the only way an index lands in
+    // `tainted` is a genuine call cycle in the source, or a dependency on
+    // one, exactly D5's own "`f` and `g` in a cycle" case), then every other
+    // fresh claim in the order Pass 1 already produced -- fuzz/test/mutate
+    // claims and unsupported/unclaimed ones never consult `known_bounded` at
+    // all, so nothing about their order is load-bearing.
     let mut processing_order: Vec<usize> = topo_order;
-    processing_order.extend(cyclic.iter().copied());
+    processing_order.extend(tainted.iter().copied());
     let ordered: std::collections::BTreeSet<usize> = processing_order.iter().copied().collect();
     processing_order.extend(
         (0..plans.len()).filter(|i| {
@@ -1122,7 +1125,7 @@ fn verify_loaded_crate(
         if bounded_eligible.contains(&idx) {
             resolve_contracted_calls(
                 &mut plans[idx].boundary,
-                cyclic.contains(&idx),
+                tainted.contains(&idx),
                 &known_bounded,
             );
             plans[idx].inputs.verified_bounds = plans[idx].boundary.verified.clone();
@@ -1740,65 +1743,6 @@ fn resolve_contracted_calls(
             },
         });
     }
-}
-
-/// Topological order (Kahn's algorithm, deterministic: ties break on node
-/// id, never on `Vec` insertion order) over the call graph restricted to
-/// this run's bounded-eligible, not-yet-known claims (§5.5's "within a
-/// crate, verify claimed functions callees-before-callers"). Returns the
-/// orderable claims callees-first, and separately the ones a cycle left
-/// unorderable -- "a cycle cannot be ordered" is not a failure of this
-/// function, it is the fact D5's second branch exists to catch.
-fn topological_order(
-    domain: &std::collections::BTreeSet<usize>,
-    node_ids: &[String],
-    edges: &BTreeMap<usize, std::collections::BTreeSet<usize>>,
-) -> (Vec<usize>, std::collections::BTreeSet<usize>) {
-    use std::collections::BTreeSet;
-    // Restricted to `domain` throughout -- an earlier version of this
-    // function sized everything off `node_ids.len()` (every plan, reused
-    // and non-bounded-eligible ones included), so a reused or fuzz-only
-    // claim with in-degree 0 by default silently entered the topological
-    // order and was then run through the ordered pass unconditionally
-    // (adversarial review, 2026-08-26). `domain` is the only set this
-    // function may ever place a node from or return in `cyclic`.
-    let mut indegree: BTreeMap<usize, usize> = domain.iter().map(|&i| (i, 0)).collect();
-    for succs in edges.values() {
-        for &j in succs {
-            if let Some(d) = indegree.get_mut(&j) {
-                *d += 1;
-            }
-        }
-    }
-    let mut ready: BTreeSet<(String, usize)> = domain
-        .iter()
-        .filter(|&&i| indegree[&i] == 0)
-        .map(|&i| (node_ids[i].clone(), i))
-        .collect();
-    let mut order = Vec::new();
-    let mut placed: BTreeSet<usize> = BTreeSet::new();
-    while let Some(&(ref id, i)) = ready.iter().next() {
-        let id = id.clone();
-        ready.remove(&(id, i));
-        order.push(i);
-        placed.insert(i);
-        if let Some(succs) = edges.get(&i) {
-            for &j in succs {
-                if let Some(d) = indegree.get_mut(&j) {
-                    *d -= 1;
-                    if *d == 0 {
-                        ready.insert((node_ids[j].clone(), j));
-                    }
-                }
-            }
-        }
-    }
-    let cyclic: BTreeSet<usize> = domain
-        .iter()
-        .copied()
-        .filter(|i| !placed.contains(i))
-        .collect();
-    (order, cyclic)
 }
 
 /// D5's third branch (§5.5): the caller's `bounded` check earns nothing,

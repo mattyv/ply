@@ -1,4 +1,4 @@
-//! `ply-schedule`: the pure verification scheduler for the future `cargo ply verify`
+//! `ply-schedule`: the `stub_verified` gate for the future `cargo ply verify`
 //! (The-Ply-Spec.md D5, §5.5). No I/O, no external crates beyond `ply-kernel` (for
 //! [`Evidence`], reused rather than duplicated).
 //!
@@ -17,18 +17,13 @@
 //! first, the caller credited only if those proofs passed -- is therefore the entire
 //! soundness guarantee; an implementation that relaxes it is unsound and nothing
 //! downstream will notice." That makes this crate as soundness-critical as the verdict
-//! kernel (`tools/kernel`), so it gets the same treatment: one pure module, invariants
+//! kernel (`tools/kernel`), so it gets the same treatment: a pure module, invariants
 //! checked exhaustively (`tests/enumeration.rs`) rather than by spot-check alone.
 //!
 //! ## Scope
 //!
-//! This crate answers two questions, both pure functions of already-known data:
+//! This crate answers one question, a pure function of already-known data:
 //!
-//! - [`plan`]: given a [`CallGraph`], what order must functions be verified in so
-//!   that every callee a caller might stub is verified (attempted) before that
-//!   caller? Cycles (D5: "f and g in a cycle") must degrade to a same-batch group,
-//!   never deadlock and never let one cycle member precede another as if the
-//!   dependency were resolved.
 //! - [`may_stub`]: given proof results that have actually arrived this run, may
 //!   `caller` assume `callee`'s contract via `stub_verified`? [`StubDecision::Allowed`]
 //!   is returned only when `callee` itself passed a Kani contract proof this run, in a
@@ -38,6 +33,39 @@
 //!   (§5.5's "anything else" list) via [`StubRefusalReason`], which is what a
 //!   `conditional` verdict's assumption-listing (D5, `ply-kernel`'s
 //!   `VerdictNode::conditional`) is built from.
+//!
+//! The other half of D5's scheduler -- *what order* functions must actually be
+//! verified in so that every callee is attempted before its caller, and which
+//! claims a cycle (or a transitive dependency on one) denies assumed-contract
+//! credit to -- is the part that actually ships, and it lives in
+//! `ply_core::schedule::order` (`crates/ply-core/src/schedule.rs`), consumed
+//! directly by `ply-cli`. It used to be duplicated here as `plan`/`Batch`, which
+//! implemented a *different*, more permissive contract (a cycle's dependents were
+//! layered into batches after the cycle, as though cleanly orderable) that nothing
+//! in the product ever called; it was deleted in favour of the one real
+//! implementation rather than kept as a second, untested opinion.
+//!
+//! ## `may_stub` is a *stricter-per-edge, laxer-overall* rule, and nothing runs it
+//!
+//! Read this before wiring [`may_stub`] into anything. It refuses a caller that is
+//! in the same cycle as its callee, and only that. The rule that ships denies
+//! assumed-contract credit far more widely: to every claim on a cycle **and every
+//! claim that transitively reaches one**, on every edge, whether or not the callee
+//! being assumed is itself in the cycle (The-Ply-Spec.md §5.5).
+//!
+//! So the two do not agree, and [`may_stub`] is the looser of the two in the case
+//! that matters -- a caller one step outside a cycle, asking to assume a cycle
+//! member's contract, is refused by the shipped rule and can be `Allowed` by this
+//! one. That is not a bug here: the finer per-edge rule is exactly what §5.5's own
+//! honesty note names as a possible future refinement. But adopting it is a
+//! deliberate relaxation of shipped conservatism, and it needs the argument §5.5
+//! declines to make -- that the cycle member's own passing proof did not itself
+//! rest on the assumption this call would grant. It is not a drop-in.
+//!
+//! Its own enumeration cannot catch the disagreement either: that corpus varies
+//! caller/callee pairs, and a claim that merely *depends on* a cycle needs three
+//! nodes to express. Recorded 2026-08-30, when review pointed out that this file
+//! read as though both halves now agreed.
 //!
 //! Anchoring (`id`/source spans), engine invocation, and Diagnostic assembly are a
 //! model-layer/CLI concern (M3, ADR-0003) and out of scope here, exactly as
@@ -162,15 +190,6 @@ impl CallGraph {
     }
 }
 
-/// A set of fns that may be verified in parallel -- no fn in one [`Batch`] is a
-/// (transitive, acyclic) callee of any fn in an earlier batch it could legally stub,
-/// nor of any other fn in the *same* batch it could legally stub (same-batch members
-/// are either mutually independent or mutually cyclic; either way, neither may stub
-/// the other -- see [`may_stub`]). Always sorted ascending by [`FnId`], for the same
-/// determinism reason as the rest of this crate.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Batch(pub Vec<FnId>);
-
 /// D5's refusal taxonomy: every reason [`may_stub`] can refuse a `stub_verified`,
 /// each mapping directly to one of §5.5's "anything else" cases -- this *is* the
 /// assumptions-listing a `conditional` verdict (`ply-kernel`'s
@@ -234,109 +253,6 @@ fn all_reachability(graph: &CallGraph) -> BTreeMap<FnId, BTreeSet<FnId>> {
 /// component), `a == b` included. This is D5's "in a cycle" test.
 fn same_scc(reach: &BTreeMap<FnId, BTreeSet<FnId>>, a: FnId, b: FnId) -> bool {
     a == b || (reach[&a].contains(&b) && reach[&b].contains(&a))
-}
-
-/// Assigns each fn's strongly-connected-component a "batch index": 0 if the SCC
-/// calls no other SCC, else `1 + max` over every other SCC it calls. Reads on the
-/// SCC-condensation graph, which is acyclic by construction (SCCs are maximal
-/// mutually-reachable classes), so this always terminates -- standing obligation 3's
-/// no-deadlock/no-infinite-loop half. Memoized so each SCC's layer is computed once
-/// regardless of how many predecessors ask for it.
-fn scc_layers(
-    graph: &CallGraph,
-    ids: &[FnId],
-    scc_of: &BTreeMap<FnId, FnId>,
-) -> BTreeMap<FnId, usize> {
-    // Condensation edges: scc(caller) -> scc(callee) whenever they differ.
-    let mut condensation_out: BTreeMap<FnId, BTreeSet<FnId>> = BTreeMap::new();
-    for &caller in ids {
-        let sc = scc_of[&caller];
-        for callee in graph.callees(caller) {
-            let sd = scc_of[&callee];
-            if sd != sc {
-                condensation_out.entry(sc).or_default().insert(sd);
-            }
-        }
-    }
-
-    let scc_reps: BTreeSet<FnId> = scc_of.values().copied().collect();
-    let mut layer: BTreeMap<FnId, usize> = BTreeMap::new();
-
-    // The condensation is a DAG, so plain memoized recursion terminates -- no
-    // visiting-guard is needed for correctness, only for termination, and
-    // termination already follows from acyclicity.
-    fn layer_of(
-        scc: FnId,
-        out: &BTreeMap<FnId, BTreeSet<FnId>>,
-        cache: &mut BTreeMap<FnId, usize>,
-    ) -> usize {
-        if let Some(&l) = cache.get(&scc) {
-            return l;
-        }
-        let l = match out.get(&scc) {
-            None => 0,
-            Some(succs) => succs
-                .iter()
-                .map(|&s| 1 + layer_of(s, out, cache))
-                .max()
-                .unwrap_or(0),
-        };
-        cache.insert(scc, l);
-        l
-    }
-
-    for &s in &scc_reps {
-        layer_of(s, &condensation_out, &mut layer);
-    }
-    layer
-}
-
-/// Plans the callees-before-callers verification order for every fn in `graph`
-/// (The-Ply-Spec.md D5, §5.5): each returned [`Batch`] may be verified in parallel,
-/// and batch `i` never depends (through an acyclic call edge) on any batch after it.
-///
-/// Cycles degrade rather than deadlock (D5: "f and g in a cycle"): every fn in a
-/// strongly-connected component lands in the *same* batch as the rest of that
-/// component, since none of them can be strictly ordered before another -- verifying
-/// them still works (each proof runs against an *assumed* contract for the others,
-/// per [`may_stub`]'s [`StubRefusalReason::CalleeInCycle`]), it just cannot rely on
-/// stubbing across the cycle.
-///
-/// Deterministic (standing obligation 4): batches are ordered by ascending layer
-/// index and each batch's contents are sorted ascending by [`FnId`] -- both are a
-/// direct consequence of iterating `BTreeMap`/`BTreeSet` (never a hash-based
-/// collection), so two calls on an equal `graph` always produce an equal result.
-pub fn plan(graph: &CallGraph) -> Vec<Batch> {
-    let ids: Vec<FnId> = graph.fn_ids().collect();
-    if ids.is_empty() {
-        return Vec::new();
-    }
-
-    let reach = all_reachability(graph);
-    let scc_of: BTreeMap<FnId, FnId> = ids
-        .iter()
-        .map(|&id| {
-            // Canonical SCC representative: the smallest id mutually reachable with
-            // `id` (always includes `id` itself).
-            let rep = ids
-                .iter()
-                .copied()
-                .find(|&other| same_scc(&reach, id, other))
-                .expect("id is always mutually reachable with itself");
-            (id, rep)
-        })
-        .collect();
-
-    let layer = scc_layers(graph, &ids, &scc_of);
-    let max_layer = layer.values().copied().max().unwrap_or(0);
-
-    let mut batches: Vec<Vec<FnId>> = vec![Vec::new(); max_layer + 1];
-    for &id in &ids {
-        // `ids` iterates in ascending order (from `BTreeMap::keys`), so pushing in
-        // that order keeps each batch sorted without a separate sort pass.
-        batches[layer[&scc_of[&id]]].push(id);
-    }
-    batches.into_iter().map(Batch).collect()
 }
 
 /// Decides whether `caller` may verify itself with `#[kani::stub_verified(callee)]`

@@ -781,6 +781,41 @@ refused by name rather than hanging or silently returning weaker evidence under 
 stronger word. The refusal says what would work instead: such a function is not
 unchecked, it needs a different check.
 
+**How the list grows is measured too, and not by counting types.** The same discipline
+that justifies each entry above governs which entry comes next, because the obvious
+instrument for that turned out to be the wrong one. Measured 2026-08-27 and adopted 2026-08-30
+(`docs/invariant-reachability.md`), against a library designed with no knowledge of Ply --
+`tests/fixtures/ratelimiter/`, written from `docs/greenfield-ratelimiter-design.md` by
+someone told not to think about checkability and not told this project existed, who then
+enumerated eleven properties they cared about: the share of that library's public-surface types Ply
+could construct rose from 21% to roughly 80%, and the number of those eleven properties
+that became checkable went from **zero to zero**. The metric moved sixty points while the
+outcome did not move at all, because it counted how often a type appears rather than
+whether any property could be reached; it was dominated by getters and configuration,
+while the type that library's whole correctness argument rested on had a public-surface
+count of zero, being internal state. Its own denominator was soft enough that two
+paragraphs of one commit quoted different totals for the same measurement without anyone
+noticing -- a percentage invites comparison against its own history rather than scrutiny
+of what is underneath it.
+
+Additions to this list are therefore ranked by **which single missing capability unblocks
+the most properties somebody independently wrote down**, recorded per property as: whether
+it is a single-function property at all, what specifically stops it, and whether its
+author flagged it as risky. On the library measured, that ranking put floating point first
+(built since on the sampling tier, `2443b85` -- proving over floats remains out of scope,
+as the type list below states) and put `struct`s and `enum`s last -- the reverse of what type
+coverage implied. It also separates two things a coverage share cannot: a property that is
+**out of this tool's shape entirely** (a sixteen-thread stress test is better evidence than
+any single-function check could produce) from one that is in shape but unreachable for want
+of plumbing. Only the second is a gap. The first is what `coverage.not_checked` (§5.6, §5.7)
+exists to report, and its count is a result to state plainly rather than a deficit to close.
+
+None of this demotes proof itself. The evidence ladder means something only because its
+strongest rungs are sometimes reached; a record of claims with no engine behind it is a
+list of assertions. What the measurement demotes is the expectation that reach should
+spread *evenly* -- proof earns its cost where consequence is concentrated in a small pure
+surface, which is the shape §5.4b's cheapest entries already describe.
+
 v1 supports functions whose parameters and return type are, recursively:
 
 - **integers, `bool`, `char`, `Option<T>`, `Result<T,E>`** of supported types — cheap
@@ -1082,6 +1117,20 @@ not a failure of the ordering, it is the fact the second branch below exists to 
 every claim in a cycle falls back to it, for every same-crate contracted callee it
 reaches, because the one thing branch one needs — this claim's callees already verified
 — cannot be established for a claim with no place in the order (built 2026-08-26).
+
+**The fallback reaches further than the cycle's own members, and this is easy to read
+past.** "No place in the order" is a property of the *ordering*, not of cycle membership:
+a claim's turn only arrives once every claimed callee it reaches has already been placed,
+so a claim that calls into a cycle — however many calls removed, and without being part of
+any cycle itself — never gets a turn either, and falls back on every edge exactly as a
+cycle member does. The same is true of a claim whose callee is not in this run's ordered
+set at all. So the set denied branch one is: **every claim on a cycle, plus every claim
+that transitively reaches one.** That is deliberately coarser than refusing edge by edge
+— a claim three calls downstream of a cycle is denied credit it might, on a finer rule,
+have been entitled to — and the coarseness is the safe direction, chosen because the
+finer rule requires establishing that the cycle member's own proof did not itself rest on
+the assumption the downstream call would grant. Written down 2026-08-30 after review found
+that the implementation had always behaved this way while no artifact said so.
 
 To verify fn `f` that calls fn `g`, the split is on **what `g` offers**, in three
 branches — the first two keyed on the evidence behind `g`'s contract, the third on there

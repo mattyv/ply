@@ -1,5 +1,151 @@
 # TODO
 
+## Review of the scheduler unification — 2026-08-30
+
+An independent adversarial pass over the five commits. It confirmed the soundness argument
+link by link, and confirmed the ordering code is byte-identical to what shipped before. It
+also found a seventh bug the exhaustive check could not see, after six earlier planted bugs
+had all died — which is the point the project keeps having to relearn: a check's adequacy is
+measured, never standing.
+
+- [x] **The check could not tell a tie broken on name from a tie broken on position.**
+      Every test used names `n0`, `n1`, `n2`, `n3` — sorted in the same order as the
+      positions they sat at, so the two rules were indistinguishable. Swapping one for the
+      other left all 1,048,576 cases green, all eight smaller tests green, and green the
+      test *named after the property it broke*. Names are now `d`, `b`, `a`, `c`, which sort
+      neither with the positions nor against them, so neither substitution can imitate the
+      real rule. Verified: replanted, and it now dies. This was not academic — real names are
+      `component::function`, and a nested component makes name order and position order
+      genuinely disagree.
+- [x] **The check read its output as a set, so placing something twice was invisible.** One
+      line comparing counts closes it.
+- [x] **The spec never stated the rule the whole change turns on.** It said a claim *in* a
+      cycle falls back; it never said the fallback also covers every claim that reaches one.
+      The implementation has always behaved that way and no artifact said so. §5.5 now does,
+      including why the coarse rule is the safe one.
+- [x] **The unused stub-permission gate reads as though it agrees with the shipped rule.**
+      It does not: it refuses only a caller inside the callee's own cycle, so it is looser
+      exactly where it matters, and its own exhaustive test cannot notice — that corpus has
+      two nodes and the disagreement needs three. Its crate doc now says so, and says that
+      adopting it is a deliberate relaxation needing an argument the spec declines to make.
+- [x] **Two claims in the spec were not true of the evidence they cited.** The measurement
+      was dated 2026-08-30; it was made 2026-08-27. And it was described as "a real outside
+      library", which it is not — it is `tests/fixtures/ratelimiter/`, in this repository,
+      written from a design brief by someone told not to think about checkability and not
+      told this project existed. That provenance is what makes the measurement worth citing,
+      so overstating it as third-party was both false and unnecessary. Corrected in the spec
+      and here; the commit message that carries it is already pushed and cannot be corrected
+      in place, which is why it is written down here instead.
+
+### KNOWN GAP: a function that calls itself is never denied credit by the ordering
+
+- [ ] **Self-recursion is filtered out before the ordering ever sees it**, so a
+      self-recursive claim is placed normally rather than denied. Credit for the self-call
+      is still refused, but only because the claim's own result is not yet available when
+      the decision is taken — an accident of sequence that no test pins. Meanwhile the
+      exhaustive check *does* include self-loops and requires them denied, so the tested
+      rule and the real input space quietly disagree about this one case. Pre-existing, not
+      introduced by this change; found by review 2026-08-30. Wants a test pinning that a
+      self-recursive claim earns nothing from itself.
+
+### KNOWN GAP: the spec still claims a restriction nothing enforces
+
+- [ ] **§5.4a says contract strings are restricted to a closed subset. Nothing checks
+      that**, and this repository's own rate-limiter fixture violates it. Flagged inside
+      `docs/invariant-reachability.md`, which the spec now cites as evidence — so the spec
+      leans on a document that names one of the spec's own claims as needing retraction, and
+      the retraction is still undone. Predates this branch; recorded 2026-08-30 rather than
+      left to be found again.
+
+## What widening the types is actually worth — decided 2026-08-30
+
+Agreed with the maintainer: **stop treating "support more types" as the roadmap.** The
+evidence against it is already in this repository and it is unusually direct.
+
+On the one library anyone measured against -- `tests/fixtures/ratelimiter/`, designed by
+someone told not to think about checkability and not told this project existed, who wrote
+down eleven properties they cared about -- the share of supported types went from 21% to about
+80%, and the number of those properties that became checkable went from zero to zero.
+Sixty points of work, no movement in the thing the work was for. The number was counting
+how often a type appears on a public surface, which turned out to be nearly unrelated to
+whether anything could be proved. It was also dominated by getters and configuration,
+while the type that library's whole correctness argument rested on had a public-surface
+count of zero, because it was internal state.
+
+What actually blocked those eleven: finding the function at all, building the object a
+method needs before it can be called, mutation, and floating point. Floats have since
+landed (`2443b85`), which is the strongest form of the argument -- the single
+highest-ranked blocker is discharged, so "more types" is not what stands between Ply and
+the next real property.
+
+**The replacement question, to be answered before any further type work is scheduled:**
+take a library whose author enumerated their own properties, and for each one record
+whether it is a single-function property at all, what specifically stops it, and whether
+the author flagged it as risky. Then rank by *which single missing capability unblocks
+the most properties*. That ranking put structs and enums last on the one library it was
+run against -- the opposite of what type coverage implied.
+
+**Two reasons a function cannot be checked, and they are not the same thing.** Conflating
+them is what makes "Ply's checkable subset is too narrow" sound damning when it mostly is
+not:
+
+- **Out of shape, permanently.** A sixteen-thread stress test is better evidence than
+  anything a single-function checker could produce. Refusing by name is the product
+  working. This category should be counted and reported, never quietly widened toward.
+- **In shape, unplumbed.** A genuine single-function property over a value Ply could
+  sample, blocked only by not being able to build the argument. This is a gap.
+
+Only the second is measurable, so effort drifts toward it whether or not it is where the
+value is. That drift is exactly what the 21%-to-80% episode was.
+
+**Consequence for the plan:** the honesty machinery (the rule registry, staleness
+reporting, the "what was NOT checked" output) is scheduled ahead of further type work.
+
+**Corrected the same day, before this was acted on.** The first version of this paragraph
+said the ledger "works across a whole codebase regardless of types" and called the proof
+engine "a bonus on the slice where it happens to be cheap". The second half is wrong and
+is withdrawn. A ledger with no engine behind it is a spreadsheet of assertions: the
+evidence ladder only means anything because its top rungs are sometimes reached, and if
+nothing ever reaches them the whole design collapses into "tested / not tested". Proof is
+what makes an entry in the ledger worth more than a claim; the ledger is what makes proof
+safe to trust and safe to lack. They are complementary, not ranked.
+
+What is true is narrower: **proof pays where it is concentrated, not where it is spread.**
+A small pure core carrying consequence out of proportion to its size is exactly where it
+earns its cost -- which is why this repository's own kernel gets exhaustive enumeration
+over every tree to a bound plus an unbounded inductive proof, and why the mutation run
+that guards it has already found real dead code and a blanked failure message that would
+have left every future counterexample unreadable. The mistake was never valuing proof; it
+was expecting proof to spread evenly across a codebase.
+
+That gives a targeting rule rather than a coverage programme: **widen toward the shapes
+where proof is cheap AND the consequence is concentrated**, and let the rest be recorded
+honestly. It also makes the gap below worse rather than acceptable -- Ply's kernel is
+precisely the shape where proof pays most, and Ply cannot reach it.
+
+### KNOWN GAP: Ply's own file does not record what Ply's own evidence is
+
+- [ ] **Ply's self-declaration is silent about both halves of its own honesty.** `ply.yaml`
+      declares which crates exist and which may depend on which, and stops. It does not
+      record that the verdict kernel and the check scheduler carry the strongest evidence
+      in the repository -- exhaustive enumeration over every tree to a bound, an unbounded
+      inductive proof for the kernel, a mutation run in CI that checks the check can still
+      see. Nor does it record that the parsing, rendering and process-driving shell is out
+      of reach and always will be.
+
+      Both omissions matter, and the second more. Ply's own argument is that saying "I
+      cannot see this" is the whole premise, and that the count of out-of-reach things
+      should be reported proudly rather than hidden. Ply does not do that for itself: a
+      reader of its self-portrait sees neither the proof nor the gap.
+
+      Sharpest form of it: **Ply cannot check its own most-proved code.** The kernel's
+      entry point takes a reference to a recursive tree; the scheduler takes a set of
+      numbers, a slice of strings and a map of sets. Ply can build a value for none of
+      those. Pointed at its own core, it would report that it cannot see it.
+
+      This is a gap in the one file whose entire purpose is that its claims are checked,
+      and it was not written down anywhere before today.
+
 ## The source copy followed a hand-written list — 2026-08-30 (2c9e343)
 
 The first CI run after the workspace merge went red, and it was the merge's
@@ -169,28 +315,42 @@ saw that class of bug because nothing calls it.
 
 So unification is a decision, not a move:
 
-- [ ] **Decide which ordering ships**, then unify toward it. Adopting `plan`'s layering
-      changes the order real verification runs in, which is a behaviour change to the
-      soundness-relevant path and wants its own review. Keeping the shipped ordering
-      means bringing its semantics into the pure module and re-deriving the two
-      enumerations against it — the enumerations currently prove properties of an
-      ordering nobody runs.
-- [ ] Whichever wins, carry the shipped copy's review fixes across deliberately and name
-      them in the commit. There are at least six; the `domain` restriction is the one
-      with a comment explaining itself, and the others will need finding.
-- [ ] The exhaustive checks come with it: 65,536 graphs (every edge mask on 4 nodes)
-      against an independent oracle, and 4,096 graph-plus-config combinations for the
-      stub gate. Two tests, 3.9 seconds — not "69,000 tests", which is how this was
-      described earlier today before anyone checked.
+- [x] **Decided which ordering ships: the shipped one** (`4dd4d30`). Its leftover
+      set is not merely the cycle's own members — a function only becomes orderable
+      once every function it calls has been placed, so a function that calls into a
+      cycle, however many steps removed, never becomes orderable either. Adopting
+      `plan`'s layering instead would have handed assumed-contract credit to exactly
+      those steps-removed dependents, which the shipped ordering deliberately
+      withholds. The ordering moved into `crates/ply-core/src/schedule.rs` unchanged
+      (same Kahn's-algorithm body, same id tie-break), and the returned leftover set
+      got a name that says what is in it (`tainted`, not `cyclic`).
+- [x] Carried across unchanged, so every review fix travelled with the code rather
+      than needing to be re-found: the `domain` restriction (2026-08-26, the one with
+      its own comment) and the reuse-decided-after-ordering fix are both still in the
+      moved function's doc comment and behaviour, verbatim.
+- [x] **The exhaustive check moved with it and grew a second dimension**
+      (`crates/ply-core/tests/schedule_enumeration.rs`): it now varies which
+      functions are in scope, not just the call graph's shape — 1,048,576
+      combinations, because scope (a claim that should never have entered the
+      ordered pass at all) is exactly where the 2026-08-26 bug lived. Checked
+      against an oracle computed a different way (SCC + reachability) than the
+      implementation (indegree counting).
 
-### KNOWN GAP that outranks the rest, found 2026-08-30
+### KNOWN GAP that outranks the rest, found 2026-08-30 — CLOSED (`4dd4d30`)
 
-- [ ] **The check scheduler exists twice.** `tools/schedule` holds one copy with an
-      exhaustive test suite over ~69,000 cases; the copy that actually ships is inside
-      `crates/ply-cli/src/verify.rs` and has no such suite. The docs call this ordering
-      the soundness guarantee. Two implementations of a soundness rule is one more than
-      can be trusted, and nothing downstream can catch them drifting apart. Unify before
-      building anything that depends on check ordering.
+- [x] **The check scheduler no longer exists twice.** `tools/schedule`'s `plan`/
+      `Batch` (the untested, more permissive copy) are deleted; `may_stub` and its
+      own exhaustive test are untouched and still live there. The one real ordering
+      is `ply_core::schedule::order`, called directly by `crates/ply-cli/src/
+      verify.rs`, and it is the copy the exhaustive test now covers. Verified after
+      the fact, independently: three deliberate breakages of the new module (a node
+      placed before one of its callees, a cycle's dependent left out of the tainted
+      set, the id tie-break replaced with a hash-based one) each made the
+      enumeration fail, and each failure named the actual defect rather than a bare
+      assertion. The full engine-backed suite (`cargo test -p ply-e2e`, 89 fixture
+      binaries, Kani proofs included) was run to completion afterward: 163 tests,
+      0 failures — the landing commit's own note ("the engine-backed suite has not
+      reported yet") is now resolved.
 
 ### A fourth review, and the half-fixes it found — 2026-08-30
 
@@ -1074,8 +1234,11 @@ project existed. Every number below is measured against it.
       that Ply never invents one.
 
 - [ ] **Strings and collections on the sampling tier.** Did not land; the mechanism now
-      exists. This is where parsing and validation bugs live, so it is the highest-value
-      remaining type work.
+      exists. **Demoted 2026-08-30, and the old justification here was withdrawn** -- it
+      read "this is where parsing and validation bugs live, so it is the highest-value
+      remaining type work", which is a guess dressed as a ranking. Build it when a
+      property somebody wrote down is blocked on it and nothing else, not as a programme.
+      See "What widening the types is actually worth" below.
 - [ ] KNOWN GAP: a constructor returning `Result<Self, E>` — a real shape in the yardstick
       — is still refused.
 - [ ] KNOWN GAP: `NonZero` and `Duration` are top-level only, never nested inside `Option`,
@@ -2082,6 +2245,13 @@ wall clock, 72 tests (was 53), zero warnings on `cargo check --workspace --tests
       oracles written from D5's text rather than from the production code. Mutation-
       checked by letting `NotRun` license a stub — the exact unsound shortcut Kani
       itself takes — and confirming it goes red.
+      **RETRACTED as of 2026-08-30 (`4dd4d30`): the SCC-condensation planning
+      described above never shipped** — `crates/ply-cli/src/verify.rs` carried its
+      own, stricter, untested ordering the whole time, and the two disagreed about
+      where a cycle's dependents go (see "The two schedulers order cycles
+      differently" and its resolution, above). The planning half (`plan`/`Batch`) is
+      now deleted; `may_stub` and its own enumeration, described accurately above,
+      are untouched. Read this bullet as "the stub-decision half only" from here on.
 - [ ] **D5 ambiguity surfaced by the scheduler**: cross-crate proof results are really
       scoped per (calling-crate, callee), since each consumer re-proves locally, but
       `ProofResults` models one global status per fn. Exact for same-crate; a
