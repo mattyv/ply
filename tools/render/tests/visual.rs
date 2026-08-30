@@ -174,6 +174,121 @@ fn completed_evidence_is_attached_to_actual_workspace_component_and_function_gro
     assert!(svg.contains("src/&lt;hostile&gt;&amp;&quot;.rs"));
 }
 
+/// The old renderer found its shapes by re-parsing its own rendered SVG:
+/// walking `<g>` tags, reading their `data-name`/`data-fn` attributes back
+/// as text, and joining nested ones into a dotted path with `.` — then
+/// matched that path against `element.label`, which for every element (see
+/// `collect_elements` in `visual/mod.rs`) is always the bare local name, not
+/// the dotted path. A top-level component's bare name and its dotted path
+/// are the same string, so the mismatch never showed up in a document with
+/// no nesting — every existing fixture here is exactly that shape. Nest one
+/// component inside another, give the outer one a name that needs XML
+/// escaping, and put a same-named inner component under two different
+/// outers: every one of those four nested elements is a shape the old
+/// matcher genuinely drew but could never find a label match for, so it
+/// silently left them all unattached.
+#[test]
+fn nested_components_with_a_shared_local_name_and_an_escaped_label_all_attach() {
+    let doc = parse_document(
+        r#"ply: 1
+components:
+  "Q&A":
+    anchor: app::qa
+    components:
+      inner:
+        anchor: app::qa::inner
+        fns:
+          run: {}
+  beta:
+    anchor: app::beta
+    components:
+      inner:
+        anchor: app::beta::inner
+        fns:
+          run: {}
+"#,
+    )
+    .unwrap();
+    let elements = BTreeMap::from([
+        (
+            "workspace-id".into(),
+            element("workspace-id", "workspace", "workspace", None, "bounded(2)"),
+        ),
+        (
+            "qa-id".into(),
+            element(
+                "qa-id",
+                "component",
+                "Q&A",
+                Some("workspace-id"),
+                "bounded(2)",
+            ),
+        ),
+        (
+            "qa-inner-id".into(),
+            element(
+                "qa-inner-id",
+                "component",
+                "inner",
+                Some("qa-id"),
+                "bounded(2)",
+            ),
+        ),
+        (
+            "qa-inner-run-id".into(),
+            element(
+                "qa-inner-run-id",
+                "fn",
+                "run",
+                Some("qa-inner-id"),
+                "bounded(4)",
+            ),
+        ),
+        (
+            "beta-id".into(),
+            element(
+                "beta-id",
+                "component",
+                "beta",
+                Some("workspace-id"),
+                "bounded(2)",
+            ),
+        ),
+        (
+            "beta-inner-id".into(),
+            element(
+                "beta-inner-id",
+                "component",
+                "inner",
+                Some("beta-id"),
+                "bounded(2)",
+            ),
+        ),
+        (
+            "beta-inner-run-id".into(),
+            element(
+                "beta-inner-run-id",
+                "fn",
+                "run",
+                Some("beta-inner-id"),
+                "violation",
+            ),
+        ),
+    ]);
+
+    let svg = render_svg_with_evidence(&doc, &elements, &[]).unwrap();
+
+    // Every element drawn corresponds to a real shape in this document, so
+    // every one of them must carry its own id — the invariant, not a
+    // spot-check of the two the old code happened to get right.
+    for id in elements.keys() {
+        assert!(
+            svg.contains(&format!("data-element-id=\"{id}\"")),
+            "{id} never attached a data-element-id: {svg}"
+        );
+    }
+}
+
 #[test]
 fn unmatched_or_ambiguous_elements_are_not_attached_to_another_shape() {
     let doc = parse_document(

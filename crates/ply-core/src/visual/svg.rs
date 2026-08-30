@@ -1252,6 +1252,11 @@ fn render_fn_chip(
     // go", the focused view answers "what exactly is promised here". Drawing
     // clauses at overview zoom would bury that first question in prose.
     show_contract: bool,
+    // This fn's own evidence element, already resolved by the caller
+    // (`render_component`, which alone knows the component's own resolved
+    // id -- the parent id a fn's lookup needs) alongside the diagnostics
+    // that attach to it. `None` whenever there is no evidence to attach.
+    evidence: Option<(&super::VisualElement, &[super::VisualDiagnostic])>,
 ) -> FnChip {
     // §5.1: the list that actually governs this fn — its own if it declared
     // one, else the nearest ancestor component's default (or nothing, if it
@@ -1449,6 +1454,12 @@ fn render_fn_chip(
     if effective.is_empty() {
         tip.push("no checks declared — nothing about this function is verified (unclaimed)".into());
     }
+    // Last, as everywhere else this attaches: a run's outcome is a
+    // postscript to what the document promised, not a replacement for it.
+    if let Some((element, diagnostics)) = evidence {
+        tip.push(completed_evidence_tooltip(element, diagnostics));
+    }
+    let id_attr = element_id_attr(evidence.map(|(element, _)| element));
 
     let clause_w = clauses
         .iter()
@@ -1489,7 +1500,7 @@ fn render_fn_chip(
         )
     };
     let svg = format!(
-        "<g class=\"fn-chip\" data-fn=\"{}\">{}<rect class=\"{box_class}\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{height:.1}\" rx=\"4\" />{inner}{badge_svg}</g>",
+        "<g class=\"fn-chip\" data-fn=\"{}\"{id_attr}>{}<rect class=\"{box_class}\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{height:.1}\" rx=\"4\" />{inner}{badge_svg}</g>",
         esc(name),
         title(&tip.join("\n"))
     );
@@ -1590,12 +1601,16 @@ struct ComponentBox {
 
 /// Everything the recursive component walk threads unchanged through every
 /// level: capability profiles, the findings lookup, the collapse decisions,
-/// and the document's edge list (consulted for a box's internal layout).
+/// the document's edge list (consulted for a box's internal layout), and
+/// the optional evidence view (`None` on every path but
+/// `render_svg_with_evidence`, which is what keeps `render_svg` and
+/// `render_svg_with_options` byte-for-byte unchanged).
 struct WalkCtx<'a> {
     profiles: &'a IndexMap<String, Vec<String>>,
     findings: &'a FindingCtx<'a>,
     collapse: &'a CollapseCtx<'a>,
     edges: &'a [String],
+    evidence: Option<&'a EvidenceView<'a>>,
 }
 
 /// Picks between the two component renderers for one box: collapsed
@@ -1612,6 +1627,13 @@ fn render_component_dispatch<'a>(
     walk: &WalkCtx,
     level: usize,
     inherited: Option<InheritedChecks<'a>>,
+    // The id of the evidence element that draws this component's own
+    // container (the workspace, or the nearest ancestor component that
+    // itself resolved) -- `None` whenever there is no evidence, or the
+    // container above this one never resolved. Threaded explicitly, like
+    // `qualified` and `level`, because it changes at every recursive call
+    // rather than staying fixed for the whole walk the way `WalkCtx` does.
+    parent_element_id: Option<&str>,
 ) -> ComponentBox {
     let is_hollow = comp.fns.is_empty() && comp.components.is_empty();
     if !is_hollow && walk.collapse.should_collapse(qualified, level) {
@@ -1622,9 +1644,18 @@ fn render_component_dispatch<'a>(
             walk.profiles,
             walk.findings,
             inherited,
+            walk.evidence.zip(parent_element_id),
         )
     } else {
-        render_component(name, qualified, comp, walk, level, inherited)
+        render_component(
+            name,
+            qualified,
+            comp,
+            walk,
+            level,
+            inherited,
+            parent_element_id,
+        )
     }
 }
 
@@ -1644,6 +1675,11 @@ fn render_collapsed_component(
     profiles: &IndexMap<String, Vec<String>>,
     ctx: &FindingCtx,
     inherited: Option<InheritedChecks>,
+    // The evidence view together with the id of the container this
+    // component draws inside, already zipped into one option -- see
+    // `resolved_component`'s doc comment for why the pair travels as one
+    // parameter rather than two.
+    evidence_parent: Option<(&EvidenceView, &str)>,
 ) -> ComponentBox {
     let findings = collect_findings_subtree(qualified, comp, ctx);
     let ceiling = component_ceiling(name, comp, inherited);
@@ -1749,6 +1785,14 @@ fn render_collapsed_component(
     if let Some(reason) = colour_reason_line(comp, inherited, name) {
         tip.push(reason);
     }
+    // The evidence line always comes last, after every declared-tooltip
+    // line above -- a run's outcome reads as a postscript to what the
+    // document promised, never ahead of it.
+    let resolved = resolved_component(evidence_parent, name);
+    if let Some((element, diagnostics)) = resolved {
+        tip.push(completed_evidence_tooltip(element, diagnostics));
+    }
+    let id_attr = element_id_attr(resolved.map(|(element, _)| element));
 
     let component_box_class = format!(
         "{} {}",
@@ -1760,7 +1804,7 @@ fn render_collapsed_component(
         ceiling_class(ceiling)
     );
     let mut svg = format!(
-        "<g class=\"component\" data-name=\"{}\">{}<rect class=\"collapsed-stack {ceiling}\" x=\"{STACK_OFFSET:.1}\" y=\"{STACK_OFFSET:.1}\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" /><rect class=\"{component_box_class}\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
+        "<g class=\"component\" data-name=\"{}\"{id_attr}>{}<rect class=\"collapsed-stack {ceiling}\" x=\"{STACK_OFFSET:.1}\" y=\"{STACK_OFFSET:.1}\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" /><rect class=\"{component_box_class}\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
         esc(name),
         title(&tip.join("\n")),
         ceiling = ceiling_class(ceiling)
@@ -1840,11 +1884,13 @@ fn render_component<'a>(
     walk: &WalkCtx,
     level: usize,
     inherited: Option<InheritedChecks<'a>>,
+    parent_element_id: Option<&str>,
 ) -> ComponentBox {
     let WalkCtx {
         profiles,
         findings: ctx,
         edges,
+        evidence,
         ..
     } = *walk;
     let findings = ctx.component_findings(qualified);
@@ -1856,6 +1902,13 @@ fn render_component<'a>(
     // declares no default of its own) inherit — threaded to the fn chips
     // and nested boxes below.
     let this_default = component_default_checks(name, comp, inherited);
+    // Resolved once, up front: this component's own evidence element (if
+    // any), looked up by exactly the identity this walk already has in
+    // hand -- its bare local name and the parent's own resolved id -- so
+    // both its own tag/tooltip below and its children's lookups (which need
+    // its id as *their* parent) read from the same answer.
+    let own_evidence = resolved_component(evidence.zip(parent_element_id), name);
+    let own_element_id = own_evidence.map(|(element, _)| element.id.as_str());
     let finding_badge_w = finding_badge_width(&findings);
     let name_w = text_w(name, NAME_CHAR_W)
         + if findings.is_empty() {
@@ -1901,6 +1954,7 @@ fn render_component<'a>(
                     walk,
                     level + 1,
                     this_default,
+                    own_element_id,
                 ),
             )
         })
@@ -1919,6 +1973,7 @@ fn render_component<'a>(
                     ctx,
                     this_default,
                     walk.collapse.is_focused_subtree(qualified),
+                    resolved_function(evidence.zip(own_element_id), fname, qualified),
                 ),
             )
         })
@@ -2118,6 +2173,12 @@ fn render_component<'a>(
                 .into(),
         );
     }
+    // Last, as everywhere else this attaches: a run's outcome is a
+    // postscript to what the document promised, not a replacement for it.
+    if let Some((element, diagnostics)) = own_evidence {
+        tip.push(completed_evidence_tooltip(element, diagnostics));
+    }
+    let id_attr = element_id_attr(own_evidence.map(|(element, _)| element));
 
     let component_box_class = format!(
         "{} {}{}",
@@ -2130,7 +2191,7 @@ fn render_component<'a>(
         if is_hollow { " hollow-box" } else { "" }
     );
     let mut svg = format!(
-        "<g class=\"component\" data-name=\"{}\">{}<rect class=\"{component_box_class}\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
+        "<g class=\"component\" data-name=\"{}\"{id_attr}>{}<rect class=\"{component_box_class}\" x=\"0\" y=\"0\" width=\"{box_w:.1}\" height=\"{box_h:.1}\" rx=\"6\" />",
         esc(name),
         title(&tip.join("\n"))
     );
@@ -2641,86 +2702,115 @@ pub fn render_svg(doc: &Document) -> Result<String, RenderError> {
     render_svg_with_options(doc, &RenderOptions::default())
 }
 
-#[derive(Debug)]
-struct SemanticSvgGroup {
-    kind: &'static str,
-    qualified_parent: Option<String>,
-    semantic_name: String,
-    opening_end: usize,
+/// Evidence available while rendering: the flat element/diagnostic view a
+/// verify run publishes (The-Ply-Spec.md's visual envelope), consulted
+/// directly at each component and function chip as the walk draws it,
+/// rather than reconstructed afterward by re-parsing the SVG this module
+/// just emitted. Every render path but `render_svg_with_evidence` threads
+/// `None` for this the whole way down (see `WalkCtx`), which is what keeps
+/// `render_svg` and `render_svg_with_options` byte-for-byte unchanged.
+struct EvidenceView<'a> {
+    elements: &'a BTreeMap<String, super::VisualElement>,
+    diagnostics: &'a [super::VisualDiagnostic],
 }
 
-fn svg_attribute(tag: &str, name: &str) -> Option<String> {
-    let marker = format!(" {name}=\"");
-    let start = tag.find(&marker)? + marker.len();
-    let end = tag[start..].find('"')? + start;
-    Some(tag[start..end].to_string())
-}
-
-/// Locate only the renderer's real component and function groups. Their
-/// existing `data-name`/`data-fn` markers are part of the static grammar, and
-/// SVG nesting supplies the qualified component path. This deliberately does
-/// not search by a bare function label across the whole document.
-fn semantic_svg_groups(svg: &str) -> Vec<SemanticSvgGroup> {
-    let mut groups = Vec::new();
-    let mut open_groups: Vec<Option<String>> = Vec::new();
-    let mut cursor = 0;
-    while let Some(relative) = svg[cursor..].find('<') {
-        let start = cursor + relative;
-        if svg[start..].starts_with("</g>") {
-            open_groups.pop();
-            cursor = start + 4;
-            continue;
-        }
-        if !svg[start..].starts_with("<g") {
-            cursor = start + 1;
-            continue;
-        }
-        let Some(relative_end) = svg[start..].find('>') else {
-            break;
-        };
-        let opening_end = start + relative_end;
-        let tag = &svg[start..=opening_end];
-        let parent = open_groups.iter().rev().find_map(Clone::clone);
-        let class = svg_attribute(tag, "class");
-        let semantic_component = if class.as_deref() == Some("component") {
-            svg_attribute(tag, "data-name").map(|name| {
-                let qualified = parent
-                    .as_ref()
-                    .map_or_else(|| name.clone(), |parent| format!("{parent}.{name}"));
-                groups.push(SemanticSvgGroup {
-                    kind: "component",
-                    qualified_parent: parent.clone(),
-                    semantic_name: qualified.clone(),
-                    opening_end,
-                });
-                qualified
-            })
-        } else {
-            if class.as_deref() == Some("fn-chip")
-                && let (Some(parent), Some(name)) = (parent.clone(), svg_attribute(tag, "data-fn"))
-            {
-                groups.push(SemanticSvgGroup {
-                    kind: "fn",
-                    qualified_parent: Some(parent),
-                    semantic_name: name,
-                    opening_end,
-                });
-            }
-            None
-        };
-        open_groups.push(semantic_component);
-        cursor = opening_end + 1;
+impl<'a> EvidenceView<'a> {
+    /// The one element matching `matches`, or `None` if zero or more than
+    /// one do — an ambiguous match is left unattached rather than guessed,
+    /// same as an absent one (`unmatched_or_ambiguous_elements_are_not_attached_to_another_shape`
+    /// in `tools/render/tests/visual.rs` pins this for a malformed payload;
+    /// well-formed evidence never actually hits it, since kind + label +
+    /// parent id is unique by construction).
+    fn find(
+        &self,
+        matches: impl Fn(&super::VisualElement) -> bool,
+    ) -> Option<&'a super::VisualElement> {
+        let mut hits = self.elements.values().filter(|element| matches(element));
+        let first = hits.next()?;
+        hits.next().is_none().then_some(first)
     }
-    groups
+
+    fn workspace(&self) -> Option<&'a super::VisualElement> {
+        self.find(|element| element.kind == "workspace" && element.parent_id.is_none())
+    }
+
+    /// A component is identified by its own bare local name (never a
+    /// qualified dotted path — see `collect_elements` in `visual/mod.rs`,
+    /// which labels every element with `node.id` alone) and the id of the
+    /// element that resolved for its immediate container.
+    fn component(&self, name: &str, parent_id: &str) -> Option<&'a super::VisualElement> {
+        self.find(|element| {
+            element.kind == "component"
+                && element.label == name
+                && element.parent_id.as_deref() == Some(parent_id)
+        })
+    }
+
+    /// A fn's label is ordinarily bare too, but some callers qualify it
+    /// (`"component::fn"`) — both forms are accepted, matching what the
+    /// pre-refactor matcher accepted.
+    fn function(
+        &self,
+        name: &str,
+        qualified: &str,
+        parent_id: &str,
+    ) -> Option<&'a super::VisualElement> {
+        let qualified_label = format!("{qualified}::{name}");
+        self.find(|element| {
+            element.kind == "fn"
+                && element.parent_id.as_deref() == Some(parent_id)
+                && (element.label == name || element.label == qualified_label)
+        })
+    }
 }
 
-fn unique_element(
-    elements: &BTreeMap<String, super::VisualElement>,
-    mut predicate: impl FnMut(&super::VisualElement) -> bool,
-) -> Option<&super::VisualElement> {
-    let mut matches = elements.values().filter(|element| predicate(element));
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
+/// This component's own resolved evidence, paired with the diagnostics view
+/// it would need to build a tooltip — `None` when there is no evidence at
+/// all, or its container never resolved (so this one has no parent id to
+/// match against). Takes the evidence view and the container's id already
+/// zipped into one option, rather than as two -- the two are only ever
+/// meaningful together, and keeping them one parameter is what keeps this
+/// call's own caller (`render_collapsed_component`) under clippy's argument
+/// limit.
+fn resolved_component<'a>(
+    container: Option<(&EvidenceView<'a>, &str)>,
+    name: &str,
+) -> Option<(&'a super::VisualElement, &'a [super::VisualDiagnostic])> {
+    let (evidence, parent_id) = container?;
+    evidence
+        .component(name, parent_id)
+        .map(|element| (element, evidence.diagnostics))
+}
+
+/// Same as [`resolved_component`], for a fn chip.
+fn resolved_function<'a>(
+    container: Option<(&EvidenceView<'a>, &str)>,
+    name: &str,
+    qualified: &str,
+) -> Option<(&'a super::VisualElement, &'a [super::VisualDiagnostic])> {
+    let (evidence, parent_id) = container?;
+    evidence
+        .function(name, qualified, parent_id)
+        .map(|element| (element, evidence.diagnostics))
+}
+
+/// Same as [`resolved_component`], for the single workspace frame.
+fn resolved_workspace<'a>(
+    evidence: Option<&EvidenceView<'a>>,
+) -> Option<(&'a super::VisualElement, &'a [super::VisualDiagnostic])> {
+    let evidence = evidence?;
+    evidence
+        .workspace()
+        .map(|element| (element, evidence.diagnostics))
+}
+
+/// The `data-element-id` attribute to splice straight into a drawn group's
+/// own opening tag when evidence resolved an element for it — empty
+/// otherwise, so a tag that never resolved anything is unmodified.
+fn element_id_attr(element: Option<&super::VisualElement>) -> String {
+    element.map_or_else(String::new, |element| {
+        format!(" data-element-id=\"{}\"", esc(&element.id))
+    })
 }
 
 fn completed_evidence_tooltip(
@@ -2778,147 +2868,49 @@ fn completed_evidence_tooltip(
     lines.join("\n")
 }
 
-#[derive(Debug)]
-struct SvgEdit {
-    start: usize,
-    end: usize,
-    replacement: String,
-}
-
-fn attach_to_group(
-    svg: &str,
-    group: &SemanticSvgGroup,
-    element: &super::VisualElement,
-    diagnostics: &[super::VisualDiagnostic],
-    edits: &mut Vec<SvgEdit>,
-) {
-    edits.push(SvgEdit {
-        start: group.opening_end,
-        end: group.opening_end,
-        replacement: format!(" data-element-id=\"{}\"", esc(&element.id)),
-    });
-    let title_open = group.opening_end + 1;
-    if !svg[title_open..].starts_with("<title>") {
-        return;
-    }
-    let content_start = title_open + "<title>".len();
-    let Some(relative_end) = svg[content_start..].find("</title>") else {
-        return;
-    };
-    let content_end = content_start + relative_end;
-    edits.push(SvgEdit {
-        start: content_end,
-        end: content_end,
-        replacement: format!(
-            "\n{}",
-            esc(&completed_evidence_tooltip(element, diagnostics))
-        ),
-    });
-}
-
-/// Render completed results through the static SVG grammar, then attach stable
-/// IDs and portable evidence tooltips to the real shapes. Unmatched or
-/// ambiguous elements are left unattached rather than guessed.
+/// Render with the given evidence resolved and attached directly at every
+/// component group and fn chip as the walk draws it — a stable
+/// `data-element-id` plus the evidence sentence appended to the tooltip
+/// already built for that shape, never left to a later pass to (mis)find.
+/// A thin wrapper over [`render_svg_impl`], the default (never-collapse)
+/// options plus `Some` evidence.
 pub fn render_svg_with_evidence(
     doc: &Document,
     elements: &BTreeMap<String, super::VisualElement>,
     diagnostics: &[super::VisualDiagnostic],
 ) -> Result<String, RenderError> {
-    let mut rendered = render_svg(doc)?;
-    if elements.is_empty() {
-        return Ok(rendered);
-    }
-
-    let workspace = unique_element(elements, |element| {
-        element.kind == "workspace" && element.parent_id.is_none()
-    });
-    let groups = semantic_svg_groups(&rendered);
-    let mut resolved_components: HashMap<String, &super::VisualElement> = HashMap::new();
-    let mut edits = Vec::new();
-
-    if let (Some(element), Some(frame_start)) =
-        (workspace, rendered.find("<rect class=\"workspace-frame\""))
-        && let Some(open_relative) = rendered[frame_start..].find('>')
-    {
-        let opening_end = frame_start + open_relative;
-        if let Some(close_relative) = rendered[opening_end + 1..].find("</rect>") {
-            let close_end = opening_end + 1 + close_relative + "</rect>".len();
-            edits.push(SvgEdit {
-                start: frame_start,
-                end: frame_start,
-                replacement: format!("<g data-element-id=\"{}\">", esc(&element.id)),
-            });
-            edits.push(SvgEdit {
-                start: close_end,
-                end: close_end,
-                replacement: "</g>".into(),
-            });
-            let frame_group = SemanticSvgGroup {
-                kind: "workspace",
-                qualified_parent: None,
-                semantic_name: "workspace".into(),
-                opening_end,
-            };
-            attach_to_group(&rendered, &frame_group, element, diagnostics, &mut edits);
-            // The frame is a rect, not a pre-existing group; discard the
-            // attribute edit intended for a `<g>` opening. The wrapper above
-            // owns the stable ID while this call enriches the frame's title.
-            edits.retain(|edit| !(edit.start == opening_end && edit.end == opening_end));
-        }
-    }
-
-    for group in groups.iter().filter(|group| group.kind == "component") {
-        let expected_parent_id = match &group.qualified_parent {
-            Some(parent) => resolved_components
-                .get(parent)
-                .map(|element| element.id.as_str()),
-            None => workspace.map(|element| element.id.as_str()),
-        };
-        let Some(expected_parent_id) = expected_parent_id else {
-            continue;
-        };
-        let Some(element) = unique_element(elements, |element| {
-            element.kind == "component"
-                && esc(&element.label) == group.semantic_name
-                && element.parent_id.as_deref() == Some(expected_parent_id)
-        }) else {
-            continue;
-        };
-        resolved_components.insert(group.semantic_name.clone(), element);
-        attach_to_group(&rendered, group, element, diagnostics, &mut edits);
-    }
-
-    for group in groups.iter().filter(|group| group.kind == "fn") {
-        let Some(parent_path) = group.qualified_parent.as_ref() else {
-            continue;
-        };
-        let Some(parent) = resolved_components.get(parent_path) else {
-            continue;
-        };
-        let qualified_label = format!("{parent_path}::{}", group.semantic_name);
-        let Some(element) = unique_element(elements, |element| {
-            element.kind == "fn"
-                && element.parent_id.as_deref() == Some(&parent.id)
-                && (esc(&element.label) == group.semantic_name
-                    || esc(&element.label) == qualified_label)
-        }) else {
-            continue;
-        };
-        attach_to_group(&rendered, group, element, diagnostics, &mut edits);
-    }
-
-    edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
-    for edit in edits {
-        rendered.replace_range(edit.start..edit.end, &edit.replacement);
-    }
-    Ok(rendered)
+    let evidence = EvidenceView {
+        elements,
+        diagnostics,
+    };
+    render_svg_impl(doc, &RenderOptions::default(), Some(&evidence))
 }
 
 /// `render_svg`, plus The-Ply-Spec.md §7.1's `--depth`/`--focus`/`--collapse`
-/// collapsing.
+/// collapsing. A thin wrapper over [`render_svg_impl`] with no evidence —
+/// see that function's doc comment for why this keeps its output
+/// byte-for-byte unchanged from before evidence attachment existed.
 pub fn render_svg_with_options(
     doc: &Document,
     options: &RenderOptions,
+) -> Result<String, RenderError> {
+    render_svg_impl(doc, options, None)
+}
+
+/// The real render walk, shared by every public entry point above. `evidence`
+/// is threaded through `WalkCtx` to every component and fn chip the walk
+/// draws (`render_component`, `render_collapsed_component`, `render_fn_chip`)
+/// so each can look its own element up directly, by the identity it already
+/// has in hand, and attach a `data-element-id` plus tooltip line inline.
+/// `None` makes every one of those lookups return nothing, so
+/// `render_svg`/`render_svg_with_options` (both call this with `None`) are
+/// unaffected by evidence ever having been threaded through at all — the
+/// committed `vetting/`/`docs/` artifacts and the insta snapshot depend on
+/// that being exactly true.
+fn render_svg_impl(
+    doc: &Document,
+    options: &RenderOptions,
+    evidence: Option<&EvidenceView>,
 ) -> Result<String, RenderError> {
     // §7.1 "finding (tool-computed, not declared)": run `ply-check`'s
     // document-local rules up front, then thread `ctx` through every render
@@ -2949,6 +2941,13 @@ pub fn render_svg_with_options(
     let collapsing_active =
         options.depth.is_some() || options.focus.is_some() || !options.collapse.is_empty();
 
+    // Resolved once, ahead of the whole walk: the workspace's own evidence
+    // element (if any), whose id is what makes a *top-level* component's
+    // own lookup below resolvable at all (see `EvidenceView::component`'s
+    // doc comment — a component's evidence match always needs its
+    // container's resolved id).
+    let workspace_evidence = resolved_workspace(evidence);
+    let workspace_element_id = workspace_evidence.map(|(element, _)| element.id.as_str());
     let top: Vec<(String, ComponentBox)> = doc
         .components
         .iter()
@@ -2964,9 +2963,11 @@ pub fn render_svg_with_options(
                         findings: &ctx,
                         collapse: &collapse,
                         edges: &doc.edges,
+                        evidence,
                     },
                     1,
                     None,
+                    workspace_element_id,
                 ),
             )
         })
@@ -3848,7 +3849,7 @@ pub fn render_svg_with_options(
     // §7.1 / newbie bar: the frame is the first thing anyone sees, so its
     // tooltip explains the whole picture rather than assuming the reader
     // has already read The-Ply-Spec.md.
-    let workspace_tip = title(
+    let mut workspace_tip_text = String::from(
         "This diagram is drawn from ply.yaml, the file describing this codebase's \
          architecture and verification claims. Each box is a component; chips are \
          functions with their declared checks; arrows are permitted calls (solid) and \
@@ -3860,6 +3861,14 @@ pub fn render_svg_with_options(
          picture full of promises should not look like a picture full of results. \
          Hover anything for its meaning.",
     );
+    // Last, as everywhere else this attaches: a run's outcome is a
+    // postscript to what the document promised, not a replacement for it.
+    if let Some((element, diagnostics)) = workspace_evidence {
+        workspace_tip_text.push('\n');
+        workspace_tip_text.push_str(&completed_evidence_tooltip(element, diagnostics));
+    }
+    let workspace_tip = title(&workspace_tip_text);
+    let workspace_id_attr = element_id_attr(workspace_evidence.map(|(element, _)| element));
 
     // Author-written strings reach this output; `tame` is applied once at
     // the end rather than at each of the dozen insertion sites, so no future
@@ -3876,7 +3885,7 @@ pub fn render_svg_with_options(
          <pattern id=\"unclaimed-hatch-dark\" patternUnits=\"userSpaceOnUse\" width=\"8\" height=\"8\" patternTransform=\"rotate(45)\">\
          <rect width=\"8\" height=\"8\" fill=\"#15171c\" />\
          <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#4a5262\" stroke-width=\"2\" /></pattern></defs>\
-         <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\">{workspace_tip}</rect>\
+         <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\"{workspace_id_attr}>{workspace_tip}</rect>\
          <g><title>ply.yaml — the document this picture is drawn from. Everything you \
 see here was declared in it; nothing was inferred from code. What each box has actually \
 been checked for is what `cargo ply verify` reports, not this drawing.\n{version_line}</title>\
