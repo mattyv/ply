@@ -45,6 +45,28 @@
 //! in the product ever called; it was deleted in favour of the one real
 //! implementation rather than kept as a second, untested opinion.
 //!
+//! ## `may_stub` is a *stricter-per-edge, laxer-overall* rule, and nothing runs it
+//!
+//! Read this before wiring [`may_stub`] into anything. It refuses a caller that is
+//! in the same cycle as its callee, and only that. The rule that ships denies
+//! assumed-contract credit far more widely: to every claim on a cycle **and every
+//! claim that transitively reaches one**, on every edge, whether or not the callee
+//! being assumed is itself in the cycle (The-Ply-Spec.md §5.5).
+//!
+//! So the two do not agree, and [`may_stub`] is the looser of the two in the case
+//! that matters -- a caller one step outside a cycle, asking to assume a cycle
+//! member's contract, is refused by the shipped rule and can be `Allowed` by this
+//! one. That is not a bug here: the finer per-edge rule is exactly what §5.5's own
+//! honesty note names as a possible future refinement. But adopting it is a
+//! deliberate relaxation of shipped conservatism, and it needs the argument §5.5
+//! declines to make -- that the cycle member's own passing proof did not itself
+//! rest on the assumption this call would grant. It is not a drop-in.
+//!
+//! Its own enumeration cannot catch the disagreement either: that corpus varies
+//! caller/callee pairs, and a claim that merely *depends on* a cycle needs three
+//! nodes to express. Recorded 2026-08-30, when review pointed out that this file
+//! read as though both halves now agreed.
+//!
 //! Anchoring (`id`/source spans), engine invocation, and Diagnostic assembly are a
 //! model-layer/CLI concern (M3, ADR-0003) and out of scope here, exactly as
 //! `ply-kernel`'s own doc comment draws that line for the verdict tree.

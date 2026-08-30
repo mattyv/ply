@@ -127,8 +127,15 @@ pub fn order(
 mod tests {
     use super::*;
 
+    /// Ids that deliberately do **not** sort in index order -- `n0..nN`
+    /// would make a tie-break on index look identical to one on id, and
+    /// that blind spot was real until review found it on 2026-08-30.
+    /// These sort to indices `[2, 1, 3, 0]`.
     fn ids(n: usize) -> Vec<String> {
-        (0..n).map(|i| format!("n{i}")).collect()
+        ["d", "b", "a", "c"][..n]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     #[test]
@@ -141,8 +148,11 @@ mod tests {
     #[test]
     fn independent_nodes_place_in_id_order() {
         let domain: BTreeSet<usize> = [0, 1, 2].into_iter().collect();
+        // Ids "d", "b", "a" -- so id order is node 2, then 1, then 0, the
+        // exact reverse of index order. An implementation breaking ties on
+        // index would place `[0, 1, 2]` and pass with `n0..n2` ids.
         let (placed, tainted) = order(&domain, &ids(3), &BTreeMap::new());
-        assert_eq!(placed, vec![0, 1, 2]);
+        assert_eq!(placed, vec![2, 1, 0]);
         assert!(tainted.is_empty());
     }
 

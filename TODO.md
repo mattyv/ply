@@ -1,12 +1,70 @@
 # TODO
 
+## Review of the scheduler unification — 2026-08-30
+
+An independent adversarial pass over the five commits. It confirmed the soundness argument
+link by link, and confirmed the ordering code is byte-identical to what shipped before. It
+also found a seventh bug the exhaustive check could not see, after six earlier planted bugs
+had all died — which is the point the project keeps having to relearn: a check's adequacy is
+measured, never standing.
+
+- [x] **The check could not tell a tie broken on name from a tie broken on position.**
+      Every test used names `n0`, `n1`, `n2`, `n3` — sorted in the same order as the
+      positions they sat at, so the two rules were indistinguishable. Swapping one for the
+      other left all 1,048,576 cases green, all eight smaller tests green, and green the
+      test *named after the property it broke*. Names are now `d`, `b`, `a`, `c`, which sort
+      neither with the positions nor against them, so neither substitution can imitate the
+      real rule. Verified: replanted, and it now dies. This was not academic — real names are
+      `component::function`, and a nested component makes name order and position order
+      genuinely disagree.
+- [x] **The check read its output as a set, so placing something twice was invisible.** One
+      line comparing counts closes it.
+- [x] **The spec never stated the rule the whole change turns on.** It said a claim *in* a
+      cycle falls back; it never said the fallback also covers every claim that reaches one.
+      The implementation has always behaved that way and no artifact said so. §5.5 now does,
+      including why the coarse rule is the safe one.
+- [x] **The unused stub-permission gate reads as though it agrees with the shipped rule.**
+      It does not: it refuses only a caller inside the callee's own cycle, so it is looser
+      exactly where it matters, and its own exhaustive test cannot notice — that corpus has
+      two nodes and the disagreement needs three. Its crate doc now says so, and says that
+      adopting it is a deliberate relaxation needing an argument the spec declines to make.
+- [x] **Two claims in the spec were not true of the evidence they cited.** The measurement
+      was dated 2026-08-30; it was made 2026-08-27. And it was described as "a real outside
+      library", which it is not — it is `tests/fixtures/ratelimiter/`, in this repository,
+      written from a design brief by someone told not to think about checkability and not
+      told this project existed. That provenance is what makes the measurement worth citing,
+      so overstating it as third-party was both false and unnecessary. Corrected in the spec
+      and here; the commit message that carries it is already pushed and cannot be corrected
+      in place, which is why it is written down here instead.
+
+### KNOWN GAP: a function that calls itself is never denied credit by the ordering
+
+- [ ] **Self-recursion is filtered out before the ordering ever sees it**, so a
+      self-recursive claim is placed normally rather than denied. Credit for the self-call
+      is still refused, but only because the claim's own result is not yet available when
+      the decision is taken — an accident of sequence that no test pins. Meanwhile the
+      exhaustive check *does* include self-loops and requires them denied, so the tested
+      rule and the real input space quietly disagree about this one case. Pre-existing, not
+      introduced by this change; found by review 2026-08-30. Wants a test pinning that a
+      self-recursive claim earns nothing from itself.
+
+### KNOWN GAP: the spec still claims a restriction nothing enforces
+
+- [ ] **§5.4a says contract strings are restricted to a closed subset. Nothing checks
+      that**, and this repository's own rate-limiter fixture violates it. Flagged inside
+      `docs/invariant-reachability.md`, which the spec now cites as evidence — so the spec
+      leans on a document that names one of the spec's own claims as needing retraction, and
+      the retraction is still undone. Predates this branch; recorded 2026-08-30 rather than
+      left to be found again.
+
 ## What widening the types is actually worth — decided 2026-08-30
 
 Agreed with the maintainer: **stop treating "support more types" as the roadmap.** The
 evidence against it is already in this repository and it is unusually direct.
 
-On the one outside library anyone measured against -- eleven properties its own author
-had written down and cared about -- the share of supported types went from 21% to about
+On the one library anyone measured against -- `tests/fixtures/ratelimiter/`, designed by
+someone told not to think about checkability and not told this project existed, who wrote
+down eleven properties they cared about -- the share of supported types went from 21% to about
 80%, and the number of those properties that became checkable went from zero to zero.
 Sixty points of work, no movement in the thing the work was for. The number was counting
 how often a type appears on a public surface, which turned out to be nearly unrelated to

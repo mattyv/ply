@@ -79,8 +79,24 @@ fn build_domain(domain_mask: u32) -> BTreeSet<usize> {
     (0..N).filter(|&i| domain_mask & (1 << i) != 0).collect()
 }
 
+/// Deliberately **not** `n0..n3`. Ids that sort in index order make an
+/// index-based tie-break indistinguishable from an id-based one, and that
+/// blind spot was real: swapping the ready-set's key from `(id, index)` to
+/// `(index, id)` left all 1,048,576 cases green, all eight unit tests green,
+/// and even `ties_among_ready_nodes_break_on_node_id` green -- the test named
+/// after the property it broke (found by review, 2026-08-30).
+///
+/// These sort to indices `[2, 1, 3, 0]`: neither aligned with index order nor
+/// its reverse, so neither an index tie-break nor a reversed one can imitate
+/// it. This is not a contrived shape either -- real node ids are
+/// `"{component path}::{fn}"`, and because `.` sorts before `:`, a nested
+/// component makes `"a.b::f"` precede `"a::g"` while their indices run the
+/// other way. Index order and id order genuinely diverge in production.
 fn node_ids() -> Vec<String> {
-    (0..N).map(|i| format!("n{i}")).collect()
+    ["d", "b", "a", "c"][..N]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Independent reachability oracle: a plain adjacency matrix relaxed to its
@@ -237,6 +253,18 @@ fn order_places_callees_before_callers_and_taints_every_cycle_dependent() {
                 }
             }
 
+            // Every domain node appears exactly once, never twice: the
+            // checks above read `placed` as a set, so a mutant that pushed a
+            // node more than once would satisfy all of them.
+            if placed.len() + tainted.len() != domain.len() {
+                offending.push(format!(
+                    "multiplicity: edges {edges_mask:#06x}, domain {domain_mask:#06x}: {} placed + {} tainted != {} in domain",
+                    placed.len(),
+                    tainted.len(),
+                    domain.len()
+                ));
+            }
+
             // The tainted set matches the independent oracle exactly.
             for (i, &expected) in expected_tainted.iter().enumerate() {
                 let actual = tainted.contains(&i);
@@ -294,9 +322,14 @@ fn ties_among_ready_nodes_break_on_node_id() {
     let edges: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     let (placed, tainted) = order(&domain, &ids, &edges);
     assert!(tainted.is_empty());
+    // Node 0 is "d" and node 1 is "b", so the smaller *id* is the larger
+    // *index*. An implementation that broke ties on index would place
+    // `[0, 1]` here and this assertion is the only thing in the suite that
+    // tells the two apart.
     assert_eq!(
         placed,
-        vec![0, 1],
-        "two independently-ready nodes must place the smaller id first"
+        vec![1, 0],
+        "two independently-ready nodes must place the smaller id first, \
+         which here is the higher-numbered node"
     );
 }
