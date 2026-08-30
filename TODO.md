@@ -1,5 +1,35 @@
 # TODO
 
+## KNOWN GAP: the required-check names can be made impossible to satisfy — 2026-08-30
+
+Branch protection is on, so `main` now requires named checks to pass. That makes the
+*names* of CI jobs load-bearing, and four of the six are generated rather than fixed:
+
+    shard: [0, 1, 2, 3]
+    name: product-e2e (${{ matrix.shard }}/4)
+
+The shard count is written twice — once as the list, once as the literal `4` in the
+display name — and the name is what branch protection matches on.
+
+- [ ] **Change the shard count and every pull request blocks forever.** Going to six
+      shards produces jobs called `product-e2e (0/6)`…`(5/6)`, so a rule requiring
+      `product-e2e (0/4)` waits on a check that will never report again. The pull
+      request cannot merge and nothing explains why — the failure is a *missing*
+      check, not a failing one, which is the harder kind to read. Editing only the
+      list and not the string is worse still: the jobs are then named
+      `product-e2e (4/4)` and `(5/4)`.
+
+      The standard fix is a gate job that does nothing but depend on every shard and
+      succeed, with a fixed name, and require that instead. Then the shard count is
+      free to change and the required name never moves. Not built — it is a change to
+      CI that cannot be tested without merging it, so it wants a deliberate decision
+      rather than being slipped in.
+
+      Cheap partial mitigation available today: require `product` and `kernel-mutants`
+      (both fixed names) and leave the shards advisory. That protects the fast checks
+      and the mutation gate but not the end-to-end suite, which is the one that has
+      actually caught a regression on this branch.
+
 ## Review of the scheduler unification — 2026-08-30
 
 An independent adversarial pass over the five commits. It confirmed the soundness argument
