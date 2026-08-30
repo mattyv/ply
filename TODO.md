@@ -1,5 +1,47 @@
 # TODO
 
+## Coverage audit, and the four faults it found — 2026-08-30
+
+A cheaper model swept the text renderer and the drawing for tests that pass without
+proving anything. It confirmed the repair below held — the whole class of bug the first
+review found is now caught — and found four more faults that the suite could not see. All
+four are verified by hand, fixed with tests that kill them, and the tests were watched
+going red under each fault before being kept.
+
+**Line coverage was not measurable: neither tool is installed, and nothing was installed
+to get a number.** That is less of a loss than it sounds. Every line involved in all four
+faults below *executes* under the old tests; a coverage tool would have called them
+covered. Mutation survival is what found them, and it is the number this project should
+keep quoting.
+
+- [x] **An arrow touching the outside world could silently lose the only words saying it
+      is unchecked.** The note fires when either end is an outside party; requiring
+      *both* ends — which essentially never happens — deleted it from every real edge and
+      no test noticed. Now every such edge is checked against the document.
+- [x] **`--focus` could show the wrong half of the tree in detail.** What is inside the
+      component you named is meant to be spelled out; the boxes above it stay plain so
+      they do not bury it. Swapping those two was invisible to roughly ninety lines of
+      focus tests, because they all check the geometry of whatever got drawn and never
+      that the right things got drawn. My first attempt at the guard was itself useless —
+      I picked the target and an unrelated component, which sit on the same side of the
+      swap and pass either way. It needed one component inside the target and one above
+      it.
+- [x] **Nesting in the text was not checked at all.** Indentation is the only thing
+      grouping a function with its component there — no boxes, no lines — and handing a
+      child the same depth as its parent, flattening a whole subtree, left every test
+      green. Every assertion was "these words appear somewhere", and somewhere is not the
+      same place. Depth is now checked against the document for every component and
+      function.
+
+**Recorded, not fixed.** The installed command's `--text` test compares the command's
+output against a second call to the same function, so it proves the wiring and cannot
+prove the content. That is the right division of labour — content is the render tests'
+job — but it is worth knowing that assertion is wiring-only.
+
+**Still unmeasured.** The drawing module is 4,000+ lines and only three points in it were
+mutation-tested. Standing mutation coverage exists for the verdict kernel and nothing
+else; extending it past the kernel remains open.
+
 ## Review of the transcript, and what it found — 2026-08-30
 
 A second model reviewed the feature below. It was right about almost everything, and the

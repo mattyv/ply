@@ -4975,3 +4975,174 @@ fn the_sentences_a_first_time_reader_has_to_act_on_say_what_they_mean() {
          be:\n{text}"
     );
 }
+
+/// Indentation is the only thing that says which function belongs to which
+/// component in the text form — there are no boxes, no lines, nothing else
+/// to group by. So the depth the walk hands down its own recursion is load
+/// bearing, and it was checked nowhere: passing a child the *same* depth as
+/// its parent, so a nested component's whole subtree flattens into its
+/// parent, left every test green (coverage audit, 2026-08-30). Every
+/// assertion about the text was "these words appear somewhere", and
+/// somewhere is not the same place.
+#[test]
+fn nesting_in_the_text_matches_nesting_in_the_document() {
+    fn expect(
+        comps: &indexmap::IndexMap<String, ply_render::model::Component>,
+        depth: usize,
+        out: &mut Vec<(String, usize)>,
+    ) {
+        for (name, comp) in comps {
+            // Top-level components sit one level in from the margin.
+            out.push((format!("component {name} "), 2 * (depth + 1)));
+            for fname in comp.fns.keys() {
+                out.push((format!("fn {fname}"), 2 * (depth + 2)));
+            }
+            expect(&comp.components, depth + 1, out);
+        }
+    }
+
+    for fixture in [
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "tests/fixtures/full.ply.yaml",
+        "tests/fixtures/checks_inheritance.ply.yaml",
+    ] {
+        let yaml = std::fs::read_to_string(fixture).unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let text = ply_render::transcript::render_transcript(&doc);
+
+        let mut wanted = Vec::new();
+        expect(&doc.components, 0, &mut wanted);
+        assert!(
+            wanted.iter().any(|(h, _)| h.starts_with("component ")),
+            "{fixture} has no components, so this proves nothing"
+        );
+
+        for (heading, indent) in wanted {
+            let line = text
+                .lines()
+                .find(|l| l.trim_start().starts_with(heading.trim_end()))
+                .unwrap_or_else(|| panic!("{fixture}: no line for {heading:?} in:\n{text}"));
+            let got = line.len() - line.trim_start().len();
+            assert_eq!(
+                got, indent,
+                "{fixture}: {heading:?} is indented {got} spaces and its place in the document \
+                 says {indent}. Indentation is the only thing grouping a function with its \
+                 component here, so a reader would attach it to the wrong one."
+            );
+        }
+    }
+}
+
+/// Every edge that names an outside party carries the note saying so. The
+/// normal shape is one internal end and one external end — and the test set
+/// had nothing pinning that shape, so requiring *both* ends to be external
+/// (which is essentially never) silently deleted the note from every real
+/// edge and no test noticed (coverage audit, 2026-08-30). That note is the
+/// only thing on the line that says the arrow is a declaration nobody
+/// checked.
+#[test]
+fn an_edge_touching_the_outside_world_always_says_it_is_unverified() {
+    for fixture in [
+        "../../vetting/003-trading-system.ply.yaml",
+        "tests/fixtures/externals.ply.yaml",
+    ] {
+        let yaml = std::fs::read_to_string(fixture).unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let text = ply_render::transcript::render_transcript(&doc);
+
+        let mut checked = 0;
+        for raw in &doc.edges {
+            let (from, to) = raw
+                .split_once("~>")
+                .or_else(|| raw.split_once("->"))
+                .expect("an edge names two ends");
+            let from = from.trim();
+            let to = to.split(':').next().unwrap().trim();
+            let external = [from, to]
+                .into_iter()
+                .find(|e| doc.externals.contains_key(*e));
+            let Some(external) = external else { continue };
+            checked += 1;
+
+            let line = text
+                .lines()
+                .find(|l| l.contains(from) && l.contains(to) && l.trim().starts_with(from))
+                .unwrap_or_else(|| panic!("{fixture}: no line for edge {raw:?} in:\n{text}"));
+            assert!(
+                line.contains(&format!(
+                    "— {external} is outside this codebase, so this edge is a declaration, \
+                     never a verified fact"
+                )),
+                "{fixture}: this edge touches `{external}`, which Ply never checks, and the \
+                 line does not say so. A reader takes it for a verified fact: {line:?}"
+            );
+        }
+        assert!(
+            checked > 0,
+            "{fixture}: no edge here names an external, so this proves nothing"
+        );
+    }
+}
+
+/// `--focus` promises that the named component and what is inside it are
+/// spelled out in full, while the boxes on the path down to it stay plain —
+/// they are there for orientation, and filling them with clause text drowns
+/// the thing being focused on. Swapping which side of the path counts as
+/// "inside" inverts exactly that, and every focus test passed: they check
+/// geometry and overflow of whatever got drawn, never that the right boxes
+/// got the detail (coverage audit, 2026-08-30).
+///
+/// Both directions have to be exercised, and picking the wrong pair proves
+/// nothing: the target itself and an unrelated component land on the same
+/// side of the swap, so a test built from those two passes either way. What
+/// separates them is a component *inside* the target and a component *above*
+/// it.
+#[test]
+fn focus_spells_out_what_is_inside_the_target_and_not_what_is_above_it() {
+    use ply_render::svg::{RenderOptions, render_svg_with_options};
+
+    let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).unwrap();
+
+    // A chip drawn with its promise spelled out carries clause text; one
+    // drawn plain does not.
+    let spelled_out = |focus: &str, fname: &str| -> bool {
+        let svg = render_svg_with_options(
+            &doc,
+            &RenderOptions {
+                focus: Some(focus.to_string()),
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        let parsed = roxmltree::Document::parse(&svg).unwrap();
+        parsed
+            .descendants()
+            .find(|n| n.attribute("data-fn") == Some(fname))
+            .unwrap_or_else(|| panic!("--focus {focus} drew no chip for {fname}"))
+            .descendants()
+            .any(|d| {
+                d.attribute("class")
+                    .is_some_and(|c| c.split(' ').any(|t| t == "fn-clause"))
+            })
+    };
+
+    // Inside the target, two levels down: this is what was asked for.
+    assert!(
+        spelled_out("ingest", "OrderBook::apply"),
+        "`OrderBook::apply` sits inside the component that was focused on, and its promise is \
+         not spelled out — which is the one thing --focus was asked to do"
+    );
+    // Above the target: drawn so the reader can see the path down, and
+    // deliberately left plain.
+    assert!(
+        !spelled_out("strategy.signals", "Strategy::on_update"),
+        "`Strategy::on_update` is in a component the focused one merely sits inside, and its \
+         promise is spelled out. Those boxes are drawn for orientation; filling them with \
+         clause text buries the component actually being focused on"
+    );
+    // A component off the path entirely is folded away and draws no chips at
+    // all, so there is nothing to ask about it here -- that is `--focus`'s
+    // collapse behaviour, pinned by the tests in `mod collapse`.
+}
