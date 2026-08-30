@@ -926,7 +926,7 @@ fn colour_reason_line(
     let (path, evidence) = weakest_declaration(comp, inherited, "", name)?;
     Some(match evidence {
         Evidence::Violation | Evidence::Unclaimed => format!(
-            "this box is white because `{path}` declares no checks at all — one unchecked \
+            "this box is hatched because `{path}` declares no checks at all — one unchecked \
              thing inside sets the shade of everything around it"
         ),
         other => format!(
@@ -944,8 +944,15 @@ fn colour_reason_line(
 fn ceiling_tooltip_line(e: Evidence) -> String {
     match e {
         Evidence::Violation | Evidence::Unclaimed => {
-            "no checks are declared anywhere in this component — nothing here is verified yet \
-             (unclaimed)"
+            // Deliberately does NOT say "nothing here declares checks": a
+            // component lands here as soon as ONE thing inside declares
+            // none, however much the rest declares. The old wording was
+            // false for every mixed component -- in vetting 003, six of
+            // `ingest`'s seven functions declare checks and it still read
+            // as declaring nothing anywhere. The line below this one names
+            // the item responsible.
+            "promises nothing as a whole — something inside declares no checks, and one \
+             unchecked thing sets the level of everything around it (unclaimed)"
                 .to_string()
         }
         other => format!(
@@ -1230,7 +1237,7 @@ fn render_fn_chip(
     }
     if let Some(n) = &note {
         tip.push(format!(
-            "generic — every check ran with {n}; the evidence covers only that type"
+            "generic — every check runs with {n}; whatever they earn covers only that type"
         ));
     }
     for t in &fc.trusted {

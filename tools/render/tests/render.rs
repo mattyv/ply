@@ -713,9 +713,9 @@ fn glyphs_are_explained_by_a_hover_title() {
     assert!(push.contains(
         "fuzz(1024) — runs the function on 1024 random inputs, checking the contract on each"
     ));
-    assert!(
-        push.contains("generic — every check ran with T=u64; the evidence covers only that type")
-    );
+    assert!(push.contains(
+        "generic — every check runs with T=u64; whatever they earn covers only that type"
+    ));
     assert!(push.contains(
         "trusted (a human vouches for this; no machine checks it): SPSC cross-thread safety"
     ));
@@ -4159,5 +4159,35 @@ fn every_label_on_a_box_is_readable_against_that_box() {
         "these labels are drawn on a fill too close to their own colour. The strongest \
          promise fills are the ones a reader most wants to read:\n  {}",
         unreadable.join("\n  ")
+    );
+}
+
+/// A component whose weakest function promises nothing is drawn at the bottom
+/// of the ladder — correctly, because one unchecked thing caps everything
+/// around it. But the sentence explaining that said "no checks are declared
+/// anywhere in this component", which for a mixed component is simply false:
+/// in vetting 003, six of `ingest`'s seven functions declare checks and one
+/// empty list drags the fold down.
+///
+/// This is the tool stating something untrue about the user's own document —
+/// the failure it exists to prevent, in its own output. The fix is a sentence
+/// that says what actually happened.
+#[test]
+fn a_component_is_never_told_it_declares_nothing_when_something_inside_declares() {
+    let svg = render_fixture("../../vetting/003-trading-system.ply.yaml");
+    let doc = roxmltree::Document::parse(&svg).unwrap();
+
+    let ingest = doc
+        .descendants()
+        .find(|n| n.attribute("data-name") == Some("ingest"))
+        .and_then(|n| n.children().find(|c| c.has_tag_name("title")))
+        .and_then(|t| t.text())
+        .expect("the ingest component should carry a tooltip");
+
+    assert!(
+        !ingest.contains("no checks are declared anywhere in this component"),
+        "`ingest` contains six functions that declare checks and one that does not, yet its \
+         tooltip claims nothing anywhere inside declares any. Its shade is right; the \
+         sentence explaining the shade is false. Tooltip was:\n{ingest}"
     );
 }
