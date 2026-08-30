@@ -257,28 +257,42 @@ saw that class of bug because nothing calls it.
 
 So unification is a decision, not a move:
 
-- [ ] **Decide which ordering ships**, then unify toward it. Adopting `plan`'s layering
-      changes the order real verification runs in, which is a behaviour change to the
-      soundness-relevant path and wants its own review. Keeping the shipped ordering
-      means bringing its semantics into the pure module and re-deriving the two
-      enumerations against it — the enumerations currently prove properties of an
-      ordering nobody runs.
-- [ ] Whichever wins, carry the shipped copy's review fixes across deliberately and name
-      them in the commit. There are at least six; the `domain` restriction is the one
-      with a comment explaining itself, and the others will need finding.
-- [ ] The exhaustive checks come with it: 65,536 graphs (every edge mask on 4 nodes)
-      against an independent oracle, and 4,096 graph-plus-config combinations for the
-      stub gate. Two tests, 3.9 seconds — not "69,000 tests", which is how this was
-      described earlier today before anyone checked.
+- [x] **Decided which ordering ships: the shipped one** (`4dd4d30`). Its leftover
+      set is not merely the cycle's own members — a function only becomes orderable
+      once every function it calls has been placed, so a function that calls into a
+      cycle, however many steps removed, never becomes orderable either. Adopting
+      `plan`'s layering instead would have handed assumed-contract credit to exactly
+      those steps-removed dependents, which the shipped ordering deliberately
+      withholds. The ordering moved into `crates/ply-core/src/schedule.rs` unchanged
+      (same Kahn's-algorithm body, same id tie-break), and the returned leftover set
+      got a name that says what is in it (`tainted`, not `cyclic`).
+- [x] Carried across unchanged, so every review fix travelled with the code rather
+      than needing to be re-found: the `domain` restriction (2026-08-26, the one with
+      its own comment) and the reuse-decided-after-ordering fix are both still in the
+      moved function's doc comment and behaviour, verbatim.
+- [x] **The exhaustive check moved with it and grew a second dimension**
+      (`crates/ply-core/tests/schedule_enumeration.rs`): it now varies which
+      functions are in scope, not just the call graph's shape — 1,048,576
+      combinations, because scope (a claim that should never have entered the
+      ordered pass at all) is exactly where the 2026-08-26 bug lived. Checked
+      against an oracle computed a different way (SCC + reachability) than the
+      implementation (indegree counting).
 
-### KNOWN GAP that outranks the rest, found 2026-08-30
+### KNOWN GAP that outranks the rest, found 2026-08-30 — CLOSED (`4dd4d30`)
 
-- [ ] **The check scheduler exists twice.** `tools/schedule` holds one copy with an
-      exhaustive test suite over ~69,000 cases; the copy that actually ships is inside
-      `crates/ply-cli/src/verify.rs` and has no such suite. The docs call this ordering
-      the soundness guarantee. Two implementations of a soundness rule is one more than
-      can be trusted, and nothing downstream can catch them drifting apart. Unify before
-      building anything that depends on check ordering.
+- [x] **The check scheduler no longer exists twice.** `tools/schedule`'s `plan`/
+      `Batch` (the untested, more permissive copy) are deleted; `may_stub` and its
+      own exhaustive test are untouched and still live there. The one real ordering
+      is `ply_core::schedule::order`, called directly by `crates/ply-cli/src/
+      verify.rs`, and it is the copy the exhaustive test now covers. Verified after
+      the fact, independently: three deliberate breakages of the new module (a node
+      placed before one of its callees, a cycle's dependent left out of the tainted
+      set, the id tie-break replaced with a hash-based one) each made the
+      enumeration fail, and each failure named the actual defect rather than a bare
+      assertion. The full engine-backed suite (`cargo test -p ply-e2e`, 89 fixture
+      binaries, Kani proofs included) was run to completion afterward: 163 tests,
+      0 failures — the landing commit's own note ("the engine-backed suite has not
+      reported yet") is now resolved.
 
 ### A fourth review, and the half-fixes it found — 2026-08-30
 
@@ -2173,6 +2187,13 @@ wall clock, 72 tests (was 53), zero warnings on `cargo check --workspace --tests
       oracles written from D5's text rather than from the production code. Mutation-
       checked by letting `NotRun` license a stub — the exact unsound shortcut Kani
       itself takes — and confirming it goes red.
+      **RETRACTED as of 2026-08-30 (`4dd4d30`): the SCC-condensation planning
+      described above never shipped** — `crates/ply-cli/src/verify.rs` carried its
+      own, stricter, untested ordering the whole time, and the two disagreed about
+      where a cycle's dependents go (see "The two schedulers order cycles
+      differently" and its resolution, above). The planning half (`plan`/`Batch`) is
+      now deleted; `may_stub` and its own enumeration, described accurately above,
+      are untouched. Read this bullet as "the stub-decision half only" from here on.
 - [ ] **D5 ambiguity surfaced by the scheduler**: cross-crate proof results are really
       scoped per (calling-crate, callee), since each consumer re-proves locally, but
       `ProofResults` models one global status per fn. Exact for same-crate; a
