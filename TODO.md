@@ -127,6 +127,43 @@ across two commits, except the three recorded below as open.
       components worked by coincidence, which is why every existing test looked right.
       ~230 lines of re-parsing deleted; output byte-identical with no evidence passed.
 
+### The two schedulers order cycles differently — analysis, 2026-08-30
+
+Before anyone unifies these, the mapping is not vocabulary. The two implementations
+disagree about **where a call cycle goes**, and only one of them is tested.
+
+**Shipped** (`crates/ply-cli/src/verify.rs`, `topological_order`, ~50 lines): returns
+`(order, cyclic)` — a linear order of everything it could place, plus the set it could
+not. The caller concatenates them, so **every cycle member is processed last, in a
+lump**, no matter where the cycle sits in the dependency graph.
+
+**Pure** (`tools/schedule`, `plan`): collapses strongly-connected components and returns
+layered batches, so **a cycle is processed at its own layer** — early if things depend on
+it, late if it depends on things.
+
+The pure version is the more defensible ordering: a cycle that half the codebase depends
+on should not be verified after its dependents. But the shipped version is the one that
+has absorbed real review fixes — the `domain` restriction (adversarial review,
+2026-08-26) exists because an earlier version sized everything off `node_ids.len()` and
+silently admitted reused and fuzz-only claims into the ordered pass. The pure copy never
+saw that class of bug because nothing calls it.
+
+So unification is a decision, not a move:
+
+- [ ] **Decide which ordering ships**, then unify toward it. Adopting `plan`'s layering
+      changes the order real verification runs in, which is a behaviour change to the
+      soundness-relevant path and wants its own review. Keeping the shipped ordering
+      means bringing its semantics into the pure module and re-deriving the two
+      enumerations against it — the enumerations currently prove properties of an
+      ordering nobody runs.
+- [ ] Whichever wins, carry the shipped copy's review fixes across deliberately and name
+      them in the commit. There are at least six; the `domain` restriction is the one
+      with a comment explaining itself, and the others will need finding.
+- [ ] The exhaustive checks come with it: 65,536 graphs (every edge mask on 4 nodes)
+      against an independent oracle, and 4,096 graph-plus-config combinations for the
+      stub gate. Two tests, 3.9 seconds — not "69,000 tests", which is how this was
+      described earlier today before anyone checked.
+
 ### KNOWN GAP that outranks the rest, found 2026-08-30
 
 - [ ] **The check scheduler exists twice.** `tools/schedule` holds one copy with an
