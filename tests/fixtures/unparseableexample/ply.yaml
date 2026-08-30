@@ -1,0 +1,27 @@
+ply: 1
+
+# The second `examples` entry is not a Rust expression -- it is a truncated
+# call, the shape a typo actually takes. Unlike `badexample`'s entry, which
+# parses and then fails to compile, this one never reaches the compiler at
+# all: it dies in `syn`.
+#
+# That difference is the whole point of this fixture. The parse error used
+# to be discarded at the harness-building call site by an `if let Ok(...)`,
+# so the malformed example was silently dropped, the sound one ran, and the
+# claim earned `tested` -- exit 0, no diagnostics, and the result recorded
+# and reused on the next run. `generate_example_test`'s own doc comment had
+# promised the opposite the whole time ("never a silently skipped example").
+#
+# A typo'd example is the worst thing to drop quietly: it is the one
+# assertion the author wrote out by hand, and the verdict claimed it was
+# checked. Ply must refuse the claim and name the entry (E0501), never
+# report `tested`.
+components:
+  unparseableexample:
+    anchor: ply_fixture_unparseableexample
+    fns:
+      add_small:
+        checks: [test]
+        examples:
+          - "add_small(2, 3) == 5"
+          - "add_small("

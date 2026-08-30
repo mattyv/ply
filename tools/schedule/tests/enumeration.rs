@@ -362,7 +362,7 @@ fn may_stub_allows_only_when_callee_actually_passed() {
                         let actual = may_stub(&graph, caller, callee, &results);
                         if actual != expected {
                             offending.push(format!(
-                                "mask {mask:#03x}, configs {configs:?}, caller {caller}, callee {callee}: got {actual:?}, oracle says {expected:?}"
+                                "mask {mask:#x}, configs {configs:?}, caller {caller}, callee {callee}: got {actual:?}, oracle says {expected:?}"
                             ));
                         }
                     }

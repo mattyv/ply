@@ -323,7 +323,9 @@ check, it uses Cargo's test runner, property testing, Kani, or `cargo-mutants`. 
 results distinguish tested, fuzzed, and bounded evidence; missing engines, unsupported
 inputs, timeouts, and inconclusive runs remain visible.
 
-See [`docs/SCHEMA.md`](docs/SCHEMA.md) for the current user-facing reference and
+See [`docs/SCHEMA.md`](docs/SCHEMA.md) for the user-facing reference (it trails the
+code by design — where the two disagree, `cargo ply check`'s own closing paragraph is
+the authority on what is checked) and
 [`The-Ply-Spec.md`](The-Ply-Spec.md) for the implementation specification.
 
 ## Design principles

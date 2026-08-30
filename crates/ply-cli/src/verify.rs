@@ -145,17 +145,23 @@ struct Toolchain {
     /// Kani installed must not be slower for having none.
     kani: std::cell::OnceCell<Option<String>>,
     mutants: std::cell::OnceCell<Option<String>>,
+    /// Where every probe above must run. The rustup shims resolve a
+    /// toolchain from the current directory, and the engines run against
+    /// this crate -- so probing anywhere else records a compiler and engine
+    /// that were never the ones used (external review, 2026-08-30).
+    crate_dir: std::path::PathBuf,
 }
 
 impl Toolchain {
     fn probe(crate_dir: &Path) -> Toolchain {
-        let (rustc, target) = rustc_identity();
+        let (rustc, target) = rustc_identity(crate_dir);
         Toolchain {
             target,
             rustc,
             features: declared_features(crate_dir),
             kani: std::cell::OnceCell::new(),
             mutants: std::cell::OnceCell::new(),
+            crate_dir: crate_dir.to_path_buf(),
         }
     }
 
@@ -172,7 +178,7 @@ impl Toolchain {
                     name: "kani".into(),
                     version: self
                         .kani
-                        .get_or_init(kani::version)
+                        .get_or_init(|| kani::version(&self.crate_dir))
                         .clone()
                         .unwrap_or_else(missing),
                     // The flags that shape the obligation, exactly as
@@ -194,7 +200,7 @@ impl Toolchain {
                     name: "cargo-mutants".into(),
                     version: self
                         .mutants
-                        .get_or_init(mutants::version)
+                        .get_or_init(|| mutants::version(&self.crate_dir))
                         .clone()
                         .unwrap_or_else(missing),
                     flags: String::new(),
@@ -238,8 +244,26 @@ fn kani_flags(has_stubs: bool) -> String {
 /// them. That needs a broken `rustc -vV` beside a working cargo on both
 /// machines, which is exotic -- but "would only ever make a fingerprint
 /// match less often" was a claim with an exception in it.
-fn rustc_identity() -> (String, String) {
-    let out = std::process::Command::new("rustc").arg("-vV").output();
+/// Probed **in the crate being verified**, not in whatever directory the
+/// user happened to run from.
+///
+/// The rustup shim picks a toolchain from the current directory, and the
+/// engines run `cargo test` with `current_dir` set to the target crate. So
+/// probing from the caller's cwd recorded a different compiler than the one
+/// Cargo actually used, whenever a `rust-toolchain.toml` sat in the project
+/// and the caller was somewhere else. Both directions were demonstrated:
+/// stored evidence survived a real change to the project's toolchain, and a
+/// re-run from inside the project reported the compiler as changed when only
+/// the shell's directory had (external review, 2026-08-30).
+///
+/// The fingerprint decides whether a recorded verdict may be carried
+/// forward. Recording a compiler that never compiled anything here is the
+/// kind of quiet wrongness that lets stale evidence look current.
+fn rustc_identity(crate_dir: &Path) -> (String, String) {
+    let out = std::process::Command::new("rustc")
+        .arg("-vV")
+        .current_dir(crate_dir)
+        .output();
     let text = match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
         _ => return ("unknown".into(), "unknown".into()),
@@ -746,6 +770,34 @@ fn verify_loaded_crate(
                 features: toolchain.features.clone(),
                 ply_version: PLY_VERSION.to_string(),
             };
+
+            // Every declared example is parsed here, before this claim can
+            // earn anything, and a parse failure stops it dead.
+            //
+            // It used to be parsed only while building the harness, where
+            // the `Err` was dropped by an `if let Ok(...)`: the malformed
+            // example was silently skipped, the remaining ones ran, and the
+            // claim earned `tested` with exit 0 and no diagnostic -- then
+            // the result was recorded and reused. `generate_example_test`'s
+            // own doc comment promised the opposite ("never a silently
+            // skipped example") and had promised it for as long as the call
+            // site had broken it (external review, 2026-08-30).
+            //
+            // A typo'd example is the worst possible thing to drop quietly:
+            // it is the one assertion the author wrote out by hand, and the
+            // verdict claimed it had been checked.
+            if let Some(bad) = claim.examples.iter().enumerate().find_map(|(i, example)| {
+                ply_core::fuzz_gen::generate_example_test(fn_name, (i + 1) as u32, example)
+                    .err()
+                    .map(|e| e.to_string())
+            }) {
+                diagnostics.push(refused_anchor_diag(&node_id, &bad));
+                early_nodes_by_component
+                    .entry(comp_name.clone())
+                    .or_default()
+                    .push(leaf_node(fn_name, "unsupported"));
+                continue;
+            }
 
             plans.push(Plan {
                 node_id,
@@ -4309,7 +4361,19 @@ fn run_fuzz_and_test_checks(
             ));
             fuzz_label = Some("tool_error".into());
             fuzz_ran = false;
-        } else if run.timed_out {
+        } else if run.timed_out && !run.failed_tests.iter().any(|t| t == &fuzz_test_name) {
+            // The `failed_tests` guard is the whole point of this arm's
+            // shape. `test` and `fuzz` share one cargo subprocess and one
+            // deadline, so a slow fuzz run can outlive a test that already
+            // failed -- and this arm used to fire first, relabelling an
+            // observed, reported failure as a timeout and then saying, in as
+            // many words, "never as a violation". The failure was sitting in
+            // `run.failed_tests`, captured before the kill; the classifier
+            // threw it away (external review, 2026-08-30).
+            //
+            // A timeout label now means what it says: this check produced no
+            // failure of its own before the clock ran out. If it did, the
+            // violation arm below owns it, whatever else was still running.
             diagnostics.push(Diagnostic {
                 code: "P0601".into(),
                 severity: "warning".into(),
@@ -4520,7 +4584,13 @@ fn run_fuzz_and_test_checks(
                 cf.receiver.is_some(),
             ));
             test_label = Some("tool_error".into());
-        } else if run.timed_out {
+        } else if run.timed_out && failing_test_checks.is_empty() {
+            // Same guard, same reason as `fuzz`'s arm above: one subprocess
+            // and one deadline serve both checks, so a slow sibling can
+            // outlive a test of this check's own that already failed and was
+            // reported. This arm firing first turned an observed violation
+            // into a timeout, and told the reader there was no violation
+            // (external review, 2026-08-30). A concrete failure dominates.
             diagnostics.push(Diagnostic {
                 code: "R0601".into(),
                 severity: "warning".into(),

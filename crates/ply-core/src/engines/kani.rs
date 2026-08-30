@@ -101,9 +101,16 @@ pub fn unstable_flags(enable_stubbing: bool) -> Vec<&'static str> {
 /// about another. `None` when `cargo kani` is not installed or will not
 /// answer -- a `bounded` check then earns no evidence at all, so nothing is
 /// recorded and nothing can be reused.
-pub fn version() -> Option<String> {
+/// Probed in the crate being verified. Rustup shims `cargo` per toolchain,
+/// so a probe run from the caller's directory can report a different engine
+/// build than the one that will actually run -- the same defect found in the
+/// compiler probe (external review, 2026-08-30). The engine version is a
+/// fingerprint input, so getting it from the wrong place lets stale evidence
+/// survive a real change.
+pub fn version(crate_dir: &std::path::Path) -> Option<String> {
     let out = Command::new("cargo")
         .args(["kani", "--version"])
+        .current_dir(crate_dir)
         .output()
         .ok()?;
     if !out.status.success() {

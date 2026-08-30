@@ -4359,7 +4359,7 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
     /// repeats names across sections -- an `entry: [venue]` needle is
     /// satisfied by the externals section naming `venue`, which proves
     /// nothing about the function.
-    fn block<'a>(text: &'a str, heading: &str) -> String {
+    fn block(text: &str, heading: &str) -> String {
         let mut lines = text.lines();
         let head = loop {
             match lines.next() {
