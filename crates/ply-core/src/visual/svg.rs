@@ -385,6 +385,56 @@ pub(super) fn tame(text: &str) -> String {
         .collect()
 }
 
+/// What a function's declared `examples` are, said in the future tense
+/// because neither view has run anything.
+///
+/// Both views print this, and until now both printed it wrongly in
+/// different ways. "Compiled into a test" is a claim about a compiler
+/// neither renderer invokes -- and on the `badexample` fixture, whose second
+/// example cannot type-check, the sentence was flatly false. The text form
+/// was taught the honest version in the morning; the drawing was left with
+/// the original, and a test *required* it against a function declaring
+/// `[bounded(3), fuzz(1024)]` (external review, 2026-08-30).
+///
+/// Shared rather than written twice, which is what let them diverge for a
+/// day. `runs_them` is whether the effective check list contains `test`: the
+/// verifier only generates example tests inside that branch, so examples
+/// under any other check are never compiled into anything.
+pub(super) fn examples_prose(n: usize, runs_them: bool) -> String {
+    let plural = if n == 1 { "example" } else { "examples" };
+    if runs_them {
+        format!(
+            "{n} worked {plural} — the `test` check above compiles each into a test when \
+             `cargo ply verify` runs; a promise of what will run, never a result"
+        )
+    } else {
+        format!(
+            "{n} worked {plural}, written down but not run: no check here asks for the \
+             declared examples, so nothing compiles them"
+        )
+    }
+}
+
+/// The line closing a function's contract, in both views.
+///
+/// `nothing_runs` is whether the effective check list is empty. A function
+/// can declare a promise and ask for nothing that would test it -- a legacy
+/// boundary is exactly that -- and saying "the checks above test the
+/// function against exactly this promise" there contradicted the view's own
+/// neighbouring sentence. Even where checks exist, the old wording claimed a
+/// run: both branches are future-conditional now.
+pub(super) fn contract_close_prose(nothing_runs: bool) -> String {
+    if nothing_runs {
+        "nothing above checks this promise — it is written down, and this document asks for \
+         no check that would test it"
+            .to_string()
+    } else {
+        "the checks above are what will test the function against exactly this promise when \
+         `cargo ply verify` runs"
+            .to_string()
+    }
+}
+
 /// Which rulebook the document was read under, stated in both views.
 ///
 /// Every other invalid field still renders faithfully -- the picture stays a
@@ -1325,6 +1375,13 @@ fn render_fn_chip(
         cursor_x += badge_w + BADGE_GAP;
     }
 
+    // Both sentences below are decided by what the effective check list
+    // actually asks for, not by the clause existing -- the same derivation
+    // the text form uses, from the same two helpers, so the two views cannot
+    // word it differently again.
+    let runs_examples = effective.iter().any(|c| c.trim() == "test");
+    let nothing_runs = effective.is_empty();
+
     let mut tip = finding_tooltip_lines(&findings);
     tip.push(name.to_string());
     if is_inherited {
@@ -1359,7 +1416,7 @@ fn render_fn_chip(
         for e in &fc.ensures {
             tip.push(format!("ensures: {e}"));
         }
-        tip.push("the checks above test the function against exactly this promise".to_string());
+        tip.push(contract_close_prose(nothing_runs));
     }
     if fc.mode == Mode::Synth {
         // §7.1 `mode: synth`: violet is the single authorship channel,
@@ -1384,10 +1441,7 @@ fn render_fn_chip(
         ));
     }
     if !fc.examples.is_empty() {
-        tip.push(format!(
-            "{} worked example(s), each compiled into a test",
-            fc.examples.len()
-        ));
+        tip.push(examples_prose(fc.examples.len(), runs_examples));
     }
     for p in &fc.unresolved {
         tip.push(unresolved_fn_pin_prose(p.id, &p.note));

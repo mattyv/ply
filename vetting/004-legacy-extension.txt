@@ -25,7 +25,7 @@ components:
     fn approve_withdrawal
       fuzz(256) — runs the function on 256 random inputs, checking the contract on each
       test — runs the declared examples plus generated inputs, checking the contract on each
-      2 worked examples, each compiled into a test:
+      2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
         approve_withdrawal(1000, 5000, 3) == true
         approve_withdrawal(5000, 5000, 0) == false
     fn withdraw
