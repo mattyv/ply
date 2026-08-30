@@ -1821,6 +1821,54 @@ than assumed from the table row alone. The earlier version of this paragraph cla
 closure when those forms existed only as table rows; the gate asks whether a reader of
 a real diagram can see the construct, so a row is not enough.
 
+### 7.1a The transcript: the same grammar, written out
+
+`ply-render --text` writes the document as prose instead of as a picture. It is not a
+second format and carries no information the drawing lacks; it is the §7.1 grammar
+serialised into sentences rather than into shapes, from the same functions that word the
+drawing's tooltips.
+
+It exists because of a measurement, not a preference. On the committed trading-system
+diagram, 474 characters of text are drawn on the canvas and 9,923 are reachable only by
+hovering — 95% of what the render says, and all of the reasoning: why a box sits where it
+does on the ladder, what a check actually does, which ancestor a promise was inherited
+from. A reader who cannot hover gets the labels and none of the meaning. A model reading
+the document cannot hover at all.
+
+Reading `ply.yaml` instead is not equivalent, and the gap is the point: the source says
+what was **written**, the transcript says what is **true after the rules are applied**.
+A missing `checks:` line inherits from the nearest ancestor; a written empty one inherits
+nothing and means "check nothing here" (§5.4c). Those look nearly identical and mean
+opposite things, and a reader who resolves them wrongly states a confident falsehood
+about what is verified.
+
+Three properties are load-bearing:
+
+- **Deterministic by construction.** The renderer takes the parsed document and returns
+  a string: no filesystem, no clock, no environment, no locale, no randomness is in
+  scope. Every collection walked is insertion-ordered, so iteration is document order.
+  There are no sorts and no computed non-integers, so there is no float formatting to
+  pin.
+- **Generated, never stored.** It is written on demand like a compiler's output and never
+  committed, so it cannot go stale against the document it describes.
+- **One derivation, two serializations.** Every sentence comes from the same functions the
+  drawing uses. The two views cannot word a shared fact differently because there is only
+  one wording of it.
+
+The two views do not agree verbatim, and should not: about a third of what the picture
+says is glyph shorthand — `B2 F1024`, `e×1`, `⛉`, `*` — that the text spells out in
+words. Demanding verbatim agreement would force the text to be as terse as the picture.
+The invariant that holds instead is stronger and drives from the document: **every
+component, function, check, contract clause, capability, owned type, profile rule,
+default `checks:` list, trusted claim, worked example, edge, forbidden rule, external and
+open question in the document is findable in the transcript.** A construct added to the
+grammar later cannot quietly skip it, because the walk visits every field.
+
+`--text` cannot be combined with `--depth`, `--focus` or `--collapse`. Those fold parts of
+a drawing away to fit a screen; the text has no screen to fit and always states the whole
+document. A run that asks for both is refused rather than silently narrowed, because a
+reader handed a quietly-folded transcript would believe they had the complete view.
+
 ### 7.2 The watermark
 
 The system has three strata:

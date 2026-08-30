@@ -294,7 +294,7 @@ fn checks_glyph_row(checks: &[String]) -> String {
 
 /// The glyph row spelled out for the hover tooltip. `<title>` is native SVG:
 /// no script, no legend clutter on the canvas.
-fn check_prose(c: &str) -> String {
+pub(super) fn check_prose(c: &str) -> String {
     match parse_check(c) {
         Ok(Check::Test) => {
             "test — runs the declared examples plus generated inputs, checking the contract on each"
@@ -487,6 +487,24 @@ fn render_finding_badge(x: f64, y: f64, findings: &[&Diagnostic]) -> String {
     )
 }
 
+/// One forbidden-call rule as a sentence, with the wildcard spelled out so
+/// `*` never reaches a reader. Shared by the drawing and the transcript: two
+/// serializations of one fact must not word it differently, and the only way
+/// to guarantee that is for there to be one wording.
+pub(super) fn deny_rule_prose(deny: &Deny) -> String {
+    let mut t = match (deny.from.as_str(), deny.to.as_str()) {
+        ("*", "*") => "no component may call any component".to_string(),
+        ("*", to) => format!("no component may call {to}"),
+        (from, "*") => format!("{from} may not call any component"),
+        (from, to) => format!("{from} may not call {to}"),
+    };
+    if !deny.except.is_empty() {
+        t.push_str(&format!(" — except {}", deny.except.join(", ")));
+    }
+    t.push_str(" — such a call fails the build");
+    t
+}
+
 /// Plain-language gloss for a named profile rule (§5.3): the tag alone
 /// (`no_panics`, `exhaustive_match`, ...) means nothing to a reader who
 /// hasn't read the spec. A rule this renderer doesn't recognize is shown
@@ -503,7 +521,7 @@ fn profile_rule_gloss(rule: &str) -> String {
     }
 }
 
-fn profile_rules_prose(rules: &[String]) -> String {
+pub(super) fn profile_rules_prose(rules: &[String]) -> String {
     rules
         .iter()
         .map(|r| profile_rule_gloss(r))
@@ -599,7 +617,11 @@ fn component_verdict_node<'a>(
     }
 }
 
-fn component_ceiling(name: &str, comp: &Component, inherited: Option<InheritedChecks>) -> Evidence {
+pub(super) fn component_ceiling(
+    name: &str,
+    comp: &Component,
+    inherited: Option<InheritedChecks>,
+) -> Evidence {
     aggregate(&component_verdict_node(name, comp, inherited)).evidence
 }
 
@@ -874,7 +896,7 @@ pub fn ceiling_class(e: Evidence) -> &'static str {
 
 /// Plain-language gloss for a non-`unclaimed` ceiling level, worded to read
 /// naturally after "declares checks up to ".
-fn ceiling_level_prose(e: Evidence) -> &'static str {
+pub(super) fn ceiling_level_prose(e: Evidence) -> &'static str {
     match e {
         Evidence::Tested => {
             "tested — checked once against the declared examples and generated inputs"
@@ -888,7 +910,7 @@ fn ceiling_level_prose(e: Evidence) -> &'static str {
     }
 }
 
-fn weakest_declaration<'a>(
+pub(super) fn weakest_declaration<'a>(
     comp: &'a Component,
     inherited: Option<InheritedChecks<'a>>,
     prefix: &str,
@@ -941,7 +963,7 @@ fn colour_reason_line(
 /// none of it has run"). `unclaimed` gets its own plain sentence rather than
 /// the "declares checks up to unclaimed" template, which would read as a
 /// contradiction (there is nothing to declare "up to").
-fn ceiling_tooltip_line(e: Evidence) -> String {
+pub(super) fn ceiling_tooltip_line(e: Evidence) -> String {
     match e {
         Evidence::Violation | Evidence::Unclaimed => {
             // Deliberately does NOT say "nothing here declares checks": a
@@ -4169,19 +4191,7 @@ fn render_deny(
         "deny-line-finding"
     };
     let mut tip = finding_tooltip_lines(&findings);
-    tip.push({
-        let mut t = match (deny.from.as_str(), deny.to.as_str()) {
-            ("*", "*") => "no component may call any component".to_string(),
-            ("*", to) => format!("no component may call {to}"),
-            (from, "*") => format!("{from} may not call any component"),
-            (from, to) => format!("{from} may not call {to}"),
-        };
-        if !deny.except.is_empty() {
-            t.push_str(&format!(" — except {}", deny.except.join(", ")));
-        }
-        t.push_str(" — such a call fails the build");
-        t
-    });
+    tip.push(deny_rule_prose(deny));
     let badge_svg = render_finding_badge(mx + 6.0, my - FINDING_BADGE_H - 10.0, &findings);
 
     let path_d = route

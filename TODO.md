@@ -1,5 +1,40 @@
 # TODO
 
+## The transcript: the render as text — 2026-08-30
+
+Measured, not assumed: on the committed trading-system diagram 474 characters are drawn
+on the canvas and 9,923 are reachable only by hovering. 95% of what the render says --
+and all of the reasoning -- is invisible to anyone who cannot hover, and a model reading
+the document cannot hover at all.
+
+- [x] **`ply-render --text` writes the whole document as prose.** Same facts as the
+      drawing, including every sentence the drawing only shows on hover; generated on
+      demand and never committed, so it cannot go stale. Goes to stdout or `-o`, exactly
+      like the SVG.
+- [x] **Combining `--text` with `--depth`/`--focus`/`--collapse` is refused, not
+      ignored.** Those fold a drawing to fit a screen; the text has no screen. A reader
+      handed a quietly-folded transcript would believe they had the complete view.
+- [x] **Component-level default `checks:` are now stated.** Found by the new invariant,
+      not by reading: `full.ply.yaml` declares `checks: [bounded(2)]` on a component and
+      the transcript said nothing about it. That is the §5.4c distinction the transcript
+      exists to make legible -- a default is invisible on every function that inherits
+      it, and "nothing written" and "written empty" mean opposite things.
+- [x] **The load-bearing invariant drives from the document, not the drawing**
+      (`the_transcript_leaves_nothing_in_the_document_out`): every component, function,
+      check, contract clause, capability, owned type, profile rule, default list, trusted
+      claim, edge, forbidden rule, external and open question must be findable in the
+      text. Four planted breakages (drop a forbidden rule, drop all but the first check,
+      print the trusted claim where the evidence belongs, drop the component default) all
+      die, each naming the dropped item.
+- [x] **The older drawing-vs-text test had a doc comment that overclaimed** and now says
+      what it checks: names only. About a third of what the picture says is glyph
+      shorthand (`B2 F1024`, `e×1`, `⛉`, `*`) that the text spells out in words --
+      demanding verbatim agreement would force the text to be as terse as the picture.
+- [x] **The label/line gap ratchet came out.** It had been pinned down to 0 earlier in
+      the same session, which made its `<=` a comparison that could not fail -- the same
+      silence the ratchet was built to prevent. It is a flat assertion now.
+- [x] Spec amended: §7.1a.
+
 ## Component notes, and the envelope's reasoning — 2026-08-28
 
 Both from a second person's smoke test of the grammar, decided by review rather than on

@@ -2412,33 +2412,19 @@ mod no_overlap {
                 );
             }
         }
-        // Pre-existing label/line gaps (regular- and deny-edge label
-        // placement, predating external elements) are reported rather than
-        // failed -- fixing them means restructuring those two placement
-        // paths, which is its own work item (docs/external-elements-adoption.md,
-        // TODO.md). But the count is PINNED, not merely printed: a passing
-        // test that knows about N violations and says nothing is the
-        // "gate debt: none" over-claim this project already retracted once
-        // (see The-Ply-Spec.md 7.1's own note), and an eprintln in a green
-        // test is read by nobody. Pinning makes the debt a ratchet: it can
-        // only be paid down, never silently grow. Lower this number when you
-        // fix one; if it rises, you added one and the test says so.
-        const KNOWN_LABEL_LINE_GAPS: usize = 0;
-        if !known_pre_existing_gaps.is_empty() {
-            eprintln!(
-                "no_drawn_element_intersects_a_box_it_is_not_inside: {} known pre-existing \
-                 label/line gap(s), predating the external-elements feature, reported not \
-                 failed (docs/external-elements-adoption.md):\n{}",
-                known_pre_existing_gaps.len(),
-                known_pre_existing_gaps.join("\n")
-            );
-        }
+        // Label/line gaps in regular- and deny-edge label placement were
+        // carried for a while as a pinned count, reported rather than failed,
+        // because fixing them meant restructuring both placement paths. That
+        // work landed (the second placement pass that moves a label off any
+        // line it would sit on), the count reached zero, and the pin came out
+        // with it: a ratchet held at its floor is a comparison that cannot
+        // fail, which is the same silence it was built to prevent. This is a
+        // flat assertion now -- one gap and the test goes red.
         assert!(
-            known_pre_existing_gaps.len() <= KNOWN_LABEL_LINE_GAPS,
-            "label/line gaps grew from {} to {} -- this change added one. Fix the new \
-             collision rather than raising the pin:\n{}",
-            KNOWN_LABEL_LINE_GAPS,
-            known_pre_existing_gaps.len(),
+            known_pre_existing_gaps.is_empty(),
+            "a label now sits on a line it should have been moved off. Label placement runs a \
+             second pass for exactly this, so a collision here means the pass did not see this \
+             case -- fix the placement rather than allowing the overlap:\n{}",
             known_pre_existing_gaps.join("\n")
         );
         assert!(
@@ -4190,4 +4176,321 @@ fn a_component_is_never_told_it_declares_nothing_when_something_inside_declares(
          tooltip claims nothing anywhere inside declares any. Its shade is right; the \
          sentence explaining the shade is false. Tooltip was:\n{ingest}"
     );
+}
+
+/// The transcript: everything the diagram says, written out. It exists
+/// because 95% of what a render says lives in hover text — measured on the
+/// committed trading-system diagram, 9,923 characters of hover against 474
+/// drawn — and the reader this was built for cannot hover.
+///
+/// This first test pins the three things that make it honest rather than
+/// merely present: it says what it is, it says that editing it does nothing,
+/// and it says that nothing has been run. Then it checks one fact of each
+/// kind actually arrives.
+#[test]
+fn the_transcript_states_what_it_is_and_what_the_document_declares() {
+    let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).expect("fixture should parse");
+    let text = ply_render::transcript::render_transcript(&doc);
+
+    for required in [
+        // What it is, and that it is a rendering rather than a source.
+        "Ply transcript",
+        "Editing this text changes nothing",
+        // The strip's own rule, extended to the whole document.
+        "Nothing here has been run",
+    ] {
+        assert!(
+            text.contains(required),
+            "the transcript header must say {required:?} — a reader who mistakes it for the \
+             document will edit it and change nothing. Got:\n{text}"
+        );
+    }
+
+    for fact in [
+        // the summary
+        "11 components · 14 functions · 2 promise nothing",
+        // a component and its anchor
+        "component risk — maps to Rust module risk",
+        // a check, in words rather than a code
+        "proves the contract for every input, unrolling loops at most 3 times",
+        // a contract clause
+        "order.qty > 0 && order.px > 0",
+        // a fact the diagram only ever showed on hover
+        "only this component may mutate them",
+        // an outside party
+        "the exchange: accepts orders, returns fills",
+        // a forbidden call, with its wildcard spelled out
+        "no component may call risk",
+        // an open decision
+        "venue failover",
+    ] {
+        assert!(
+            text.contains(fact),
+            "the transcript must carry {fact:?}. Got:\n{text}"
+        );
+    }
+}
+
+/// Same document in, byte-identical transcript out. The design discharges
+/// this rather than the test proving it — the render function takes the
+/// parsed document and returns a string, so no clock, path, environment or
+/// locale is in scope to leak — but a signature can be widened by accident,
+/// and this notices when it is.
+#[test]
+fn the_transcript_is_byte_identical_across_runs() {
+    let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).unwrap();
+    let a = ply_render::transcript::render_transcript(&doc);
+    let b = ply_render::transcript::render_transcript(&doc);
+    assert_eq!(a, b, "two renders of one document differed");
+
+    // A second parse of the same bytes must also agree: this is where a
+    // hash-ordered container would show itself, since its iteration order can
+    // differ between two maps built from identical input.
+    let doc2 = parse_document(&yaml).unwrap();
+    assert_eq!(
+        a,
+        ply_render::transcript::render_transcript(&doc2),
+        "two parses of the same bytes produced different transcripts — something in the walk \
+         depends on allocation or hash order rather than on the document"
+    );
+}
+
+/// Where the file sits on disk must not reach the output. Path leakage is the
+/// single most likely machine fact to creep into a text renderer, and it is
+/// invisible until someone else runs it.
+#[test]
+fn the_transcript_does_not_depend_on_where_the_file_lives() {
+    let yaml = std::fs::read_to_string("../../vetting/003-trading-system.ply.yaml").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("renamed.ply.yaml");
+    std::fs::write(&elsewhere, &yaml).unwrap();
+
+    let from_here = ply_render::transcript::render_transcript(&parse_document(&yaml).unwrap());
+    let moved = std::fs::read_to_string(&elsewhere).unwrap();
+    let from_there = ply_render::transcript::render_transcript(&parse_document(&moved).unwrap());
+
+    assert_eq!(
+        from_here, from_there,
+        "the transcript changed when the same document was read from a different path"
+    );
+}
+
+/// The two views must not drift apart on the one thing they word identically:
+/// the names. There is no committed transcript to diff against — it is
+/// generated on demand like a compiler's output — so this generates both from
+/// the same document and checks that every component and function the drawing
+/// labels is also named in the text.
+///
+/// Names only, and deliberately so. The rest of what the picture says is
+/// glyph shorthand the text form spells out in words instead, so demanding
+/// verbatim agreement there would force the text to be as terse as the
+/// picture. That everything *declared* survives into the text is the separate
+/// and stronger check in `the_transcript_leaves_nothing_in_the_document_out`,
+/// which walks the document rather than the drawing.
+///
+/// The direction matters. A transcript that quietly said *less* than the
+/// picture would be the more dangerous failure, because its whole purpose is
+/// to be the complete view for a reader who cannot hover.
+#[test]
+fn the_transcript_and_the_drawing_state_the_same_facts() {
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "../../ply.yaml",
+    ] {
+        let yaml = std::fs::read_to_string(fixture).unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let text = ply_render::transcript::render_transcript(&doc);
+        let svg = ply_render::svg::render_svg(&doc).unwrap();
+        let parsed = roxmltree::Document::parse(&svg).unwrap();
+
+        // Every component and function the drawing names.
+        let mut missing = Vec::new();
+        for node in parsed.descendants() {
+            if let Some(name) = node.attribute("data-name") {
+                // Nested components are drawn by their own name, so the leaf
+                // name is what both views share.
+                let leaf = name.rsplit('.').next().unwrap_or(name);
+                if !text.contains(leaf) {
+                    missing.push(format!("component `{leaf}`"));
+                }
+            }
+            if let Some(f) = node.attribute("data-fn")
+                && !text.contains(f)
+            {
+                missing.push(format!("function `{f}`"));
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "{fixture}: the drawing shows these, and the transcript does not mention them. The \
+             transcript is the complete view for a reader who cannot hover, so anything the \
+             picture knows and it does not is a hole in exactly the wrong place:\n  {}",
+            missing.join("\n  ")
+        );
+    }
+}
+
+/// Walks the parsed document itself and fails on the first thing in it the
+/// text does not carry. This is the invariant the transcript actually
+/// promises — it is sold as the complete view for a reader who cannot hover,
+/// so anything declared and not restated is a hole in exactly the wrong
+/// place. Driving from the document rather than from the drawing is
+/// deliberate: it covers what the drawing shows *and* what only its hover
+/// text shows, and a construct added to the grammar later cannot quietly
+/// skip the check, because the walk visits every field.
+///
+/// It is not spelled as a substring sweep over the drawing's own sentences.
+/// About a third of what the picture says is glyph shorthand — `B2 F1024`,
+/// `e×1`, `⛉`, `*` — that the text form deliberately spells out in words,
+/// so verbatim agreement between the two is the wrong bar and would force
+/// the text to be as terse as the picture.
+#[test]
+fn the_transcript_leaves_nothing_in_the_document_out() {
+    fn walk(
+        prefix: &str,
+        comps: &indexmap::IndexMap<String, ply_render::model::Component>,
+        text: &str,
+        missing: &mut Vec<String>,
+    ) {
+        for (name, comp) in comps {
+            let path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}.{name}")
+            };
+            let mut want = vec![(format!("component `{path}`"), name.clone())];
+            want.push((format!("{path}'s anchor"), comp.anchor.clone()));
+            for u in &comp.uses {
+                want.push((format!("{path}'s capability `{u}`"), u.clone()));
+            }
+            for o in &comp.owns {
+                want.push((format!("{path} owns `{o}`"), o.clone()));
+            }
+            if let Some(p) = &comp.profile {
+                want.push((format!("{path}'s profile `{p}`"), p.clone()));
+            }
+            if let Some(n) = &comp.note {
+                want.push((format!("{path}'s note"), n.clone()));
+            }
+            for c in comp.checks.iter().flatten() {
+                want.push((format!("{path}'s default check `{c}`"), c.clone()));
+            }
+            for (label, needle) in want {
+                if !text.contains(&needle) {
+                    missing.push(label);
+                }
+            }
+
+            for (fname, fc) in &comp.fns {
+                let mut want = vec![(format!("fn `{fname}`"), fname.clone())];
+                for c in fc.checks.iter().flatten() {
+                    want.push((format!("`{fname}`'s check `{c}`"), c.clone()));
+                }
+                for r in &fc.requires {
+                    want.push((format!("`{fname}`'s requires `{r}`"), r.clone()));
+                }
+                for e in &fc.ensures {
+                    want.push((format!("`{fname}`'s ensures `{e}`"), e.clone()));
+                }
+                for (k, v) in &fc.check_with {
+                    want.push((format!("`{fname}`'s {k} binding"), format!("{k}={v}")));
+                }
+                for t in &fc.trusted {
+                    want.push((format!("`{fname}`'s trusted claim"), t.claim.clone()));
+                    want.push((format!("`{fname}`'s trusted evidence"), t.evidence.clone()));
+                }
+                for u in &fc.unresolved {
+                    want.push((
+                        format!("`{fname}`'s open question #{}", u.id),
+                        u.note.clone(),
+                    ));
+                }
+                for e in &fc.entry {
+                    want.push((format!("`{fname}`'s entry point `{e}`"), e.clone()));
+                }
+                for (label, needle) in want {
+                    if !text.contains(&needle) {
+                        missing.push(label);
+                    }
+                }
+            }
+
+            walk(&path, &comp.components, text, missing);
+        }
+    }
+
+    for fixture in [
+        "../../vetting/001-spsc-disruptor.ply.yaml",
+        "../../vetting/002-ingest-pipeline.ply.yaml",
+        "../../vetting/003-trading-system.ply.yaml",
+        "../../ply.yaml",
+        "tests/fixtures/full.ply.yaml",
+    ] {
+        let yaml = std::fs::read_to_string(fixture).unwrap();
+        let doc = parse_document(&yaml).unwrap();
+        let text = ply_render::transcript::render_transcript(&doc);
+
+        let mut missing = Vec::new();
+        walk("", &doc.components, &text, &mut missing);
+
+        for (name, ext) in &doc.externals {
+            if !text.contains(name) {
+                missing.push(format!("external `{name}`"));
+            }
+            if !text.contains(&ext.note) {
+                missing.push(format!("external `{name}`'s note"));
+            }
+        }
+        for e in &doc.edges {
+            // An edge is restated in words, not echoed: the arrow itself is
+            // what has to survive, so both endpoints must be findable in one
+            // line of the text.
+            if !text.lines().any(|l| {
+                e.split(['-', '>', '~', ':'])
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .all(|p| l.contains(p))
+            }) {
+                missing.push(format!("edge `{e}`"));
+            }
+        }
+        for d in &doc.deny {
+            if !text.lines().any(|l| {
+                d.split(['-', '>', '!', ' '])
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty() && *p != "except")
+                    .all(|p| l.contains(p) || p == "*")
+            }) {
+                missing.push(format!("forbidden call `{d}`"));
+            }
+        }
+        for (name, rules) in &doc.profiles {
+            if !text.contains(name) {
+                missing.push(format!("profile `{name}`"));
+            }
+            for r in rules {
+                if !text.contains(r) {
+                    missing.push(format!("profile `{name}`'s rule `{r}`"));
+                }
+            }
+        }
+        for u in &doc.unresolved {
+            if !text.contains(&u.note) {
+                missing.push(format!("open question #{}", u.id));
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "{fixture}: the document declares these and the text form does not carry them. The \
+             text form is sold as the complete view for a reader who cannot hover, so anything \
+             it drops is a confident silence about something that was written down:\n  {}",
+            missing.join("\n  ")
+        );
+    }
 }

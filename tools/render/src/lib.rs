@@ -5,3 +5,7 @@
 pub use ply_core::model;
 pub mod layout;
 pub mod svg;
+
+/// The text form of the same facts the drawing shows -- see
+/// `ply_core::visual::transcript` for why it exists.
+pub use ply_core::visual::transcript;
