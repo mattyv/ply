@@ -2,6 +2,8 @@ This is a Ply transcript: everything the diagram of this document shows — ever
 It is generated from that document, like a compiler's output, and nothing in it is written by hand. Editing this text changes nothing; edit the ply.yaml document and generate it again.
 No result reaches this page. Every line below is a declaration or a promise, never a result — whatever `cargo ply verify` has found, it is reported there and never here.
 
+ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
+
 1 component · 4 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
@@ -11,7 +13,7 @@ components:
     capabilities: unsafe — this component may use only the capabilities it declares. That limit is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so use of a capability this component never declared can still go unnoticed (§5.3)
     owns disruptor::spsc::Spsc — only this component may mutate them
     profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
-    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
+    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, slot — nothing here counts as checked more strongly than the weakest thing inside it
     fn slot
       bounded(2) — proves the contract for every input, unrolling loops at most 2 times

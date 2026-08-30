@@ -234,8 +234,9 @@ words, alongside what each function needs and gives. The arrow is the one depend
 spec permits; anything else between these two would be a violation.
 
 The line across the top says what the whole document declares and how much of it promises
-nothing. It counts promises only, never results — nothing here has been run, and a picture
-full of promises should not look like a picture full of results.
+nothing. It counts promises only, never results — the render never sees what a
+verification found, and a picture full of promises should not look like a picture full of
+results.
 
 Most of what a diagram says is only reachable by hovering: on the trading-system example,
 474 characters are drawn on the canvas and 9,923 sit in hover text — 95% of the render,

@@ -357,6 +357,50 @@ pub(super) fn document_counts(doc: &Document) -> (usize, usize, usize) {
     (c, f, u)
 }
 
+/// Strips terminal control bytes from author-written text before it enters
+/// either view.
+///
+/// Notes, contracts, trusted claims and evidence, worked examples and
+/// unresolved-decision notes are unrestricted strings in the schema, and the
+/// text form is explicitly meant to be piped and read in a terminal. A note
+/// carrying an OSC sequence could retitle a reader's window; an ANSI one
+/// could repaint the output around it. Neither survives this (external
+/// review, 2026-08-30).
+///
+/// C0 and C1 are replaced rather than dropped, so text does not silently
+/// close up around a removed byte and read as something the author did not
+/// write. Newlines are kept: they are the one control character with a
+/// legitimate meaning here, and the layout problem they cause (a multi-line
+/// note rendering at column 0, able to impersonate a heading) is recorded as
+/// an open gap rather than half-solved.
+pub(super) fn tame(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c == '\n' || !c.is_control() {
+                c
+            } else {
+                '\u{fffd}'
+            }
+        })
+        .collect()
+}
+
+/// Which rulebook the document was read under, stated in both views.
+///
+/// Every other invalid field still renders faithfully -- the picture stays a
+/// true account of what was written, which is why `render` deliberately
+/// draws half-finished documents that `check` would refuse. The version is
+/// different in kind: it selects the semantics every other line is given, so
+/// a version this build does not speak is refused at the command rather than
+/// guessed at, and the one it did read is printed. A v1 and an unsupported
+/// v2 document used to render identically (external review, 2026-08-30).
+pub(super) fn format_version_line(version: u32) -> String {
+    format!(
+        "ply: {version} — the format version every rule below is read under; a version this \
+         build does not speak is refused, never guessed at"
+    )
+}
+
 /// The one sentence both views use for a rule this grammar declares and this
 /// build does not enforce.
 ///
@@ -1049,8 +1093,8 @@ pub(super) fn ceiling_tooltip_line(e: Evidence) -> String {
                 .to_string()
         }
         other => format!(
-            "declares checks up to {} — the strongest verdict this could earn; none of it has \
-             been run yet",
+            "declares checks up to {} — the strongest verdict this could earn if every \
+             declared check ran and passed; a promise, never a result",
             ceiling_level_prose(other)
         ),
     }
@@ -3492,6 +3536,7 @@ pub fn render_svg_with_options(
     fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
         if n == 1 { one } else { many }
     }
+    let version_line = esc(&format_version_line(doc.ply));
     let strip_text = format!(
         "{total_components} {} · {total_fns} {} · {unclaimed_fns} {} nothing",
         plural(total_components, "component", "components"),
@@ -3499,7 +3544,7 @@ pub fn render_svg_with_options(
         plural(unclaimed_fns, "promises", "promise"),
     );
     let strip_tip = title(&format!(
-        "What this document declares, before anything has been run. \"{} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose.          Running `cargo ply verify` is what turns promises into results; this line never          reports results.",
+        "What this document declares. \"{} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose.          Running `cargo ply verify` is what turns promises into results; this line never          reports results.",
         unclaimed_fns,
         plural(unclaimed_fns, "function promises", "functions promise"),
     ));
@@ -3757,12 +3802,15 @@ pub fn render_svg_with_options(
          strongly it promises to be checked — white means something inside promises \
          nothing, deeper grey means stronger checks promised, and the weakest \
          function sets the whole box's shade. Nothing here is green: green is kept \
-         for evidence a run has actually earned, and nothing has been run yet, so a \
+         for evidence a run has actually earned, which this render never sees, so a \
          picture full of promises should not look like a picture full of results. \
          Hover anything for its meaning.",
     );
 
-    Ok(format!(
+    // Author-written strings reach this output; `tame` is applied once at
+    // the end rather than at each of the dozen insertion sites, so no future
+    // one can forget it.
+    Ok(tame(&format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.1}\" height=\"{height:.1}\" \
          viewBox=\"0 0 {width:.1} {height:.1}\" font-family=\"monospace\" font-size=\"12\">\
          <style>{style}</style>\
@@ -3777,7 +3825,7 @@ pub fn render_svg_with_options(
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\">{workspace_tip}</rect>\
          <g><title>ply.yaml — the document this picture is drawn from. Everything you \
 see here was declared in it; nothing was inferred from code. What each box has actually \
-been checked for is what `cargo ply verify` reports, not this drawing.</title>\
+been checked for is what `cargo ply verify` reports, not this drawing.\n{version_line}</title>\
          <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text></g>\
          <g class=\"verdict-strip\">{strip_tip}<text class=\"verdict-strip-text\" x=\"{strip_x:.1}\" y=\"20\">{strip_text}</text></g>\
          {title_extra}\
@@ -3787,7 +3835,7 @@ been checked for is what `cargo ply verify` reports, not this drawing.</title>\
         frame_inner_h = frame_content_h - 2.0,
         strip_x = FRAME_PAD + text_w("ply.yaml", NAME_CHAR_W) + 24.0,
         strip_text = esc(&strip_text),
-    ))
+    )))
 }
 
 /// Builds a leaf-name -> qualified-paths index from a positions-shaped map's

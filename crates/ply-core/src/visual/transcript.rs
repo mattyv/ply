@@ -48,7 +48,8 @@
 
 use super::svg::{
     ceiling_tooltip_line, check_prose, component_ceiling, declared_not_checked, deny_rule_prose,
-    document_counts, profile_rules_prose, unresolved_fn_pin_prose, weakest_declaration,
+    document_counts, format_version_line, profile_rules_prose, tame, unresolved_fn_pin_prose,
+    weakest_declaration,
 };
 use crate::model::{
     Component, Document, EdgeKind, FnClaim, InheritedChecks, Mode, component_default_checks,
@@ -115,6 +116,8 @@ pub fn render_transcript(doc: &Document) -> String {
          a result — whatever `cargo ply verify` has found, it is reported there and never \
          here.\n\n",
     );
+
+    out.push_str(&format!("{}\n\n", format_version_line(doc.ply)));
 
     let (components, functions, unclaimed) = document_counts(doc);
     out.push_str(&format!(
@@ -256,7 +259,11 @@ pub fn render_transcript(doc: &Document) -> String {
         }
     }
 
-    out
+    // Author-written strings reach this output: notes, contract clauses,
+    // trusted claims and evidence, worked examples, unresolved notes. Tamed
+    // once here rather than at each insertion site, so a future one cannot
+    // forget it. See `tame` for what is removed and what deliberately is not.
+    tame(&out)
 }
 
 /// Components, functions, and functions promising nothing — the summary

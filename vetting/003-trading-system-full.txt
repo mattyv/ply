@@ -2,6 +2,8 @@ This is a Ply transcript: everything the diagram of this document shows — ever
 It is generated from that document, like a compiler's output, and nothing in it is written by hand. Editing this text changes nothing; edit the ply.yaml document and generate it again.
 No result reaches this page. Every line below is a declaration or a promise, never a result — whatever `cargo ply verify` has found, it is reported there and never here.
 
+ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
+
 11 components · 14 functions · 2 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
@@ -20,7 +22,7 @@ components:
       capabilities: unsafe — this component may use only the capabilities it declares. That limit is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so use of a capability this component never declared can still go unnoticed (§5.3)
       owns disruptor::spsc::Spsc — only this component may mutate them
       profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
-      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
+      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, Spsc::try_push — nothing here counts as checked more strongly than the weakest thing inside it
       fn Spsc::try_push
         bounded(3) — proves the contract for every input, unrolling loops at most 3 times
@@ -31,7 +33,7 @@ components:
     component decoder — maps to Rust module ingest::decode
       pure — a sealed promise: this component declares no capabilities and may not use any. That is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so capability use inside this sealed component can still go unnoticed (§5.3)
       profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
-      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
+      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, decode — nothing here counts as checked more strongly than the weakest thing inside it
       fn decode
         bounded(2) — proves the contract for every input, unrolling loops at most 2 times
@@ -43,7 +45,7 @@ components:
       owns ingest::book::OrderBook — only this component may mutate them
       profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
       strict — this component asks that architecture findings inside it fail the build rather than warn. Nothing acts on that yet: no check this build runs reads the flag
-      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
+      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, OrderBook::apply — nothing here counts as checked more strongly than the weakest thing inside it
       fn OrderBook::apply
         bounded(2) — proves the contract for every input, unrolling loops at most 2 times
@@ -55,13 +57,13 @@ components:
         bounded(2) — proves the contract for every input, unrolling loops at most 2 times
 
   component strategy — maps to Rust module strat
-    declares checks up to tested — checked once against the declared examples and generated inputs — the strongest verdict this could earn; none of it has been run yet
+    declares checks up to tested — checked once against the declared examples and generated inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, Strategy::on_update — nothing here counts as checked more strongly than the weakest thing inside it
     fn Strategy::on_update
       test — runs the declared examples plus generated inputs, checking the contract on each
     component signals — maps to Rust module strat::signals
       pure — a sealed promise: this component declares no capabilities and may not use any. That is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so capability use inside this sealed component can still go unnoticed (§5.3)
-      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
+      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, momentum — nothing here counts as checked more strongly than the weakest thing inside it
       fn momentum
         bounded(2) — proves the contract for every input, unrolling loops at most 2 times
@@ -70,7 +72,7 @@ components:
   component risk — maps to Rust module risk
     owns risk::Limits — only this component may mutate them
     strict — this component asks that architecture findings inside it fail the build rather than warn. Nothing acts on that yet: no check this build runs reads the flag
-    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
+    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, check_order — nothing here counts as checked more strongly than the weakest thing inside it
     fn check_order
       bounded(3) — proves the contract for every input, unrolling loops at most 3 times
@@ -83,7 +85,7 @@ components:
 
   component oms — maps to Rust module oms
     owns oms::OrderStore — only this component may mutate them
-    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
+    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, Oms::submit — nothing here counts as checked more strongly than the weakest thing inside it
     fn Oms::submit
       bounded(2) — proves the contract for every input, unrolling loops at most 2 times
@@ -104,7 +106,7 @@ components:
 
   component pnl — maps to Rust module pnl
     owns pnl::Positions — only this component may mutate them
-    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
+    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, Positions::apply_fill — nothing here counts as checked more strongly than the weakest thing inside it
     fn Positions::apply_fill
       bounded(2) — proves the contract for every input, unrolling loops at most 2 times

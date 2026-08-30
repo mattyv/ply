@@ -75,6 +75,16 @@ fn the_committed_text_forms_still_match_what_the_documents_render_to() {
             "vetting/003-trading-system-full.txt",
         ),
         ("ply.yaml", "docs/ply-self.txt"),
+        // The unchecked-legacy scenario, which had a committed drawing and no
+        // committed text — while the README and this module both claimed one
+        // sat beside every scenario. Making the sentence true beats softening
+        // it, and this is the scenario where the text form's own reason for
+        // existing (telling a written empty checks list from an inherited
+        // one) does the most work (external review, 2026-08-30).
+        (
+            "vetting/004-legacy-extension/feature/ply.yaml",
+            "vetting/004-legacy-extension.txt",
+        ),
     ] {
         let yaml = std::fs::read_to_string(root.join(yaml_path))
             .unwrap_or_else(|e| panic!("reading {yaml_path}: {e}"));

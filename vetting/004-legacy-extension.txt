@@ -4,32 +4,39 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 
 ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
 
-4 components · 0 functions · 0 promise nothing
+2 components · 5 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
 components:
 
-  component e2e — maps to Rust module ply_e2e
-    note: Drives the built binary the way a user does, and depends on nothing. A suite that links the library instead stops testing what ships. It had grown exactly that dependency once; the fix was to move the test rather than widen the rule.
+  component ledger — maps to Rust module ledger
     hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
 
-  component attrs — maps to Rust module ply_attrs
-    note: Stands alone. It is a proc-macro crate, compiled for the machine doing the building rather than the machine the program will run on, so a dependency from here into the library would compile perfectly well and would be wrong: the macro would begin depending on the very thing it exists to annotate.
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
-
-  component core — maps to Rust module ply_core
-    note: Everything Ply knows how to do, with no terminal attached. It must never reach up into the command-line layer: that constraint is what makes the engine adapters testable at all, because the moment a diagnostic's wording lives here, the wording and the engine can only be tested together.
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
-
-  component cli — maps to Rust module ply_cli
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+  component withdrawal — maps to Rust module withdrawal
+    pure — a sealed promise: this component declares no capabilities and may not use any. That is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so capability use inside this sealed component can still go unnoticed (§5.3)
+    declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+    that level comes from its weakest part, approve_withdrawal — nothing here counts as checked more strongly than the weakest thing inside it
+    fn fee_cents
+      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+    fn total_debit_cents
+      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+    fn tier_fee_cents
+      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+    fn approve_withdrawal
+      fuzz(256) — runs the function on 256 random inputs, checking the contract on each
+      test — runs the declared examples plus generated inputs, checking the contract on each
+      2 worked examples, each compiled into a test:
+        approve_withdrawal(1000, 5000, 3) == true
+        approve_withdrawal(5000, 5000, 0) == false
+    fn withdraw
+      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
 
 externals — systems and people outside this codebase: none declared
 
 edges — who may call whom, and what data flows where:
   ("a -> b" means a may call b; that an undeclared cross-component call is forbidden is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so a call that crosses this line can still go unnoticed (§5.3))
   ("a ~> b : T" means T data flows from a to b — declared so the flow is visible; nothing checks flows in v1)
-  cli -> core
+  withdrawal -> ledger
 
 forbidden calls: none declared
 
