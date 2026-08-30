@@ -1,5 +1,20 @@
 # TODO
 
+## Verus is two releases behind — 2026-08-30
+
+Noted, not acted on. The spike pins **0.2026.08.15.7d4628a**; upstream now has
+0.2026.08.23.fbbbbcf (stable) and a 0.2026.08.30.b432e82 rolling build.
+
+- [ ] **Move the kernel proof to a current Verus, as its own change.** Deliberately not
+      a version-string bump. The pin is load-bearing for the same reason ADR-0003 pins
+      Kani -- a drifting engine version silently invalidates recorded evidence -- and this
+      pin carries more weight than Kani's ever did: it is what licenses the claim that all
+      four standing obligations hold unbounded, by structural induction. Changing it means
+      re-obtaining the proof and re-checking the honesty condition that travels with it
+      (the proof runs over a shadow of the kernel, not its source, tied back by a
+      differential test over generated trees). Until that is done, `FINDINGS.md`'s version
+      is the version the claim rests on, and the claim should keep quoting it.
+
 ## Coverage audit, and the four faults it found — 2026-08-30
 
 A cheaper model swept the text renderer and the drawing for tests that pass without
