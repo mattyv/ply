@@ -1,0 +1,27 @@
+ply: 1
+# The four shapes a function's `checks:` can arrive in, side by side. Two of
+# them end with nothing verified and the document says so in opposite ways
+# (§5.4c), which is exactly the pair a reader most easily conflates:
+#
+#   silent    -- no key written here, and an ancestor's empty list reaches it
+#   spelt_out -- `checks: []` written on this function
+#
+# and two that do not:
+#
+#   inherits  -- no key written here, an ancestor's non-empty list reaches it
+#   own       -- its own list, inheriting nothing
+components:
+  switched_off:
+    anchor: app::switched_off
+    checks: []
+    fns:
+      silent: {}
+      spelt_out:
+        checks: []
+  handed_down:
+    anchor: app::handed_down
+    checks: [bounded(2)]
+    fns:
+      inherits: {}
+      own:
+        checks: [test]

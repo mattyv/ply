@@ -194,3 +194,70 @@ fn non_numeric_depth_is_rejected_with_a_plain_language_message() {
     );
     assert!(stderr.contains("\"abc\""), "got: {stderr:?}");
 }
+
+/// The text form has to be reachable from the command line, or it is a
+/// library function nobody can run. It goes to the same places the drawing
+/// does — stdout by default, a file with `-o` — so a reader can pipe it
+/// into anything without learning a second set of rules.
+#[test]
+fn text_flag_writes_the_transcript_to_stdout_instead_of_the_drawing() {
+    let out = run(&["tests/fixtures/full.ply.yaml", "--text"]);
+    assert!(out.status.success(), "expected exit 0, got: {out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("<svg"),
+        "--text asked for the text form and got a drawing, got: {stdout:?}"
+    );
+    assert!(
+        stdout.starts_with("This is a Ply transcript:"),
+        "the text form should open by saying what it is, got: {stdout:?}"
+    );
+    assert!(out.stderr.is_empty(), "expected no stderr, got: {out:?}");
+}
+
+#[test]
+fn text_flag_honours_the_output_path() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("ply-render-cli-text-{}.txt", std::process::id()));
+    let out = run(&[
+        "tests/fixtures/full.ply.yaml",
+        "--text",
+        "-o",
+        path.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "expected exit 0, got: {out:?}");
+    assert!(
+        out.stdout.is_empty(),
+        "with -o, stdout should carry nothing, got: {out:?}"
+    );
+    let written = std::fs::read_to_string(&path).expect("output file should exist");
+    assert!(
+        written.starts_with("This is a Ply transcript:"),
+        "got: {written:?}"
+    );
+    std::fs::remove_file(&path).ok();
+}
+
+/// `--depth`, `--focus` and `--collapse` fold parts of the *drawing* away to
+/// fit a screen. The text form has no screen to fit and always states the
+/// whole document, so combining them is a request that cannot be honoured.
+/// Saying so beats silently ignoring the flag — the reader would otherwise
+/// believe they were handed a narrowed view.
+#[test]
+fn text_flag_says_plainly_that_the_folding_flags_do_not_apply_to_it() {
+    let out = run(&["tests/fixtures/full.ply.yaml", "--text", "--depth", "1"]);
+    assert!(!out.status.success(), "expected nonzero exit, got: {out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        stderr,
+        "error: --text writes out the whole document, so it cannot be combined with --depth, \
+         --focus or --collapse. Those fold parts of the drawing away to fit a screen; the text \
+         form has no screen to fit. Drop --depth to get the text, or drop --text to get a \
+         folded drawing.\n",
+        "got: {stderr:?}"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "a refused run must emit nothing on stdout, got: {out:?}"
+    );
+}

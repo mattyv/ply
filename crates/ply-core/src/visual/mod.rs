@@ -6,6 +6,7 @@
 
 pub mod layout;
 pub mod svg;
+pub mod transcript;
 
 use std::collections::BTreeMap;
 use std::fmt;

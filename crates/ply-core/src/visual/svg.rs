@@ -294,7 +294,7 @@ fn checks_glyph_row(checks: &[String]) -> String {
 
 /// The glyph row spelled out for the hover tooltip. `<title>` is native SVG:
 /// no script, no legend clutter on the canvas.
-fn check_prose(c: &str) -> String {
+pub(super) fn check_prose(c: &str) -> String {
     match parse_check(c) {
         Ok(Check::Test) => {
             "test — runs the declared examples plus generated inputs, checking the contract on each"
@@ -322,10 +322,20 @@ fn check_prose(c: &str) -> String {
 
 /// §5.6: the wording explaining a fn-level unresolved marker, used both on
 /// the pin glyph itself and in the fn-chip's aggregated tooltip.
-fn unresolved_fn_pin_prose(id: u64, note: &str) -> String {
+///
+/// The last clause is the honest one and was not always. It used to end
+/// "this function's checks cap at `test` (§5.6)", stating an enforcement
+/// this build does not perform: §5.6 says in as many words that the cap is
+/// not enforced -- nothing applies it, and `cargo ply verify` runs the full
+/// claim against a body that panics at the marker. `worklist` has always
+/// said so on every marker line; the two views said the opposite until
+/// 2026-08-30.
+pub(super) fn unresolved_fn_pin_prose(id: u64, note: &str) -> String {
     format!(
         "#{id} marks an unresolved decision — a question this function still owes an \
-         answer: {note}. Until it is resolved, this function's checks cap at `test` (§5.6)"
+         answer: {note}. While it is open, this function's checks are meant to be held down \
+         to the weakest level — but that cap is not applied yet, so everything below still \
+         runs in full (§5.6)"
     )
 }
 
@@ -487,6 +497,24 @@ fn render_finding_badge(x: f64, y: f64, findings: &[&Diagnostic]) -> String {
     )
 }
 
+/// One forbidden-call rule as a sentence, with the wildcard spelled out so
+/// `*` never reaches a reader. Shared by the drawing and the transcript: two
+/// serializations of one fact must not word it differently, and the only way
+/// to guarantee that is for there to be one wording.
+pub(super) fn deny_rule_prose(deny: &Deny) -> String {
+    let mut t = match (deny.from.as_str(), deny.to.as_str()) {
+        ("*", "*") => "no component may call any component".to_string(),
+        ("*", to) => format!("no component may call {to}"),
+        (from, "*") => format!("{from} may not call any component"),
+        (from, to) => format!("{from} may not call {to}"),
+    };
+    if !deny.except.is_empty() {
+        t.push_str(&format!(" — except {}", deny.except.join(", ")));
+    }
+    t.push_str(" — such a call fails the build");
+    t
+}
+
 /// Plain-language gloss for a named profile rule (§5.3): the tag alone
 /// (`no_panics`, `exhaustive_match`, ...) means nothing to a reader who
 /// hasn't read the spec. A rule this renderer doesn't recognize is shown
@@ -503,7 +531,7 @@ fn profile_rule_gloss(rule: &str) -> String {
     }
 }
 
-fn profile_rules_prose(rules: &[String]) -> String {
+pub(super) fn profile_rules_prose(rules: &[String]) -> String {
     rules
         .iter()
         .map(|r| profile_rule_gloss(r))
@@ -599,7 +627,11 @@ fn component_verdict_node<'a>(
     }
 }
 
-fn component_ceiling(name: &str, comp: &Component, inherited: Option<InheritedChecks>) -> Evidence {
+pub(super) fn component_ceiling(
+    name: &str,
+    comp: &Component,
+    inherited: Option<InheritedChecks>,
+) -> Evidence {
     aggregate(&component_verdict_node(name, comp, inherited)).evidence
 }
 
@@ -874,7 +906,7 @@ pub fn ceiling_class(e: Evidence) -> &'static str {
 
 /// Plain-language gloss for a non-`unclaimed` ceiling level, worded to read
 /// naturally after "declares checks up to ".
-fn ceiling_level_prose(e: Evidence) -> &'static str {
+pub(super) fn ceiling_level_prose(e: Evidence) -> &'static str {
     match e {
         Evidence::Tested => {
             "tested — checked once against the declared examples and generated inputs"
@@ -888,7 +920,7 @@ fn ceiling_level_prose(e: Evidence) -> &'static str {
     }
 }
 
-fn weakest_declaration<'a>(
+pub(super) fn weakest_declaration<'a>(
     comp: &'a Component,
     inherited: Option<InheritedChecks<'a>>,
     prefix: &str,
@@ -926,7 +958,7 @@ fn colour_reason_line(
     let (path, evidence) = weakest_declaration(comp, inherited, "", name)?;
     Some(match evidence {
         Evidence::Violation | Evidence::Unclaimed => format!(
-            "this box is white because `{path}` declares no checks at all — one unchecked \
+            "this box is hatched because `{path}` declares no checks at all — one unchecked \
              thing inside sets the shade of everything around it"
         ),
         other => format!(
@@ -941,11 +973,18 @@ fn colour_reason_line(
 /// none of it has run"). `unclaimed` gets its own plain sentence rather than
 /// the "declares checks up to unclaimed" template, which would read as a
 /// contradiction (there is nothing to declare "up to").
-fn ceiling_tooltip_line(e: Evidence) -> String {
+pub(super) fn ceiling_tooltip_line(e: Evidence) -> String {
     match e {
         Evidence::Violation | Evidence::Unclaimed => {
-            "no checks are declared anywhere in this component — nothing here is verified yet \
-             (unclaimed)"
+            // Deliberately does NOT say "nothing here declares checks": a
+            // component lands here as soon as ONE thing inside declares
+            // none, however much the rest declares. The old wording was
+            // false for every mixed component -- in vetting 003, six of
+            // `ingest`'s seven functions declare checks and it still read
+            // as declaring nothing anywhere. The line below this one names
+            // the item responsible.
+            "promises nothing as a whole — something inside declares no checks, and one \
+             unchecked thing sets the level of everything around it (unclaimed)"
                 .to_string()
         }
         other => format!(
@@ -1230,7 +1269,7 @@ fn render_fn_chip(
     }
     if let Some(n) = &note {
         tip.push(format!(
-            "generic — every check ran with {n}; the evidence covers only that type"
+            "generic — every check runs with {n}; whatever they earn covers only that type"
         ));
     }
     for t in &fc.trusted {
@@ -1325,13 +1364,19 @@ fn component_tip_lines(
     if let Some(note) = &comp.note {
         tip.push(note.clone());
     }
+    // See the matching note in `transcript.rs`: `pure` beside a `uses:` list
+    // is a self-contradicting document, and a view that prints one and drops
+    // the other understates what was declared.
     if comp.pure {
         tip.push(
             "pure — the double border is the seal: this component declares no capabilities \
-             and may not use any; capability use inside it is an error (A0408)"
+             and may not use any. Code inside it that reaches for one anyway is reported as \
+             an architecture finding (§5.3, A0403): a warning by default, and a build error \
+             where the component is also marked `strict`"
                 .into(),
         );
-    } else if !comp.uses.is_empty() {
+    }
+    if !comp.uses.is_empty() {
         tip.push(format!("capabilities: {}", comp.uses.join(", ")));
     }
     if !comp.owns.is_empty() {
@@ -3409,7 +3454,7 @@ pub fn render_svg_with_options(
         plural(unclaimed_fns, "promises", "promise"),
     );
     let strip_tip = title(&format!(
-        "What this document declares, before anything has been run. \"{} {} nothing\"          counts functions with no checks against them at all -- code the diagram is          showing you but says nothing about. Running `cargo ply verify` is what turns          promises into results; this line never reports results.",
+        "What this document declares, before anything has been run. \"{} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose.          Running `cargo ply verify` is what turns promises into results; this line never          reports results.",
         unclaimed_fns,
         plural(unclaimed_fns, "function promises", "functions promise"),
     ));
@@ -4162,19 +4207,7 @@ fn render_deny(
         "deny-line-finding"
     };
     let mut tip = finding_tooltip_lines(&findings);
-    tip.push({
-        let mut t = match (deny.from.as_str(), deny.to.as_str()) {
-            ("*", "*") => "no component may call any component".to_string(),
-            ("*", to) => format!("no component may call {to}"),
-            (from, "*") => format!("{from} may not call any component"),
-            (from, to) => format!("{from} may not call {to}"),
-        };
-        if !deny.except.is_empty() {
-            t.push_str(&format!(" — except {}", deny.except.join(", ")));
-        }
-        t.push_str(" — such a call fails the build");
-        t
-    });
+    tip.push(deny_rule_prose(deny));
     let badge_svg = render_finding_badge(mx + 6.0, my - FINDING_BADGE_H - 10.0, &findings);
 
     let path_d = route

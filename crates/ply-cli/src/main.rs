@@ -17,6 +17,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use ply_core::diag::is_absence;
 use ply_core::model::parse_document;
 use ply_core::visual::svg::{RenderOptions, render_svg_with_options};
+use ply_core::visual::transcript::render_transcript;
 use ply_core::visual::{
     DEFAULT_RETAINED_RUNS, VisualPublisher, build_visual_envelope_with_sources,
     completed_run_metadata, outcome_of,
@@ -76,6 +77,12 @@ enum Commands {
         /// Fold this component; dotted paths select nested components. Repeat as needed.
         #[arg(long)]
         collapse: Vec<String>,
+        /// Write the text form instead of the drawing: the same facts, every
+        /// one of them, including the ones the drawing only shows on hover.
+        /// For reading in a terminal, piping into another tool, or handing to
+        /// a model -- none of which can hover.
+        #[arg(long)]
+        text: bool,
     },
     /// Validate ply.yaml and the anchors it points at (§6). Fast, no engines.
     Check {
@@ -168,6 +175,7 @@ fn main() -> anyhow::Result<()> {
             depth,
             focus,
             collapse,
+            text,
         } => {
             let options = RenderOptions {
                 depth,
@@ -175,7 +183,7 @@ fn main() -> anyhow::Result<()> {
                 collapse,
             };
             let mut stdout = std::io::stdout().lock();
-            render_command(&path, output.as_deref(), &options, &mut stdout)?;
+            render_command(&path, output.as_deref(), &options, text, &mut stdout)?;
         }
         Commands::Check { path } => {
             let report = check::check_crate(&path)?;
@@ -286,8 +294,34 @@ fn render_command(
     requested_path: &Path,
     output: Option<&Path>,
     options: &RenderOptions,
+    text: bool,
     stdout: &mut impl Write,
 ) -> anyhow::Result<()> {
+    // The folding flags narrow a *drawing* to fit a screen. The text form has
+    // no screen to fit and always states the whole document, so a run asking
+    // for both is asking for something that does not exist. Refusing beats
+    // ignoring: a reader handed a quietly-unfolded transcript would believe
+    // they had been given the narrowed view they asked for.
+    if text {
+        let named = if options.depth.is_some() {
+            Some("--depth")
+        } else if options.focus.is_some() {
+            Some("--focus")
+        } else if !options.collapse.is_empty() {
+            Some("--collapse")
+        } else {
+            None
+        };
+        if let Some(named) = named {
+            anyhow::bail!(
+                "--text writes out the whole document, so it cannot be combined with --depth, \
+                 --focus or --collapse. Those fold parts of the drawing away to fit a screen; \
+                 the text form has no screen to fit. Drop {named} to get the text, or drop \
+                 --text to get a folded drawing."
+            );
+        }
+    }
+
     let input = if requested_path.is_dir() {
         requested_path.join("ply.yaml")
     } else {
@@ -298,6 +332,17 @@ fn render_command(
     let document = parse_document(&yaml).map_err(|error| {
         anyhow::anyhow!("{} did not parse as ply.yaml: {error}", input.display())
     })?;
+    if text {
+        let transcript = render_transcript(&document);
+        return match output {
+            Some(path) => std::fs::write(path, transcript)
+                .map_err(|error| anyhow::anyhow!("could not write {}: {error}", path.display())),
+            None => stdout.write_all(transcript.as_bytes()).map_err(|error| {
+                anyhow::anyhow!("could not write the transcript to stdout: {error}")
+            }),
+        };
+    }
+
     let svg = render_svg_with_options(&document, options)
         .map_err(|error| anyhow::anyhow!("could not render {}: {error}", input.display()))?;
 
@@ -627,12 +672,17 @@ mod tests {
                 depth,
                 focus,
                 collapse,
+                text,
             } => {
                 assert_eq!(path, PathBuf::from("."));
                 assert_eq!(output, Some(PathBuf::from("drawing.svg")));
                 assert_eq!(depth, Some(2));
                 assert_eq!(focus.as_deref(), Some("outer.inner"));
                 assert_eq!(collapse, ["left", "right"]);
+                assert!(
+                    !text,
+                    "the drawing is still the default; --text opts out of it"
+                );
             }
             _ => panic!("render should parse as render"),
         }
@@ -646,12 +696,100 @@ mod tests {
         assert!(!root.path().join("Cargo.toml").exists());
 
         let mut stdout = Vec::new();
-        render_command(root.path(), None, &RenderOptions::default(), &mut stdout).unwrap();
+        render_command(
+            root.path(),
+            None,
+            &RenderOptions::default(),
+            false,
+            &mut stdout,
+        )
+        .unwrap();
 
         let document = parse_document(yaml).unwrap();
         let canonical = render_svg_with_options(&document, &RenderOptions::default()).unwrap();
         assert_eq!(String::from_utf8(stdout).unwrap(), canonical);
         assert!(canonical.starts_with("<svg"));
+    }
+
+    /// The text form has to be on the installed command, not only on the
+    /// development binary in `tools/`. Shipping a reader aid from one entry
+    /// point and not the other is the split this project called out once
+    /// already, over the fold-nothing-away notice.
+    #[test]
+    fn render_text_writes_the_transcript_where_the_drawing_would_have_gone() {
+        let root = tempfile::tempdir().unwrap();
+        let yaml = "ply: 1\ncomponents:\n  pricing:\n    anchor: app::pricing\n";
+        std::fs::write(root.path().join("ply.yaml"), yaml).unwrap();
+
+        let mut stdout = Vec::new();
+        render_command(
+            root.path(),
+            None,
+            &RenderOptions::default(),
+            true,
+            &mut stdout,
+        )
+        .unwrap();
+        let written = String::from_utf8(stdout).unwrap();
+
+        assert!(
+            !written.contains("<svg"),
+            "--text asked for the text form and got a drawing: {written:?}"
+        );
+        let document = parse_document(yaml).unwrap();
+        assert_eq!(written, render_transcript(&document));
+    }
+
+    #[test]
+    fn render_text_honours_the_output_path() {
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("diagram.ply.yaml");
+        let output = root.path().join("diagram.txt");
+        std::fs::write(&input, "ply: 1\n").unwrap();
+        let mut stdout = Vec::new();
+
+        render_command(
+            &input,
+            Some(&output),
+            &RenderOptions::default(),
+            true,
+            &mut stdout,
+        )
+        .unwrap();
+
+        assert!(stdout.is_empty());
+        assert!(
+            std::fs::read_to_string(output)
+                .unwrap()
+                .starts_with("This is a Ply transcript:")
+        );
+    }
+
+    /// The folding flags narrow a drawing to fit a screen; the text form has
+    /// no screen to fit and always states the whole document. Silently
+    /// ignoring the flag would leave the reader believing they had been
+    /// handed a narrowed view, so the run is refused and says why.
+    #[test]
+    fn render_text_refuses_the_folding_flags_rather_than_ignoring_them() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("ply.yaml"), "ply: 1\n").unwrap();
+        let options = RenderOptions {
+            depth: Some(1),
+            ..RenderOptions::default()
+        };
+        let mut stdout = Vec::new();
+
+        let error =
+            render_command(root.path(), None, &options, true, &mut stdout).expect_err("refused");
+
+        assert_eq!(
+            error.to_string(),
+            "--text writes out the whole document, so it cannot be combined with --depth, \
+             --focus or --collapse. Those fold parts of the drawing away to fit a screen; the \
+             text form has no screen to fit. Drop --depth to get the text, or drop --text to \
+             get a folded drawing."
+        );
+        assert!(stdout.is_empty(), "a refused run must write nothing");
     }
 
     #[test]
@@ -666,6 +804,7 @@ mod tests {
             &input,
             Some(&output),
             &RenderOptions::default(),
+            false,
             &mut stdout,
         )
         .unwrap();
@@ -679,9 +818,15 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let missing = root.path().join("ply.yaml");
         let mut stdout = Vec::new();
-        let error = render_command(root.path(), None, &RenderOptions::default(), &mut stdout)
-            .unwrap_err()
-            .to_string();
+        let error = render_command(
+            root.path(),
+            None,
+            &RenderOptions::default(),
+            false,
+            &mut stdout,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains(&missing.display().to_string()), "{error}");
         assert!(error.contains("could not read"), "{error}");
         assert!(
@@ -690,9 +835,15 @@ mod tests {
         );
 
         std::fs::write(&missing, "this is: [not valid yaml").unwrap();
-        let error = render_command(root.path(), None, &RenderOptions::default(), &mut stdout)
-            .unwrap_err()
-            .to_string();
+        let error = render_command(
+            root.path(),
+            None,
+            &RenderOptions::default(),
+            false,
+            &mut stdout,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains(&missing.display().to_string()), "{error}");
         assert!(error.contains("did not parse as ply.yaml"), "{error}");
     }

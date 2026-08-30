@@ -1,5 +1,156 @@
 # TODO
 
+## Verus is two releases behind — 2026-08-30
+
+Noted, not acted on. The spike pins **0.2026.08.15.7d4628a**; upstream now has
+0.2026.08.23.fbbbbcf (stable) and a 0.2026.08.30.b432e82 rolling build.
+
+- [ ] **Move the kernel proof to a current Verus, as its own change.** Deliberately not
+      a version-string bump. The pin is load-bearing for the same reason ADR-0003 pins
+      Kani -- a drifting engine version silently invalidates recorded evidence -- and this
+      pin carries more weight than Kani's ever did: it is what licenses the claim that all
+      four standing obligations hold unbounded, by structural induction. Changing it means
+      re-obtaining the proof and re-checking the honesty condition that travels with it
+      (the proof runs over a shadow of the kernel, not its source, tied back by a
+      differential test over generated trees). Until that is done, `FINDINGS.md`'s version
+      is the version the claim rests on, and the claim should keep quoting it.
+
+## Coverage audit, and the four faults it found — 2026-08-30
+
+A cheaper model swept the text renderer and the drawing for tests that pass without
+proving anything. It confirmed the repair below held — the whole class of bug the first
+review found is now caught — and found four more faults that the suite could not see. All
+four are verified by hand, fixed with tests that kill them, and the tests were watched
+going red under each fault before being kept.
+
+**Line coverage was not measurable: neither tool is installed, and nothing was installed
+to get a number.** That is less of a loss than it sounds. Every line involved in all four
+faults below *executes* under the old tests; a coverage tool would have called them
+covered. Mutation survival is what found them, and it is the number this project should
+keep quoting.
+
+- [x] **An arrow touching the outside world could silently lose the only words saying it
+      is unchecked.** The note fires when either end is an outside party; requiring
+      *both* ends — which essentially never happens — deleted it from every real edge and
+      no test noticed. Now every such edge is checked against the document.
+- [x] **`--focus` could show the wrong half of the tree in detail.** What is inside the
+      component you named is meant to be spelled out; the boxes above it stay plain so
+      they do not bury it. Swapping those two was invisible to roughly ninety lines of
+      focus tests, because they all check the geometry of whatever got drawn and never
+      that the right things got drawn. My first attempt at the guard was itself useless —
+      I picked the target and an unrelated component, which sit on the same side of the
+      swap and pass either way. It needed one component inside the target and one above
+      it.
+- [x] **Nesting in the text was not checked at all.** Indentation is the only thing
+      grouping a function with its component there — no boxes, no lines — and handing a
+      child the same depth as its parent, flattening a whole subtree, left every test
+      green. Every assertion was "these words appear somewhere", and somewhere is not the
+      same place. Depth is now checked against the document for every component and
+      function.
+
+**Recorded, not fixed.** The installed command's `--text` test compares the command's
+output against a second call to the same function, so it proves the wiring and cannot
+prove the content. That is the right division of labour — content is the render tests'
+job — but it is worth knowing that assertion is wiring-only.
+
+**Still unmeasured.** The drawing module is 4,000+ lines and only three points in it were
+mutation-tested. Standing mutation coverage exists for the verdict kernel and nothing
+else; extending it past the kernel remains open.
+
+## Review of the transcript, and what it found — 2026-08-30
+
+A second model reviewed the feature below. It was right about almost everything, and the
+headline is bad: **the safety net was largely an illusion.** Thirteen deliberate
+breakages of the text renderer were run against the whole suite and only one died. All
+are now fixed and all die.
+
+- [x] **The worst one: the feature lied in the exact place it was sold on.** A function
+      that wrote no checks line at all, and inherited an empty list from an ancestor, was
+      told it had *written* an empty list. Same sentence, byte for byte, as a function
+      that really did write one — the two opposite statements this view exists to keep
+      apart. It now says which ancestor switched checking off, and says the function did
+      not ask for it.
+- [x] **The completeness test skipped four fields it never mentioned:** the seal, the
+      build-fails-here flag, machine-written functions, and worked examples. Deleting the
+      entire worked-examples block left every test green. Both structures are now bound
+      field by field with no catch-all, so a field added later stops the test compiling
+      rather than being quietly unchecked. Two fixtures that exercise those fields were
+      added to the set it reads; there was no `mode: synth` in any of them before.
+- [x] **The derived sentences had no test at all.** They restate no field, so a walk over
+      fields cannot see them — deleting how strongly a component is checked, or why, or
+      that it declares nothing yet, all passed. Every component block must now answer both
+      questions, and each of the sentences that answers them is pinned word for word.
+- [x] **Wrong rule, wrong severity, in the sentence a reader would quote.** Both views
+      said a sealed component touching a capability "is an error (A0408)". It is A0403,
+      and a warning unless the component is also marked to fail the build. A0408 is a
+      different rule about helpers used inside contracts. Pre-existing in the drawing; the
+      text form copied it onto a second surface instead of catching it.
+- [x] **A component marked sealed *and* declaring capabilities silently lost the
+      capability list** — the view telling a reader the document said less than it did,
+      and dropping the half that would explain a surprising finding.
+- [x] **Two header sentences were false.** "Nothing here has been run" is not something a
+      renderer handed a parsed document can know, and is flatly wrong for anyone who just
+      ran a verification; it now says no result reaches this page. And the summary's gloss
+      called the counted functions "code this document says nothing about" — in the
+      trading-system example both counted functions wrote `checks: []`, so the document
+      says something very deliberate about 2 of the 2 it described.
+- [x] **Both views claimed an enforcement that does not exist.** An open question was said
+      to cap a function's checks; §5.6 says in as many words that the cap is not enforced,
+      and a verification runs the full claim anyway. `worklist` has always said so on
+      every marker line. The two views now do too, and share one copy of the sentence
+      instead of two.
+- [x] Newbie bar: "contract at the watermark" (jargon, glossed by more jargon) and "the
+      level above" (reads as the parent component, not the previous line) rewritten.
+- [x] **`plural()` leaked a fresh allocation on every call**, under a comment claiming no
+      allocation could enter. In this repo of all repos.
+- [x] Spec §7.1a said the walk "visits every field" and that there is "only one wording"
+      of a shared fact. Neither was true when written; both are retracted and replaced
+      with what actually holds, including the day the seal sentence was worded two ways.
+
+Goldens moved and were read, not accepted: the three vetting drawings and the
+architecture diagram changed by exactly the three corrected sentences, no geometry.
+
+**KNOWN GAP, left open on purpose.** A component's stated level ignores open questions,
+so a component can say it declares checks up to the strongest level while a function
+inside it says an open question holds it down. Both sentences are individually true and
+they sit four lines apart. The fix belongs in the shared ceiling computation and changes
+the drawing too, so it is its own change rather than a rider on this one.
+
+## The transcript: the render as text — 2026-08-30
+
+Measured, not assumed: on the committed trading-system diagram 474 characters are drawn
+on the canvas and 9,923 are reachable only by hovering. 95% of what the render says --
+and all of the reasoning -- is invisible to anyone who cannot hover, and a model reading
+the document cannot hover at all.
+
+- [x] **`ply-render --text` writes the whole document as prose.** Same facts as the
+      drawing, including every sentence the drawing only shows on hover; generated on
+      demand and never committed, so it cannot go stale. Goes to stdout or `-o`, exactly
+      like the SVG.
+- [x] **Combining `--text` with `--depth`/`--focus`/`--collapse` is refused, not
+      ignored.** Those fold a drawing to fit a screen; the text has no screen. A reader
+      handed a quietly-folded transcript would believe they had the complete view.
+- [x] **Component-level default `checks:` are now stated.** Found by the new invariant,
+      not by reading: `full.ply.yaml` declares `checks: [bounded(2)]` on a component and
+      the transcript said nothing about it. That is the §5.4c distinction the transcript
+      exists to make legible -- a default is invisible on every function that inherits
+      it, and "nothing written" and "written empty" mean opposite things.
+- [x] **The load-bearing invariant drives from the document, not the drawing**
+      (`the_transcript_leaves_nothing_in_the_document_out`): every component, function,
+      check, contract clause, capability, owned type, profile rule, default list, trusted
+      claim, edge, forbidden rule, external and open question must be findable in the
+      text. Four planted breakages (drop a forbidden rule, drop all but the first check,
+      print the trusted claim where the evidence belongs, drop the component default) all
+      die, each naming the dropped item.
+- [x] **The older drawing-vs-text test had a doc comment that overclaimed** and now says
+      what it checks: names only. About a third of what the picture says is glyph
+      shorthand (`B2 F1024`, `e×1`, `⛉`, `*`) that the text spells out in words --
+      demanding verbatim agreement would force the text to be as terse as the picture.
+- [x] **The label/line gap ratchet came out.** It had been pinned down to 0 earlier in
+      the same session, which made its `<=` a comparison that could not fail -- the same
+      silence the ratchet was built to prevent. It is a flat assertion now.
+- [x] Spec amended: §7.1a.
+
 ## Component notes, and the envelope's reasoning — 2026-08-28
 
 Both from a second person's smoke test of the grammar, decided by review rather than on

@@ -1,0 +1,44 @@
+This is a Ply transcript: everything the diagram of this document shows — every box, arrow, and rule, and all the text that is otherwise visible only by hovering — written out in full.
+It is generated from that document, like a compiler's output, and nothing in it is written by hand. Editing this text changes nothing; edit the ply.yaml document and generate it again.
+No result reaches this page. Every line below is a declaration or a promise, never a result — whatever `cargo ply verify` has found, it is reported there and never here.
+
+1 component · 4 functions · 0 promise nothing
+("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
+
+components:
+
+  component ring — maps to Rust module disruptor::spsc
+    capabilities: unsafe — this component may use only the capabilities it declares; using an undeclared one is an architecture finding (§5.3, A0404)
+    owns disruptor::spsc::Spsc — only this component may mutate them
+    profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
+    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn; none of it has been run yet
+    that level comes from its weakest part, slot — nothing here counts as checked more strongly than the weakest thing inside it
+    fn slot
+      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+      mutate — plants small deliberate bugs; the test/fuzz checks must catch every one, or the contract is flagged weak
+      fuzz(4096) — runs the function on 4096 random inputs, checking the contract on each
+    fn Spsc::with_capacity
+      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+      generic — every check runs with T=u64; whatever they earn covers only that type
+    fn Spsc::try_push
+      bounded(3) — proves the contract for every input, unrolling loops at most 3 times
+      fuzz(1024) — runs the function on 1024 random inputs, checking the contract on each
+      generic — every check runs with T=u64; whatever they earn covers only that type
+      trusted (a human vouches for this; no machine checks it): SPSC cross-thread safety (happens-before between cursors) — evidence: loom test tests/loom_spsc.rs
+      1 worked example, compiled into a test:
+        { let q = Spsc::with_capacity(2); q.try_push(7).is_ok() } == true
+    fn Spsc::try_pop
+      bounded(3) — proves the contract for every input, unrolling loops at most 3 times
+      fuzz(1024) — runs the function on 1024 random inputs, checking the contract on each
+      generic — every check runs with T=u64; whatever they earn covers only that type
+
+externals — systems and people outside this codebase: none declared
+
+edges — who may call whom, and what data flows where: none declared
+
+forbidden calls: none declared
+
+profiles — named bundles of extra rules a component can adopt:
+  hot_path: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
+
+unresolved decisions held by the workspace as a whole: none declared

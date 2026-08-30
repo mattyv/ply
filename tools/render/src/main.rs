@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use ply_render::model::parse_document;
 use ply_render::svg::{RenderOptions, render_svg_with_options};
+use ply_render::transcript::render_transcript;
 
 /// `--depth` is 1-indexed (top-level boxes are level 1, per §7.1), so 0
 /// names no real level and a non-numeric value isn't a level at all. Both
@@ -55,6 +56,13 @@ struct Cli {
     /// fully-expanded default would — the inverse selection to `--focus`.
     #[arg(long = "collapse")]
     collapse: Vec<String>,
+
+    /// Write the text form instead of the drawing: the same facts, every
+    /// one of them, including the ones the drawing only shows on hover.
+    /// For reading in a terminal, piping into another tool, or handing to
+    /// a model — none of which can hover.
+    #[arg(long = "text")]
+    text: bool,
 }
 
 fn main() -> ExitCode {
@@ -78,6 +86,45 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    // The folding flags narrow a *drawing* to fit a screen. The text form
+    // has no screen to fit and always states the whole document, so a run
+    // that asks for both is asking for something that does not exist.
+    // Ignoring the flag silently would be worse than refusing: the reader
+    // would believe they had been handed a narrowed view.
+    if cli.text && (cli.depth.is_some() || cli.focus.is_some() || !cli.collapse.is_empty()) {
+        let named = if cli.depth.is_some() {
+            "--depth"
+        } else if cli.focus.is_some() {
+            "--focus"
+        } else {
+            "--collapse"
+        };
+        eprintln!(
+            "error: --text writes out the whole document, so it cannot be combined with \
+             --depth, --focus or --collapse. Those fold parts of the drawing away to fit a \
+             screen; the text form has no screen to fit. Drop {named} to get the text, or drop \
+             --text to get a folded drawing."
+        );
+        return ExitCode::FAILURE;
+    }
+
+    if cli.text {
+        let text = render_transcript(&doc);
+        return match cli.out {
+            Some(path) => match std::fs::write(&path, text) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: could not write {}: {e}", path.display());
+                    ExitCode::FAILURE
+                }
+            },
+            None => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+        };
+    }
 
     let options = RenderOptions {
         depth: cli.depth,

@@ -20,3 +20,4 @@ indexmap = { version = "2", features = ["serde"] }
 [dev-dependencies]
 insta = "1"
 roxmltree = "0.20"
+tempfile = "3"

@@ -1821,6 +1821,77 @@ than assumed from the table row alone. The earlier version of this paragraph cla
 closure when those forms existed only as table rows; the gate asks whether a reader of
 a real diagram can see the construct, so a row is not enough.
 
+### 7.1a The transcript: the same grammar, written out
+
+`ply-render --text` (and `cargo ply render --text`) writes the document as prose instead
+of as a picture: the §7.1 grammar serialised into sentences rather than into shapes.
+
+It is **not** merely the drawing transcribed. It states two things the drawing does not,
+both from §5.4c: whether a function's checks were written on it or inherited, and which
+ancestor they were inherited from. Those are invisible in a picture whose only channel
+for "checked this strongly" is a fill, and the earlier version of this section claimed
+the text "carries no information the drawing lacks" while the code carried a comment
+saying the opposite — corrected 2026-08-30.
+
+It exists because of a measurement, not a preference. On the committed trading-system
+diagram, 474 characters of text are drawn on the canvas and 9,923 are reachable only by
+hovering — 95% of what the render says, and all of the reasoning: why a box sits where it
+does on the ladder, what a check actually does, which ancestor a promise was inherited
+from. A reader who cannot hover gets the labels and none of the meaning. A model reading
+the document cannot hover at all.
+
+Reading `ply.yaml` instead is not equivalent, and the gap is the point: the source says
+what was **written**, the transcript says what is **true after the rules are applied**.
+A missing `checks:` line inherits from the nearest ancestor; a written empty one inherits
+nothing and means "check nothing here" (§5.4c). Those look nearly identical and mean
+opposite things, and a reader who resolves them wrongly states a confident falsehood
+about what is verified.
+
+Three properties are load-bearing:
+
+- **Deterministic by construction.** The renderer takes the parsed document and returns
+  a string: no filesystem, no clock, no environment, no locale, no randomness is in
+  scope. Every collection walked is insertion-ordered, so iteration is document order.
+  There are no sorts and no computed non-integers, so there is no float formatting to
+  pin.
+- **Generated, never hand-written.** It is produced from the document like a compiler's
+  output; no one edits it. A copy is committed beside each vetting scenario, for the same
+  reason the drawings are: a change to the wording then arrives in review as a diff a
+  person can read, rather than as an invisible shift in what the tool tells people. Those
+  copies are gated against a live render, because a stale one would do the opposite of
+  what it is for. Nothing in the build depends on them.
+- **One derivation where there is one fact.** The sentences both views share come from
+  shared functions — the check glosses, the ceiling line, the profile rules, the deny
+  rules, the open-question sentence — so those cannot drift. This is a discipline, not a
+  mechanism: nothing stops a future sentence being written twice, and the `pure` sentence
+  was worded differently in the two views for a day before review caught it. Where a fact
+  belongs to only one view (the drawing's glyph key; the text's inherited-from
+  attribution) there is nothing to share.
+
+The two views do not agree verbatim, and should not: about a third of what the picture
+says is glyph shorthand — `B2 F1024`, `e×1`, `⛉`, `*` — that the text spells out in
+words. Demanding verbatim agreement would force the text to be as terse as the picture.
+The invariant that holds instead is stronger and drives from the document: **every
+component, function, check, contract clause, capability, owned type, profile rule,
+default `checks:` list, trusted claim, worked example, entry point, machine-written
+marker, seal, `strict` flag, edge, forbidden rule, external and open question in the
+document is findable in the transcript.** A construct added to the grammar later cannot
+quietly skip it, because the walk binds every field of `Component` and `FnClaim` by name
+with no rest pattern: a new field stops the test compiling.
+
+That last sentence was written before it was true. The first version of the walk read the
+fields its author remembered and silently skipped four — `pure`, `strict`, `mode` and
+`examples` — so deleting the entire worked-examples block, or the seal sentence, left
+every test green. It was found by review on 2026-08-30, along with the graver failure it
+was supposed to prevent: a function that inherited an empty `checks:` list was told it
+had *written* one, collapsing the very §5.4c distinction quoted above. Thirteen deliberate
+breakages now run against these tests; before the repair, one died.
+
+`--text` cannot be combined with `--depth`, `--focus` or `--collapse`. Those fold parts of
+a drawing away to fit a screen; the text has no screen to fit and always states the whole
+document. A run that asks for both is refused rather than silently narrowed, because a
+reader handed a quietly-folded transcript would believe they had the complete view.
+
 ### 7.2 The watermark
 
 The system has three strata:
