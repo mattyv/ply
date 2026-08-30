@@ -1,20 +1,13 @@
-//! Exhaustive enumeration over small call graphs, checking [`plan`] and [`may_stub`]
-//! against independent oracles built fresh in this file -- never by calling
-//! `ply_schedule`'s own internals (which are private besides the two functions under
-//! test anyway). Two corpora, one per function under test, per this crate's task
-//! brief ("Enumerate exhaustively over every directed graph up to a small node
-//! bound").
+//! Exhaustive enumeration over small call graphs, checking [`may_stub`] against an
+//! independent oracle built fresh in this file -- never by calling `ply_schedule`'s
+//! own internals (which are private besides the one function under test anyway).
 //!
-//! ## Corpus A -- `plan`'s dependency/cycle ordering (invariants 1, 3's
-//! no-deadlock/termination half, and 4)
-//!
-//! Every directed graph on **4 nodes**, self-loops included: 4*4 = 16 possible
-//! `(caller, callee)` edges, so 2^16 = **65,536** graphs. `plan` never reads per-fn
-//! claim/result data, so no per-node config is crossed in here -- this corpus is
-//! about graph *topology* alone. 4 nodes is enough to exercise both structural
-//! extremes that matter: a depth-3 chain (a->b->c->d, exercising multi-level
-//! ordering) and multi-node cycles up to a full 4-cycle, while keeping the corpus
-//! small enough to enumerate in well under a second even in a debug build.
+//! This used to carry a second corpus for `plan`'s dependency/cycle ordering, but
+//! `plan`/`Batch` are gone (deleted along with this corpus): they duplicated the
+//! scheduler that actually ships, `ply_core::schedule::order`
+//! (`crates/ply-core/src/schedule.rs`), and implemented a different, more permissive
+//! contract that nothing in the product ever called. The real ordering's exhaustive
+//! enumeration now lives at `crates/ply-core/tests/schedule_enumeration.rs`.
 //!
 //! ## Corpus B -- `may_stub`'s Allowed/Refused gate (invariant 2, and invariant 3's
 //! "no cycle member may stub another" half)
@@ -33,181 +26,14 @@
 //! decision (only "same SCC or not" matters, not cycle length) -- (b) the crate/`pub`
 //! relationship between the two, and (c) `callee`'s own contract/proof state. General
 //! multi-node cycle *topology* (arbitrary-length cycles, chains through third nodes)
-//! is already exhaustively covered by Corpus A; Corpus B's job is only to check the
-//! decision table itself is implemented correctly at every input combination that
-//! table actually branches on, which 2 nodes reaches in full.
+//! is exhaustively covered by `crates/ply-core/tests/schedule_enumeration.rs`;
+//! Corpus B's job is only to check the decision table itself is implemented
+//! correctly at every input combination that table actually branches on, which 2
+//! nodes reaches in full.
 use ply_schedule::{
-    Batch, CallGraph, CrateId, Evidence, FnId, FnInfo, ProofResults, ProofStatus, StubDecision,
-    StubRefusalReason, may_stub, plan,
+    CallGraph, CrateId, Evidence, FnId, FnInfo, ProofResults, ProofStatus, StubDecision,
+    StubRefusalReason, may_stub,
 };
-
-/// Unwraps the `Vec<FnId>` payload of each [`Batch`] in order, for iterating "which
-/// node is in which batch index" without repeating `.0` at every call site.
-fn real_batches(batches: &[Batch]) -> impl Iterator<Item = &[FnId]> {
-    batches.iter().map(|b| b.0.as_slice())
-}
-
-// --- Corpus A: plan() over every directed graph on 4 nodes ---
-
-const N: usize = 4;
-/// 4 nodes x 4 nodes = 16 possible directed edges (self-loops included), so 2^16
-/// graphs. Declared as a named bound per the task brief's "state the bound ... in a
-/// doc comment."
-const EDGE_SLOTS: usize = N * N;
-
-fn edge_slots() -> Vec<(FnId, FnId)> {
-    let mut slots = Vec::with_capacity(EDGE_SLOTS);
-    for caller in 0..N as FnId {
-        for callee in 0..N as FnId {
-            slots.push((caller, callee));
-        }
-    }
-    slots
-}
-
-fn dummy_info() -> FnInfo {
-    FnInfo {
-        crate_id: CrateId(0),
-        declares_contract: false,
-        is_pub: false,
-        own_evidence: Evidence::Unclaimed,
-    }
-}
-
-fn build_graph(edges_mask: u32, slots: &[(FnId, FnId)]) -> CallGraph {
-    let mut g = CallGraph::new();
-    for id in 0..N as FnId {
-        g.add_fn(id, dummy_info());
-    }
-    for (i, &(caller, callee)) in slots.iter().enumerate() {
-        if edges_mask & (1 << i) != 0 {
-            g.add_edge(caller, callee);
-        }
-    }
-    g
-}
-
-/// Independent oracle: reachability computed fresh (plain BFS via an adjacency list
-/// built directly from the mask), never touching `ply_schedule`'s internals.
-fn oracle_reachable(edges_mask: u32, slots: &[(FnId, FnId)], start: FnId) -> [bool; N] {
-    let mut reach = [false; N];
-    reach[start as usize] = true;
-    loop {
-        let mut changed = false;
-        for (i, &(caller, callee)) in slots.iter().enumerate() {
-            if edges_mask & (1 << i) != 0 && reach[caller as usize] && !reach[callee as usize] {
-                reach[callee as usize] = true;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    reach
-}
-
-fn oracle_same_scc(reach: &[[bool; N]; N], a: FnId, b: FnId) -> bool {
-    a == b || (reach[a as usize][b as usize] && reach[b as usize][a as usize])
-}
-
-/// Independent oracle for `plan`'s batch index of every node: longest-path layer over
-/// the SCC condensation, computed from scratch (union by mutual reachability, then a
-/// straightforward fixed-point relaxation over the -- acyclic by construction --
-/// condensation graph; no memoized recursion, no shared code with `ply_schedule`).
-fn oracle_batch_index(edges_mask: u32, slots: &[(FnId, FnId)]) -> [usize; N] {
-    let reach: [[bool; N]; N] =
-        std::array::from_fn(|i| oracle_reachable(edges_mask, slots, i as FnId));
-
-    // Canonical SCC representative per node: the smallest id in its mutual-reachability
-    // class.
-    let scc_rep: [usize; N] = std::array::from_fn(|i| {
-        (0..N)
-            .find(|&j| oracle_same_scc(&reach, i as FnId, j as FnId))
-            .unwrap()
-    });
-
-    // Fixed-point relaxation: layer(scc) = 0 if it calls no *other* scc, else
-    // 1 + max(layer of every other scc it calls). The condensation is acyclic by
-    // construction (SCCs are maximal), so this always converges in <= N passes.
-    let mut layer = [0usize; N];
-    for _ in 0..N {
-        for (i, &(caller, callee)) in slots.iter().enumerate() {
-            if edges_mask & (1 << i) == 0 {
-                continue;
-            }
-            let sc = scc_rep[caller as usize];
-            let sd = scc_rep[callee as usize];
-            if sc != sd {
-                layer[sc] = layer[sc].max(layer[sd] + 1);
-            }
-        }
-    }
-    std::array::from_fn(|i| layer[scc_rep[i]])
-}
-
-#[test]
-fn plan_orders_callees_before_callers_and_batches_cycles_together() {
-    let slots = edge_slots();
-    let total_graphs: u64 = 1u64 << EDGE_SLOTS;
-    assert_eq!(
-        total_graphs, 65_536,
-        "enumeration bound changed shape -- update this file's doc comment too if intentional"
-    );
-
-    let mut offending: Vec<String> = Vec::new();
-
-    for mask in 0..total_graphs {
-        let mask = mask as u32;
-        let graph = build_graph(mask, &slots);
-        let expected_index = oracle_batch_index(mask, &slots);
-
-        let batches = plan(&graph);
-        let batches_again = plan(&graph);
-
-        // Determinism (invariant 4).
-        if batches != batches_again {
-            offending.push(format!(
-                "determinism: plan() gave two different results for mask {mask:#06x}"
-            ));
-        }
-
-        // Coverage + no duplicates: every node appears in exactly one batch.
-        let mut seen = [0usize; N];
-        for (batch_idx, batch) in real_batches(&batches).enumerate() {
-            for &id in batch {
-                seen[id as usize] += 1;
-                // Ordering (invariant 1, acyclic case) + same-batch grouping
-                // (invariant 3, cycle case): the produced batch index must equal the
-                // oracle's dependency layer exactly.
-                if batch_idx != expected_index[id as usize] {
-                    offending.push(format!(
-                        "batch-index mismatch for mask {mask:#06x}, node {id}: plan put it in batch {batch_idx}, oracle says {}",
-                        expected_index[id as usize]
-                    ));
-                }
-            }
-        }
-        for (id, &count) in seen.iter().enumerate() {
-            if count != 1 {
-                offending.push(format!(
-                    "coverage mismatch for mask {mask:#06x}: node {id} appeared in {count} batches (want exactly 1)"
-                ));
-            }
-        }
-
-        if offending.len() >= 5 {
-            break;
-        }
-    }
-
-    assert!(
-        offending.is_empty(),
-        "plan() disagreed with the independent oracle (showing up to 5 of {} found):\n{}",
-        offending.len(),
-        offending.join("\n\n")
-    );
-}
 
 // --- Corpus B: may_stub() over every directed graph on 2 nodes x every per-node config ---
 
@@ -344,8 +170,8 @@ fn may_stub_allows_only_when_callee_actually_passed() {
                 let configs = [cfg0, cfg1];
                 let (graph, results) = build_graph_2(mask, &slots, &configs);
 
-                // same_scc from the same from-scratch style oracle as Corpus A, but
-                // freshly computed here (no shared helper with `ply_schedule`).
+                // same_scc from a from-scratch style oracle, freshly computed here
+                // (no shared helper with `ply_schedule`).
                 let reach0 = oracle_reach_2(mask, &slots, 0);
                 let reach1 = oracle_reach_2(mask, &slots, 1);
                 let same_scc = reach0[1] && reach1[0];
