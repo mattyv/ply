@@ -41,10 +41,29 @@ Only the second is measurable, so effort drifts toward it whether or not it is w
 value is. That drift is exactly what the 21%-to-80% episode was.
 
 **Consequence for the plan:** the honesty machinery (the rule registry, staleness
-reporting, the "what was NOT checked" output) outranks the type work, not the other way
-round. The ledger -- what is claimed, what is checked, how strongly, and what nobody
-checked -- works across a whole codebase regardless of types. The proof engine is a bonus
-on the slice where it happens to be cheap.
+reporting, the "what was NOT checked" output) is scheduled ahead of further type work.
+
+**Corrected the same day, before this was acted on.** The first version of this paragraph
+said the ledger "works across a whole codebase regardless of types" and called the proof
+engine "a bonus on the slice where it happens to be cheap". The second half is wrong and
+is withdrawn. A ledger with no engine behind it is a spreadsheet of assertions: the
+evidence ladder only means anything because its top rungs are sometimes reached, and if
+nothing ever reaches them the whole design collapses into "tested / not tested". Proof is
+what makes an entry in the ledger worth more than a claim; the ledger is what makes proof
+safe to trust and safe to lack. They are complementary, not ranked.
+
+What is true is narrower: **proof pays where it is concentrated, not where it is spread.**
+A small pure core carrying consequence out of proportion to its size is exactly where it
+earns its cost -- which is why this repository's own kernel gets exhaustive enumeration
+over every tree to a bound plus an unbounded inductive proof, and why the mutation run
+that guards it has already found real dead code and a blanked failure message that would
+have left every future counterexample unreadable. The mistake was never valuing proof; it
+was expecting proof to spread evenly across a codebase.
+
+That gives a targeting rule rather than a coverage programme: **widen toward the shapes
+where proof is cheap AND the consequence is concentrated**, and let the rest be recorded
+honestly. It also makes the gap below worse rather than acceptable -- Ply's kernel is
+precisely the shape where proof pays most, and Ply cannot reach it.
 
 ### KNOWN GAP: Ply's own file does not record what Ply's own evidence is
 
