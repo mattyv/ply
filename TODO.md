@@ -62,7 +62,44 @@ across two commits, except the three recorded below as open.
       code this build cannot raise, checked against the codes actually present in the
       checker sources rather than a hand-kept list. Verified to bite by injecting one.
 
+### A fourth review, and the half-fixes it found — 2026-08-30
+
+The pattern in all three: I had fixed the instance in front of me and reported the class
+as done.
+
+- [x] **The drawing still told both lies the text form had been taught out of.** The
+      morning's fix landed on the transcript only, and a green test *required* the
+      drawing to say an example was "compiled into a test" against a function declaring
+      `[bounded(3), fuzz(1024)]` — a passing test pinning a false sentence in exactly the
+      configuration where it is false. Both sentences now come from two shared helpers,
+      and both are future-conditional: neither view runs a compiler, so neither may say
+      one ran. The TODO tick claiming otherwise was an overclaim about my own work.
+- [x] **`SCHEMA.md` §8 still opened "None of the rules in this section is enforced"** while
+      §2 and §14, corrected earlier the same day, said crate-level `edges:`/`deny:` are
+      checked. Replaced with a tier matrix stating row by row what is enforced (`A0401`,
+      `A0405`) and what is only recorded, verified against the code rather than the prose.
+- [x] **The malformed-example refusal wore the wrong identity**: `V0507` (a code in no
+      documentation anywhere), `severity: "warning"` for something that refuses a claim
+      and exits non-zero, and `open_item: "unsupported_signature"` — false, since the
+      signature is fine and the document is malformed. A dedicated constructor emits a
+      real `E0501` at error severity now. The regression asserted on a substring of the
+      human title, so it passed with the code wrong; it asserts the `code` field.
+
 ### KNOWN GAPS, left open deliberately
+
+- [ ] **The doc test is a substring ratchet, and its weakness is measured, not assumed.**
+      A reworded blanket lie inserted under §8 alongside an intact matrix passes all three
+      assertions. The real fix is the rule registry below; until it exists this catches
+      the historical sentence and the matrix vanishing, which is worth having and is not
+      a proof.
+- [ ] **The malformed-example diagnostic carries no pointer at the offending YAML line.**
+      `diag.rs` documents pointers as present only on E0201/E0204, so this is consistent —
+      but that rationale ("a diagnostic about a function points at source, not at YAML")
+      argues a diagnostic that *is* about a YAML line deserves one. Follow-up, not a
+      defect; the title quotes the entry.
+- [ ] **The tier matrix omits a `profile:` row** that §8 documents in its own subsection.
+      Nothing is claimed enforced that is not, but the honest summary skips one construct.
+
 
 - [ ] **The rule registry.** The ratchet above catches a phantom *code*; it cannot catch a
       phantom claim with no code in it ("compiled into a test" had none). The real fix is

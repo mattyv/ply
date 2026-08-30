@@ -1058,12 +1058,28 @@ would make deleting the note the cheapest fix.
 
 ## 8. Architecture: edges, denials, capabilities, ownership
 
-> **Read this first.** None of the rules in this section is enforced against your code
-> in this build. `cargo ply check` validates that these lines are well-formed, that
-> every name resolves, and that references are unambiguous; it does **not** compare them
-> against what your code actually calls, touches, or mutates. The output says so on
-> every run. Write them if you want the intent recorded and validated — do not write
-> them believing a violation will be caught today.
+> **Read this first.** This section covers two different tiers of enforcement, and they
+> are not equally real yet. The table below is the honest summary; `cargo ply check`'s
+> own closing output paragraph is the authority if this table and that output ever
+> disagree.
+
+| Construct | Enforced today? | Finding |
+|---|---|---|
+| `edges:` between components in different **crates** | **Yes** — against the real dependency graph from `cargo metadata` | `A0401` (error) |
+| `deny:` at crate level | **Yes** — same graph | `A0405` (error) |
+| `edges:`/`deny:` between components in the **same** crate (an item-level call) | Declared only | none |
+| `~>` data-flow declarations | Declared only, by design (never checked) | none |
+| `uses:` (capabilities) | Declared only | none |
+| `owns:` (ownership) | Declared only | none |
+| `pure:` | Declared only | none |
+| `strict:` | Declared only — read by the renderers, nothing else | none |
+
+`cargo ply check` validates that every construct in this section is well-formed, that
+every name resolves, and that references are unambiguous, whether or not the tier behind
+it runs today. For the two enforced rows, it goes further: it compares your declared `edges:`
+and `deny:` against what your crate's `Cargo.toml` actually depends on, and raises
+`A0401`/`A0405` on a mismatch. For every other row, write it if you want the intent
+recorded and validated — do not write it believing a violation will be caught today.
 
 ### Edges
 
@@ -1111,19 +1127,22 @@ rule does not apply to.
 
 ### Two tiers, and `strict`
 
-The intended enforcement has two tiers, and they differ in how much you can trust them:
+The design calls for two tiers, and they differ in how much you'd be able to trust them:
 
-- **Crate tier** — derived from cargo's own dependency graph, which is exact. Findings
-  here are errors.
-- **Item tier** — derived from parsing your source without type inference or macro
-  expansion. It resolves calls, capability use, and mutation *approximately*: it can
-  miss a call it cannot place, and it can misattribute one. Findings here are
-  **warnings by default**.
+- **Crate tier** — derived from cargo's own dependency graph, which is exact. This is
+  the tier that runs today: `edges:`/`deny:` between components in different crates,
+  checked against `cargo metadata`. Findings here are errors (`A0401`, `A0405`).
+- **Item tier** — would be derived from parsing your source without type inference or
+  macro expansion, resolving calls, capability use, and mutation *approximately*: it
+  could miss a call it cannot place, and could misattribute one. Findings here would be
+  **warnings by default**. **This tier does not exist in this build** — see section 14.
+  It is validated for shape and then compared against nothing.
 
-`strict: true` on a component turns that component's item-tier findings into errors.
-That is an opt-in precisely because the underlying data is approximate — turning
-advisory findings into build failures is a promise you make about your own code, not one
-the tool can make for you.
+`strict: true` on a component is meant to turn that component's item-tier findings into
+errors once that tier exists. Today it is read by nothing but the renderers. That is
+still meant to be an opt-in precisely because the underlying data would be approximate —
+turning advisory findings into build failures is a promise you make about your own code,
+not one the tool can make for you.
 
 ```yaml
 ply: 1

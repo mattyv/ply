@@ -44,24 +44,39 @@ fn an_example_that_cannot_be_parsed_stops_the_claim_earning_anything() {
         "a run that silently dropped one of the author's own assertions must say so: {}",
         run.json
     );
-    let said = diagnostics
+    // The machine-readable identity has to be E0501, not a title substring.
+    // A reader's tool matches on `code`, never on `title` text -- and this
+    // fixture's own bug used to be exactly that gap: the diagnostic's real
+    // `code` was `V0507` (a code no documentation names, `severity:
+    // "warning"` for something that refuses the claim and exits non-zero,
+    // and `open_item: "unsupported_signature"`, which is false -- the
+    // signature is fine, the document is malformed) while "E0501" only ever
+    // appeared inside the human-readable `title`. A test that checks the
+    // title substring passes on both the right diagnostic and the wrong
+    // one, which is why this fixture's regression survived undetected.
+    let malformed = diagnostics
         .iter()
-        .any(|d| d["title"].as_str().is_some_and(|t| t.contains("E0501")));
-    assert!(
-        said,
-        "the diagnostic must name the parse failure (E0501) so the author can find the typo. \
-         Refusing the claim without saying why is only half the fix: {}",
+        .find(|d| {
+            d["title"]
+                .as_str()
+                .is_some_and(|t| t.contains("`add_small(`"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no diagnostic quotes the offending entry — with two examples on one function, a \
+                 reader cannot otherwise tell which one is malformed: {}",
+                run.json
+            )
+        });
+    assert_eq!(
+        malformed["code"], "E0501",
+        "the machine-readable code must be E0501 (the documented code for an unparseable \
+         contract expression), not whatever refused-anchor code the tool happens to reuse: {}",
         run.json
     );
-    let names_it = diagnostics.iter().any(|d| {
-        d["title"]
-            .as_str()
-            .is_some_and(|t| t.contains("add_small("))
-    });
-    assert!(
-        names_it,
-        "the diagnostic must quote the offending entry — with two examples on one function, a \
-         reader cannot otherwise tell which one is malformed: {}",
+    assert_eq!(
+        malformed["severity"], "error",
+        "refusing a claim and exiting non-zero is an error, not a warning: {}",
         run.json
     );
 
