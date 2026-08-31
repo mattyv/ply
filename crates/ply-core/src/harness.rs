@@ -808,16 +808,26 @@ fn is_bare_self_type(ty: &Type) -> bool {
 }
 
 /// Whether a receiverless associated fn's return type is a shape
-/// [`scan_ctor_candidates`] accepts as a usable constructor: bare `Self`, or
-/// -- widened 2026-08-28, docs/review-structs-enums.md finding 2, "a
-/// violation reported on correct code" -- `Result<Self, E>`, the ordinary
-/// fallible-constructor shape (`Range::new(lo, hi) -> Result<Self,
-/// String>`, rejecting `lo > hi`). Before this widening, a `Result`-
-/// returning constructor was invisible to every constructor scan, so a type
-/// with one and nothing else fell straight through to rule 2 (direct field
-/// construction) and Ply built exactly the state the constructor exists to
-/// forbid, then reported the function that reads it as violating its own
-/// promise.
+/// [`scan_ctor_candidates`] (the parameter path) and [`scan_file_for_receiver`]
+/// (the receiver path) both accept as a usable constructor -- one shared
+/// answer, computed here once, rather than each scan asking its own
+/// narrower question: bare `Self`, or -- widened 2026-08-28,
+/// docs/review-structs-enums.md finding 2, "a violation reported on correct
+/// code" -- `Result<Self, E>`, the ordinary fallible-constructor shape
+/// (`Range::new(lo, hi) -> Result<Self, String>`, rejecting `lo > hi`).
+/// Before that widening, a `Result`-returning constructor was invisible to
+/// every constructor scan, so a type with one and nothing else fell
+/// straight through to rule 2 (direct field construction) and Ply built
+/// exactly the state the constructor exists to forbid, then reported the
+/// function that reads it as violating its own promise.
+///
+/// The widening reached the parameter path's own scan in that fix but not
+/// the receiver path's, which kept its own separate, narrower check until
+/// 2026-08-31 (defect 1, docs/reach-measurement-2.md): the exact same
+/// constructor Ply had just used to build a *parameter* was reported as not
+/// existing when the receiver scan asked. The receiver path now calls this
+/// same function rather than carrying a second answer that could disagree
+/// with it.
 ///
 /// Deliberately narrow, matching `return_rust_type_from_syn`'s own doc:
 /// `Result<Self, E>` behind a type alias, or nested inside another
@@ -1807,12 +1817,15 @@ pub struct ReceiverPlan {
     /// false.
     pub ctor_requires: Option<Expr>,
     /// Whether `constructor` returns bare `Self` or `Result<Self, E>`
-    /// (2026-08-28, docs/review-structs-enums.md finding 2) -- codegen
-    /// (`fuzz_gen::build_user_value_stmt`) reads this to decide whether the
-    /// constructor call needs a rejecting `match` around it. Always
-    /// [`CtorReturn::Bare`] for a receiver's own plan (`scan_impls_for_receiver`
-    /// does not (yet) recognise a fallible receiver constructor -- see that
-    /// fn's own doc comment), so this changes nothing for the receiver path.
+    /// (2026-08-28, docs/review-structs-enums.md finding 2) -- codegen reads
+    /// this to decide whether the constructor call needs a rejecting `match`
+    /// around it: `fuzz_gen::build_user_value_stmt` for a parameter's own
+    /// plan, `fuzz_gen::receiver_preamble` for a receiver's (the latter
+    /// widened 2026-08-31, defect 1, docs/reach-measurement-2.md -- before
+    /// that fix this field was hardcoded to `Bare` for every receiver's
+    /// plan, so a fallible constructor Ply had already used to build a
+    /// *parameter* in the same run was reported as though it did not exist
+    /// when the very same scan was asked to build a *receiver*).
     pub ctor_return: CtorReturn,
     pub operations: Vec<Operation>,
     /// Every other `&self`/`&mut self` operation this scan found in the same
@@ -2299,10 +2312,12 @@ fn extract_requires_expr(attrs: &[syn::Attribute]) -> Result<Option<Expr>> {
 }
 
 /// One candidate constructor found while scanning: its call path, its own
-/// parameters, the first unbuildable-parameter type it has (if any), and
-/// its own declared `#[ply::requires]` (if any) -- see
+/// parameters, the first unbuildable-parameter type it has (if any), its
+/// own declared `#[ply::requires]` (if any), and which of the two
+/// constructor-return shapes it has ([`CtorReturn`], added 2026-08-31 --
+/// see `scan_file_for_receiver`'s own doc for why) -- see
 /// `scan_impls_for_receiver`.
-type CtorCandidate = (String, Vec<Param>, Option<String>, Option<Expr>);
+type CtorCandidate = (String, Vec<Param>, Option<String>, Option<Expr>, CtorReturn);
 
 /// One constructor candidate found by [`scan_ctor_candidates`]/
 /// [`scan_ctor_candidates_crate_wide`] for a **parameter's** own type (never
@@ -2465,31 +2480,31 @@ fn scan_file_for_receiver(
                 continue;
             }
             if is_receiverless {
-                // A candidate constructor: one returning `Self`, or the
-                // type's own name written out -- `-> Quota`,
-                // `-> super::Quota` -- which is ordinary Rust and was not
-                // recognised here, so a type whose constructor spelled
-                // itself that way had "no constructor to call" as far as
-                // the receiver scan was concerned (2026-08-28, the same
-                // family as the qualified-`impl` fix).
-                //
-                // Still narrower than the parameter path in one respect,
-                // deliberately and recorded rather than papered over: a
-                // `Result<Self, E>` constructor is recognised for a
-                // parameter and not for a receiver.
-                let returns_self = match &m.sig.output {
-                    syn::ReturnType::Type(_, ty) => return_names_this_type(
-                        ty,
-                        type_name,
-                        file_mod,
-                        &use_aliases,
-                        target_absolute,
-                    ),
-                    syn::ReturnType::Default => false,
-                };
-                if !returns_self {
+                // A candidate constructor: bare `Self`, the type's own name
+                // written out (`-> Quota`, `-> super::Quota`), or either of
+                // those wrapped in `Result<_, E>` -- exactly
+                // [`ctor_return_kind`]'s own answer, the same function
+                // [`scan_ctor_candidates`] (the *parameter* path's own
+                // scan) already calls. Before 2026-08-31 this scan asked its
+                // own, narrower question here (bare-`Self`-or-name only),
+                // so the very same constructor Ply had just used to build a
+                // *parameter* in the same run (`A::new(v) -> Result<A,
+                // Bad>`) was reported as not existing when the receiver
+                // scan asked -- a false sentence, found pointing Ply at
+                // `semver` (docs/reach-measurement-2.md). One classifier,
+                // shared by both scans, is what makes that impossible now:
+                // there is only one answer to "is this a constructor",
+                // not a second one for receivers to disagree with.
+                let Some(ctor_return) = ctor_return_kind(
+                    &m.sig.output,
+                    aliases,
+                    type_name,
+                    file_mod,
+                    &use_aliases,
+                    target_absolute,
+                ) else {
                     continue;
-                }
+                };
                 let Some(params) = params_from_inputs(m.sig.inputs.iter(), aliases) else {
                     continue;
                 };
@@ -2516,7 +2531,8 @@ fn scan_file_for_receiver(
                 // generates for it (2026-08-27, docs/review-caveats.md N2).
                 let ctor_requires = extract_requires_expr(&m.attrs)
                     .map_err(|_| ReceiverError::UnsupportedParamPattern)?;
-                out.ctor_candidates.push((path, params, bad, ctor_requires));
+                out.ctor_candidates
+                    .push((path, params, bad, ctor_requires, ctor_return));
             } else if let Some(syn::FnArg::Receiver(r)) = m.sig.inputs.first()
                 && r.reference.is_some()
                 && let Some(params) = params_from_inputs(m.sig.inputs.iter().skip(1), aliases)
@@ -2672,13 +2688,13 @@ fn scan_impls_for_receiver(
     };
     let ctor_candidates: Vec<CtorCandidate> = ctor_candidates
         .into_iter()
-        .map(|(path, params, _bad, req)| {
+        .map(|(path, params, _bad, req, ctor_return)| {
             let resolved: Vec<Param> = params.iter().map(resolve_or_keep).collect();
             let bad = resolved
                 .iter()
                 .find(|p| !p.ty.is_fuzz_supported())
                 .map(|p| p.ty.display_name());
-            (path, resolved, bad, req)
+            (path, resolved, bad, req, ctor_return)
         })
         .collect();
     // `target_params` (the checked method's own non-`self` arguments) is
@@ -2693,17 +2709,21 @@ fn scan_impls_for_receiver(
     // that parameter) rather than emitting a harness that cannot compile --
     // narrower than it could be, not broken.
 
-    let buildable = ctor_candidates.iter().find(|(_, _, bad, _)| bad.is_none());
-    let (ctor_path, ctor_params, ctor_requires) = match buildable {
-        Some((path, params, _, req)) => (path.clone(), params.clone(), req.clone()),
+    let buildable = ctor_candidates
+        .iter()
+        .find(|(_, _, bad, _, _)| bad.is_none());
+    let (ctor_path, ctor_params, ctor_requires, ctor_return) = match buildable {
+        Some((path, params, _, req, ctor_return)) => {
+            (path.clone(), params.clone(), req.clone(), *ctor_return)
+        }
         None => match ctor_candidates.first() {
-            Some((path, _, Some(bad), _)) if bad == "private" => {
+            Some((path, _, Some(bad), _, _)) if bad == "private" => {
                 return Err(ReceiverError::PrivateConstructor {
                     type_name: type_name.to_string(),
                     ctor_name: path.clone(),
                 });
             }
-            Some((path, _, Some(bad), _)) => {
+            Some((path, _, Some(bad), _, _)) => {
                 return Err(ReceiverError::UnsupportedConstructorParam {
                     type_name: type_name.to_string(),
                     ctor_name: path.clone(),
@@ -2746,8 +2766,8 @@ fn scan_impls_for_receiver(
     // silent exactly where the first two findings' fix stops.
     let mut other_constructors: Vec<String> = ctor_candidates
         .iter()
-        .filter(|(path, _, bad, _)| bad.is_none() && *path != ctor_path)
-        .map(|(path, _, _, _)| path.clone())
+        .filter(|(path, _, bad, _, _)| bad.is_none() && *path != ctor_path)
+        .map(|(path, _, _, _, _)| path.clone())
         .collect();
     other_constructors.sort();
     other_constructors.dedup();
@@ -2760,15 +2780,16 @@ fn scan_impls_for_receiver(
         constructor: ctor_path,
         ctor_params,
         ctor_requires,
-        // `scan_impls_for_receiver`'s own ctor-candidate scan (just above)
-        // still gates on bare `Self` only, so every receiver's own plan is
-        // always `Bare` here -- widening the receiver path to `Result<Self,
-        // E>` is real, adjacent scope this task did not ask for
-        // (docs/review-structs-enums.md's two reproductions are both a
-        // *parameter*, never a receiver), left for the user to decide
-        // whether it is wanted. The constructor search itself is now
-        // crate-wide (finding 1, just above).
-        ctor_return: CtorReturn::Bare,
+        // The chosen candidate's own answer from `ctor_return_kind`
+        // (2026-08-31, defect 1, docs/reach-measurement-2.md) -- `Bare` for
+        // a plain `-> Self`/`-> Type` constructor, `ResultSelf` for a
+        // `Result`-wrapped one, exactly as the parameter path's own
+        // `resolve_user_type` already reports for the same constructor.
+        // Before this fix this field was hardcoded to `Bare` here, so a
+        // fallible constructor Ply had just called to build a *parameter*
+        // was reported as not existing at all when asked to build a
+        // *receiver*.
+        ctor_return,
         operations,
         excluded_operations: excluded_ops,
         other_constructors,
