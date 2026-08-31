@@ -76,6 +76,38 @@ tests already in use, plus reviewers running the repository's own fixtures rathe
 crates written for the purpose. Worth saying because the registry is exactly the kind of
 structural fix that invites the belief that a whole category of error is now closed.
 
+## The thirteen, triaged — and the count corrected
+
+Done 2026-08-31, after the count above was taken. It changes the picture, and two of the
+corrections are against my own measurement.
+
+**Two were never gaps: `E0303` and `W0302`.** The spec names them in a sentence saying they
+do not exist — *"there is no `stale` status, no `W0302`, no `cargo ply accept` and no
+`E0303`"* — because the record re-verifies its fingerprint at the moment of use, so a claim
+is never "recorded but possibly no longer true". A scan that counts a code's presence cannot
+tell a promise from a denial, and mine did not. **The honest number is eleven, not thirteen**,
+and the registry's own scan has to handle this or it will inherit the same flaw.
+
+**Ten are features that are honestly not built**, and the fix for them is not code — it is
+the status field, so that every surface says so instead of reading like a rule Ply applies:
+
+- `A0402`, `A0403`, `A0404`, `A0406`, `A0407`, `A0408`, `W0411`, `W0412` — the item tier and
+  its call-site extraction. `ply.yaml`'s own comment already says this tier is not built;
+  `calls_unresolved` does not exist in the source at all.
+- `W0531` — a hand-edited derived body. Gated on `synth`, which the plan explicitly excludes
+  from production.
+- `X0902` — the witness-replay half of the correctness oracle. The spec already admits this
+  one: *"not yet wired into the M3 e2e suite"*.
+
+**One is a real gap, and it is small: `W0111`.** When `ply.yaml` and an inline attribute
+disagree, the spec says `ply.yaml` wins and Ply warns. Ply does not warn. A user can override
+a promise written on the function and be told nothing. That is a silent override, which is
+the same family as the silence closed this week — worth building, and cheap.
+
+So the work the registry unblocks is one warning plus ten status fields, not thirteen
+judgment calls. That is a much smaller and more tractable thing than the count suggested,
+and the count suggested otherwise because I read a denial as a promise.
+
 ## Four decisions I need from you
 
 1. **Where the table lives.** My recommendation: a `const` table in `ply-core`, not a data
@@ -88,11 +120,9 @@ structural fix that invites the belief that a whole category of error is now clo
    document fails the build. Extending it to the rule tables is the only way the documents
    stay true without anyone remembering. It means those tables stop being hand-editable.
 
-3. **What happens to the thirteen.** Each is a rule the docs promise and nothing enforces.
-   They are not one thing: some are unbuilt features, some may be genuinely dead. They need
-   triaging into *implement* or *retract* before the registry can carry them honestly, and
-   that triage is a judgment call per rule. Roughly a session's work, and the registry is
-   blocked on it.
+3. **What happens to the eleven** — triaged in the section above, and the answer is smaller
+   than the count implied: ten need only an honest status, one (`W0111`) needs building.
+   The decision left for you is whether `W0111` is worth building now or recorded as owed.
 
 4. **Whether it lands before or after the two reach defects.** The registry is the larger
    piece; the reach defects (a promise cannot mention its receiver; a comparison nested in a
