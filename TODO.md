@@ -1,5 +1,97 @@
 # TODO
 
+## Ply pointed at a stranger's code: 1 of 16 — 2026-08-30
+
+`docs/reach-measurement-2.md`. The method of `docs/invariant-reachability.md`, repeated on a
+second library chosen before reading what Ply supports: `semver` 1.0.28, 2,117 lines, whose
+author documents his guarantees unusually well. Sixteen stated properties. **Ply checks one.**
+
+**Zero of the sixteen are out of the tool's shape.** No threads, no sequences, no hidden
+state — sixteen pure single-function properties. This is the most favourable library the
+project is likely to meet, and reach is 1 in 16. The single reachable property survives only
+because the author wrote `-> Self` instead of `-> Version`; spelling the type out, which no
+compiler or reader would call a change, turns the verdict into `unsupported`.
+
+**It contradicts the first measurement almost item for item, which is the point.** Floats
+ranked first there; `semver` has no float anywhere, so they unblock zero. Structs and enums
+ranked last with "zero effect"; here they gate twelve of sixteen. The two dominant blockers
+here — `&str` arguments, and refusal on the *return* type — never appeared on the first list
+at all, because in the rate limiter everything was already refused at the parameters, so
+nothing ever reached the return check. **A blocker only becomes visible once the ones in
+front of it are gone.** One library's ranking does not generalise, and a standing list of
+types to build is the wrong instrument; measurement per codebase is the right one.
+
+Also measured: no capability unblocks even one further property on its own. `&str` blocks
+eleven of sixteen, but every unreached property is held by two to four independent blockers
+at once, so the first fix moves the count by nothing.
+
+### Three defects, each reproduced independently before being written down
+
+- [ ] **Ply generates a harness that does not compile whenever a method's parameter has the
+      same type as its receiver.** `a.same_as(b)`, `merge`, `union`, `cmp`, `min` — all of
+      them. Reproduced from scratch in a nine-line crate: `error[E0252]: the name Pair is
+      defined multiple times`. The report of it is good — refuses to call it a pass or a
+      violation, quotes the compiler — but the harness is still wrong.
+- [ ] **A user-facing sentence is false, and one run proves it false by itself.** For a type
+      whose constructor returns `Result<Self, E>`, Ply says: "it has no associated function
+      in the file it is declared in that builds a `A` value ... and none was found."
+      Reproduced with the same type, same constructor, same file, same run: used as a
+      *parameter* it earns `fuzzed(64)`, because Ply built the value by calling exactly the
+      constructor it says does not exist; used as a *receiver* it is refused with that
+      sentence. The `Result<Self, E>` widening reached the parameter path and not the
+      receiver path. Every constructor in `semver` is that shape and every `semver` type is
+      used as a receiver.
+- [ ] **Contracts written the documented out-of-source way are accepted, then ignored.**
+      `check` reports "6 of 6 fn claims point at a function Ply can find"; `verify` runs none
+      of them and explains it with two warnings on the same function that contradict each
+      other — one saying the contract exists and was used, one saying there is no contract.
+      Neither states the actionable fact: only source attributes reach the engines. `check`
+      is the command people run first and gives no hint of it.
+
+Two smaller ones, recorded but not ranked. **When the tool was made to go red on purpose** --
+`Version::new` was deliberately broken to return a non-empty pre-release, because a check
+that never fails proves nothing -- it caught it, with an input strategy that makes the catch
+real rather than lucky. But the terminal said "proptest shrank a failing case to this minimal
+example" and then showed no example: the values live in `--json` only, alongside a runnable
+failing test Ply wrote into the crate's `src/` without mentioning it. **To be explicit,
+because the shorthand invites the opposite reading: no defect was found in `semver`. None was
+looked for.** The other smaller one is that
+the return-type gate causing much of the loss is documented in its own code comment as
+blocking nothing technically, which makes it a deliberate narrowing that is now the
+second-largest blocker in the measurement.
+
+Nothing hung and nothing crashed. Cold run 21 seconds, warm run half a second.
+
+## KNOWN GAP: the required-check names can be made impossible to satisfy — 2026-08-30
+
+Branch protection is on, so `main` now requires named checks to pass. That makes the
+*names* of CI jobs load-bearing, and four of the six are generated rather than fixed:
+
+    shard: [0, 1, 2, 3]
+    name: product-e2e (${{ matrix.shard }}/4)
+
+The shard count is written twice — once as the list, once as the literal `4` in the
+display name — and the name is what branch protection matches on.
+
+- [ ] **Change the shard count and every pull request blocks forever.** Going to six
+      shards produces jobs called `product-e2e (0/6)`…`(5/6)`, so a rule requiring
+      `product-e2e (0/4)` waits on a check that will never report again. The pull
+      request cannot merge and nothing explains why — the failure is a *missing*
+      check, not a failing one, which is the harder kind to read. Editing only the
+      list and not the string is worse still: the jobs are then named
+      `product-e2e (4/4)` and `(5/4)`.
+
+      The standard fix is a gate job that does nothing but depend on every shard and
+      succeed, with a fixed name, and require that instead. Then the shard count is
+      free to change and the required name never moves. Not built — it is a change to
+      CI that cannot be tested without merging it, so it wants a deliberate decision
+      rather than being slipped in.
+
+      Cheap partial mitigation available today: require `product` and `kernel-mutants`
+      (both fixed names) and leave the shards advisory. That protects the fast checks
+      and the mutation gate but not the end-to-end suite, which is the one that has
+      actually caught a regression on this branch.
+
 ## Review of the scheduler unification — 2026-08-30
 
 An independent adversarial pass over the five commits. It confirmed the soundness argument
