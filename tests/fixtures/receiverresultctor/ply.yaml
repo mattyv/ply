@@ -1,0 +1,23 @@
+ply: 1
+
+# Defect 1 (docs/reach-measurement-2.md): every receiver method here is
+# built by calling a constructor that returns bare `Self`, the type's own
+# name, or one of those wrapped in `Result<_, E>` -- all four are the same
+# constructor shape, and the receiver path must recognise every one of
+# them exactly as the parameter path already does for `read_it`'s `a: A`.
+components:
+  receiverresultctor:
+    anchor: ply_fixture_receiverresultctor
+    fns:
+      BareSelf::doubled:
+        checks: [fuzz(64)]
+      ExplicitName::doubled:
+        checks: [fuzz(64)]
+      ResultSelf::doubled:
+        checks: [fuzz(64)]
+      ResultExplicitName::doubled:
+        checks: [fuzz(64)]
+      A::doubled:
+        checks: [fuzz(64)]
+      read_it:
+        checks: [fuzz(64)]

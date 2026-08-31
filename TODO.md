@@ -1,5 +1,77 @@
 # TODO
 
+## Two harness-generation defects fixed — 2026-08-31
+
+Both were found by pointing Ply at `semver` -- see `docs/reach-measurement-2.md`,
+which landed on `main` while this work was in progress and so was not visible
+from the branch it was written on. The agent that fixed these noted, correctly
+for what it could see, that the cited file did not exist and declined to
+either invent the measurement or drop the citation. It exists; that note is
+withdrawn rather than left to confuse a later reader.
+
+- [x] **Defect 1 — a receiver's own constructor scan disagreed with the
+      parameter path about what counts as a constructor.** A
+      `Result<Self, E>`-returning `new` (or one spelling the type's own name
+      instead of `Self`, bare or `Result`-wrapped -- four spellings of one
+      shape) was recognised when building a *parameter* and reported as not
+      existing when the very same scan was asked to build a *receiver* for
+      the identical type in the identical run. Fixed by making the receiver
+      scan (`scan_file_for_receiver`, `crates/ply-core/src/harness.rs`) call
+      `ctor_return_kind` -- the one classifier the parameter path
+      (`scan_ctor_candidates`) already used -- instead of carrying its own
+      narrower, separate check, and by threading the resulting `CtorReturn`
+      through `ReceiverPlan` instead of hardcoding `CtorReturn::Bare`.
+      `fuzz_gen::receiver_preamble` now renders the same rejecting `match`
+      around a fallible constructor call that `build_user_value_stmt`
+      already renders for the parameter path. Fixture:
+      `tests/fixtures/receiverresultctor/`; test:
+      `tests/e2e/tests/receiverresultctor_fixture.rs` (all four spellings,
+      plus the exact `A`/`Bad`/`read_it` reproduction, in one run). Reverting
+      the fix reproduces the original false `V0507` refusal verbatim.
+- [x] **Defect 2 — a method whose parameter shares its receiver's type
+      generated a harness with the same `use` line twice.** The generated
+      harness's extra-type-import scan (`extra_type_imports`,
+      `crates/ply-core/src/fuzz_gen.rs`) deduplicated against its own output
+      only, never against the primary `use` `wrap_fn_harness_module` already
+      emits for the checked function's own type -- so a `&self` method
+      taking another value of its own type imported that type twice
+      (`error[E0252]: the name `Pair` is defined multiple times`). Fixed by
+      backing the dedup with a real `HashSet`, seeded with the primary
+      import up front, so "the receiver's type" and "a second parameter of
+      the same type" are the same case as the existing two-parameters dedup,
+      not a second special case beside it. Fixture:
+      `tests/fixtures/sharedtypeparam/`; test:
+      `tests/e2e/tests/sharedtypeparam_fixture.rs` (receiver+parameter,
+      two parameters with no receiver, and receiver+parameter+return all
+      naming the same type). Reverting the fix reproduces the original
+      `E0252` verbatim.
+- [ ] **KNOWN GAP, found while writing the defect-2 fixture, not fixed (out
+      of this task's scope): `#[ply::ensures]` on a receiver method cannot
+      read `self`.** Nothing rewrites a bare `self` in the postcondition
+      closure to the actual receiver binding before splicing it into the
+      generated free-standing assertion, so `self.a == other.a` renders as a
+      literal `self.a`, which does not exist outside an `impl` block --
+      `error[E0424]: expected value, found module `self``. No fixture in the
+      crate exercised this before (`grep`-confirmed: no existing
+      `#[ply::ensures]` or `#[ply::requires]` on a receiver method reads
+      `self`), so it was invisible until this task's own reproduction
+      (`same_as(&self, other: &Pair)`, ensures reading `self.a`, matching the
+      literal Defect 2 repro handed to this session) tried it. Fixing defect
+      2 alone does *not* make that literal reproduction pass -- it trades
+      `E0252` for `E0424`. The committed `sharedtypeparam` fixture avoids
+      reading `self` in every postcondition so it isolates defect 2 cleanly.
+- [ ] **KNOWN GAP, found the same way, not fixed (also out of scope):
+      postcondition widening mis-parenthesises a nested comparison.**
+      `contract_rt::widen`'s catch-all leaf case casts a whole nested
+      comparison's token stream to `i128` without wrapping it in its own
+      parens first, so `*result == (a.a == b.a)` (a boolean-returning
+      postcondition stated as an equality of two other equalities) renders
+      as `a.a == (b.a as i128)` -- because `as` binds tighter than `==`,
+      that compares `u64` to `i128`, `error[E0308]`. No existing fixture
+      wrote a boolean postcondition that way either. Worked around in the
+      `sharedtypeparam` fixture by stating the same property as an `iff`
+      (`(!*result || lhs == rhs) && (*result || lhs != rhs)`), which
+      `widen`'s existing `&&`/`||` recursion handles correctly.
 ## Ply pointed at a stranger's code: 1 of 16 — 2026-08-30
 
 `docs/reach-measurement-2.md`. The method of `docs/invariant-reachability.md`, repeated on a
