@@ -1,5 +1,52 @@
 # TODO
 
+## Two more harness-generation compile defects fixed — 2026-08-31
+
+Both were the two `KNOWN GAP`s recorded just below (found the same day, pointing Ply at
+`semver`, `docs/reach-measurement-2.md`), confirmed pre-existing and almost certainly a
+real share of that measurement's 1-in-16 reach. Test-first, revert-and-confirm-red on
+both.
+
+- [x] **A method's own postcondition could not mention the receiver it is called on.**
+      `#[ply::ensures(|result| *result >= self.a)]` generated a harness that did not
+      compile: `error[E0424]: expected value, found module `self``, because the
+      postcondition is spliced into the generated test as a free-standing expression
+      outside any `impl` block, where the literal keyword `self` means nothing. Fixed by
+      rewriting a bare `self` to the binding the generated harness already builds the
+      receiver under (`__ply_receiver`), before `old()` is lifted (so `old(self.x)` still
+      reads the receiver's value on entry) and before the postcondition is widened. New
+      helper: `contract_rt::rewrite_self_to_receiver`, wired into
+      `fuzz_gen::generate_fuzz_test` (the only place a receiver method's postcondition is
+      ever spliced into a runnable test -- `contract_rt::render_cex_test`'s replay-test
+      path already refuses every receiver method by design, so it needed no change).
+      Fixture: `tests/fixtures/selfreceiver/`; test:
+      `tests/e2e/tests/selfreceiver_fixture.rs`, covering `self` read alongside the
+      result (the reported repro, verbatim), `self` read alongside a parameter, and a
+      receiver built through a fallible (`Result<Self, E>`) constructor whose own
+      postcondition also reads `self` (the constructor-scan fix and this fix now
+      interacting in one run). Reverting the fix reproduces the original `E0424` verbatim
+      for all three.
+- [x] **A comparison nested inside another comparison as a leaf did not compile.**
+      `*result == (a == b)` (a boolean postcondition stated as an equality of two other
+      equalities) rendered as `a == b as i128` -- `contract_rt::widen`'s catch-all leaf
+      case cast the nested comparison's token stream to `i128` with no parens of its own,
+      and because `as` binds tighter than `==`, that parses as `a == (b as i128)`,
+      comparing `u64` to `i128` (`error[E0308]`). Fixed by giving `widen_leaf` its own
+      case for a nested comparison or logical operator (`==`, `!=`, `<`, `<=`, `>`, `>=`,
+      `&&`, `||`): recurse through `widen` itself (which already widens *that*
+      expression's own leaves correctly, arithmetic included, so a mixed case like
+      `a + 1 == b` nested as a leaf still cannot overflow while being checked), then
+      parenthesise the whole result before casting it -- never taking the nested
+      expression's tokens verbatim. Fixture: `tests/fixtures/nestedcomparison/`; test:
+      `tests/e2e/tests/nestedcomparison_fixture.rs`, covering the reported repro
+      (verbatim), a comparison nested under `&&`, one nested under `||`, a comparison of
+      two expressions rather than two bare names, and a mixed arithmetic case -- all five
+      needed the fix. Two more (`&&`/`||` as the postcondition's own outermost operator,
+      no wrapping equality) are in the same fixture and confirmed, by testing against the
+      pre-fix binary, to already have worked -- `widen`'s own `&&`/`||` recursion never
+      routes through the leaf path those exercise. Reverting the fix reproduces the
+      original `E0308` verbatim for all five.
+
 ## Silent-green regression and two false sentences, closed — 2026-08-31
 
 An adversarial review of the two 2026-08-30 wording fixes above found the narrower
@@ -121,9 +168,9 @@ fixture, and a revert-and-confirm-red pass on every fix.
       list (§2226-2229 area, M3 thin-slice status). Fixture:
       `tests/fixtures/yamlonlycontract/` (new); new test:
       `tests/e2e/tests/yamlonlycontract_fixture.rs` (two tests, `check` and `verify`).
-## KNOWN GAP: a method's promise cannot mention its own receiver — 2026-08-31
+## KNOWN GAP: a method's promise cannot mention its own receiver — CLOSED, see top of file
 
-- [ ] **`#[ply::ensures(|result| *result >= self.a)]` generates a harness that does not
+- [x] **`#[ply::ensures(|result| *result >= self.a)]` generates a harness that does not
       compile:** `error[E0424]: expected value, found module `self``. Any promise that
       refers to `self` — which is most of what a method's promise would naturally say —
       is affected, whatever its parameters.
@@ -142,6 +189,9 @@ fixture, and a revert-and-confirm-red pass on every fix.
 
       Reported honestly when it happens — a tool error, never a pass, with the compiler's
       own words quoted — so nobody is misled. It is still a check that cannot run.
+
+      **Fixed 2026-08-31** — see "Two more harness-generation compile defects fixed" at
+      the top of this file.
 
 ## Two harness-generation defects fixed — 2026-08-31
 
@@ -188,10 +238,9 @@ withdrawn rather than left to confuse a later reader.
       two parameters with no receiver, and receiver+parameter+return all
       naming the same type). Reverting the fix reproduces the original
       `E0252` verbatim.
-- [ ] **KNOWN GAP, found while writing the defect-2 fixture, not fixed (out
-      of this task's scope): `#[ply::ensures]` on a receiver method cannot
-      read `self`.** Nothing rewrites a bare `self` in the postcondition
-      closure to the actual receiver binding before splicing it into the
+- [x] **KNOWN GAP, found while writing the defect-2 fixture -- `#[ply::ensures]` on a
+      receiver method cannot read `self`.** Nothing rewrites a bare `self` in the
+      postcondition closure to the actual receiver binding before splicing it into the
       generated free-standing assertion, so `self.a == other.a` renders as a
       literal `self.a`, which does not exist outside an `impl` block --
       `error[E0424]: expected value, found module `self``. No fixture in the
@@ -203,8 +252,10 @@ withdrawn rather than left to confuse a later reader.
       2 alone does *not* make that literal reproduction pass -- it trades
       `E0252` for `E0424`. The committed `sharedtypeparam` fixture avoids
       reading `self` in every postcondition so it isolates defect 2 cleanly.
-- [ ] **KNOWN GAP, found the same way, not fixed (also out of scope):
-      postcondition widening mis-parenthesises a nested comparison.**
+      **Fixed 2026-08-31** — see "Two more harness-generation compile defects fixed" at
+      the top of this file.
+- [x] **KNOWN GAP, found the same way -- postcondition widening mis-parenthesises a
+      nested comparison.**
       `contract_rt::widen`'s catch-all leaf case casts a whole nested
       comparison's token stream to `i128` without wrapping it in its own
       parens first, so `*result == (a.a == b.a)` (a boolean-returning
@@ -215,6 +266,8 @@ withdrawn rather than left to confuse a later reader.
       `sharedtypeparam` fixture by stating the same property as an `iff`
       (`(!*result || lhs == rhs) && (*result || lhs != rhs)`), which
       `widen`'s existing `&&`/`||` recursion handles correctly.
+      **Fixed 2026-08-31** — see "Two more harness-generation compile defects fixed" at
+      the top of this file.
 ## Ply pointed at a stranger's code: 1 of 16 — 2026-08-30
 
 `docs/reach-measurement-2.md`. The method of `docs/invariant-reachability.md`, repeated on a

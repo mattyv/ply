@@ -1,0 +1,15 @@
+ply: 1
+
+# Defect 1 (docs/reach-measurement-2.md): every postcondition below reads
+# `self`, the shape that used to generate a harness which does not compile
+# (`error[E0424]: expected value, found module `self``).
+components:
+  selfreceiver:
+    anchor: ply_fixture_selfreceiver
+    fns:
+      Pair::bumped:
+        checks: [fuzz(64)]
+      Pair::at_least:
+        checks: [fuzz(64)]
+      Meter::doubled:
+        checks: [fuzz(64)]

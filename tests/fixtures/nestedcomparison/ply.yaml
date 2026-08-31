@@ -1,0 +1,22 @@
+ply: 1
+
+# Defect 2 (docs/reach-measurement-2.md): a comparison nested inside another
+# comparison as a leaf used to generate a harness that does not compile.
+components:
+  nestedcomparison:
+    anchor: ply_fixture_nestedcomparison
+    fns:
+      same:
+        checks: [fuzz(64)]
+      both_eq:
+        checks: [fuzz(64)]
+      either_eq:
+        checks: [fuzz(64)]
+      halves_eq:
+        checks: [fuzz(64)]
+      bumped_eq:
+        checks: [fuzz(64)]
+      bigger:
+        checks: [fuzz(64)]
+      either:
+        checks: [fuzz(64)]
