@@ -1,5 +1,39 @@
 # TODO
 
+## Two wording defects found pointing Ply at semver — 2026-08-30
+
+Both defects were in what Ply *says*, not what it computes — found by pointing Ply at
+`semver` (the brief cited `docs/reach-measurement-2.md` for this, which is not present in
+this checkout). Both fixed, with a failing test written first for each, an end-to-end
+fixture, and a revert-and-confirm-red pass on every fix.
+
+- [x] **A counterexample was announced and then withheld.** The terminal printed a
+      diagnostic's title — which can promise "proptest shrank a failing case to this
+      minimal example" — and stopped there: no failing input, no mention that Ply had
+      just written a runnable red test into the user's own `src/`, even though `--json`
+      carried both the whole time. `crates/ply-cli/src/main.rs`'s `print_human` now
+      reuses the same `counterexample` field `--json` does, printing the failing input
+      plainly (never fabricated — the W0541 "cannot render as Rust" case still names no
+      test file, since none was written) and the path of the written test when there is
+      one. Fixture: `tests/fixtures/fuzzbug/` (existing); new tests: `fuzzbug_fixture.rs`'s
+      `the_terminal_shows_the_promised_counterexample_and_where_the_test_was_written`,
+      plus three unit tests in `main.rs`.
+- [x] **A contract written in `ply.yaml` was accepted by `check`, then silently ignored
+      by `verify`, which explained the silence with two contradictory warnings.** One
+      (`W0510`) said the ply.yaml contract "is used ... so this run checked `{fn}`
+      against its inline attributes only" — false when there are no inline attributes,
+      since nothing was checked against them. The other (`V0505`) correctly said "there
+      is nothing to check its result against, so nothing was run." `W0510`'s wording was
+      the wrong half: it now only fires when there genuinely are inline attributes to
+      check against (`cf.has_contract()`), and `V0505`'s message now names the ply.yaml
+      contract and says plainly that ply.yaml contracts are not read for a fn's own
+      checks — one honest statement instead of two disagreeing ones. `check`'s anchors
+      line ("N of N fn claims ... point at a function Ply can find") now also names this
+      up front, before `verify` ever runs, with the same wording. This is a wording fix
+      only — `ply.yaml` contract merge stays out of scope, per the spec's own status
+      list (§2226-2229 area, M3 thin-slice status). Fixture:
+      `tests/fixtures/yamlonlycontract/` (new); new test:
+      `tests/e2e/tests/yamlonlycontract_fixture.rs` (two tests, `check` and `verify`).
 ## Two harness-generation defects fixed — 2026-08-31
 
 Both were found by pointing Ply at `semver` -- see `docs/reach-measurement-2.md`,

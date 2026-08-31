@@ -581,7 +581,20 @@ fn verify_loaded_crate(
             if declares_contract && explicit.is_empty() && !cf.has_contract() {
                 continue;
             }
-            if declares_contract {
+            // `declared_contract_not_anded_diag`'s wording says this run
+            // "checked `{fn_name}` against its inline attributes only" --
+            // true exactly when there are inline attributes to check
+            // against (`cf.has_contract()`). When there are none, saying
+            // that is false, and it used to fire anyway, standing right
+            // next to `V0505`'s "there is nothing to check its result
+            // against, so nothing was run" -- two warnings on the same fn
+            // flatly contradicting each other (2026-08-30, found pointing
+            // Ply at semver). With no inline attributes, whichever
+            // diagnostic below reports "no evidence" is the one honest
+            // statement, and it already names the ply.yaml contract itself
+            // (see the `declares_contract` fork inside the fuzz/test check
+            // below), so nothing is pushed here in that case.
+            if declares_contract && cf.has_contract() {
                 diagnostics.push(declared_contract_not_anded_diag(&node_id, fn_name));
             }
 
@@ -1160,6 +1173,7 @@ fn verify_loaded_crate(
             &plans[idx].seed,
             harness_info.as_ref(),
             !plans[idx].claim.examples.is_empty(),
+            !plans[idx].claim.requires.is_empty() || !plans[idx].claim.ensures.is_empty(),
             opts,
         )?;
         if node.verdict.starts_with("bounded(")
@@ -2426,6 +2440,12 @@ fn run_fn_checks(
     seed: &[u8; 32],
     harness_info: Option<&HarnessInfo>,
     has_examples: bool,
+    // Whether ply.yaml *also* declares a `requires:`/`ensures:` contract for
+    // this same fn (2026-08-30, "a documented way of writing contracts is
+    // accepted, then silently ignored") -- needed here so the "nothing to
+    // check against" diagnostic below can say so, rather than leaving a
+    // reader to wonder why a contract they can see in ply.yaml did not count.
+    declares_yaml_contract: bool,
     opts: &VerifyOptions,
 ) -> Result<(Node, Vec<Diagnostic>)> {
     let mut diagnostics = Vec::new();
@@ -2527,6 +2547,26 @@ fn run_fn_checks(
             } else {
                 "test".into()
             };
+            // The one honest statement replacing what used to be two
+            // contradictory warnings (2026-08-30, found pointing Ply at
+            // semver): when ply.yaml *also* declares a `requires:`/
+            // `ensures:` contract for this same fn, a reader needs to know
+            // that it is not what "no `#[ply::ensures]`" refers to above --
+            // ply.yaml's copy is never read for a fn's own checks, only an
+            // inline attribute is, so writing the contract there did
+            // nothing here. Without this clause the reader is left to
+            // wonder why a contract they can see in ply.yaml did not count.
+            let yaml_contract_note = if declares_yaml_contract {
+                format!(
+                    " `{fn_name}` does declare a `requires:`/`ensures:` contract in ply.yaml, but \
+                     ply.yaml contracts are not read for a fn's own checks -- only \
+                     `#[ply::requires]`/`#[ply::ensures]` attributes written on the function \
+                     itself are. Move the contract onto `{fn_name}` as an attribute if you want \
+                     it checked."
+                )
+            } else {
+                String::new()
+            };
             diagnostics.push(Diagnostic {
                 code: "V0505".into(),
                 severity: "warning".into(),
@@ -2538,7 +2578,7 @@ fn run_fn_checks(
                     "`{fn_name}` declares `{}` but has no `#[ply::ensures]` and no `examples:` entries -- \
                      there is nothing to check its result against, so nothing was run. Add an \
                      `#[ply::ensures]` clause naming what `{fn_name}` promises about its result, or add \
-                     `examples:` entries naming concrete calls to assert.",
+                     `examples:` entries naming concrete calls to assert.{yaml_contract_note}",
                     if wants_fuzz.is_some() { "fuzz" } else { "test" }
                 ),
                 pointer: None,
@@ -5720,6 +5760,82 @@ fn unused(_p: &PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Defect 2 (2026-08-30, "a documented way of writing contracts is
+    /// accepted, then silently ignored"): a fn claimed with `checks:
+    /// [fuzz(64)]` plus a `requires:`/`ensures:` contract written directly
+    /// in ply.yaml, on a function with no inline `#[ply::requires]`/
+    /// `#[ply::ensures]` attribute at all, used to earn *two* warnings that
+    /// flatly contradicted each other: one (`W0510`) said the ply.yaml
+    /// contract "is used ... so this run checked `seven` against its inline
+    /// attributes only" -- which is false, there are no inline attributes,
+    /// nothing was checked against them -- and the other (`V0505`) said
+    /// "there is nothing to check its result against, so nothing was run".
+    /// A reader had to reconcile those alone. This fixes it to one honest
+    /// diagnostic.
+    #[test]
+    fn a_yaml_only_contract_on_an_unattributed_fn_earns_one_honest_warning_not_two() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"yamlonly-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn seven() -> u32 {\n    7\n}\n",
+        )
+        .unwrap();
+        let yaml_path = dir.path().join("ply.yaml");
+        std::fs::write(
+            &yaml_path,
+            "ply: 1\ncomponents:\n  demo:\n    anchor: yamlonly_demo\n    fns:\n      seven:\n        \
+             checks: [fuzz(64)]\n        requires: [\"true\"]\n        ensures: [\"|result| \
+             *result == 7\"]\n",
+        )
+        .unwrap();
+        let loaded = config::load(&yaml_path).unwrap();
+
+        let result = verify_loaded_crate(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: Some(5),
+                seed: None,
+            },
+            loaded,
+        )
+        .unwrap();
+
+        let on_seven: Vec<&Diagnostic> = result
+            .envelope
+            .diagnostics
+            .iter()
+            .filter(|d| d.node_id == "demo::seven")
+            .collect();
+        assert_eq!(
+            on_seven.len(),
+            1,
+            "exactly one diagnostic, not two contradictory ones: {on_seven:#?}"
+        );
+        let d = on_seven[0];
+        assert_eq!(d.code, "V0505");
+        assert!(
+            !d.title.contains("checked `seven` against its inline"),
+            "must never claim inline attributes were checked when there are none: {}",
+            d.title
+        );
+        assert!(
+            d.title.contains("ply.yaml"),
+            "must name that ply.yaml declares a contract here, and that it is not read: {}",
+            d.title
+        );
+        assert!(
+            d.title.contains("#[ply::requires]") || d.title.contains("#[ply::ensures]"),
+            "must say what a reader should write instead: {}",
+            d.title
+        );
+    }
 
     #[test]
     fn verification_returns_the_loaded_snapshot_and_qualified_source_entries() {
