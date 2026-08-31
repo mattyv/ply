@@ -1,0 +1,16 @@
+ply: 1
+
+# Defect 2 (2026-08-30, "a documented way of writing contracts is accepted,
+# then silently ignored"): `seven`'s contract is written entirely in
+# ply.yaml -- `requires:`/`ensures:` here, never a `#[ply::requires]`/
+# `#[ply::ensures]` attribute in src/lib.rs. `check` must say this plainly
+# on its anchors line; `verify` must not report two contradictory warnings
+# about it.
+components:
+  yamlonlycontract:
+    anchor: ply_fixture_yamlonlycontract
+    fns:
+      seven:
+        checks: [fuzz(64)]
+        requires: ["true"]
+        ensures: ["|result| *result == 7"]

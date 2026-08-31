@@ -1,0 +1,12 @@
+ply: 1
+
+# Defect 3 (2026-08-30): both fns break their promise under `fuzz(256)`,
+# and both must get a surviving generated cex test out of the same run.
+components:
+  fuzzbugtwo:
+    anchor: ply_fixture_fuzzbugtwo
+    fns:
+      seeded_bug_a:
+        checks: [fuzz(256)]
+      seeded_bug_b:
+        checks: [fuzz(256)]

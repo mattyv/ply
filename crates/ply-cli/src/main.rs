@@ -620,9 +620,55 @@ fn claims_sharing(items: &[ply_core::diag::NotCarriedForward], why: &str) -> (St
 
 fn print_human(envelope: &ply_core::diag::Envelope) {
     print!("{}", tree_report(envelope));
-    for d in &envelope.diagnostics {
-        println!("[{}] {} — {}", d.code, d.node_id, d.title);
+    print!("{}", diagnostics_report(&envelope.diagnostics));
+}
+
+/// The terminal-readable half of `--json`'s `diagnostics` array. A
+/// diagnostic's `title` alone used to be the whole report (2026-08-30, "a
+/// counterexample is announced and then withheld"): a title can promise a
+/// minimal failing input -- "proptest shrank a failing case to this minimal
+/// example" -- and name a runnable test Ply just wrote into the user's own
+/// `src/`, while the terminal, which is what people actually read, showed
+/// neither. `--json` carried both the whole time under
+/// `counterexample.inputs` and `counterexample.cargo_test`; this reuses that
+/// same field rather than recomputing anything, so the terminal and
+/// `--json` cannot disagree about what the failing input was.
+fn diagnostics_report(diagnostics: &[ply_core::diag::Diagnostic]) -> String {
+    let mut out = String::new();
+    for d in diagnostics {
+        out.push_str(&format!("[{}] {} — {}\n", d.code, d.node_id, d.title));
+        if let Some(cex) = &d.counterexample {
+            out.push_str(&counterexample_report(cex));
+        }
     }
+    out
+}
+
+/// The failing input itself, plainly -- whatever `inputs` holds, never
+/// fabricated or reformatted into something tidier than what the engine
+/// actually produced (the same rule `W0541` already keeps for a value that
+/// could not be rendered as Rust source at all: shown as raw text, not
+/// invented, and named as absent rather than guessed at -- `cargo_test` is
+/// `None` in exactly that case, so no path is printed). Followed by the one
+/// fact a person reading a terminal has no other way to learn: Ply just
+/// wrote a file into their own `src/` directory, and where.
+fn counterexample_report(cex: &ply_core::diag::Counterexample) -> String {
+    let mut out = String::new();
+    if !cex.inputs.is_empty() {
+        let pairs: Vec<String> = cex
+            .inputs
+            .iter()
+            .map(|(name, value)| format!("{name} = {value}"))
+            .collect();
+        out.push_str(&format!("    failing input: {}\n", pairs.join(", ")));
+    }
+    if let Some(path) = &cex.cargo_test {
+        out.push_str(&format!(
+            "    Ply wrote a test that reproduces this to {path} -- run `cargo test` from this \
+             crate's root directory and it fails the same way this run just did.\n"
+        ));
+    }
+    out
 }
 
 /// Every absence a node carries, in either field, over the whole tree.
@@ -679,6 +725,30 @@ fn exit_code_for(envelope: &ply_core::diag::Envelope, fail_on: FailOn) -> i32 {
 mod tests {
     use super::*;
     use ply_core::diag::{Envelope, Node};
+
+    /// Defect 3 (2026-08-30, "a test that reproduces this" is false):
+    /// `cargo test` does not print the diagnostic's own title text back at
+    /// you -- it prints the postcondition failure message the generated
+    /// test panics with. "it fails with the same message above" claimed a
+    /// verbatim match that never happens; "fails the same way" says the
+    /// true, weaker thing. The reader also needs to know *where* to run
+    /// the command, since the path Ply names is relative to the crate root,
+    /// not the reader's current directory.
+    #[test]
+    fn counterexample_report_never_claims_cargo_test_prints_the_same_message() {
+        let cex = ply_core::diag::Counterexample {
+            inputs: std::collections::BTreeMap::new(),
+            kani_witness: None,
+            cargo_test: Some("src/ply_generated_cex.rs".to_string()),
+        };
+        let report = counterexample_report(&cex);
+        assert_eq!(
+            report,
+            "    Ply wrote a test that reproduces this to src/ply_generated_cex.rs -- run \
+             `cargo test` from this crate's root directory and it fails the same way this run \
+             just did.\n"
+        );
+    }
 
     #[test]
     fn render_is_available_before_there_is_a_cargo_project() {
@@ -1177,6 +1247,97 @@ mod tests {
         assert_eq!(
             exit_code_for(&envelope(&["unsupported"]), FailOn::Evidence),
             1
+        );
+    }
+
+    fn cex_diagnostic(
+        counterexample: Option<ply_core::diag::Counterexample>,
+    ) -> ply_core::diag::Diagnostic {
+        ply_core::diag::Diagnostic {
+            code: "P0502".into(),
+            severity: "error".into(),
+            phase: "verify".into(),
+            engine: "proptest".into(),
+            check: "fuzz(64)".into(),
+            node_id: "semver::Version::new".into(),
+            title: "`Version::new` breaks its own postcondition \
+                     `|result|result.pre.is_empty() && result.build.is_empty()` for at least one \
+                     input -- proptest shrank a failing case to this minimal example. (P0502)"
+                .into(),
+            primary_span: None,
+            pointer: None,
+            counterexample,
+            fixes: vec![],
+            assumptions: vec![],
+            open_item: None,
+        }
+    }
+
+    /// Defect 1 (2026-08-30, "a counterexample is announced and then
+    /// withheld"): the title promises a minimal failing example, and the
+    /// terminal used to stop right there -- never printing the input, even
+    /// though `--json` carried it all along. This is the terminal's own red
+    /// test: the `[P0502] ... — <title>` line must be followed by the
+    /// actual failing input, and by where the runnable test was written.
+    #[test]
+    fn a_diagnostic_with_a_counterexample_shows_the_failing_input_and_the_written_test_path() {
+        let mut inputs = std::collections::BTreeMap::new();
+        inputs.insert("major".to_string(), "7".to_string());
+        inputs.insert("minor".to_string(), "7".to_string());
+        inputs.insert("patch".to_string(), "0".to_string());
+        let diag = cex_diagnostic(Some(ply_core::diag::Counterexample {
+            inputs,
+            kani_witness: Some(
+                "captured from proptest shrinking, replayable with --seed abcd".into(),
+            ),
+            cargo_test: Some("src/ply_generated_cex.rs".into()),
+        }));
+        let report = diagnostics_report(&[diag]);
+        assert!(
+            report.contains("failing input: major = 7, minor = 7, patch = 0"),
+            "the promised minimal example must actually appear: {report}"
+        );
+        assert!(
+            report.contains("src/ply_generated_cex.rs"),
+            "must name the path of the runnable test Ply just wrote into the user's own src/: \
+             {report}"
+        );
+    }
+
+    /// The W0541 case (docs, D7): when the inputs cannot be rendered as
+    /// stable Rust source, there is no `cargo_test` path, and this must
+    /// never invent one -- the report simply has no "wrote a test" line.
+    #[test]
+    fn a_diagnostic_whose_inputs_cannot_be_rendered_names_no_test_file() {
+        let mut inputs = std::collections::BTreeMap::new();
+        inputs.insert("params_raw".to_string(), "Foo { x: 4 }".to_string());
+        let diag = cex_diagnostic(Some(ply_core::diag::Counterexample {
+            inputs,
+            kani_witness: None,
+            cargo_test: None,
+        }));
+        let report = diagnostics_report(&[diag]);
+        assert!(
+            report.contains("failing input: params_raw = Foo { x: 4 }"),
+            "the raw witness must still be shown, plainly, never fabricated: {report}"
+        );
+        assert!(
+            !report.contains("wrote a test"),
+            "no test file exists in this case, so none may be named: {report}"
+        );
+    }
+
+    /// A diagnostic with no counterexample at all (a tool error) prints
+    /// only its title line, exactly as before.
+    #[test]
+    fn a_diagnostic_with_no_counterexample_prints_only_its_title_line() {
+        let diag = cex_diagnostic(None);
+        let report = diagnostics_report(&[diag]);
+        assert_eq!(
+            report,
+            "[P0502] semver::Version::new — `Version::new` breaks its own postcondition \
+             `|result|result.pre.is_empty() && result.build.is_empty()` for at least one input \
+             -- proptest shrank a failing case to this minimal example. (P0502)\n"
         );
     }
 }

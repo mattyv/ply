@@ -1,0 +1,15 @@
+ply: 1
+
+# Defect 2 (docs/reach-measurement-2.md): every fn here shares one struct
+# type across at least two of {receiver, parameter, return}, the shape that
+# used to generate a harness with the same `use` line twice.
+components:
+  sharedtypeparam:
+    anchor: ply_fixture_sharedtypeparam
+    fns:
+      Pair::value_of:
+        checks: [fuzz(64)]
+      Pair::copy_of:
+        checks: [fuzz(64)]
+      both_same:
+        checks: [fuzz(64)]

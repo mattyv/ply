@@ -930,8 +930,23 @@ fn receiver_preamble(
     }
     let needs_mut = plan.operations.iter().any(|op| op.takes_mut_self);
     let mut_kw = if needs_mut { "mut " } else { "" };
+    // A fallible constructor (defect 1, 2026-08-31, docs/reach-measurement-2.md):
+    // `plan.ctor_return` now carries the real shape (see `ReceiverPlan::ctor_return`'s
+    // own doc), so a `Result<Self, E>`-returning constructor gets the same
+    // rejecting `match` `build_user_value_stmt` already renders for the
+    // parameter path, never unwrapped and never treated as though the `Err`
+    // payload were a receiver.
+    let ctor_expr = match plan.ctor_return {
+        harness::CtorReturn::Bare => format!("{ctor_call}({ctor_args})"),
+        harness::CtorReturn::ResultSelf => format!(
+            "match {ctor_call}({ctor_args}) {{\n                Ok(__ply_ctor_ok) => \
+             __ply_ctor_ok,\n                Err(_) => {{ __ply_rejected.set(__ply_rejected.get() \
+             + 1); return Err(proptest::test_runner::TestCaseError::reject(\"constructor returned \
+             Err\")); }}\n            }}"
+        ),
+    };
     body.push_str(&format!(
-        "let {mut_kw}__ply_receiver = {ctor_call}({ctor_args});\n            "
+        "let {mut_kw}__ply_receiver = {ctor_expr};\n            "
     ));
 
     let step_pattern = plan
@@ -1445,38 +1460,56 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
 /// -- its `[lib] name`, not necessarily its package name).
 /// Every struct/enum type name Ply itself constructs somewhere in `cf` --
 /// a parameter's own type, or (recursively) a constructor argument or a
-/// field/variant's own type -- deduplicated, in first-seen order.
+/// field/variant's own type -- deduplicated, in first-seen order, and never
+/// repeating `cf.import_path()` (the `use` `wrap_fn_harness_module` already
+/// emits to call the checked function itself).
+///
 /// Struct/enum parameters (2026-08-27): `call_expr()`'s own import only
 /// brings the checked function (or its enclosing type, for a method) into
 /// scope, never a *parameter's* type -- `wrap_fn_harness_module` needs one
 /// more `use` per such type, or the generated harness fails to compile with
 /// "cannot find struct/enum `X` in this scope" the moment it names one in a
 /// constructor call or a field/variant literal.
+///
+/// A real `HashSet` backs the dedup, seeded with `cf.import_path()`, rather
+/// than each call site separately checking "have I already emitted this
+/// name" (found against `semver`, docs/reach-measurement-2.md, defect 2): a
+/// method whose parameter shares its receiver's type -- `same_as(&self,
+/// other: &Self)`, the ordinary shape behind `merge`/`cmp`/`min`/`max` too --
+/// used to get the receiver's own type name from `import_path()` *and*
+/// again from this scan (which only checked against its own output, never
+/// against `import_path()`), so the generated harness imported the same
+/// type twice: `use Pair;` twice in one module is `error[E0252]: the name
+/// `Pair` is defined multiple times`, and the check ran zero cases.
+/// Seeding the same set with `import_path()` up front makes "the receiver's
+/// type" and "a second parameter of the same type" the same case as the
+/// dedup two parameters of one type already needed, instead of a second
+/// special case next to it.
 fn extra_type_imports(cf: &ContractFn) -> Vec<String> {
-    fn walk(ty: &RustType, out: &mut Vec<String>) {
+    fn walk(ty: &RustType, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>) {
         match ty {
             RustType::UserTypeCtor(plan) => {
-                if !out.iter().any(|n| n == &plan.import_path) {
+                if seen.insert(plan.import_path.clone()) {
                     out.push(plan.import_path.clone());
                 }
                 for p in &plan.ctor_params {
-                    walk(&p.ty, out);
+                    walk(&p.ty, seen, out);
                 }
             }
             RustType::UserTypeFields(plan) => {
-                if !out.iter().any(|n| n == &plan.import_path) {
+                if seen.insert(plan.import_path.clone()) {
                     out.push(plan.import_path.clone());
                 }
                 match &plan.shape {
                     harness::UserTypeShape::Struct(fields) => {
                         for f in fields {
-                            walk(&f.ty, out);
+                            walk(&f.ty, seen, out);
                         }
                     }
                     harness::UserTypeShape::Enum(variants) => {
                         for (_, fields) in variants {
                             for f in fields {
-                                walk(&f.ty, out);
+                                walk(&f.ty, seen, out);
                             }
                         }
                     }
@@ -1485,13 +1518,15 @@ fn extra_type_imports(cf: &ContractFn) -> Vec<String> {
             _ => {}
         }
     }
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(cf.import_path());
     let mut out = Vec::new();
     for p in &cf.params {
-        walk(&p.ty, &mut out);
+        walk(&p.ty, &mut seen, &mut out);
     }
     if let Some(plan) = &cf.receiver {
         for p in &plan.ctor_params {
-            walk(&p.ty, &mut out);
+            walk(&p.ty, &mut seen, &mut out);
         }
     }
     out

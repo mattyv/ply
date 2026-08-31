@@ -1,0 +1,17 @@
+ply: 1
+
+# Defect 1 (2026-08-30 regression): `seven` declares `checks: [test]` with
+# an `examples:` entry (which passes on its own) AND a `requires:`/
+# `ensures:` contract written directly in ply.yaml (which is wrong: `seven`
+# returns 7, not 99). No inline `#[ply::requires]`/`#[ply::ensures]`
+# attribute exists at all. Nothing must report a clean, silent `tested`
+# here -- the reader must be told the ply.yaml contract was never checked.
+components:
+  yamlonlycontractexample:
+    anchor: ply_fixture_yamlonlycontractexample
+    fns:
+      seven:
+        checks: [test]
+        ensures: ["|result| *result == 99"]
+        examples:
+          - "seven() == 7"

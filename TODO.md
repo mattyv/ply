@@ -1,5 +1,220 @@
 # TODO
 
+## Silent-green regression and two false sentences, closed — 2026-08-31
+
+An adversarial review of the two 2026-08-30 wording fixes above found the narrower
+`W0510` gate had reopened the exact silence it was meant to close, plus one more false
+sentence in `check`'s new boundary-contract wording, plus one false "a test reproduces
+this" claim when two fns break their promise in the same run, plus four planted bugs
+none of the new tests caught. All closed; test-first, revert-and-confirm-red on every
+fix.
+
+- [x] **Silent-green regression, closed.** `checks: [test]` + a passing `examples:`
+      entry + a *wrong* ply.yaml `ensures:` (no inline attribute) reported `tested` with
+      zero diagnostics — `V0505` never fires when there is something to actually run
+      (the example), so narrowing `W0510` to only fire alongside an inline attribute
+      left nothing to say the ply.yaml contract was ever declared, let alone unchecked.
+      Fixed by restoring `W0510`'s original unconditional firing (`declares_contract`,
+      not `declares_contract && cf.has_contract()`) and instead fixing the actual false
+      clause: "so this run checked `{fn}` against its inline attributes only" (false
+      with no inline attribute) is now "so this run does not check `{fn}` against it;
+      only an inline attribute on `{fn}` itself counts toward `{fn}`'s own checks" — true
+      either way. `V0505`'s own ply.yaml aside (added in the 2026-08-30 fix) is removed
+      as now-redundant, since `W0510` always fires alongside it. New fixture:
+      `tests/fixtures/yamlonlycontractexample/`; new test:
+      `tests/e2e/tests/yamlonlycontractexample_fixture.rs`. Existing tests updated to
+      expect two non-contradictory diagnostics instead of one
+      (`yamlonlycontract_fixture.rs`, `verify.rs`'s own unit test).
+- [x] **`check` told a boundary-only fn's author to destroy the feature, with a false
+      sentence.** For `legacy_rate` (declares a ply.yaml contract, no `checks:` of its
+      own — §5.5's boundary declaration, working as intended), `check` said "`verify`
+      does not read a contract written there yet" (false — it reads it and uses it as a
+      caller's assumption) and "Move the contract onto `legacy_rate` as an attribute if
+      you want it checked" (advice to delete the feature the fixture demonstrates). Now
+      distinguishes two cases (`AnchorTally`'s `yaml_contract_checked_fns` vs.
+      `yaml_contract_boundary_fns`): a fn with its own `checks:` gets told to move the
+      contract onto it if it wants that checked; a fn with no `checks:` of its own gets
+      told this is deliberate, and that any caller's result will say it rests on an
+      unchecked promise. New test: `tests/e2e/tests/boundarycontract_check.rs`; existing
+      `check.rs` unit test updated, new one added for the boundary case.
+- [x] **"Ply wrote a test that reproduces this" was false when two fns broke their
+      promise in one run.** `harness::write_generated_test` overwrote
+      `ply_generated_cex.rs` wholesale on every call, and `verify` called it once per
+      broken fn — so the terminal printed the line twice but only the *last* fn's test
+      survived on disk. Fixed by accumulating every fn's rendered cex test into one
+      `Vec<RenderedTest>` across the whole run (`push_cex_test`, deduped by test name so
+      a fn re-rendered mid-run for §9's oracle check does not produce two `fn` items with
+      the same name) and writing the combined file exactly once, after every fn has been
+      checked. New fixture: `tests/fixtures/fuzzbugtwo/` (two fns, both broken); new
+      test: `tests/e2e/tests/fuzzbugtwo_fixture.rs`, asserting both rendered tests
+      survive and both actually run under `cargo test`.
+- [x] Two smaller wording repairs: "run `cargo test` and it fails with the same message
+      above" (false — `cargo test` prints the postcondition failure text, never the
+      diagnostic's own title) is now "run `cargo test` from this crate's root directory
+      and it fails the same way this run just did" (`main.rs`'s `counterexample_report`,
+      pinned by a new unit test). `check`'s plural wording ("Move the contract onto the
+      function as an attribute" when several are involved, naming none of them) now says
+      "those functions"/"them" throughout, pinned by a new unit test with four fns split
+      across both cases.
+- [x] **Four planted bugs, each closed with a test that kills it** (adversarial review
+      measured all four surviving the existing suite):
+      - A fallible constructor's rejection arm turned vacuous (`Ok` instead of rejecting)
+        went unnoticed by the existing receiver-constructor fixture
+        (`receiverresultctor`), because its constructor rejects only one value and its
+        promise (`u64 >= 0`) is vacuously true regardless. New fixture:
+        `tests/fixtures/narrowctor/` — a constructor rejecting most of its domain
+        (`v > 3`, against a generator drawing mostly from `0..=16`) behind a non-vacuous
+        promise (`*result <= 6`, true only because the rejection is real). New test:
+        `tests/e2e/tests/narrowctor_fixture.rs`, asserting the high-rejection warning
+        (`W0503`/`high_rejection_rate`) fires — confirmed to fail (verdict flips to
+        `violation`) when the constructor's rejection is defeated.
+      - `||` mutated to `&&` in both new yaml-contract detectors (`verify.rs`'s
+        `declares_contract`, `check.rs`'s walk) survived because every existing fixture
+        with a ply.yaml contract declared both `requires:` and `ensures:`. Already
+        closed incidentally by the two fixtures above (`yamlonlycontractexample`,
+        `boundarycontract` via `boundarycontract_check.rs`), both `ensures:`-only —
+        confirmed by mutating both conditions to `&&` and watching both tests fail.
+      - Deleting `W0510` outright survived the whole suite, since the one place it was
+        tested (`yamlonlycontract_fixture.rs`) has no inline attribute, and nothing
+        asserted it also fires when one *does* exist. New test:
+        `tests/e2e/tests/yaml_and_inline_contract_fixture.rs`, reusing the existing
+        `envelopecontract` fixture (`add` carries both an inline `#[ply::ensures]` and a
+        ply.yaml `ensures:`) — confirmed to fail when the diagnostic push is deleted.
+
+## Two wording defects found pointing Ply at semver — 2026-08-30
+
+Both defects were in what Ply *says*, not what it computes — found by pointing Ply at
+`semver` (the brief cited `docs/reach-measurement-2.md` for this, which is not present in
+this checkout). Both fixed, with a failing test written first for each, an end-to-end
+fixture, and a revert-and-confirm-red pass on every fix.
+
+- [x] **A counterexample was announced and then withheld.** The terminal printed a
+      diagnostic's title — which can promise "proptest shrank a failing case to this
+      minimal example" — and stopped there: no failing input, no mention that Ply had
+      just written a runnable red test into the user's own `src/`, even though `--json`
+      carried both the whole time. `crates/ply-cli/src/main.rs`'s `print_human` now
+      reuses the same `counterexample` field `--json` does, printing the failing input
+      plainly (never fabricated — the W0541 "cannot render as Rust" case still names no
+      test file, since none was written) and the path of the written test when there is
+      one. Fixture: `tests/fixtures/fuzzbug/` (existing); new tests: `fuzzbug_fixture.rs`'s
+      `the_terminal_shows_the_promised_counterexample_and_where_the_test_was_written`,
+      plus three unit tests in `main.rs`.
+- [x] **A contract written in `ply.yaml` was accepted by `check`, then silently ignored
+      by `verify`, which explained the silence with two contradictory warnings.** One
+      (`W0510`) said the ply.yaml contract "is used ... so this run checked `{fn}`
+      against its inline attributes only" — false when there are no inline attributes,
+      since nothing was checked against them. The other (`V0505`) correctly said "there
+      is nothing to check its result against, so nothing was run." Fixed here by
+      narrowing `W0510` to fire only when there genuinely are inline attributes to
+      check against (`cf.has_contract()`).
+      **RETRACTED, 2026-08-31 (adversarial review): that narrowing was itself a
+      regression** — a fn with `checks: [test]`, a passing `examples:` entry, and a
+      *wrong* ply.yaml `ensures:` (no inline attribute) reported a clean `tested` with
+      zero diagnostics, because `V0505` does not fire when there is something to run
+      (an example), so nothing was left to mention the ply.yaml contract at all. See
+      "Silent-green regression and two false sentences, closed" below for the real fix:
+      `W0510` fires unconditionally again whenever ply.yaml declares a contract, and its
+      own wording is what changed to stop being false, not the condition it fires under.
+      `check`'s anchors line ("N of N fn claims ... point at a function Ply can find")
+      now also names this up front, before `verify` ever runs. This is a wording fix
+      only — `ply.yaml` contract merge stays out of scope, per the spec's own status
+      list (§2226-2229 area, M3 thin-slice status). Fixture:
+      `tests/fixtures/yamlonlycontract/` (new); new test:
+      `tests/e2e/tests/yamlonlycontract_fixture.rs` (two tests, `check` and `verify`).
+## KNOWN GAP: a method's promise cannot mention its own receiver — 2026-08-31
+
+- [ ] **`#[ply::ensures(|result| *result >= self.a)]` generates a harness that does not
+      compile:** `error[E0424]: expected value, found module `self``. Any promise that
+      refers to `self` — which is most of what a method's promise would naturally say —
+      is affected, whatever its parameters.
+
+      Found while verifying the two fixes above, and **confirmed pre-existing**: the same
+      case run against the binary built before those fixes produces the identical error,
+      so neither fix caused it. It surfaced only because the reproduction taken from the
+      `semver` measurement happened to write `self.a == other.a`; a promise about the
+      arguments alone hides it completely, which is why the same-type-parameter fix looked
+      finished when it was not.
+
+      This is very likely a real share of the 1-in-16 reach recorded in
+      `docs/reach-measurement-2.md`. A method that cannot say anything about the object it
+      is called on can only promise things about its arguments, and the interesting
+      promises about a method are usually about the receiver.
+
+      Reported honestly when it happens — a tool error, never a pass, with the compiler's
+      own words quoted — so nobody is misled. It is still a check that cannot run.
+
+## Two harness-generation defects fixed — 2026-08-31
+
+Both were found by pointing Ply at `semver` -- see `docs/reach-measurement-2.md`,
+which landed on `main` while this work was in progress and so was not visible
+from the branch it was written on. The agent that fixed these noted, correctly
+for what it could see, that the cited file did not exist and declined to
+either invent the measurement or drop the citation. It exists; that note is
+withdrawn rather than left to confuse a later reader.
+
+- [x] **Defect 1 — a receiver's own constructor scan disagreed with the
+      parameter path about what counts as a constructor.** A
+      `Result<Self, E>`-returning `new` (or one spelling the type's own name
+      instead of `Self`, bare or `Result`-wrapped -- four spellings of one
+      shape) was recognised when building a *parameter* and reported as not
+      existing when the very same scan was asked to build a *receiver* for
+      the identical type in the identical run. Fixed by making the receiver
+      scan (`scan_file_for_receiver`, `crates/ply-core/src/harness.rs`) call
+      `ctor_return_kind` -- the one classifier the parameter path
+      (`scan_ctor_candidates`) already used -- instead of carrying its own
+      narrower, separate check, and by threading the resulting `CtorReturn`
+      through `ReceiverPlan` instead of hardcoding `CtorReturn::Bare`.
+      `fuzz_gen::receiver_preamble` now renders the same rejecting `match`
+      around a fallible constructor call that `build_user_value_stmt`
+      already renders for the parameter path. Fixture:
+      `tests/fixtures/receiverresultctor/`; test:
+      `tests/e2e/tests/receiverresultctor_fixture.rs` (all four spellings,
+      plus the exact `A`/`Bad`/`read_it` reproduction, in one run). Reverting
+      the fix reproduces the original false `V0507` refusal verbatim.
+- [x] **Defect 2 — a method whose parameter shares its receiver's type
+      generated a harness with the same `use` line twice.** The generated
+      harness's extra-type-import scan (`extra_type_imports`,
+      `crates/ply-core/src/fuzz_gen.rs`) deduplicated against its own output
+      only, never against the primary `use` `wrap_fn_harness_module` already
+      emits for the checked function's own type -- so a `&self` method
+      taking another value of its own type imported that type twice
+      (`error[E0252]: the name `Pair` is defined multiple times`). Fixed by
+      backing the dedup with a real `HashSet`, seeded with the primary
+      import up front, so "the receiver's type" and "a second parameter of
+      the same type" are the same case as the existing two-parameters dedup,
+      not a second special case beside it. Fixture:
+      `tests/fixtures/sharedtypeparam/`; test:
+      `tests/e2e/tests/sharedtypeparam_fixture.rs` (receiver+parameter,
+      two parameters with no receiver, and receiver+parameter+return all
+      naming the same type). Reverting the fix reproduces the original
+      `E0252` verbatim.
+- [ ] **KNOWN GAP, found while writing the defect-2 fixture, not fixed (out
+      of this task's scope): `#[ply::ensures]` on a receiver method cannot
+      read `self`.** Nothing rewrites a bare `self` in the postcondition
+      closure to the actual receiver binding before splicing it into the
+      generated free-standing assertion, so `self.a == other.a` renders as a
+      literal `self.a`, which does not exist outside an `impl` block --
+      `error[E0424]: expected value, found module `self``. No fixture in the
+      crate exercised this before (`grep`-confirmed: no existing
+      `#[ply::ensures]` or `#[ply::requires]` on a receiver method reads
+      `self`), so it was invisible until this task's own reproduction
+      (`same_as(&self, other: &Pair)`, ensures reading `self.a`, matching the
+      literal Defect 2 repro handed to this session) tried it. Fixing defect
+      2 alone does *not* make that literal reproduction pass -- it trades
+      `E0252` for `E0424`. The committed `sharedtypeparam` fixture avoids
+      reading `self` in every postcondition so it isolates defect 2 cleanly.
+- [ ] **KNOWN GAP, found the same way, not fixed (also out of scope):
+      postcondition widening mis-parenthesises a nested comparison.**
+      `contract_rt::widen`'s catch-all leaf case casts a whole nested
+      comparison's token stream to `i128` without wrapping it in its own
+      parens first, so `*result == (a.a == b.a)` (a boolean-returning
+      postcondition stated as an equality of two other equalities) renders
+      as `a.a == (b.a as i128)` -- because `as` binds tighter than `==`,
+      that compares `u64` to `i128`, `error[E0308]`. No existing fixture
+      wrote a boolean postcondition that way either. Worked around in the
+      `sharedtypeparam` fixture by stating the same property as an `iff`
+      (`(!*result || lhs == rhs) && (*result || lhs != rhs)`), which
+      `widen`'s existing `&&`/`||` recursion handles correctly.
 ## Ply pointed at a stranger's code: 1 of 16 — 2026-08-30
 
 `docs/reach-measurement-2.md`. The method of `docs/invariant-reachability.md`, repeated on a
