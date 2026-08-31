@@ -34,6 +34,28 @@ fixture, and a revert-and-confirm-red pass on every fix.
       list (§2226-2229 area, M3 thin-slice status). Fixture:
       `tests/fixtures/yamlonlycontract/` (new); new test:
       `tests/e2e/tests/yamlonlycontract_fixture.rs` (two tests, `check` and `verify`).
+## KNOWN GAP: a method's promise cannot mention its own receiver — 2026-08-31
+
+- [ ] **`#[ply::ensures(|result| *result >= self.a)]` generates a harness that does not
+      compile:** `error[E0424]: expected value, found module `self``. Any promise that
+      refers to `self` — which is most of what a method's promise would naturally say —
+      is affected, whatever its parameters.
+
+      Found while verifying the two fixes above, and **confirmed pre-existing**: the same
+      case run against the binary built before those fixes produces the identical error,
+      so neither fix caused it. It surfaced only because the reproduction taken from the
+      `semver` measurement happened to write `self.a == other.a`; a promise about the
+      arguments alone hides it completely, which is why the same-type-parameter fix looked
+      finished when it was not.
+
+      This is very likely a real share of the 1-in-16 reach recorded in
+      `docs/reach-measurement-2.md`. A method that cannot say anything about the object it
+      is called on can only promise things about its arguments, and the interesting
+      promises about a method are usually about the receiver.
+
+      Reported honestly when it happens — a tool error, never a pass, with the compiler's
+      own words quoted — so nobody is misled. It is still a check that cannot run.
+
 ## Two harness-generation defects fixed — 2026-08-31
 
 Both were found by pointing Ply at `semver` -- see `docs/reach-measurement-2.md`,
