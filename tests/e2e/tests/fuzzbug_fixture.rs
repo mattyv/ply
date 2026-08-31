@@ -91,3 +91,44 @@ fn fuzz_check_shrinks_a_seeded_bug_and_renders_it_as_a_red_test_then_passes_afte
     );
     assert!(test_run2.combined_output.contains("ply_cex_seeded_bug_"));
 }
+
+/// Defect 1 (2026-08-30, "a counterexample is announced and then
+/// withheld"): the terminal (not `--json`) used to print the title above --
+/// which promises "proptest shrank a failing case to this minimal
+/// example" -- and then simply stop, showing neither the input nor the
+/// runnable test Ply had already written into `src/`. The terminal is what
+/// people actually read, so this is the terminal's own red test.
+#[test]
+fn the_terminal_shows_the_promised_counterexample_and_where_the_test_was_written() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("fuzzbug");
+
+    let out = std::process::Command::new(&cargo_ply)
+        .args([
+            "verify",
+            fixture.path().to_str().unwrap(),
+            "--engine-timeout",
+            "120",
+        ])
+        .output()
+        .expect("spawning cargo-ply verify");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    assert!(
+        stdout.contains(
+            "`seeded_bug` breaks its own postcondition `|result|*result == x` for at least one \
+             input -- proptest shrank a failing case to this minimal example. (P0502)"
+        ),
+        "the title itself is unchanged: {stdout}"
+    );
+    assert!(
+        stdout.contains("failing input: x = 7"),
+        "the promised minimal example must actually appear in the terminal, not just --json: \
+         {stdout}"
+    );
+    assert!(
+        stdout.contains("src/ply_generated_cex.rs"),
+        "must name where the runnable test was written -- Ply put a file in the user's own \
+         src/ and the terminal said nothing about it: {stdout}"
+    );
+}

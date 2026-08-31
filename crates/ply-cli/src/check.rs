@@ -279,6 +279,18 @@ pub struct AnchorTally {
     /// counts above describe a search that never happened. The summary
     /// sentence has to say that outright rather than report a tidy zero.
     pub no_library: bool,
+    /// How many local fn claims write a `requires:`/`ensures:` contract
+    /// directly in ply.yaml (2026-08-30, "a documented way of writing
+    /// contracts is accepted, then silently ignored"): `verify` never reads
+    /// it for the claim's own checks -- only inline `#[ply::requires]`/
+    /// `#[ply::ensures]` attributes do -- and `check` used to give no hint
+    /// of that at all, so the very first command a user runs looked clean
+    /// right up until `verify` quietly checked nothing.
+    pub yaml_contract_fns: usize,
+    /// The one such fn's own name, kept only when there is exactly one
+    /// (`yaml_contract_fns == 1`) -- naming it beats "1 of them" when there
+    /// is only one "them" to mean.
+    pub yaml_contract_fn_name: Option<String>,
 }
 
 fn check_anchors(
@@ -291,6 +303,8 @@ fn check_anchors(
         unresolved: 0,
         elsewhere: 0,
         no_library: false,
+        yaml_contract_fns: 0,
+        yaml_contract_fn_name: None,
     };
     let lib_path = crate_dir.join("src/lib.rs");
     let Ok(lib_src) = std::fs::read_to_string(&lib_path) else {
@@ -372,8 +386,16 @@ fn walk_anchors(
     // to another crate is a boundary component, and this slice reads its
     // declared contracts rather than its code.
     if is_local(local_anchors, &comp.anchor) {
-        for fn_name in comp.fns.keys() {
+        for (fn_name, claim) in &comp.fns {
             let node_id = format!("{qualified}::{fn_name}");
+            if !claim.requires.is_empty() || !claim.ensures.is_empty() {
+                tally.yaml_contract_fns += 1;
+                tally.yaml_contract_fn_name = if tally.yaml_contract_fns == 1 {
+                    Some(fn_name.clone())
+                } else {
+                    None
+                };
+            }
             // The same pre-check `verify` runs, in the same order, for the
             // same reason (`verify.rs`'s own comment on this): a
             // `Type::method` claim naming something real but out of this
@@ -708,6 +730,23 @@ fn anchor_detail(t: &AnchorTally) -> String {
             t.elsewhere
         ));
     }
+    if t.yaml_contract_fns > 0 {
+        let (subject, verb) = if t.yaml_contract_fns == 1 {
+            ("1 of them".to_string(), "writes")
+        } else {
+            (format!("{} of them", t.yaml_contract_fns), "write")
+        };
+        let onto = match &t.yaml_contract_fn_name {
+            Some(name) => format!("`{name}`"),
+            None => "the function".to_string(),
+        };
+        s.push_str(&format!(
+            " {subject} also {verb} a `requires:`/`ensures:` contract directly in ply.yaml -- \
+             `verify` does not read a contract written there yet, only \
+             `#[ply::requires]`/`#[ply::ensures]` attributes written on the function itself do. \
+             Move the contract onto {onto} as an attribute if you want it checked."
+        ));
+    }
     s
 }
 
@@ -1005,6 +1044,35 @@ mod tests {
         assert_eq!(
             cov.checked[1].detail,
             "1 of 1 fn claims in this crate point at a function Ply can find."
+        );
+    }
+
+    /// Defect 2 (2026-08-30, "a documented way of writing contracts is
+    /// accepted, then silently ignored"): `check` is the command people run
+    /// first, and until now it gave no hint at all that a `requires:`/
+    /// `ensures:` written directly in ply.yaml is not what `verify` actually
+    /// checks -- only `#[ply::requires]`/`#[ply::ensures]` attributes on the
+    /// function itself reach it. The one sentence a user needs must appear
+    /// right here, on the anchors line, since that is what already reports
+    /// "N of N fn claims point at a function Ply can find" for this exact
+    /// claim.
+    #[test]
+    fn a_fn_claim_with_a_yaml_only_contract_names_that_it_is_not_read() {
+        let dir = crate_with(
+            "pub fn seven() -> u32 { 7 }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      seven:\n        \
+             checks: [fuzz(64)]\n        requires: [\"true\"]\n        ensures: [\"|result| \
+             *result == 7\"]\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        let cov = report.envelope.coverage.as_ref().unwrap();
+        assert_eq!(
+            cov.checked[1].detail,
+            "1 of 1 fn claims in this crate point at a function Ply can find. 1 of them also \
+             writes a `requires:`/`ensures:` contract directly in ply.yaml -- `verify` does not \
+             read a contract written there yet, only `#[ply::requires]`/`#[ply::ensures]` \
+             attributes written on the function itself do. Move the contract onto `seven` as an \
+             attribute if you want it checked."
         );
     }
 
