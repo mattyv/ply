@@ -1,0 +1,61 @@
+{
+  "format": 2,
+  "written_by": "a21020f413686a693fcfba641634e6d01232787672d1d223e192f69b79fb1963",
+  "results": {
+    "narrowctor::Narrow::doubled": {
+      "fingerprint": "f451204f8fa2979efe7164438fc31f151f6d9f1cfd03617e29a6a005ef36e852",
+      "verdict": "fuzzed(64)",
+      "statuses": [],
+      "evidence": {
+        "engine": "proptest",
+        "seed": "654e82baef1d52c2664b9f906d7f6eb0ebf422d36090f7e9040b10f32aea388e",
+        "cases": 64
+      },
+      "diagnostics": [
+        {
+          "code": "W0503",
+          "severity": "warning",
+          "phase": "verify",
+          "engine": "proptest",
+          "check": "fuzz(64)",
+          "node_id": "narrowctor::Narrow::doubled",
+          "title": "most of the inputs generated for `Narrow::doubled` were thrown away by its own `#[ply::requires]` precondition (254/318 draws rejected). proptest kept drawing until it had 64 accepted cases, so the count is honest -- but those cases all come from the narrow corner of the input space the precondition allows, which is weaker evidence than 64 on its own suggests. (W0503)",
+          "fixes": [
+            {
+              "title": "give `Narrow::doubled` a parameter type whose values are valid by construction, so the generator hits the allowed domain directly instead of being filtered into it"
+            },
+            {
+              "title": "relax `Narrow::doubled`'s `#[ply::requires]` if it is stricter than the function really needs"
+            }
+          ],
+          "open_item": "high_rejection_rate"
+        },
+        {
+          "code": "W0520",
+          "severity": "info",
+          "phase": "verify",
+          "engine": "proptest",
+          "check": "fuzz",
+          "node_id": "narrowctor::Narrow::doubled",
+          "title": "`Narrow::doubled` needs a `Narrow`, so Ply built one itself: `Narrow::new`, then up to 3 calls to `Narrow::doubled`, in random order, before the checked call. That covers every value `Narrow`'s own code can reach within 3 steps of a fresh one -- nothing else was assumed. (W0520, §5.4c)",
+          "open_item": null
+        }
+      ],
+      "inputs": {
+        "its contract": "14603e8ac1c39434",
+        "the build of Ply that checked it": "9ba78dae605c97d4",
+        "the callees it stands on": "4df68c1409b969ed",
+        "the checks that ran": "4c242f820090b8f5",
+        "the code it runs": "2e0287c0bbac42ad",
+        "the compiler and the build target": "bf70dd442259ad28",
+        "the crate's features": "888ca37d720284f4",
+        "the engines behind them": "651a23e37e8789a4",
+        "the function's own source": "93a617a59683fe6d",
+        "the promises it assumes": "d972c487c26e7547",
+        "the versions of everything outside this workspace": "0fabd3141f2a2b8e",
+        "the worked examples it asserts": "7d5529f841102c10",
+        "which claim this is": "2666d79becf9b69c"
+      }
+    }
+  }
+}

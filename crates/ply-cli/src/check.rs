@@ -280,17 +280,37 @@ pub struct AnchorTally {
     /// sentence has to say that outright rather than report a tidy zero.
     pub no_library: bool,
     /// How many local fn claims write a `requires:`/`ensures:` contract
-    /// directly in ply.yaml (2026-08-30, "a documented way of writing
-    /// contracts is accepted, then silently ignored"): `verify` never reads
-    /// it for the claim's own checks -- only inline `#[ply::requires]`/
-    /// `#[ply::ensures]` attributes do -- and `check` used to give no hint
-    /// of that at all, so the very first command a user runs looked clean
-    /// right up until `verify` quietly checked nothing.
-    pub yaml_contract_fns: usize,
+    /// directly in ply.yaml *and* also declare a non-empty `checks:` list of
+    /// their own -- they are asking to be verified (2026-08-30, "a
+    /// documented way of writing contracts is accepted, then silently
+    /// ignored"): `verify` never adds the ply.yaml contract to a claim's own
+    /// checks -- only inline `#[ply::requires]`/`#[ply::ensures]`
+    /// attributes do -- and `check` used to give no hint of that at all, so
+    /// the very first command a user runs looked clean right up until
+    /// `verify` quietly checked nothing against it.
+    ///
+    /// Kept separate from `yaml_contract_boundary_fns` (2026-08-31 review,
+    /// "`check` tells users of the boundary-contract feature to destroy
+    /// it"): a fn with no `checks:` of its own that declares a ply.yaml
+    /// contract is not an oversight, it is §5.5's boundary-contract
+    /// declaration working exactly as designed, and telling its author to
+    /// "move the contract onto it as an attribute" is advice to delete the
+    /// feature the fixture exists to demonstrate. The old single counter
+    /// fired for both shapes alike and gave that advice to both.
+    pub yaml_contract_checked_fns: usize,
     /// The one such fn's own name, kept only when there is exactly one
-    /// (`yaml_contract_fns == 1`) -- naming it beats "1 of them" when there
-    /// is only one "them" to mean.
-    pub yaml_contract_fn_name: Option<String>,
+    /// (`yaml_contract_checked_fns == 1`) -- naming it beats "1 of them"
+    /// when there is only one "them" to mean.
+    pub yaml_contract_checked_fn_name: Option<String>,
+    /// How many local fn claims declare a ply.yaml `requires:`/`ensures:`
+    /// contract but ask for **no** `checks:` of their own -- §5.5's
+    /// boundary-contract declaration: legacy code nobody edits, given a
+    /// contract from outside so a caller's proof can assume it, with no
+    /// intent that anything here ever verify the callee itself.
+    pub yaml_contract_boundary_fns: usize,
+    /// The one such fn's own name, kept only when there is exactly one
+    /// (`yaml_contract_boundary_fns == 1`).
+    pub yaml_contract_boundary_fn_name: Option<String>,
 }
 
 fn check_anchors(
@@ -303,8 +323,10 @@ fn check_anchors(
         unresolved: 0,
         elsewhere: 0,
         no_library: false,
-        yaml_contract_fns: 0,
-        yaml_contract_fn_name: None,
+        yaml_contract_checked_fns: 0,
+        yaml_contract_checked_fn_name: None,
+        yaml_contract_boundary_fns: 0,
+        yaml_contract_boundary_fn_name: None,
     };
     let lib_path = crate_dir.join("src/lib.rs");
     let Ok(lib_src) = std::fs::read_to_string(&lib_path) else {
@@ -389,12 +411,28 @@ fn walk_anchors(
         for (fn_name, claim) in &comp.fns {
             let node_id = format!("{qualified}::{fn_name}");
             if !claim.requires.is_empty() || !claim.ensures.is_empty() {
-                tally.yaml_contract_fns += 1;
-                tally.yaml_contract_fn_name = if tally.yaml_contract_fns == 1 {
-                    Some(fn_name.clone())
+                // §5.5: a claim with no `checks:` of its own is a boundary
+                // contract declaration, not a request to be verified --
+                // "asks to be checked" and "asks for nothing" get different
+                // advice below (2026-08-31 review, "`check` tells users of
+                // the boundary-contract feature to destroy it").
+                let has_own_checks = claim.checks.as_ref().is_some_and(|c| !c.is_empty());
+                if has_own_checks {
+                    tally.yaml_contract_checked_fns += 1;
+                    tally.yaml_contract_checked_fn_name = if tally.yaml_contract_checked_fns == 1 {
+                        Some(fn_name.clone())
+                    } else {
+                        None
+                    };
                 } else {
-                    None
-                };
+                    tally.yaml_contract_boundary_fns += 1;
+                    tally.yaml_contract_boundary_fn_name = if tally.yaml_contract_boundary_fns == 1
+                    {
+                        Some(fn_name.clone())
+                    } else {
+                        None
+                    };
+                }
             }
             // The same pre-check `verify` runs, in the same order, for the
             // same reason (`verify.rs`'s own comment on this): a
@@ -730,21 +768,56 @@ fn anchor_detail(t: &AnchorTally) -> String {
             t.elsewhere
         ));
     }
-    if t.yaml_contract_fns > 0 {
-        let (subject, verb) = if t.yaml_contract_fns == 1 {
-            ("1 of them".to_string(), "writes")
-        } else {
-            (format!("{} of them", t.yaml_contract_fns), "write")
-        };
-        let onto = match &t.yaml_contract_fn_name {
-            Some(name) => format!("`{name}`"),
-            None => "the function".to_string(),
-        };
+    // §5.5: a ply.yaml `requires:`/`ensures:` contract is used exactly one
+    // way -- a caller crossing into that fn may assume it -- and is never
+    // added to the fn's own checks. That fact reads differently depending
+    // on whether the fn also asked to be checked (2026-08-31 review,
+    // "`check` tells users of the boundary-contract feature to destroy
+    // it"): telling a fn with no `checks:` of its own to "move the contract
+    // onto it as an attribute" is advice to delete a feature that is
+    // working exactly as intended for legacy code nobody wants to edit.
+    if t.yaml_contract_checked_fns == 1 {
+        let fn_name = t
+            .yaml_contract_checked_fn_name
+            .as_deref()
+            .unwrap_or("the function");
         s.push_str(&format!(
-            " {subject} also {verb} a `requires:`/`ensures:` contract directly in ply.yaml -- \
-             `verify` does not read a contract written there yet, only \
-             `#[ply::requires]`/`#[ply::ensures]` attributes written on the function itself do. \
-             Move the contract onto {onto} as an attribute if you want it checked."
+            " 1 of them also writes a `requires:`/`ensures:` contract directly in ply.yaml. A \
+             ply.yaml contract is only used one way -- a caller of `{fn_name}` may assume it, \
+             but it is not added to `{fn_name}`'s own checks, so `verify` does not check \
+             `{fn_name}` against it. Move the contract onto `{fn_name}` as a \
+             `#[ply::requires]`/`#[ply::ensures]` attribute if you want it checked."
+        ));
+    } else if t.yaml_contract_checked_fns > 1 {
+        s.push_str(&format!(
+            " {} of them also write a `requires:`/`ensures:` contract directly in ply.yaml. A \
+             ply.yaml contract is only used one way -- a caller of those functions may assume \
+             it, but it is not added to their own checks, so `verify` does not check them \
+             against it. Move the contract onto those functions as \
+             `#[ply::requires]`/`#[ply::ensures]` attributes if you want them checked.",
+            t.yaml_contract_checked_fns
+        ));
+    }
+    if t.yaml_contract_boundary_fns == 1 {
+        let fn_name = t
+            .yaml_contract_boundary_fn_name
+            .as_deref()
+            .unwrap_or("the function");
+        s.push_str(&format!(
+            " 1 of them, `{fn_name}`, declares a `requires:`/`ensures:` contract in ply.yaml but \
+             asks for no checks of its own -- that is deliberate: it lets any function calling \
+             `{fn_name}` assume the promise is true, without Ply ever verifying that \
+             `{fn_name}` itself keeps it. This is the normal way to describe legacy code you do \
+             not want to edit; any caller's result will say it rests on an unchecked promise."
+        ));
+    } else if t.yaml_contract_boundary_fns > 1 {
+        s.push_str(&format!(
+            " {} of them declare a `requires:`/`ensures:` contract in ply.yaml but ask for no \
+             checks of their own -- that is deliberate: it lets any function calling them \
+             assume the promise is true, without Ply ever verifying that they keep it. This is \
+             the normal way to describe legacy code you do not want to edit; any caller's \
+             result will say it rests on these unchecked promises.",
+            t.yaml_contract_boundary_fns
         ));
     }
     s
@@ -1056,6 +1129,14 @@ mod tests {
     /// right here, on the anchors line, since that is what already reports
     /// "N of N fn claims point at a function Ply can find" for this exact
     /// claim.
+    ///
+    /// `seven` has `checks: [fuzz(64)]` of its own -- it is asking to be
+    /// checked, unlike a boundary-only fn (2026-08-31 review, "`check` tells
+    /// users of the boundary-contract feature to destroy it", see
+    /// `a_boundary_only_yaml_contract_is_never_told_to_move_onto_itself`
+    /// below), so this is the "move it onto an attribute" case, worded so it
+    /// never claims `verify` does not read the contract at all -- it does,
+    /// just not for this fn's own checks.
     #[test]
     fn a_fn_claim_with_a_yaml_only_contract_names_that_it_is_not_read() {
         let dir = crate_with(
@@ -1069,10 +1150,71 @@ mod tests {
         assert_eq!(
             cov.checked[1].detail,
             "1 of 1 fn claims in this crate point at a function Ply can find. 1 of them also \
-             writes a `requires:`/`ensures:` contract directly in ply.yaml -- `verify` does not \
-             read a contract written there yet, only `#[ply::requires]`/`#[ply::ensures]` \
-             attributes written on the function itself do. Move the contract onto `seven` as an \
-             attribute if you want it checked."
+             writes a `requires:`/`ensures:` contract directly in ply.yaml. A ply.yaml contract \
+             is only used one way -- a caller of `seven` may assume it, but it is not added to \
+             `seven`'s own checks, so `verify` does not check `seven` against it. Move the \
+             contract onto `seven` as a `#[ply::requires]`/`#[ply::ensures]` attribute if you \
+             want it checked."
+        );
+    }
+
+    /// Defect 2's other half (2026-08-31 review): a fn that declares a
+    /// ply.yaml contract and *no* `checks:` of its own is §5.5's
+    /// boundary-contract declaration working as intended -- legacy code
+    /// nobody wants to edit, given a contract from outside so a caller can
+    /// assume it. Telling its author to "move the contract onto it as an
+    /// attribute" is advice to delete that feature, aimed at a fn that
+    /// never asked to be checked at all.
+    #[test]
+    fn a_boundary_only_yaml_contract_is_never_told_to_move_onto_itself() {
+        let dir = crate_with(
+            "pub fn legacy_rate(x: u32) -> u32 { x }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      legacy_rate:\n        \
+             ensures: [\"|result| *result <= 1000\"]\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        let cov = report.envelope.coverage.as_ref().unwrap();
+        assert_eq!(
+            cov.checked[1].detail,
+            "1 of 1 fn claims in this crate point at a function Ply can find. 1 of them, \
+             `legacy_rate`, declares a `requires:`/`ensures:` contract in ply.yaml but asks for \
+             no checks of its own -- that is deliberate: it lets any function calling \
+             `legacy_rate` assume the promise is true, without Ply ever verifying that \
+             `legacy_rate` itself keeps it. This is the normal way to describe legacy code you \
+             do not want to edit; any caller's result will say it rests on an unchecked promise."
+        );
+    }
+
+    /// Two smaller wording repairs, 2026-08-31 review: with more than one fn
+    /// in a bucket, the sentence used to fall back to the singular
+    /// "the function" for both cases, unnamed and grammatically wrong for a
+    /// count greater than one. It must instead say "those functions" (or,
+    /// for the checked case, "them"/"they").
+    #[test]
+    fn more_than_one_yaml_contract_fn_says_those_functions_not_the_function() {
+        let dir = crate_with(
+            "pub fn a() -> u32 { 1 }\npub fn b() -> u32 { 2 }\npub fn c() -> u32 { 3 }\npub fn \
+             d() -> u32 { 4 }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    fns:\n      a:\n        \
+             checks: [test]\n        ensures: [\"|result| *result >= 0\"]\n      b:\n        \
+             checks: [test]\n        ensures: [\"|result| *result >= 0\"]\n      c:\n        \
+             ensures: [\"|result| *result >= 0\"]\n      d:\n        ensures: [\"|result| \
+             *result >= 0\"]\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        let cov = report.envelope.coverage.as_ref().unwrap();
+        assert_eq!(
+            cov.checked[1].detail,
+            "4 of 4 fn claims in this crate point at a function Ply can find. 2 of them also \
+             write a `requires:`/`ensures:` contract directly in ply.yaml. A ply.yaml contract \
+             is only used one way -- a caller of those functions may assume it, but it is not \
+             added to their own checks, so `verify` does not check them against it. Move the \
+             contract onto those functions as `#[ply::requires]`/`#[ply::ensures]` attributes \
+             if you want them checked. 2 of them declare a `requires:`/`ensures:` contract in \
+             ply.yaml but ask for no checks of their own -- that is deliberate: it lets any \
+             function calling them assume the promise is true, without Ply ever verifying that \
+             they keep it. This is the normal way to describe legacy code you do not want to \
+             edit; any caller's result will say it rests on these unchecked promises."
         );
     }
 

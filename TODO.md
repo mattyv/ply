@@ -1,5 +1,86 @@
 # TODO
 
+## Silent-green regression and two false sentences, closed — 2026-08-31
+
+An adversarial review of the two 2026-08-30 wording fixes above found the narrower
+`W0510` gate had reopened the exact silence it was meant to close, plus one more false
+sentence in `check`'s new boundary-contract wording, plus one false "a test reproduces
+this" claim when two fns break their promise in the same run, plus four planted bugs
+none of the new tests caught. All closed; test-first, revert-and-confirm-red on every
+fix.
+
+- [x] **Silent-green regression, closed.** `checks: [test]` + a passing `examples:`
+      entry + a *wrong* ply.yaml `ensures:` (no inline attribute) reported `tested` with
+      zero diagnostics — `V0505` never fires when there is something to actually run
+      (the example), so narrowing `W0510` to only fire alongside an inline attribute
+      left nothing to say the ply.yaml contract was ever declared, let alone unchecked.
+      Fixed by restoring `W0510`'s original unconditional firing (`declares_contract`,
+      not `declares_contract && cf.has_contract()`) and instead fixing the actual false
+      clause: "so this run checked `{fn}` against its inline attributes only" (false
+      with no inline attribute) is now "so this run does not check `{fn}` against it;
+      only an inline attribute on `{fn}` itself counts toward `{fn}`'s own checks" — true
+      either way. `V0505`'s own ply.yaml aside (added in the 2026-08-30 fix) is removed
+      as now-redundant, since `W0510` always fires alongside it. New fixture:
+      `tests/fixtures/yamlonlycontractexample/`; new test:
+      `tests/e2e/tests/yamlonlycontractexample_fixture.rs`. Existing tests updated to
+      expect two non-contradictory diagnostics instead of one
+      (`yamlonlycontract_fixture.rs`, `verify.rs`'s own unit test).
+- [x] **`check` told a boundary-only fn's author to destroy the feature, with a false
+      sentence.** For `legacy_rate` (declares a ply.yaml contract, no `checks:` of its
+      own — §5.5's boundary declaration, working as intended), `check` said "`verify`
+      does not read a contract written there yet" (false — it reads it and uses it as a
+      caller's assumption) and "Move the contract onto `legacy_rate` as an attribute if
+      you want it checked" (advice to delete the feature the fixture demonstrates). Now
+      distinguishes two cases (`AnchorTally`'s `yaml_contract_checked_fns` vs.
+      `yaml_contract_boundary_fns`): a fn with its own `checks:` gets told to move the
+      contract onto it if it wants that checked; a fn with no `checks:` of its own gets
+      told this is deliberate, and that any caller's result will say it rests on an
+      unchecked promise. New test: `tests/e2e/tests/boundarycontract_check.rs`; existing
+      `check.rs` unit test updated, new one added for the boundary case.
+- [x] **"Ply wrote a test that reproduces this" was false when two fns broke their
+      promise in one run.** `harness::write_generated_test` overwrote
+      `ply_generated_cex.rs` wholesale on every call, and `verify` called it once per
+      broken fn — so the terminal printed the line twice but only the *last* fn's test
+      survived on disk. Fixed by accumulating every fn's rendered cex test into one
+      `Vec<RenderedTest>` across the whole run (`push_cex_test`, deduped by test name so
+      a fn re-rendered mid-run for §9's oracle check does not produce two `fn` items with
+      the same name) and writing the combined file exactly once, after every fn has been
+      checked. New fixture: `tests/fixtures/fuzzbugtwo/` (two fns, both broken); new
+      test: `tests/e2e/tests/fuzzbugtwo_fixture.rs`, asserting both rendered tests
+      survive and both actually run under `cargo test`.
+- [x] Two smaller wording repairs: "run `cargo test` and it fails with the same message
+      above" (false — `cargo test` prints the postcondition failure text, never the
+      diagnostic's own title) is now "run `cargo test` from this crate's root directory
+      and it fails the same way this run just did" (`main.rs`'s `counterexample_report`,
+      pinned by a new unit test). `check`'s plural wording ("Move the contract onto the
+      function as an attribute" when several are involved, naming none of them) now says
+      "those functions"/"them" throughout, pinned by a new unit test with four fns split
+      across both cases.
+- [x] **Four planted bugs, each closed with a test that kills it** (adversarial review
+      measured all four surviving the existing suite):
+      - A fallible constructor's rejection arm turned vacuous (`Ok` instead of rejecting)
+        went unnoticed by the existing receiver-constructor fixture
+        (`receiverresultctor`), because its constructor rejects only one value and its
+        promise (`u64 >= 0`) is vacuously true regardless. New fixture:
+        `tests/fixtures/narrowctor/` — a constructor rejecting most of its domain
+        (`v > 3`, against a generator drawing mostly from `0..=16`) behind a non-vacuous
+        promise (`*result <= 6`, true only because the rejection is real). New test:
+        `tests/e2e/tests/narrowctor_fixture.rs`, asserting the high-rejection warning
+        (`W0503`/`high_rejection_rate`) fires — confirmed to fail (verdict flips to
+        `violation`) when the constructor's rejection is defeated.
+      - `||` mutated to `&&` in both new yaml-contract detectors (`verify.rs`'s
+        `declares_contract`, `check.rs`'s walk) survived because every existing fixture
+        with a ply.yaml contract declared both `requires:` and `ensures:`. Already
+        closed incidentally by the two fixtures above (`yamlonlycontractexample`,
+        `boundarycontract` via `boundarycontract_check.rs`), both `ensures:`-only —
+        confirmed by mutating both conditions to `&&` and watching both tests fail.
+      - Deleting `W0510` outright survived the whole suite, since the one place it was
+        tested (`yamlonlycontract_fixture.rs`) has no inline attribute, and nothing
+        asserted it also fires when one *does* exist. New test:
+        `tests/e2e/tests/yaml_and_inline_contract_fixture.rs`, reusing the existing
+        `envelopecontract` fixture (`add` carries both an inline `#[ply::ensures]` and a
+        ply.yaml `ensures:`) — confirmed to fail when the diagnostic push is deleted.
+
 ## Two wording defects found pointing Ply at semver — 2026-08-30
 
 Both defects were in what Ply *says*, not what it computes — found by pointing Ply at
@@ -23,13 +104,19 @@ fixture, and a revert-and-confirm-red pass on every fix.
       (`W0510`) said the ply.yaml contract "is used ... so this run checked `{fn}`
       against its inline attributes only" — false when there are no inline attributes,
       since nothing was checked against them. The other (`V0505`) correctly said "there
-      is nothing to check its result against, so nothing was run." `W0510`'s wording was
-      the wrong half: it now only fires when there genuinely are inline attributes to
-      check against (`cf.has_contract()`), and `V0505`'s message now names the ply.yaml
-      contract and says plainly that ply.yaml contracts are not read for a fn's own
-      checks — one honest statement instead of two disagreeing ones. `check`'s anchors
-      line ("N of N fn claims ... point at a function Ply can find") now also names this
-      up front, before `verify` ever runs, with the same wording. This is a wording fix
+      is nothing to check its result against, so nothing was run." Fixed here by
+      narrowing `W0510` to fire only when there genuinely are inline attributes to
+      check against (`cf.has_contract()`).
+      **RETRACTED, 2026-08-31 (adversarial review): that narrowing was itself a
+      regression** — a fn with `checks: [test]`, a passing `examples:` entry, and a
+      *wrong* ply.yaml `ensures:` (no inline attribute) reported a clean `tested` with
+      zero diagnostics, because `V0505` does not fire when there is something to run
+      (an example), so nothing was left to mention the ply.yaml contract at all. See
+      "Silent-green regression and two false sentences, closed" below for the real fix:
+      `W0510` fires unconditionally again whenever ply.yaml declares a contract, and its
+      own wording is what changed to stop being false, not the condition it fires under.
+      `check`'s anchors line ("N of N fn claims ... point at a function Ply can find")
+      now also names this up front, before `verify` ever runs. This is a wording fix
       only — `ply.yaml` contract merge stays out of scope, per the spec's own status
       list (§2226-2229 area, M3 thin-slice status). Fixture:
       `tests/fixtures/yamlonlycontract/` (new); new test:

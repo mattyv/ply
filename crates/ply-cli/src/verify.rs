@@ -581,20 +581,25 @@ fn verify_loaded_crate(
             if declares_contract && explicit.is_empty() && !cf.has_contract() {
                 continue;
             }
-            // `declared_contract_not_anded_diag`'s wording says this run
-            // "checked `{fn_name}` against its inline attributes only" --
-            // true exactly when there are inline attributes to check
-            // against (`cf.has_contract()`). When there are none, saying
-            // that is false, and it used to fire anyway, standing right
-            // next to `V0505`'s "there is nothing to check its result
-            // against, so nothing was run" -- two warnings on the same fn
-            // flatly contradicting each other (2026-08-30, found pointing
-            // Ply at semver). With no inline attributes, whichever
-            // diagnostic below reports "no evidence" is the one honest
-            // statement, and it already names the ply.yaml contract itself
-            // (see the `declares_contract` fork inside the fuzz/test check
-            // below), so nothing is pushed here in that case.
-            if declares_contract && cf.has_contract() {
+            // This must fire whenever ply.yaml declares a contract here,
+            // full stop -- not only when there also happens to be an
+            // inline `#[ply::requires]`/`#[ply::ensures]` attribute.
+            // `declared_contract_not_anded_diag` used to be gated on
+            // `cf.has_contract()` too (2026-08-30), on the theory that
+            // without an inline attribute, `V0505`'s "there is nothing to
+            // check its result against" already said enough -- but that
+            // reasoning only holds when `V0505` actually fires, and it does
+            // not when the fn also has `examples:` entries (or any other
+            // check that finds something to run): a `checks: [test]` fn
+            // with a passing example and a *wrong* ply.yaml `ensures`
+            // reported a clean `tested` with zero diagnostics, in total
+            // silence (regression, found 2026-08-31). The old wording's own
+            // flaw -- claiming unconditionally that "this run checked
+            // `{fn_name}` against its inline attributes only", false when
+            // there is no inline attribute -- is fixed in the diagnostic's
+            // own text below instead, so the fix is restoring when this
+            // fires, not narrowing it further.
+            if declares_contract {
                 diagnostics.push(declared_contract_not_anded_diag(&node_id, fn_name));
             }
 
@@ -1134,6 +1139,11 @@ fn verify_loaded_crate(
     // reported as `reused: true` (caught by `resultreuse_fixture`, 2026-08-26).
     let mut results: Vec<Option<(Node, Vec<Diagnostic>)>> =
         (0..plans.len()).map(|_| None).collect();
+    // Every rendered cex test any fn in this run earns, across the whole
+    // loop below -- written to `ply_generated_cex.rs` exactly once, after
+    // the loop, so a second fn's counterexample never overwrites a first
+    // fn's (`push_cex_test`'s own doc comment has the full story).
+    let mut all_cex_tests: Vec<RenderedTest> = Vec::new();
     for idx in processing_order {
         if bounded_eligible.contains(&idx) {
             resolve_contracted_calls(
@@ -1173,8 +1183,8 @@ fn verify_loaded_crate(
             &plans[idx].seed,
             harness_info.as_ref(),
             !plans[idx].claim.examples.is_empty(),
-            !plans[idx].claim.requires.is_empty() || !plans[idx].claim.ensures.is_empty(),
             opts,
+            &mut all_cex_tests,
         )?;
         if node.verdict.starts_with("bounded(")
             && !node.statuses.iter().any(|s| s == "conditional")
@@ -1183,6 +1193,15 @@ fn verify_loaded_crate(
             known_bounded.insert(plans[idx].cf.path.clone(), k);
         }
         results[idx] = Some((node, fn_diags));
+    }
+
+    // One combined write for every cex test this whole run earned (§9,
+    // `push_cex_test`'s own doc comment): each diagnostic above already
+    // promised its own test lives at this path, so this write must include
+    // every one of them, not just the last fn's.
+    if !all_cex_tests.is_empty() {
+        let module_source = contract_rt::wrap_test_module(&all_cex_tests);
+        harness::write_generated_test(&src_dir, &lib_path, &module_source)?;
     }
 
     let mut component_nodes: BTreeMap<String, Vec<Node>> = early_nodes_by_component;
@@ -2292,6 +2311,38 @@ fn unbuildable_contracted_stub_diag(
 
 /// Union of every status on a set of child nodes, sorted and deduplicated
 /// (D6: statuses propagate upward as flags, not as evidence).
+/// Pushes a rendered cex test into the run-wide accumulator that gets
+/// written to `ply_generated_cex.rs` exactly once, after every fn has been
+/// checked (see the single `write_generated_test` call at the end of
+/// `verify_loaded_crate`). Two fns that both break their promise must both
+/// still have a test in that file -- `write_generated_test` itself only
+/// ever overwrites the whole file, so calling it once per fn silently
+/// dropped every counterexample but the last (found 2026-08-30 pointing
+/// Ply at a fixture with two broken fns; only the second's test survived on
+/// disk while the terminal reported both as generated). A fn's own witness
+/// can legitimately be rendered twice in one run (a fresh violation is
+/// stored, then immediately re-read back for §9's oracle check) with an
+/// identical `test_name`, which `retain` here drops rather than duplicates
+/// -- two `fn` items with the same name in one generated file would not
+/// compile.
+fn push_cex_test(tests_out: &mut Vec<RenderedTest>, rendered: RenderedTest) {
+    tests_out.retain(|t| t.test_name != rendered.test_name);
+    tests_out.push(rendered);
+}
+
+/// Where the combined cex-test file lives, computed the same way
+/// `write_generated_test` computes it -- needed before that single
+/// end-of-run write happens, so a diagnostic built mid-run can still name
+/// the path its counterexample will land in.
+fn cex_test_display_path(src_dir: &Path) -> String {
+    let test_file = src_dir.join("ply_generated_cex.rs");
+    test_file
+        .strip_prefix(src_dir.parent().unwrap_or(src_dir))
+        .unwrap_or(&test_file)
+        .display()
+        .to_string()
+}
+
 fn union_statuses(children: &[Node]) -> Vec<String> {
     let mut out: Vec<String> = children
         .iter()
@@ -2317,11 +2368,12 @@ fn declared_contract_not_anded_diag(node_id: &str, fn_name: &str) -> Diagnostic 
         check: "".into(),
         node_id: node_id.into(),
         title: format!(
-            "the `requires:`/`ensures:` declared for `{fn_name}` in ply.yaml is used where §5.5 \
-             needs it -- callers of `{fn_name}` may assume it at a boundary -- but it is **not** \
-             yet ANDed into `{fn_name}`'s own checks, which §5.4 says it should be. So this run \
-             checked `{fn_name}` against its inline `#[ply::requires]`/`#[ply::ensures]` only. \
-             (W0510)"
+            "the `requires:`/`ensures:` declared for `{fn_name}` in ply.yaml is used only where \
+             §5.5 needs it -- callers of `{fn_name}` may assume it at a boundary -- it is \
+             **not** yet ANDed into `{fn_name}`'s own checks, which §5.4 says it should be. So \
+             this run does not check `{fn_name}` against it; only an inline \
+             `#[ply::requires]`/`#[ply::ensures]` attribute written on `{fn_name}` itself counts \
+             toward `{fn_name}`'s own checks. (W0510)"
         ),
         pointer: None,
         primary_span: None,
@@ -2440,13 +2492,10 @@ fn run_fn_checks(
     seed: &[u8; 32],
     harness_info: Option<&HarnessInfo>,
     has_examples: bool,
-    // Whether ply.yaml *also* declares a `requires:`/`ensures:` contract for
-    // this same fn (2026-08-30, "a documented way of writing contracts is
-    // accepted, then silently ignored") -- needed here so the "nothing to
-    // check against" diagnostic below can say so, rather than leaving a
-    // reader to wonder why a contract they can see in ply.yaml did not count.
-    declares_yaml_contract: bool,
     opts: &VerifyOptions,
+    // Every rendered cex test earned by any fn in this whole run, so far --
+    // accumulated rather than written per-fn (`push_cex_test`'s own doc).
+    cex_tests_out: &mut Vec<RenderedTest>,
 ) -> Result<(Node, Vec<Diagnostic>)> {
     let mut diagnostics = Vec::new();
     let mut labels: Vec<String> = Vec::new();
@@ -2468,6 +2517,7 @@ fn run_fn_checks(
                     boundary,
                     opts,
                     &mut promise_diags,
+                    cex_tests_out,
                 )?;
                 labels.push(label);
                 statuses.append(&mut s);
@@ -2547,26 +2597,18 @@ fn run_fn_checks(
             } else {
                 "test".into()
             };
-            // The one honest statement replacing what used to be two
-            // contradictory warnings (2026-08-30, found pointing Ply at
-            // semver): when ply.yaml *also* declares a `requires:`/
-            // `ensures:` contract for this same fn, a reader needs to know
-            // that it is not what "no `#[ply::ensures]`" refers to above --
-            // ply.yaml's copy is never read for a fn's own checks, only an
-            // inline attribute is, so writing the contract there did
-            // nothing here. Without this clause the reader is left to
-            // wonder why a contract they can see in ply.yaml did not count.
-            let yaml_contract_note = if declares_yaml_contract {
-                format!(
-                    " `{fn_name}` does declare a `requires:`/`ensures:` contract in ply.yaml, but \
-                     ply.yaml contracts are not read for a fn's own checks -- only \
-                     `#[ply::requires]`/`#[ply::ensures]` attributes written on the function \
-                     itself are. Move the contract onto `{fn_name}` as an attribute if you want \
-                     it checked."
-                )
-            } else {
-                String::new()
-            };
+            // This diagnostic used to also name, inline, whether ply.yaml
+            // *also* declares a `requires:`/`ensures:` contract for this
+            // same fn (2026-08-30, "a documented way of writing contracts
+            // is accepted, then silently ignored"). That note is gone: the
+            // fix for a later regression (2026-08-31, "a promise nobody
+            // checks is now reported green in total silence") made
+            // `declared_contract_not_anded_diag` (`W0510`) fire unconditionally
+            // whenever ply.yaml declares a contract here, which is the same
+            // condition this note used to check -- so the two diagnostics
+            // said the same thing about the ply.yaml contract whenever both
+            // fired, and repeating it here would just be noise now that
+            // `W0510` always carries it.
             diagnostics.push(Diagnostic {
                 code: "V0505".into(),
                 severity: "warning".into(),
@@ -2578,7 +2620,7 @@ fn run_fn_checks(
                     "`{fn_name}` declares `{}` but has no `#[ply::ensures]` and no `examples:` entries -- \
                      there is nothing to check its result against, so nothing was run. Add an \
                      `#[ply::ensures]` clause naming what `{fn_name}` promises about its result, or add \
-                     `examples:` entries naming concrete calls to assert.{yaml_contract_note}",
+                     `examples:` entries naming concrete calls to assert.",
                     if wants_fuzz.is_some() { "fuzz" } else { "test" }
                 ),
                 pointer: None,
@@ -2684,7 +2726,6 @@ fn run_fn_checks(
                 let mut run = run_fuzz_and_test_checks(
                     cf,
                     src_dir,
-                    lib_path,
                     &info.workspace_root,
                     &info.package,
                     node_id,
@@ -2694,6 +2735,7 @@ fn run_fn_checks(
                     seed,
                     has_examples,
                     opts,
+                    cex_tests_out,
                 )?;
                 diagnostics.append(&mut run.diagnostics);
                 if let Some(l) = run.fuzz_label {
@@ -3850,6 +3892,9 @@ fn run_bounded_check(
     // unhappy path would be exactly the quiet failure this gate exists to
     // stop.
     promise_out: &mut Vec<Diagnostic>,
+    // Every rendered cex test this run earns, from every fn, accumulated
+    // here rather than written immediately -- see `push_cex_test`.
+    cex_tests_out: &mut Vec<RenderedTest>,
 ) -> Result<(String, Vec<String>, Vec<Diagnostic>)> {
     let check_label = format!("bounded({bound_k})");
 
@@ -3987,11 +4032,13 @@ fn run_bounded_check(
         // reason to fail the whole run.
         if let Ok(values) = kani::decode_witness(&stored, &cf.params, bound_k) {
             let rendered = contract_rt::render_cex_test(cf, &values, &check_label, "K0502", 1)?;
-            let module_source = contract_rt::wrap_test_module(&[RenderedTest {
-                test_name: rendered.test_name,
-                source: rendered.source,
-            }]);
-            harness::write_generated_test(src_dir, lib_path, &module_source)?;
+            push_cex_test(
+                cex_tests_out,
+                RenderedTest {
+                    test_name: rendered.test_name,
+                    source: rendered.source,
+                },
+            );
         }
     }
 
@@ -4156,14 +4203,14 @@ fn run_bounded_check(
                 }
             };
             let rendered = contract_rt::render_cex_test(cf, &values, &check_label, "K0502", 1)?;
-            let test_file = harness::write_generated_test(
-                src_dir,
-                lib_path,
-                &contract_rt::wrap_test_module(&[RenderedTest {
+            let test_file_display = cex_test_display_path(src_dir);
+            push_cex_test(
+                cex_tests_out,
+                RenderedTest {
                     test_name: rendered.test_name.clone(),
                     source: rendered.source.clone(),
-                }]),
-            )?;
+                },
+            );
             let mut inputs = BTreeMap::new();
             for (p, v) in cf.params.iter().zip(values.iter()) {
                 inputs.insert(p.name.clone(), format_value(v));
@@ -4193,13 +4240,7 @@ fn run_bounded_check(
                         "captured from `cargo kani --concrete-playback print` on harness `{}`",
                         generated.proof_fn_path
                     )),
-                    cargo_test: Some(
-                        test_file
-                            .strip_prefix(src_dir.parent().unwrap_or(src_dir))
-                            .unwrap_or(&test_file)
-                            .display()
-                            .to_string(),
-                    ),
+                    cargo_test: Some(test_file_display),
                 }),
                 fixes: vec![],
                 assumptions: vec![],
@@ -4228,7 +4269,6 @@ struct HarnessRun {
 fn run_fuzz_and_test_checks(
     cf: &ContractFn,
     src_dir: &Path,
-    lib_path: &Path,
     harness_workspace_root: &Path,
     harness_pkg: &str,
     node_id: &str,
@@ -4238,6 +4278,7 @@ fn run_fuzz_and_test_checks(
     seed: &[u8; 32],
     has_examples: bool,
     opts: &VerifyOptions,
+    cex_tests_out: &mut Vec<RenderedTest>,
 ) -> Result<HarnessRun> {
     let timeout = opts
         .engine_timeout_secs
@@ -4438,7 +4479,7 @@ fn run_fuzz_and_test_checks(
                 harness_pkg,
                 &ply_core::fuzz_gen::seed_hex(seed),
                 src_dir,
-                lib_path,
+                cex_tests_out,
             )?;
             diagnostics.push(d);
             fuzz_label = Some(label);
@@ -4950,7 +4991,7 @@ fn render_fuzz_violation(
     harness_pkg: &str,
     seed_hex: &str,
     src_dir: &Path,
-    lib_path: &Path,
+    cex_tests_out: &mut Vec<RenderedTest>,
 ) -> Result<(String, Diagnostic)> {
     let contract_text = cf
         .ensures
@@ -5095,14 +5136,14 @@ fn render_fuzz_violation(
     match decoded {
         Some(values) => {
             let rendered = contract_rt::render_cex_test(cf, &values, check_label, "P0502", 1)?;
-            let test_file = harness::write_generated_test(
-                src_dir,
-                lib_path,
-                &contract_rt::wrap_test_module(&[RenderedTest {
+            let test_file_display = cex_test_display_path(src_dir);
+            push_cex_test(
+                cex_tests_out,
+                RenderedTest {
                     test_name: rendered.test_name.clone(),
                     source: rendered.source.clone(),
-                }]),
-            )?;
+                },
+            );
             let mut inputs = BTreeMap::new();
             for p in &cf.params {
                 // Look fields up by name: `fields` is a BTreeMap (sorted by
@@ -5150,13 +5191,7 @@ fn render_fuzz_violation(
                              docs/m4-findings.md)",
                             harness_fuzz_test_name(cf)
                         )),
-                        cargo_test: Some(
-                            test_file
-                                .strip_prefix(src_dir.parent().unwrap_or(src_dir))
-                                .unwrap_or(&test_file)
-                                .display()
-                                .to_string(),
-                        ),
+                        cargo_test: Some(test_file_display),
                     }),
                     fixes: vec![],
                     assumptions: vec![],
@@ -5771,10 +5806,18 @@ mod tests {
     /// attributes only" -- which is false, there are no inline attributes,
     /// nothing was checked against them -- and the other (`V0505`) said
     /// "there is nothing to check its result against, so nothing was run".
-    /// A reader had to reconcile those alone. This fixes it to one honest
-    /// diagnostic.
+    /// A reader had to reconcile those alone.
+    ///
+    /// The actual fix is not fewer diagnostics: it is diagnostics that never
+    /// claim more than they know. `W0510` still fires every time ply.yaml
+    /// declares a contract (a later regression, 2026-08-31, narrowed that to
+    /// only fire alongside an inline attribute, which silently dropped it
+    /// for the case that matters most -- a `ply.yaml` contract with no
+    /// inline attribute at all). It just no longer says what specifically
+    /// was or was not checked, so having both `V0505` and `W0510` fire
+    /// together is no longer a contradiction, only two honest facts.
     #[test]
-    fn a_yaml_only_contract_on_an_unattributed_fn_earns_one_honest_warning_not_two() {
+    fn a_yaml_only_contract_on_an_unattributed_fn_earns_two_diagnostics_that_agree() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(
@@ -5815,25 +5858,38 @@ mod tests {
             .collect();
         assert_eq!(
             on_seven.len(),
-            1,
-            "exactly one diagnostic, not two contradictory ones: {on_seven:#?}"
+            2,
+            "two diagnostics that agree, not one that omits the ply.yaml fact: {on_seven:#?}"
         );
-        let d = on_seven[0];
-        assert_eq!(d.code, "V0505");
+        for d in &on_seven {
+            assert!(
+                !d.title.contains("checked `seven` against its inline"),
+                "must never claim inline attributes were checked when there are none: {}",
+                d.title
+            );
+        }
+        let v0505 = on_seven
+            .iter()
+            .find(|d| d.code == "V0505")
+            .unwrap_or_else(|| panic!("expected a V0505 diagnostic: {on_seven:#?}"));
+        let w0510 = on_seven
+            .iter()
+            .find(|d| d.code == "W0510")
+            .unwrap_or_else(|| panic!("expected a W0510 diagnostic: {on_seven:#?}"));
         assert!(
-            !d.title.contains("checked `seven` against its inline"),
-            "must never claim inline attributes were checked when there are none: {}",
-            d.title
+            w0510.title.contains("ply.yaml"),
+            "must name that ply.yaml declares a contract here, and that it is not checked: {}",
+            w0510.title
         );
         assert!(
-            d.title.contains("ply.yaml"),
-            "must name that ply.yaml declares a contract here, and that it is not read: {}",
-            d.title
-        );
-        assert!(
-            d.title.contains("#[ply::requires]") || d.title.contains("#[ply::ensures]"),
+            w0510.title.contains("#[ply::requires]") || w0510.title.contains("#[ply::ensures]"),
             "must say what a reader should write instead: {}",
-            d.title
+            w0510.title
+        );
+        assert!(
+            v0505.title.contains("no `#[ply::ensures]`"),
+            "must still say why nothing ran: {}",
+            v0505.title
         );
     }
 

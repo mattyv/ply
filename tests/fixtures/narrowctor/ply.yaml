@@ -1,0 +1,13 @@
+ply: 1
+
+# Adversarial review, 2026-08-31: `Narrow::new` rejects most of its input
+# domain (anything above 3), and `doubled`'s promise only holds because
+# that rejection is real -- the fixture the high-rejection warning
+# (`W0503`) needs, which `receiverresultctor`'s single-value-rejecting,
+# vacuously-true fixture cannot provide.
+components:
+  narrowctor:
+    anchor: ply_fixture_narrowctor
+    fns:
+      Narrow::doubled:
+        checks: [fuzz(64)]

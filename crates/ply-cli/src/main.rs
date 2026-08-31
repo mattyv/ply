@@ -664,8 +664,8 @@ fn counterexample_report(cex: &ply_core::diag::Counterexample) -> String {
     }
     if let Some(path) = &cex.cargo_test {
         out.push_str(&format!(
-            "    Ply wrote a test that reproduces this to {path} -- run `cargo test` and it \
-             fails with the same message above.\n"
+            "    Ply wrote a test that reproduces this to {path} -- run `cargo test` from this \
+             crate's root directory and it fails the same way this run just did.\n"
         ));
     }
     out
@@ -725,6 +725,30 @@ fn exit_code_for(envelope: &ply_core::diag::Envelope, fail_on: FailOn) -> i32 {
 mod tests {
     use super::*;
     use ply_core::diag::{Envelope, Node};
+
+    /// Defect 3 (2026-08-30, "a test that reproduces this" is false):
+    /// `cargo test` does not print the diagnostic's own title text back at
+    /// you -- it prints the postcondition failure message the generated
+    /// test panics with. "it fails with the same message above" claimed a
+    /// verbatim match that never happens; "fails the same way" says the
+    /// true, weaker thing. The reader also needs to know *where* to run
+    /// the command, since the path Ply names is relative to the crate root,
+    /// not the reader's current directory.
+    #[test]
+    fn counterexample_report_never_claims_cargo_test_prints_the_same_message() {
+        let cex = ply_core::diag::Counterexample {
+            inputs: std::collections::BTreeMap::new(),
+            kani_witness: None,
+            cargo_test: Some("src/ply_generated_cex.rs".to_string()),
+        };
+        let report = counterexample_report(&cex);
+        assert_eq!(
+            report,
+            "    Ply wrote a test that reproduces this to src/ply_generated_cex.rs -- run \
+             `cargo test` from this crate's root directory and it fails the same way this run \
+             just did.\n"
+        );
+    }
 
     #[test]
     fn render_is_available_before_there_is_a_cargo_project() {
