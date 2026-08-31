@@ -12,12 +12,14 @@ in the source that emits them, once in `The-Ply-Spec.md` and `docs/SCHEMA.md`. C
 | distinct codes across both | **72** |
 | in both — emitted *and* documented | **38** |
 | emitted, explained nowhere | **21** |
-| documented, never emitted by anything | **13** |
+| documented, never emitted by anything | **13** — corrected to **11** below; two were miscounted |
 
-Barely half of what Ply talks about is described where a user would look, and thirteen rules
-are promised by documents that no code enforces.
+Barely half of what Ply talks about is described where a user would look, and eleven rules
+are promised by documents that no code enforces. (Thirteen codes came out of the first scan;
+two of those turned out to be named only in a sentence saying they do not exist — see the
+triage below, which corrects this measurement.)
 
-The thirteen are the dangerous half. A reader of the spec learns that Ply checks a rule; it
+The eleven are the dangerous half. A reader of the spec learns that Ply checks a rule; it
 does not. That is the failure this whole project exists to refuse — describing intent as
 fact — occurring in the documents that define it.
 
@@ -55,7 +57,7 @@ the real artifact, fail on the first unexplained item:
 1. **Every code the source emits has a row.** A new diagnostic without a registry entry
    fails the build. This closes the twenty-one.
 2. **Every row marked `enforced` has a site that emits it.** A rule that stops being
-   enforced, or was never enforced, cannot keep its status. This closes the thirteen.
+   enforced, or was never enforced, cannot keep its status. This closes the eleven.
 
 Neither is a lint anyone can forget to run. They are the gate.
 
@@ -76,7 +78,7 @@ tests already in use, plus reviewers running the repository's own fixtures rathe
 crates written for the purpose. Worth saying because the registry is exactly the kind of
 structural fix that invites the belief that a whole category of error is now closed.
 
-## The thirteen, triaged — and the count corrected
+## The eleven, triaged — and the count corrected
 
 Done 2026-08-31, after the count above was taken. It changes the picture, and two of the
 corrections are against my own measurement.
@@ -132,11 +134,11 @@ and the count suggested otherwise because I read a denial as a promise.
 
 ## Cost, honestly
 
-The table and its two invariant tests are perhaps a session. Triaging the thirteen is
-another, and cannot be delegated cleanly because each one is a decision about whether a
-promised rule should exist. Rewiring the consumers — checker output, both views, the schema
-tables — is a third, mostly mechanical once the table exists.
+The table and its two invariant tests are perhaps a session. The triage that was estimated
+at a second session is done, above, and cost an hour rather than a session — because ten of
+the eleven turned out to need an honest status rather than a decision. Rewiring the consumers
+— checker output, both views, the schema tables — is mostly mechanical once the table exists.
 
-So: three sessions, of which one is judgment and two are typing. It closes the sixth clause
+So: closer to two sessions than three, and the judgment half is already spent. It closes the sixth clause
 of the seven-clause definition of production, which is otherwise unmet and cannot be closed
 by review, because review is what has been failing to close it.
