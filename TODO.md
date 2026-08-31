@@ -48,9 +48,14 @@ at once, so the first fix moves the count by nothing.
       Neither states the actionable fact: only source attributes reach the engines. `check`
       is the command people run first and gives no hint of it.
 
-Two smaller ones, recorded but not ranked: a real proptest failure printed "shrank a failing
-case to this minimal example" and then no example (the values are in `--json` only, together
-with a runnable failing test Ply wrote into the crate's `src/` without mentioning it); and
+Two smaller ones, recorded but not ranked. **When the tool was made to go red on purpose** --
+`Version::new` was deliberately broken to return a non-empty pre-release, because a check
+that never fails proves nothing -- it caught it, with an input strategy that makes the catch
+real rather than lucky. But the terminal said "proptest shrank a failing case to this minimal
+example" and then showed no example: the values live in `--json` only, alongside a runnable
+failing test Ply wrote into the crate's `src/` without mentioning it. **To be explicit,
+because the shorthand invites the opposite reading: no defect was found in `semver`. None was
+looked for.** The other smaller one is that
 the return-type gate causing much of the loss is documented in its own code comment as
 blocking nothing technically, which makes it a deliberate narrowing that is now the
 second-largest blocker in the measurement.
