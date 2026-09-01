@@ -1,5 +1,21 @@
 # TODO
 
+## Verified independently, and one blemish found while doing it — 2026-09-01
+
+The `Self`-spelled parameter fix was checked against the real library on a case the
+implementing agent did not use: the same method that was refused now runs 64 cases, and a
+promise that is false on nearly every input comes back a violation with a concrete failing
+input, so the fix makes something reachable without making it toothless.
+
+- [ ] **The failing input is printed with Ply's own generated internal names.** Verified
+      output, verbatim: `failing input: other = __ply_leaf_p_other_major_major=0,
+      __ply_leaf_p_other_minor_minor=0, __ply_leaf_p_other_patch_patch=1`. A reader is
+      supposed to be able to act on a counterexample; these are scaffolding names from the
+      generator, doubled and prefixed, not anything in the user's own code. The run is
+      otherwise honest here -- it says plainly that it cannot write this shape out as a
+      runnable test rather than inventing one -- which makes the printed values the only
+      thing the reader gets, and they are unreadable. Fails the newbie bar.
+
 ## Review of the three items, and two defects it found that I had missed — 2026-09-01
 
 Independent review of the three open items below, then every claim on both sides re-run
