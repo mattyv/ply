@@ -2,9 +2,9 @@
   "version": 1,
   "bundleId": "56737745-a03f-4e47-9208-9b86d9a69907",
   "revision": {
-    "number": 3,
-    "updatedAt": "2026-08-23T18:05:00.000Z",
-    "summary": "Add Tooling Today: the four crates that exist (model/check/kernel/render), vetting corpus, CI, vs the unbuilt cargo ply"
+    "number": 4,
+    "updatedAt": "2026-09-01T00:00:00.000Z",
+    "summary": "cargo ply and the engines are built: fold the unbuilt half of Tooling Today back in, attach real source files to the architecture nodes, and re-anchor the spec threads onto The-Ply-Spec.md"
   },
   "diagrams": [
     {
@@ -31,7 +31,9 @@
           {
             "id": "cargoply",
             "label": "cargo ply",
-            "files": [],
+            "files": [
+              "crates/ply-cli/src/main.rs"
+            ],
             "group": "g-loop",
             "step": 2,
             "x": 114,
@@ -95,7 +97,7 @@
             "id": "spec",
             "label": "SPEC.md",
             "files": [
-              "SPEC.md"
+              "The-Ply-Spec.md"
             ],
             "group": "g-artifacts",
             "step": 9,
@@ -119,8 +121,8 @@
             "label": "tools/render",
             "files": [
               "tools/render/src/main.rs",
-              "tools/render/src/model.rs",
-              "tools/render/src/svg.rs"
+              "tools/render/src/svg.rs",
+              "tools/render/src/layout.rs"
             ],
             "group": "g-artifacts",
             "step": 11,
@@ -599,7 +601,9 @@
           {
             "id": "attrs",
             "label": "ply-attrs",
-            "files": [],
+            "files": [
+              "crates/ply-attrs/src/lib.rs"
+            ],
             "group": "g-attrs",
             "x": 221,
             "y": 42,
@@ -608,7 +612,9 @@
           {
             "id": "cfg",
             "label": "config",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/config.rs"
+            ],
             "group": "g-core",
             "x": 1173,
             "y": 1053,
@@ -617,7 +623,11 @@
           {
             "id": "model",
             "label": "model",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/model.rs",
+              "crates/ply-core/src/kernel.rs",
+              "crates/ply-core/src/record.rs"
+            ],
             "group": "g-core",
             "x": 1074,
             "y": 1188,
@@ -626,7 +636,12 @@
           {
             "id": "extract",
             "label": "extract",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/surface.rs",
+              "crates/ply-core/src/callgraph.rs",
+              "crates/ply-core/src/promise.rs",
+              "crates/ply-core/src/reach.rs"
+            ],
             "group": "g-core",
             "x": 141.5,
             "y": 1323,
@@ -635,7 +650,9 @@
           {
             "id": "arch",
             "label": "arch",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/arch.rs"
+            ],
             "group": "g-core",
             "x": 141.5,
             "y": 1484,
@@ -644,7 +661,13 @@
           {
             "id": "engines",
             "label": "engines",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/engines/mod.rs",
+              "crates/ply-core/src/engines/kani.rs",
+              "crates/ply-core/src/engines/fuzz.rs",
+              "crates/ply-core/src/engines/mutants.rs",
+              "crates/ply-core/src/schedule.rs"
+            ],
             "group": "g-core",
             "x": 1380.5,
             "y": 364,
@@ -653,7 +676,12 @@
           {
             "id": "harness",
             "label": "harness",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/harness.rs",
+              "crates/ply-core/src/harness_crate.rs",
+              "crates/ply-core/src/fuzz_gen.rs",
+              "crates/ply-core/src/contract_rt.rs"
+            ],
             "group": "g-core",
             "x": 221,
             "y": 229,
@@ -662,7 +690,10 @@
           {
             "id": "diag",
             "label": "diag",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/diag.rs",
+              "crates/ply-core/src/registry.rs"
+            ],
             "group": "g-core",
             "x": 518.5,
             "y": 544,
@@ -671,7 +702,13 @@
           {
             "id": "cli",
             "label": "ply-cli",
-            "files": [],
+            "files": [
+              "crates/ply-cli/src/main.rs",
+              "crates/ply-cli/src/check.rs",
+              "crates/ply-cli/src/verify.rs",
+              "crates/ply-cli/src/audit.rs",
+              "crates/ply-cli/src/worklist.rs"
+            ],
             "group": "g-cli",
             "x": 2447.5,
             "y": 892,
@@ -734,7 +771,10 @@
           {
             "id": "plyyaml",
             "label": "ply.yaml (user claims)",
-            "files": [],
+            "files": [
+              "ply.yaml",
+              "schema/ply.schema.json"
+            ],
             "group": "g-artifacts",
             "x": 2867.5,
             "y": 1188,
@@ -2513,8 +2553,8 @@
             "id": "kernel",
             "label": "ply-kernel",
             "files": [
-              "tools/kernel/src/lib.rs",
-              "tools/kernel/tests/enumeration.rs"
+              "crates/ply-core/src/kernel.rs",
+              "crates/ply-core/tests/kernel_enumeration.rs"
             ],
             "group": "built",
             "x": 260,
@@ -2566,8 +2606,14 @@
           {
             "id": "cargoply",
             "label": "cargo ply",
-            "files": [],
-            "group": "planned",
+            "files": [
+              "crates/ply-cli/src/main.rs",
+              "crates/ply-cli/src/check.rs",
+              "crates/ply-cli/src/verify.rs",
+              "crates/ply-cli/src/audit.rs",
+              "crates/ply-cli/src/worklist.rs"
+            ],
+            "group": "built",
             "x": 760,
             "y": 80,
             "change": "added"
@@ -2575,8 +2621,13 @@
           {
             "id": "engines",
             "label": "Kani \u00b7 proptest \u00b7 cargo-mutants",
-            "files": [],
-            "group": "planned",
+            "files": [
+              "crates/ply-core/src/engines/mod.rs",
+              "crates/ply-core/src/engines/kani.rs",
+              "crates/ply-core/src/engines/fuzz.rs",
+              "crates/ply-core/src/engines/mutants.rs"
+            ],
+            "group": "built",
             "x": 760,
             "y": 210,
             "change": "added"
@@ -2636,19 +2687,19 @@
           {
             "from": "cargoply",
             "to": "kernel",
-            "label": "will reuse",
+            "label": "aggregates with",
             "change": "added"
           },
           {
             "from": "cargoply",
             "to": "model",
-            "label": "will reuse",
+            "label": "parses with",
             "change": "added"
           },
           {
             "from": "cargoply",
             "to": "engines",
-            "label": "will route to",
+            "label": "routes to",
             "change": "added"
           }
         ],
@@ -2656,10 +2707,6 @@
           {
             "id": "built",
             "label": "Built today"
-          },
-          {
-            "id": "planned",
-            "label": "Not built yet"
           }
         ],
         "comments": {
@@ -2686,16 +2733,23 @@
           ],
           "cargoply": [
             {
-              "id": "p1",
-              "text": "The actual verification tool \u2014 does not exist yet. Everything to its left is the spec-validation scaffolding built to prove the grammar is total and drawable before the router is written.",
-              "ts": 1787478425319
+              "id": "tt-cargoply-2",
+              "ts": 1756742400000,
+              "text": "The verification tool itself, and it exists now: `cargo ply` installs as a cargo subcommand with six commands \u2014 render, check, audit, worklist, verify, clean-views. render needs only the declaration file; check, audit and worklist are fast document-and-anchor passes with no engines; verify is the one that drives the engines and writes counterexample artifacts. Entry point crates/ply-cli/src/main.rs."
             }
           ],
           "__diagram__": [
             {
-              "id": "d1",
-              "text": "Current state of the tooling as of 2026-08-23, with one 2026-08-25 correction: the model and the document-local rules were promoted into crates/ply-core (Phase 1a), so the two leftmost boxes are product modules the tooling consumes rather than crates of their own. The `cargo ply` box is stale in the other direction -- verify and check both exist now -- and redrawing this diagram against the product is a separate job.",
-              "ts": 1787478425319
+              "id": "tt-diag-2",
+              "ts": 1756742400000,
+              "text": "Current state of the tooling as of 2026-09-01. The 2026-08-23 version of this view split the work into \"built\" and \"not built yet\", with the actual verification tool on the unbuilt side; that split is gone because both halves now exist. The verdict kernel also moved: it is owned by the product (crates/ply-core/src/kernel.rs) and tools/kernel is a thin re-export kept so the older imports still compile. Everything here is checked in CI."
+            }
+          ],
+          "engines": [
+            {
+              "id": "tt-engines-1",
+              "ts": 1756742400000,
+              "text": "Driven as subprocesses, never re-implemented. Kani for bounded proof, a generated proptest harness for fuzzing, cargo-mutants for mutation. crates/ply-core/src/engines/ holds one adapter per tool and crates/ply-core/src/schedule.rs orders the work callees-first, which is what makes a caller's credit honest."
             }
           ]
         }
@@ -2706,8 +2760,8 @@
   "codeThreads": [
     {
       "id": "t-spec-d2-attrs",
-      "file": "SPEC.md",
-      "line": 130,
+      "file": "The-Ply-Spec.md",
+      "line": 178,
       "snippet": "position). `requires`/`ensures` re-emit the item with `cfg_attr(kani, ...)` attributes",
       "anchored": true,
       "node": "attrs",
@@ -2722,8 +2776,8 @@
     },
     {
       "id": "t-spec-d4-arch",
-      "file": "SPEC.md",
-      "line": 307,
+      "file": "The-Ply-Spec.md",
+      "line": 654,
       "snippet": "**Crate tier (sound, errors).** From `cargo metadata`: the exact crate dependency graph.",
       "anchored": true,
       "node": "arch",
@@ -2738,12 +2792,12 @@
     },
     {
       "id": "t-spec-d5-model",
-      "file": "SPEC.md",
-      "line": 444,
-      "snippet": "generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict.",
+      "file": "The-Ply-Spec.md",
+      "line": 1162,
+      "snippet": "generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict: `f` is not",
       "anchored": true,
       "node": "model",
-      "diagramType": "sequence",
+      "diagramType": "verify-pipeline",
       "comments": [
         {
           "id": "ct-3",
@@ -2754,12 +2808,12 @@
     },
     {
       "id": "t-spec-cli-verify",
-      "file": "SPEC.md",
-      "line": 482,
+      "file": "The-Ply-Spec.md",
+      "line": 1517,
       "snippet": "cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts",
       "anchored": true,
       "node": "cli",
-      "diagramType": "sequence",
+      "diagramType": "verify-pipeline",
       "comments": [
         {
           "id": "ct-4",
@@ -2770,12 +2824,12 @@
     },
     {
       "id": "t-spec-d7-cex",
-      "file": "SPEC.md",
-      "line": 643,
-      "snippet": "the inputs rendered as stable Rust source (D7), else `W0541`.",
+      "file": "The-Ply-Spec.md",
+      "line": 2104,
+      "snippet": "else `W0541` with a `reason` of `inputs_unrenderable` or `expression_unrenderable`. Its",
       "anchored": true,
       "node": "cex",
-      "diagramType": "sequence",
+      "diagramType": "verify-pipeline",
       "comments": [
         {
           "id": "ct-5",
@@ -2786,9 +2840,9 @@
     },
     {
       "id": "t-spec-staleness-plylock",
-      "file": "SPEC.md",
-      "line": 300,
-      "snippet": "the fingerprint no longer matches, `ply check` reports `W0302 claim may be stale` and the",
+      "file": "The-Ply-Spec.md",
+      "line": 593,
+      "snippet": "`W0302`, no `cargo ply accept` and no `E0303`: a claim is never in a state of \"recorded",
       "anchored": true,
       "node": "plylock",
       "diagramType": "architecture",
@@ -2802,8 +2856,8 @@
     },
     {
       "id": "t-spec-engines-subprocess",
-      "file": "SPEC.md",
-      "line": 113,
+      "file": "The-Ply-Spec.md",
+      "line": 154,
       "snippet": "External engines run as subprocesses and are detected at startup. Each is optional: a",
       "anchored": true,
       "node": "engines",
@@ -2818,8 +2872,8 @@
     },
     {
       "id": "t-spec-envelope-shape",
-      "file": "SPEC.md",
-      "line": 614,
+      "file": "The-Ply-Spec.md",
+      "line": 2035,
       "snippet": "`{ \"command\": \"...\", \"ply_version\": \"...\", \"root\": <node tree \u00a77>, \"diagnostics\": [<Diagnostic>...] }`.",
       "anchored": true,
       "node": "envelope",
@@ -2834,12 +2888,12 @@
     },
     {
       "id": "t-spec-d6-node",
-      "file": "SPEC.md",
-      "line": 510,
+      "file": "The-Ply-Spec.md",
+      "line": 1705,
       "snippet": "D6 over the evidence order; `statuses` and `open_items` (unresolved markers, weak specs,",
       "anchored": true,
       "node": "node",
-      "diagramType": "class",
+      "diagramType": "verdict-model",
       "comments": [
         {
           "id": "ct-9",
@@ -2850,12 +2904,12 @@
     },
     {
       "id": "t-spec-violation-rule",
-      "file": "SPEC.md",
-      "line": 425,
+      "file": "The-Ply-Spec.md",
+      "line": 1004,
       "snippet": "passing checks earned; a failing check is a `violation` regardless of what else passed.",
       "anchored": true,
       "node": "violation",
-      "diagramType": "class",
+      "diagramType": "verdict-model",
       "comments": [
         {
           "id": "ct-10",
