@@ -1,0 +1,16 @@
+ply: 1
+
+# Ply's own refusal for a shape `fuzz`/`bounded` cannot build says, verbatim,
+# to "declare `test` instead, with an `examples:` entry, to run the
+# concrete case directly". This fixture does exactly that on a method
+# (`&Self`, the same parameter shape `semver`'s `Version::cmp_precedence`
+# has) -- the gap that let the generated test's name break on `::` survive
+# every other fixture, all of which used a free function.
+components:
+  methodexampletest:
+    anchor: ply_fixture_methodexampletest
+    fns:
+      Weight::matches:
+        checks: [test]
+        examples:
+          - "Weight::new(3).matches(&Weight::new(3)) == true"

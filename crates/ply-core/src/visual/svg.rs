@@ -440,7 +440,16 @@ pub(super) fn tame(text: &str) -> String {
 /// day. `runs_them` is whether the effective check list contains `test`: the
 /// verifier only generates example tests inside that branch, so examples
 /// under any other check are never compiled into anything.
-pub(super) fn examples_prose(n: usize, runs_them: bool) -> String {
+///
+/// `pub`, not `pub(super)`, since 2026-09-01: `verify`'s own terminal
+/// output needed the exact same disclosure the drawing already carries on
+/// a function's tooltip (a declared `examples:` list that no check ever
+/// runs used to pass in total silence -- found by hand against
+/// `Version::parse("1.2.3").is_err()`, a plainly false example, under
+/// `checks: [fuzz(64)]`). Reusing this rather than writing a second
+/// sentence is the whole point: the picture and the terminal must not be
+/// able to disagree about what ran.
+pub fn examples_prose(n: usize, runs_them: bool) -> String {
     let plural = if n == 1 { "example" } else { "examples" };
     if runs_them {
         format!(

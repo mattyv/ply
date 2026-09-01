@@ -29,6 +29,7 @@ use syn::visit::Visit;
 
 use crate::harness;
 use crate::harness::{ContractFn, Param, RustType};
+use crate::model::Check;
 
 /// The seed a `fuzz(n)` run uses, derived from the function it checks
 /// (2026-08-25). Until now the generated harness built its runner with
@@ -1328,6 +1329,38 @@ pub fn plan_param_seeding(cf: &ContractFn, examples_pool: &[String]) -> Option<P
     })
 }
 
+/// Whether `checks` will make *some* declared check actually read
+/// `examples` for `cf` -- either directly (`test` compiles every entry
+/// into a real assertion) or indirectly (`fuzz` grows its corpus from them,
+/// which only ever engages [`plan_param_seeding`] or the receiver's own
+/// constructor-seeding, and only when the shape they seed is otherwise
+/// unbuildable -- see each one's own doc). `false` is the exact condition
+/// `ply-cli`'s `examples_not_run` warning fires on: nothing declared will
+/// ever compile or consume these examples, so a false one (or an edit to a
+/// true one) changes nothing about the verdict while still being read and
+/// fingerprinted as though it mattered (§5.2a).
+///
+/// Exists so that warning can ask this one question through the same
+/// machinery that actually decides it, rather than re-deriving "will this
+/// engage seeding" a second time from `cf`'s shape and getting it wrong for
+/// exactly the fixtures (`paramseeded`, `textseeded`) built to prove
+/// seeding real.
+pub fn examples_are_consumed(cf: &ContractFn, checks: &[Check], examples: &[String]) -> bool {
+    if checks.iter().any(|c| matches!(c, Check::Test)) {
+        return true;
+    }
+    if !checks.iter().any(|c| matches!(c, Check::Fuzz(_))) {
+        return false;
+    }
+    if plan_param_seeding(cf, examples).is_some() {
+        return true;
+    }
+    if let Some(plan) = &cf.receiver {
+        return plan_receiver_seeding(plan, examples).is_some();
+    }
+    false
+}
+
 /// Source 1 for a *plain parameter*'s own corpus, widened past
 /// [`extract_examples_seed_strings`]'s constructor-call shape: every string
 /// literal found *anywhere inside* the argument written at `param_index` of
@@ -1943,7 +1976,25 @@ pub fn generate_fuzz_test_with_examples(
 /// subset -- "arbitrary Rust `==` expressions") as a plain `#[test]`.
 /// `E0501`-shaped parse failure surfaces as an error, never a silently
 /// skipped example.
-pub fn generate_example_test(fn_name: &str, index: u32, example_src: &str) -> Result<String> {
+///
+/// Takes the checked function itself, `cf`, rather than a bare name string,
+/// and builds the test's name from [`ContractFn::ident`] -- the same safe
+/// identifier [`generate_fuzz_test_with_examples`] already builds its own
+/// `ply_fuzz_{ident}` test name from (it turns `Type::method` into
+/// `Type_method`). This function used to take the checked function's raw
+/// `::`-qualified path as a plain `&str` and splice it straight into the
+/// generated name, so a method's test read `fn
+/// ply_example_Type::method_01()` -- not a legal identifier at all, and the
+/// harness crate failed with `error: invalid path separator in function
+/// definition`. Every fixture exercising this codegen used a free function
+/// (whose path has no `::` to go wrong), so the break was never seen even
+/// though nearly everything in a real library is a method (found
+/// 2026-09-01, verified by hand against `semver`'s `Version::cmp_precedence`).
+/// Taking `cf` and deriving the ident in here, the same way the fuzz-test
+/// generator already does, makes passing the wrong string impossible rather
+/// than merely documented against -- there is only ever one place that
+/// turns a checked function into a safe identifier.
+pub fn generate_example_test(cf: &ContractFn, index: u32, example_src: &str) -> Result<String> {
     let expr: Expr = syn::parse_str(example_src).map_err(|e| {
         anyhow::anyhow!(
             "E0501: could not parse `examples` entry `{example_src}` as a Rust expression: {e}"
@@ -1957,9 +2008,10 @@ pub fn generate_example_test(fn_name: &str, index: u32, example_src: &str) -> Re
     // file -- burying the user's real mistake (2026-08-24 M4 review, D1's
     // own probe).
     let escaped_src = example_src.replace('\\', "\\\\").replace('"', "\\\"");
+    let ident = cf.ident();
     Ok(format!(
         "    #[test]\n\
-         \x20\x20\x20\x20fn ply_example_{fn_name}_{index:02}() {{\n\
+         \x20\x20\x20\x20fn ply_example_{ident}_{index:02}() {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20assert!({text}, \"example failed: `{escaped_src}` does not hold\");\n\
          \x20\x20\x20\x20}}\n",
     ))
@@ -2654,9 +2706,64 @@ pub fn scalar(x: u32) -> u32 { x + 1 }
 
     #[test]
     fn renders_one_example_as_a_plain_assert_test() {
-        let body = generate_example_test("clamp", 1, "clamp(150) == 100").unwrap();
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result <= 100)]
+pub fn clamp(x: u32) -> u32 { if x > 100 { 100 } else { x } }
+"#,
+            "clamp",
+        );
+        let body = generate_example_test(&cf, 1, "clamp(150) == 100").unwrap();
         assert!(body.contains("fn ply_example_clamp_01()"));
         assert!(body.contains("clamp (150) == 100") || body.contains("clamp(150) == 100"));
+    }
+
+    /// Ply's own refusal for a shape `fuzz`/`bounded` cannot build tells the
+    /// user to "declare `test` instead, with an `examples:` entry, to run
+    /// the concrete case directly". Doing exactly that on a *method* used to
+    /// break: the checked function's own path (`Type::method`, exactly what
+    /// every fixture exercising this codegen was missing -- every one of
+    /// them used a free function) was spliced verbatim into the generated
+    /// test's name, so `fn ply_example_Type::method_01()` is not a legal
+    /// Rust identifier at all -- the harness crate fails with `error:
+    /// invalid path separator in function definition`. Nearly everything in
+    /// a real library is a method, so the escape hatch Ply itself recommends
+    /// was broken for most of the cases it recommends it for.
+    #[test]
+    fn the_generated_example_test_name_is_never_a_qualified_path() {
+        // A nested-module free function reproduces the same `::`-qualified
+        // `path` a method has (`inner::helper`, exactly the shape
+        // `Type::method` takes), without this low-level unit test also
+        // having to satisfy the separate "can Ply build a receiver value"
+        // gate `discover_fn` applies to an actual method -- the codegen bug
+        // this pins is purely about splicing a `::`-qualified path into an
+        // identifier, and is agnostic to *why* the path contains one. The
+        // real motivating case (confirmed by hand against `semver`'s
+        // `Version::cmp_precedence`, and pinned end-to-end by the
+        // `methodexampletest` fixture) is a method.
+        let cf = discover(
+            r#"
+pub mod inner {
+    #[ply::ensures(|result| *result)]
+    pub fn helper() -> bool { true }
+}
+"#,
+            "inner::helper",
+        );
+        let body = generate_example_test(&cf, 1, "true").unwrap();
+        let wrapped = format!("mod m {{\n{body}\n}}\n");
+        assert!(
+            syn::parse_str::<syn::File>(&wrapped).is_ok(),
+            "a checked function's qualified path (`Type::method`) must never be spliced \
+             verbatim into the generated test's name -- `::` is not legal inside a Rust \
+             identifier, so the harness crate fails to build with `error: invalid path \
+             separator in function definition`:\n{body}"
+        );
+        assert!(
+            !body.contains("::"),
+            "the generated test name must use a safe identifier (see `ContractFn::ident`), \
+             never the raw `::`-qualified path: {body}"
+        );
     }
 
     /// Every generated example test must be *valid Rust*, whatever the user
@@ -2669,7 +2776,14 @@ pub fn scalar(x: u32) -> u32 { x + 1 }
     /// points at a file they never wrote.
     #[test]
     fn an_example_containing_a_quote_is_escaped_in_the_assert_message() {
-        let body = generate_example_test("greet", 1, r#"greet(0) == "zero""#).unwrap();
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == 0)]
+pub fn greet(x: u32) -> u32 { x }
+"#,
+            "greet",
+        );
+        let body = generate_example_test(&cf, 1, r#"greet(0) == "zero""#).unwrap();
         assert!(
             body.contains(r#"`greet(0) == \"zero\"` does not hold"#),
             "the example text is echoed into a Rust string literal, so its quotes must be escaped -- \
@@ -3399,6 +3513,101 @@ pub fn always_true(_o: Widget) -> bool { true }
             "an opaque type has no part Ply knows how to vary -- seeding it would report a case \
              count larger than the one distinct value it actually had"
         );
+    }
+
+    // -- `examples_are_consumed`: the exact question `ply-cli`'s
+    // `examples_not_run` warning asks, through the same seeding machinery
+    // that actually decides it (2026-09-01) --
+
+    /// `test` always compiles every example into a real assertion, whatever
+    /// the function's own shape.
+    #[test]
+    fn examples_are_consumed_when_test_is_declared() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == x + 1)]
+pub fn increment(x: u32) -> u32 { x + 1 }
+"#,
+            "increment",
+        );
+        let examples = vec!["increment(5) == 999".to_string()];
+        assert!(examples_are_consumed(&cf, &[Check::Test], &examples));
+    }
+
+    /// The real-world reproduction this whole warning exists for
+    /// (`Version::parse("1.2.3").is_err()` under `checks: [fuzz(64)]`,
+    /// verified by hand against `semver`): an ordinary, already-buildable
+    /// parameter is never seeded, so `fuzz` alone never touches the
+    /// examples at all.
+    #[test]
+    fn examples_are_not_consumed_by_fuzz_alone_over_an_ordinary_parameter() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == x + 1)]
+pub fn increment(x: u32) -> u32 { x + 1 }
+"#,
+            "increment",
+        );
+        let examples = vec!["increment(5) == 999".to_string()];
+        assert!(!examples_are_consumed(&cf, &[Check::Fuzz(64)], &examples));
+    }
+
+    /// `paramseeded`'s own shape: a plain `Option<String>` parameter Ply
+    /// cannot build on its own, seeded by `fuzz` alone (no `test`
+    /// declared). The warning must not fire here -- seeding is real.
+    #[test]
+    fn examples_are_consumed_by_fuzz_when_a_plain_parameter_is_seeded() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result >= 0)]
+pub fn width(label: Option<String>) -> usize { label.map(|s| s.len()).unwrap_or(0) }
+"#,
+            "width",
+        );
+        let examples = vec!["width(Some(\"hi\".to_string())) == 2".to_string()];
+        assert!(examples_are_consumed(&cf, &[Check::Fuzz(64)], &examples));
+    }
+
+    /// `textseeded`'s own shape: a receiver built by a fallible,
+    /// free-form-text constructor, seeded by `fuzz` alone (no `test`
+    /// declared). The warning must not fire here either.
+    #[test]
+    fn examples_are_consumed_by_fuzz_when_a_receiver_constructor_is_seeded() {
+        let cf = discover_receiver(
+            r#"
+pub struct PrereleaseErr;
+pub struct Prerelease { pub text: String }
+impl Prerelease {
+    pub fn new(text: &str) -> Result<Self, PrereleaseErr> {
+        if !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+            Ok(Prerelease { text: text.to_string() })
+        } else {
+            Err(PrereleaseErr)
+        }
+    }
+    #[ply::ensures(|result| *result == self.text.is_empty())]
+    pub fn is_empty(&self) -> bool { self.text.is_empty() }
+}
+"#,
+            "m::Prerelease::is_empty",
+        );
+        let examples = vec!["Prerelease::new(\"beta.1\").is_ok()".to_string()];
+        assert!(examples_are_consumed(&cf, &[Check::Fuzz(64)], &examples));
+    }
+
+    /// Neither `test` nor `fuzz` declared at all (say, `bounded` alone):
+    /// nothing here ever reads an example, whatever the function's shape.
+    #[test]
+    fn examples_are_not_consumed_when_neither_test_nor_fuzz_is_declared() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == x + 1)]
+pub fn increment(x: u32) -> u32 { x + 1 }
+"#,
+            "increment",
+        );
+        let examples = vec!["increment(5) == 999".to_string()];
+        assert!(!examples_are_consumed(&cf, &[Check::Bounded(2)], &examples));
     }
 
     /// A receiver built through a fallible (`Result<Self, E>`) constructor

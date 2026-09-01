@@ -1,0 +1,15 @@
+ply: 1
+
+# Real-world reproduction (verified by hand against `semver`'s
+# `Version::parse`, 2026-09-01): `increment(5) == 999` is a plainly false
+# sentence -- the function actually returns 6 -- yet the only declared check
+# is `fuzz(64)`, which never compiles or runs `examples:` at all. This must
+# earn a warning naming the ignored example, never total silence.
+components:
+  examplesnotrun:
+    anchor: ply_fixture_examplesnotrun
+    fns:
+      increment:
+        checks: [fuzz(64)]
+        examples:
+          - "increment(5) == 999"
