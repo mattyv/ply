@@ -1,5 +1,65 @@
 # TODO
 
+## Review of the three items, and two defects it found that I had missed — 2026-09-01
+
+Independent review of the three open items below, then every claim on both sides re-run
+against the real library rather than taken on trust. **The ranking held; one of my own
+claims did not, and two worse defects than the ones I named were found.**
+
+**My claim that Ply "already owns the vocabulary and does not reach for it" was wrong.**
+The existing "narrower than it looks" mark counts inputs thrown away *before* the call --
+its printed legend says so, in terms of constructors and operations the run could not
+call. In the case at issue nothing is thrown away: all 64 inputs run. The emptiness lives
+*inside* the promise's own "either it was rejected, or ..." structure, after the call,
+where no measurement exists at all. Reusing that mark unchanged would make its own legend
+false. Either its legend is reworded to honestly cover both, or -- cleaner -- a sibling
+mark says what this one actually measures.
+
+- [ ] **A factually false `examples:` entry passes in silence.** Verified by hand: write
+      `Version::parse("1.2.3").is_err()` -- a plainly false sentence, that text parses
+      fine -- under a `fuzz` check and the verdict is a clean `fuzzed(64)` with not one
+      word about it. Examples never execute under a fuzz-only check. Worse than inert:
+      the run *notices* the examples changed and re-checks because of them, so it reads
+      them, fingerprints them, treats the verdict as depending on them, and never
+      evaluates them. Same species as the recorded "contracts written the documented
+      out-of-source way are accepted, then ignored" defect, and sharper.
+- [ ] **The escape hatch Ply's own refusal recommends does not work for a method.** The
+      refusal for a `Self`-spelled parameter says to "declare `test` instead, with an
+      `examples:` entry". Doing exactly that gives `error: invalid path separator in
+      function definition` -- the generated test's *name* splices the checked function's
+      path in verbatim, `::` and all. Every fixture exercising this codegen uses free
+      functions, so it has never been seen; nearly everything in a real library is a
+      method.
+- [ ] **That same refusal contains a false sentence.** It says no part of the parameter's
+      value is one Ply knows how to vary. False -- the identical type spelled by name is
+      varied happily. A wording defect on top of the reach defect.
+
+**Two corrections to how the remaining work is priced:**
+
+- **The non-numeric comparison defect is contagious, which I did not say.** Every check in
+  a crate shares one generated harness, so one string comparison written the way anyone
+  would write it turns the *whole crate's* evidence into tool errors, not just that
+  function's. It also gates the trait-method work: the natural phrasing of the ordering
+  properties is exactly the shape that trips it. Fix it before that work, not after.
+- **Trait methods are two items, not one.** Properties 3, 4, 7 and 12 sit on hand-written
+  implementations with real bodies -- moderate work, and plausibly all four fall to it now
+  that the return type no longer refuses anything and text parameters work. Properties 1
+  and 2 sit on *derived* implementations with no body to anchor to, so they need promises
+  written in the config file to reach the engines, which is a separate standing gap.
+  Sequence them apart.
+
+**The fix for the confident-verdict problem is measurement first, generation second, and
+the order is the point.** Measurement repairs what Ply currently says; generation only
+improves what it covers. Record which branch of the promise actually decided each case and
+print the split. Three ways that fix would itself be dishonest, to be avoided by name:
+evaluating every branch in order to count it (the guard exists to stop a panic -- count
+which branch *decided*, never what each would have said); a threshold that prints
+unqualified below some skew (print the split always); and wording that promotes a
+promise-text count into a claim about which code paths ran. Generation shipped alone is
+the trap -- it makes the number look stronger with nothing showing anything moved. With
+measurement in place first, the acceptance-branch count rising on the real library is the
+acceptance test, and it comes free.
+
 ## The acceptance test ran: `semver` reach moved from 1 of 16 to 4 of 16 — 2026-09-01
 
 Measured, not inferred: every property below was written as a real promise on the real
