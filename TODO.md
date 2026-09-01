@@ -193,6 +193,43 @@ fixture, and a revert-and-confirm-red pass on every fix.
       **Fixed 2026-08-31** — see "Two more harness-generation compile defects fixed" at
       the top of this file.
 
+## Text parameters landed, and the next blocker is a design problem — 2026-09-01
+
+`&str` now reaches the sampler (one line: `str` maps to the same type `String` already used;
+references were already looked through, so only the borrowed spelling was missing). Measured
+as the largest single blocker — 11 of `semver`'s 16 properties.
+
+Re-measured against `semver` immediately. **The count is still one in sixteen, but the
+failure mode moved, and that is the finding.**
+
+Probe: `Prerelease::is_empty(&self) -> bool`, whose receiver must be built by
+`Prerelease::new(text: &str) -> Result<Self, Error>` — text parameter and fallible
+constructor at once, both fixed within the last day. Before today this was refused before
+anything ran. Now:
+
+- Ply **builds the receiver and runs the check**. `Prerelease::new` is called with generated
+  text, exactly as intended.
+- The verdict is `unclaimed`, not `fuzzed(64)`, because **1025 of 1074 generated strings were
+  thrown away** by the constructor's precondition. Random text essentially never parses as a
+  valid pre-release identifier.
+- Ply says so itself, unprompted: *"So this function has no fuzz evidence at all -- its
+  verdict is `unclaimed`, not `fuzzed(64)`."* That is the high-rejection machinery working —
+  the same machinery whose test was proved to bite this morning by planting a bug that turned
+  rejections into passes.
+
+- [ ] **NEXT BLOCKER, and it is a design problem rather than a defect: a type built by
+      parsing text cannot be constructed by random text.** Uniform sampling will not produce
+      a valid version string, identifier, or any other parsed format, so every property about
+      such a type reaches the engine and comes back with no evidence. The honest reporting is
+      right and worth keeping. What is missing is a way to generate values that satisfy a
+      constructor — seeding from `examples:`, sampling a grammar, or reusing values the
+      crate's own tests already contain. None of these is a one-line change, and choosing
+      between them is a design decision, not an implementation.
+
+The scoreboard, stated plainly: reach on `semver` has gone from "refused before anything ran"
+to "ran, and honestly reported that it learned nothing". No property moved into the checkable
+column. That is progress in honesty and none in coverage, and the two should not be confused.
+
 ## Re-measured `semver` after the reach fixes: it has not moved — 2026-09-01
 
 The two reach defects fixed today (a promise may now mention its receiver; a comparison may
