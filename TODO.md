@@ -1,5 +1,35 @@
 # TODO
 
+## Design principle, from the maintainer — 2026-09-01
+
+**Requiring the user to write a small declaration is cheap, because an agent writes it.**
+Stated plainly when seeded generation landed: one `examples:` line took a real library's
+function from no evidence to sixty-four real checks, and "one line is one line from an LLM".
+
+This changes the economics of a decision already recorded. `docs/rule-registry-design.md`
+and the seeding design both weighed "adds something new for the user to write and keep true"
+as a significant cost, and rejected options partly on those grounds. That cost is lower than
+assumed for anything an agent can write from reading the code. It is **not** lower for
+things a user must keep true by hand over time -- a declaration that drifts from reality is
+still the failure mode that matters, and an agent writing it once does not keep it true.
+
+So the rule is: **prefer a small declaration over inference where an agent can supply it and
+Ply can check it against reality.** Prefer inference where the declaration would have to be
+maintained by hand and nothing would notice it going stale.
+
+- [ ] **An example does not unblock a parameter Ply cannot build, and the refusal never
+      mentions examples.** Measured: a function taking `Option<String>` with a perfectly good
+      `examples:` entry supplying one is still refused with "use a type neither the bounded
+      nor the fuzz codegen builds inputs for", full stop. Seeding reaches the constructor
+      path only. The escape hatch exists conceptually and is neither wired nor offered.
+
+      The honest version of this has a counting condition attached, and it is the one this
+      project already wrote down: **one value run 256 times is one test and must never be
+      reported as 256.** So examples may seed a parameter only where Ply can also mutate the
+      value to grow a real corpus -- `Option<String>` yes, since the text inside is
+      mutable; an opaque struct no. Where it cannot grow one, the verdict must report the
+      number of distinct values it actually had, not the number of runs it performed.
+
 ## Seeded generation moved a real library's reach — 2026-09-01
 
 The acceptance test Fable named: not a green fixture, but whether a real library's number
