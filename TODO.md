@@ -17,18 +17,53 @@ So the rule is: **prefer a small declaration over inference where an agent can s
 Ply can check it against reality.** Prefer inference where the declaration would have to be
 maintained by hand and nothing would notice it going stale.
 
-- [ ] **An example does not unblock a parameter Ply cannot build, and the refusal never
-      mentions examples.** Measured: a function taking `Option<String>` with a perfectly good
-      `examples:` entry supplying one is still refused with "use a type neither the bounded
-      nor the fuzz codegen builds inputs for", full stop. Seeding reaches the constructor
-      path only. The escape hatch exists conceptually and is neither wired nor offered.
+- [x] **An example now unblocks a parameter Ply cannot build, for the shapes whose parts Ply
+      already knows how to vary -- 2026-09-01.** `width(label: Option<String>) -> usize` (the
+      measured gap, verbatim) now earns `fuzzed(64) [seeded]` from one `examples:` entry --
+      `tests/fixtures/paramseeded`. `Vec<String>` opens the same way (elements and length
+      both vary), sharing the exact corpus/mutate/trickle apparatus the constructor path
+      already built (`fuzz_gen::plan_param_seeding`, `SeedableWrap`) rather than a second one
+      -- the two mechanisms are mutually exclusive by construction (this one only ever fires
+      for a non-receiver fn), which is what makes reusing the apparatus's own generated
+      variable names safe. **Not opened, disclosed rather than attempted:**
+      `Result<String, E>`, and nested `NonZero`/`Duration`/`f32`/`f64` inside any wrapper --
+      each needs its own construction or mutation story, which `String`'s existing text
+      apparatus does not hand over for free (a number has no character-level mutator to
+      reuse; a `Result`'s `Err` arm needs its own construction path).
 
-      The honest version of this has a counting condition attached, and it is the one this
-      project already wrote down: **one value run 256 times is one test and must never be
-      reported as 256.** So examples may seed a parameter only where Ply can also mutate the
-      value to grow a real corpus -- `Option<String>` yes, since the text inside is
-      mutable; an opaque struct no. Where it cannot grow one, the verdict must report the
-      number of distinct values it actually had, not the number of runs it performed.
+      The counting condition: `plan_param_seeding` refuses (stays `None`, parameter stays
+      refused) whenever the type is not one of the two classified shapes, whenever more than
+      one parameter is otherwise unbuildable, or whenever no `examples:` entry supplies a
+      seed -- an opaque type never borrows the seeded machinery just because an example
+      exists. For an opaque type, `examples:` now still unlocks `test` alone (never `fuzz`,
+      which cannot grow a case count for it): `generate_example_test`'s own codegen never
+      depended on the parameter being buildable in the first place, so the gate widening
+      there is a real bug fix, not new machinery -- `tests/fixtures/paramseedopaque` earns
+      `tested`, the vocabulary this project had already written down for "a concrete case
+      was run and held", never a fabricated `fuzzed(n)`. A new diagnostic, `W0524`, carries
+      the growable case's own provenance (parameter name, example count, real case count) the
+      way `W0523` already does for the constructor case, worded for its own honesty
+      condition: there is no rejection rate to report here (nothing gates an
+      `Option<String>`/`Vec<String>` value the way a fallible constructor gates text), so
+      every one of the `n` cases genuinely ran.
+
+      The refusal itself was fixed in the other direction too: `V0505`'s message now names,
+      per unbuildable parameter, whether an example would actually help (and what to write)
+      or would not (an opaque type, told plainly rather than given false hope).
+
+      Found along the way and fixed as necessary plumbing, not scope creep: the generated
+      harness module only ever imported types a fn's own resolved parameters referenced, so
+      `test`'s newly-unlocked opaque-type path failed to compile (`error[E0433]: cannot find
+      type ... in this scope`) the moment an example's own literal source named a type
+      nothing else in the fn's signature resolved -- fixed with a glob import of the target
+      crate, which an explicit `use` always outranks on a name clash, so no existing
+      generated harness resolves any name differently.
+
+      Every fixture that depends on a shape staying unbuildable (`excludedop`, `skippedctor`,
+      `textmutator`) and every one depending on the constructor-seeding behaviour
+      (`textseeded`, `textseedempty`) still passes unchanged -- none of them declare an
+      `examples:` entry for the parameter this widening reaches, which is exactly the gate
+      that keeps their premises intact.
 
 ## Seeded generation moved a real library's reach — 2026-09-01
 

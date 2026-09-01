@@ -77,8 +77,9 @@ codes!(
     // --- Tier::Contract: verify-time, per-function proof-engine checks
     // (§5.4). ---
     E0501, E0502, E0503, W0502, W0503, W0510, W0511, W0512, W0513, W0514, W0515, W0516, W0517,
-    V0505, V0506, V0507, V0508, V0509, V0510, W0518, W0519, W0520, W0521, W0522, W0523, W0541,
-    W0110, W0111, W0303, W0531, K0502, K0601, M0601, P0502, P0601, R0502, R0601, X0901, X0902,
+    V0505, V0506, V0507, V0508, V0509, V0510, W0518, W0519, W0520, W0521, W0522, W0523, W0524,
+    W0541, W0110, W0111, W0303, W0531, K0502, K0601, M0601, P0502, P0601, R0502, R0601, X0901,
+    X0902,
 );
 
 /// The stage of Ply's own pipeline a code belongs to. See the module doc
@@ -611,6 +612,14 @@ impl Code {
                 severity: Info,
                 spec_anchor: "§5.4c",
                 gloss: "A random-sample check on a value built by parsing text (a version, an identifier, a URL) grew its inputs from a pool of already-valid values -- some written by hand as examples, some accepted by the parser itself during this run -- instead of guessing text uniformly, because almost none of that would ever parse. The case count is real, but the inputs are drawn from near what is already known to work, not from the whole space of text.",
+            },
+            W0524 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Info,
+                spec_anchor: "§5.4c",
+                gloss: "A random-sample check on a plain parameter Ply's ordinary generator cannot build at all (an optional or list-shaped value wrapping text, say) grew its inputs from example value(s) written by hand, varied by trying different text, instead of being refused outright. The case count is real, but the inputs are drawn from near what is already known, not from the whole range of possible values.",
             },
             W0541 => RuleEntry {
                 code: self,

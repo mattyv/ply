@@ -605,6 +605,14 @@ pub struct SeedStats {
     pub accepted: u32,
     pub rejected: u32,
     pub total: u32,
+    /// The seeded parameter's own name, present only for a *plain-parameter*
+    /// seeded run (`fuzz_gen::plan_param_seeding`, 2026-09-01) -- a
+    /// receiver-constructor-seeded run (the original mechanism) never
+    /// prints this field, so `None` is how `verify` tells the two apart to
+    /// word its own diagnostic correctly (there is no rejection dynamic to
+    /// describe for a plain parameter: nothing gates an `Option<String>`/
+    /// `Vec<String>` value the way a fallible constructor gates text).
+    pub param: Option<String>,
 }
 
 /// Parses the
@@ -613,7 +621,11 @@ pub struct SeedStats {
 /// (`fuzz_gen::generate_fuzz_test_with_examples`) -- present exactly when
 /// that fn's own constructor was seeded at all (an ordinary, ungated
 /// constructor prints nothing here, so `None` means "not a seeded run",
-/// never "a seeded run this parser failed to read").
+/// never "a seeded run this parser failed to read"). An optional trailing
+/// `|param=<name>` names the seeded parameter for the plain-parameter
+/// widening (2026-09-01) -- absent for the original, receiver-constructor
+/// shape, which is why it is parsed permissively (`and_then`, never with
+/// the same `?`-propagating strictness as the four counts before it).
 pub fn parse_seed_stats_marker(combined: &str) -> Option<SeedStats> {
     let line = combined
         .lines()
@@ -640,12 +652,17 @@ pub fn parse_seed_stats_marker(combined: &str) -> Option<SeedStats> {
         .parse()
         .ok()?;
     let total = parts.next()?.trim().strip_prefix("total=")?.parse().ok()?;
+    let param = parts
+        .next()
+        .and_then(|p| p.trim().strip_prefix("param="))
+        .map(str::to_string);
     Some(SeedStats {
         fn_name,
         examples,
         accepted,
         rejected,
         total,
+        param,
     })
 }
 
@@ -1066,6 +1083,28 @@ mod tests {
                 accepted: 49,
                 rejected: 1025,
                 total: 1074,
+                param: None,
+            }
+        );
+    }
+
+    /// The plain-parameter-seeding widening (2026-09-01): the marker's own
+    /// trailing `|param=<name>` names which parameter was seeded, so
+    /// `verify` can tell this apart from a receiver-constructor-seeded run
+    /// (which never prints this field) and word its own diagnostic
+    /// accordingly.
+    #[test]
+    fn parses_the_seed_stats_markers_own_trailing_param_field() {
+        let combined = "noise\nPLY_FUZZ_SEED_STATS|width|examples=1|accepted=0|rejected=0|total=64|param=label\nmore\n";
+        assert_eq!(
+            parse_seed_stats_marker(combined).unwrap(),
+            SeedStats {
+                fn_name: "width".into(),
+                examples: 1,
+                accepted: 0,
+                rejected: 0,
+                total: 64,
+                param: Some("label".into()),
             }
         );
     }
