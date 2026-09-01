@@ -1,5 +1,125 @@
 # TODO
 
+## Seeded generation moved a real library's reach — 2026-09-01
+
+The acceptance test Fable named: not a green fixture, but whether a real library's number
+moves. It moved.
+
+`semver`'s `Prerelease::is_empty` -- a method whose receiver must be built by parsing text,
+the exact shape that produced the dead end:
+
+- **Before:** 1025 of 1074 generated strings rejected, 49 ever checked, verdict `unclaimed`.
+  No evidence at all.
+- **After, with one `examples:` entry:** 26 of 90 rejected, verdict
+  `fuzzed(64) [narrower than it looks, seeded]`. Sixty-four real cases, each one run.
+
+One example took it from no evidence to real evidence, and the run says exactly where the
+inputs came from: *"the 64 cases were grown from 65 known-valid values: 1 from the
+`examples:` you wrote, 64 that `Prerelease::new` accepted from random draws during this
+run."*
+
+**This is the first change today that moved a number rather than a failure mode.** Both
+reach fixes yesterday and the text fix this morning were real and necessary and left
+`semver` at one checkable property. This one produces evidence where there was none.
+
+Verified by hand before being believed: the status appears on a seeded run and propagates to
+the root; it survives result reuse (`[seeded, reused]`); an unseeded run carries no such
+mark, so the two are never confused; and a seeded run still catches a false promise --
+breaking the function under test gives `violation`, not a comfortable pass.
+
+- [ ] **Not measured: whether the whole 1-in-16 count moves.** One property is now reachable
+      that was not. The other fifteen are each held by two to four blockers, and this
+      addresses one of them. The full re-measurement is owed before any claim about the count.
+- [ ] **KNOWN GAP, disclosed not detected: seeded runs miss the extremes.** Mutations of
+      short valid values reach a 280-character identifier or a 20-digit overflow essentially
+      never -- and those are exactly the cases `semver`'s author wrote down. The `[seeded]`
+      status is honest cover for this, not a fix. The user's defence is to write the extreme
+      case as an example, where it becomes a seed; that should be said somewhere a user reads.
+
+## Seeded generation for text-parsed types — 2026-09-01
+
+`docs/reach-measurement-2.md`'s open blocker ("a type built by parsing text cannot be
+constructed by random text") is closed for the shape it was measured against: a receiver
+whose own constructor takes a `&str`/`String` and rejects most input (a `#[ply::requires]`,
+or a fallible `Result<Self, E>` return). Test-first throughout; every fix below was proved
+by reverting it and watching the exact same failure come back.
+
+- [x] **Corpus and mix, implemented.** `fuzz_gen::plan_receiver_seeding` decides, per
+      receiver constructor, whether its (first) `String`-typed parameter is gated at all;
+      if so, `fuzz_gen::extract_examples_seed_strings` pulls every literal string argument
+      passed to that constructor anywhere in the crate's `examples:` entries (syntactic
+      only, zero new vocabulary), and the generated harness (`fuzz_gen::seed_apparatus`)
+      grows that pool at runtime with every value the constructor actually accepts. Future
+      draws for that parameter come from a 4:1 mix (`SEED_MUTATE_WEIGHT`:
+      `SEED_TRICKLE_WEIGHT`, `fuzz_gen.rs`) of mutating a random corpus entry (character
+      edit, splice, truncation, repetition, or a verbatim replay) against a continuing
+      uniform trickle -- justified in a doc comment on those two constants and repeated in
+      the diagnostic below so the ratio reaches the JSON envelope, not just source. An
+      unseeded (ungated, or non-text) constructor takes byte-identical code paths to
+      before this feature existed -- pinned by
+      `fuzz_gen::tests::an_infallible_unconstrained_text_constructor_is_not_seeded`,
+      comparing the seeded and plain entry points on the same fn and asserting equal
+      output.
+- [x] **The verdict carries its own provenance, honestly.** A `fuzzed(n)` verdict earned
+      this way carries a `seeded` status -- structurally the same way `conditional`
+      already travels (a plain flag in the same `statuses` list the tree and the record
+      already carry, propagated and reused with zero extra plumbing, per
+      `crates/ply-cli/src/verify.rs`'s own comment at the push site) -- plus a new,
+      `info`-severity diagnostic (`W0523`, never a warning: this describes what the
+      evidence *is*, not something incidental about the run) naming the real counts a
+      given run produced: how many seeds came from `examples:`, how many the constructor
+      accepted from generated draws, and the actual rejected/total split. A verdict
+      earning `fuzzed(n)` with nothing ever seeded carries neither the status nor the
+      diagnostic -- proved both directions by an e2e fixture pair
+      (`tests/fixtures/textseeded`, whose receiver constructor parses text and is fed one
+      `examples:` seed, vs. the pre-existing `narrowctor`, whose receiver constructor
+      rejects on a plain `u64` and must show neither) and confirmed to survive a reused
+      (carried-forward) verdict unchanged.
+- [x] **The other honesty condition: no seeds at all names the fix.** When a gated text
+      constructor's corpus never grows past zero (no `examples:` entry, and not one
+      generated draw was ever accepted), the existing high-rejection abort (`W0503`)
+      switches from its generic "widen your `requires`" wording to naming the exact
+      action -- add an `examples:` entry for the specific constructor, quoted by name --
+      only for this shape; every other cause of that same abort (a plain numeric
+      `requires`, unrelated to text) keeps its original wording verbatim, unaffected.
+      Fixture: `tests/fixtures/textseedempty` (a constructor accepting essentially none of
+      the space uniform sampling could draw, no `examples:` entry at all).
+- [x] **Real bugs found by actually compiling the generated harness, not just asserting on
+      its text (CLAUDE.md: "assert the observable outcome, not the shape of the output").**
+      The corpus's embedded `examples:` literals were spliced as bare `&str` literals into
+      a `Vec<String>` initializer (`error[E0308]`, caught only once the `textseeded`
+      fixture was actually built and run, not by the unit tests, which merely checked the
+      literal text was present) -- fixed by appending `.to_string()` to each; a unit test
+      now pins the exact well-typed form. Both new fixtures also needed their receiver's
+      field made `pub`, the same requirement every other receiver-postcondition fixture in
+      this codebase already has.
+- [ ] **KNOWN GAP, disclosed rather than hidden (the design brief's own "known failure
+      mode").** Seeded generation is an honest *disclosure*, not a *detection* mechanism:
+      64 cases mutated from short, ordinary seeds essentially never reach an extreme an
+      author actually cared about (a 280-character identifier, a 20-digit overflow) --
+      mutation just does not walk that far from a short starting point in a handful of
+      edits. The `seeded` status and its diagnostic say what the evidence *is*; they do
+      not detect what it *misses*. The user's defence is unchanged from what `examples:`
+      already offers: write the extreme case by hand as its own `examples:` entry, and it
+      becomes a seed like any other. Second-order, also disclosed rather than fixed: seeds
+      anchor the draw distribution near what is already known-valid, so a pathological
+      input that would crash the parser becomes measurably *less* likely to turn up than
+      under pure uniform sampling -- which is the whole reason the uniform trickle stays
+      in the mix rather than being dropped for a purer (and more self-referential) corpus.
+      No code change is proposed for this; it is a property of the technique, named so it
+      is never mistaken for closed.
+- [ ] **KNOWN GAP: only a receiver's own constructor parameter is seeded.** A plain
+      (non-receiver) function whose own text parameter is itself gated by its own
+      `#[ply::requires]` -- e.g. a parser checked directly rather than through a
+      receiver -- is not seeded at all yet; nor is a `String` parameter nested two levels
+      deep (a struct field built via its own constructor, itself an argument to another
+      constructor). Scoped out deliberately for this session: the measured probe
+      (`docs/reach-measurement-2.md`) and the acceptance shape are both squarely the
+      receiver-constructor case, and widening to every gated `String` parameter
+      everywhere is a larger, separately-reviewable change. Not yet re-measured against
+      `semver` itself -- that measurement is explicitly the maintainer's to run, not
+      mine to claim.
+
 ## Two more harness-generation compile defects fixed — 2026-08-31
 
 Both were the two `KNOWN GAP`s recorded just below (found the same day, pointing Ply at
