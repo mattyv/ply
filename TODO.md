@@ -193,6 +193,41 @@ fixture, and a revert-and-confirm-red pass on every fix.
       **Fixed 2026-08-31** — see "Two more harness-generation compile defects fixed" at
       the top of this file.
 
+## Re-measured `semver` after the reach fixes: it has not moved — 2026-09-01
+
+The two reach defects fixed today (a promise may now mention its receiver; a comparison may
+now nest inside a promise) plus yesterday's receiver-constructor fix were checked against the
+library that produced the 1-in-16 result. **Reach is unchanged.** That is exactly what
+`docs/reach-measurement-2.md` predicted — every unreached property is held by two to four
+independent blockers, and its table records "unblocks alone: 0" for every capability
+including the ones just shipped — but it was worth measuring rather than trusting, and the
+measurement found something the table missed.
+
+Probe: `Version::cmp_precedence(&self, other: &Self) -> Ordering`, the property about
+comparing versions while disregarding build metadata. It converges three defects — a receiver
+that must be built, a parameter of the receiver's own type, and a return type Ply can observe
+but not construct. Two of those three are now fixed.
+
+- [ ] **NEW BLOCKER: a parameter written as `Self` is refused, where the same type spelled by
+      name is not.** `other: &Self` gives "parameter(s) other: Self use a type neither the
+      bounded nor the fuzz codegen builds inputs for". Rewriting it as `other: &Version` --
+      which no compiler or reader would call a change -- gets past that check entirely. This
+      is the same asymmetry the measurement already found between `-> Self` and `-> Version`
+      in the return position, now confirmed in the parameter position too. It is not in the
+      measurement's blocker table, so that table understates the problem: properties it
+      attributed to other causes may be blocked by this as well.
+- [ ] **Confirmed still open: the refusal that names nothing.** With the parameter spelled
+      out, the same function is refused with "none of its declared checks apply to this
+      function's shape" -- no mention of the return type that is actually stopping it. The
+      measurement flagged this ("`unsupported_shape_diag` inspects only parameters, so when
+      the blocker is the return type it falls back to a sentence carrying no information a
+      user can act on"). It is unchanged.
+
+The honest scoreboard: today's fixes are real and were verified to work in both directions,
+but they move `semver` from one checkable property to one checkable property. A blocker only
+becomes visible once the ones in front of it are gone, and removing two of four revealed a
+fifth rather than a verdict.
+
 ## Two harness-generation defects fixed — 2026-08-31
 
 Both were found by pointing Ply at `semver` -- see `docs/reach-measurement-2.md`,
