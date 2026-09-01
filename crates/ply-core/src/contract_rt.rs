@@ -76,6 +76,41 @@ pub(crate) fn lift_entry_values(body: &Expr) -> (Expr, Vec<EntryValue>) {
     (rewritten, lifter.found)
 }
 
+/// Rewrites every bare `self` in `body` to `__ply_receiver` -- the name a
+/// generated harness already binds the receiver Ply built under
+/// (`fuzz_gen::receiver_preamble`). A method's postcondition is spliced into
+/// the generated test as a free-standing expression outside any `impl`
+/// block, where the literal keyword `self` means nothing
+/// (`error[E0424]: expected value, found module `self``) -- the most
+/// natural thing a method's own promise can say (relating its result to the
+/// receiver it was called on) used to make that promise uncheckable. Called
+/// only when the checked function actually has a receiver
+/// (`ContractFn::receiver.is_some()`); every other clause comes back
+/// unchanged, so a caller can also run this unconditionally without
+/// consequence. This rewrite happens *before* `old()` is lifted, so
+/// `old(self.a)` reads the receiver's value on entry the same way
+/// `old(param)` does.
+pub(crate) fn rewrite_self_to_receiver(body: &Expr) -> Expr {
+    use syn::visit_mut::VisitMut;
+
+    struct SelfRewriter;
+    impl VisitMut for SelfRewriter {
+        fn visit_expr_mut(&mut self, e: &mut Expr) {
+            syn::visit_mut::visit_expr_mut(self, e);
+            if let Expr::Path(p) = e
+                && p.path.is_ident("self")
+            {
+                *e = syn::parse_str::<Expr>("__ply_receiver")
+                    .expect("an identifier is an expression");
+            }
+        }
+    }
+
+    let mut rewritten = body.clone();
+    SelfRewriter.visit_expr_mut(&mut rewritten);
+    rewritten
+}
+
 /// The `let` statements that read the entry values, one per binding, each
 /// followed by a newline and `indent` so the caller can splice them in at
 /// the point the call is about to be written. `.clone()` rather than a bare
@@ -137,6 +172,21 @@ pub(crate) fn widen(expr: &Expr) -> proc_macro2::TokenStream {
 /// nested arithmetic (so `a + b * c` promotes every operand, not just the
 /// outermost), and casts anything else (literal, path, deref, method call,
 /// field access, existing cast) to `i128` at the leaf.
+///
+/// A comparison or logical operator (`==`, `&&`, ...) reaching here is one
+/// nested *inside* another comparison as a leaf (`*result == (a == b)`) --
+/// `widen`'s own top-level match only descends into `&&`/`||` when one of
+/// them is the *outermost* operator, so a comparison used as a leaf used to
+/// fall through to the catch-all below, which cast its token stream to
+/// `i128` with no parens of its own: `a == b` became `a == b as i128`, and
+/// because `as` binds tighter than `==`, that parses as `a == (b as i128)`
+/// -- comparing the wrong types (`error[E0308]`) instead of casting the
+/// whole comparison. Recursing through `widen` here (rather than taking the
+/// expression's tokens verbatim) also keeps any arithmetic on either side of
+/// that nested comparison itself widened to `i128`, so a mixed case (`a + 1
+/// == b`, nested as a leaf) still cannot overflow while being checked --
+/// only the outer parenthesise-then-cast is new, not a second, weaker path
+/// for arithmetic.
 fn widen_leaf(expr: &Expr) -> proc_macro2::TokenStream {
     match expr {
         Expr::Binary(bin)
@@ -146,6 +196,22 @@ fn widen_leaf(expr: &Expr) -> proc_macro2::TokenStream {
             ) =>
         {
             widen(expr)
+        }
+        Expr::Binary(bin)
+            if matches!(
+                bin.op,
+                BinOp::Eq(_)
+                    | BinOp::Ne(_)
+                    | BinOp::Lt(_)
+                    | BinOp::Le(_)
+                    | BinOp::Gt(_)
+                    | BinOp::Ge(_)
+                    | BinOp::And(_)
+                    | BinOp::Or(_)
+            ) =>
+        {
+            let inner = widen(expr);
+            quote::quote!(((#inner) as i128))
         }
         Expr::Paren(p) => widen_leaf(&p.expr),
         other => quote::quote!((#other as i128)),
@@ -473,6 +539,86 @@ pub fn get(n: NonZeroU32) -> u32 { n.get() }
             "a NonZero witness must render through `NonZero{{X}}::new(..).unwrap()`, never as a \
              bare integer literal a NonZeroU32-typed binding could not accept:\n{}",
             rendered.source
+        );
+    }
+
+    // -- 2026-08-31: two harness-generation defects found pointing Ply at
+    // `semver` (docs/reach-measurement-2.md).
+
+    /// Defect 2: a comparison nested *inside* another comparison as a leaf
+    /// (`*result == (a == b)`, a boolean postcondition stated as an
+    /// equality of two other equalities) used to render with the cast
+    /// binding to the comparison's last operand alone -- `a == b` became
+    /// `a == b as i128`, and because `as` binds tighter than `==`, that
+    /// parses as `a == (b as i128)`, comparing `u64` to `i128`
+    /// (`error[E0308]`) instead of casting the whole comparison.
+    #[test]
+    fn a_comparison_nested_as_a_leaf_is_parenthesised_before_it_is_cast() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == (a == b))]
+pub fn same(a: u64, b: u64) -> bool { a == b }
+"#,
+            "same",
+        );
+        let values = vec![WitnessValue::UInt(3), WitnessValue::UInt(4)];
+        let rendered = render_cex_test(&cf, &values, "fuzz(64)", "P0502", 1).unwrap();
+        let check_line = rendered
+            .source
+            .lines()
+            .find(|l| l.contains("catch_unwind"))
+            .expect("the replay test always evaluates the contract");
+        assert!(
+            !check_line.replace(' ', "").contains("a==basi128"),
+            "the nested comparison must not be cast with `as i128` binding to its last operand \
+             alone -- that compares the wrong types:\n{check_line}"
+        );
+        assert!(
+            check_line.contains("(a as i128)") && check_line.contains("(b as i128)"),
+            "each bare name inside the nested comparison must still be widened to i128 on its \
+             own:\n{check_line}"
+        );
+    }
+
+    /// Defect 1: a method's own postcondition could not mention the
+    /// receiver it is called on -- `self` is spliced into the generated
+    /// harness as a free-standing expression outside any `impl` block,
+    /// where the literal keyword `self` means nothing
+    /// (`error[E0424]: expected value, found module `self``).
+    /// `rewrite_self_to_receiver` rewrites a bare `self` to the binding a
+    /// generated harness already builds the receiver under
+    /// (`__ply_receiver`).
+    #[test]
+    fn rewrite_self_to_receiver_replaces_a_bare_self_with_the_receiver_binding() {
+        let expr: Expr = syn::parse_str("*result >= self.a").unwrap();
+        let rewritten = rewrite_self_to_receiver(&expr);
+        let text = rewritten.to_token_stream().to_string();
+        assert!(
+            !text.split_whitespace().any(|tok| tok == "self"),
+            "no bare `self` may survive the rewrite:\n{text}"
+        );
+        assert!(
+            text.contains("__ply_receiver . a") || text.contains("__ply_receiver.a"),
+            "`self.a` must become a read of the receiver binding a generated harness already \
+             built:\n{text}"
+        );
+    }
+
+    /// `self` read alongside a parameter in the same clause -- both must
+    /// survive: only the receiver reference is rewritten.
+    #[test]
+    fn rewrite_self_to_receiver_leaves_other_identifiers_alone() {
+        let expr: Expr = syn::parse_str("*result == self.a + extra").unwrap();
+        let rewritten = rewrite_self_to_receiver(&expr);
+        let text = rewritten.to_token_stream().to_string();
+        assert!(
+            text.contains("extra"),
+            "a parameter read alongside `self` must survive the \
+             rewrite untouched:\n{text}"
+        );
+        assert!(
+            text.contains("__ply_receiver . a") || text.contains("__ply_receiver.a"),
+            "`self.a` must still become a read of the receiver binding:\n{text}"
         );
     }
 

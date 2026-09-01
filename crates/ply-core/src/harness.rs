@@ -1098,6 +1098,24 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                 // `NonZero`/`Duration`/`F32`/`F64` -- see `RustType::
                 // String`'s own doc for why).
                 "String" => RustType::String,
+                // `&str` reaches here as bare `str`, because references are
+                // looked through above. Sampling one is the same job as
+                // sampling a `String` -- proptest builds the `String` and the
+                // call site passes a reference to it -- so it maps to the
+                // same type rather than getting a second one that would then
+                // need its own arm in every match over `RustType`.
+                //
+                // Measured 2026-08-30 as the single largest reason Ply could
+                // not check a real library: text parameters blocked 11 of the
+                // 16 properties `semver`'s author wrote down
+                // (`docs/reach-measurement-2.md`). `String` was already
+                // sampled; only the borrowed spelling was refused, which is
+                // the spelling almost every real signature uses.
+                //
+                // Bare `str` is not a type a parameter can have in Rust (it
+                // is unsized), so mapping it here can only ever be reached
+                // through a reference.
+                "str" => RustType::String,
                 "Vec" => {
                     if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments
                         && let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first()

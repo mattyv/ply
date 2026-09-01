@@ -1,0 +1,9 @@
+[package]
+name = "greendemo"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+ply = { package = "ply-attrs", path = "../../crates/ply-attrs" }
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+[workspace]

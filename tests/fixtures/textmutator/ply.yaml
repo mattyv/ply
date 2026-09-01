@@ -1,0 +1,19 @@
+ply: 1
+
+# The fourteenth false clean, closed (docs/review-structs-enums.md finding
+# 1). `Acc::note` is the type's only state-changing operation and takes
+# borrowed text. Until 2026-09-01 Ply could not build a text argument, so
+# `note` never entered the operation sequence used to build a receiver,
+# and `Acc::get`'s promise (always 0) came back a clean pass on code that
+# breaks after one ordinary call. Text arguments now work, so this run
+# calls `note`, reaches the broken state, and reports a violation.
+#
+# Its sibling `excludedop` is the same shape with a parameter that is
+# still unbuildable, and checks the opposite behaviour: a run that
+# genuinely cannot call the mutator must say so.
+components:
+  textmutator:
+    anchor: ply_fixture_textmutator
+    fns:
+      Acc::get:
+        checks: [fuzz(256)]

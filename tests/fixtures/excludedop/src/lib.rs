@@ -14,8 +14,16 @@
 //! a.get() // -> 5, not 0
 //! ```
 //!
-//! Ply still cannot build a `&str` argument (a separate, known gap -- see
-//! docs/review-structs-enums.md finding 5), so this run genuinely cannot
+//! `note` took a `&str` until 2026-09-01, when borrowed text became a
+//! buildable argument -- at which point Ply started calling `note`, found
+//! this violation for real, and this fixture stopped testing what it was
+//! written to test. It is preserved by giving `note` a parameter that is
+//! *still* unbuildable (`Option<String>`: a `String` nested inside another
+//! type, deliberately never built -- see `RustType::String`'s own doc).
+//! The companion fixture `textmutator` records the other half: the same
+//! shape with a `&str`, where Ply now finds the violation it used to miss.
+//!
+//! So this run genuinely cannot
 //! call `note` and genuinely cannot find this violation by running cases.
 //! What it must do instead is say so: name `note` as an operation this run
 //! never called, and mark the verdict as resting on a narrower history than
@@ -31,9 +39,9 @@ impl Acc {
         Acc { total: 0 }
     }
 
-    /// The only way `Acc`'s state ever changes -- and Ply cannot build a
-    /// `&str` argument to call it with.
-    pub fn note(&mut self, _s: &str) {
+    /// The only way `Acc`'s state ever changes -- and Ply cannot build an
+    /// `Option<String>` argument to call it with.
+    pub fn note(&mut self, _s: Option<String>) {
         self.total += 5;
     }
 
