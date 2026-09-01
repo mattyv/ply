@@ -19,8 +19,8 @@ use ply_core::model::parse_document;
 use ply_core::visual::svg::{RenderOptions, render_svg_with_options};
 use ply_core::visual::transcript::render_transcript;
 use ply_core::visual::{
-    DEFAULT_RETAINED_RUNS, VisualPublisher, build_visual_envelope_with_sources,
-    completed_run_metadata, outcome_of,
+    DEFAULT_RETAINED_RUNS, RunOutcome, VisualPublisher, build_declared_visual_envelope,
+    build_visual_envelope_with_sources, completed_run_metadata, outcome_of,
 };
 use verify::VerifyOptions;
 
@@ -183,7 +183,11 @@ fn main() -> anyhow::Result<()> {
                 collapse,
             };
             let mut stdout = std::io::stdout().lock();
-            render_command(&path, output.as_deref(), &options, text, &mut stdout)?;
+            if cli.json {
+                render_json_command(&path, output.as_deref(), &options, text, &mut stdout)?;
+            } else {
+                render_command(&path, output.as_deref(), &options, text, &mut stdout)?;
+            }
         }
         Commands::Check { path } => {
             let report = check::check_crate(&path)?;
@@ -297,6 +301,30 @@ fn render_command(
     text: bool,
     stdout: &mut impl Write,
 ) -> anyhow::Result<()> {
+    render_command_with_format(requested_path, output, options, text, false, stdout)
+}
+
+fn render_json_command(
+    requested_path: &Path,
+    output: Option<&Path>,
+    options: &RenderOptions,
+    text: bool,
+    stdout: &mut impl Write,
+) -> anyhow::Result<()> {
+    render_command_with_format(requested_path, output, options, text, true, stdout)
+}
+
+fn render_command_with_format(
+    requested_path: &Path,
+    output: Option<&Path>,
+    options: &RenderOptions,
+    text: bool,
+    json: bool,
+    stdout: &mut impl Write,
+) -> anyhow::Result<()> {
+    if text && json {
+        anyhow::bail!("--text and --json select different render outputs; use one or the other");
+    }
     // The folding flags narrow a *drawing* to fit a screen. The text form has
     // no screen to fit and always states the whole document, so a run asking
     // for both is asking for something that does not exist. Refusing beats
@@ -375,6 +403,25 @@ fn render_command(
             input.display(),
             document.ply
         );
+    }
+    if json {
+        let visual = build_declared_visual_envelope(
+            &document,
+            completed_run_metadata(
+                input.parent().unwrap_or_else(|| Path::new(".")),
+                env!("CARGO_PKG_VERSION"),
+                RunOutcome::Clean,
+            ),
+            options,
+        )?;
+        let json = visual.to_json_pretty();
+        return match output {
+            Some(path) => std::fs::write(path, json)
+                .map_err(|error| anyhow::anyhow!("could not write {}: {error}", path.display())),
+            None => stdout.write_all(json.as_bytes()).map_err(|error| {
+                anyhow::anyhow!("could not write the visual JSON to stdout: {error}")
+            }),
+        };
     }
     if text {
         let transcript = render_transcript(&document);
@@ -840,6 +887,51 @@ mod tests {
         let canonical = render_svg_with_options(&document, &RenderOptions::default()).unwrap();
         assert_eq!(String::from_utf8(stdout).unwrap(), canonical);
         assert!(canonical.starts_with("<svg"));
+    }
+
+    #[test]
+    fn render_json_keeps_declaration_hierarchy_before_code_exists() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("finding-header.ply.yaml"),
+            "ply: 1\ncomponents:\n  market_data:\n    anchor: app::market_data\n    components:\n      decoder:\n        anchor: app::decoder\n        fns:\n          decode:\n            requires: [input.len() > 0]\n            ensures: [result.len() > 0]\n",
+        )
+        .unwrap();
+
+        let mut stdout = Vec::new();
+        render_json_command(
+            &root.path().join("finding-header.ply.yaml"),
+            None,
+            &RenderOptions::default(),
+            false,
+            &mut stdout,
+        )
+        .unwrap();
+
+        let json = String::from_utf8(stdout).unwrap();
+        let visual = ply_core::visual::VisualEnvelope::from_json(&json).unwrap();
+        let function = visual
+            .elements
+            .values()
+            .find(|element| element.kind == "fn")
+            .unwrap();
+        let component = visual
+            .elements
+            .get(function.parent_id.as_ref().unwrap())
+            .unwrap();
+        assert_eq!(component.label, "decoder");
+        assert!(
+            function
+                .declaration
+                .as_deref()
+                .unwrap()
+                .contains("Input (requires): input.len() > 0")
+        );
+        assert!(
+            visual
+                .svg
+                .contains(&format!("data-element-id=\"{}\"", function.id))
+        );
     }
 
     /// The text form has to be on the installed command, not only on the
