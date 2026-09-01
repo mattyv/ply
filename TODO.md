@@ -1,5 +1,43 @@
 # TODO
 
+## The acceptance test ran: `semver` reach moved from 1 of 16 to 4 of 16 — 2026-09-01
+
+Measured, not inferred: every property below was written as a real promise on the real
+function and run. Full write-up in `docs/reach-measurement-2.md`; the vendored copy it was
+run against is at `/home/user/semvercheck` (outside this repository).
+
+Newly reachable, each `fuzzed(64)`: parse rejects whitespace; an accepted identifier is
+stored verbatim; at most 32 comparators. The check was proved to bite — a deliberately
+false promise came back `violation` with a shrunk failing input.
+
+**The honest caveat, and it is a big one: three of the four are checked almost entirely on
+inputs the function rejects**, because random text essentially never parses. The evidence
+is real; the author's rules about what is *accepted* are barely exercised. Ply prints
+`fuzzed(64)` unqualified and does not say this.
+
+- [ ] **Ply does not disclose that a run took the reject path nearly every time.** It
+      already has the vocabulary (`narrower than it looks`, `seeded`) and does not reach for
+      it here. Writing `examples:` does not help either: seeding only engages where the
+      ordinary generator cannot build the value at all, and a plain text parameter is one it
+      can — so the escape hatch a user would reach for is silently inert. This is the same
+      species of gap the `seeded` status was invented to close, in the one place it does not
+      apply.
+- [ ] **A promise comparing non-numeric values with `==` or `!=` does not compile.** The
+      generated harness casts both sides of a comparison to `i128` (so it can report a
+      broken promise rather than overflow while checking one); against a string, an
+      `Option` or a struct that cast is invalid — `error[E0606]: casting &str as i128 is
+      invalid`. Reported honestly as a tool error, never as a pass. Not new, but far more
+      reachable now the return-type gate no longer refuses these functions first. This is
+      what blocks the natural phrasing of property 15.
+- [ ] **`Self` as a parameter spelling is refused where the same type by name is checked.**
+      `cmp_precedence(&self, other: &Self)` is `unsupported`; change nothing but `&Self` to
+      `&Version` and it is `fuzzed(64)`. Mirror image of this document's original headline,
+      which turned on the author having typed `-> Self` rather than `-> Version`. Property 6
+      is reachable in substance and unreachable as written.
+
+Still blocked and untouched today: trait methods (properties 1, 2, 3, 4, 7, 12), and a
+`VersionReq` or `Comparator` built from text in a parameter position (5, 8, 9, 10, 11).
+
 ## Fixed: a declaration-only render no longer calls its own run clean — ffacd9b, 2026-09-01
 
 `cargo ply render --json` (the editor-facing envelope behind semantic focus) built a tree

@@ -52,6 +52,49 @@ substance of this document.
 
 ---
 
+## Re-measured 2026-09-01, after the day's reach work: 4 of 16
+
+*Run against a fresh vendored copy of `semver` 1.0.28 with the product at `6fdf2fb`. Each
+property below was written as an inline `#[ply::ensures]` on the real function and actually
+run; nothing here is inferred from what a blocker list says should now work.*
+
+**The count moved from 1 to 4.** Reachable as the author wrote them: #13 (already), plus
+**#14** (parse rejects whitespace), **#15** (an accepted identifier is stored verbatim) and
+**#16** (at most 32 comparators) — each `fuzzed(64)`, each with the check proved to bite
+(a deliberately false promise on #14 came back `violation` with a shrunk failing input).
+
+**The caveat that must travel with that number: three of the four are checked almost
+entirely on inputs the function rejects.** Random text essentially never parses as a
+version, so a promise shaped "either it was rejected, or ..." is satisfied by the rejection
+branch nearly every time. The evidence is real and the cases ran, but the author's rules
+about what is *accepted* are barely exercised. **Ply does not say so** — it prints
+`fuzzed(64)` unqualified. It already owns the vocabulary for exactly this (`narrower than
+it looks`, `seeded`) and does not reach for it here, and writing `examples:` does not help:
+seeding only engages where the ordinary generator cannot build the value at all, and a
+plain text parameter is one it can. That is a disclosure gap, recorded in TODO.md.
+
+**Two blockers found by running this rather than reasoning about it:**
+
+- **A promise that compares non-numeric values with `==` or `!=` does not compile.** The
+  generated harness rewrites both sides of a comparison to `i128` so it can report a broken
+  promise instead of overflowing while checking one; against a string, an `Option` or a
+  struct that cast is invalid. Property #15 written the natural way (`as_str() == text`)
+  fails with `casting &str as i128 is invalid`; written as the author's other conjunct
+  (`.len() == text.len()`) it reaches. Ply reports this honestly — `tool_error`, never a
+  pass — and it is not new; it is simply far more reachable now that the return-type gate
+  no longer refuses these functions first.
+- **`Self` as a *parameter* spelling is refused where the same type by name is checked.**
+  `cmp_precedence(&self, other: &Self)` is `unsupported`; change nothing but `&Self` to
+  `&Version` and it is `fuzzed(64)`. This is the mirror image of this document's original
+  headline, which turned on the author having typed `-> Self` rather than `-> Version`.
+  Property #6 is reachable in substance and unreachable as written.
+
+**Unchanged:** #1, #2, #3, #4, #7 and #12 are still held by trait methods, which nothing
+today touched. #5, #8, #9, #10 and #11 need a `VersionReq` or `Comparator` built from text
+in a *parameter* position.
+
+---
+
 ## TLDR
 
 **Of the sixteen properties `semver`'s author wrote down, Ply checks one — and it checks
