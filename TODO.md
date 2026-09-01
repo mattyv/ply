@@ -1,5 +1,88 @@
 # TODO
 
+## The type wall has a generic answer, and my own "do paths first" was wrong — 2026-09-01
+
+Reviewed, then every load-bearing claim re-run by hand. **Half the refusals are not about
+types at all — they are shapes Ply already builds, refused the moment they nest.** Measured
+directly, one probe, pairs differing only in nesting:
+
+| written as | verdict |
+|---|---|
+| an optional number | real evidence |
+| an optional string | refused |
+| a reference to a vector of bytes | real evidence |
+| a slice of bytes | refused |
+| a string | real evidence |
+| a list of strings | refused |
+
+Every part is buildable alone. The machinery is simply not recursive: each shape added
+after the original set was deliberately barred from composing, because one shared decision
+answers for both the sampling engine and the exhaustive-proof engine, and letting a new
+shape compose would have quietly made things eligible for proof that should not be. The
+narrowing protected the proof engine at the sampling engine's expense — **and that is why
+the list grows forever: every addition is a leaf that cannot combine, so every combination
+becomes a future addition.**
+
+**My earlier recommendation — "paths, and nothing else" — was wrong, and this is the
+correction.** Paths are the biggest single blocker (34 functions) and the one that must
+wait. Ply runs the real function body. Measured on Ply's own crates: of 39 public functions
+taking a path, **8 reach a filesystem write inside their own body** — saving a record,
+writing a generated crate's manifest, writing its source file. Unlocking paths today means
+generating random paths and executing those. Ply has no side-effect detection; the
+capability scan is planned with nothing behind it. Refusing paths is currently doing safety
+work nobody assigned to it.
+
+**The plan, three sittings, in this order:**
+
+- [ ] **1. Make the sampling engine's decision recursive, and add slices.** Composition
+      (optional, result, list, set, map, fixed array, slice, tuple, reference, owning
+      wrapper) closed over anything buildable — for the sampling engine only. The proof
+      engine keeps its measured list byte-for-byte, pinned by a regression test. Add slices,
+      which are not handled as a shape at all today: build the owned list and lend a slice
+      of it, the same trick already used for references. **Biggest reach gain at zero
+      honesty cost** — it unlocks the 13 list-of-strings functions and most of the tail,
+      all pure computation in Ply's own code. Gate it with an enumeration-style invariant:
+      every shape the grammar admits must yield something that compiles.
+- [ ] **2. One build-route mechanism for named types.** A type is buildable if there is a
+      public way to get one from parts Ply can already build. This exists — it is how a
+      user's own structs are built from their constructors, and durations and non-zero
+      numbers are two hand-rolled instances of the same idea. Generalise it into a table
+      with three sources: the existing constructor resolution; a small curated set for
+      standard-library types (**excluding paths**); and a declared route in the config file
+      — the hook the spec has promised since the first spike and never built. Variety comes
+      from Ply sampling the route's inputs, never from an author listing values.
+- [ ] **3. A syntactic "this body reaches file-writing calls" check, and only then paths.**
+
+**What notices when a declared route goes stale, since that is the question the design must
+answer:** the route names a function, and the generated harness is a separate downstream
+crate, so a renamed, removed or private function fails to compile — loudly. A route whose
+values mostly get rejected trips the existing high-rejection warning. A route cannot build
+an invariant-breaking value, because anything a public function returns is a value some
+real caller could hold — the same argument the constructor rule already rests on.
+
+**The one failure the compiler cannot catch, and it needs mechanism rather than trust:** a
+route that ignores its inputs and returns the same value every time. Defence: count
+distinct built values where the type can be printed, and disclose when that count collapses
+— "16 cases ran, but only 1 distinct value reached the function". Where the type cannot be
+printed, the verdict names the route so a reader can judge, and the route joins the audit
+listing beside trusted contract helpers. The residual is a known limit, written down.
+
+**Three new ways to print a number that means less than it looks, each needing disclosure:**
+values built through a route are sampled through the route's inputs, not the type's natural
+domain, so a route-built verdict needs a mark naming the route; the collapsed-diversity case
+above; and — the worst — **a valid value aimed at a meaningless domain**: a randomly built
+path is a perfectly good value handed to a function whose promise is really about the file
+behind it, so nearly every case exits early with "not found" and the count measures one
+behaviour many times. The general disclosure for that: where a function returns
+success-or-error, count the split and say it — "16 cases; 15 returned an error before the
+interesting behaviour engaged". That same disclosure doubles as the detector for a
+degenerate declared route, and is the same species as the still-open item about a promise
+whose rejection branch decides nearly every case.
+
+- [ ] **Spec wording to fix when the hook lands:** the claim that the hook's design was
+      validated in the first spike is thinner than it reads. The spike validated the
+      constructor-harness pattern, not the declaration surface.
+
 ## Heavy ponytail review of the whole repository — requested 2026-09-01, NOT STARTED
 
 The maintainer's read: "we've got a lot of bloat". Run at **ultra** intensity — deletion
