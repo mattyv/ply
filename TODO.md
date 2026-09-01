@@ -15,8 +15,8 @@ where no measurement exists at all. Reusing that mark unchanged would make its o
 false. Either its legend is reworded to honestly cover both, or -- cleaner -- a sibling
 mark says what this one actually measures.
 
-- [x] **A factually false `examples:` entry passes in silence -- now disclosed, 2026-09-01
-      (commit pending).** Verified by hand: `Version::parse("1.2.3").is_err()` -- a
+- [x] **A factually false `examples:` entry passes in silence -- now disclosed, 2026-09-01,
+      9faf5f0.** Verified by hand: `Version::parse("1.2.3").is_err()` -- a
       plainly false sentence, that text parses fine -- under a `fuzz` check earned a
       clean `fuzzed(64)` with not one word about it. Fixed by measurement, not by making
       `fuzz` run examples (that is the separate proposal below, deliberately left
@@ -32,7 +32,7 @@ mark says what this one actually measures.
       sentence (`examples_prose`) is reused verbatim rather than said a second way, so the
       picture and the terminal cannot disagree about what ran. §5.4a amended.
 - [x] **The escape hatch Ply's own refusal recommends did not work for a method -- fixed,
-      2026-09-01 (commit pending).** The refusal for an unbuildable parameter says to
+      2026-09-01, 9faf5f0.** The refusal for an unbuildable parameter says to
       "declare `test` instead, with an `examples:` entry" -- doing exactly that on a
       method gave `error: invalid path separator in function definition`: the generated
       test's own *name* spliced the checked function's `::`-qualified path in verbatim.
