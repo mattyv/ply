@@ -30,9 +30,18 @@ mark says what this one actually measures.
       path in verbatim, `::` and all. Every fixture exercising this codegen uses free
       functions, so it has never been seen; nearly everything in a real library is a
       method.
-- [ ] **That same refusal contains a false sentence.** It says no part of the parameter's
-      value is one Ply knows how to vary. False -- the identical type spelled by name is
-      varied happily. A wording defect on top of the reach defect.
+- [x] **That same refusal contains a false sentence — audited, 2026-09-01 (`f2bfe88`).**
+      It says no part of the parameter's value is one Ply knows how to vary. False for a
+      `Self` parameter specifically, because the identical type spelled by name was
+      varied happily -- a reach defect (see "`Self` as a parameter spelling..." below),
+      not a wording defect on its own. Fixing the reach defect closes this too: `Self` no
+      longer reaches this sentence's gate at all (it resolves to the same buildable type
+      the receiver already does, before the gate runs), and every other parameter shape
+      that still reaches it has already failed the same resolution attempt a named type
+      gets, so the sentence is true whenever it still fires. Confirmed with a regression
+      test, not reworded -- the trailing "declare `test` instead" advice (the escape-hatch
+      defect just above) is a separate, still-open defect and was left untouched on
+      request.
 
 **Two corrections to how the remaining work is priced:**
 
@@ -89,11 +98,16 @@ is real; the author's rules about what is *accepted* are barely exercised. Ply p
       invalid`. Reported honestly as a tool error, never as a pass. Not new, but far more
       reachable now the return-type gate no longer refuses these functions first. This is
       what blocks the natural phrasing of property 15.
-- [ ] **`Self` as a parameter spelling is refused where the same type by name is checked.**
-      `cmp_precedence(&self, other: &Self)` is `unsupported`; change nothing but `&Self` to
-      `&Version` and it is `fuzzed(64)`. Mirror image of this document's original headline,
-      which turned on the author having typed `-> Self` rather than `-> Version`. Property 6
-      is reachable in substance and unreachable as written.
+- [x] **`Self` as a parameter spelling is refused where the same type by name is checked
+      — fixed 2026-09-01 (`f2bfe88`).** `cmp_precedence(&self, other: &Self)` was
+      `unsupported`; changing nothing but `&Self` to `&Version` was `fuzzed(64)`. Mirror
+      image of this document's original headline, which turned on the author having
+      typed `-> Self` rather than `-> Version`. `Self` in parameter position now resolves
+      to the receiver's own already-resolved type, exactly like the named spelling.
+      Proved to still bite: a deliberately broken `cmp_precedence`, reached only through
+      this fix, came back `violation` with a real shrunk failing input
+      (`other = major=5, minor=1, patch=9`), not a comfortable pass. Property 6 is now
+      reachable as written; re-measuring the full 16-property count is separate work.
 
 Still blocked and untouched today: trait methods (properties 1, 2, 3, 4, 7, 12), and a
 `VersionReq` or `Comparator` built from text in a parameter position (5, 8, 9, 10, 11).
@@ -645,14 +659,15 @@ comparing versions while disregarding build metadata. It converges three defects
 that must be built, a parameter of the receiver's own type, and a return type Ply can observe
 but not construct. Two of those three are now fixed.
 
-- [ ] **NEW BLOCKER: a parameter written as `Self` is refused, where the same type spelled by
-      name is not.** `other: &Self` gives "parameter(s) other: Self use a type neither the
-      bounded nor the fuzz codegen builds inputs for". Rewriting it as `other: &Version` --
-      which no compiler or reader would call a change -- gets past that check entirely. This
-      is the same asymmetry the measurement already found between `-> Self` and `-> Version`
-      in the return position, now confirmed in the parameter position too. It is not in the
-      measurement's blocker table, so that table understates the problem: properties it
-      attributed to other causes may be blocked by this as well.
+- [x] **NEW BLOCKER: a parameter written as `Self` is refused, where the same type spelled
+      by name is not — fixed 2026-09-01 (`f2bfe88`), same fix as the entry earlier in this
+      file.** `other: &Self` gave "parameter(s) other: Self use a type neither the bounded
+      nor the fuzz codegen builds inputs for". Rewriting it as `other: &Version` -- which
+      no compiler or reader would call a change -- got past that check entirely. Same
+      asymmetry the measurement already found between `-> Self` and `-> Version` in the
+      return position, now closed in the parameter position too: `Self` resolves through
+      the receiver's own already-resolved type rather than a second lookup that could
+      disagree with it.
 - [ ] **Confirmed still open: the refusal that names nothing.** With the parameter spelled
       out, the same function is refused with "none of its declared checks apply to this
       function's shape" -- no mention of the return type that is actually stopping it. The
