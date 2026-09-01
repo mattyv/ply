@@ -1,5 +1,38 @@
 # TODO
 
+## Heavy ponytail review of the whole repository — requested 2026-09-01, NOT STARTED
+
+The maintainer's read: "we've got a lot of bloat". Run at **ultra** intensity — deletion
+over addition, question whether each thing needs to exist at all, and the shortest working
+diff wins. This is a review of what is *here*, not of what to build next.
+
+Numbers measured today, as leads rather than findings — each still needs someone to look
+before anything is cut:
+
+- **Two parallel implementations of the same ideas.** The product crates are ~49,000 lines
+  of Rust; a separate development-tooling tree carries another ~8,700. Its drawing tool
+  alone is ~7,400 lines, its checker ~800, its scheduler ~560, and its kernel entry is 7
+  lines. Some of this was deliberately promoted into the product and the leftovers were
+  meant to become thin consumers — the architecture bundle's own note says so. Whether that
+  actually happened is the first thing to check.
+- **The docs directory is 2.7 MB across 40 files.** The largest is a 984 KB generated
+  walkthrough. The second, at 536 KB, is a review document that has a raw session
+  transcript pasted into it — 28 tool-invocation markers, another tool's version banner,
+  and someone's local machine paths, all committed. That one is the clearest single candidate.
+- **100 fixture directories**, each its own crate that the end-to-end suite builds from
+  scratch. A recorded item already suspects duplicate proof work inside that suite.
+- **This file is 3,309 lines with 121 open items**, against a 2,372-line spec. A running
+  state longer than the thing it describes is itself the smell — and the rule that keeps it
+  honest ("a stale list is worse than none") argues for pruning what is recorded and done,
+  not just appending.
+
+Two things the review must NOT cut, because they look like bloat and are not:
+
+- **The exhaustive kernel enumeration.** It is nearly a million cases and takes seconds.
+  It is the gate, and it is deliberately more than a sample.
+- **The honest caveats recorded throughout this file.** A known gap left open on purpose is
+  a state worth recording. Deleting the record does not close the gap; it hides it.
+
 ## Verified independently, and one blemish found while doing it — 2026-09-01
 
 The `Self`-spelled parameter fix was checked against the real library on a case the
