@@ -1,5 +1,18 @@
 # TODO
 
+## Fixed: a declaration-only render no longer calls its own run clean — ffacd9b, 2026-09-01
+
+`cargo ply render --json` (the editor-facing envelope behind semantic focus) built a tree
+in which every item is `unclaimed` — nothing has been checked — and then reported
+`"outcome": "clean"`. A plugin colouring a badge from that field would have shown green for
+a document no run has ever looked at.
+
+The builder now derives the outcome from the tree it constructs rather than trusting the
+caller, so it reports `missing_evidence`. Two tests, both watched to fail against the old
+code: an end-to-end one over the real CLI that checks its own premise (all six items still
+unclaimed) before asserting the outcome, and a unit test that hands the builder `clean` and
+requires it back as `missing_evidence`.
+
 ## Measured: the return-type gate can come off, and what it hides — 2026-09-01
 
 Fable's ranking put this first and it is not a declaration at all: the gate refusing a
