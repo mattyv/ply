@@ -214,9 +214,18 @@ Text arguments now work, so Ply calls `note`, reaches the broken state, and repo
       back `fuzzed(256)` on the broken function and the test fails demanding
       `violation`. That is the false clean itself, reproducible on demand.
 
+- [x] **`skippedctor` too, same cause.** Its premise is a constructor Ply finds but cannot
+      use, because the constructor took borrowed text. It is usable now, so no constructor
+      was skipped and the disclosure it tests never fired. Its argument is now an
+      `Option<String>`, and the test passes again.
+
+Swept the rest rather than waiting for CI to find them one at a time: exactly three fixtures
+depended on borrowed text being unbuildable, all three are handled, and the only fixture left
+with a `&str` parameter is `textmutator`, which uses one deliberately.
+
 Worth stating plainly because it is the first time this has happened today: a capability
-improvement made a test fail by making Ply *better*, and the fix was to preserve both
-truths rather than weaken either test.
+improvement made tests fail by making Ply *better*, and the fix was to preserve both truths
+rather than weaken any test.
 
 ## Text parameters landed, and the next blocker is a design problem — 2026-09-01
 
