@@ -1,0 +1,26 @@
+{
+  "format": 2,
+  "written_by": "199c9f95406e7ef97dd41a1d61da642105acec96ad7234c5cee2ed8c54d1719c",
+  "results": {
+    "paramseedopaque::always_true": {
+      "fingerprint": "6d1926f95afb94f562530a9fb1c50846e33909ff12a26f0b13adfe35e68a7fea",
+      "verdict": "tested",
+      "statuses": [],
+      "inputs": {
+        "its contract": "1c020703a5392168",
+        "the build of Ply that checked it": "dc2d634316b59e31",
+        "the callees it stands on": "4df68c1409b969ed",
+        "the checks that ran": "caa85931cca6ecf9",
+        "the code it runs": "f5068da78a983ff0",
+        "the compiler and the build target": "bf70dd442259ad28",
+        "the crate's features": "888ca37d720284f4",
+        "the engines behind them": "651a23e37e8789a4",
+        "the function's own source": "e2ad3163ef8a8687",
+        "the promises it assumes": "d972c487c26e7547",
+        "the versions of everything outside this workspace": "0fabd3141f2a2b8e",
+        "the worked examples it asserts": "b18d0c00d862bfe9",
+        "which claim this is": "1309f0298a83b363"
+      }
+    }
+  }
+}

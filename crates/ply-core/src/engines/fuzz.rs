@@ -591,6 +591,81 @@ pub fn parse_abort_marker(combined: &str) -> Option<FuzzAbort> {
     })
 }
 
+/// What a seeded run reports about its own provenance
+/// (docs/reach-measurement-2.md): how many known-valid values came from a
+/// user's own `examples:` entries, how many the constructor accepted from
+/// generated draws during this run, and the same rejected/total counts the
+/// high-rejection warning already computes -- carried here too because a
+/// seeded run's honest disclosure needs them regardless of whether the
+/// rejection rate crossed that warning's own threshold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedStats {
+    pub fn_name: String,
+    pub examples: u32,
+    pub accepted: u32,
+    pub rejected: u32,
+    pub total: u32,
+    /// The seeded parameter's own name, present only for a *plain-parameter*
+    /// seeded run (`fuzz_gen::plan_param_seeding`, 2026-09-01) -- a
+    /// receiver-constructor-seeded run (the original mechanism) never
+    /// prints this field, so `None` is how `verify` tells the two apart to
+    /// word its own diagnostic correctly (there is no rejection dynamic to
+    /// describe for a plain parameter: nothing gates an `Option<String>`/
+    /// `Vec<String>` value the way a fallible constructor gates text).
+    pub param: Option<String>,
+}
+
+/// Parses the
+/// `PLY_FUZZ_SEED_STATS|<fn>|examples=<e>|accepted=<a>|rejected=<r>|total=<t>`
+/// marker, printed unconditionally by a seeded fn's generated harness
+/// (`fuzz_gen::generate_fuzz_test_with_examples`) -- present exactly when
+/// that fn's own constructor was seeded at all (an ordinary, ungated
+/// constructor prints nothing here, so `None` means "not a seeded run",
+/// never "a seeded run this parser failed to read"). An optional trailing
+/// `|param=<name>` names the seeded parameter for the plain-parameter
+/// widening (2026-09-01) -- absent for the original, receiver-constructor
+/// shape, which is why it is parsed permissively (`and_then`, never with
+/// the same `?`-propagating strictness as the four counts before it).
+pub fn parse_seed_stats_marker(combined: &str) -> Option<SeedStats> {
+    let line = combined
+        .lines()
+        .find(|l| l.contains("PLY_FUZZ_SEED_STATS|"))?;
+    let after = line.split_once("PLY_FUZZ_SEED_STATS|")?.1;
+    let mut parts = after.split('|');
+    let fn_name = parts.next()?.trim().to_string();
+    let examples = parts
+        .next()?
+        .trim()
+        .strip_prefix("examples=")?
+        .parse()
+        .ok()?;
+    let accepted = parts
+        .next()?
+        .trim()
+        .strip_prefix("accepted=")?
+        .parse()
+        .ok()?;
+    let rejected = parts
+        .next()?
+        .trim()
+        .strip_prefix("rejected=")?
+        .parse()
+        .ok()?;
+    let total = parts.next()?.trim().strip_prefix("total=")?.parse().ok()?;
+    let param = parts
+        .next()
+        .and_then(|p| p.trim().strip_prefix("param="))
+        .map(str::to_string);
+    Some(SeedStats {
+        fn_name,
+        examples,
+        accepted,
+        rejected,
+        total,
+        param,
+    })
+}
+
 fn parse_u8_list(raw: &str) -> Option<Vec<u8>> {
     let inner = raw.strip_prefix('[')?.strip_suffix(']')?;
     if inner.is_empty() {
@@ -995,6 +1070,53 @@ mod tests {
         let (fname, detail) = parse_high_reject_marker(combined).unwrap();
         assert_eq!(fname, "safe_increment");
         assert_eq!(detail, "12/20");
+    }
+
+    #[test]
+    fn parses_the_seed_stats_marker_with_every_count() {
+        let combined = "noise\nPLY_FUZZ_SEED_STATS|Prerelease::is_empty|examples=2|accepted=49|rejected=1025|total=1074\nmore\n";
+        assert_eq!(
+            parse_seed_stats_marker(combined).unwrap(),
+            SeedStats {
+                fn_name: "Prerelease::is_empty".into(),
+                examples: 2,
+                accepted: 49,
+                rejected: 1025,
+                total: 1074,
+                param: None,
+            }
+        );
+    }
+
+    /// The plain-parameter-seeding widening (2026-09-01): the marker's own
+    /// trailing `|param=<name>` names which parameter was seeded, so
+    /// `verify` can tell this apart from a receiver-constructor-seeded run
+    /// (which never prints this field) and word its own diagnostic
+    /// accordingly.
+    #[test]
+    fn parses_the_seed_stats_markers_own_trailing_param_field() {
+        let combined = "noise\nPLY_FUZZ_SEED_STATS|width|examples=1|accepted=0|rejected=0|total=64|param=label\nmore\n";
+        assert_eq!(
+            parse_seed_stats_marker(combined).unwrap(),
+            SeedStats {
+                fn_name: "width".into(),
+                examples: 1,
+                accepted: 0,
+                rejected: 0,
+                total: 64,
+                param: Some("label".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn an_unseeded_runs_output_has_no_seed_stats_marker() {
+        assert_eq!(
+            parse_seed_stats_marker("running 1 test\ntest x ... ok\n"),
+            None,
+            "an ordinary, ungated constructor's harness must print nothing here -- absence of \
+             the marker is how `verify` tells a seeded run from an unseeded one"
+        );
     }
 
     // -- the `String` marker wire-safety proof (task, 2026-08-27): a

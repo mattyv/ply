@@ -358,6 +358,14 @@ fn marker_display_expr(ty: &RustType, var: &str) -> String {
         RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => {
             format!("__ply_marker_val_{var}")
         }
+        // A seedable-wrapped shape (`Option<String>`/`Vec<String>`) has no
+        // `Display` impl either (neither does `Option`/`Vec` of anything),
+        // but both derive `Debug` via `String`'s own -- the same `{:?}` the
+        // `Option(_)`/`Vec(_)` arms above already use for their own inner
+        // types.
+        RustType::Unsupported(t) if classify_seedable_wrap(t).is_some() => {
+            format!("format!(\"{{:?}}\", {var})")
+        }
         // `NonZero{X}`'s own `Display` is already just the plain number
         // (std impls it as a pass-through to the inner integer), so the
         // default arm below is exact for it too -- no case needed.
@@ -729,6 +737,31 @@ fn combined_strategy_expr(cf: &ContractFn) -> Result<String> {
     combined_strategy_expr_for(&cf.params)
 }
 
+/// Exactly [`combined_strategy_expr_for`], except the named parameter's own
+/// strategy fragment is replaced with `strategy_expr_override` wholesale --
+/// used only to splice the corpus-backed seeded strategy into one
+/// constructor parameter's slot (`receiver_pattern_and_strategy`) without
+/// duplicating the tuple-building logic above it. `override_slot: None`
+/// (every constructor with nothing seeded) computes byte-identical output
+/// to `combined_strategy_expr_for`.
+fn combined_strategy_expr_for_with_override(
+    params: &[Param],
+    override_slot: Option<(&str, &str)>,
+) -> Result<String> {
+    let plans: Vec<ParamPlan> = params.iter().map(plan_for_param).collect::<Result<_>>()?;
+    let mut strategies: Vec<String> = plans.into_iter().map(|p| p.strategy).collect();
+    if let Some((name, expr)) = override_slot
+        && let Some(idx) = params.iter().position(|p| p.name == name)
+    {
+        strategies[idx] = expr.to_string();
+    }
+    Ok(match strategies.len() {
+        0 => "proptest::strategy::Just(())".to_string(),
+        1 => strategies[0].clone(),
+        _ => format!("({})", strategies.join(", ")),
+    })
+}
+
 fn call_args_for(params: &[Param]) -> Vec<String> {
     params
         .iter()
@@ -757,7 +790,13 @@ fn moves_on_by_value_call(ty: &RustType) -> bool {
         RustType::Option(inner) => moves_on_by_value_call(inner),
         RustType::Result(ok, err) => moves_on_by_value_call(ok) || moves_on_by_value_call(err),
         RustType::Array(inner, _) => moves_on_by_value_call(inner),
-        RustType::Unsupported(_) => false,
+        // A seedable-wrapped shape (`Option<String>`/`Vec<String>`, see
+        // `SeedableWrap`'s own doc) owns a `String` inside, so it moves on
+        // a by-value call exactly as `RustType::String` itself already
+        // does above -- any other `Unsupported` shape is opaque to this
+        // codegen and conservatively assumed not to move, same as before
+        // this task.
+        RustType::Unsupported(t) => classify_seedable_wrap(t).is_some(),
         // A struct/enum parameter (2026-08-27): conservative rather than
         // measured -- Ply's parser does not read `#[derive(Copy)]`, so
         // whether a given user type actually moves on a by-value call is
@@ -854,9 +893,26 @@ fn receiver_pattern_and_strategy(
     plan: &harness::ReceiverPlan,
     target_pattern: &str,
     target_strategy: &str,
+    seed_plan: Option<&ReceiverSeedPlan>,
 ) -> Result<(String, String)> {
     let ctor_pattern = value_pattern_for(&plan.ctor_params);
-    let ctor_strategy = combined_strategy_expr_for(&plan.ctor_params)?;
+    // Seeded generation (docs/reach-measurement-2.md): when this
+    // constructor's text parameter is gated (a `requires`, or a fallible
+    // return) and a `ReceiverSeedPlan` was built for it, that one param's
+    // own strategy slot is overridden to draw from the corpus-backed
+    // `__PlySeedStrategy` (see `seed_apparatus`) instead of uniform text.
+    // Every other constructor -- the overwhelming majority -- takes the
+    // `None` arm below, byte-identical to before this existed.
+    let ctor_strategy = match seed_plan {
+        Some(sp) => combined_strategy_expr_for_with_override(
+            &plan.ctor_params,
+            Some((
+                &sp.param_name,
+                "__PlySeedStrategy { corpus: __ply_seed_corpus.clone() }",
+            )),
+        )?,
+        None => combined_strategy_expr_for(&plan.ctor_params)?,
+    };
     let num_ops = plan.operations.len();
     let mut step_strategies = vec![target_strategy.to_string()];
     for op in plan.operations.iter().skip(1) {
@@ -905,6 +961,7 @@ fn receiver_preamble(
     cf: &ContractFn,
     plan: &harness::ReceiverPlan,
     target_pattern: &str,
+    seed_plan: Option<&ReceiverSeedPlan>,
 ) -> Result<String> {
     let ctor_call = harness::last_two_segments(&plan.constructor);
     let ctor_args = call_args_for(&plan.ctor_params).join(", ");
@@ -948,6 +1005,20 @@ fn receiver_preamble(
     body.push_str(&format!(
         "let {mut_kw}__ply_receiver = {ctor_expr};\n            "
     ));
+    // Source 2 (design brief, docs/reach-measurement-2.md): reaching this
+    // line means every gate above already passed -- the requires filter, if
+    // any, and the constructor's own `Result`, if fallible -- so the text
+    // that was just accepted is certified valid by the code under check
+    // itself. It joins the corpus for the rest of *this* run, which is why
+    // a seeded run's evidence keeps improving as it goes rather than
+    // staying pinned to whatever `examples:` alone provided.
+    if let Some(sp) = seed_plan {
+        body.push_str(&format!(
+            "__ply_seed_corpus.borrow_mut().push({}.clone()); \
+             __ply_seed_corpus_grown.set(__ply_seed_corpus_grown.get() + 1);\n            ",
+            sp.param_name
+        ));
+    }
 
     let step_pattern = plan
         .operations
@@ -1004,6 +1075,511 @@ fn receiver_preamble(
     Ok(body)
 }
 
+// -- Seeded generation (docs/reach-measurement-2.md: "a type built from
+// text cannot be constructed from random text"). A receiver whose own
+// constructor parses a `&str`/`String` and is gated (a `#[ply::requires]`,
+// or a fallible `Result<Self, E>` return) grows a corpus of known-valid
+// text -- literal arguments a user's `examples:` already pass to that
+// constructor, plus every value the constructor accepts during the run --
+// and draws future cases as a mix of mutations of that corpus alongside a
+// continuing uniform trickle, rather than uniform text alone. See
+// `plan_receiver_seeding` for when this applies at all (an ungated
+// constructor is never touched) and `seed_apparatus` for the generated
+// runtime support.
+
+/// 4:1, mutate-from-corpus to uniform-trickle, once the corpus holds at
+/// least one known-valid value (empty corpus always trickles -- there is
+/// nothing yet to mutate). This is a real design parameter, not a footnote:
+/// the measured baseline (`docs/reach-measurement-2.md`) was 49 accepted out
+/// of 1074 *uniform* draws, roughly 4.6%, so a mix anywhere near uniform
+/// would still mostly fail to earn evidence -- the whole point of seeding.
+/// A ratio of 1 (all mutation, no trickle) was rejected instead: the brief's
+/// own "known failure mode" is that seeds anchor the distribution away from
+/// the extremes an author actually cared about, and *dropping* the uniform
+/// slice entirely would make a run permanently self-referential -- it could
+/// never discover a valid shape the corpus does not already resemble, and a
+/// pathological input reachable only by uniform luck would become
+/// permanently unreachable rather than merely less likely. Keeping a full
+/// fifth of draws genuinely uniform is what keeps the corpus itself capable
+/// of growing into new territory, not just mutating around what it started
+/// with -- the same shape of trade-off the integer strategies above already
+/// make (`prop_oneof![3 => small, 1 => any]`) and the string strategy makes
+/// again for its content (`9 => ascii, 1 => unicode`). Recorded here, and
+/// named in the diagnostic `verify` emits for a seeded run, so the ratio
+/// reaches the JSON envelope rather than living only in this comment.
+pub(crate) const SEED_MUTATE_WEIGHT: u32 = 4;
+pub(crate) const SEED_TRICKLE_WEIGHT: u32 = 1;
+
+/// What a seeded receiver constructor parameter needs: which parameter
+/// (by name, so `receiver_preamble` can splice a read of its own bound
+/// variable) and the seeds pulled from `examples:` at codegen time (source
+/// 1 of 2 -- source 2, values the constructor accepts at runtime, is grown
+/// entirely inside the generated harness and never seen here).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReceiverSeedPlan {
+    param_name: String,
+    examples_seeds: Vec<String>,
+}
+
+/// Whether `plan`'s constructor should be seeded at all, and if so, from
+/// what. Deliberately narrow (2026-09-01): seeding only a receiver's own
+/// constructor, only its first `String`-typed parameter, and only when that
+/// constructor actually rejects something -- an ungated constructor accepts
+/// every draw already, so seeding it would be a no-op wearing a feature's
+/// clothes, and the honesty condition ("a seeded verdict must never be
+/// indistinguishable from an unseeded one") is easiest to keep by simply
+/// never seeding where nothing is gated. `None` means every line downstream
+/// of this stays byte-identical to before this feature existed.
+fn plan_receiver_seeding(
+    plan: &harness::ReceiverPlan,
+    examples_pool: &[String],
+) -> Option<ReceiverSeedPlan> {
+    let gated =
+        plan.ctor_requires.is_some() || matches!(plan.ctor_return, harness::CtorReturn::ResultSelf);
+    if !gated {
+        return None;
+    }
+    let string_param = plan.ctor_params.iter().find(|p| p.ty == RustType::String)?;
+    let examples_seeds = extract_examples_seed_strings(examples_pool, &plan.constructor);
+    Some(ReceiverSeedPlan {
+        param_name: string_param.name.clone(),
+        examples_seeds,
+    })
+}
+
+/// Source 1 (design brief): every string-literal argument passed to a call
+/// matching `ctor_path` (matched on its last two `::`-segments, the same
+/// convention [`harness::last_two_segments`] uses everywhere else), found
+/// anywhere in `examples` -- purely syntactic, exactly like
+/// [`generate_example_test`] already parses these same strings into
+/// assertions. Zero new vocabulary: an `examples:` entry a user already
+/// wrote is scanned for calls to the constructor being seeded, and its
+/// literal string arguments become known-valid corpus values. An entry that
+/// does not parse contributes nothing here -- it is someone else's
+/// diagnostic (`E0501`) to report, not this extractor's.
+pub fn extract_examples_seed_strings(examples: &[String], ctor_path: &str) -> Vec<String> {
+    struct CtorArgCollector<'a> {
+        target: &'a str,
+        out: Vec<String>,
+    }
+    impl<'a> Visit<'a> for CtorArgCollector<'a> {
+        fn visit_expr_call(&mut self, node: &'a syn::ExprCall) {
+            let func_text = node.func.to_token_stream().to_string().replace(' ', "");
+            if harness::last_two_segments(&func_text) == self.target {
+                for arg in &node.args {
+                    if let Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    }) = arg
+                    {
+                        self.out.push(s.value());
+                    }
+                }
+            }
+            syn::visit::visit_expr_call(self, node);
+        }
+    }
+    let target = harness::last_two_segments(ctor_path);
+    let mut out = Vec::new();
+    for example in examples {
+        let Ok(expr) = syn::parse_str::<Expr>(example) else {
+            continue;
+        };
+        let mut collector = CtorArgCollector {
+            target: &target,
+            out: Vec::new(),
+        };
+        collector.visit_expr(&expr);
+        out.append(&mut collector.out);
+    }
+    out
+}
+
+// -- widening past the receiver-constructor case (2026-09-01, TODO.md "an
+// example does not unblock a parameter Ply cannot build"). Everything above
+// this point seeds a receiver's own constructor; everything below seeds a
+// *plain* (non-receiver) function's own parameter whose type `RustType`
+// deliberately never builds at all -- `Option<String>`/`Vec<String>` (see
+// `SeedableWrap`'s own doc for exactly why these two and not, say, nested
+// `NonZero`/`Duration`/`f32`/`f64`, which are real widenings not attempted
+// this session). The two mechanisms never coexist on one generated harness
+// (`plan_param_seeding` refuses outright whenever `cf.receiver.is_some()`),
+// so they safely reuse the exact same apparatus below (`seed_apparatus`,
+// `__ply_seed_corpus` and friends) with no risk of two definitions of the
+// same name landing in one generated `#[test] fn` body.
+
+/// A parameter shape `RustType` classifies `Unsupported` -- deliberately,
+/// since `RustType::String` is never nested (see its own doc) -- but whose
+/// *text* Ply's existing corpus/mutate/trickle apparatus can grow once an
+/// `examples:` entry supplies a starting value. Named for what wraps the
+/// text, since the wrapping is all this module builds on top of the same
+/// seeded `String` strategy: `Option::of` for `OptionString`, a bounded
+/// `proptest::collection::vec` for `VecString` -- both proptest combinators
+/// that vary structure (present/absent, how many) around a strategy that
+/// already varies the text itself, so no new mutation logic is needed for
+/// either shape.
+///
+/// Not attempted this session, and disclosed rather than silently skipped
+/// (see TODO.md): `Result<String, E>`, and nested `NonZero`/`Duration`/
+/// `f32`/`f64` inside any of these wrappers -- each is a real widening (a
+/// `Result`'s `Err` arm needs its own construction story; a number has no
+/// existing mutation apparatus the way text does), not a trivial extension
+/// of what is here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedableWrap {
+    OptionString,
+    VecString,
+}
+
+/// Classifies an `Unsupported` type's own normalised source text (exactly
+/// what [`harness::RustType::Unsupported`] stores, so this reads the same
+/// spelling `rust_type_from_syn_at` already produced) as one of the two
+/// shapes above, or `None` for anything else -- an opaque struct, a type
+/// this session did not open, or a type that is not actually `Unsupported`
+/// at all (already buildable, so this mechanism has no job here). `None` is
+/// also the honest answer for a shape whose *inner* text cannot be varied
+/// -- there is no case in the list above where that is true, but a caller
+/// must never assume "classified" implies "always mutable" for some future
+/// addition without re-checking this doc.
+///
+/// Deliberately only the *owned* spellings (`Option<String>`/`Vec<String>`),
+/// never `Option<&str>`/`Vec<&str>` -- the wrapped strategy this module
+/// builds always produces an owned `String` inside (`__PlySeedStrategy`'s
+/// own `Value` type), and splicing that into a call site expecting `&str`
+/// needs a borrow this codegen does not add (unlike a bare `&str` top-level
+/// parameter, whose existing by-reference call-site handling is a different
+/// code path this shape does not go through). Recognising the borrowed
+/// spelling here without also fixing the call site would silently generate
+/// a harness that fails to compile (`error[E0308]`) -- narrower, but tested,
+/// beats broader and unverified.
+pub fn classify_seedable_wrap(source: &str) -> Option<SeedableWrap> {
+    match source {
+        "Option<String>" => Some(SeedableWrap::OptionString),
+        "Vec<String>" => Some(SeedableWrap::VecString),
+        _ => None,
+    }
+}
+
+/// What a seeded *plain parameter* needs: which one (by index, so the
+/// override lands in the right tuple slot, and by name, for the diagnostic
+/// and the runtime stats marker), which shape it wraps, and the seeds
+/// pulled from `examples:` at codegen time -- there is no "source 2" here
+/// (contrast [`ReceiverSeedPlan`]): nothing rejects an `Option<String>`/
+/// `Vec<String>` value the way a fallible constructor rejects text, so
+/// there is no runtime "accepted" event to grow the corpus from; it stays
+/// exactly the size `examples:` gave it, mutated and trickled from there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamSeedPlan {
+    param_index: usize,
+    param_name: String,
+    shape: SeedableWrap,
+    examples_seeds: Vec<String>,
+}
+
+/// Whether `cf`'s own parameters should be seeded at all, and if so, from
+/// what. Deliberately narrow, the same way [`plan_receiver_seeding`] is:
+///
+/// - never for a receiver method (`cf.receiver.is_some()`) -- that shape
+///   already has its own seeding story above, and the two apparatuses reuse
+///   the same generated variable names, so keeping them mutually exclusive
+///   by construction is what makes that reuse safe rather than a latent
+///   name collision;
+/// - never when more than one of `cf`'s own parameters is otherwise
+///   unbuildable -- combining two independent seed pools in one harness is
+///   a real widening this session does not attempt, so a fn with two such
+///   parameters simply stays refused, honestly, rather than seeding one and
+///   silently ignoring the other;
+/// - never for a shape [`classify_seedable_wrap`] does not recognise (an
+///   opaque type) -- there is no text to grow a corpus from, so seeding it
+///   would report cases that never happened;
+/// - never with zero seeds -- no `examples:` entry naming a value for this
+///   exact parameter means there is nothing to grow from yet, so this stays
+///   `None` and the parameter stays refused, exactly like an ungated
+///   receiver constructor stays unseeded.
+///
+/// `None` means every line downstream of this stays exactly as unbuildable
+/// as it always was.
+pub fn plan_param_seeding(cf: &ContractFn, examples_pool: &[String]) -> Option<ParamSeedPlan> {
+    if cf.receiver.is_some() {
+        return None;
+    }
+    let mut bad = cf
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| !p.ty.is_fuzz_supported());
+    let (idx, p) = bad.next()?;
+    if bad.next().is_some() {
+        return None;
+    }
+    let RustType::Unsupported(src) = &p.ty else {
+        return None;
+    };
+    let shape = classify_seedable_wrap(src)?;
+    let examples_seeds = extract_examples_seed_strings_for_param(examples_pool, &cf.path, idx);
+    if examples_seeds.is_empty() {
+        return None;
+    }
+    Some(ParamSeedPlan {
+        param_index: idx,
+        param_name: p.name.clone(),
+        shape,
+        examples_seeds,
+    })
+}
+
+/// Source 1 for a *plain parameter*'s own corpus, widened past
+/// [`extract_examples_seed_strings`]'s constructor-call shape: every string
+/// literal found *anywhere inside* the argument written at `param_index` of
+/// a call to `fn_path` (matched the same [`harness::last_two_segments`] way
+/// every other extractor here matches calls), found anywhere in `examples`.
+/// Deliberately structure-agnostic -- `Some("hi".to_string())`, a bare
+/// `vec!["a".into(), "b".into()]`, whatever wrapper the parameter's own
+/// declared type uses, every string literal inside that one argument's
+/// subtree becomes a seed. The same "purely syntactic, zero new vocabulary"
+/// contract as the constructor extractor: an unparseable example, or one
+/// that never calls `fn_path` at all, contributes nothing here.
+pub fn extract_examples_seed_strings_for_param(
+    examples: &[String],
+    fn_path: &str,
+    param_index: usize,
+) -> Vec<String> {
+    // A plain `syn::visit::Visit` walk (what `extract_examples_seed_strings`
+    // above uses) never looks inside a macro invocation's own tokens --
+    // `vec!["a".into(), "b".into()]` parses as one opaque `Expr::Macro`, and
+    // syn does not know `vec!`'s own grammar to descend into it. Since
+    // `Vec<String>`'s own examples are naturally written exactly that way,
+    // this scans the argument's raw token stream instead: every literal
+    // token, at any nesting depth (including inside a macro's `(...)`/
+    // `[...]`/`{...}` group), that parses as a string literal is a seed --
+    // structure-agnostic by construction, never needing a dedicated
+    // `visit_expr_*` arm for each new wrapper shape this module learns.
+    fn collect_string_literals(tokens: proc_macro2::TokenStream, out: &mut Vec<String>) {
+        for tt in tokens {
+            match tt {
+                proc_macro2::TokenTree::Literal(lit) => {
+                    if let Ok(syn::Lit::Str(s)) = syn::parse_str::<syn::Lit>(&lit.to_string()) {
+                        out.push(s.value());
+                    }
+                }
+                proc_macro2::TokenTree::Group(g) => collect_string_literals(g.stream(), out),
+                _ => {}
+            }
+        }
+    }
+    struct CallFinder<'a> {
+        target: &'a str,
+        param_index: usize,
+        out: Vec<String>,
+    }
+    impl<'a> Visit<'a> for CallFinder<'a> {
+        fn visit_expr_call(&mut self, node: &'a syn::ExprCall) {
+            let func_text = node.func.to_token_stream().to_string().replace(' ', "");
+            if harness::last_two_segments(&func_text) == self.target
+                && let Some(arg) = node.args.iter().nth(self.param_index)
+            {
+                collect_string_literals(arg.to_token_stream(), &mut self.out);
+            }
+            syn::visit::visit_expr_call(self, node);
+        }
+    }
+    let target = harness::last_two_segments(fn_path);
+    let mut out = Vec::new();
+    for example in examples {
+        let Ok(expr) = syn::parse_str::<Expr>(example) else {
+            continue;
+        };
+        let mut finder = CallFinder {
+            target: &target,
+            param_index,
+            out: Vec::new(),
+        };
+        finder.visit_expr(&expr);
+        out.append(&mut finder.out);
+    }
+    out
+}
+
+/// The wrapped strategy expression for one seeded plain parameter, spliced
+/// into the checked call's own strategy tuple in place of the `Unsupported`
+/// type's usual (nonexistent) one. Reuses [`seed_apparatus`]'s own
+/// `__PlySeedStrategy`/`__ply_seed_corpus` verbatim -- always safe, since
+/// [`plan_param_seeding`] never returns `Some` when `cf.receiver.is_some()`,
+/// the only other place that apparatus is spliced into a harness.
+/// Structural variety (present/absent, how many) comes from proptest's own
+/// combinators, not a new mutation function: `Option::of` sometimes draws
+/// `None` with no text at all, and `collection::vec` independently varies
+/// both each element's text and how many elements there are -- exactly the
+/// "elements or length" the design brief names for `Vec`.
+fn param_seed_wrapped_strategy_expr(plan: &ParamSeedPlan) -> String {
+    let inner = "__PlySeedStrategy { corpus: __ply_seed_corpus.clone() }";
+    match plan.shape {
+        SeedableWrap::OptionString => format!("proptest::option::of({inner})"),
+        SeedableWrap::VecString => format!("proptest::collection::vec({inner}, 0..=8)"),
+    }
+}
+
+/// [`combined_strategy_expr_for`], for the one case it cannot handle: a
+/// parameter whose type is `Unsupported` in the ordinary type system, so
+/// `plan_for_param`'s default arm would bail building its strategy before
+/// ever reaching an override. The seeded parameter's slot is built directly
+/// from [`param_seed_wrapped_strategy_expr`]; every other parameter goes
+/// through the ordinary `plan_for_param`, unaffected.
+fn combined_strategy_expr_for_param_seed(params: &[Param], plan: &ParamSeedPlan) -> Result<String> {
+    let mut strategies = Vec::with_capacity(params.len());
+    for (i, p) in params.iter().enumerate() {
+        if i == plan.param_index {
+            strategies.push(param_seed_wrapped_strategy_expr(plan));
+        } else {
+            strategies.push(plan_for_param(p)?.strategy);
+        }
+    }
+    Ok(match strategies.len() {
+        0 => "proptest::strategy::Just(())".to_string(),
+        1 => strategies[0].clone(),
+        _ => format!("({})", strategies.join(", ")),
+    })
+}
+
+/// [`params_preamble`]'s counterpart for the same case: the seeded
+/// parameter needs no preamble at all (proptest draws the wrapped value
+/// directly -- there is no constructor call to splice in, unlike a
+/// struct/enum parameter), so its slot is skipped rather than handed to
+/// `plan_for_param`, which would bail on it.
+fn params_preamble_for_param_seed(params: &[Param], plan: &ParamSeedPlan) -> Result<String> {
+    let mut out = String::new();
+    for (i, p) in params.iter().enumerate() {
+        if i == plan.param_index {
+            continue;
+        }
+        out.push_str(&plan_for_param(p)?.preamble);
+    }
+    Ok(out)
+}
+
+/// [`value_pattern_for`]'s counterpart for the same case: the seeded
+/// parameter's pattern is always just its own bare name (an `Unsupported`
+/// type is never [`RustType::UserTypeCtor`]/[`RustType::UserTypeFields`],
+/// the only shapes whose pattern is not just the parameter's name), so it
+/// is bound directly rather than handed to `plan_for_param`, which would
+/// bail on it just to compute the same bare name.
+fn value_pattern_for_with_param_seed(params: &[Param], plan: &ParamSeedPlan) -> Result<String> {
+    let mut names = Vec::with_capacity(params.len());
+    for (i, p) in params.iter().enumerate() {
+        if i == plan.param_index {
+            names.push(p.name.clone());
+        } else {
+            names.push(plan_for_param(p)?.pattern);
+        }
+    }
+    Ok(match names.len() {
+        0 => "_".to_string(),
+        1 => names[0].clone(),
+        _ => format!("({})", names.join(", ")),
+    })
+}
+
+/// The generated harness's own runtime support for one seeded `String`
+/// parameter, emitted once as nested items inside the generated `#[test]
+/// fn` itself -- never a shared dependency, since the harness crate depends
+/// on nothing but the target crate and proptest, and this keeps it that
+/// way. Builds: the corpus (`Rc<RefCell<Vec<String>>>`, seeded with
+/// `examples_seeds` and grown at runtime by `receiver_preamble`'s own
+/// push), a counter for how many joined it at runtime, a mutation function
+/// (character edit, splice, truncation, repetition, or a verbatim replay --
+/// the brief's own list), a uniform-text function reusing the same
+/// content/length decisions [`strategy_expr`]'s own `RustType::String` arm
+/// already makes, and the `proptest::strategy::Strategy` implementation
+/// that draws [`SEED_MUTATE_WEIGHT`]:[`SEED_TRICKLE_WEIGHT`] between them
+/// (always trickling when the corpus is still empty, since there is
+/// nothing yet to mutate).
+fn seed_apparatus(examples_seeds: &[String]) -> String {
+    let literal_seeds = examples_seeds
+        .iter()
+        .map(|s| format!("{}.to_string()", proc_macro2::Literal::string(s)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let total_weight = SEED_MUTATE_WEIGHT + SEED_TRICKLE_WEIGHT;
+    format!(
+        "            let __ply_seed_corpus: std::rc::Rc<std::cell::RefCell<Vec<String>>> = \
+         std::rc::Rc::new(std::cell::RefCell::new(vec![{literal_seeds}]));\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let __ply_seed_corpus_grown = std::cell::Cell::new(0u32);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20fn __ply_seed_uniform(__ply_rng: &mut proptest::test_runner::TestRng) -> String {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20use proptest::prelude::Rng;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_len = __ply_rng.random_range(0u32..={STRING_MAX_CHARS}u32);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20(0..__ply_len).map(|_| {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if __ply_rng.random_range(0u32..10u32) < 9 {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20char::from_u32(__ply_rng.random_range(0x20u32..=0x7eu32)).unwrap_or('a')\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}} else {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20char::from_u32(__ply_rng.random_range(0xa0u32..=0x10ffffu32)).unwrap_or('a')\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}).collect::<String>()\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20fn __ply_seed_mutate(__ply_base: &str, __ply_rng: &mut proptest::test_runner::TestRng) -> String {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20use proptest::prelude::Rng;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let mut __ply_chars: Vec<char> = __ply_base.chars().collect();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20match __ply_rng.random_range(0u32..5u32) {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x200 => {{}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x201 => {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if !__ply_chars.is_empty() {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_i = __ply_rng.random_range(0..__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_chars[__ply_i] = if __ply_rng.random_range(0u32..10u32) < 9 {{ char::from_u32(__ply_rng.random_range(0x20u32..=0x7eu32)).unwrap_or('a') }} else {{ char::from_u32(__ply_rng.random_range(0xa0u32..=0x10ffffu32)).unwrap_or('a') }};\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x202 => {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_i = __ply_rng.random_range(0..=__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_c = char::from_u32(__ply_rng.random_range(0x20u32..=0x7eu32)).unwrap_or('a');\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_chars.insert(__ply_i, __ply_c);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x203 => {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if !__ply_chars.is_empty() {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_new_len = __ply_rng.random_range(0..__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_chars.truncate(__ply_new_len);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20_ => {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if !__ply_chars.is_empty() {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_i = __ply_rng.random_range(0..__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_j = __ply_rng.random_range(__ply_i..__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_seg: Vec<char> = __ply_chars[__ply_i..=__ply_j].to_vec();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_at = __ply_rng.random_range(0..=__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20for (__ply_k, __ply_c) in __ply_seg.into_iter().enumerate() {{ __ply_chars.insert(__ply_at + __ply_k, __ply_c); }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_chars.into_iter().collect()\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20struct __PlySeedValueTree {{ value: String }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20impl proptest::strategy::ValueTree for __PlySeedValueTree {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20type Value = String;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20fn current(&self) -> String {{ self.value.clone() }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20fn simplify(&mut self) -> bool {{ false }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20fn complicate(&mut self) -> bool {{ false }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20#[derive(Clone)]\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20struct __PlySeedStrategy {{ corpus: std::rc::Rc<std::cell::RefCell<Vec<String>>> }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20impl std::fmt::Debug for __PlySeedStrategy {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ write!(f, \"__PlySeedStrategy\") }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20impl proptest::strategy::Strategy for __PlySeedStrategy {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20type Tree = __PlySeedValueTree;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20type Value = String;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20fn new_tree(&self, __ply_runner: &mut proptest::test_runner::TestRunner) -> proptest::strategy::NewTree<Self> {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20use proptest::prelude::Rng;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_len = self.corpus.borrow().len();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_value = if __ply_len == 0 || __ply_runner.rng().random_range(0u32..{total_weight}u32) >= {SEED_MUTATE_WEIGHT}u32 {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_seed_uniform(__ply_runner.rng())\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}} else {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_idx = __ply_runner.rng().random_range(0..__ply_len);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_base = self.corpus.borrow()[__ply_idx].clone();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_seed_mutate(&__ply_base, __ply_runner.rng())\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}};\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(__PlySeedValueTree {{ value: __ply_value }})\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n"
+    )
+}
+
 /// Generates the `ply_fuzz_{fn}` proptest-driven test: `cases` runs of the
 /// combined strategy, `requires` as a rejection filter (§5.4c), the
 /// `ensures` clause checked in `catch_unwind` (never crashing the whole
@@ -1015,15 +1591,45 @@ fn receiver_preamble(
 ///
 /// Returns just the `#[test] fn ply_fuzz_{fn}() { ... }` item text -- the
 /// caller assembles it into the per-fn `mod {fn}_harness { ... }` alongside
-/// the example/direct-case tests.
+/// the example/direct-case tests. Never seeded (see
+/// [`generate_fuzz_test_with_examples`] for that): every existing caller of
+/// this exact function keeps the exact behaviour it always had.
 pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Result<String> {
+    generate_fuzz_test_with_examples(cf, cases, seed, &[])
+}
+
+/// Exactly [`generate_fuzz_test`], plus `examples_pool` -- every `examples:`
+/// entry declared anywhere in the crate being verified (not just this fn's
+/// own), so a seed written against the constructor from a sibling claim
+/// still counts. `examples_pool` is otherwise inert: it only ever matters
+/// when `cf` is a receiver method whose constructor [`plan_receiver_seeding`]
+/// decides to seed, which is exactly when [`generate_fuzz_test`]'s `&[]`
+/// above would also decide *not* to seed for lack of any pool at all -- so
+/// passing `&[]` here is indistinguishable from calling
+/// `generate_fuzz_test` directly, which is what the plain wrapper does.
+pub fn generate_fuzz_test_with_examples(
+    cf: &ContractFn,
+    cases: u32,
+    seed: &[u8; 32],
+    examples_pool: &[String],
+) -> Result<String> {
     let Some((_closure, _)) = &cf.ensures else {
         bail!(
             "fuzz check requires an #[ply::ensures] clause on `{}` to check against",
             cf.name
         );
     };
-    if !cf.is_fuzz_supported() {
+    // Widening past the receiver-constructor case (2026-09-01): computed
+    // once, up front, exactly like `seed_plan` below computes the receiver
+    // case -- `None` for every fn that is not a plain function with exactly
+    // one otherwise-unbuildable, example-seeded `Option<String>`/
+    // `Vec<String>` parameter, which is the vast majority. When `Some`, this
+    // parameter's own type stays `Unsupported` in the ordinary sense
+    // (`is_fuzz_supported()` below still says `false` for it), so every
+    // check that follows must ask for this plan explicitly rather than
+    // re-deriving "is this really unsupported" from the type alone.
+    let param_seed_plan = plan_param_seeding(cf, examples_pool);
+    if !cf.is_fuzz_supported() && param_seed_plan.is_none() {
         let bad: Vec<String> = cf
             .params
             .iter()
@@ -1059,8 +1665,20 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
         );
     }
 
-    let target_pattern = value_pattern(cf);
-    let target_strategy = combined_strategy_expr(cf)?;
+    // A plain parameter seeded per `param_seed_plan` above needs its own
+    // pattern/strategy built through the seeded-aware variants (the
+    // ordinary ones would bail trying to build a strategy for its
+    // `Unsupported` type) -- `None` for every fn `plan_param_seeding`
+    // refused, which takes the exact `value_pattern`/`combined_strategy_
+    // expr` calls this always used.
+    let target_pattern = match &param_seed_plan {
+        Some(plan) => value_pattern_for_with_param_seed(&cf.params, plan)?,
+        None => value_pattern(cf),
+    };
+    let target_strategy = match &param_seed_plan {
+        Some(plan) => combined_strategy_expr_for_param_seed(&cf.params, plan)?,
+        None => combined_strategy_expr(cf)?,
+    };
     let seed_literal = format!(
         "[{}]",
         seed.iter()
@@ -1076,10 +1694,28 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
     // the receiver and drives the sequence before the checked call runs.
     // Every other fn's generated harness is byte-identical to before this
     // task -- `receiver` is `None` everywhere else.
+    // Seeded generation (docs/reach-measurement-2.md): computed once, up
+    // front, from the receiver's own constructor plan and the crate-wide
+    // examples pool -- `None` for every receiver whose constructor is not
+    // gated, and for every non-receiver fn, which is the vast majority and
+    // takes byte-identical paths below to before this feature existed.
+    let seed_plan = cf
+        .receiver
+        .as_ref()
+        .and_then(|plan| plan_receiver_seeding(plan, examples_pool));
     let (pattern, strategy, receiver_preamble_text) = match &cf.receiver {
         Some(plan) => {
-            let (p, s) = receiver_pattern_and_strategy(plan, &target_pattern, &target_strategy)?;
-            (p, s, receiver_preamble(cf, plan, &target_pattern)?)
+            let (p, s) = receiver_pattern_and_strategy(
+                plan,
+                &target_pattern,
+                &target_strategy,
+                seed_plan.as_ref(),
+            )?;
+            (
+                p,
+                s,
+                receiver_preamble(cf, plan, &target_pattern, seed_plan.as_ref())?,
+            )
         }
         None => (
             target_pattern.clone(),
@@ -1097,7 +1733,10 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
     // receiver`'s own comment on `target_params`), so this is always empty
     // in that case too -- the receiver's own construction, including its
     // constructor's arguments, is entirely `receiver_preamble_text`'s job.
-    let params_preamble_text = params_preamble(&cf.params)?;
+    let params_preamble_text = match &param_seed_plan {
+        Some(plan) => params_preamble_for_param_seed(&cf.params, plan)?,
+        None => params_preamble(&cf.params)?,
+    };
     let target_args = call_args(cf).join(", ");
     let args = match &cf.receiver {
         Some(_) if target_args.is_empty() => "&__ply_receiver".to_string(),
@@ -1202,6 +1841,54 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
         ));
     }
 
+    // Seeded generation's own runtime support and the honest-provenance
+    // marker it reports (docs/reach-measurement-2.md): both empty strings
+    // for the vast majority of fns (`seed_plan` is `None`), so the
+    // generated test is byte-identical to before this feature existed --
+    // the honesty condition CLAUDE.md calls out by name ("a seeded verdict
+    // must never be indistinguishable from an unseeded one") cuts both
+    // ways, and an unseeded run must carry no trace of this mechanism
+    // either.
+    // The two seeding mechanisms are mutually exclusive by construction
+    // (`plan_param_seeding` refuses whenever `cf.receiver.is_some()`, the
+    // only other place `seed_plan` is `Some`), so it is safe to build the
+    // exact same apparatus from either one -- never both, so never two
+    // definitions of the same generated name in one `#[test] fn` body.
+    let seed_setup = match (&seed_plan, &param_seed_plan) {
+        (Some(sp), _) => seed_apparatus(&sp.examples_seeds),
+        (None, Some(psp)) => seed_apparatus(&psp.examples_seeds),
+        (None, None) => String::new(),
+    };
+    // Printed unconditionally (never gated on the outcome below) so
+    // `verify` can learn the real provenance -- how many seeds came from
+    // `examples:`, how many the constructor accepted at runtime, and the
+    // same rejected/total counts the high-rejection warning already
+    // computes -- whichever way the run ends: a clean pass, a violation, or
+    // proptest abandoning the run entirely for lack of any accepted value
+    // to grow from.
+    // A plain-parameter-seeded run's own marker additionally names the
+    // parameter (`|param={name}`) -- there is no rejection dynamic to
+    // report here (nothing gates an `Option<String>`/`Vec<String>` value
+    // the way a fallible constructor gates text), so `accepted` always
+    // reads 0 (`__ply_seed_corpus_grown` is never incremented for this
+    // mechanism -- see `ParamSeedPlan`'s own doc on why there is no
+    // "source 2"), which is the honest count: nothing grew beyond what
+    // `examples:` gave it. `__ply_rej`/`__ply_tot` still track whatever this
+    // fn's own `#[ply::requires]` rejected, if it has one -- unrelated to
+    // seeding, and correct either way.
+    let seed_stats_marker = match (&seed_plan, &param_seed_plan) {
+        (Some(sp), _) => format!(
+            "eprintln!(\"PLY_FUZZ_SEED_STATS|{label}|examples={ex}|accepted={{}}|rejected={{}}|total={{}}\", __ply_seed_corpus_grown.get(), __ply_rej, __ply_tot);\n            ",
+            ex = sp.examples_seeds.len()
+        ),
+        (None, Some(psp)) => format!(
+            "eprintln!(\"PLY_FUZZ_SEED_STATS|{label}|examples={ex}|accepted={{}}|rejected={{}}|total={{}}|param={pname}\", __ply_seed_corpus_grown.get(), __ply_rej, __ply_tot);\n            ",
+            ex = psp.examples_seeds.len(),
+            pname = psp.param_name,
+        ),
+        (None, None) => String::new(),
+    };
+
     Ok(format!(
         "    #[test]\n\
          \x20\x20\x20\x20fn ply_fuzz_{ident}() {{\n\
@@ -1213,6 +1900,7 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
          \x20\x20\x20\x20\x20\x20\x20\x20);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rejected = std::cell::Cell::new(0u32);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_total = std::cell::Cell::new(0u32);\n\
+         {seed_setup}\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {strategy};\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{pattern}| {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
@@ -1235,6 +1923,7 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
          \x20\x20\x20\x20\x20\x20\x20\x20}});\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rej = __ply_rejected.get();\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_tot = __ply_total.get();\n\
+         {seed_stats_marker}\
          \x20\x20\x20\x20\x20\x20\x20\x20match __ply_outcome {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(()) => {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if __ply_tot > 0 && (__ply_rej as f64) / (__ply_tot as f64) > 0.5 {{\n\
@@ -1548,6 +2237,91 @@ fn extra_type_imports(cf: &ContractFn) -> Vec<String> {
     out
 }
 
+/// Every path expression's leading identifier in `expr`, collected without
+/// judging whether it names a type -- `Ordering` from `Ordering::Greater`,
+/// `x` from a bare parameter read, `result` from the closure's own
+/// parameter, all land in the same set. Over-collection costs nothing:
+/// [`contract_referenced_use_imports`] only acts on names that also happen
+/// to be a key in the file's own `use` aliases, and a parameter or `result`
+/// never is one. Mirrors `find_moved_param_read`'s own `Visit`-based walk
+/// two functions above it in this file.
+fn collect_leading_idents(expr: &Expr, out: &mut BTreeSet<String>) {
+    struct Finder<'a> {
+        out: &'a mut BTreeSet<String>,
+    }
+    impl<'a> Visit<'a> for Finder<'a> {
+        fn visit_expr_path(&mut self, node: &'a syn::ExprPath) {
+            if let Some(seg) = node.path.segments.first() {
+                self.out.insert(seg.ident.to_string());
+            }
+            syn::visit::visit_expr_path(self, node);
+        }
+    }
+    Finder { out }.visit_expr(expr);
+}
+
+/// The counterpart to `extra_type_imports` for a name the *contract text*
+/// refers to directly, rather than one reached by walking a parameter or
+/// the receiver (docs/reach-measurement-2.md: a postcondition naming
+/// `Ordering` -- not a parameter, not the return type, just a name in the
+/// `#[ply::ensures]` expression -- failed the generated harness with
+/// `error[E0433]: cannot find type Ordering in this scope`; nothing in
+/// `extra_type_imports` walks contract text at all).
+///
+/// Resolved only through `cf.use_aliases` -- exactly the `use` items the
+/// file the checked fn lives in already declared, matched against every
+/// name `collect_leading_idents` finds in `requires`/`ensures`. **Not** a
+/// blanket re-emission of every `use` in that file, and **not** a glob
+/// import of the target crate's own root: both were considered and
+/// rejected. A glob import of the target crate cannot reach this defect's
+/// own reproduction at all -- `Ordering` is `std::cmp::Ordering`, not
+/// anything the target crate exports, so only re-emitting the file's own
+/// `use std::cmp::Ordering;` (or an equivalent path) ever brings it into
+/// scope. And blindly re-emitting *every* `use` item in the file -- rather
+/// than only the ones the contract actually names -- risks a name that is
+/// private to the target crate for a completely unrelated reason (some
+/// helper the checked fn's contract never mentions): re-emitting that from
+/// what is, for the fuzz engine, a separate downstream crate would newly
+/// fail to compile on a function whose contract asked for nothing new, the
+/// exact "one fix breaks a neighbour" shape this project treats as
+/// seriously as a missing one. Scoping to referenced names keeps a failure
+/// possible only where the contract itself names something the crate does
+/// not export -- a real, actionable compiler error, not silent collateral
+/// damage.
+///
+/// `crate::`-prefixed segments are rewritten to `target_crate_ident` (an
+/// external harness crate has no `crate::` of its own that could mean the
+/// target); a `self::`/`super::`-prefixed path is skipped outright --
+/// resolving those needs the declaring module's own position in the crate
+/// tree, which this scan does not carry, the same crate-root assumption
+/// `extra_type_imports`'s own doc already states for a bare struct/enum
+/// name.
+fn contract_referenced_use_imports(cf: &ContractFn, target_crate_ident: &str) -> Vec<String> {
+    let mut idents = BTreeSet::new();
+    if let Some((expr, _)) = &cf.requires {
+        collect_leading_idents(expr, &mut idents);
+    }
+    if let Some((closure, _)) = &cf.ensures {
+        collect_leading_idents(&closure.body, &mut idents);
+    }
+    let mut out = Vec::new();
+    for ident in idents {
+        let Some(segments) = cf.use_aliases.get(&ident) else {
+            continue;
+        };
+        match segments.first().map(String::as_str) {
+            Some("self") | Some("super") => continue,
+            Some("crate") => {
+                let mut rewritten = vec![target_crate_ident.to_string()];
+                rewritten.extend(segments[1..].iter().cloned());
+                out.push(rewritten.join("::"));
+            }
+            _ => out.push(segments.join("::")),
+        }
+    }
+    out
+}
+
 pub fn wrap_fn_harness_module(
     cf: &ContractFn,
     target_crate_ident: &str,
@@ -1564,16 +2338,48 @@ pub fn wrap_fn_harness_module(
     // import naming the method.
     let import_path = cf.import_path();
     let mut out = format!(
-        "#[cfg(test)]\nmod {module_ident}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{import_path};\n"
+        "#[cfg(test)]\nmod {module_ident}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{import_path};\n\
+         \x20\x20\x20\x20#[allow(unused_imports)]\n    use {target_crate_ident}::*;\n"
     );
+    // The glob import above (2026-09-01, plain-parameter seeding widening,
+    // TODO.md): an `examples:` entry may reference a type -- `Opaque` in
+    // `always_true(Opaque::default())`, say -- that never appears anywhere
+    // in `cf`'s own resolved parameter types (`extra_type_imports` below
+    // only ever sees a `RustType::UserTypeCtor`/`UserTypeFields`, and an
+    // opaque type this scan could not build a value of, per `docs/review-
+    // self-construction.md`'s rule 3, stays `Unsupported` forever). Before
+    // this, only `test`/`fuzz` checks on a fn whose *own params* were all
+    // recognised user types ever needed such a name in scope, so the
+    // specific `use` list below was enough; opening `test` for an opaque
+    // parameter with an `examples:`-only seed (`run_fn_checks`'s own
+    // `test_unlocked_by_examples`) is the first shape where an example's
+    // own literal source can name a type nothing else here ever resolves --
+    // an explicit `use` several lines below always wins a name clash with
+    // this glob (Rust's own shadowing rule for a glob vs. a named import),
+    // so this never changes what any existing generated harness resolves a
+    // name to.
+    let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    emitted.insert(format!("{target_crate_ident}::{import_path}"));
     // Struct/enum parameters (2026-08-27): one `use` per type Ply itself
     // constructs -- assumed to sit at the target crate's own root, same as
     // every other bare struct/enum name this scan resolves
     // (`scan_crate_type_locations` indexes by bare name, not module path).
     for extra in extra_type_imports(cf) {
-        out.push_str(&format!(
-            "    #[allow(unused_imports)]\n    use {target_crate_ident}::{extra};\n"
-        ));
+        let full = format!("{target_crate_ident}::{extra}");
+        if emitted.insert(full.clone()) {
+            out.push_str(&format!("    #[allow(unused_imports)]\n    use {full};\n"));
+        }
+    }
+    // A type the *contract text* names directly, rather than one reached
+    // by walking a parameter or the receiver -- see
+    // `contract_referenced_use_imports`'s own doc (docs/reach-measurement-2.md).
+    // These are already full paths (`std::cmp::Ordering`,
+    // `{target_crate_ident}::foo::Bar`), unlike `extra_type_imports`'s bare
+    // names, so no additional prefix is added here.
+    for full in contract_referenced_use_imports(cf, target_crate_ident) {
+        if emitted.insert(full.clone()) {
+            out.push_str(&format!("    #[allow(unused_imports)]\n    use {full};\n"));
+        }
     }
     out.push('\n');
     for b in bodies {
@@ -1621,6 +2427,41 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
             !body.contains(": String = x;"),
             "a bare scalar reference assigned directly to a String-typed binding does not \
              compile (expected String, found u32):\n{body}"
+        );
+    }
+
+    /// docs/reach-measurement-2.md: a contract that *names* a type -- not a
+    /// parameter, not the return type, just a name written in the
+    /// `#[ply::ensures]`/`#[ply::requires]` text itself -- failed to
+    /// compile with `error[E0433]: cannot find type Ordering in this
+    /// scope`, because `wrap_fn_harness_module` only ever imports the
+    /// checked fn's own path and the types `extra_type_imports` finds by
+    /// walking *parameters and the receiver* -- never anything the contract
+    /// text alone refers to. This fixture reproduces the defect without
+    /// touching the return-type gate at all (`Ordering` here is not the
+    /// return type or a parameter -- just a name the postcondition reads --
+    /// so it is real regardless of the separate gate question): the crate
+    /// under test imports `std::cmp::Ordering` at the top of the file and
+    /// the contract names it, and nothing about the checked fn's signature
+    /// should stop the harness from seeing what the file itself can see.
+    #[test]
+    fn a_contract_naming_a_type_used_nowhere_in_the_signature_still_gets_its_own_import() {
+        let cf = discover(
+            r#"
+use std::cmp::Ordering;
+#[ply::ensures(|result| *result || Ordering::Equal == Ordering::Equal)]
+pub fn f(x: u32) -> bool { x > 0 }
+"#,
+            "f",
+        );
+        let fuzz_body = generate_fuzz_test(&cf, 8, &derive_seed("f", "")).unwrap();
+        let module = wrap_fn_harness_module(&cf, "target_crate", &[fuzz_body]);
+        assert!(
+            module.contains("use std::cmp::Ordering;"),
+            "a contract naming a type the checked fn's own file already imports must bring \
+             that same import into the generated harness module, or the harness fails to \
+             compile with \"cannot find type `Ordering` in this scope\" even though the type \
+             is right there in scope for the real function:\n{module}"
         );
     }
 
@@ -2246,6 +3087,317 @@ impl Pair {
         assert!(
             body.contains("extra as i128"),
             "a parameter read alongside `self` must survive untouched:\n{body}"
+        );
+    }
+
+    // -- seeded generation (docs/reach-measurement-2.md, "a type built from
+    // text cannot be constructed from random text"): a receiver whose own
+    // constructor takes a `&str`/`String` and is gated by a `requires` or a
+    // fallible return grows a corpus of known-valid text (`examples:` plus
+    // every value the constructor accepts during the run) and draws a mix
+    // of mutations of it alongside a continuing uniform trickle, instead of
+    // uniform text alone.
+
+    /// Source 1 (design brief): the string literals a user's own
+    /// `examples:` entry already passes to the constructor are extractable
+    /// syntactically, with zero new vocabulary -- `examples:` entries are
+    /// Rust expressions Ply already parses into assertions
+    /// (`generate_example_test`).
+    #[test]
+    fn extracts_string_literals_passed_to_the_named_constructor() {
+        let examples = vec![
+            "Prerelease::new(\"beta.1\").unwrap().is_empty() == false".to_string(),
+            "Prerelease::new(\"0\").unwrap().as_str() == \"0\"".to_string(),
+            // A call to a different function must not contribute -- only
+            // literal arguments to *this* constructor are corpus material.
+            "Version::parse(\"1.2.3\").is_ok()".to_string(),
+        ];
+        let seeds = extract_examples_seed_strings(&examples, "Prerelease::new");
+        assert_eq!(
+            seeds,
+            vec!["beta.1".to_string(), "0".to_string()],
+            "must collect exactly the literal arguments passed to `Prerelease::new`, in order, \
+             and nothing passed to an unrelated call"
+        );
+    }
+
+    #[test]
+    fn examples_seed_extraction_ignores_a_call_with_no_string_literal_argument() {
+        let examples = vec!["Prerelease::new(some_variable).is_ok()".to_string()];
+        assert_eq!(
+            extract_examples_seed_strings(&examples, "Prerelease::new"),
+            Vec::<String>::new(),
+            "a non-literal argument is not a known-valid value Ply can embed -- nothing to \
+             extract"
+        );
+    }
+
+    #[test]
+    fn examples_seed_extraction_skips_an_unparseable_entry_rather_than_failing() {
+        let examples = vec!["Prerelease::new(".to_string()];
+        assert_eq!(
+            extract_examples_seed_strings(&examples, "Prerelease::new"),
+            Vec::<String>::new(),
+            "a malformed example is someone else's diagnostic (E0501) to report -- this \
+             extractor just finds nothing in it"
+        );
+    }
+
+    /// The measurement's own probe, close to verbatim: a receiver method
+    /// (`is_empty`) whose receiver is built by a fallible, text-parsing
+    /// constructor (`Prerelease::new`). With one `examples:`-derived seed,
+    /// the generated harness must grow its corpus from it and from the
+    /// constructor's own runtime accepts, not sample uniform text alone.
+    #[test]
+    fn a_gated_text_constructor_gets_a_seeded_strategy_when_examples_provide_a_seed() {
+        let cf = discover_receiver(
+            r#"
+pub struct PrereleaseErr;
+pub struct Prerelease { text: String }
+impl Prerelease {
+    pub fn new(text: &str) -> Result<Self, PrereleaseErr> {
+        if text.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+            Ok(Prerelease { text: text.to_string() })
+        } else {
+            Err(PrereleaseErr)
+        }
+    }
+    #[ply::ensures(|result| *result == self.text.is_empty())]
+    pub fn is_empty(&self) -> bool { self.text.is_empty() }
+}
+"#,
+            "m::Prerelease::is_empty",
+        );
+        let examples = vec!["Prerelease::new(\"beta.1\").is_ok()".to_string()];
+        let body =
+            generate_fuzz_test_with_examples(&cf, 64, &derive_seed("is_empty", ""), &examples)
+                .unwrap();
+        assert!(
+            body.contains("__PlySeedStrategy"),
+            "the ctor's own text parameter must draw from the seeded strategy, not uniform \
+             text alone:\n{body}"
+        );
+        assert!(
+            body.contains("\"beta.1\".to_string()"),
+            "the example's literal argument must be embedded as an owned `String`, not a bare \
+             `&str` literal -- `Vec<String>` does not accept one (`error[E0308]`, found by \
+             actually compiling this exact fixture in the textseeded e2e test):\n{body}"
+        );
+        assert!(
+            body.contains("__ply_seed_corpus.borrow_mut().push"),
+            "every value the constructor accepts during the run must join the corpus too \
+             (design brief, source 2):\n{body}"
+        );
+        assert!(
+            body.contains("PLY_FUZZ_SEED_STATS|"),
+            "the run must report its own provenance (examples vs. runtime-accepted counts) \
+             so the verdict can carry it honestly:\n{body}"
+        );
+    }
+
+    /// The other honesty condition CLAUDE.md calls out by name: a seeded
+    /// run must never be indistinguishable from an unseeded one. A
+    /// constructor with no `requires` and no fallible return has nothing to
+    /// reject, so there is nothing to seed against -- the generated harness
+    /// must come out byte-identical to what the unseeded path already
+    /// produced (`generates_a_fuzz_test_for_a_scalar_fn`'s sibling case,
+    /// for a receiver instead of a free fn).
+    #[test]
+    fn an_infallible_unconstrained_text_constructor_is_not_seeded() {
+        let cf = discover_receiver(
+            r#"
+pub struct Label { text: String }
+impl Label {
+    pub fn new(text: &str) -> Self { Label { text: text.to_string() } }
+    #[ply::ensures(|result| *result == self.text.len() as u32)]
+    pub fn length(&self) -> u32 { self.text.len() as u32 }
+}
+"#,
+            "m::Label::length",
+        );
+        let seed = derive_seed("length", "");
+        let with_examples = generate_fuzz_test_with_examples(
+            &cf,
+            64,
+            &seed,
+            &["Label::new(\"x\").length()".to_string()],
+        )
+        .unwrap();
+        let without = generate_fuzz_test(&cf, 64, &seed).unwrap();
+        assert_eq!(
+            with_examples, without,
+            "an unconstrained constructor rejects nothing, so seeding it would be a no-op \
+             disguised as a feature -- the generated harness must be unaffected either way"
+        );
+        assert!(
+            !with_examples.contains("__PlySeedStrategy"),
+            "must not seed a constructor with nothing gating it:\n{with_examples}"
+        );
+    }
+
+    // -- widening past the receiver-constructor case (2026-09-01, TODO.md
+    // "an example does not unblock a parameter Ply cannot build"): a *plain*
+    // function's own parameter whose type Ply's ordinary codegen cannot
+    // build at all (`Option<String>`, `Vec<String>` -- see `SeedableWrap`'s
+    // own doc) is seeded from an `examples:` entry the same way, reusing the
+    // exact corpus/mutate/trickle apparatus above rather than a second one.
+
+    #[test]
+    fn classify_seedable_wrap_recognises_option_and_vec_of_string_only() {
+        assert_eq!(
+            classify_seedable_wrap("Option<String>"),
+            Some(SeedableWrap::OptionString)
+        );
+        assert_eq!(
+            classify_seedable_wrap("Vec<String>"),
+            Some(SeedableWrap::VecString)
+        );
+        assert_eq!(
+            classify_seedable_wrap("Option<u32>"),
+            None,
+            "already buildable without seeding -- not this mechanism's job"
+        );
+        assert_eq!(
+            classify_seedable_wrap("Widget"),
+            None,
+            "opaque -- no part of it is text Ply knows how to mutate"
+        );
+    }
+
+    #[test]
+    fn extracts_a_string_literal_from_anywhere_inside_the_named_parameter_slot() {
+        let examples = vec![
+            "width(Some(\"hi\".to_string())) == 2".to_string(),
+            // A call to a different function must not contribute.
+            "other(Some(\"nope\".to_string()))".to_string(),
+        ];
+        let seeds = extract_examples_seed_strings_for_param(&examples, "width", 0);
+        assert_eq!(
+            seeds,
+            vec!["hi".to_string()],
+            "must find the literal wrapped inside `Some(...)`, structure-agnostic, and nothing \
+             from an unrelated call"
+        );
+    }
+
+    #[test]
+    fn param_seed_extraction_finds_nothing_when_no_example_calls_this_fn() {
+        let examples = vec!["other(Some(\"x\".to_string()))".to_string()];
+        assert_eq!(
+            extract_examples_seed_strings_for_param(&examples, "width", 0),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The worked example (TODO.md, "the measured gap"): a plain fn's own
+    /// `Option<String>` parameter, refused outright before this task, now
+    /// builds a real seeded strategy once an `examples:` entry supplies a
+    /// starting value.
+    #[test]
+    fn a_plain_fns_option_string_parameter_is_seeded_when_an_example_provides_one() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result >= 0)]
+pub fn width(label: Option<String>) -> usize { label.map(|s| s.len()).unwrap_or(0) }
+"#,
+            "width",
+        );
+        let examples = vec!["width(Some(\"hi\".to_string())) == 2".to_string()];
+        let body = generate_fuzz_test_with_examples(&cf, 64, &derive_seed("width", ""), &examples)
+            .unwrap();
+        assert!(
+            body.contains("__PlySeedStrategy"),
+            "the parameter must draw from the seeded corpus instead of staying refused:\n{body}"
+        );
+        assert!(
+            body.contains("proptest::option::of("),
+            "an `Option<String>` parameter must be wrapped with proptest's own `Option` \
+             combinator around the seeded string strategy:\n{body}"
+        );
+        assert!(
+            body.contains("\"hi\".to_string()"),
+            "the example's literal text must seed the corpus:\n{body}"
+        );
+        assert!(
+            body.contains("PLY_FUZZ_SEED_STATS|") && body.contains("param=label"),
+            "the run must report which parameter was seeded, so the verdict can name it \
+             honestly:\n{body}"
+        );
+    }
+
+    /// The `Vec<String>` sibling: growth by element and by length, not just
+    /// by mutating one string's text.
+    #[test]
+    fn a_plain_fns_vec_string_parameter_is_seeded_when_an_example_provides_one() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result >= 0)]
+pub fn total_len(tags: Vec<String>) -> usize { tags.iter().map(|s| s.len()).sum() }
+"#,
+            "total_len",
+        );
+        let examples = vec!["total_len(vec![\"hi\".to_string()]) == 2".to_string()];
+        let body =
+            generate_fuzz_test_with_examples(&cf, 64, &derive_seed("total_len", ""), &examples)
+                .unwrap();
+        assert!(
+            body.contains("__PlySeedStrategy"),
+            "the parameter's elements must draw from the seeded corpus:\n{body}"
+        );
+        assert!(
+            body.contains("proptest::collection::vec(__PlySeedStrategy"),
+            "a `Vec<String>` parameter must vary both element text and length -- \
+             `proptest::collection::vec` around the seeded string strategy:\n{body}"
+        );
+        assert!(
+            body.contains("\"hi\".to_string()"),
+            "the example's literal text must seed the corpus:\n{body}"
+        );
+    }
+
+    /// Revert-proof (CLAUDE.md: prove every fix bites): with no `examples:`
+    /// entry naming a value for `label`, `Option<String>` remains exactly as
+    /// unbuildable as it always was -- this must still bail, not silently
+    /// produce a harness with nothing to draw from.
+    #[test]
+    fn without_an_example_an_option_string_parameter_still_bails() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result >= 0)]
+pub fn width(label: Option<String>) -> usize { label.map(|s| s.len()).unwrap_or(0) }
+"#,
+            "width",
+        );
+        let err = generate_fuzz_test(&cf, 64, &derive_seed("width", "")).unwrap_err();
+        assert!(
+            err.to_string().contains("V0505"),
+            "no example, no seed, so this parameter is still refused by name: {err}"
+        );
+    }
+
+    /// The honesty condition (CLAUDE.md, "one value run 256 times is one
+    /// test"): a parameter Ply cannot build *and* cannot mutate must never
+    /// borrow the seeded machinery just because an example exists --
+    /// `plan_param_seeding` must say `None` for it, so the caller never
+    /// claims growth that cannot happen.
+    #[test]
+    fn an_opaque_unsupported_parameter_is_never_planned_for_seeding() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result)]
+pub fn always_true(_o: Widget) -> bool { true }
+"#,
+            "always_true",
+        );
+        // Deliberately contains a string literal a broken `classify_seedable_
+        // wrap` (one that answered `Some` for everything) would happily
+        // treat as a seed -- so this test fails for the right reason if
+        // that classifier ever stops actually gating on the shape.
+        let examples = vec!["always_true(Widget::from_bytes(\"abc\")) == true".to_string()];
+        assert!(
+            plan_param_seeding(&cf, &examples).is_none(),
+            "an opaque type has no part Ply knows how to vary -- seeding it would report a case \
+             count larger than the one distinct value it actually had"
         );
     }
 

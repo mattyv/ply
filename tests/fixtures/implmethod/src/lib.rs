@@ -58,9 +58,15 @@ pub struct Elsewhere {
 
 impl Bucket {
     /// Receiverless, and its *return* type (not `Self`, not a parameter) is
-    /// a struct Ply's parser does not recognise. Must be refused honestly
-    /// as unsupported -- never a broken harness -- exactly the way an
-    /// unrecognised *parameter* type already is.
+    /// a struct Ply's parser does not recognise. Until 2026-09-01 this was
+    /// refused as `unsupported` on that basis alone -- retracted, measured
+    /// (docs/reach-measurement-2.md, The-Ply-Spec.md §5.4b): the return
+    /// type is never constructed by either engine, only ever read back
+    /// from the real call, so an unrecognised return type was never a real
+    /// reason to refuse. Checked now, and earns a genuine `bounded(2)`
+    /// proof -- the same real evidence an unrecognised *parameter* type
+    /// still correctly withholds, because a parameter really would need
+    /// building.
     #[ply::requires(true)]
     #[ply::ensures(|result| result.n == 0)]
     pub fn make_elsewhere() -> Elsewhere {

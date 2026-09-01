@@ -406,6 +406,80 @@ pub fn build_visual_envelope(
     build_visual_envelope_with_sources(document, result, run, &BTreeMap::new())
 }
 
+/// Build the same navigable visual contract before code or evidence exists.
+/// Every declared item is present and explicitly unanswered; verification can
+/// later replace those states without changing identity or hierarchy.
+pub fn build_declared_visual_envelope(
+    document: &Document,
+    run: RunMetadata,
+    options: &svg::RenderOptions,
+) -> Result<VisualEnvelope, VisualEnvelopeError> {
+    fn component_node(path: &str, component: &crate::model::Component) -> Node {
+        let mut children = component
+            .fns
+            .iter()
+            .map(|(name, claim)| Node {
+                id: name.clone(),
+                kind: "fn".into(),
+                verdict: "unclaimed".into(),
+                contract: crate::diag::Contract {
+                    requires: claim.requires.clone(),
+                    ensures: claim.ensures.clone(),
+                },
+                ..Node::default()
+            })
+            .collect::<Vec<_>>();
+        children.extend(
+            component
+                .components
+                .iter()
+                .map(|(name, child)| component_node(&format!("{path}.{name}"), child)),
+        );
+        Node {
+            id: path.into(),
+            kind: "component".into(),
+            verdict: "unclaimed".into(),
+            children,
+            ..Node::default()
+        }
+    }
+
+    let result = Envelope {
+        command: "render".into(),
+        ply_version: document.ply.to_string(),
+        root: Node {
+            id: "workspace".into(),
+            kind: "workspace".into(),
+            verdict: "unclaimed".into(),
+            children: document
+                .components
+                .iter()
+                .map(|(name, component)| component_node(name, component))
+                .collect(),
+            ..Node::default()
+        },
+        diagnostics: vec![],
+        coverage: None,
+        trust_surface: None,
+        open_items: None,
+        not_carried_forward: vec![],
+    };
+    // The caller cannot know what this outcome should be: the tree is built
+    // right here, from the declarations alone, and nothing in it has been
+    // checked. Deriving it rather than trusting the argument is what stops a
+    // client from reading `clean` off a document where every item is still
+    // unclaimed and colouring its badge green.
+    let run = RunMetadata {
+        outcome: outcome_of(&result),
+        ..run
+    };
+    let mut visual = build_visual_envelope(document, &result, run)?;
+    visual.svg =
+        svg::render_svg_with_evidence_and_options(document, &visual.elements, &[], options)?;
+    visual.validate()?;
+    Ok(visual)
+}
+
 /// Build the portable visual contract with the exact source ranges captured
 /// from the same verification snapshot. The map is keyed by Ply's qualified
 /// claim id (`component.path::function-key`), never by a display label.
@@ -520,7 +594,11 @@ fn collect_elements(
             VisualElement {
                 id: id.clone(),
                 kind: node.kind.clone(),
-                label: node.id.clone(),
+                label: if node.kind == "component" {
+                    node.id.rsplit('.').next().unwrap_or(&node.id).to_string()
+                } else {
+                    node.id.clone()
+                },
                 parent_id: parent_id.map(ToOwned::to_owned),
                 declaration,
                 evidence,

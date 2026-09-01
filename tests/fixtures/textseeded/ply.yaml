@@ -1,0 +1,14 @@
+ply: 1
+
+# docs/reach-measurement-2.md: `Prerelease::new` parses free-form text, and
+# random text almost never satisfies it. This one `examples:` entry is the
+# seed that lets Ply grow a corpus of known-valid values instead of
+# sampling text uniformly.
+components:
+  textseeded:
+    anchor: ply_fixture_textseeded
+    fns:
+      Prerelease::is_empty:
+        checks: [fuzz(64)]
+        examples:
+          - "Prerelease::new(\"beta.1\").is_ok()"

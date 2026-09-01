@@ -1,5 +1,371 @@
 # TODO
 
+## Review of the three items, and two defects it found that I had missed — 2026-09-01
+
+Independent review of the three open items below, then every claim on both sides re-run
+against the real library rather than taken on trust. **The ranking held; one of my own
+claims did not, and two worse defects than the ones I named were found.**
+
+**My claim that Ply "already owns the vocabulary and does not reach for it" was wrong.**
+The existing "narrower than it looks" mark counts inputs thrown away *before* the call --
+its printed legend says so, in terms of constructors and operations the run could not
+call. In the case at issue nothing is thrown away: all 64 inputs run. The emptiness lives
+*inside* the promise's own "either it was rejected, or ..." structure, after the call,
+where no measurement exists at all. Reusing that mark unchanged would make its own legend
+false. Either its legend is reworded to honestly cover both, or -- cleaner -- a sibling
+mark says what this one actually measures.
+
+- [ ] **A factually false `examples:` entry passes in silence.** Verified by hand: write
+      `Version::parse("1.2.3").is_err()` -- a plainly false sentence, that text parses
+      fine -- under a `fuzz` check and the verdict is a clean `fuzzed(64)` with not one
+      word about it. Examples never execute under a fuzz-only check. Worse than inert:
+      the run *notices* the examples changed and re-checks because of them, so it reads
+      them, fingerprints them, treats the verdict as depending on them, and never
+      evaluates them. Same species as the recorded "contracts written the documented
+      out-of-source way are accepted, then ignored" defect, and sharper.
+- [ ] **The escape hatch Ply's own refusal recommends does not work for a method.** The
+      refusal for a `Self`-spelled parameter says to "declare `test` instead, with an
+      `examples:` entry". Doing exactly that gives `error: invalid path separator in
+      function definition` -- the generated test's *name* splices the checked function's
+      path in verbatim, `::` and all. Every fixture exercising this codegen uses free
+      functions, so it has never been seen; nearly everything in a real library is a
+      method.
+- [ ] **That same refusal contains a false sentence.** It says no part of the parameter's
+      value is one Ply knows how to vary. False -- the identical type spelled by name is
+      varied happily. A wording defect on top of the reach defect.
+
+**Two corrections to how the remaining work is priced:**
+
+- **The non-numeric comparison defect is contagious, which I did not say.** Every check in
+  a crate shares one generated harness, so one string comparison written the way anyone
+  would write it turns the *whole crate's* evidence into tool errors, not just that
+  function's. It also gates the trait-method work: the natural phrasing of the ordering
+  properties is exactly the shape that trips it. Fix it before that work, not after.
+- **Trait methods are two items, not one.** Properties 3, 4, 7 and 12 sit on hand-written
+  implementations with real bodies -- moderate work, and plausibly all four fall to it now
+  that the return type no longer refuses anything and text parameters work. Properties 1
+  and 2 sit on *derived* implementations with no body to anchor to, so they need promises
+  written in the config file to reach the engines, which is a separate standing gap.
+  Sequence them apart.
+
+**The fix for the confident-verdict problem is measurement first, generation second, and
+the order is the point.** Measurement repairs what Ply currently says; generation only
+improves what it covers. Record which branch of the promise actually decided each case and
+print the split. Three ways that fix would itself be dishonest, to be avoided by name:
+evaluating every branch in order to count it (the guard exists to stop a panic -- count
+which branch *decided*, never what each would have said); a threshold that prints
+unqualified below some skew (print the split always); and wording that promotes a
+promise-text count into a claim about which code paths ran. Generation shipped alone is
+the trap -- it makes the number look stronger with nothing showing anything moved. With
+measurement in place first, the acceptance-branch count rising on the real library is the
+acceptance test, and it comes free.
+
+## The acceptance test ran: `semver` reach moved from 1 of 16 to 4 of 16 — 2026-09-01
+
+Measured, not inferred: every property below was written as a real promise on the real
+function and run. Full write-up in `docs/reach-measurement-2.md`; the vendored copy it was
+run against is at `/home/user/semvercheck` (outside this repository).
+
+Newly reachable, each `fuzzed(64)`: parse rejects whitespace; an accepted identifier is
+stored verbatim; at most 32 comparators. The check was proved to bite — a deliberately
+false promise came back `violation` with a shrunk failing input.
+
+**The honest caveat, and it is a big one: three of the four are checked almost entirely on
+inputs the function rejects**, because random text essentially never parses. The evidence
+is real; the author's rules about what is *accepted* are barely exercised. Ply prints
+`fuzzed(64)` unqualified and does not say this.
+
+- [ ] **Ply does not disclose that a run took the reject path nearly every time.** It
+      already has the vocabulary (`narrower than it looks`, `seeded`) and does not reach for
+      it here. Writing `examples:` does not help either: seeding only engages where the
+      ordinary generator cannot build the value at all, and a plain text parameter is one it
+      can — so the escape hatch a user would reach for is silently inert. This is the same
+      species of gap the `seeded` status was invented to close, in the one place it does not
+      apply.
+- [ ] **A promise comparing non-numeric values with `==` or `!=` does not compile.** The
+      generated harness casts both sides of a comparison to `i128` (so it can report a
+      broken promise rather than overflow while checking one); against a string, an
+      `Option` or a struct that cast is invalid — `error[E0606]: casting &str as i128 is
+      invalid`. Reported honestly as a tool error, never as a pass. Not new, but far more
+      reachable now the return-type gate no longer refuses these functions first. This is
+      what blocks the natural phrasing of property 15.
+- [ ] **`Self` as a parameter spelling is refused where the same type by name is checked.**
+      `cmp_precedence(&self, other: &Self)` is `unsupported`; change nothing but `&Self` to
+      `&Version` and it is `fuzzed(64)`. Mirror image of this document's original headline,
+      which turned on the author having typed `-> Self` rather than `-> Version`. Property 6
+      is reachable in substance and unreachable as written.
+
+Still blocked and untouched today: trait methods (properties 1, 2, 3, 4, 7, 12), and a
+`VersionReq` or `Comparator` built from text in a parameter position (5, 8, 9, 10, 11).
+
+## Fixed: a declaration-only render no longer calls its own run clean — ffacd9b, 2026-09-01
+
+`cargo ply render --json` (the editor-facing envelope behind semantic focus) built a tree
+in which every item is `unclaimed` — nothing has been checked — and then reported
+`"outcome": "clean"`. A plugin colouring a badge from that field would have shown green for
+a document no run has ever looked at.
+
+The builder now derives the outcome from the tree it constructs rather than trusting the
+caller, so it reports `missing_evidence`. Two tests, both watched to fail against the old
+code: an end-to-end one over the real CLI that checks its own premise (all six items still
+unclaimed) before asserting the outcome, and a unit test that hands the builder `clean` and
+requires it back as `missing_evidence`.
+
+## Measured: the return-type gate can come off, and what it hides — 2026-09-01
+
+Fable's ranking put this first and it is not a declaration at all: the gate refusing a
+function because Ply cannot *construct* its return type blocks 10 of the 16 properties in
+`docs/reach-measurement-2.md`, and the gate's own doc comment already concedes it blocks
+nothing technically -- *"nothing in this codegen ever names or constructs a return type.
+This gate is therefore a deliberate, requested narrowing... on principle."*
+
+Measured rather than taken on the comment's word. With the gate temporarily removed:
+
+- A function returning `std::cmp::Ordering` -- a type Ply models nowhere -- **earns
+  `fuzzed(64)`**, and a false promise about it is caught: `!result.is_lt()` on `a.cmp(&b)`
+  gives `violation` with a shrunk failing input. So the comment is right, and the refusal
+  really is costing real evidence for no technical reason.
+- **But removing it exposes a separate defect the gate was hiding.** A contract that *names*
+  the return type -- `|result| *result != Ordering::Greater || a > b` -- fails to compile:
+  `error[E0433]: cannot find type Ordering in this scope`. The generated harness brings
+  parameter types into scope and not types the contract text names.
+
+- [x] **The import defect, fixed** (`cc2121e`). A contract may now name any type the file
+      it lives in can see -- `use_aliases_in_file`'s own scan is carried on `ContractFn` and
+      resolved against every identifier the contract text references
+      (`fuzz_gen::contract_referenced_use_imports`), not only the parameter/receiver types
+      `extra_type_imports` already walked. A glob import of the target crate was considered
+      and rejected: it cannot reach `std::cmp::Ordering` at all (an external crate's own
+      root export list, not the target crate's), and blindly re-emitting every `use` in the
+      file risks importing something private for an unrelated reason and breaking a
+      neighbour function's harness that never asked for it. Proved both directions: a unit
+      test and a new e2e fixture (`tests/fixtures/ensuresimport`) go red with the exact
+      `error[E0433]` before the fix and green after; the fixture also proves the catching
+      direction (a broken implementation still reports `violation`).
+- [x] **The gate decided: off, on both engines, measured** (`51ef480`). Measured directly
+      before removing anything, per the maintainer's brief: a function returning
+      `std::cmp::Ordering` earns `fuzzed(64)` on the fuzz engine and a genuine `bounded(2)`
+      proof on the bounded (Kani) engine, both completing in seconds -- not a timeout
+      mislabeled -- and both independently report `violation` with a real witness on a
+      broken promise about the same type. Both engines pay this gate's cost for nothing in
+      return, so `is_bounded_return_supported`/`is_fuzz_return_supported`
+      (`crates/ply-core/src/harness.rs`) now always answer `true`; the history of why the
+      gate was added is kept in their doc comments, retracted rather than deleted. §5.4b
+      amended in the same change: "parameters and return type" is no longer true --
+      the list binds parameters only, and a function's return type is never a reason
+      either engine refuses it. New permanent fixture `tests/fixtures/orderingreturn`
+      proves the same clean-and-catches pair against a real `cargo ply verify` run on both
+      engines together. **Not yet measured: whether this moves the real 16-property count**
+      -- that re-measurement is the maintainer's to run, per `docs/reach-measurement-2.md`'s
+      own acceptance rule.
+
+## Design principle, from the maintainer — 2026-09-01
+
+**Requiring the user to write a small declaration is cheap, because an agent writes it.**
+Stated plainly by the maintainer when seeded generation landed: "one line is one line from
+an LLM".
+
+*The example originally cited here has been withdrawn.* It said one `examples:` line took a
+real library's function from no evidence to sixty-four real checks; re-measured by hand
+against `semver` 1.0.28, that function gets there with no example at all (see the correction
+above). The principle is the maintainer's and stands on its own; the measurement that was
+offered in support of it did not.
+
+This changes the economics of a decision already recorded. `docs/rule-registry-design.md`
+and the seeding design both weighed "adds something new for the user to write and keep true"
+as a significant cost, and rejected options partly on those grounds. That cost is lower than
+assumed for anything an agent can write from reading the code. It is **not** lower for
+things a user must keep true by hand over time -- a declaration that drifts from reality is
+still the failure mode that matters, and an agent writing it once does not keep it true.
+
+So the rule is: **prefer a small declaration over inference where an agent can supply it and
+Ply can check it against reality.** Prefer inference where the declaration would have to be
+maintained by hand and nothing would notice it going stale.
+
+- [x] **An example now unblocks a parameter Ply cannot build, for the shapes whose parts Ply
+      already knows how to vary -- 2026-09-01.** `width(label: Option<String>) -> usize` (the
+      measured gap, verbatim) now earns `fuzzed(64) [seeded]` from one `examples:` entry --
+      `tests/fixtures/paramseeded`. `Vec<String>` opens the same way (elements and length
+      both vary), sharing the exact corpus/mutate/trickle apparatus the constructor path
+      already built (`fuzz_gen::plan_param_seeding`, `SeedableWrap`) rather than a second one
+      -- the two mechanisms are mutually exclusive by construction (this one only ever fires
+      for a non-receiver fn), which is what makes reusing the apparatus's own generated
+      variable names safe. **Not opened, disclosed rather than attempted:**
+      `Result<String, E>`, and nested `NonZero`/`Duration`/`f32`/`f64` inside any wrapper --
+      each needs its own construction or mutation story, which `String`'s existing text
+      apparatus does not hand over for free (a number has no character-level mutator to
+      reuse; a `Result`'s `Err` arm needs its own construction path).
+
+      The counting condition: `plan_param_seeding` refuses (stays `None`, parameter stays
+      refused) whenever the type is not one of the two classified shapes, whenever more than
+      one parameter is otherwise unbuildable, or whenever no `examples:` entry supplies a
+      seed -- an opaque type never borrows the seeded machinery just because an example
+      exists. For an opaque type, `examples:` now still unlocks `test` alone (never `fuzz`,
+      which cannot grow a case count for it): `generate_example_test`'s own codegen never
+      depended on the parameter being buildable in the first place, so the gate widening
+      there is a real bug fix, not new machinery -- `tests/fixtures/paramseedopaque` earns
+      `tested`, the vocabulary this project had already written down for "a concrete case
+      was run and held", never a fabricated `fuzzed(n)`. A new diagnostic, `W0524`, carries
+      the growable case's own provenance (parameter name, example count, real case count) the
+      way `W0523` already does for the constructor case, worded for its own honesty
+      condition: there is no rejection rate to report here (nothing gates an
+      `Option<String>`/`Vec<String>` value the way a fallible constructor gates text), so
+      every one of the `n` cases genuinely ran.
+
+      The refusal itself was fixed in the other direction too: `V0505`'s message now names,
+      per unbuildable parameter, whether an example would actually help (and what to write)
+      or would not (an opaque type, told plainly rather than given false hope).
+
+      Found along the way and fixed as necessary plumbing, not scope creep: the generated
+      harness module only ever imported types a fn's own resolved parameters referenced, so
+      `test`'s newly-unlocked opaque-type path failed to compile (`error[E0433]: cannot find
+      type ... in this scope`) the moment an example's own literal source named a type
+      nothing else in the fn's signature resolved -- fixed with a glob import of the target
+      crate, which an explicit `use` always outranks on a name clash, so no existing
+      generated harness resolves any name differently.
+
+      Every fixture that depends on a shape staying unbuildable (`excludedop`, `skippedctor`,
+      `textmutator`) and every one depending on the constructor-seeding behaviour
+      (`textseeded`, `textseedempty`) still passes unchanged -- none of them declare an
+      `examples:` entry for the parameter this widening reaches, which is exactly the gate
+      that keeps their premises intact.
+
+## Seeded generation moved a real library's reach — 2026-09-01
+
+The acceptance test Fable named: not a green fixture, but whether a real library's number
+moves. It moved.
+
+`semver`'s `Prerelease::is_empty` -- a method whose receiver must be built by parsing text,
+the exact shape that produced the dead end:
+
+- **Before:** 1025 of 1074 generated strings rejected, 49 ever checked, verdict `unclaimed`.
+  No evidence at all.
+- **After:** 43 of 107 rejected, verdict `fuzzed(64) [narrower than it looks, seeded]`.
+  Sixty-four real cases, each one run.
+
+**Correction, 2026-09-01, after re-running this by hand against a fresh vendored copy of
+`semver` 1.0.28 rather than trusting the earlier record: the `examples:` entry is not what
+moved it, and the earlier version of this section said it was.** The same function reaches
+`fuzzed(64)` with no `examples:` line at all, and the run says so itself: *"the 64 cases
+were grown from 64 known-valid values: 0 from the `examples:` you wrote, 64 that
+`Prerelease::new` accepted from random draws during this run."* What did the work is the
+free half of the mechanism -- harvesting every value the constructor accepts during the run,
+which used to be thrown away. Adding the example changes the verdict not at all.
+
+Both numbers above were re-measured directly, the "before" by building the product as it
+stood at 83949d6 and running it against the same crate, so the delta is real. Only the
+attribution was wrong.
+
+This matters beyond bookkeeping: the design principle recorded below was written on the
+belief that *one line from a model* bought the evidence. On this function nothing was
+bought -- it was free. Examples still matter where the constructor accepts essentially
+nothing and there is no case base to grow from (the `textseedempty` fixture: 1025 of 1025
+rejected), which is a narrower claim than the one that was recorded.
+
+**This is the first change today that moved a number rather than a failure mode.** Both
+reach fixes yesterday and the text fix this morning were real and necessary and left
+`semver` at one checkable property. This one produces evidence where there was none.
+
+Verified by hand before being believed: the status appears on a seeded run and propagates to
+the root; it survives result reuse (`[seeded, reused]`); an unseeded run carries no such
+mark, so the two are never confused; and a seeded run still catches a false promise --
+breaking the function under test gives `violation`, not a comfortable pass.
+
+- [ ] **Not measured: whether the whole 1-in-16 count moves.** One property is now reachable
+      that was not. The other fifteen are each held by two to four blockers, and this
+      addresses one of them. The full re-measurement is owed before any claim about the count.
+      A vendored copy set up for it now lives at `/home/user/semvercheck` (outside this
+      repository; nothing here modifies `semver` upstream).
+- [ ] **KNOWN GAP, disclosed not detected: seeded runs miss the extremes.** Mutations of
+      short valid values reach a 280-character identifier or a 20-digit overflow essentially
+      never -- and those are exactly the cases `semver`'s author wrote down. The `[seeded]`
+      status is honest cover for this, not a fix. The user's defence is to write the extreme
+      case as an example, where it becomes a seed; that should be said somewhere a user reads.
+
+## Seeded generation for text-parsed types — 2026-09-01
+
+`docs/reach-measurement-2.md`'s open blocker ("a type built by parsing text cannot be
+constructed by random text") is closed for the shape it was measured against: a receiver
+whose own constructor takes a `&str`/`String` and rejects most input (a `#[ply::requires]`,
+or a fallible `Result<Self, E>` return). Test-first throughout; every fix below was proved
+by reverting it and watching the exact same failure come back.
+
+- [x] **Corpus and mix, implemented.** `fuzz_gen::plan_receiver_seeding` decides, per
+      receiver constructor, whether its (first) `String`-typed parameter is gated at all;
+      if so, `fuzz_gen::extract_examples_seed_strings` pulls every literal string argument
+      passed to that constructor anywhere in the crate's `examples:` entries (syntactic
+      only, zero new vocabulary), and the generated harness (`fuzz_gen::seed_apparatus`)
+      grows that pool at runtime with every value the constructor actually accepts. Future
+      draws for that parameter come from a 4:1 mix (`SEED_MUTATE_WEIGHT`:
+      `SEED_TRICKLE_WEIGHT`, `fuzz_gen.rs`) of mutating a random corpus entry (character
+      edit, splice, truncation, repetition, or a verbatim replay) against a continuing
+      uniform trickle -- justified in a doc comment on those two constants and repeated in
+      the diagnostic below so the ratio reaches the JSON envelope, not just source. An
+      unseeded (ungated, or non-text) constructor takes byte-identical code paths to
+      before this feature existed -- pinned by
+      `fuzz_gen::tests::an_infallible_unconstrained_text_constructor_is_not_seeded`,
+      comparing the seeded and plain entry points on the same fn and asserting equal
+      output.
+- [x] **The verdict carries its own provenance, honestly.** A `fuzzed(n)` verdict earned
+      this way carries a `seeded` status -- structurally the same way `conditional`
+      already travels (a plain flag in the same `statuses` list the tree and the record
+      already carry, propagated and reused with zero extra plumbing, per
+      `crates/ply-cli/src/verify.rs`'s own comment at the push site) -- plus a new,
+      `info`-severity diagnostic (`W0523`, never a warning: this describes what the
+      evidence *is*, not something incidental about the run) naming the real counts a
+      given run produced: how many seeds came from `examples:`, how many the constructor
+      accepted from generated draws, and the actual rejected/total split. A verdict
+      earning `fuzzed(n)` with nothing ever seeded carries neither the status nor the
+      diagnostic -- proved both directions by an e2e fixture pair
+      (`tests/fixtures/textseeded`, whose receiver constructor parses text and is fed one
+      `examples:` seed, vs. the pre-existing `narrowctor`, whose receiver constructor
+      rejects on a plain `u64` and must show neither) and confirmed to survive a reused
+      (carried-forward) verdict unchanged.
+- [x] **The other honesty condition: no seeds at all names the fix.** When a gated text
+      constructor's corpus never grows past zero (no `examples:` entry, and not one
+      generated draw was ever accepted), the existing high-rejection abort (`W0503`)
+      switches from its generic "widen your `requires`" wording to naming the exact
+      action -- add an `examples:` entry for the specific constructor, quoted by name --
+      only for this shape; every other cause of that same abort (a plain numeric
+      `requires`, unrelated to text) keeps its original wording verbatim, unaffected.
+      Fixture: `tests/fixtures/textseedempty` (a constructor accepting essentially none of
+      the space uniform sampling could draw, no `examples:` entry at all).
+- [x] **Real bugs found by actually compiling the generated harness, not just asserting on
+      its text (CLAUDE.md: "assert the observable outcome, not the shape of the output").**
+      The corpus's embedded `examples:` literals were spliced as bare `&str` literals into
+      a `Vec<String>` initializer (`error[E0308]`, caught only once the `textseeded`
+      fixture was actually built and run, not by the unit tests, which merely checked the
+      literal text was present) -- fixed by appending `.to_string()` to each; a unit test
+      now pins the exact well-typed form. Both new fixtures also needed their receiver's
+      field made `pub`, the same requirement every other receiver-postcondition fixture in
+      this codebase already has.
+- [ ] **KNOWN GAP, disclosed rather than hidden (the design brief's own "known failure
+      mode").** Seeded generation is an honest *disclosure*, not a *detection* mechanism:
+      64 cases mutated from short, ordinary seeds essentially never reach an extreme an
+      author actually cared about (a 280-character identifier, a 20-digit overflow) --
+      mutation just does not walk that far from a short starting point in a handful of
+      edits. The `seeded` status and its diagnostic say what the evidence *is*; they do
+      not detect what it *misses*. The user's defence is unchanged from what `examples:`
+      already offers: write the extreme case by hand as its own `examples:` entry, and it
+      becomes a seed like any other. Second-order, also disclosed rather than fixed: seeds
+      anchor the draw distribution near what is already known-valid, so a pathological
+      input that would crash the parser becomes measurably *less* likely to turn up than
+      under pure uniform sampling -- which is the whole reason the uniform trickle stays
+      in the mix rather than being dropped for a purer (and more self-referential) corpus.
+      No code change is proposed for this; it is a property of the technique, named so it
+      is never mistaken for closed.
+- [ ] **KNOWN GAP: only a receiver's own constructor parameter is seeded.** A plain
+      (non-receiver) function whose own text parameter is itself gated by its own
+      `#[ply::requires]` -- e.g. a parser checked directly rather than through a
+      receiver -- is not seeded at all yet; nor is a `String` parameter nested two levels
+      deep (a struct field built via its own constructor, itself an argument to another
+      constructor). Scoped out deliberately for this session: the measured probe
+      (`docs/reach-measurement-2.md`) and the acceptance shape are both squarely the
+      receiver-constructor case, and widening to every gated `String` parameter
+      everywhere is a larger, separately-reviewable change. Not yet re-measured against
+      `semver` itself -- that measurement is explicitly the maintainer's to run, not
+      mine to claim.
+
 ## Two more harness-generation compile defects fixed — 2026-08-31
 
 Both were the two `KNOWN GAP`s recorded just below (found the same day, pointing Ply at
@@ -1036,8 +1402,9 @@ the spot: the first instinct -- add a free-text `description` -- would have been
 - [ ] Comments still evaporate, deliberately: making them survive needs a position-aware
       second parse this codebase does not have, and would let prose reach output without
       passing validation. The component note is the declared home instead.
-- [ ] `cargo ply render --help` advertises the global `--json` flag, which does nothing
-      for a command that emits an SVG.
+- [x] `cargo ply render --help` advertises the global `--json` flag. It now emits the
+      declaration-only visual envelope, so clients can navigate the YAML hierarchy before
+      code or evidence exists; every item is explicitly `unclaimed`.
 
 ## Agreed 2026-08-28, not yet done
 

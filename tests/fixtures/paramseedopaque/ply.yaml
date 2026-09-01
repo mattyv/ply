@@ -1,0 +1,16 @@
+ply: 1
+
+# TODO.md's own honesty condition: "one value run 256 times is one test and
+# must never be reported as 256." `Opaque` has no part Ply knows how to vary
+# -- no public fields, no constructor found -- so the one `examples:` entry
+# below cannot become a mutated corpus the way `paramseeded`'s `Option<String>`
+# does. It can still be *run*, though: `test` replays the example directly,
+# and the honest verdict is `tested`, never a fabricated `fuzzed(n)`.
+components:
+  paramseedopaque:
+    anchor: ply_fixture_paramseedopaque
+    fns:
+      always_true:
+        checks: [test]
+        examples:
+          - "always_true(Opaque::default()) == true"
