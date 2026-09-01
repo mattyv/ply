@@ -464,6 +464,15 @@ pub fn build_declared_visual_envelope(
         open_items: None,
         not_carried_forward: vec![],
     };
+    // The caller cannot know what this outcome should be: the tree is built
+    // right here, from the declarations alone, and nothing in it has been
+    // checked. Deriving it rather than trusting the argument is what stops a
+    // client from reading `clean` off a document where every item is still
+    // unclaimed and colouring its badge green.
+    let run = RunMetadata {
+        outcome: outcome_of(&result),
+        ..run
+    };
     let mut visual = build_visual_envelope(document, &result, run)?;
     visual.svg =
         svg::render_svg_with_evidence_and_options(document, &visual.elements, &[], options)?;

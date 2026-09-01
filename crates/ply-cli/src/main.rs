@@ -410,7 +410,10 @@ fn render_command_with_format(
             completed_run_metadata(
                 input.parent().unwrap_or_else(|| Path::new(".")),
                 env!("CARGO_PKG_VERSION"),
-                RunOutcome::Clean,
+                // Placeholder only: the builder replaces this with the outcome
+                // it derives from the tree it constructs. Nothing has been
+                // checked here, so what comes out says the evidence is missing.
+                RunOutcome::MissingEvidence,
             ),
             options,
         )?;

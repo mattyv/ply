@@ -175,6 +175,46 @@ fn a_declaration_only_visual_keeps_hierarchy_for_semantic_focus() {
 }
 
 #[test]
+fn a_declaration_only_visual_refuses_to_call_its_own_run_clean() {
+    // A drawing made from declarations alone has checked nothing. If a caller
+    // hands it an optimistic outcome, it must not pass that through: an editor
+    // colouring a badge from `outcome` would show green for a document where
+    // every item is still unclaimed.
+    let document = parse_document(
+        "ply: 1\ncomponents:\n  decoder:\n    anchor: app::decoder\n    fns:\n      decode:\n        ensures: [\"result.is_ok()\"]\n",
+    )
+    .unwrap();
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "declared-view".into(),
+            completed_at: "2026-09-01T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "render".into(),
+            },
+            outcome: RunOutcome::Clean,
+        },
+        &RenderOptions::default(),
+    )
+    .unwrap();
+
+    assert!(
+        visual
+            .elements
+            .values()
+            .all(|element| element.evidence.verdict == "unclaimed"),
+        "the premise: a declared-only view carries no evidence at all"
+    );
+    assert_eq!(
+        visual.run.outcome,
+        RunOutcome::MissingEvidence,
+        "a run that checked nothing reports missing evidence, whatever the caller asked for"
+    );
+}
+
+#[test]
 fn publication_is_immutable_atomic_and_indexed_by_safe_relative_paths() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("ply.yaml"), "ply: 1\ncomponents: {}\n").unwrap();
