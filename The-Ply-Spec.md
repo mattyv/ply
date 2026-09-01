@@ -1489,6 +1489,7 @@ No streaming, no IDE integration, no multi-fn synthesis in v1.
 cargo ply render [path]      # draw ply.yaml as SVG; needs no code or Cargo project
                              # --output/-o writes a file; otherwise prints to stdout
                              # --depth/--focus/--collapse control folding
+                             # --json emits a navigable declaration-only visual envelope
 cargo ply check              # schema + anchors + architecture. Fast, no engines.
                              # IMPLEMENTED: schema + anchors only (see below).
 cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts
@@ -1510,6 +1511,8 @@ contains one, and defaults to the current directory. It parses the same document
 and calls the same SVG renderer used by published visual artifacts. It runs no checks,
 reads no result record, creates no `target/ply` files, and needs no `Cargo.toml`. An
 output path writes one SVG file; without one, the command writes SVG to standard output.
+With `--json`, it writes the same visual-envelope shape used by editor clients, populated
+from declarations alone. Every item is `unclaimed`; no code is read and no check runs.
 
 **`check` implements two of its three tiers (2026-08-25, Phase 1a), and says so in its own
 output.** Schema (the document against `schema/ply.schema.json` — `E0201`, `E0204` — then

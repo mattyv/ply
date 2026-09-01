@@ -5,10 +5,12 @@ use std::thread;
 
 use ply_core::diag::{Contract, Diagnostic, Envelope, Node, Span};
 use ply_core::model::parse_document;
+use ply_core::visual::svg::RenderOptions;
 use ply_core::visual::{
     DEFAULT_RETAINED_RUNS, ElementEvidence, RootIdentity, RunMetadata, RunOutcome, SourceLocation,
     ToolIdentity, VisualDiagnostic, VisualElement, VisualEnvelope, VisualEnvelopeError,
-    VisualPublisher, build_visual_envelope_with_sources, completed_run_metadata, stable_element_id,
+    VisualPublisher, build_declared_visual_envelope, build_visual_envelope_with_sources,
+    completed_run_metadata, stable_element_id,
 };
 use tempfile::tempdir;
 
@@ -119,6 +121,57 @@ fn stable_ids_and_exact_source_locations_survive_round_trip() {
         parsed.elements[&id].source.as_ref().unwrap().start_column,
         7
     );
+}
+
+#[test]
+fn a_declaration_only_visual_keeps_hierarchy_for_semantic_focus() {
+    let document = parse_document(
+        "ply: 1\ncomponents:\n  market_data:\n    anchor: app::market_data\n    components:\n      decoder:\n        anchor: app::decoder\n        fns:\n          decode:\n            requires: [\"frame.len() > 0\"]\n            ensures: [\"result.is_ok()\"]\n",
+    )
+    .unwrap();
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "declared-view".into(),
+            completed_at: "2026-09-01T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "render".into(),
+            },
+            outcome: RunOutcome::Clean,
+        },
+        &RenderOptions::default(),
+    )
+    .unwrap();
+
+    let workspace = stable_element_id("workspace", "workspace");
+    let market_data = stable_element_id("component", "market_data");
+    let decoder = stable_element_id("component", "market_data.decoder");
+    let decode = stable_element_id("fn", "market_data.decoder::decode");
+    assert_eq!(
+        visual.elements[&market_data].parent_id.as_deref(),
+        Some(workspace.as_str())
+    );
+    assert_eq!(
+        visual.elements[&decoder].parent_id.as_deref(),
+        Some(market_data.as_str())
+    );
+    assert_eq!(
+        visual.elements[&decode].parent_id.as_deref(),
+        Some(decoder.as_str())
+    );
+    assert_eq!(visual.elements[&decode].evidence.verdict, "unclaimed");
+    assert_eq!(
+        visual.elements[&decode].declaration.as_deref(),
+        Some("Input (requires): frame.len() > 0\nPostcondition (ensures): result.is_ok()")
+    );
+    for id in [&workspace, &market_data, &decoder, &decode] {
+        assert!(
+            visual.svg.contains(&format!("data-element-id=\"{id}\"")),
+            "missing {id}"
+        );
+    }
 }
 
 #[test]

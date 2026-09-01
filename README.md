@@ -101,7 +101,8 @@ what matters and inspect code where mechanical evidence stops.
 
 **What step 2 can and cannot do before the code exists.** The drawing is available
 immediately: `cargo ply render <dir> -o system.svg` reads `ply.yaml` alone, with no crate
-behind it. `cargo ply check` is only half available: it validates the document's grammar with nothing else
+behind it. Add `--json` when a visual client needs the same navigable component and
+function hierarchy before code exists. `cargo ply check` is only half available: it validates the document's grammar with nothing else
 present, but its architecture half reads your real crate dependency graph from `cargo
 metadata`, so before there is a Cargo project to read there is nothing for it to check
 against, and it says so rather than reporting a clean run. Anchors behave the same way:
@@ -191,7 +192,9 @@ hides uncertainty would recreate the problem Ply exists to solve.
 
 `cargo ply render <dir> -o system.svg` draws the spec you wrote before any code is
 checked. The picture shows your intent, not a finished run. The command also accepts a
-direct `ply.yaml` path; omit `-o` to print SVG to standard output.
+direct `ply.yaml` path; omit `-o` to print SVG to standard output. Add `--json` to emit
+the declaration-only visual envelope used for semantic navigation; every item is
+explicitly `unclaimed` because no verification has run.
 
 This specification, from `vetting/004-legacy-extension/` — a new feature written beside a
 ledger module that carries no promises of its own:
@@ -308,14 +311,14 @@ Six commands exist:
 
 | Command | Purpose |
 | --- | --- |
-| `cargo ply render <dir>` | Draw `ply.yaml` as SVG before code or a Cargo project exists. `--text` writes it as prose instead. |
+| `cargo ply render <dir>` | Draw `ply.yaml` as SVG before code or a Cargo project exists. `--text` writes prose; `--json` writes a navigable declaration-only visual. |
 | `cargo ply check <dir>` | Validate `ply.yaml`, resolve claims, and run the available architecture checks without starting verification engines. |
 | `cargo ply verify <dir>` | Run declared checks and report the evidence each function earned. |
 | `cargo ply audit <dir>` | List the trust surface: assumptions and declarations Ply does not verify. |
 | `cargo ply worklist <dir>` | List unresolved decisions and evidence still owed. |
 | `cargo ply clean-views <dir>` | Remove older published visual runs while preserving the current run. |
 
-The inspection and verification commands support `--json`. Published visual envelopes
+The render, inspection, and verification commands support `--json`. Published visual envelopes
 are the stable integration surface for editor extensions and other visual clients.
 
 Ply delegates checking rather than building its own solver. Depending on the declared

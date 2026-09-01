@@ -877,8 +877,9 @@ the spot: the first instinct -- add a free-text `description` -- would have been
 - [ ] Comments still evaporate, deliberately: making them survive needs a position-aware
       second parse this codebase does not have, and would let prose reach output without
       passing validation. The component note is the declared home instead.
-- [ ] `cargo ply render --help` advertises the global `--json` flag, which does nothing
-      for a command that emits an SVG.
+- [x] `cargo ply render --help` advertises the global `--json` flag. It now emits the
+      declaration-only visual envelope, so clients can navigate the YAML hierarchy before
+      code or evidence exists; every item is explicitly `unclaimed`.
 
 ## Agreed 2026-08-28, not yet done
 
