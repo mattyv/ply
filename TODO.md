@@ -193,6 +193,31 @@ fixture, and a revert-and-confirm-red pass on every fix.
       **Fixed 2026-08-31** — see "Two more harness-generation compile defects fixed" at
       the top of this file.
 
+## The text fix closed a recorded false clean — 2026-09-01
+
+CI caught this, and it is the opposite of a regression. `excludedop` exists to record
+"the fourteenth false clean" (`docs/review-structs-enums.md` finding 1): `Acc::get`
+promises its result is always 0, that promise is false after one call to `Acc::note`,
+and Ply could not call `note` because it took borrowed text. So every generated case
+ran against a receiver only the constructor had touched, and a broken function reported
+a clean pass.
+
+Text arguments now work, so Ply calls `note`, reaches the broken state, and reports a
+`violation`. The fixture's test still asserted the old, weaker truth and went red.
+
+- [x] **`excludedop` keeps testing what it was written to test.** Its `note` now takes
+      `Option<String>` — a `String` nested inside another type, deliberately never
+      built — so the run still genuinely cannot call it and must say so. Verified: the
+      verdict is `fuzzed(256)` marked narrower, and the warning names `note` and why.
+- [x] **`textmutator` records the win.** The same shape with a `&str`, asserting the
+      `violation` Ply now finds. Proved to bite: reverting the one-line text fix brings
+      back `fuzzed(256)` on the broken function and the test fails demanding
+      `violation`. That is the false clean itself, reproducible on demand.
+
+Worth stating plainly because it is the first time this has happened today: a capability
+improvement made a test fail by making Ply *better*, and the fix was to preserve both
+truths rather than weaken either test.
+
 ## Text parameters landed, and the next blocker is a design problem — 2026-09-01
 
 `&str` now reaches the sampler (one line: `str` maps to the same type `String` already used;
