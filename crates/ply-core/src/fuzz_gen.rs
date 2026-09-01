@@ -1893,6 +1893,91 @@ fn extra_type_imports(cf: &ContractFn) -> Vec<String> {
     out
 }
 
+/// Every path expression's leading identifier in `expr`, collected without
+/// judging whether it names a type -- `Ordering` from `Ordering::Greater`,
+/// `x` from a bare parameter read, `result` from the closure's own
+/// parameter, all land in the same set. Over-collection costs nothing:
+/// [`contract_referenced_use_imports`] only acts on names that also happen
+/// to be a key in the file's own `use` aliases, and a parameter or `result`
+/// never is one. Mirrors `find_moved_param_read`'s own `Visit`-based walk
+/// two functions above it in this file.
+fn collect_leading_idents(expr: &Expr, out: &mut BTreeSet<String>) {
+    struct Finder<'a> {
+        out: &'a mut BTreeSet<String>,
+    }
+    impl<'a> Visit<'a> for Finder<'a> {
+        fn visit_expr_path(&mut self, node: &'a syn::ExprPath) {
+            if let Some(seg) = node.path.segments.first() {
+                self.out.insert(seg.ident.to_string());
+            }
+            syn::visit::visit_expr_path(self, node);
+        }
+    }
+    Finder { out }.visit_expr(expr);
+}
+
+/// The counterpart to `extra_type_imports` for a name the *contract text*
+/// refers to directly, rather than one reached by walking a parameter or
+/// the receiver (docs/reach-measurement-2.md: a postcondition naming
+/// `Ordering` -- not a parameter, not the return type, just a name in the
+/// `#[ply::ensures]` expression -- failed the generated harness with
+/// `error[E0433]: cannot find type Ordering in this scope`; nothing in
+/// `extra_type_imports` walks contract text at all).
+///
+/// Resolved only through `cf.use_aliases` -- exactly the `use` items the
+/// file the checked fn lives in already declared, matched against every
+/// name `collect_leading_idents` finds in `requires`/`ensures`. **Not** a
+/// blanket re-emission of every `use` in that file, and **not** a glob
+/// import of the target crate's own root: both were considered and
+/// rejected. A glob import of the target crate cannot reach this defect's
+/// own reproduction at all -- `Ordering` is `std::cmp::Ordering`, not
+/// anything the target crate exports, so only re-emitting the file's own
+/// `use std::cmp::Ordering;` (or an equivalent path) ever brings it into
+/// scope. And blindly re-emitting *every* `use` item in the file -- rather
+/// than only the ones the contract actually names -- risks a name that is
+/// private to the target crate for a completely unrelated reason (some
+/// helper the checked fn's contract never mentions): re-emitting that from
+/// what is, for the fuzz engine, a separate downstream crate would newly
+/// fail to compile on a function whose contract asked for nothing new, the
+/// exact "one fix breaks a neighbour" shape this project treats as
+/// seriously as a missing one. Scoping to referenced names keeps a failure
+/// possible only where the contract itself names something the crate does
+/// not export -- a real, actionable compiler error, not silent collateral
+/// damage.
+///
+/// `crate::`-prefixed segments are rewritten to `target_crate_ident` (an
+/// external harness crate has no `crate::` of its own that could mean the
+/// target); a `self::`/`super::`-prefixed path is skipped outright --
+/// resolving those needs the declaring module's own position in the crate
+/// tree, which this scan does not carry, the same crate-root assumption
+/// `extra_type_imports`'s own doc already states for a bare struct/enum
+/// name.
+fn contract_referenced_use_imports(cf: &ContractFn, target_crate_ident: &str) -> Vec<String> {
+    let mut idents = BTreeSet::new();
+    if let Some((expr, _)) = &cf.requires {
+        collect_leading_idents(expr, &mut idents);
+    }
+    if let Some((closure, _)) = &cf.ensures {
+        collect_leading_idents(&closure.body, &mut idents);
+    }
+    let mut out = Vec::new();
+    for ident in idents {
+        let Some(segments) = cf.use_aliases.get(&ident) else {
+            continue;
+        };
+        match segments.first().map(String::as_str) {
+            Some("self") | Some("super") => continue,
+            Some("crate") => {
+                let mut rewritten = vec![target_crate_ident.to_string()];
+                rewritten.extend(segments[1..].iter().cloned());
+                out.push(rewritten.join("::"));
+            }
+            _ => out.push(segments.join("::")),
+        }
+    }
+    out
+}
+
 pub fn wrap_fn_harness_module(
     cf: &ContractFn,
     target_crate_ident: &str,
@@ -1911,14 +1996,28 @@ pub fn wrap_fn_harness_module(
     let mut out = format!(
         "#[cfg(test)]\nmod {module_ident}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{import_path};\n"
     );
+    let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    emitted.insert(format!("{target_crate_ident}::{import_path}"));
     // Struct/enum parameters (2026-08-27): one `use` per type Ply itself
     // constructs -- assumed to sit at the target crate's own root, same as
     // every other bare struct/enum name this scan resolves
     // (`scan_crate_type_locations` indexes by bare name, not module path).
     for extra in extra_type_imports(cf) {
-        out.push_str(&format!(
-            "    #[allow(unused_imports)]\n    use {target_crate_ident}::{extra};\n"
-        ));
+        let full = format!("{target_crate_ident}::{extra}");
+        if emitted.insert(full.clone()) {
+            out.push_str(&format!("    #[allow(unused_imports)]\n    use {full};\n"));
+        }
+    }
+    // A type the *contract text* names directly, rather than one reached
+    // by walking a parameter or the receiver -- see
+    // `contract_referenced_use_imports`'s own doc (docs/reach-measurement-2.md).
+    // These are already full paths (`std::cmp::Ordering`,
+    // `{target_crate_ident}::foo::Bar`), unlike `extra_type_imports`'s bare
+    // names, so no additional prefix is added here.
+    for full in contract_referenced_use_imports(cf, target_crate_ident) {
+        if emitted.insert(full.clone()) {
+            out.push_str(&format!("    #[allow(unused_imports)]\n    use {full};\n"));
+        }
     }
     out.push('\n');
     for b in bodies {
@@ -1966,6 +2065,41 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
             !body.contains(": String = x;"),
             "a bare scalar reference assigned directly to a String-typed binding does not \
              compile (expected String, found u32):\n{body}"
+        );
+    }
+
+    /// docs/reach-measurement-2.md: a contract that *names* a type -- not a
+    /// parameter, not the return type, just a name written in the
+    /// `#[ply::ensures]`/`#[ply::requires]` text itself -- failed to
+    /// compile with `error[E0433]: cannot find type Ordering in this
+    /// scope`, because `wrap_fn_harness_module` only ever imports the
+    /// checked fn's own path and the types `extra_type_imports` finds by
+    /// walking *parameters and the receiver* -- never anything the contract
+    /// text alone refers to. This fixture reproduces the defect without
+    /// touching the return-type gate at all (`Ordering` here is not the
+    /// return type or a parameter -- just a name the postcondition reads --
+    /// so it is real regardless of the separate gate question): the crate
+    /// under test imports `std::cmp::Ordering` at the top of the file and
+    /// the contract names it, and nothing about the checked fn's signature
+    /// should stop the harness from seeing what the file itself can see.
+    #[test]
+    fn a_contract_naming_a_type_used_nowhere_in_the_signature_still_gets_its_own_import() {
+        let cf = discover(
+            r#"
+use std::cmp::Ordering;
+#[ply::ensures(|result| *result || Ordering::Equal == Ordering::Equal)]
+pub fn f(x: u32) -> bool { x > 0 }
+"#,
+            "f",
+        );
+        let fuzz_body = generate_fuzz_test(&cf, 8, &derive_seed("f", "")).unwrap();
+        let module = wrap_fn_harness_module(&cf, "target_crate", &[fuzz_body]);
+        assert!(
+            module.contains("use std::cmp::Ordering;"),
+            "a contract naming a type the checked fn's own file already imports must bring \
+             that same import into the generated harness module, or the harness fails to \
+             compile with \"cannot find type `Ordering` in this scope\" even though the type \
+             is right there in scope for the real function:\n{module}"
         );
     }
 

@@ -1281,6 +1281,19 @@ pub struct ContractFn {
     /// producer of this field, on purpose (see `find_receiver_plan`'s own
     /// doc: the one and only place a `ReceiverPlan` is built).
     pub receiver: Option<ReceiverPlan>,
+    /// Every top-level `use` item's local name in the file this fn was
+    /// discovered in, mapped to its raw path segments -- exactly
+    /// [`use_aliases_in_file`]'s own return value for that file, carried
+    /// here so `fuzz_gen`'s codegen can resolve a name the *contract text*
+    /// refers to (docs/reach-measurement-2.md: a postcondition naming
+    /// `Ordering` directly -- never a parameter, never the return type --
+    /// failed with `error[E0433]: cannot find type Ordering in this
+    /// scope`, because the generated harness only ever imports the checked
+    /// fn's own path and the types [`crate::fuzz_gen`]'s parameter/receiver
+    /// walk finds; nothing walks the contract text itself). Empty for a
+    /// `ContractFn` built directly with no file context -- same convention
+    /// as `source_span`.
+    pub use_aliases: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl ContractFn {
@@ -1532,6 +1545,7 @@ pub fn resolve_anchor(
             )
             .map_err(AnchorError::Shape)?;
             contract.source_span = Some(source_span);
+            contract.use_aliases = use_aliases_in_file(&found.file);
             Ok(contract)
         }
         crate::callgraph::Resolution::Opaque(reason) => Err(AnchorError::Unreadable(reason)),
@@ -1648,6 +1662,7 @@ pub fn build_contract_fn(
         is_method,
         return_type,
         receiver: None,
+        use_aliases: std::collections::BTreeMap::new(),
     })
 }
 
@@ -2857,6 +2872,7 @@ pub fn discover_method_with_receiver(
         target.span(),
     ));
     cf.receiver = Some(plan);
+    cf.use_aliases = use_aliases_in_file(&file);
     // Struct/enum parameters (2026-08-27): the checked method's own
     // parameters (not the receiver, not the constructor's own arguments --
     // both already resolved inside `scan_impls_for_receiver` above) get the
