@@ -31,7 +31,7 @@ Measured rather than taken on the comment's word. With the gate temporarily remo
       test and a new e2e fixture (`tests/fixtures/ensuresimport`) go red with the exact
       `error[E0433]` before the fix and green after; the fixture also proves the catching
       direction (a broken implementation still reports `violation`).
-- [x] **The gate decided: off, on both engines, measured** (`<COMMIT>`). Measured directly
+- [x] **The gate decided: off, on both engines, measured** (`51ef480`). Measured directly
       before removing anything, per the maintainer's brief: a function returning
       `std::cmp::Ordering` earns `fuzzed(64)` on the fuzz engine and a genuine `bounded(2)`
       proof on the bounded (Kani) engine, both completing in seconds -- not a timeout
