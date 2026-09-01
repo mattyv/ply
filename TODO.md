@@ -654,152 +654,6 @@ both.
       routes through the leaf path those exercise. Reverting the fix reproduces the
       original `E0308` verbatim for all five.
 
-## Silent-green regression and two false sentences, closed — 2026-08-31
-
-An adversarial review of the two 2026-08-30 wording fixes above found the narrower
-`W0510` gate had reopened the exact silence it was meant to close, plus one more false
-sentence in `check`'s new boundary-contract wording, plus one false "a test reproduces
-this" claim when two fns break their promise in the same run, plus four planted bugs
-none of the new tests caught. All closed; test-first, revert-and-confirm-red on every
-fix.
-
-- [x] **Silent-green regression, closed.** `checks: [test]` + a passing `examples:`
-      entry + a *wrong* ply.yaml `ensures:` (no inline attribute) reported `tested` with
-      zero diagnostics — `V0505` never fires when there is something to actually run
-      (the example), so narrowing `W0510` to only fire alongside an inline attribute
-      left nothing to say the ply.yaml contract was ever declared, let alone unchecked.
-      Fixed by restoring `W0510`'s original unconditional firing (`declares_contract`,
-      not `declares_contract && cf.has_contract()`) and instead fixing the actual false
-      clause: "so this run checked `{fn}` against its inline attributes only" (false
-      with no inline attribute) is now "so this run does not check `{fn}` against it;
-      only an inline attribute on `{fn}` itself counts toward `{fn}`'s own checks" — true
-      either way. `V0505`'s own ply.yaml aside (added in the 2026-08-30 fix) is removed
-      as now-redundant, since `W0510` always fires alongside it. New fixture:
-      `tests/fixtures/yamlonlycontractexample/`; new test:
-      `tests/e2e/tests/yamlonlycontractexample_fixture.rs`. Existing tests updated to
-      expect two non-contradictory diagnostics instead of one
-      (`yamlonlycontract_fixture.rs`, `verify.rs`'s own unit test).
-- [x] **`check` told a boundary-only fn's author to destroy the feature, with a false
-      sentence.** For `legacy_rate` (declares a ply.yaml contract, no `checks:` of its
-      own — §5.5's boundary declaration, working as intended), `check` said "`verify`
-      does not read a contract written there yet" (false — it reads it and uses it as a
-      caller's assumption) and "Move the contract onto `legacy_rate` as an attribute if
-      you want it checked" (advice to delete the feature the fixture demonstrates). Now
-      distinguishes two cases (`AnchorTally`'s `yaml_contract_checked_fns` vs.
-      `yaml_contract_boundary_fns`): a fn with its own `checks:` gets told to move the
-      contract onto it if it wants that checked; a fn with no `checks:` of its own gets
-      told this is deliberate, and that any caller's result will say it rests on an
-      unchecked promise. New test: `tests/e2e/tests/boundarycontract_check.rs`; existing
-      `check.rs` unit test updated, new one added for the boundary case.
-- [x] **"Ply wrote a test that reproduces this" was false when two fns broke their
-      promise in one run.** `harness::write_generated_test` overwrote
-      `ply_generated_cex.rs` wholesale on every call, and `verify` called it once per
-      broken fn — so the terminal printed the line twice but only the *last* fn's test
-      survived on disk. Fixed by accumulating every fn's rendered cex test into one
-      `Vec<RenderedTest>` across the whole run (`push_cex_test`, deduped by test name so
-      a fn re-rendered mid-run for §9's oracle check does not produce two `fn` items with
-      the same name) and writing the combined file exactly once, after every fn has been
-      checked. New fixture: `tests/fixtures/fuzzbugtwo/` (two fns, both broken); new
-      test: `tests/e2e/tests/fuzzbugtwo_fixture.rs`, asserting both rendered tests
-      survive and both actually run under `cargo test`.
-- [x] Two smaller wording repairs: "run `cargo test` and it fails with the same message
-      above" (false — `cargo test` prints the postcondition failure text, never the
-      diagnostic's own title) is now "run `cargo test` from this crate's root directory
-      and it fails the same way this run just did" (`main.rs`'s `counterexample_report`,
-      pinned by a new unit test). `check`'s plural wording ("Move the contract onto the
-      function as an attribute" when several are involved, naming none of them) now says
-      "those functions"/"them" throughout, pinned by a new unit test with four fns split
-      across both cases.
-- [x] **Four planted bugs, each closed with a test that kills it** (adversarial review
-      measured all four surviving the existing suite):
-      - A fallible constructor's rejection arm turned vacuous (`Ok` instead of rejecting)
-        went unnoticed by the existing receiver-constructor fixture
-        (`receiverresultctor`), because its constructor rejects only one value and its
-        promise (`u64 >= 0`) is vacuously true regardless. New fixture:
-        `tests/fixtures/narrowctor/` — a constructor rejecting most of its domain
-        (`v > 3`, against a generator drawing mostly from `0..=16`) behind a non-vacuous
-        promise (`*result <= 6`, true only because the rejection is real). New test:
-        `tests/e2e/tests/narrowctor_fixture.rs`, asserting the high-rejection warning
-        (`W0503`/`high_rejection_rate`) fires — confirmed to fail (verdict flips to
-        `violation`) when the constructor's rejection is defeated.
-      - `||` mutated to `&&` in both new yaml-contract detectors (`verify.rs`'s
-        `declares_contract`, `check.rs`'s walk) survived because every existing fixture
-        with a ply.yaml contract declared both `requires:` and `ensures:`. Already
-        closed incidentally by the two fixtures above (`yamlonlycontractexample`,
-        `boundarycontract` via `boundarycontract_check.rs`), both `ensures:`-only —
-        confirmed by mutating both conditions to `&&` and watching both tests fail.
-      - Deleting `W0510` outright survived the whole suite, since the one place it was
-        tested (`yamlonlycontract_fixture.rs`) has no inline attribute, and nothing
-        asserted it also fires when one *does* exist. New test:
-        `tests/e2e/tests/yaml_and_inline_contract_fixture.rs`, reusing the existing
-        `envelopecontract` fixture (`add` carries both an inline `#[ply::ensures]` and a
-        ply.yaml `ensures:`) — confirmed to fail when the diagnostic push is deleted.
-
-## Two wording defects found pointing Ply at semver — 2026-08-30
-
-Both defects were in what Ply *says*, not what it computes — found by pointing Ply at
-`semver` (the brief cited `docs/reach-measurement-2.md` for this, which is not present in
-this checkout). Both fixed, with a failing test written first for each, an end-to-end
-fixture, and a revert-and-confirm-red pass on every fix.
-
-- [x] **A counterexample was announced and then withheld.** The terminal printed a
-      diagnostic's title — which can promise "proptest shrank a failing case to this
-      minimal example" — and stopped there: no failing input, no mention that Ply had
-      just written a runnable red test into the user's own `src/`, even though `--json`
-      carried both the whole time. `crates/ply-cli/src/main.rs`'s `print_human` now
-      reuses the same `counterexample` field `--json` does, printing the failing input
-      plainly (never fabricated — the W0541 "cannot render as Rust" case still names no
-      test file, since none was written) and the path of the written test when there is
-      one. Fixture: `tests/fixtures/fuzzbug/` (existing); new tests: `fuzzbug_fixture.rs`'s
-      `the_terminal_shows_the_promised_counterexample_and_where_the_test_was_written`,
-      plus three unit tests in `main.rs`.
-- [x] **A contract written in `ply.yaml` was accepted by `check`, then silently ignored
-      by `verify`, which explained the silence with two contradictory warnings.** One
-      (`W0510`) said the ply.yaml contract "is used ... so this run checked `{fn}`
-      against its inline attributes only" — false when there are no inline attributes,
-      since nothing was checked against them. The other (`V0505`) correctly said "there
-      is nothing to check its result against, so nothing was run." Fixed here by
-      narrowing `W0510` to fire only when there genuinely are inline attributes to
-      check against (`cf.has_contract()`).
-      **RETRACTED, 2026-08-31 (adversarial review): that narrowing was itself a
-      regression** — a fn with `checks: [test]`, a passing `examples:` entry, and a
-      *wrong* ply.yaml `ensures:` (no inline attribute) reported a clean `tested` with
-      zero diagnostics, because `V0505` does not fire when there is something to run
-      (an example), so nothing was left to mention the ply.yaml contract at all. See
-      "Silent-green regression and two false sentences, closed" below for the real fix:
-      `W0510` fires unconditionally again whenever ply.yaml declares a contract, and its
-      own wording is what changed to stop being false, not the condition it fires under.
-      `check`'s anchors line ("N of N fn claims ... point at a function Ply can find")
-      now also names this up front, before `verify` ever runs. This is a wording fix
-      only — `ply.yaml` contract merge stays out of scope, per the spec's own status
-      list (§2226-2229 area, M3 thin-slice status). Fixture:
-      `tests/fixtures/yamlonlycontract/` (new); new test:
-      `tests/e2e/tests/yamlonlycontract_fixture.rs` (two tests, `check` and `verify`).
-## KNOWN GAP: a method's promise cannot mention its own receiver — CLOSED, see top of file
-
-- [x] **`#[ply::ensures(|result| *result >= self.a)]` generates a harness that does not
-      compile:** `error[E0424]: expected value, found module `self``. Any promise that
-      refers to `self` — which is most of what a method's promise would naturally say —
-      is affected, whatever its parameters.
-
-      Found while verifying the two fixes above, and **confirmed pre-existing**: the same
-      case run against the binary built before those fixes produces the identical error,
-      so neither fix caused it. It surfaced only because the reproduction taken from the
-      `semver` measurement happened to write `self.a == other.a`; a promise about the
-      arguments alone hides it completely, which is why the same-type-parameter fix looked
-      finished when it was not.
-
-      This is very likely a real share of the 1-in-16 reach recorded in
-      `docs/reach-measurement-2.md`. A method that cannot say anything about the object it
-      is called on can only promise things about its arguments, and the interesting
-      promises about a method are usually about the receiver.
-
-      Reported honestly when it happens — a tool error, never a pass, with the compiler's
-      own words quoted — so nobody is misled. It is still a check that cannot run.
-
-      **Fixed 2026-08-31** — see "Two more harness-generation compile defects fixed" at
-      the top of this file.
-
 ## The text fix closed a recorded false clean — 2026-09-01
 
 CI caught this, and it is the opposite of a regression. `excludedop` exists to record
@@ -1220,25 +1074,6 @@ precisely the shape where proof pays most, and Ply cannot reach it.
       This is a gap in the one file whose entire purpose is that its claims are checked,
       and it was not written down anywhere before today.
 
-## The source copy followed a hand-written list — 2026-08-30 (2c9e343)
-
-The first CI run after the workspace merge went red, and it was the merge's
-fault. One test builds Ply from a private copy of its own source tree, and
-which directories that copy took was written out by hand. Four crates joined
-the workspace; the copy did not get them; cargo refused to load a workspace
-root naming members that are not on disk.
-
-What made it expensive is what CI reported: `cargo build ... failed`, from a
-test about result caching. Three layers from the cause and saying nothing
-about it. The copy now reads the member list out of the root manifest it is
-already copying, and a new test states the invariant rather than trusting the
-routine — every member the manifest declares has a manifest in the copy. Run
-against the old code it names the four missing crates.
-
-The class of defect is worth naming: a second, hand-kept list of something the
-build system already knows. It was silent until the first change in eight
-months touched it.
-
 ## Verification results now change what the drawing looks like — 2026-08-30
 
 Left in the working tree, not committed (explicit constraint for this session) —
@@ -1303,44 +1138,6 @@ a rolling build is the wrong thing to rest a recorded proof on.)
       shadow of the kernel, not its production source, and the differential test is what
       licenses the shadow to speak for `aggregate()`. Re-check it whenever either side is
       edited. Not a task so much as a standing condition, kept here so it travels.
-
-## External review, and the honesty boundary — 2026-08-30
-
-A third review (Codex) read the merged transcript work; a second model verified every
-finding by building and running the counterexamples. **All nine held.** They are fixed
-across two commits, except the three recorded below as open.
-
-- [x] **Both views described enforcement this build does not perform.** They said an
-      undeclared cross-component call, capability use in a sealed component, and `strict`
-      escalation were architecture findings that fail the build. Those rules are
-      implemented nowhere — their codes appear in no checker — and `ply check` already
-      says so in its own output. The views contradicted the tool they belong to. One
-      shared sentence now says declared-and-unchecked, and the codes are gone.
-- [x] **Two sentences claimed checks that never ran**, both now derived from the
-      function's effective list: a contract on a function with no checks said "the checks
-      above test this promise" four lines under "nothing about this function is verified";
-      and worked examples were called "compiled into a test" when the verifier only
-      compiles them under `test`. The committed sample shows the second landing.
-- [x] **The two views printed different headline counts** for the same document. One
-      shared calculation now; the drawing's boolean walk is deleted.
-- [x] **`render ply.yaml -o ply.yaml` destroyed the document.** Refused before reading,
-      on canonicalized paths.
-- [x] **An unsupported `ply:` version rendered confidently.** Refused now, and the version
-      is printed in both views. Deliberately *not* full validation: render draws
-      half-written documents on purpose, and the version is the one field whose wrongness
-      is not survivable, because it selects the rules every other line is read under.
-- [x] **Every remaining "has been run" claim is gone.** Reworded conditionally ("if every
-      declared check ran and passed") rather than negatively, because a negation is one
-      feature away from false — this repo already has an evidence-overlay path.
-- [x] **Terminal control bytes from author-written text are neutralised** at a single
-      choke point on each renderer's output, so a future insertion site cannot forget it.
-- [x] **The completeness walk now binds `Document` field by field.** Its absence is why
-      the format version went unrendered and unnoticed.
-- [x] **A committed transcript for vetting 004 exists** and is drift-gated. README and the
-      module doc claimed one sat beside every scenario; making that true beat softening it.
-- [x] **A ratchet for the whole class**: no sentence in either view may cite a diagnostic
-      code this build cannot raise, checked against the codes actually present in the
-      checker sources rather than a hand-kept list. Verified to bite by injecting one.
 
 ## One workspace, and evidence that reaches the drawing — 2026-08-30
 
@@ -1479,48 +1276,6 @@ as done.
 - [ ] **`block()` finds the first heading with a given name**, so two functions sharing a
       name across components remain a blind spot in the scoped needle checks.
 
-## Coverage audit, and the four faults it found — 2026-08-30
-
-A cheaper model swept the text renderer and the drawing for tests that pass without
-proving anything. It confirmed the repair below held — the whole class of bug the first
-review found is now caught — and found four more faults that the suite could not see. All
-four are verified by hand, fixed with tests that kill them, and the tests were watched
-going red under each fault before being kept.
-
-**Line coverage was not measurable: neither tool is installed, and nothing was installed
-to get a number.** That is less of a loss than it sounds. Every line involved in all four
-faults below *executes* under the old tests; a coverage tool would have called them
-covered. Mutation survival is what found them, and it is the number this project should
-keep quoting.
-
-- [x] **An arrow touching the outside world could silently lose the only words saying it
-      is unchecked.** The note fires when either end is an outside party; requiring
-      *both* ends — which essentially never happens — deleted it from every real edge and
-      no test noticed. Now every such edge is checked against the document.
-- [x] **`--focus` could show the wrong half of the tree in detail.** What is inside the
-      component you named is meant to be spelled out; the boxes above it stay plain so
-      they do not bury it. Swapping those two was invisible to roughly ninety lines of
-      focus tests, because they all check the geometry of whatever got drawn and never
-      that the right things got drawn. My first attempt at the guard was itself useless —
-      I picked the target and an unrelated component, which sit on the same side of the
-      swap and pass either way. It needed one component inside the target and one above
-      it.
-- [x] **Nesting in the text was not checked at all.** Indentation is the only thing
-      grouping a function with its component there — no boxes, no lines — and handing a
-      child the same depth as its parent, flattening a whole subtree, left every test
-      green. Every assertion was "these words appear somewhere", and somewhere is not the
-      same place. Depth is now checked against the document for every component and
-      function.
-
-**Recorded, not fixed.** The installed command's `--text` test compares the command's
-output against a second call to the same function, so it proves the wiring and cannot
-prove the content. That is the right division of labour — content is the render tests'
-job — but it is worth knowing that assertion is wiring-only.
-
-**Still unmeasured.** The drawing module is 4,000+ lines and only three points in it were
-mutation-tested. Standing mutation coverage exists for the verdict kernel and nothing
-else; extending it past the kernel remains open.
-
 ## Review of the transcript, and what it found — 2026-08-30
 
 A second model reviewed the feature below. It was right about almost everything, and the
@@ -1579,41 +1334,6 @@ so a component can say it declares checks up to the strongest level while a func
 inside it says an open question holds it down. Both sentences are individually true and
 they sit four lines apart. The fix belongs in the shared ceiling computation and changes
 the drawing too, so it is its own change rather than a rider on this one.
-
-## The transcript: the render as text — 2026-08-30
-
-Measured, not assumed: on the committed trading-system diagram 474 characters are drawn
-on the canvas and 9,923 are reachable only by hovering. 95% of what the render says --
-and all of the reasoning -- is invisible to anyone who cannot hover, and a model reading
-the document cannot hover at all.
-
-- [x] **`ply-render --text` writes the whole document as prose.** Same facts as the
-      drawing, including every sentence the drawing only shows on hover; generated on
-      demand and never committed, so it cannot go stale. Goes to stdout or `-o`, exactly
-      like the SVG.
-- [x] **Combining `--text` with `--depth`/`--focus`/`--collapse` is refused, not
-      ignored.** Those fold a drawing to fit a screen; the text has no screen. A reader
-      handed a quietly-folded transcript would believe they had the complete view.
-- [x] **Component-level default `checks:` are now stated.** Found by the new invariant,
-      not by reading: `full.ply.yaml` declares `checks: [bounded(2)]` on a component and
-      the transcript said nothing about it. That is the §5.4c distinction the transcript
-      exists to make legible -- a default is invisible on every function that inherits
-      it, and "nothing written" and "written empty" mean opposite things.
-- [x] **The load-bearing invariant drives from the document, not the drawing**
-      (`the_transcript_leaves_nothing_in_the_document_out`): every component, function,
-      check, contract clause, capability, owned type, profile rule, default list, trusted
-      claim, edge, forbidden rule, external and open question must be findable in the
-      text. Four planted breakages (drop a forbidden rule, drop all but the first check,
-      print the trusted claim where the evidence belongs, drop the component default) all
-      die, each naming the dropped item.
-- [x] **The older drawing-vs-text test had a doc comment that overclaimed** and now says
-      what it checks: names only. About a third of what the picture says is glyph
-      shorthand (`B2 F1024`, `e×1`, `⛉`, `*`) that the text spells out in words --
-      demanding verbatim agreement would force the text to be as terse as the picture.
-- [x] **The label/line gap ratchet came out.** It had been pinned down to 0 earlier in
-      the same session, which made its `<=` a comparison that could not fail -- the same
-      silence the ratchet was built to prevent. It is a flat assertion now.
-- [x] Spec amended: §7.1a.
 
 ## Component notes, and the envelope's reasoning — 2026-08-28
 
@@ -1705,33 +1425,6 @@ Nothing below jumps that queue.
       `product-e2e` and `tools` to pass. This is a repository setting, not a code
       change, so it needs doing in GitHub's settings by the repository owner (or via
       the API with admin rights) -- Ply cannot set it from here.
-
-## Second smoke-test impression — 2026-08-28
-
-- [x] **"The check badges are the one thing with no tooltip, while the canvas tooltip
-      promises hover anything for its meaning."** Checked rather than assumed: the
-      badges do resolve a tooltip, and it glosses each one in plain language
-      ("bounded(2) — proves the contract for every input, unrolling loops at most 2
-      times"). The claim was wrong; the instinct behind it was not.
-- [x] **The invariant test that should have settled that question could not.**
-      `every_drawn_item_resolves_a_tooltip` walked a hand-maintained list of classes: of
-      the 35 the renderer emits, it named 14. A construct added later was explained only
-      if someone remembered to add it, and nothing failed if they did not -- the same
-      silent absence this project treats as a defect everywhere else. Inverted: every
-      class emitted must resolve a tooltip, and anything that genuinely cannot has to be
-      named as decoration, so a new construct fails until someone decides which it is.
-- [x] Inverting it found exactly one real gap: the `ply.yaml` title on the canvas had no
-      tooltip. It has one now.
-- [x] **Every box now says why it is the colour it is.** The canvas tooltip explained
-      the scale; no box said which function set its own shade, so finding the drag meant
-      opening every chip in turn. Each box now names the weakest thing inside it and
-      what that thing declares -- by path, so a function several components down is
-      findable rather than merely blamed. A box that is white says which claim declares
-      nothing at all.
-- [x] The words cannot drift from the colour: a test walks every component in six
-      documents and fails if the level the sentence names is not the level the box is
-      painted. Watched red by making the search pick the strongest declaration instead
-      of the weakest.
 
 ## Smoke test on a real project — 2026-08-28
 
@@ -1873,63 +1566,6 @@ in their words, and what happened to each.
       spacing leaking into a sentence held to the newbie bar. It now reads
       `super::Quota`, as written.
 
-## Forced colour made Ply blind to its own engines — 2026-08-28
-
-- [x] **Every compiler error reached Ply as `\x1b[1m\x1b[91merror\x1b[0m: ...` under
-      `CARGO_TERM_COLOR=always`, and nothing matched.** Ply reads its engines'
-      output line-first -- a compiler error is a line beginning `error`, attributed to
-      a function by the `-->` span under it -- so forced colour meant it could neither
-      pin a build failure to the function that caused it nor quote the compiler. It
-      fell back to "the compiler gave no specific error line": a sentence written for a
-      failure genuinely beyond attribution, printed for one that was entirely
-      attributable. A true sentence in the wrong place, which reads like the tool
-      working.
-- [x] Found by CI, which sets that variable, on a test that had been green locally for
-      months. Engine output is now stripped of ANSI escapes (CSI and OSC, including
-      terminal hyperlinks) before anything parses it -- at every engine, not just
-      cargo, so the next tool to add colour costs nothing.
-- [x] Regression test runs the real fixture with the variable set and asserts the
-      compiler's own message survives; watched red, and the pre-existing test stayed
-      green under the same sabotage, which is why it never caught this.
-
-## Ply's own architecture, rendered and checked — 2026-08-28
-
-- [x] **ARCHITECTURE.md**, with the diagram rendered from the root `ply.yaml` rather
-      than drawn by hand, and linked from the README. A test in the render tools fails
-      if the committed SVG stops matching what the spec renders to, so the page cannot
-      go stale quietly; watched red by adding a crate to the spec.
-- [x] **Running Ply on Ply found a real violation of Ply's own rule, and it is fixed
-      rather than declared away.** `ply_e2e` had grown a dependency on `ply_core` that
-      no edge allowed -- the type-coverage measurement reads core's classifier directly
-      so the published count cannot drift. Declaring `e2e -> core` would have made the
-      run green by widening the rule to the whole suite to excuse one file (the crate
-      tier cannot say "one test file may"), leaving every other e2e test resting on a
-      convention the checker could no longer enforce. The measurement moved to
-      `ply-core`'s own tests instead, beside the classifier it measures: the rule is
-      intact, the edge is gone, `e2e` depends on nothing again.
-- [x] Fixed while there: the architecture summary said "1 real crate dependencies
-      cross" -- now "1 real crate dependency crosses". The unit test had been pinning
-      the ungrammatical wording, so it was updated to the corrected sentence.
-- [x] Fixed while there: a document that declares no fn claims at all was told "NOT
-      RESOLVED ... none of the 0 fn claims were ever looked for" -- a failure that did
-      not happen, the mirror image of the bug the previous entry fixed. It now says
-      there were no fn claims to resolve.
-
-## `check` on a crate with no library stops reading clean — 2026-08-28
-
-- [x] **A binary-only crate got a clean `check` and a refusal from `verify`.** Found
-      while answering whether the fast command needs code to be there. With no
-      `src/lib.rs`, every claim was counted as "anchored to another crate" -- the shape
-      of a boundary somebody chose -- and the run exited 0 having resolved nothing.
-      `verify` on the same crate said `E0301`, exit 1. The two commands now agree: the
-      claim is unresolved, the missing library is named as the obstacle, and the
-      summary says a search did not happen instead of reporting a zero.
-- [x] End-to-end test in `check_command`, watched red against the old behaviour; both
-      commands asserted on the same crate in the same test. The-Ply-Spec.md §5.2
-      amended.
-- Note: the document half still needs no code at all -- a `ply.yaml` alone in an empty
-  directory gets its grammar checked, which is the spec-first loop working as intended.
-
 ## Ply borrows the user's Cargo.toml and gives it back — 2026-08-28
 
 - [x] **A run on a crate with its own workspace no longer leaves an edit behind.**
@@ -2052,108 +1688,6 @@ since no separate doc was asked for this session.
       resting on a clean callee that itself rested on a clean callee inherit anything
       the second hop assumed, transitively -- is a real question this design declines
       to answer rather than guesses at.
-
-## Third adversarial review of D5's first branch — 2026-08-26
-
-`docs/review-callees-first.md`, three BLOCKING findings (D1, D2, D3) plus three
-non-blocking-but-real ones (D4, D5, D6). Every fix red-first, with the literal failure
-text captured before the fix went back in.
-
-- [x] **D1 (BLOCKING) — branch one composed against a callee whose own proof did not
-      cover the caller's argument.** A `bounded(k)` proof over a length-indexed
-      parameter (`Vec<u8>`, a slice, `BTreeSet`, an array) only ever builds values up to
-      length `k`, not the type's full value space -- composing a caller's bound against
-      it assumes the callee's contract holds on arguments its own proof never touched.
-      Reproduced live: a callee proved only over vectors of length <= 2 returns a value
-      breaking its own postcondition at length 3; a caller always passing length 3
-      composed to a clean `bounded(2)`, exit 0, false. Red-first (`stubverifiedveclen`
-      fixture, domain gate disabled): `f` came back `"verdict":"bounded(2)"`,
-      `"statuses":[]` -- no `conditional`, no `owed-evidence`, the exact false-clean
-      shape the review named. Fixed with `RustType::is_full_domain()`
-      (`crates/ply-core/src/harness.rs`): a callee with any non-full-domain parameter is
-      excluded from branch one, whatever its own verdict, falling back to branch two
-      exactly like a cycle does. **Narrowed, not proved**: a fixed-size `[T; N]` array is
-      excluded too, conservatively, even though its size is part of the type and an
-      argument-containment argument might one day admit it safely -- that argument is
-      not made here. Green: `f` composes to `bounded(2)` with `conditional`/
-      `owed-evidence`, `W0511` present, no `W0517`, exit 0.
-- [x] **D2 (BLOCKING) — a same-crate contracted callee Ply cannot build a stub for was
-      silently inlined.** A tuple-pattern parameter, a `self` parameter, or an
-      unparseable contract attribute made `build_contract_fn` fail for the callee, and
-      the `if let ... && ...` chain deciding D5's first two branches had no `else`: the
-      failure fell through with no stub, no refusal, no diagnostic, contradicting this
-      commit's own "always stubbed, never inlined" claim. Red-first (`stubverifiedtuparg`
-      fixture, the new refusal gate disabled): `f` came back a real, freshly-computed
-      `"verdict":"bounded(2)"` in 32.55s -- Kani had genuinely compiled and inlined `g`'s
-      real tuple-pattern body, exactly the silent inlining the review named. Fixed: the
-      match rewritten with every arm explicit, a new `unstubbable_contracted` field on
-      `BoundaryPlan`, and a new diagnostic (`W0512`, `unbuildable_contracted_stub_diag`)
-      naming the callee and why its stand-in could not be built. Green: `g` and `f` both
-      report `unclaimed`, `W0512` names `g`, exit 1.
-- [x] **D3 (BLOCKING) — the widened tamper check accepted a hand-edited overclaim.**
-      Round 2's fix for the stale-bound defect widened `W0516`'s "is this verdict
-      earnable" check to accept any `bounded(j)` with `j <= k` for a claim declared
-      `bounded(k)` -- necessary, because branch one can genuinely compose to a shallower
-      `j`. But the review showed this was a strict superset of what composition can
-      produce: a hand-edited `bounded(4)` for a claim that had actually composed to
-      `bounded(2)` passed, because `4 <= 5` (the claim's own declared bound) was the only
-      thing checked. Red-first (`stubverifiedtamperedbound` fixture: run once, hand-edit
-      the stored `bounded(2)` to `bounded(4)`, re-run against the pre-fix "any `j <= k`"
-      rule): the tampered `bounded(4)` was silently accepted, no `W0516`, exactly the
-      overclaim the review reproduced. Fixed (`record.rs`'s `verdict_is_earnable`): the
-      expected value is now pinned exactly, `min(declared_k, min(the bound each
-      stood-on callee earned))`, read from `verified_bounds`, and a stored verdict must
-      equal that number, never merely sit under it. Green: the tampered record is
-      refused, `W0516` present, re-verified to the honest `bounded(2)`, exit 0.
-- [x] **D4 (non-blocking, real) — `audit`/`worklist` never saw an inline-contracted
-      assumption.** Both commands read only the `ply.yaml`-declared boundary-contract
-      route; a same-crate callee assumed through its own inline `#[ply::requires]`/
-      `#[ply::ensures]` (branch two, reached whenever that callee is not itself an
-      independently bounded-checked claim) reported `conditional`/`owed-evidence`
-      correctly at `verify` time while `audit`'s trust surface and `worklist`'s count
-      both stayed silent -- §5.5's own honesty condition 3 not holding for this class.
-      Red-first (`stubverifiedinlineaudit` fixture, the new listing arm disabled): both
-      commands reported "(0)" -- zero assumed contracts, zero owed evidence -- for a
-      callee `verify` itself marks conditional. Fixed in `shared.rs`'s
-      `assumed_contracts`, narrowly: listed whenever the callee carries no `bounded`
-      check anywhere in the document. **Known gap, not solved**: a same-crate callee
-      that *is* claimed `bounded` elsewhere but still lands on branch two at `verify`
-      time (a cycle, or an unclean run) needs the same ordering computation `verify`
-      does to tell "stood on" from "assumed" -- this listing does not attempt that and
-      under-reports exactly that case. Green: both commands report "(1)", naming the
-      callee, the caller, and the promise text.
-- [x] **D5 (non-blocking, real) — the vacuity gate fired on a proved callee's inline
-      contract.** §5.5's emptiness/vacuity check (E0502/E0503) exists to interrogate
-      branch two's *assumed* clauses; it was running over every stub's contract
-      regardless of branch, including a callee proved clean this run (branch one), whose
-      inline contract is real evidence rather than a promise being trusted sight-unseen.
-      Fixed by filtering the stub list fed to the vacuity gate to assumed-only
-      (`is_assumed()`) before it runs. A second, smaller wording defect went with it:
-      diagnostic text in this area said a contract was "declared in ply.yaml" in
-      contexts where it could just as easily be an inline `#[ply::requires]`/
-      `#[ply::ensures]` on the callee itself -- corrected in `W0511`'s
-      `conditional_verdict_diag` and the three E0502/E0503 title strings to describe the
-      contract neutrally rather than naming the wrong source.
-- [x] **D6 (non-blocking, real) — a mutation-decorated verdict broke bound parsing.**
-      `parse_bound` (`verify.rs`, feeds the `known_bounded` map branch one composes
-      against) matched only a bare `bounded(k)` string; a `·spec-strong`-decorated
-      verdict failed to parse, silently dropping that claim out of `known_bounded` and
-      its callers to branch two. Fixed by stripping the `·spec-strong` suffix before
-      parsing, matching the same handling `record.rs`'s `verdict_is_earnable` already
-      had for the identical shape.
-- [x] Fixtures added, each with its own permanent e2e test:
-      `stubverifiedveclen` (D1, the reviewer's length-indexed-parameter shape, entered
-      the suite permanently as required), `stubverifiedtuparg` (D2, a tuple-pattern
-      parameter), `stubverifiedtamperedbound` (D3, a live hand-edit-and-reverify
-      reproduction), `stubverifiedinlineaudit` (D4, `audit` + `worklist`). All four
-      confirmed red-first against the isolated defect and green with the fix restored,
-      including a red-first pass over D3's own live e2e reproduction (hand-editing
-      `ply.lock` and re-running against the pre-fix "any `j <= k`" rule accepted the
-      tampered `bounded(4)`; the fix refuses it and re-earns `bounded(2)`). D6 also
-      carries its own unit test (`parse_bound`, spec-strong-decorated input).
-      `cargo test --workspace`: 321 passed, 0 failed, 0 ignored, across 50 test
-      binaries; `cargo fmt --all` made no changes; `cargo clippy --workspace
-      --all-targets -- -D warnings` clean.
 
 ## Phase 1a — landed 2026-08-25
 
@@ -3228,7 +2762,12 @@ wall clock, 72 tests (was 53), zero warnings on `cargo check --workspace --tests
       drawn as a badge, fingerprinted under D14 so it goes stale with the body. No
       predicate sub-language until a vetting scenario forces one.
 
-## From the external review (codex, 2026-08-23) — see docs/review-2026-08-23.md
+## From the external review (codex, 2026-08-23)
+
+*The raw transcript that was committed as `docs/review-2026-08-23.md` was deleted on
+2026-09-01: it was another tool's session log, complete with its version banner, 24 raw
+tool-invocation markers and 25 absolute paths from the reviewer's own machine. Its findings
+are the items below; the transcript itself is in git history if anyone ever wants it.*
 
 - [x] **M0 spike done, ADR-0003 accepted** (0974f57). 8/9 mechanisms work; cross-crate
       stubbing works via caller-local re-proof. Fixtures + run.sh under tests/spike/.
