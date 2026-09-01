@@ -729,6 +729,20 @@ This subset applies to `requires`/`ensures` — the expressions sent to proof en
 `examples` entries are exempt: they are arbitrary Rust `==` expressions, compiled as
 plain `#[test]`s and never translated for an engine.
 
+**Declaring `examples:` is not the same as running them (added 2026-09-01).** Only
+`test` compiles an entry into a real assertion; `fuzz` reads one only when it seeds a
+shape it could not otherwise build at all (an unbuildable receiver constructor or plain
+parameter — §5.4c), and `bounded`/`prove`/`mutate` never read `examples` at all. A
+function whose declared checks include none of these earns whatever those checks find
+while its examples silently do nothing — worse than plain neglect, because §5.2a still
+reads and fingerprints them as part of what the claim's result depends on, so editing a
+never-run example still re-earns the claim, exactly as though it mattered to the
+verdict. `verify` now warns (`W0525`) whenever this is so, naming how many examples will
+not run and that `test` is what makes them run — a warning, not a verdict change: the
+declared checks that did run are reported exactly as they would be without this
+disclosure. The rendered drawing already carried this exact disclosure on a function's
+own tooltip; `W0525` is the same fact, said once, reaching the terminal too.
+
 Boolean Rust expressions over the function's parameters and `result`; literals (integer,
 bool, char, string); calls to `pure`-marked helper fns; `==,!=,<,<=,>,>=`; `&&,||,!`;
 arithmetic; field access; `.len()`; `.is_ok()/.is_err()/.is_some()`; `matches!()`. The

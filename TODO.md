@@ -31,21 +31,40 @@ where no measurement exists at all. Reusing that mark unchanged would make its o
 false. Either its legend is reworded to honestly cover both, or -- cleaner -- a sibling
 mark says what this one actually measures.
 
-- [ ] **A factually false `examples:` entry passes in silence.** Verified by hand: write
-      `Version::parse("1.2.3").is_err()` -- a plainly false sentence, that text parses
-      fine -- under a `fuzz` check and the verdict is a clean `fuzzed(64)` with not one
-      word about it. Examples never execute under a fuzz-only check. Worse than inert:
-      the run *notices* the examples changed and re-checks because of them, so it reads
-      them, fingerprints them, treats the verdict as depending on them, and never
-      evaluates them. Same species as the recorded "contracts written the documented
-      out-of-source way are accepted, then ignored" defect, and sharper.
-- [ ] **The escape hatch Ply's own refusal recommends does not work for a method.** The
-      refusal for a `Self`-spelled parameter says to "declare `test` instead, with an
-      `examples:` entry". Doing exactly that gives `error: invalid path separator in
-      function definition` -- the generated test's *name* splices the checked function's
-      path in verbatim, `::` and all. Every fixture exercising this codegen uses free
-      functions, so it has never been seen; nearly everything in a real library is a
-      method.
+- [x] **A factually false `examples:` entry passes in silence -- now disclosed, 2026-09-01,
+      9faf5f0.** Verified by hand: `Version::parse("1.2.3").is_err()` -- a
+      plainly false sentence, that text parses fine -- under a `fuzz` check earned a
+      clean `fuzzed(64)` with not one word about it. Fixed by measurement, not by making
+      `fuzz` run examples (that is the separate proposal below, deliberately left
+      undone): `cargo ply verify` now warns (`W0525`) whenever a function declares
+      `examples:` and nothing declared will actually consume them -- naming how many will
+      not run and that `test` is what runs them. The condition asks the seeding machinery
+      itself (`fuzz_gen::examples_are_consumed`) rather than re-deriving "does fuzz use
+      this," so it does not false-positive on `paramseeded`/`textseeded`, where `fuzz`
+      alone genuinely does seed from an example with no `test` declared. This is a
+      warning only -- it does not change what any check means or what verdict it earns.
+      New fixture `tests/fixtures/examplesnotrun` (the semver reproduction, self-contained)
+      pins both the silent "before" and the disclosed "after"; the render's own tooltip
+      sentence (`examples_prose`) is reused verbatim rather than said a second way, so the
+      picture and the terminal cannot disagree about what ran. §5.4a amended.
+- [x] **The escape hatch Ply's own refusal recommends did not work for a method -- fixed,
+      2026-09-01, 9faf5f0.** The refusal for an unbuildable parameter says to
+      "declare `test` instead, with an `examples:` entry" -- doing exactly that on a
+      method gave `error: invalid path separator in function definition`: the generated
+      test's own *name* spliced the checked function's `::`-qualified path in verbatim.
+      Every fixture exercising this codegen used a free function, so the break was never
+      seen even though nearly everything in a real library is a method. Fixed by taking
+      the checked function itself rather than a bare name, and deriving the test's name
+      from the same safe identifier (`ContractFn::ident`) the fuzz-test generator already
+      builds its own test name from, so there is exactly one place that turns a checked
+      function into a safe identifier, not two. New permanent fixture
+      `tests/fixtures/methodexampletest` (a method taking `&Self`, the exact shape
+      `semver`'s `Version::cmp_precedence` has) proves both directions against a real
+      `cargo ply verify` run: a true example earns a real `tested` verdict, and a
+      rewritten false one earns a real, named `violation` -- the gap that let this
+      survive was that no fixture had a method under `test` with examples at all.
+      Verified by hand against `semver` itself, both before (the exact quoted compiler
+      error) and after (a clean `tested` verdict) the fix.
 - [x] **That same refusal contains a false sentence — audited, 2026-09-01 (`f2bfe88`).**
       It says no part of the parameter's value is one Ply knows how to vary. False for a
       `Self` parameter specifically, because the identical type spelled by name was
@@ -58,6 +77,23 @@ mark says what this one actually measures.
       test, not reworded -- the trailing "declare `test` instead" advice (the escape-hatch
       defect just above) is a separate, still-open defect and was left untouched on
       request.
+
+**Not done, and deliberately left for the maintainer: actually running `examples:` under
+`fuzz`/`bounded`.** The stronger fix for the first item above is having `fuzz` itself
+compile and run every declared example once, up front, alongside its generated cases --
+turning "declared but unconsumed" into "declared and checked" instead of merely
+disclosing the gap. Not built this session because it is a semantic change to what a
+declared check means, which CLAUDE.md reserves for the maintainer, not an agent mid-fix.
+What it would take: `fuzz`'s harness already has a slot for exactly this (the direct
+`ply_example_*` tests `test` generates already run inside the same harness module `fuzz`
+shares -- see `generate_example_test`/`fuzz_gen::wrap_fn_harness_module`), so the
+generation side is close to free -- the real work is deciding what a *failing* example
+means for a `fuzz`-only claim's verdict (today `R0502`/`violation` is `test`'s own
+vocabulary) and what it means for `bounded`, which builds a completely different kind of
+harness and has no equivalent slot at all. It would also change `fingerprint` input 4's
+own wording ("the worked examples a `test` check compiles into assertions") the moment
+any check besides `test` compiles one, which is a spec-level decision, not a drive-by
+edit.
 
 **Two corrections to how the remaining work is priced:**
 

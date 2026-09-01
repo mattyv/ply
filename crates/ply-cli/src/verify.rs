@@ -693,6 +693,33 @@ fn verify_loaded_crate(
                 continue;
             }
 
+            // §5.4a: an `examples:` entry is only ever compiled into an
+            // assertion by `test`, or consumed as a seed by `fuzz` when the
+            // shape it seeds is otherwise unbuildable
+            // (`fuzz_gen::examples_are_consumed` asks the seeding machinery
+            // itself, rather than re-deriving the answer here and getting it
+            // wrong for `paramseeded`/`textseeded`, where seeding is real).
+            // Declaring examples that nothing consumes used to run this
+            // claim's other checks and say nothing about them at all: they
+            // are still read and fingerprinted (§5.2a input 4, so editing
+            // one still re-earns this claim), which reads as though it
+            // mattered to the verdict, but nothing ever compiled or ran it
+            // (found by hand, 2026-09-01: `Version::parse("1.2.3").is_err()`
+            // -- a plainly false sentence -- passed in total silence under
+            // `checks: [fuzz(64)]`). The drawing already discloses exactly
+            // this state on the function's own tooltip (`examples_prose`'s
+            // non-`test` branch); this reuses that same sentence rather
+            // than saying it a second, different way.
+            if !claim.examples.is_empty()
+                && !ply_core::fuzz_gen::examples_are_consumed(&cf, &checks, &claim.examples)
+            {
+                diagnostics.push(examples_not_run_diag(
+                    &node_id,
+                    fn_name,
+                    claim.examples.len(),
+                ));
+            }
+
             // §5.5's three-way split, decided from the call graph before
             // any engine starts. Only `bounded` needs it: Kani descends into
             // callee bodies, proptest simply runs them.
@@ -805,7 +832,7 @@ fn verify_loaded_crate(
             // it is the one assertion the author wrote out by hand, and the
             // verdict claimed it had been checked.
             if let Some(bad) = claim.examples.iter().enumerate().find_map(|(i, example)| {
-                ply_core::fuzz_gen::generate_example_test(fn_name, (i + 1) as u32, example)
+                ply_core::fuzz_gen::generate_example_test(&cf, (i + 1) as u32, example)
                     .err()
                     .map(|e| e.to_string())
             }) {
@@ -977,11 +1004,9 @@ fn verify_loaded_crate(
             // fuzz half.
             if has_test {
                 for (i, example) in plan.claim.examples.iter().enumerate() {
-                    if let Ok(body) = ply_core::fuzz_gen::generate_example_test(
-                        plan.fn_name,
-                        (i + 1) as u32,
-                        example,
-                    ) {
+                    if let Ok(body) =
+                        ply_core::fuzz_gen::generate_example_test(&plan.cf, (i + 1) as u32, example)
+                    {
                         bodies.push(body);
                     }
                 }
@@ -2140,6 +2165,51 @@ fn empty_checks_diag(
         }],
         assumptions: vec![],
         open_item: Some("declared_unchecked".into()),
+    }
+}
+
+/// §5.4a: a `test` check compiles `examples:` entries into real assertions
+/// -- nothing else does. `fuzz`, `bounded`, `prove` and `mutate` never read
+/// them at all, so a function that declares `examples:` without also
+/// declaring `test` earns whatever its other checks find while its
+/// examples silently do nothing. Worse than plain neglect: §5.2a still
+/// reads and fingerprints them as part of what this claim's result depends
+/// on, so editing a never-run example still re-earns the claim -- exactly
+/// as though it mattered to the verdict, when nothing ever compiled or ran
+/// it (found by hand, 2026-09-01: `Version::parse("1.2.3").is_err()`, a
+/// plainly false sentence about a real function, passed in total silence
+/// under `checks: [fuzz(64)]`).
+///
+/// The drawing already discloses exactly this state, on the function's own
+/// tooltip (`examples_prose`'s non-`test` branch, `crate::visual::svg`).
+/// This reuses that same sentence rather than saying the same fact a
+/// second, different way -- the whole point being that the picture and the
+/// terminal output must never disagree about what ran.
+fn examples_not_run_diag(node_id: &str, fn_name: &str, n: usize) -> Diagnostic {
+    let pronoun = if n == 1 { "it" } else { "them" };
+    Diagnostic {
+        code: "W0525".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` declares {}. Add `test` to its `checks:` list to actually run \
+             {pronoun} as a real test. (W0525, §5.4a)",
+            ply_core::visual::svg::examples_prose(n, false),
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![Fix {
+            title: format!(
+                "add `test` to `{fn_name}`'s `checks:` list so its worked examples actually run"
+            ),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: Some("examples_not_run".into()),
     }
 }
 
@@ -6280,6 +6350,34 @@ mod tests {
             ),
             "{}",
             d.title
+        );
+    }
+
+    /// The exact wording of the `examples_not_run` warning (W0525) --
+    /// exact-string, per CLAUDE.md's newbie bar ("the test for new wording
+    /// is exact-string, so the words are reviewed like code").
+    #[test]
+    fn examples_not_run_diag_names_the_count_and_the_fix() {
+        let d = examples_not_run_diag("semver::Version::parse", "Version::parse", 1);
+        assert_eq!(d.code, "W0525");
+        assert_eq!(d.severity, "warning");
+        assert_eq!(
+            d.title,
+            "`Version::parse` declares 1 worked example, written down but not run: no check \
+             here asks for the declared examples, so nothing compiles them. Add `test` to its \
+             `checks:` list to actually run it as a real test. (W0525, §5.4a)"
+        );
+    }
+
+    /// Plural count, plural pronoun.
+    #[test]
+    fn examples_not_run_diag_pluralises_more_than_one_example() {
+        let d = examples_not_run_diag("crate::f", "f", 2);
+        assert_eq!(
+            d.title,
+            "`f` declares 2 worked examples, written down but not run: no check here asks for \
+             the declared examples, so nothing compiles them. Add `test` to its `checks:` list \
+             to actually run them as a real test. (W0525, §5.4a)"
         );
     }
 
