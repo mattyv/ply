@@ -1,5 +1,34 @@
 # TODO
 
+## Measured: the return-type gate can come off, and what it hides — 2026-09-01
+
+Fable's ranking put this first and it is not a declaration at all: the gate refusing a
+function because Ply cannot *construct* its return type blocks 10 of the 16 properties in
+`docs/reach-measurement-2.md`, and the gate's own doc comment already concedes it blocks
+nothing technically -- *"nothing in this codegen ever names or constructs a return type.
+This gate is therefore a deliberate, requested narrowing... on principle."*
+
+Measured rather than taken on the comment's word. With the gate temporarily removed:
+
+- A function returning `std::cmp::Ordering` -- a type Ply models nowhere -- **earns
+  `fuzzed(64)`**, and a false promise about it is caught: `!result.is_lt()` on `a.cmp(&b)`
+  gives `violation` with a shrunk failing input. So the comment is right, and the refusal
+  really is costing real evidence for no technical reason.
+- **But removing it exposes a separate defect the gate was hiding.** A contract that *names*
+  the return type -- `|result| *result != Ordering::Greater || a > b` -- fails to compile:
+  `error[E0433]: cannot find type Ordering in this scope`. The generated harness brings
+  parameter types into scope and not types the contract text names.
+
+- [ ] **Decide whether the gate comes off.** It is a reviewed, deliberate narrowing recorded
+      in the code, and §5.4b's stated rule that a supported signature covers "parameters
+      *and* return type" would need amending with it. The evidence the original review did
+      not have is the measurement: it costs 10 of 16 on a real library. Recommended, but it
+      is a spec change and a reversal of a recorded decision, so it is the maintainer's.
+- [ ] **The import defect is worth fixing either way**, and probably first: a contract may
+      name any type the crate can see, and today naming one in a promise breaks the harness.
+      That is invisible while the gate refuses those functions anyway, which is what "the
+      gate was hiding it" means.
+
 ## Design principle, from the maintainer — 2026-09-01
 
 **Requiring the user to write a small declaration is cheap, because an agent writes it.**
