@@ -16,22 +16,22 @@ components:
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, slot — nothing here counts as checked more strongly than the weakest thing inside it
     fn slot
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
-      mutate — plants small deliberate bugs; the test/fuzz checks must catch every one, or the contract is flagged weak
-      fuzz(4096) — runs the function on 4096 random inputs, checking the contract on each
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+      mutate — plants small deliberate bugs; test/fuzz must catch each one or the requires/ensures are too weak
+      fuzz(4096) — tries 4096 generated inputs that satisfy requires, then checks ensures
     fn Spsc::with_capacity
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
       generic — every check runs with T=u64; whatever they earn covers only that type
     fn Spsc::try_push
-      bounded(3) — proves the contract for every input, unrolling loops at most 3 times
-      fuzz(1024) — runs the function on 1024 random inputs, checking the contract on each
+      bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3
+      fuzz(1024) — tries 1024 generated inputs that satisfy requires, then checks ensures
       generic — every check runs with T=u64; whatever they earn covers only that type
       trusted (a human vouches for this; no machine checks it): SPSC cross-thread safety (happens-before between cursors) — evidence: loom test tests/loom_spsc.rs
       1 worked example, written down but not run: no check here asks for the declared examples, so nothing compiles them:
         { let q = Spsc::with_capacity(2); q.try_push(7).is_ok() } == true
     fn Spsc::try_pop
-      bounded(3) — proves the contract for every input, unrolling loops at most 3 times
-      fuzz(1024) — runs the function on 1024 random inputs, checking the contract on each
+      bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3
+      fuzz(1024) — tries 1024 generated inputs that satisfy requires, then checks ensures
       generic — every check runs with T=u64; whatever they earn covers only that type
 
 externals — systems and people outside this codebase: none declared

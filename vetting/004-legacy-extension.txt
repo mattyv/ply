@@ -17,19 +17,19 @@ components:
     declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, approve_withdrawal — nothing here counts as checked more strongly than the weakest thing inside it
     fn fee_cents
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
     fn total_debit_cents
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
     fn tier_fee_cents
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
     fn approve_withdrawal
-      fuzz(256) — runs the function on 256 random inputs, checking the contract on each
-      test — runs the declared examples plus generated inputs, checking the contract on each
+      fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+      test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
       2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
         approve_withdrawal(1000, 5000, 3) == true
         approve_withdrawal(5000, 5000, 0) == false
     fn withdraw
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
 
 externals — systems and people outside this codebase: none declared
 

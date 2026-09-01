@@ -1724,14 +1724,14 @@ grammar.**
 | `owns` | header line under the anchor, `owns T, U` — the types this component is sole mutator of |
 | capabilities / `pure` | badge row on the box; `pure` = a sealed border, no badges |
 | profile | tag on the box |
-| checks list | glyph row on the fn chip |
+| checks list | a readable second row on the fn chip, in declaration order: `test`, `fuzz: n cases`, `bounded: loop≤k`, `prove`, `mutate`. The tooltip and transcript expand each check and state what its number measures. |
 | verdict | fn-chip fill by discrete display state, never a continuous ordinal ramp — see the amendment below. Five states: `declared` (no evidence resolved, or evidence that settled nothing — drawn exactly as a chip with no evidence always has), `earned` (green — the one hue reserved for evidence a run actually produced), `violated` (red — the only red besides `deny`/finding), `unanswered` (a run tried and could not say; distinct, never red), `stale` (a stored result exists but the code moved since; distinct, never red). "Earned on assumptions" (§5.5's `conditional`) is a marked variant of `earned`, not a sixth hue — the mark is an attached character, never a new colour |
-| statuses | corner markers on the node (conditional, weak-spec, …) — `tools/render`'s own SVG realizes the colourblind-safety half of this today folded into the five display states above (`✓`/`✓†`/`✗`/`?`/`↻` beside the fn's check glyphs, not yet one marker per individual status kind) |
+| statuses | corner markers on the node (conditional, weak-spec, …) — `tools/render`'s own SVG realizes the colourblind-safety half of this today folded into the five display states above (`✓`/`✓†`/`✗`/`?`/`↻` beside the fn's check labels, not yet one marker per individual status kind) |
 | worst_descendant | a collapsed box takes its weakest descendant's fill — D6 made visible |
 | assumption chain | thin dotted arrows from a verdict to the contracts it assumed |
 | unresolved marker | numbered pin on the fn or component |
 | trusted claim | hollow shield badge on the node — attested by named evidence, not machine-checked |
-| contract clauses (`requires`/`ensures`) | a contract mark on the fn chip — a solid ink bar the full height of the chip's left edge (a gutter mark: "this row carries something binding"); the tooltip lists each clause verbatim, and inside a `--focus` target the clauses are additionally *drawn* under the fn name, one line each, prefixed `needs` (what the caller must guarantee going in) and `gives` (what the function guarantees coming out). Drawn only at focus, never at overview: the overview answers "where does attention go", the focused view answers "what exactly is promised here", and clause text at overview zoom buries the first question. Ancestors of the focus target are excluded for the same reason — they stay expanded only to show the path down. This draws the §7.2 watermark per function: marked = a promise stands at the mark; bare = signature only. (The renderer sees only YAML-declared clauses; inline attributes join when `cargo ply` emits the §8 envelope.) |
+| contract clauses (`requires`/`ensures`) | a contract mark on the fn chip — a solid ink bar the full height of the chip's left edge (a gutter mark: "this row carries something binding"); the tooltip lists each clause verbatim, and inside a `--focus` target the clauses are additionally *drawn* under the fn name, one line each, prefixed `Input (requires)` and `Postcondition (ensures)`. Drawn only at focus, never at overview: the overview answers "where does attention go", the focused view answers "what exactly is promised here", and clause text at overview zoom buries the first question. Ancestors of the focus target are excluded for the same reason — they stay expanded only to show the path down. This draws the §7.2 watermark per function: marked = a promise stands at the mark; bare = signature only. The static renderer sees YAML clauses; the §8 envelope adds inline attributes from a completed `cargo ply verify` run. |
 | declared ceiling | component fill, on the **neutral grey** ramp (never green — see the channel-discipline amendment of 2026-08-29), stepped by the verdict ordinal scale: the strongest verdict the component's declared checks *could* earn — per fn the strongest check kind (`test`→tested … `prove`→proved; `mutate` strengthens, never lifts; no checks = unclaimed, unfilled), folded worst-of by the kernel's container rule. A ceiling is a promise, not proof: it is drawn in grey, never in the green reserved for evidence a run has earned, and its tooltip says none of it has run |
 | `strict` | a solid ink triangle notch in the box's top-right corner — the "flagged, zero tolerance" instinct; tooltip already explains errors-not-warnings |
 | `mode: synth` | the fn chip's fill turns light violet — violet is hereby the authorship channel, its single meaning "machine-written": the body below the watermark is synthesized from the contract, with the checks holding the line. Tooltip says exactly that |
@@ -1934,12 +1934,12 @@ Three properties are load-bearing:
   rules, the open-question sentence — so those cannot drift. This is a discipline, not a
   mechanism: nothing stops a future sentence being written twice, and the `pure` sentence
   was worded differently in the two views for a day before review caught it. Where a fact
-  belongs to only one view (the drawing's glyph key; the text's inherited-from
+  belongs to only one view (the drawing's compact check row; the text's inherited-from
   attribution) there is nothing to share.
 
-The two views do not agree verbatim, and should not: about a third of what the picture
-says is glyph shorthand — `B2 F1024`, `e×1`, `⛉`, `*` — that the text spells out in
-words. Demanding verbatim agreement would force the text to be as terse as the picture.
+The two views do not agree verbatim, and should not. The picture keeps compact labels such
+as `bounded: loop≤2`, `fuzz: 1024 cases`, `e×1`, `⛉`, and `*`; the text expands their
+meaning. Demanding verbatim agreement would force the text to be as terse as the picture.
 The invariant that holds instead is stronger and drives from the document: **every
 component, function, check, contract clause, capability, owned type, profile rule,
 default `checks:` list, trusted claim, worked example, entry point, machine-written

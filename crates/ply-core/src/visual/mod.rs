@@ -175,6 +175,8 @@ pub struct VisualElement {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declaration: Option<String>,
     pub evidence: ElementEvidence,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceLocation>,
@@ -476,6 +478,20 @@ fn collect_elements(
         .iter()
         .map(|(index, diagnostic)| diagnostic_id(*index, diagnostic))
         .collect();
+    let declaration = (!node.contract.is_empty()).then(|| {
+        node.contract
+            .requires
+            .iter()
+            .map(|clause| format!("Input (requires): {clause}"))
+            .chain(
+                node.contract
+                    .ensures
+                    .iter()
+                    .map(|clause| format!("Postcondition (ensures): {clause}")),
+            )
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
     let evidence = ElementEvidence {
         verdict: node.verdict.clone(),
         statuses: node.statuses.clone(),
@@ -506,6 +522,7 @@ fn collect_elements(
                 kind: node.kind.clone(),
                 label: node.id.clone(),
                 parent_id: parent_id.map(ToOwned::to_owned),
+                declaration,
                 evidence,
                 source,
                 diagnostic_ids,
