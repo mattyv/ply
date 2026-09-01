@@ -13,6 +13,7 @@ pub mod model;
 pub mod promise;
 pub mod reach;
 pub mod record;
+pub mod registry;
 pub mod schedule;
 pub mod schema;
 pub mod surface;

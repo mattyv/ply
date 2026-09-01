@@ -101,14 +101,24 @@ the status field, so that every surface says so instead of reading like a rule P
 - `X0902` — the witness-replay half of the correctness oracle. The spec already admits this
   one: *"not yet wired into the M3 e2e suite"*.
 
-**One is a real gap, and it is small: `W0111`.** When `ply.yaml` and an inline attribute
-disagree, the spec says `ply.yaml` wins and Ply warns. Ply does not warn. A user can override
-a promise written on the function and be told nothing. That is a silent override, which is
-the same family as the silence closed this week — worth building, and cheap.
+**The eleventh, `W0111`, was first triaged as a real gap that was cheap to build. That was
+wrong, and this is the second correction to this page.** The spec says: when `ply.yaml` and
+an inline attribute disagree, `ply.yaml` wins and Ply warns. The warning is missing, so it
+looked like a small honest fix. But the premise is not implemented: a `ply.yaml` contract is
+never merged into a function's own checks at all — only inline attributes are — so the
+conflict `W0111` reports the resolution of never arises. `attach_claim_text` shows both
+promises side by side rather than one overriding the other, and nothing anywhere picks a
+winner.
 
-So the work the registry unblocks is one warning plus ten status fields, not thirteen
-judgment calls. That is a much smaller and more tractable thing than the count suggested,
-and the count suggested otherwise because I read a denial as a promise.
+So `W0111` is unreachable by construction, gated on exactly the same unbuilt `ply.yaml`
+contract merge as the other ten. Building the warning first would mean writing a diagnostic
+about a resolution that does not happen.
+
+**The corrected answer: all eleven need an honest status, and none is a cheap build.** The
+registry's whole job here is to say so. The first triage called `W0111` "worth building, and
+cheap" without checking whether its premise was implementable, which is the same species of
+error as counting a denial as a promise — reading a document's description of a rule as
+evidence that the rule exists.
 
 ## Four decisions I need from you
 
@@ -122,9 +132,10 @@ and the count suggested otherwise because I read a denial as a promise.
    document fails the build. Extending it to the rule tables is the only way the documents
    stay true without anyone remembering. It means those tables stop being hand-editable.
 
-3. **What happens to the eleven** — triaged in the section above, and the answer is smaller
-   than the count implied: ten need only an honest status, one (`W0111`) needs building.
-   The decision left for you is whether `W0111` is worth building now or recorded as owed.
+3. **What happens to the eleven** — triaged above, and after a correction the answer is
+   uniform: all eleven need an honest status, none is a cheap build, and `W0111` in
+   particular cannot be built before the `ply.yaml` contract merge it depends on. Nothing is
+   left for you to decide here unless you disagree with that reading.
 
 4. **Whether it lands before or after the two reach defects.** The registry is the larger
    piece; the reach defects (a promise cannot mention its receiver; a comparison nested in a

@@ -1,0 +1,11 @@
+ply: 1
+components:
+  greendemo:
+    anchor: greendemo
+    fns:
+      clamp:
+        checks: [bounded(2), fuzz(64)]
+      digit_count:
+        checks: [fuzz(64)]
+      total:
+        checks: [fuzz(64)]

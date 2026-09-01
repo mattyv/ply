@@ -1,5 +1,52 @@
 # TODO
 
+## Two more harness-generation compile defects fixed — 2026-08-31
+
+Both were the two `KNOWN GAP`s recorded just below (found the same day, pointing Ply at
+`semver`, `docs/reach-measurement-2.md`), confirmed pre-existing and almost certainly a
+real share of that measurement's 1-in-16 reach. Test-first, revert-and-confirm-red on
+both.
+
+- [x] **A method's own postcondition could not mention the receiver it is called on.**
+      `#[ply::ensures(|result| *result >= self.a)]` generated a harness that did not
+      compile: `error[E0424]: expected value, found module `self``, because the
+      postcondition is spliced into the generated test as a free-standing expression
+      outside any `impl` block, where the literal keyword `self` means nothing. Fixed by
+      rewriting a bare `self` to the binding the generated harness already builds the
+      receiver under (`__ply_receiver`), before `old()` is lifted (so `old(self.x)` still
+      reads the receiver's value on entry) and before the postcondition is widened. New
+      helper: `contract_rt::rewrite_self_to_receiver`, wired into
+      `fuzz_gen::generate_fuzz_test` (the only place a receiver method's postcondition is
+      ever spliced into a runnable test -- `contract_rt::render_cex_test`'s replay-test
+      path already refuses every receiver method by design, so it needed no change).
+      Fixture: `tests/fixtures/selfreceiver/`; test:
+      `tests/e2e/tests/selfreceiver_fixture.rs`, covering `self` read alongside the
+      result (the reported repro, verbatim), `self` read alongside a parameter, and a
+      receiver built through a fallible (`Result<Self, E>`) constructor whose own
+      postcondition also reads `self` (the constructor-scan fix and this fix now
+      interacting in one run). Reverting the fix reproduces the original `E0424` verbatim
+      for all three.
+- [x] **A comparison nested inside another comparison as a leaf did not compile.**
+      `*result == (a == b)` (a boolean postcondition stated as an equality of two other
+      equalities) rendered as `a == b as i128` -- `contract_rt::widen`'s catch-all leaf
+      case cast the nested comparison's token stream to `i128` with no parens of its own,
+      and because `as` binds tighter than `==`, that parses as `a == (b as i128)`,
+      comparing `u64` to `i128` (`error[E0308]`). Fixed by giving `widen_leaf` its own
+      case for a nested comparison or logical operator (`==`, `!=`, `<`, `<=`, `>`, `>=`,
+      `&&`, `||`): recurse through `widen` itself (which already widens *that*
+      expression's own leaves correctly, arithmetic included, so a mixed case like
+      `a + 1 == b` nested as a leaf still cannot overflow while being checked), then
+      parenthesise the whole result before casting it -- never taking the nested
+      expression's tokens verbatim. Fixture: `tests/fixtures/nestedcomparison/`; test:
+      `tests/e2e/tests/nestedcomparison_fixture.rs`, covering the reported repro
+      (verbatim), a comparison nested under `&&`, one nested under `||`, a comparison of
+      two expressions rather than two bare names, and a mixed arithmetic case -- all five
+      needed the fix. Two more (`&&`/`||` as the postcondition's own outermost operator,
+      no wrapping equality) are in the same fixture and confirmed, by testing against the
+      pre-fix binary, to already have worked -- `widen`'s own `&&`/`||` recursion never
+      routes through the leaf path those exercise. Reverting the fix reproduces the
+      original `E0308` verbatim for all five.
+
 ## Silent-green regression and two false sentences, closed — 2026-08-31
 
 An adversarial review of the two 2026-08-30 wording fixes above found the narrower
@@ -121,9 +168,9 @@ fixture, and a revert-and-confirm-red pass on every fix.
       list (§2226-2229 area, M3 thin-slice status). Fixture:
       `tests/fixtures/yamlonlycontract/` (new); new test:
       `tests/e2e/tests/yamlonlycontract_fixture.rs` (two tests, `check` and `verify`).
-## KNOWN GAP: a method's promise cannot mention its own receiver — 2026-08-31
+## KNOWN GAP: a method's promise cannot mention its own receiver — CLOSED, see top of file
 
-- [ ] **`#[ply::ensures(|result| *result >= self.a)]` generates a harness that does not
+- [x] **`#[ply::ensures(|result| *result >= self.a)]` generates a harness that does not
       compile:** `error[E0424]: expected value, found module `self``. Any promise that
       refers to `self` — which is most of what a method's promise would naturally say —
       is affected, whatever its parameters.
@@ -142,6 +189,115 @@ fixture, and a revert-and-confirm-red pass on every fix.
 
       Reported honestly when it happens — a tool error, never a pass, with the compiler's
       own words quoted — so nobody is misled. It is still a check that cannot run.
+
+      **Fixed 2026-08-31** — see "Two more harness-generation compile defects fixed" at
+      the top of this file.
+
+## The text fix closed a recorded false clean — 2026-09-01
+
+CI caught this, and it is the opposite of a regression. `excludedop` exists to record
+"the fourteenth false clean" (`docs/review-structs-enums.md` finding 1): `Acc::get`
+promises its result is always 0, that promise is false after one call to `Acc::note`,
+and Ply could not call `note` because it took borrowed text. So every generated case
+ran against a receiver only the constructor had touched, and a broken function reported
+a clean pass.
+
+Text arguments now work, so Ply calls `note`, reaches the broken state, and reports a
+`violation`. The fixture's test still asserted the old, weaker truth and went red.
+
+- [x] **`excludedop` keeps testing what it was written to test.** Its `note` now takes
+      `Option<String>` — a `String` nested inside another type, deliberately never
+      built — so the run still genuinely cannot call it and must say so. Verified: the
+      verdict is `fuzzed(256)` marked narrower, and the warning names `note` and why.
+- [x] **`textmutator` records the win.** The same shape with a `&str`, asserting the
+      `violation` Ply now finds. Proved to bite: reverting the one-line text fix brings
+      back `fuzzed(256)` on the broken function and the test fails demanding
+      `violation`. That is the false clean itself, reproducible on demand.
+
+- [x] **`skippedctor` too, same cause.** Its premise is a constructor Ply finds but cannot
+      use, because the constructor took borrowed text. It is usable now, so no constructor
+      was skipped and the disclosure it tests never fired. Its argument is now an
+      `Option<String>`, and the test passes again.
+
+Swept the rest rather than waiting for CI to find them one at a time: exactly three fixtures
+depended on borrowed text being unbuildable, all three are handled, and the only fixture left
+with a `&str` parameter is `textmutator`, which uses one deliberately.
+
+Worth stating plainly because it is the first time this has happened today: a capability
+improvement made tests fail by making Ply *better*, and the fix was to preserve both truths
+rather than weaken any test.
+
+## Text parameters landed, and the next blocker is a design problem — 2026-09-01
+
+`&str` now reaches the sampler (one line: `str` maps to the same type `String` already used;
+references were already looked through, so only the borrowed spelling was missing). Measured
+as the largest single blocker — 11 of `semver`'s 16 properties.
+
+Re-measured against `semver` immediately. **The count is still one in sixteen, but the
+failure mode moved, and that is the finding.**
+
+Probe: `Prerelease::is_empty(&self) -> bool`, whose receiver must be built by
+`Prerelease::new(text: &str) -> Result<Self, Error>` — text parameter and fallible
+constructor at once, both fixed within the last day. Before today this was refused before
+anything ran. Now:
+
+- Ply **builds the receiver and runs the check**. `Prerelease::new` is called with generated
+  text, exactly as intended.
+- The verdict is `unclaimed`, not `fuzzed(64)`, because **1025 of 1074 generated strings were
+  thrown away** by the constructor's precondition. Random text essentially never parses as a
+  valid pre-release identifier.
+- Ply says so itself, unprompted: *"So this function has no fuzz evidence at all -- its
+  verdict is `unclaimed`, not `fuzzed(64)`."* That is the high-rejection machinery working —
+  the same machinery whose test was proved to bite this morning by planting a bug that turned
+  rejections into passes.
+
+- [ ] **NEXT BLOCKER, and it is a design problem rather than a defect: a type built by
+      parsing text cannot be constructed by random text.** Uniform sampling will not produce
+      a valid version string, identifier, or any other parsed format, so every property about
+      such a type reaches the engine and comes back with no evidence. The honest reporting is
+      right and worth keeping. What is missing is a way to generate values that satisfy a
+      constructor — seeding from `examples:`, sampling a grammar, or reusing values the
+      crate's own tests already contain. None of these is a one-line change, and choosing
+      between them is a design decision, not an implementation.
+
+The scoreboard, stated plainly: reach on `semver` has gone from "refused before anything ran"
+to "ran, and honestly reported that it learned nothing". No property moved into the checkable
+column. That is progress in honesty and none in coverage, and the two should not be confused.
+
+## Re-measured `semver` after the reach fixes: it has not moved — 2026-09-01
+
+The two reach defects fixed today (a promise may now mention its receiver; a comparison may
+now nest inside a promise) plus yesterday's receiver-constructor fix were checked against the
+library that produced the 1-in-16 result. **Reach is unchanged.** That is exactly what
+`docs/reach-measurement-2.md` predicted — every unreached property is held by two to four
+independent blockers, and its table records "unblocks alone: 0" for every capability
+including the ones just shipped — but it was worth measuring rather than trusting, and the
+measurement found something the table missed.
+
+Probe: `Version::cmp_precedence(&self, other: &Self) -> Ordering`, the property about
+comparing versions while disregarding build metadata. It converges three defects — a receiver
+that must be built, a parameter of the receiver's own type, and a return type Ply can observe
+but not construct. Two of those three are now fixed.
+
+- [ ] **NEW BLOCKER: a parameter written as `Self` is refused, where the same type spelled by
+      name is not.** `other: &Self` gives "parameter(s) other: Self use a type neither the
+      bounded nor the fuzz codegen builds inputs for". Rewriting it as `other: &Version` --
+      which no compiler or reader would call a change -- gets past that check entirely. This
+      is the same asymmetry the measurement already found between `-> Self` and `-> Version`
+      in the return position, now confirmed in the parameter position too. It is not in the
+      measurement's blocker table, so that table understates the problem: properties it
+      attributed to other causes may be blocked by this as well.
+- [ ] **Confirmed still open: the refusal that names nothing.** With the parameter spelled
+      out, the same function is refused with "none of its declared checks apply to this
+      function's shape" -- no mention of the return type that is actually stopping it. The
+      measurement flagged this ("`unsupported_shape_diag` inspects only parameters, so when
+      the blocker is the return type it falls back to a sentence carrying no information a
+      user can act on"). It is unchanged.
+
+The honest scoreboard: today's fixes are real and were verified to work in both directions,
+but they move `semver` from one checkable property to one checkable property. A blocker only
+becomes visible once the ones in front of it are gone, and removing two of four revealed a
+fifth rather than a verdict.
 
 ## Two harness-generation defects fixed — 2026-08-31
 
@@ -188,10 +344,9 @@ withdrawn rather than left to confuse a later reader.
       two parameters with no receiver, and receiver+parameter+return all
       naming the same type). Reverting the fix reproduces the original
       `E0252` verbatim.
-- [ ] **KNOWN GAP, found while writing the defect-2 fixture, not fixed (out
-      of this task's scope): `#[ply::ensures]` on a receiver method cannot
-      read `self`.** Nothing rewrites a bare `self` in the postcondition
-      closure to the actual receiver binding before splicing it into the
+- [x] **KNOWN GAP, found while writing the defect-2 fixture -- `#[ply::ensures]` on a
+      receiver method cannot read `self`.** Nothing rewrites a bare `self` in the
+      postcondition closure to the actual receiver binding before splicing it into the
       generated free-standing assertion, so `self.a == other.a` renders as a
       literal `self.a`, which does not exist outside an `impl` block --
       `error[E0424]: expected value, found module `self``. No fixture in the
@@ -203,8 +358,10 @@ withdrawn rather than left to confuse a later reader.
       2 alone does *not* make that literal reproduction pass -- it trades
       `E0252` for `E0424`. The committed `sharedtypeparam` fixture avoids
       reading `self` in every postcondition so it isolates defect 2 cleanly.
-- [ ] **KNOWN GAP, found the same way, not fixed (also out of scope):
-      postcondition widening mis-parenthesises a nested comparison.**
+      **Fixed 2026-08-31** — see "Two more harness-generation compile defects fixed" at
+      the top of this file.
+- [x] **KNOWN GAP, found the same way -- postcondition widening mis-parenthesises a
+      nested comparison.**
       `contract_rt::widen`'s catch-all leaf case casts a whole nested
       comparison's token stream to `i128` without wrapping it in its own
       parens first, so `*result == (a.a == b.a)` (a boolean-returning
@@ -215,6 +372,8 @@ withdrawn rather than left to confuse a later reader.
       `sharedtypeparam` fixture by stating the same property as an `iff`
       (`(!*result || lhs == rhs) && (*result || lhs != rhs)`), which
       `widen`'s existing `&&`/`||` recursion handles correctly.
+      **Fixed 2026-08-31** — see "Two more harness-generation compile defects fixed" at
+      the top of this file.
 ## Ply pointed at a stranger's code: 1 of 16 — 2026-08-30
 
 `docs/reach-measurement-2.md`. The method of `docs/invariant-reachability.md`, repeated on a

@@ -1128,11 +1128,27 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
         None => String::new(),
     };
 
+    // A receiver method's postcondition is spliced into this generated test
+    // as a free-standing expression, outside the `impl` block it was
+    // written in -- so a bare `self` in it (the most natural thing a
+    // method's own promise says: relating its result to the receiver it was
+    // called on) is rewritten to `__ply_receiver`, the binding
+    // `receiver_preamble` above already built the receiver under. A no-op
+    // for every non-receiver fn (`cf.receiver` is `None`), so nothing
+    // changes for the vast majority of generated harnesses. Done *before*
+    // `old()` is lifted, so `old(self.a)` still reads the receiver's value
+    // on entry rather than the (post-call) `__ply_receiver` reference.
+    let ensures_body = &cf.ensures.as_ref().unwrap().0.body;
+    let self_rewritten_body = if cf.receiver.is_some() {
+        crate::contract_rt::rewrite_self_to_receiver(ensures_body)
+    } else {
+        (**ensures_body).clone()
+    };
+
     // `old(expr)` -- the value `expr` had on entry -- is read into a
     // binding of its own before the call, which is the only way a harness
     // built out of ordinary Rust can honour it (§5.4a).
-    let (checked_body, entry_values) =
-        crate::contract_rt::lift_entry_values(&cf.ensures.as_ref().unwrap().0.body);
+    let (checked_body, entry_values) = crate::contract_rt::lift_entry_values(&self_rewritten_body);
     let entry_lets = crate::contract_rt::entry_value_lets(&entry_values, &" ".repeat(12));
     let widened = crate::contract_rt::widen(&checked_body).to_string();
 
@@ -2167,6 +2183,107 @@ impl Flag {
         assert!(
             body.contains("Flag::flip(&__ply_receiver)"),
             "a zero-arg checked call must not gain a stray trailing comma:\n{body}"
+        );
+    }
+
+    // -- Defect 1 (2026-08-31, docs/reach-measurement-2.md): a method's own
+    // postcondition could not mention the receiver it is called on --
+    // `self` is spliced into the generated harness as a free-standing
+    // expression outside any `impl` block, where the literal keyword
+    // `self` means nothing (`error[E0424]`).
+
+    /// The reported repro, verbatim: `self` and the result together.
+    #[test]
+    fn a_postcondition_reading_self_alongside_the_result_rewrites_self_to_the_receiver() {
+        let cf = discover_receiver(
+            r#"
+pub struct Pair { pub a: u64 }
+impl Pair {
+    pub fn new(a: u64) -> Self { Pair { a } }
+    #[ply::ensures(|result| *result >= self.a)]
+    pub fn bumped(&self) -> u64 { self.a.saturating_add(1) }
+}
+"#,
+            "m::Pair::bumped",
+        );
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("bumped", "")).unwrap();
+        assert!(
+            !body.contains("self.a") && !body.contains("self . a"),
+            "no bare `self` may survive into the generated harness -- it means nothing outside \
+             an `impl` block:\n{body}"
+        );
+        assert!(
+            body.contains("__ply_receiver.a") || body.contains("__ply_receiver . a"),
+            "`self.a` must become a read of the receiver binding this harness already built:\n\
+             {body}"
+        );
+    }
+
+    /// `self` and a parameter read together in one postcondition -- only
+    /// the receiver reference is rewritten, the parameter is untouched.
+    #[test]
+    fn a_postcondition_reading_self_and_a_parameter_rewrites_only_self() {
+        let cf = discover_receiver(
+            r#"
+pub struct Pair { pub a: u64 }
+impl Pair {
+    pub fn new(a: u64) -> Self { Pair { a } }
+    #[ply::ensures(|result| *result >= self.a && *result >= extra)]
+    pub fn at_least(&self, extra: u64) -> u64 { self.a.saturating_add(extra) }
+}
+"#,
+            "m::Pair::at_least",
+        );
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("at_least", "")).unwrap();
+        assert!(
+            !body.contains("self.a") && !body.contains("self . a"),
+            "no bare `self` may survive into the generated harness:\n{body}"
+        );
+        assert!(
+            body.contains("__ply_receiver.a") || body.contains("__ply_receiver . a"),
+            "`self.a` must become a read of the receiver binding:\n{body}"
+        );
+        assert!(
+            body.contains("extra as i128"),
+            "a parameter read alongside `self` must survive untouched:\n{body}"
+        );
+    }
+
+    /// A receiver built through a fallible (`Result<Self, E>`) constructor
+    /// -- the shape `receiverresultctor` fixed the receiver scan for --
+    /// whose own postcondition also reads `self`. The two defects fixed
+    /// the same day interact here: the constructor must still be found,
+    /// and the postcondition must still be able to read the receiver it
+    /// builds.
+    #[test]
+    fn a_result_returning_constructors_receiver_still_lets_its_postcondition_read_self() {
+        let cf = discover_receiver(
+            r#"
+pub struct MeterErr;
+pub struct Meter { pub n: u64 }
+impl Meter {
+    pub fn new(n: u64) -> Result<Self, MeterErr> {
+        if n == 0 { Err(MeterErr) } else { Ok(Meter { n }) }
+    }
+    #[ply::ensures(|result| *result >= self.n)]
+    pub fn doubled(&self) -> u64 { self.n.saturating_mul(2) }
+}
+"#,
+            "m::Meter::doubled",
+        );
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("doubled", "")).unwrap();
+        assert!(
+            body.contains("match Meter::new"),
+            "the fallible constructor must still be recognised and called:\n{body}"
+        );
+        assert!(
+            !body.contains("self.n") && !body.contains("self . n"),
+            "no bare `self` may survive into the generated harness:\n{body}"
+        );
+        assert!(
+            body.contains("__ply_receiver.n") || body.contains("__ply_receiver . n"),
+            "`self.n` must become a read of the receiver binding, even though it was built \
+             through a fallible constructor:\n{body}"
         );
     }
 
