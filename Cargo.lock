@@ -360,13 +360,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ply-kernel"
-version = "0.1.0"
-dependencies = [
- "ply-core",
-]
-
-[[package]]
 name = "ply-render"
 version = "0.1.0"
 dependencies = [
@@ -374,16 +367,8 @@ dependencies = [
  "indexmap",
  "insta",
  "ply-core",
- "ply-kernel",
  "roxmltree",
  "tempfile",
-]
-
-[[package]]
-name = "ply-schedule"
-version = "0.1.0"
-dependencies = [
- "ply-kernel",
 ]
 
 [[package]]

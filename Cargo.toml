@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "tools/check", "tools/kernel", "tools/render", "tools/schedule", "tests/e2e"]
+members = ["crates/*", "tools/check", "tools/render", "tests/e2e"]
 # `tools/` was its own workspace until 2026-08-30, on the grounds that the
 # spec-validation tooling predates the product. But every crate in it takes a
 # path dependency on `crates/ply-core`, so it was one dependency graph

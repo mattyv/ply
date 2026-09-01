@@ -1,5 +1,45 @@
 # TODO
 
+## Ponytail review at ultra: 11,900 lines deleted, none load-bearing — 2026-09-01
+
+**Deleted: the scheduler tool (557 lines).** Its own doc comment was the case against it.
+The half that ships had already moved into the product; what remained was a rule whose
+section heading read *"and nothing runs it"*, which **disagreed with the shipped rule and
+was the looser of the two in the case that matters** — it would let a caller one step
+outside a cycle assume a contract the shipped rule refuses. It carried 228 lines of
+exhaustive tests that its own comment admitted could not catch that disagreement. Unused,
+more permissive than production, wearing a rigour costume: the risk was never the bytes,
+it was someone wiring it in because the tests looked convincing. The spec already names the
+finer per-edge rule as a possible future refinement, and adopting it needs an argument §5.5
+declines to make — so it would be written fresh against the shipped rule anyway.
+
+**Deleted: the kernel facade crate (7 lines).** A whole package, manifest and workspace
+entry whose entire body was one re-export, kept "to keep existing imports working". Two
+files really imported it; both now name the product module directly.
+
+**Deleted: `docs/review-2026-08-23.md` (10,818 lines, 536 KB)** — another tool's raw session
+log, its version banner, 24 tool-invocation markers and 25 absolute paths from the
+reviewer's own machine, all committed. Its findings were already written up as the items
+that referenced it, which now record where the transcript went.
+
+**Deleted: 12 finished sections of this file (466 lines)** — every item ticked, dated before
+today, no open gap, each already in git with the hash it was ticked with. All 125 open items
+and all 43 known gaps kept.
+
+**Kept, and I was wrong to have suspected it.** The renderer tool is 7,374 lines of which
+6,900+ are the test suite for the product's own renderer; 175 lines are the tool. Deleting
+it deletes those tests. It is misplaced, not bloat, and the workspace merge already fixed
+the harm that mattered.
+
+**Broke one thing and caught it:** removing the facade left the Verus differential spike —
+the test that ties the unbounded proof back to the production kernel — with no dependency at
+all. It failed to compile, was repointed at the product crate, and its four tests pass again.
+That spike sits outside the workspace, so the ordinary suite would not have caught it.
+
+- [ ] **The 100 fixture crates are not the bloat they look like.** Each pins a real
+      behaviour and each is small. What makes the end-to-end suite take an hour is duplicate
+      proof work inside it, already recorded separately. Do not delete fixtures for size.
+
 ## The type wall has a generic answer, and my own "do paths first" was wrong — 2026-09-01
 
 Reviewed, then every load-bearing claim re-run by hand. **Half the refusals are not about

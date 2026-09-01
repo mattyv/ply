@@ -11,4 +11,4 @@ edition = "2021"
 publish = false
 
 [dependencies]
-ply-kernel = { path = "../../../../tools/kernel" }
+ply-core = { path = "../../../../crates/ply-core" }

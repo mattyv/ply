@@ -1,5 +1,5 @@
 //! Differential test binding the Verus shadow to production: for a shared
-//! corpus of generated trees, production `ply_kernel::aggregate` and the
+//! corpus of generated trees, production `ply_core::kernel::aggregate` and the
 //! shadow's plain-Rust executable version (`ply_verus_diff_spike::aggregate`,
 //! a hand-written transcription of the same rules proved in
 //! `tests/spike/verus/proof/shadow.rs`) must agree at every node -- not just
@@ -19,7 +19,7 @@
 //! reproducible (fixed seeds) without a network-fetched dependency, in
 //! keeping with the rest of this spike being self-contained.
 
-use ply_kernel::{
+use ply_core::kernel::{
     AggregatedNode, Evidence as PEvidence, NodeKind as PNodeKind, StatusKind, StatusSet,
     VerdictNode,
 };
@@ -275,7 +275,7 @@ fn shadow_matches_production_on_hand_picked_edge_cases() {
         conditional: None,
         children: vec![],
     };
-    let leaf_p_agg = ply_kernel::aggregate(&leaf_p);
+    let leaf_p_agg = ply_core::kernel::aggregate(&leaf_p);
     check_node(&leaf_p, &leaf_s, &leaf_p_agg, &mut offending);
 
     let empty_container_p = VerdictNode {
@@ -290,7 +290,7 @@ fn shadow_matches_production_on_hand_picked_edge_cases() {
         conditional: None,
         children: vec![],
     };
-    let empty_container_p_agg = ply_kernel::aggregate(&empty_container_p);
+    let empty_container_p_agg = ply_core::kernel::aggregate(&empty_container_p);
     check_node(&empty_container_p, &empty_container_s, &empty_container_p_agg, &mut offending);
 
     let violation_root_p = VerdictNode {
@@ -331,7 +331,7 @@ fn shadow_matches_production_on_hand_picked_edge_cases() {
             },
         ],
     };
-    let violation_root_p_agg = ply_kernel::aggregate(&violation_root_p);
+    let violation_root_p_agg = ply_core::kernel::aggregate(&violation_root_p);
     check_node(&violation_root_p, &violation_root_s, &violation_root_p_agg, &mut offending);
 
     assert!(
@@ -355,7 +355,7 @@ fn shadow_matches_production_over_generated_trees() {
         let mut next_id: u64 = 0;
         let size_budget = 1 + rng.range(MAX_NODES as u64) as usize;
         let (p_tree, s_tree, _used) = gen_pair(&mut rng, MAX_DEPTH, size_budget, &mut next_id);
-        let p_agg = ply_kernel::aggregate(&p_tree);
+        let p_agg = ply_core::kernel::aggregate(&p_tree);
 
         let before = offending.len();
         check_node(&p_tree, &s_tree, &p_agg, &mut offending);
