@@ -1,0 +1,75 @@
+ply: 1
+
+# Visual regression demo for findings that cannot attach to a drawn edge.
+# The invalid call to an external produces one header finding; the unused
+# external remains visibly flagged. The nested system is large enough to
+# exercise fit, zoom, pan, and tooltips in Ply Visual.
+externals:
+  backup_venue:
+    note: "the standby exchange used during venue failover"
+
+components:
+  market_data:
+    anchor: trading::market_data
+    components:
+      feed:
+        anchor: trading::market_data::feed
+        uses: [net]
+        fns:
+          Feed::poll:
+            checks: [fuzz(256)]
+            ensures: ["|result| result.sequence > 0"]
+      decoder:
+        anchor: trading::market_data::decoder
+        pure: true
+        fns:
+          decode:
+            checks: [bounded(2), fuzz(512)]
+            requires: ["frame.len() > 0"]
+            ensures: ["|result| result.is_ok()"]
+      book:
+        anchor: trading::market_data::book
+        owns: [trading::OrderBook]
+        fns:
+          OrderBook::apply:
+            checks: [bounded(3), fuzz(256), mutate]
+
+  strategy:
+    anchor: trading::strategy
+    pure: true
+    fns:
+      decide:
+        checks: [bounded(2), fuzz(1024)]
+        requires: ["snapshot.is_current()"]
+
+  risk:
+    anchor: trading::risk
+    strict: true
+    fns:
+      approve:
+        checks: [bounded(3), fuzz(2048), mutate]
+        requires: ["order.qty > 0"]
+        ensures: ["|result| result.is_ok() == (order.qty <= limits.max_qty)"]
+
+  execution:
+    anchor: trading::execution
+    uses: [net]
+    fns:
+      submit:
+        checks: [test]
+
+edges:
+  - market_data.feed -> market_data.decoder
+  - market_data.decoder -> market_data.book
+  - market_data.book -> strategy
+  - strategy -> risk
+  - risk -> execution
+  - "market_data.feed ~> market_data.decoder : RawFrame"
+  - "market_data.decoder ~> market_data.book : Tick"
+  - "market_data.book ~> strategy : Snapshot"
+  - "strategy ~> risk : OrderIntent"
+  - "risk ~> execution : ApprovedOrder"
+  - "execution -> backup_venue"
+
+deny:
+  - "* -> execution except risk"
