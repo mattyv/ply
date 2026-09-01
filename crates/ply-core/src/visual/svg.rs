@@ -3857,6 +3857,21 @@ fn render_svg_impl(
         render_edge(&re.edge, from, to, label_pos, &findings, &mut edges_svg);
     }
 
+    // Externals are laid out below after the header determines the frame width,
+    // but render them now so their findings do not also enter the title fallback.
+    let external_boxes: Vec<(String, ExternalBox)> = doc
+        .externals
+        .iter()
+        .map(|(name, ext)| (name.clone(), render_external(name, ext, &ctx)))
+        .collect();
+    // External flows likewise draw later, once their routes can see the final
+    // frame. Mark only those whose external endpoint exists and will be drawn.
+    for flow in &pending_external_flows {
+        if doc.externals.contains_key(&flow.ext_name) {
+            ctx.edge_findings(flow.edge_index);
+        }
+    }
+
     // §7.1: "a finding with no drawable item attaches a red count next to
     // the workspace title." Checked last, once every render call above has
     // had its chance to mark a diagnostic attached — a clean document
@@ -3924,7 +3939,8 @@ fn render_svg_impl(
         )
     });
 
-    let (title_extra, title_min_w) = if unattached > 0 {
+    let default_strip_x = FRAME_PAD + text_w("ply.yaml", NAME_CHAR_W) + 24.0;
+    let (title_extra, title_min_w, strip_x) = if unattached > 0 {
         let count_text = format!(
             "{unattached} finding{} — run ply-check",
             if unattached == 1 { "" } else { "s" }
@@ -3934,9 +3950,10 @@ fn render_svg_impl(
             "<text class=\"finding-count\" x=\"{title_x:.1}\" y=\"20\">{}</text>",
             esc(&count_text)
         );
-        (text, title_x + text_w(&count_text, CHIP_CHAR_W) + FRAME_PAD)
+        let count_end = title_x + text_w(&count_text, CHIP_CHAR_W);
+        (text, count_end + FRAME_PAD, count_end + BADGE_GAP)
     } else {
-        (String::new(), 0.0)
+        (String::new(), 0.0, default_strip_x)
     };
 
     // `frame_content_*`: the workspace frame's OWN size — everything above
@@ -3950,11 +3967,7 @@ fn render_svg_impl(
     // The strip shares the title's line, so a narrow diagram must widen to
     // hold it — found by `everything_renders_inside_the_canvas` when the
     // strip first ran off a 350px canvas by 122px.
-    let strip_min_w = FRAME_PAD
-        + text_w("ply.yaml", NAME_CHAR_W)
-        + 24.0
-        + text_w(&strip_text, NAME_CHAR_W)
-        + FRAME_PAD;
+    let strip_min_w = strip_x + text_w(&strip_text, NAME_CHAR_W) + FRAME_PAD;
     let frame_content_w = frame_w.max(title_min_w).max(strip_min_w);
     // A tall stack of wildcard any-nodes (several `*` rules anchoring in
     // one margin column, `place_clear` pushing each below the last) can
@@ -3977,11 +3990,6 @@ fn render_svg_impl(
     // document with none renders exactly as before: every variable below is
     // `0.0`/empty on that path, so `frame_content_*` alone decides the
     // canvas, byte-identical to pre-externals output.
-    let external_boxes: Vec<(String, ExternalBox)> = doc
-        .externals
-        .iter()
-        .map(|(name, ext)| (name.clone(), render_external(name, ext, &ctx)))
-        .collect();
     let external_band_w: f64 = external_boxes.iter().map(|(_, b)| b.width).sum::<f64>()
         + EXTERNAL_GAP * external_boxes.len().saturating_sub(1) as f64;
     let external_band_x = ((frame_content_w - external_band_w) / 2.0).max(0.0);
@@ -4229,7 +4237,7 @@ been checked for is what `cargo ply verify` reports, not this drawing.\n{version
          </svg>",
         frame_inner_w = frame_content_w - 2.0,
         frame_inner_h = frame_content_h - 2.0,
-        strip_x = FRAME_PAD + text_w("ply.yaml", NAME_CHAR_W) + 24.0,
+        strip_x = strip_x,
         strip_text = esc(&strip_text),
     )))
 }

@@ -27,6 +27,7 @@ const FINDING_CLASSES: &[&str] = &[
     "deny-line-finding",
     "unresolved-pin-finding",
     "registry-pin-finding",
+    "external-box-finding",
 ];
 
 fn code_counts<I: IntoIterator<Item = String>>(codes: I) -> BTreeMap<String, usize> {
@@ -41,6 +42,7 @@ fn code_counts<I: IntoIterator<Item = String>>(codes: I) -> BTreeMap<String, usi
 /// fault-injection demo this feature exists to fix. Each must report at
 /// least one finding — otherwise it's not exercising this test at all.
 const FIXTURES: &[&str] = &[
+    "../check/tests/fixtures/external_in_call_edge.ply.yaml",
     "../check/tests/fixtures/bad_check_syntax.ply.yaml",
     "../check/tests/fixtures/bad_edge_syntax.ply.yaml",
     "../check/tests/fixtures/bad_path_form.ply.yaml",
@@ -156,6 +158,32 @@ fn every_finding_is_visibly_flagged_or_counted_at_the_title() {
             );
         }
     }
+}
+
+#[test]
+fn title_findings_do_not_overlap_the_verdict_strip() {
+    let yaml =
+        std::fs::read_to_string("../check/tests/fixtures/external_in_call_edge.ply.yaml").unwrap();
+    let doc = parse_document(&yaml).unwrap();
+    let svg = render_svg(&doc).unwrap();
+    let xml = roxmltree::Document::parse(&svg).unwrap();
+    let finding = xml
+        .descendants()
+        .find(|node| node.attribute("class") == Some("finding-count"))
+        .expect("fixture should render an unattached finding count");
+    let strip = xml
+        .descendants()
+        .find(|node| node.attribute("class") == Some("verdict-strip-text"))
+        .expect("fixture should render the verdict strip");
+    let finding_x: f64 = finding.attribute("x").unwrap().parse().unwrap();
+    let strip_x: f64 = strip.attribute("x").unwrap().parse().unwrap();
+    let finding_text = finding.text().unwrap();
+    let finding_right = finding_x + finding_text.chars().count() as f64 * 7.4;
+
+    assert!(
+        strip_x >= finding_right + 6.0,
+        "finding count ended at {finding_right}, but verdict strip began at {strip_x}"
+    );
 }
 
 /// The finding tooltip embeds `Diagnostic::message` verbatim after the
