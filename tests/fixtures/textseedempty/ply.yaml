@@ -1,0 +1,11 @@
+ply: 1
+
+# docs/reach-measurement-2.md: no `examples:` entry, and `Strict::new`
+# accepts essentially none of the text uniform sampling could ever draw --
+# there is no known-valid value to grow inputs from at all.
+components:
+  textseedempty:
+    anchor: ply_fixture_textseedempty
+    fns:
+      Strict::length:
+        checks: [fuzz(64)]

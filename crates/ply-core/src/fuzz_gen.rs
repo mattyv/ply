@@ -729,6 +729,31 @@ fn combined_strategy_expr(cf: &ContractFn) -> Result<String> {
     combined_strategy_expr_for(&cf.params)
 }
 
+/// Exactly [`combined_strategy_expr_for`], except the named parameter's own
+/// strategy fragment is replaced with `strategy_expr_override` wholesale --
+/// used only to splice the corpus-backed seeded strategy into one
+/// constructor parameter's slot (`receiver_pattern_and_strategy`) without
+/// duplicating the tuple-building logic above it. `override_slot: None`
+/// (every constructor with nothing seeded) computes byte-identical output
+/// to `combined_strategy_expr_for`.
+fn combined_strategy_expr_for_with_override(
+    params: &[Param],
+    override_slot: Option<(&str, &str)>,
+) -> Result<String> {
+    let plans: Vec<ParamPlan> = params.iter().map(plan_for_param).collect::<Result<_>>()?;
+    let mut strategies: Vec<String> = plans.into_iter().map(|p| p.strategy).collect();
+    if let Some((name, expr)) = override_slot
+        && let Some(idx) = params.iter().position(|p| p.name == name)
+    {
+        strategies[idx] = expr.to_string();
+    }
+    Ok(match strategies.len() {
+        0 => "proptest::strategy::Just(())".to_string(),
+        1 => strategies[0].clone(),
+        _ => format!("({})", strategies.join(", ")),
+    })
+}
+
 fn call_args_for(params: &[Param]) -> Vec<String> {
     params
         .iter()
@@ -854,9 +879,26 @@ fn receiver_pattern_and_strategy(
     plan: &harness::ReceiverPlan,
     target_pattern: &str,
     target_strategy: &str,
+    seed_plan: Option<&ReceiverSeedPlan>,
 ) -> Result<(String, String)> {
     let ctor_pattern = value_pattern_for(&plan.ctor_params);
-    let ctor_strategy = combined_strategy_expr_for(&plan.ctor_params)?;
+    // Seeded generation (docs/reach-measurement-2.md): when this
+    // constructor's text parameter is gated (a `requires`, or a fallible
+    // return) and a `ReceiverSeedPlan` was built for it, that one param's
+    // own strategy slot is overridden to draw from the corpus-backed
+    // `__PlySeedStrategy` (see `seed_apparatus`) instead of uniform text.
+    // Every other constructor -- the overwhelming majority -- takes the
+    // `None` arm below, byte-identical to before this existed.
+    let ctor_strategy = match seed_plan {
+        Some(sp) => combined_strategy_expr_for_with_override(
+            &plan.ctor_params,
+            Some((
+                &sp.param_name,
+                "__PlySeedStrategy { corpus: __ply_seed_corpus.clone() }",
+            )),
+        )?,
+        None => combined_strategy_expr_for(&plan.ctor_params)?,
+    };
     let num_ops = plan.operations.len();
     let mut step_strategies = vec![target_strategy.to_string()];
     for op in plan.operations.iter().skip(1) {
@@ -905,6 +947,7 @@ fn receiver_preamble(
     cf: &ContractFn,
     plan: &harness::ReceiverPlan,
     target_pattern: &str,
+    seed_plan: Option<&ReceiverSeedPlan>,
 ) -> Result<String> {
     let ctor_call = harness::last_two_segments(&plan.constructor);
     let ctor_args = call_args_for(&plan.ctor_params).join(", ");
@@ -948,6 +991,20 @@ fn receiver_preamble(
     body.push_str(&format!(
         "let {mut_kw}__ply_receiver = {ctor_expr};\n            "
     ));
+    // Source 2 (design brief, docs/reach-measurement-2.md): reaching this
+    // line means every gate above already passed -- the requires filter, if
+    // any, and the constructor's own `Result`, if fallible -- so the text
+    // that was just accepted is certified valid by the code under check
+    // itself. It joins the corpus for the rest of *this* run, which is why
+    // a seeded run's evidence keeps improving as it goes rather than
+    // staying pinned to whatever `examples:` alone provided.
+    if let Some(sp) = seed_plan {
+        body.push_str(&format!(
+            "__ply_seed_corpus.borrow_mut().push({}.clone()); \
+             __ply_seed_corpus_grown.set(__ply_seed_corpus_grown.get() + 1);\n            ",
+            sp.param_name
+        ));
+    }
 
     let step_pattern = plan
         .operations
@@ -1004,6 +1061,227 @@ fn receiver_preamble(
     Ok(body)
 }
 
+// -- Seeded generation (docs/reach-measurement-2.md: "a type built from
+// text cannot be constructed from random text"). A receiver whose own
+// constructor parses a `&str`/`String` and is gated (a `#[ply::requires]`,
+// or a fallible `Result<Self, E>` return) grows a corpus of known-valid
+// text -- literal arguments a user's `examples:` already pass to that
+// constructor, plus every value the constructor accepts during the run --
+// and draws future cases as a mix of mutations of that corpus alongside a
+// continuing uniform trickle, rather than uniform text alone. See
+// `plan_receiver_seeding` for when this applies at all (an ungated
+// constructor is never touched) and `seed_apparatus` for the generated
+// runtime support.
+
+/// 4:1, mutate-from-corpus to uniform-trickle, once the corpus holds at
+/// least one known-valid value (empty corpus always trickles -- there is
+/// nothing yet to mutate). This is a real design parameter, not a footnote:
+/// the measured baseline (`docs/reach-measurement-2.md`) was 49 accepted out
+/// of 1074 *uniform* draws, roughly 4.6%, so a mix anywhere near uniform
+/// would still mostly fail to earn evidence -- the whole point of seeding.
+/// A ratio of 1 (all mutation, no trickle) was rejected instead: the brief's
+/// own "known failure mode" is that seeds anchor the distribution away from
+/// the extremes an author actually cared about, and *dropping* the uniform
+/// slice entirely would make a run permanently self-referential -- it could
+/// never discover a valid shape the corpus does not already resemble, and a
+/// pathological input reachable only by uniform luck would become
+/// permanently unreachable rather than merely less likely. Keeping a full
+/// fifth of draws genuinely uniform is what keeps the corpus itself capable
+/// of growing into new territory, not just mutating around what it started
+/// with -- the same shape of trade-off the integer strategies above already
+/// make (`prop_oneof![3 => small, 1 => any]`) and the string strategy makes
+/// again for its content (`9 => ascii, 1 => unicode`). Recorded here, and
+/// named in the diagnostic `verify` emits for a seeded run, so the ratio
+/// reaches the JSON envelope rather than living only in this comment.
+pub(crate) const SEED_MUTATE_WEIGHT: u32 = 4;
+pub(crate) const SEED_TRICKLE_WEIGHT: u32 = 1;
+
+/// What a seeded receiver constructor parameter needs: which parameter
+/// (by name, so `receiver_preamble` can splice a read of its own bound
+/// variable) and the seeds pulled from `examples:` at codegen time (source
+/// 1 of 2 -- source 2, values the constructor accepts at runtime, is grown
+/// entirely inside the generated harness and never seen here).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReceiverSeedPlan {
+    param_name: String,
+    examples_seeds: Vec<String>,
+}
+
+/// Whether `plan`'s constructor should be seeded at all, and if so, from
+/// what. Deliberately narrow (2026-09-01): seeding only a receiver's own
+/// constructor, only its first `String`-typed parameter, and only when that
+/// constructor actually rejects something -- an ungated constructor accepts
+/// every draw already, so seeding it would be a no-op wearing a feature's
+/// clothes, and the honesty condition ("a seeded verdict must never be
+/// indistinguishable from an unseeded one") is easiest to keep by simply
+/// never seeding where nothing is gated. `None` means every line downstream
+/// of this stays byte-identical to before this feature existed.
+fn plan_receiver_seeding(
+    plan: &harness::ReceiverPlan,
+    examples_pool: &[String],
+) -> Option<ReceiverSeedPlan> {
+    let gated =
+        plan.ctor_requires.is_some() || matches!(plan.ctor_return, harness::CtorReturn::ResultSelf);
+    if !gated {
+        return None;
+    }
+    let string_param = plan.ctor_params.iter().find(|p| p.ty == RustType::String)?;
+    let examples_seeds = extract_examples_seed_strings(examples_pool, &plan.constructor);
+    Some(ReceiverSeedPlan {
+        param_name: string_param.name.clone(),
+        examples_seeds,
+    })
+}
+
+/// Source 1 (design brief): every string-literal argument passed to a call
+/// matching `ctor_path` (matched on its last two `::`-segments, the same
+/// convention [`harness::last_two_segments`] uses everywhere else), found
+/// anywhere in `examples` -- purely syntactic, exactly like
+/// [`generate_example_test`] already parses these same strings into
+/// assertions. Zero new vocabulary: an `examples:` entry a user already
+/// wrote is scanned for calls to the constructor being seeded, and its
+/// literal string arguments become known-valid corpus values. An entry that
+/// does not parse contributes nothing here -- it is someone else's
+/// diagnostic (`E0501`) to report, not this extractor's.
+pub fn extract_examples_seed_strings(examples: &[String], ctor_path: &str) -> Vec<String> {
+    struct CtorArgCollector<'a> {
+        target: &'a str,
+        out: Vec<String>,
+    }
+    impl<'a> Visit<'a> for CtorArgCollector<'a> {
+        fn visit_expr_call(&mut self, node: &'a syn::ExprCall) {
+            let func_text = node.func.to_token_stream().to_string().replace(' ', "");
+            if harness::last_two_segments(&func_text) == self.target {
+                for arg in &node.args {
+                    if let Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    }) = arg
+                    {
+                        self.out.push(s.value());
+                    }
+                }
+            }
+            syn::visit::visit_expr_call(self, node);
+        }
+    }
+    let target = harness::last_two_segments(ctor_path);
+    let mut out = Vec::new();
+    for example in examples {
+        let Ok(expr) = syn::parse_str::<Expr>(example) else {
+            continue;
+        };
+        let mut collector = CtorArgCollector {
+            target: &target,
+            out: Vec::new(),
+        };
+        collector.visit_expr(&expr);
+        out.append(&mut collector.out);
+    }
+    out
+}
+
+/// The generated harness's own runtime support for one seeded `String`
+/// parameter, emitted once as nested items inside the generated `#[test]
+/// fn` itself -- never a shared dependency, since the harness crate depends
+/// on nothing but the target crate and proptest, and this keeps it that
+/// way. Builds: the corpus (`Rc<RefCell<Vec<String>>>`, seeded with
+/// `examples_seeds` and grown at runtime by `receiver_preamble`'s own
+/// push), a counter for how many joined it at runtime, a mutation function
+/// (character edit, splice, truncation, repetition, or a verbatim replay --
+/// the brief's own list), a uniform-text function reusing the same
+/// content/length decisions [`strategy_expr`]'s own `RustType::String` arm
+/// already makes, and the `proptest::strategy::Strategy` implementation
+/// that draws [`SEED_MUTATE_WEIGHT`]:[`SEED_TRICKLE_WEIGHT`] between them
+/// (always trickling when the corpus is still empty, since there is
+/// nothing yet to mutate).
+fn seed_apparatus(examples_seeds: &[String]) -> String {
+    let literal_seeds = examples_seeds
+        .iter()
+        .map(|s| format!("{}.to_string()", proc_macro2::Literal::string(s)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let total_weight = SEED_MUTATE_WEIGHT + SEED_TRICKLE_WEIGHT;
+    format!(
+        "            let __ply_seed_corpus: std::rc::Rc<std::cell::RefCell<Vec<String>>> = \
+         std::rc::Rc::new(std::cell::RefCell::new(vec![{literal_seeds}]));\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let __ply_seed_corpus_grown = std::cell::Cell::new(0u32);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20fn __ply_seed_uniform(__ply_rng: &mut proptest::test_runner::TestRng) -> String {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20use proptest::prelude::Rng;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_len = __ply_rng.random_range(0u32..={STRING_MAX_CHARS}u32);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20(0..__ply_len).map(|_| {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if __ply_rng.random_range(0u32..10u32) < 9 {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20char::from_u32(__ply_rng.random_range(0x20u32..=0x7eu32)).unwrap_or('a')\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}} else {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20char::from_u32(__ply_rng.random_range(0xa0u32..=0x10ffffu32)).unwrap_or('a')\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}).collect::<String>()\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20fn __ply_seed_mutate(__ply_base: &str, __ply_rng: &mut proptest::test_runner::TestRng) -> String {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20use proptest::prelude::Rng;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let mut __ply_chars: Vec<char> = __ply_base.chars().collect();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20match __ply_rng.random_range(0u32..5u32) {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x200 => {{}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x201 => {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if !__ply_chars.is_empty() {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_i = __ply_rng.random_range(0..__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_chars[__ply_i] = if __ply_rng.random_range(0u32..10u32) < 9 {{ char::from_u32(__ply_rng.random_range(0x20u32..=0x7eu32)).unwrap_or('a') }} else {{ char::from_u32(__ply_rng.random_range(0xa0u32..=0x10ffffu32)).unwrap_or('a') }};\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x202 => {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_i = __ply_rng.random_range(0..=__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_c = char::from_u32(__ply_rng.random_range(0x20u32..=0x7eu32)).unwrap_or('a');\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_chars.insert(__ply_i, __ply_c);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x203 => {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if !__ply_chars.is_empty() {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_new_len = __ply_rng.random_range(0..__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_chars.truncate(__ply_new_len);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20_ => {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if !__ply_chars.is_empty() {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_i = __ply_rng.random_range(0..__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_j = __ply_rng.random_range(__ply_i..__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_seg: Vec<char> = __ply_chars[__ply_i..=__ply_j].to_vec();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_at = __ply_rng.random_range(0..=__ply_chars.len());\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20for (__ply_k, __ply_c) in __ply_seg.into_iter().enumerate() {{ __ply_chars.insert(__ply_at + __ply_k, __ply_c); }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_chars.into_iter().collect()\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20struct __PlySeedValueTree {{ value: String }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20impl proptest::strategy::ValueTree for __PlySeedValueTree {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20type Value = String;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20fn current(&self) -> String {{ self.value.clone() }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20fn simplify(&mut self) -> bool {{ false }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20fn complicate(&mut self) -> bool {{ false }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20#[derive(Clone)]\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20struct __PlySeedStrategy {{ corpus: std::rc::Rc<std::cell::RefCell<Vec<String>>> }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20impl std::fmt::Debug for __PlySeedStrategy {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ write!(f, \"__PlySeedStrategy\") }}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20impl proptest::strategy::Strategy for __PlySeedStrategy {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20type Tree = __PlySeedValueTree;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20type Value = String;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20fn new_tree(&self, __ply_runner: &mut proptest::test_runner::TestRunner) -> proptest::strategy::NewTree<Self> {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20use proptest::prelude::Rng;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_len = self.corpus.borrow().len();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_value = if __ply_len == 0 || __ply_runner.rng().random_range(0u32..{total_weight}u32) >= {SEED_MUTATE_WEIGHT}u32 {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_seed_uniform(__ply_runner.rng())\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}} else {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_idx = __ply_runner.rng().random_range(0..__ply_len);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_base = self.corpus.borrow()[__ply_idx].clone();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_seed_mutate(&__ply_base, __ply_runner.rng())\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}};\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(__PlySeedValueTree {{ value: __ply_value }})\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n"
+    )
+}
+
 /// Generates the `ply_fuzz_{fn}` proptest-driven test: `cases` runs of the
 /// combined strategy, `requires` as a rejection filter (§5.4c), the
 /// `ensures` clause checked in `catch_unwind` (never crashing the whole
@@ -1015,8 +1293,28 @@ fn receiver_preamble(
 ///
 /// Returns just the `#[test] fn ply_fuzz_{fn}() { ... }` item text -- the
 /// caller assembles it into the per-fn `mod {fn}_harness { ... }` alongside
-/// the example/direct-case tests.
+/// the example/direct-case tests. Never seeded (see
+/// [`generate_fuzz_test_with_examples`] for that): every existing caller of
+/// this exact function keeps the exact behaviour it always had.
 pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Result<String> {
+    generate_fuzz_test_with_examples(cf, cases, seed, &[])
+}
+
+/// Exactly [`generate_fuzz_test`], plus `examples_pool` -- every `examples:`
+/// entry declared anywhere in the crate being verified (not just this fn's
+/// own), so a seed written against the constructor from a sibling claim
+/// still counts. `examples_pool` is otherwise inert: it only ever matters
+/// when `cf` is a receiver method whose constructor [`plan_receiver_seeding`]
+/// decides to seed, which is exactly when [`generate_fuzz_test`]'s `&[]`
+/// above would also decide *not* to seed for lack of any pool at all -- so
+/// passing `&[]` here is indistinguishable from calling
+/// `generate_fuzz_test` directly, which is what the plain wrapper does.
+pub fn generate_fuzz_test_with_examples(
+    cf: &ContractFn,
+    cases: u32,
+    seed: &[u8; 32],
+    examples_pool: &[String],
+) -> Result<String> {
     let Some((_closure, _)) = &cf.ensures else {
         bail!(
             "fuzz check requires an #[ply::ensures] clause on `{}` to check against",
@@ -1076,10 +1374,28 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
     // the receiver and drives the sequence before the checked call runs.
     // Every other fn's generated harness is byte-identical to before this
     // task -- `receiver` is `None` everywhere else.
+    // Seeded generation (docs/reach-measurement-2.md): computed once, up
+    // front, from the receiver's own constructor plan and the crate-wide
+    // examples pool -- `None` for every receiver whose constructor is not
+    // gated, and for every non-receiver fn, which is the vast majority and
+    // takes byte-identical paths below to before this feature existed.
+    let seed_plan = cf
+        .receiver
+        .as_ref()
+        .and_then(|plan| plan_receiver_seeding(plan, examples_pool));
     let (pattern, strategy, receiver_preamble_text) = match &cf.receiver {
         Some(plan) => {
-            let (p, s) = receiver_pattern_and_strategy(plan, &target_pattern, &target_strategy)?;
-            (p, s, receiver_preamble(cf, plan, &target_pattern)?)
+            let (p, s) = receiver_pattern_and_strategy(
+                plan,
+                &target_pattern,
+                &target_strategy,
+                seed_plan.as_ref(),
+            )?;
+            (
+                p,
+                s,
+                receiver_preamble(cf, plan, &target_pattern, seed_plan.as_ref())?,
+            )
         }
         None => (
             target_pattern.clone(),
@@ -1202,6 +1518,33 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
         ));
     }
 
+    // Seeded generation's own runtime support and the honest-provenance
+    // marker it reports (docs/reach-measurement-2.md): both empty strings
+    // for the vast majority of fns (`seed_plan` is `None`), so the
+    // generated test is byte-identical to before this feature existed --
+    // the honesty condition CLAUDE.md calls out by name ("a seeded verdict
+    // must never be indistinguishable from an unseeded one") cuts both
+    // ways, and an unseeded run must carry no trace of this mechanism
+    // either.
+    let seed_setup = match &seed_plan {
+        Some(sp) => seed_apparatus(&sp.examples_seeds),
+        None => String::new(),
+    };
+    // Printed unconditionally (never gated on the outcome below) so
+    // `verify` can learn the real provenance -- how many seeds came from
+    // `examples:`, how many the constructor accepted at runtime, and the
+    // same rejected/total counts the high-rejection warning already
+    // computes -- whichever way the run ends: a clean pass, a violation, or
+    // proptest abandoning the run entirely for lack of any accepted value
+    // to grow from.
+    let seed_stats_marker = match &seed_plan {
+        Some(sp) => format!(
+            "eprintln!(\"PLY_FUZZ_SEED_STATS|{label}|examples={ex}|accepted={{}}|rejected={{}}|total={{}}\", __ply_seed_corpus_grown.get(), __ply_rej, __ply_tot);\n            ",
+            ex = sp.examples_seeds.len()
+        ),
+        None => String::new(),
+    };
+
     Ok(format!(
         "    #[test]\n\
          \x20\x20\x20\x20fn ply_fuzz_{ident}() {{\n\
@@ -1213,6 +1556,7 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
          \x20\x20\x20\x20\x20\x20\x20\x20);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rejected = std::cell::Cell::new(0u32);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_total = std::cell::Cell::new(0u32);\n\
+         {seed_setup}\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {strategy};\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{pattern}| {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
@@ -1235,6 +1579,7 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
          \x20\x20\x20\x20\x20\x20\x20\x20}});\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rej = __ply_rejected.get();\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_tot = __ply_total.get();\n\
+         {seed_stats_marker}\
          \x20\x20\x20\x20\x20\x20\x20\x20match __ply_outcome {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(()) => {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if __ply_tot > 0 && (__ply_rej as f64) / (__ply_tot as f64) > 0.5 {{\n\
@@ -2246,6 +2591,151 @@ impl Pair {
         assert!(
             body.contains("extra as i128"),
             "a parameter read alongside `self` must survive untouched:\n{body}"
+        );
+    }
+
+    // -- seeded generation (docs/reach-measurement-2.md, "a type built from
+    // text cannot be constructed from random text"): a receiver whose own
+    // constructor takes a `&str`/`String` and is gated by a `requires` or a
+    // fallible return grows a corpus of known-valid text (`examples:` plus
+    // every value the constructor accepts during the run) and draws a mix
+    // of mutations of it alongside a continuing uniform trickle, instead of
+    // uniform text alone.
+
+    /// Source 1 (design brief): the string literals a user's own
+    /// `examples:` entry already passes to the constructor are extractable
+    /// syntactically, with zero new vocabulary -- `examples:` entries are
+    /// Rust expressions Ply already parses into assertions
+    /// (`generate_example_test`).
+    #[test]
+    fn extracts_string_literals_passed_to_the_named_constructor() {
+        let examples = vec![
+            "Prerelease::new(\"beta.1\").unwrap().is_empty() == false".to_string(),
+            "Prerelease::new(\"0\").unwrap().as_str() == \"0\"".to_string(),
+            // A call to a different function must not contribute -- only
+            // literal arguments to *this* constructor are corpus material.
+            "Version::parse(\"1.2.3\").is_ok()".to_string(),
+        ];
+        let seeds = extract_examples_seed_strings(&examples, "Prerelease::new");
+        assert_eq!(
+            seeds,
+            vec!["beta.1".to_string(), "0".to_string()],
+            "must collect exactly the literal arguments passed to `Prerelease::new`, in order, \
+             and nothing passed to an unrelated call"
+        );
+    }
+
+    #[test]
+    fn examples_seed_extraction_ignores_a_call_with_no_string_literal_argument() {
+        let examples = vec!["Prerelease::new(some_variable).is_ok()".to_string()];
+        assert_eq!(
+            extract_examples_seed_strings(&examples, "Prerelease::new"),
+            Vec::<String>::new(),
+            "a non-literal argument is not a known-valid value Ply can embed -- nothing to \
+             extract"
+        );
+    }
+
+    #[test]
+    fn examples_seed_extraction_skips_an_unparseable_entry_rather_than_failing() {
+        let examples = vec!["Prerelease::new(".to_string()];
+        assert_eq!(
+            extract_examples_seed_strings(&examples, "Prerelease::new"),
+            Vec::<String>::new(),
+            "a malformed example is someone else's diagnostic (E0501) to report -- this \
+             extractor just finds nothing in it"
+        );
+    }
+
+    /// The measurement's own probe, close to verbatim: a receiver method
+    /// (`is_empty`) whose receiver is built by a fallible, text-parsing
+    /// constructor (`Prerelease::new`). With one `examples:`-derived seed,
+    /// the generated harness must grow its corpus from it and from the
+    /// constructor's own runtime accepts, not sample uniform text alone.
+    #[test]
+    fn a_gated_text_constructor_gets_a_seeded_strategy_when_examples_provide_a_seed() {
+        let cf = discover_receiver(
+            r#"
+pub struct PrereleaseErr;
+pub struct Prerelease { text: String }
+impl Prerelease {
+    pub fn new(text: &str) -> Result<Self, PrereleaseErr> {
+        if text.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+            Ok(Prerelease { text: text.to_string() })
+        } else {
+            Err(PrereleaseErr)
+        }
+    }
+    #[ply::ensures(|result| *result == self.text.is_empty())]
+    pub fn is_empty(&self) -> bool { self.text.is_empty() }
+}
+"#,
+            "m::Prerelease::is_empty",
+        );
+        let examples = vec!["Prerelease::new(\"beta.1\").is_ok()".to_string()];
+        let body =
+            generate_fuzz_test_with_examples(&cf, 64, &derive_seed("is_empty", ""), &examples)
+                .unwrap();
+        assert!(
+            body.contains("__PlySeedStrategy"),
+            "the ctor's own text parameter must draw from the seeded strategy, not uniform \
+             text alone:\n{body}"
+        );
+        assert!(
+            body.contains("\"beta.1\".to_string()"),
+            "the example's literal argument must be embedded as an owned `String`, not a bare \
+             `&str` literal -- `Vec<String>` does not accept one (`error[E0308]`, found by \
+             actually compiling this exact fixture in the textseeded e2e test):\n{body}"
+        );
+        assert!(
+            body.contains("__ply_seed_corpus.borrow_mut().push"),
+            "every value the constructor accepts during the run must join the corpus too \
+             (design brief, source 2):\n{body}"
+        );
+        assert!(
+            body.contains("PLY_FUZZ_SEED_STATS|"),
+            "the run must report its own provenance (examples vs. runtime-accepted counts) \
+             so the verdict can carry it honestly:\n{body}"
+        );
+    }
+
+    /// The other honesty condition CLAUDE.md calls out by name: a seeded
+    /// run must never be indistinguishable from an unseeded one. A
+    /// constructor with no `requires` and no fallible return has nothing to
+    /// reject, so there is nothing to seed against -- the generated harness
+    /// must come out byte-identical to what the unseeded path already
+    /// produced (`generates_a_fuzz_test_for_a_scalar_fn`'s sibling case,
+    /// for a receiver instead of a free fn).
+    #[test]
+    fn an_infallible_unconstrained_text_constructor_is_not_seeded() {
+        let cf = discover_receiver(
+            r#"
+pub struct Label { text: String }
+impl Label {
+    pub fn new(text: &str) -> Self { Label { text: text.to_string() } }
+    #[ply::ensures(|result| *result == self.text.len() as u32)]
+    pub fn length(&self) -> u32 { self.text.len() as u32 }
+}
+"#,
+            "m::Label::length",
+        );
+        let seed = derive_seed("length", "");
+        let with_examples = generate_fuzz_test_with_examples(
+            &cf,
+            64,
+            &seed,
+            &["Label::new(\"x\").length()".to_string()],
+        )
+        .unwrap();
+        let without = generate_fuzz_test(&cf, 64, &seed).unwrap();
+        assert_eq!(
+            with_examples, without,
+            "an unconstrained constructor rejects nothing, so seeding it would be a no-op \
+             disguised as a feature -- the generated harness must be unaffected either way"
+        );
+        assert!(
+            !with_examples.contains("__PlySeedStrategy"),
+            "must not seed a constructor with nothing gating it:\n{with_examples}"
         );
     }
 

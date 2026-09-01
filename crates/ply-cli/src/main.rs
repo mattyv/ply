@@ -460,6 +460,16 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
     if node.statuses.iter().any(|s| s == "partial-history") {
         marks.push("narrower than it looks");
     }
+    // A random-sample check on a value built by parsing text (a version, an
+    // identifier, a URL) cannot reach its evidence count by guessing text
+    // uniformly -- almost none of it parses. Ply grows its inputs from a
+    // pool of already-valid values instead (docs/reach-measurement-2.md),
+    // and this mark is the disclosure that the count is real but the inputs
+    // are not an unbiased sample of all possible text -- the diagnostic
+    // beneath the tree names exactly where each one came from.
+    if node.statuses.iter().any(|s| s == "seeded") {
+        marks.push("seeded");
+    }
     // Last, and from its own field rather than from `statuses`: reuse is
     // not a qualifier on the evidence (D6), it is a fact about when the run
     // happened. A person reading `bounded(2)` should be able to tell
@@ -473,7 +483,7 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
 
 /// What each mark means, printed once beneath the tree and only when the
 /// tree actually carries it. A mark a reader cannot decode is decoration.
-const MARK_GLOSS: [(&str, &str); 4] = [
+const MARK_GLOSS: [(&str, &str); 5] = [
     (
         "assumed",
         "this result rests on a promise Ply was handed and did not check — if the promise is \
@@ -498,6 +508,13 @@ const MARK_GLOSS: [(&str, &str); 4] = [
          hashes the same — the function's own source, the code it calls, the promises it assumes, \
          the examples it checks, the checks themselves, the engines, the compiler and target, the \
          crate's features, the resolved versions of its dependencies, and Ply's own version",
+    ),
+    (
+        "seeded",
+        "this value is built by parsing text, and random text almost never parses, so Ply grew its \
+         inputs from values already known to be valid instead of guessing blindly — the count below \
+         is real, but it is evidence about text similar to what is already known to work, not about \
+         arbitrary text",
     ),
 ];
 

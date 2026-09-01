@@ -876,6 +876,16 @@ fn verify_loaded_crate(
         );
     }
 
+    // Every `examples:` entry declared anywhere in this crate (docs/reach-
+    // measurement-2.md's seeded-generation source 1) -- not just the fn
+    // being generated for, so a seed written against a constructor from a
+    // sibling claim still counts. Gathered once, up front, since building
+    // one fn's harness must never depend on iteration order over the rest.
+    let examples_pool: Vec<String> = plans
+        .iter()
+        .flat_map(|p| p.claim.examples.iter().cloned())
+        .collect();
+
     // Pass 2: any fn needing fuzz/test/mutate shares one generated harness
     // crate per target crate (§5.4c) -- write it once, fully, before
     // running anything, so mutate's baseline sees every fn's tests.
@@ -952,7 +962,12 @@ fn verify_loaded_crate(
             }
             let mut bodies = Vec::new();
             if let Some(n) = has_fuzz
-                && let Ok(body) = ply_core::fuzz_gen::generate_fuzz_test(&plan.cf, n, &plan.seed)
+                && let Ok(body) = ply_core::fuzz_gen::generate_fuzz_test_with_examples(
+                    &plan.cf,
+                    n,
+                    &plan.seed,
+                    &examples_pool,
+                )
             {
                 bodies.push(body);
             }
@@ -2744,6 +2759,17 @@ fn run_fn_checks(
                 if let Some(l) = run.test_label {
                     labels.push(l);
                 }
+                // The same structural pattern `conditional`/`partial-history`
+                // already follow (CLAUDE.md: "read how `conditional` is
+                // carried ... and follow that pattern"): a status travels
+                // beside the verdict as a plain flag, propagates upward
+                // through this same `statuses` vec, and (via `RecordEntry`)
+                // survives a reused verdict unchanged -- never a warning,
+                // since this describes what the evidence *is*, not
+                // something incidental about the run.
+                if run.seeded && !statuses.iter().any(|s| s == "seeded") {
+                    statuses.push("seeded".into());
+                }
                 // §1: a verdict names the evidence that produced it. Only a
                 // run that happened has any to name.
                 if run.fuzz_ran
@@ -4263,6 +4289,15 @@ struct HarnessRun {
     fuzz_ran: bool,
     fuzz_cases_reached: Option<u32>,
     diagnostics: Vec<Diagnostic>,
+    /// Whether `fuzz` earned a `fuzzed(n)` verdict whose cases were grown
+    /// from a corpus of known-valid values rather than sampled uniformly
+    /// (docs/reach-measurement-2.md) -- `false` for every fn whose
+    /// constructor was not seeded at all, which is the vast majority.
+    /// `run_fn_checks` turns this into the `seeded` status (the same
+    /// structural pattern `conditional` already follows: a status that
+    /// travels with the verdict, propagates into the recorded result, and
+    /// survives a reused verdict, never a warning about an incidental fact).
+    seeded: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4347,6 +4382,11 @@ fn run_fuzz_and_test_checks(
     // sibling `test` check running is not evidence for `fuzz` (see the
     // `fuzz_tests_executed == 0` branch below, "also fix" task 2026-08-27).
     let mut fuzz_ran = true;
+    // Set once, in the one branch that earns a real `fuzzed(n)` verdict
+    // whose cases were grown from a corpus of known-valid values (docs/
+    // reach-measurement-2.md) -- `false` otherwise, including for every fn
+    // whose constructor was never seeded at all.
+    let mut seeded = false;
 
     // The harness never ran at all for this fn (2026-08-24 M4 review, D1 --
     // the review's most serious finding, widened 2026-08-27 to catch the
@@ -4400,8 +4440,15 @@ fn run_fuzz_and_test_checks(
             fuzz_ran: false,
             fuzz_cases_reached: None,
             diagnostics,
+            seeded: false,
         });
     }
+
+    // Present exactly when this fn's own constructor was seeded at all
+    // (`fuzz_gen::plan_receiver_seeding` decided to, and its generated
+    // harness printed the marker unconditionally either way) -- `None`
+    // means "not a seeded run", not "a seeded run this parser missed".
+    let seed_stats = fuzz_engine::parse_seed_stats_marker(&run.combined_output);
 
     if let Some(n) = wants_fuzz {
         let check_label = format!("fuzz({n})");
@@ -4493,6 +4540,60 @@ fn run_fuzz_and_test_checks(
             let total = abort.accepted + abort.rejected;
             let reason = &abort.reason;
             let (accepted, rejected) = (abort.accepted, abort.rejected);
+            // The seeded case's own dead end, repaired (docs/reach-
+            // measurement-2.md): a gated text constructor that never
+            // accepted even one draw -- no `examples:` seed and nothing the
+            // constructor itself ever accepted -- has no case base to grow
+            // from at all, and the refusal must name the exact action that
+            // would fix it, not just restate the same generic advice every
+            // other high-rejection abort already gets.
+            let ctor_name = seed_stats
+                .as_ref()
+                .filter(|s| s.examples == 0 && s.accepted == 0)
+                .and(cf.receiver.as_ref())
+                .map(|plan| harness::last_two_segments(&plan.constructor));
+            let title = match &ctor_name {
+                Some(ctor_name) => format!(
+                    "this type is built by parsing, and random text almost never parses ({rejected} \
+                     of {total} draws rejected -- no case base to grow from). So this function has \
+                     no fuzz evidence at all -- its verdict is `unclaimed`, not `fuzzed({n})`. Add an \
+                     `examples:` entry showing one valid call to `{ctor_name}`, and Ply will grow \
+                     inputs from it. (W0503)"
+                ),
+                None => format!(
+                    "proptest gave up on `{fn_name}` before it could run the {n} cases `fuzz({n})` \
+                     asked for: {rejected} of the {total} inputs it generated were thrown away by the \
+                     function's own `#[ply::requires]` precondition and only {accepted} were ever \
+                     checked, which tripped proptest's own limit ({reason}). So this function has no \
+                     fuzz evidence at all -- its verdict is `unclaimed`, not `fuzzed({n})`. (W0503)"
+                ),
+            };
+            let mut fixes = vec![
+                Fix {
+                    title: format!(
+                        "widen `{fn_name}`'s `#[ply::requires]`, or give its parameters a type whose \
+                         values satisfy it by construction -- proptest can only check inputs its \
+                         generator actually produces"
+                    ),
+                    edits: vec![],
+                },
+                Fix {
+                    title: format!(
+                        "swap `fuzz({n})` for `test` plus `examples:` entries naming concrete inputs \
+                         inside `{fn_name}`'s allowed domain"
+                    ),
+                    edits: vec![],
+                },
+            ];
+            if let Some(ctor_name) = &ctor_name {
+                fixes.push(Fix {
+                    title: format!(
+                        "add an `examples:` entry in ply.yaml with one valid call to `{ctor_name}` -- \
+                         Ply extracts its literal arguments and grows future draws from them"
+                    ),
+                    edits: vec![],
+                });
+            }
             diagnostics.push(Diagnostic {
                 code: "W0503".into(),
                 severity: "warning".into(),
@@ -4500,33 +4601,11 @@ fn run_fuzz_and_test_checks(
                 engine: "proptest".into(),
                 check: check_label.clone(),
                 node_id: node_id.into(),
-                title: format!(
-                    "proptest gave up on `{fn_name}` before it could run the {n} cases `fuzz({n})` \
-                     asked for: {rejected} of the {total} inputs it generated were thrown away by the \
-                     function's own `#[ply::requires]` precondition and only {accepted} were ever \
-                     checked, which tripped proptest's own limit ({reason}). So this function has no \
-                     fuzz evidence at all -- its verdict is `unclaimed`, not `fuzzed({n})`. (W0503)"
-                ),
+                title,
                 pointer: None,
                 primary_span: None,
                 counterexample: None,
-                fixes: vec![
-                    Fix {
-                        title: format!(
-                            "widen `{fn_name}`'s `#[ply::requires]`, or give its parameters a type whose \
-                             values satisfy it by construction -- proptest can only check inputs its \
-                             generator actually produces"
-                        ),
-                        edits: vec![],
-                    },
-                    Fix {
-                        title: format!(
-                            "swap `fuzz({n})` for `test` plus `examples:` entries naming concrete inputs \
-                             inside `{fn_name}`'s allowed domain"
-                        ),
-                        edits: vec![],
-                    },
-                ],
+                fixes,
                 assumptions: vec![],
                 open_item: Some("no_cases_ran".into()),
             });
@@ -4607,6 +4686,61 @@ fn run_fuzz_and_test_checks(
                 // `combine_fn_check_verdicts` key off the `fuzzed` prefix.
                 fuzz_label = Some(format!("fuzzed({n})"));
                 fuzz_cases_reached = Some(n);
+                // The honest disclosure the design brief calls the "part
+                // that must not be cut": a run whose cases were grown from
+                // a corpus of known-valid values, not sampled uniformly,
+                // says so -- named with the real counts this run actually
+                // produced, never the illustrative numbers from any write-
+                // up. Gated on there being at least one seed (an example or
+                // a runtime accept): a seeded constructor whose corpus
+                // stayed empty the whole run drew uniformly throughout,
+                // indistinguishable from an unseeded one, and must read
+                // that way.
+                if let Some(stats) = &seed_stats
+                    && (stats.examples > 0 || stats.accepted > 0)
+                {
+                    let ctor_name = cf
+                        .receiver
+                        .as_ref()
+                        .map(|plan| harness::last_two_segments(&plan.constructor))
+                        .unwrap_or_else(|| fn_name.to_string());
+                    let corpus_total = stats.examples + stats.accepted;
+                    diagnostics.push(Diagnostic {
+                        code: "W0523".into(),
+                        severity: "info".into(),
+                        phase: "verify".into(),
+                        engine: "proptest".into(),
+                        check: check_label.clone(),
+                        node_id: node_id.into(),
+                        title: format!(
+                            "random text almost never satisfies `{ctor_name}` ({rejected} of \
+                             {total} draws thrown away by its own precondition), so the {n} \
+                             cases were grown from {corpus_total} known-valid values: \
+                             {examples} from the `examples:` you wrote, {accepted} that \
+                             `{ctor_name}` accepted from random draws during this run. This is \
+                             evidence about inputs *near* ones already known to be valid, not \
+                             about the whole space of text. The {n} cases are real and each one \
+                             ran. (W0523)",
+                            rejected = stats.rejected,
+                            total = stats.total,
+                            examples = stats.examples,
+                            accepted = stats.accepted,
+                        ),
+                        pointer: None,
+                        primary_span: None,
+                        counterexample: None,
+                        fixes: vec![Fix {
+                            title: "add an `examples:` entry for an extreme case you care about \
+                                 (a very long value, a boundary number) -- mutating short, \
+                                 ordinary seeds rarely reaches one on its own"
+                                .to_string(),
+                            edits: vec![],
+                        }],
+                        assumptions: vec![],
+                        open_item: Some("seeded_generation".into()),
+                    });
+                    seeded = true;
+                }
             }
         }
     }
@@ -4725,6 +4859,7 @@ fn run_fuzz_and_test_checks(
         fuzz_ran,
         fuzz_cases_reached,
         diagnostics,
+        seeded,
     })
 }
 
