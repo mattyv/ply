@@ -1066,6 +1066,28 @@ could not be reported at any seed (docs/review-post-004-strategy.md's correction
 vetting 004's finding 4). `tool_error` remains for the case where neither source yields an
 input.
 
+**A comparison is widened to `i128` only when both sides are provably numeric
+(2026-09-01).** The D7 table row above says the rendered assertion is "widened/checked
+arithmetic" so `result == x + 1` at `x`'s maximum value reports the broken promise instead
+of panicking on the overflow while checking it — but the widening that protects arithmetic
+used to cast **every** leaf a comparison reached, including text, an `Option`, a struct, or
+an enum, none of which can be cast `as i128` at all. Found pointing Ply at `semver`: the
+author's own most natural phrasing of "the constructor stores the text it was given
+verbatim" — comparing two `&str` values with `==` — could not compile
+(`error[E0606]: casting &str as i128 is invalid`), and because `fuzz`/`test` checks in a
+crate share one generated harness (immediately above), that one comparison's compile
+failure reported `tool_error` for every other function still waiting on that harness too,
+however correct. The fix narrows widening to a comparison whose *both* sides are provably
+numeric — a numeric literal; a parameter or the result whose declared type is a plain
+integer scalar, `bool`, `char`, or a float; a dereference, parenthesised form, or explicit
+numeric cast of a numeric thing; arithmetic over numeric operands; or a nested comparison/
+logical expression, always safe to cast since it is always `bool` regardless of what it
+compares. Anything else — a method call, a field access, a path to a constant, an enum
+variant — leaves that comparison exactly as written, which is always legal Rust: `rustc`
+already accepted the function's own body with that comparison unwidened before Ply ever
+ran, so declining to cast can never itself break compilation, only casting a non-numeric
+leaf could.
+
 **A `fuzz(n)` verdict names the run that produced it (2026-08-25).** The generated
 harness's RNG is built from a seed Ply chooses and records — in the §8 envelope, on the
 node whose verdict it produced — never from entropy, and proptest's own persisted-failure

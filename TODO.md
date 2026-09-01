@@ -16,6 +16,64 @@ input, so the fix makes something reachable without making it toothless.
       runnable test rather than inventing one -- which makes the printed values the only
       thing the reader gets, and they are unreadable. Fails the newbie bar.
 
+## Fixed: a promise comparing non-numeric values with `==`/`!=` did not compile — 2026-09-01
+
+Closes the item below dated 2026-09-01 ("A promise comparing non-numeric values with `==`
+or `!=` does not compile"). Test-first, watched to fail against the real defect (the exact
+compiler error, not a shape check), revert-and-confirm-red on both the unit tests and a
+real `cargo ply verify` run.
+
+**Cause.** `contract_rt::widen` casts every comparison's leaves to `i128` unconditionally,
+so the overflow-safety widening `result == x + 1` needs at `x`'s maximum value also reached
+leaves that are not numbers at all: text, an `Option`, a struct, an enum. Reproduced
+verbatim against the vendored `semver` copy at `/home/user/semvercheck-c`: putting
+`result.is_err() || result.as_ref().unwrap().as_str() == text` on `Prerelease::new` gives
+`error[E0606]: casting &str as i128 is invalid`, and because `fuzz`/`test` checks in a
+crate share one generated harness, adding one more, completely unrelated, correct function
+(`BuildMetadata::new`, checked with the same safe length-comparison property that already
+worked) to the same run turned it `tool_error` too — confirmed both ways, verbatim, against
+the unfixed binary.
+
+**Fix.** A comparison is now widened only when both sides are provably numeric, decided
+from the checked function's own parameter and return types (never guessed): a numeric
+literal; a parameter or the result whose declared type is a plain integer scalar, `bool`,
+`char`, or a float (every `RustType` shape `as i128` can actually reach through, confirmed
+directly against `rustc` rather than assumed — including that a bare fieldless enum *can*
+take that cast, right up until it gains a `Drop` impl, at which point it cannot); a
+dereference, parenthesised form, or explicit numeric cast of a numeric thing; arithmetic
+over numeric operands; or a nested comparison/logical expression (always safe to cast,
+since it is always `bool`). Anything else — a method call, a field access, a path to a
+constant, an enum variant — leaves the comparison exactly as written, which is always
+legal Rust and so can never itself break compilation.
+
+Unit tests (`crates/ply-core/src/contract_rt.rs`): a text comparison, an `Option`
+comparison, and a `Drop`-carrying fieldless-enum comparison (chosen over a plain fieldless
+enum specifically because a plain one still compiles cast `as i128` — checked directly
+against `rustc` first, so the fixture proves the real defect and not a coincidence) each
+watched to fail with the cast present, then pass with it gone. The existing overflow test
+(`widens_arithmetic_so_overflow_cannot_hide_the_defect`) and the existing nested-comparison
+suite (a history of precedence bugs) are unchanged and still pass — a return type of `bool`
+needed adding to what counts as numeric to keep the nested-comparison tests green, since a
+nested comparison's own cast (always onto a `bool` result) is unconditionally safe
+regardless of what it compares.
+
+New permanent fixture and end-to-end test proving the fix on a real `cargo ply verify`
+run, not just generated source shape: `tests/fixtures/nonnumericcompare/`,
+`tests/e2e/tests/nonnumericcompare_fixture.rs`. Covers, each both true (real passing
+evidence) and false (real `violation` with a real failing input): a text comparison, an
+`Option` comparison, a `Drop`-carrying enum-variant comparison; plus the overflow case
+(`saturating_bump`, checked `bounded(2)` rather than `fuzz` so the one bad `u8` value in
+256 cannot simply be missed by random sampling) confirming protection is intact; plus an
+entirely unrelated function proving no contagion survives. Reverting the fix reproduces
+`tool_error` for every one of these, with the real compiler errors quoted, and confirmed
+again directly against `/home/user/semvercheck-c` itself (restored to the state it was
+found in afterwards).
+
+`cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, and
+`cargo test --workspace --exclude ply-e2e` (335 `ply-core` unit tests, the kernel
+enumeration gate at 2.29s under `--release`, every other crate) all clean; the full
+`ply-e2e` suite run to completion with no regressions.
+
 ## Review of the three items, and two defects it found that I had missed — 2026-09-01
 
 Independent review of the three open items below, then every claim on both sides re-run
@@ -143,13 +201,14 @@ is real; the author's rules about what is *accepted* are barely exercised. Ply p
       can — so the escape hatch a user would reach for is silently inert. This is the same
       species of gap the `seeded` status was invented to close, in the one place it does not
       apply.
-- [ ] **A promise comparing non-numeric values with `==` or `!=` does not compile.** The
+- [x] **A promise comparing non-numeric values with `==` or `!=` does not compile.** The
       generated harness casts both sides of a comparison to `i128` (so it can report a
       broken promise rather than overflow while checking one); against a string, an
       `Option` or a struct that cast is invalid — `error[E0606]: casting &str as i128 is
       invalid`. Reported honestly as a tool error, never as a pass. Not new, but far more
       reachable now the return-type gate no longer refuses these functions first. This is
-      what blocks the natural phrasing of property 15.
+      what blocks the natural phrasing of property 15. **Fixed**, see the top of this file
+      ("Fixed: a promise comparing non-numeric values with `==`/`!=` did not compile").
 - [x] **`Self` as a parameter spelling is refused where the same type by name is checked
       — fixed 2026-09-01 (`f2bfe88`).** `cmp_precedence(&self, other: &Self)` was
       `unsupported`; changing nothing but `&Self` to `&Version` was `fuzzed(64)`. Mirror
