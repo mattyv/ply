@@ -25,10 +25,10 @@ components:
       declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, Spsc::try_push — nothing here counts as checked more strongly than the weakest thing inside it
       fn Spsc::try_push
-        bounded(3) — proves the contract for every input, unrolling loops at most 3 times
+        bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3
         generic — every check runs with T=ingest::feed::RawFrame; whatever they earn covers only that type
       fn Spsc::try_pop
-        bounded(3) — proves the contract for every input, unrolling loops at most 3 times
+        bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3
         generic — every check runs with T=ingest::feed::RawFrame; whatever they earn covers only that type
     component decoder — maps to Rust module ingest::decode
       pure — a sealed promise: this component declares no capabilities and may not use any. That is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so capability use inside this sealed component can still go unnoticed (§5.3)
@@ -36,9 +36,9 @@ components:
       declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, decode — nothing here counts as checked more strongly than the weakest thing inside it
       fn decode
-        bounded(2) — proves the contract for every input, unrolling loops at most 2 times
-        fuzz(4096) — runs the function on 4096 random inputs, checking the contract on each
-        mutate — plants small deliberate bugs; the test/fuzz checks must catch every one, or the contract is flagged weak
+        bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+        fuzz(4096) — tries 4096 generated inputs that satisfy requires, then checks ensures
+        mutate — plants small deliberate bugs; test/fuzz must catch each one or the requires/ensures are too weak
         1 worked example, written down but not run: no check here asks for the declared examples, so nothing compiles them:
           decode(&RawFrame::of(&[2, 1, 0, 100, 0, 42])).is_ok() == true
     component book — maps to Rust module ingest::book
@@ -48,26 +48,26 @@ components:
       declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, OrderBook::apply — nothing here counts as checked more strongly than the weakest thing inside it
       fn OrderBook::apply
-        bounded(2) — proves the contract for every input, unrolling loops at most 2 times
-        fuzz(256) — runs the function on 256 random inputs, checking the contract on each
-        mutate — plants small deliberate bugs; the test/fuzz checks must catch every one, or the contract is flagged weak
+        bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        mutate — plants small deliberate bugs; test/fuzz must catch each one or the requires/ensures are too weak
       fn OrderBook::updates
-        bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+        bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
       fn OrderBook::last_px
-        bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+        bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
 
   component strategy — maps to Rust module strat
     declares checks up to tested — checked once against the declared examples and generated inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, Strategy::on_update — nothing here counts as checked more strongly than the weakest thing inside it
     fn Strategy::on_update
-      test — runs the declared examples plus generated inputs, checking the contract on each
+      test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
     component signals — maps to Rust module strat::signals
       pure — a sealed promise: this component declares no capabilities and may not use any. That is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so capability use inside this sealed component can still go unnoticed (§5.3)
       declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, momentum — nothing here counts as checked more strongly than the weakest thing inside it
       fn momentum
-        bounded(2) — proves the contract for every input, unrolling loops at most 2 times
-        fuzz(2048) — runs the function on 2048 random inputs, checking the contract on each
+        bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+        fuzz(2048) — tries 2048 generated inputs that satisfy requires, then checks ensures
 
   component risk — maps to Rust module risk
     owns risk::Limits — only this component may mutate them
@@ -75,9 +75,9 @@ components:
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, check_order — nothing here counts as checked more strongly than the weakest thing inside it
     fn check_order
-      bounded(3) — proves the contract for every input, unrolling loops at most 3 times
-      fuzz(4096) — runs the function on 4096 random inputs, checking the contract on each
-      mutate — plants small deliberate bugs; the test/fuzz checks must catch every one, or the contract is flagged weak
+      bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3
+      fuzz(4096) — tries 4096 generated inputs that satisfy requires, then checks ensures
+      mutate — plants small deliberate bugs; test/fuzz must catch each one or the requires/ensures are too weak
       what this function promises — the last thing the document states before the code itself takes over:
         requires: order.qty > 0 && order.px > 0 (what the caller must guarantee going in)
         ensures: |r| r.is_err() == (order.qty > limits.max_qty) (what the function guarantees coming out)
@@ -88,13 +88,13 @@ components:
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, Oms::submit — nothing here counts as checked more strongly than the weakest thing inside it
     fn Oms::submit
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
-      fuzz(256) — runs the function on 256 random inputs, checking the contract on each
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+      fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
       #9 marks an unresolved decision — a question this function still owes an answer: order id after venue reject: fresh id or reuse. While it is open, this function's checks are meant to be held down to the weakest level — but that cap is not applied yet, so everything below still runs in full (§5.6)
       entry — venue can reach this function from outside this codebase; Ply never checks this — it is declared, not verified
         no requires are declared on this function, so it makes no environmental assumption yet
     fn Oms::on_fill
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
 
   component gateway — maps to Rust module gw
     capabilities: net — this component may use only the capabilities it declares. That limit is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so use of a capability this component never declared can still go unnoticed (§5.3)
@@ -109,8 +109,8 @@ components:
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, Positions::apply_fill — nothing here counts as checked more strongly than the weakest thing inside it
     fn Positions::apply_fill
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
-      fuzz(512) — runs the function on 512 random inputs, checking the contract on each
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+      fuzz(512) — tries 512 generated inputs that satisfy requires, then checks ensures
 
 externals — systems and people outside this codebase:
   venue — a system or person outside this codebase: the exchange: accepts orders, returns fills; market data source. Ply lists it so the boundary is visible, but checks nothing about it — every edge naming it is a declaration, not a verified fact.

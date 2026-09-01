@@ -23,10 +23,10 @@ components:
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, Spsc::try_push — nothing here counts as checked more strongly than the weakest thing inside it
     fn Spsc::try_push
-      bounded(3) — proves the contract for every input, unrolling loops at most 3 times
+      bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3
       generic — every check runs with T=ingest::feed::RawFrame; whatever they earn covers only that type
     fn Spsc::try_pop
-      bounded(3) — proves the contract for every input, unrolling loops at most 3 times
+      bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3
       generic — every check runs with T=ingest::feed::RawFrame; whatever they earn covers only that type
 
   component decoder — maps to Rust module ingest::decode
@@ -35,9 +35,9 @@ components:
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, decode — nothing here counts as checked more strongly than the weakest thing inside it
     fn decode
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
-      fuzz(4096) — runs the function on 4096 random inputs, checking the contract on each
-      mutate — plants small deliberate bugs; the test/fuzz checks must catch every one, or the contract is flagged weak
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+      fuzz(4096) — tries 4096 generated inputs that satisfy requires, then checks ensures
+      mutate — plants small deliberate bugs; test/fuzz must catch each one or the requires/ensures are too weak
       1 worked example, written down but not run: no check here asks for the declared examples, so nothing compiles them:
         decode(&RawFrame::of(&[2, 1, 0, 100, 0, 42])).is_ok() == true
 
@@ -48,13 +48,13 @@ components:
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, OrderBook::apply — nothing here counts as checked more strongly than the weakest thing inside it
     fn OrderBook::apply
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
-      fuzz(256) — runs the function on 256 random inputs, checking the contract on each
-      mutate — plants small deliberate bugs; the test/fuzz checks must catch every one, or the contract is flagged weak
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+      fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+      mutate — plants small deliberate bugs; test/fuzz must catch each one or the requires/ensures are too weak
     fn OrderBook::updates
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
     fn OrderBook::last_px
-      bounded(2) — proves the contract for every input, unrolling loops at most 2 times
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
 
 externals — systems and people outside this codebase: none declared
 

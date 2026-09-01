@@ -19,6 +19,7 @@ fn element(
         kind: kind.into(),
         label: label.into(),
         parent_id: parent_id.map(str::to_owned),
+        declaration: None,
         evidence: ElementEvidence {
             verdict: verdict.into(),
             statuses: vec![],

@@ -24,6 +24,7 @@ const GAP: f64 = 12.0;
 const NAME_CHAR_W: f64 = 8.0;
 const SUB_CHAR_W: f64 = 6.2;
 const CHIP_CHAR_W: f64 = 7.4;
+const CHECK_CHAR_W: f64 = 5.5;
 const LINE_H: f64 = 16.0;
 const HEADER_H: f64 = LINE_H * 2.0 + 6.0;
 const BADGE_H: f64 = 20.0;
@@ -162,7 +163,7 @@ pub const STYLE: &str = "\
 .fn-chip-box{fill:#f6f7f9;stroke:#9aa2b1}\
 .fn-chip-box-synth{fill:#ecdff5;stroke:#9aa2b1}\
 .fn-name{fill:#1f2430}\
-.fn-checks{fill:#4b5563;font-size:11px}\
+.fn-checks{fill:#4b5563;font-size:9px}\
 .fn-check-with{fill:#6b7280;font-size:10px}\
 .fn-examples{fill:#6b7280;font-size:10px}\
 .fn-shield{fill:none;stroke:#9a7a1f;font-size:13px}\
@@ -296,63 +297,63 @@ fn esc(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// One glyph token per check, in declaration order: `test`->T, `fuzz(n)`->Fn,
-/// `bounded(k)`->Bk, `prove`->P, `mutate`->M. Unparseable strings are shown
-/// verbatim so a malformed check is visible rather than silently dropped.
-/// The same facts as [`check_prose`], written short enough to sit on the
-/// canvas. The tooltip version is a full sentence per check -- right for
-/// hover, far too wide for a chip -- so this keeps the plain English and
-/// drops the explanatory clause. Drawn only inside a `--focus` target, for
-/// the same reason the contract clauses are: `B3 F4096 M` is unreadable to
-/// a newcomer, and hovering is not glancing.
+/// The same facts as [`check_prose`], shortened for the focused clause band.
+/// This still names what each number counts: `bounded(3)` alone does not say
+/// whether three means inputs, values, seconds, or proof depth.
 fn check_prose_compact(c: &str) -> Option<String> {
     match parse_check(c) {
-        Ok(Check::Test) => Some("runs the declared examples".into()),
-        Ok(Check::Fuzz(n)) => Some(format!("tries {n} random inputs")),
-        Ok(Check::Bounded(k)) => Some(format!("proves for all inputs, loops up to {k}")),
-        Ok(Check::Prove) => Some("proves for all inputs, no bound".into()),
-        Ok(Check::Mutate) => Some("plants bugs; the checks must catch them".into()),
+        Ok(Check::Test) => Some("test: examples + generated cases".into()),
+        Ok(Check::Fuzz(n)) => Some(format!("fuzz: {n} generated cases")),
+        Ok(Check::Bounded(k)) => Some(format!("bounded: symbolic inputs; loop depth {k}")),
+        Ok(Check::Prove) => Some("prove: symbolic inputs; no loop cap".into()),
+        Ok(Check::Mutate) => Some("mutate: plants bugs; test/fuzz must catch them".into()),
         Err(_) => None,
     }
 }
 
-fn checks_glyph_row(checks: &[String]) -> String {
+/// One glanceable label per declared check, in declaration order. The old
+/// `B2 F256 M` glyphs saved a few pixels but hid both the check names and
+/// what their numbers measured. Unparseable strings stay visible verbatim.
+fn checks_label_row(checks: &[String]) -> String {
     checks
         .iter()
         .map(|c| match parse_check(c) {
-            Ok(Check::Test) => "T".to_string(),
-            Ok(Check::Fuzz(n)) => format!("F{n}"),
-            Ok(Check::Bounded(k)) => format!("B{k}"),
-            Ok(Check::Prove) => "P".to_string(),
-            Ok(Check::Mutate) => "M".to_string(),
+            Ok(Check::Test) => "test".to_string(),
+            Ok(Check::Fuzz(n)) => format!("fuzz: {n} cases"),
+            Ok(Check::Bounded(k)) => format!("bounded: loop≤{k}"),
+            Ok(Check::Prove) => "prove".to_string(),
+            Ok(Check::Mutate) => "mutate".to_string(),
             Err(_) => c.clone(),
         })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" \u{00b7} ")
 }
 
-/// The glyph row spelled out for the hover tooltip. `<title>` is native SVG:
-/// no script, no legend clutter on the canvas.
+/// The check labels expanded for hover and transcript. This deliberately
+/// names `requires` and `ensures` instead of the vague word "contract", and
+/// says what every numeric argument measures.
 pub(super) fn check_prose(c: &str) -> String {
     match parse_check(c) {
         Ok(Check::Test) => {
-            "test — runs the declared examples plus generated inputs, checking the contract on each"
+            "test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures"
                 .into()
         }
         Ok(Check::Fuzz(n)) => {
             format!(
-                "fuzz({n}) — runs the function on {n} random inputs, checking the contract on each"
+                "fuzz({n}) — tries {n} generated inputs that satisfy requires, then checks ensures"
             )
         }
         Ok(Check::Bounded(k)) => {
             format!(
-                "bounded({k}) — proves the contract for every input, unrolling loops at most {k} times"
+                "bounded({k}) — Kani symbolically checks supported inputs that satisfy requires against ensures; {k} is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length {k}"
             )
         }
-        Ok(Check::Prove) => "prove — proves the contract for all inputs, with no bound".into(),
+        Ok(Check::Prove) => {
+            "prove — checks supported inputs that satisfy requires against ensures, without a loop-unwind limit"
+                .into()
+        }
         Ok(Check::Mutate) => {
-            "mutate — plants small deliberate bugs; the test/fuzz checks must catch every one, \
-             or the contract is flagged weak"
+            "mutate — plants small deliberate bugs; test/fuzz must catch each one or the requires/ensures are too weak"
                 .into()
         }
         Err(e) => format!("{c} — unparseable: {e}"),
@@ -1270,7 +1271,7 @@ fn strict_notch_svg(box_w: f64) -> String {
     )
 }
 
-/// One fn claim rendered as a chip: its box, name, checks glyph row,
+/// One fn claim rendered as a chip: its box, name, readable checks row,
 /// `check_with` note, trusted shield, and unresolved pins — all drawn from
 /// local origin `(0,0)` so the caller can place it with `wrap_translate`.
 struct FnChip {
@@ -1300,7 +1301,7 @@ fn render_fn_chip(
     // §5.1: the list that actually governs this fn — its own if it declared
     // one, else the nearest ancestor component's default (or nothing, if it
     // has neither). Every downstream read of "this fn's checks" — the
-    // glyph row, the tooltip prose, the declared-ceiling fill computed
+    // label row, the tooltip prose, the declared-ceiling fill computed
     // elsewhere — goes through this, not `fc.checks` directly.
     let effective = effective_checks(fc, inherited).unwrap_or(&[]);
     // A fn that wrote no `checks:` line at all is exactly the one whose
@@ -1308,11 +1309,28 @@ fn render_fn_chip(
     // `checks: []` wrote a list -- an empty one, meaning "check nothing"
     // (§5.4c) -- and inherits nothing.
     let is_inherited = fc.checks.is_none() && inherited.is_some();
-    let glyphs = checks_glyph_row(effective);
+    let check_labels = checks_label_row(effective);
     let note = check_with_note(&fc.check_with);
     let has_shield = !fc.trusted.is_empty();
-    let has_contract = !fc.requires.is_empty() || !fc.ensures.is_empty();
     let findings = ctx.fn_findings(component_path, name);
+    // A completed run carries the effective contract, including inline
+    // #[ply::requires]/#[ply::ensures] clauses that are not present in YAML.
+    // Static rendering falls back to the clauses the document can know.
+    let declaration_lines = evidence
+        .and_then(|(element, _)| element.declaration.as_deref())
+        .map(|declaration| declaration.lines().map(str::to_owned).collect::<Vec<_>>())
+        .unwrap_or_else(|| {
+            fc.requires
+                .iter()
+                .map(|clause| format!("Input (requires): {clause}"))
+                .chain(
+                    fc.ensures
+                        .iter()
+                        .map(|clause| format!("Postcondition (ensures): {clause}")),
+                )
+                .collect()
+        });
+    let has_contract = !declaration_lines.is_empty();
 
     // The clause band: one drawn line per `requires`/`ensures`, each
     // prefixed so a first-time reader knows which way it points -- "needs"
@@ -1321,10 +1339,9 @@ fn render_fn_chip(
     // schema's keywords, because the diagram is read by people who have not
     // opened the spec.
     let clauses: Vec<String> = if show_contract {
-        fc.requires
+        declaration_lines
             .iter()
-            .map(|r| format!("needs {r}"))
-            .chain(fc.ensures.iter().map(|e| format!("gives {e}")))
+            .cloned()
             .chain(effective.iter().filter_map(|c| check_prose_compact(c)))
             .collect()
     } else {
@@ -1334,7 +1351,11 @@ fn render_fn_chip(
 
     let mut cursor_x = PAD;
     let mut inner = String::new();
-    let text_y = CHIP_H / 2.0 + 4.0;
+    let text_y = if check_labels.is_empty() {
+        CHIP_H / 2.0 + 4.0
+    } else {
+        10.5
+    };
 
     // §7.1 "contract clauses" (amended): a gutter bar — full chip height,
     // flush at the left edge. The original 6x6 square was too easy to miss.
@@ -1349,14 +1370,6 @@ fn render_fn_chip(
         esc(name)
     ));
     cursor_x += text_w(name, CHIP_CHAR_W) + BADGE_GAP;
-
-    if !glyphs.is_empty() {
-        inner.push_str(&format!(
-            "<text class=\"fn-checks\" x=\"{cursor_x:.1}\" y=\"{text_y:.1}\">{}</text>",
-            esc(&glyphs)
-        ));
-        cursor_x += text_w(&glyphs, CHIP_CHAR_W) + BADGE_GAP;
-    }
 
     // The state a run's evidence backs for this fn, if any resolved —
     // `None` draws nothing new at all, which is what keeps a chip with no
@@ -1483,13 +1496,8 @@ fn render_fn_chip(
         // itself made legible — the promise standing at the watermark line,
         // spelled out verbatim rather than left for the reader to infer
         // from the mark's presence alone.
-        tip.push("contract at the watermark:".to_string());
-        for r in &fc.requires {
-            tip.push(format!("requires: {r}"));
-        }
-        for e in &fc.ensures {
-            tip.push(format!("ensures: {e}"));
-        }
+        tip.push("input and post contract:".to_string());
+        tip.extend(declaration_lines.iter().cloned());
         tip.push(contract_close_prose(nothing_runs));
     }
     if fc.mode == Mode::Synth {
@@ -1540,11 +1548,25 @@ fn render_fn_chip(
         .iter()
         .map(|c| text_w(c, CLAUSE_CHAR_W))
         .fold(0.0_f64, f64::max);
-    let width = (cursor_x + PAD - BADGE_GAP).max(if clauses.is_empty() {
-        0.0
+    let detail_x = if has_contract {
+        CONTRACT_MARK_W + PAD
     } else {
-        CONTRACT_MARK_W + PAD + clause_w + PAD
-    });
+        PAD
+    };
+    let check_w = (!check_labels.is_empty())
+        .then(|| detail_x + text_w(&check_labels, CHECK_CHAR_W) + PAD)
+        .unwrap_or(0.0);
+    let clause_width = (!clauses.is_empty())
+        .then_some(CONTRACT_MARK_W + PAD + clause_w + PAD)
+        .unwrap_or(0.0);
+    let width = (cursor_x + PAD - BADGE_GAP).max(check_w).max(clause_width);
+    if !check_labels.is_empty() {
+        inner.push_str(&format!(
+            "<text class=\"fn-checks\" x=\"{detail_x:.1}\" y=\"{y:.1}\">{}</text>",
+            esc(&check_labels),
+            y = CHIP_H - 3.0,
+        ));
+    }
     for (i, clause) in clauses.iter().enumerate() {
         inner.push_str(&format!(
             "<text class=\"fn-clause\" x=\"{x:.1}\" y=\"{y:.1}\">{}</text>",

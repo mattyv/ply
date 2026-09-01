@@ -190,16 +190,17 @@ mod layout_invariants {
             let doc = roxmltree::Document::parse(svg).unwrap();
             let (w, h) = svg_dims(&doc);
 
-            // Text elements have no computed bounding box in the SVG
-            // itself, so approximate one: monospace at a generous per-char
-            // width (8, the widest the renderer uses, for `component-name`)
-            // extended from the anchor per the element's `text-anchor`
+            // Text elements have no computed bounding box in the SVG itself,
+            // so approximate one with the renderer's deliberately smaller
+            // check-row width and a generous per-character width everywhere
+            // else. Extend it from the anchor per the element's `text-anchor`
             // (`middle` extends both ways from center; the SVG default,
             // `start`, extends only rightward). Good enough to catch a
             // label whose *anchor point* is on-canvas but whose glyphs
             // still run off the edge (vetting 002 finding 3's truncated
             // "except decoder").
             const WORST_CASE_CHAR_W: f64 = 8.0;
+            const CHECK_CHAR_W: f64 = 5.5;
             let style = ply_render::svg::STYLE;
             let is_middle_anchored = |class: Option<&str>| -> bool {
                 let Some(c) = class else { return false };
@@ -272,7 +273,12 @@ mod layout_invariants {
                         let x: f64 = node.attribute("x").unwrap_or("0").parse().unwrap();
                         let y: f64 = node.attribute("y").unwrap_or("0").parse().unwrap();
                         let chars = node.text().unwrap_or("").chars().count() as f64;
-                        let full_w = chars * WORST_CASE_CHAR_W;
+                        let char_w = if node.attribute("class") == Some("fn-checks") {
+                            CHECK_CHAR_W
+                        } else {
+                            WORST_CASE_CHAR_W
+                        };
+                        let full_w = chars * char_w;
                         if is_middle_anchored(node.attribute("class")) {
                             vec![(x - full_w / 2.0, y), (x + full_w / 2.0, y)]
                         } else {
@@ -453,14 +459,12 @@ fn profile_renders_as_tag_on_the_box() {
 }
 
 #[test]
-fn fn_chip_shows_checks_glyph_row() {
+fn fn_chip_shows_glanceable_check_labels() {
     let svg = render_fixture("tests/fixtures/full.ply.yaml");
     assert!(svg.contains("class=\"fn-chip\""));
     assert!(svg.contains(">quote<"));
-    // bounded(3), fuzz(1024), mutate -> "B3 F1024 M"
-    assert!(svg.contains("B3 F1024 M"));
-    // test, bounded(4) -> "T B4"
-    assert!(svg.contains("T B4"));
+    assert!(svg.contains("bounded: loop≤3 · fuzz: 1024 cases · mutate"));
+    assert!(svg.contains("test · bounded: loop≤4"));
 }
 
 #[test]
@@ -692,7 +696,7 @@ fn owns_renders_as_a_header_line() {
 }
 
 #[test]
-fn glyphs_are_explained_by_a_hover_title() {
+fn checks_are_explained_by_a_hover_title() {
     let svg = render_fixture("../../vetting/001-spsc-disruptor.ply.yaml");
     let doc = roxmltree::Document::parse(&svg).unwrap();
     let titles: Vec<String> = doc
@@ -708,10 +712,10 @@ fn glyphs_are_explained_by_a_hover_title() {
         .find(|t| t.starts_with("Spsc::try_push"))
         .unwrap();
     assert!(push.contains(
-        "bounded(3) — proves the contract for every input, unrolling loops at most 3 times"
+        "bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3"
     ));
     assert!(push.contains(
-        "fuzz(1024) — runs the function on 1024 random inputs, checking the contract on each"
+        "fuzz(1024) — tries 1024 generated inputs that satisfy requires, then checks ensures"
     ));
     assert!(push.contains(
         "generic — every check runs with T=u64; whatever they earn covers only that type"
@@ -1184,19 +1188,19 @@ mod contract_mark {
                 if has_contract {
                     any_contract_seen = true;
                     assert!(
-                        tooltip.contains("contract at the watermark:"),
+                        tooltip.contains("input and post contract:"),
                         "{fixture}: contract-carrying chip's tooltip is missing the header: \
                          {tooltip:?}"
                     );
                     for r in &exp.requires {
-                        let line = format!("requires: {r}");
+                        let line = format!("Input (requires): {r}");
                         assert!(
                             tooltip.contains(&line),
                             "{fixture}: tooltip is missing {line:?}, got: {tooltip:?}"
                         );
                     }
                     for e in &exp.ensures {
-                        let line = format!("ensures: {e}");
+                        let line = format!("Postcondition (ensures): {e}");
                         assert!(
                             tooltip.contains(&line),
                             "{fixture}: tooltip is missing {line:?}, got: {tooltip:?}"
@@ -1211,7 +1215,7 @@ mod contract_mark {
                     );
                 } else {
                     assert!(
-                        !tooltip.contains("contract at the watermark:"),
+                        !tooltip.contains("input and post contract:"),
                         "{fixture}: a chip with no requires/ensures must not gain contract \
                          wording, got: {tooltip:?}"
                     );
@@ -1251,14 +1255,18 @@ mod contract_mark {
             .find(|c| c.tag_name().name() == "title")
             .and_then(|t| t.text())
             .unwrap();
-        assert!(tooltip.contains("requires: order.qty > 0 && order.px > 0"));
-        assert!(tooltip.contains("ensures: |r| r.is_err() == (order.qty > limits.max_qty)"));
+        assert!(tooltip.contains("Input (requires): order.qty > 0 && order.px > 0"));
+        assert!(
+            tooltip.contains(
+                "Postcondition (ensures): |r| r.is_err() == (order.qty > limits.max_qty)"
+            )
+        );
     }
 }
 
 /// §5.1 "checks: [bounded(2)] # optional default checks for all fns in
 /// scope": a fn with no `checks` of its own must draw and describe the
-/// *inherited* checks — the glyph row on its chip, and its tooltip — not
+/// *inherited* checks — the readable row on its chip, and its tooltip — not
 /// render as if it declared nothing. `tests/fixtures/checks_inheritance.
 /// ply.yaml` exercises every shape the spec names: a direct default use, a
 /// fn-level override, a nested component with its own default, and a
@@ -1276,7 +1284,7 @@ mod checks_inheritance {
             .unwrap_or_else(|| panic!("no fn-chip named {name:?} found"))
     }
 
-    fn glyph_text(chip: roxmltree::Node) -> String {
+    fn check_label_text(chip: roxmltree::Node) -> String {
         chip.children()
             .find(|c| c.attribute("class") == Some("fn-checks"))
             .and_then(|t| t.text())
@@ -1292,26 +1300,29 @@ mod checks_inheritance {
             .to_string()
     }
 
-    /// The glyph row (§7.1 "checks list -> glyph row on the fn chip") must
+    /// The label row must
     /// reflect the *effective* list — own if declared, else inherited —
     /// for every shape the fixture exercises.
     #[test]
-    fn glyph_row_shows_the_effective_checks_for_every_inheritance_shape() {
+    fn label_row_shows_the_effective_checks_for_every_inheritance_shape() {
         let svg = render_fixture("tests/fixtures/checks_inheritance.ply.yaml");
         let doc = roxmltree::Document::parse(&svg).unwrap();
 
         // `quote` has no checks of its own -> inherits `pricing`'s bounded(2).
-        assert_eq!(glyph_text(fn_chip(&doc, "quote")), "B2");
+        assert_eq!(check_label_text(fn_chip(&doc, "quote")), "bounded: loop≤2");
         // `book` declares its own `[test]`, which wins entirely.
-        assert_eq!(glyph_text(fn_chip(&doc, "book")), "T");
+        assert_eq!(check_label_text(fn_chip(&doc, "book")), "test");
         // `discount` has no checks of its own -> inherits `curves`'s
         // fuzz(64), not the grandparent `pricing`'s bounded(2) — nearest
         // ancestor wins.
-        assert_eq!(glyph_text(fn_chip(&doc, "discount")), "F64");
+        assert_eq!(
+            check_label_text(fn_chip(&doc, "discount")),
+            "fuzz: 64 cases"
+        );
         // `delta` has no checks of its own, and `greeks` declares no
         // default of its own either -> skips up to the grandparent
         // `pricing`'s bounded(2).
-        assert_eq!(glyph_text(fn_chip(&doc, "delta")), "B2");
+        assert_eq!(check_label_text(fn_chip(&doc, "delta")), "bounded: loop≤2");
     }
 
     /// The tooltip must make the inheritance visible to a newbie: which
@@ -1325,8 +1336,7 @@ mod checks_inheritance {
         let quote_tip = tooltip_text(fn_chip(&doc, "quote"));
         assert!(
             quote_tip.contains(
-                "inherited from component `pricing`: bounded(2) — proves the contract for \
-                 every input, unrolling loops at most 2 times"
+                "inherited from component `pricing`: bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2"
             ),
             "quote's tooltip should name the inherited check and its source: {quote_tip:?}"
         );
@@ -1342,8 +1352,7 @@ mod checks_inheritance {
         let discount_tip = tooltip_text(fn_chip(&doc, "discount"));
         assert!(
             discount_tip.contains(
-                "inherited from component `curves`: fuzz(64) — runs the function on 64 random \
-                 inputs, checking the contract on each"
+                "inherited from component `curves`: fuzz(64) — tries 64 generated inputs that satisfy requires, then checks ensures"
             ),
             "discount's tooltip should name curves, not pricing: {discount_tip:?}"
         );
@@ -1353,8 +1362,7 @@ mod checks_inheritance {
         let delta_tip = tooltip_text(fn_chip(&doc, "delta"));
         assert!(
             delta_tip.contains(
-                "inherited from component `pricing`: bounded(2) — proves the contract for \
-                 every input, unrolling loops at most 2 times"
+                "inherited from component `pricing`: bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2"
             ),
             "delta's tooltip should skip greeks (no default) up to pricing: {delta_tip:?}"
         );
@@ -1884,10 +1892,10 @@ mod no_overlap {
         (x, y)
     }
 
-    /// Anchor-aware text bounding box, the same worst-case monospace
-    /// estimate `everything_renders_inside_the_canvas` uses, widened into a
-    /// real rect with a generous glyph height guessed around the baseline
-    /// (big enough for any font-size this renderer uses, 9-13px), and
+    /// Anchor-aware text bounding box, using the renderer's deliberately
+    /// smaller character width for the compact check row and the existing
+    /// worst-case monospace estimate everywhere else. It is widened into a
+    /// real rect with a generous glyph height guessed around the baseline,
     /// converted to absolute canvas coordinates via `absolute_offset` —
     /// most text (component names, fn chips, badges) is nested several
     /// `<g transform>`s deep, so its raw `x`/`y` attributes alone are not
@@ -1901,11 +1909,17 @@ mod no_overlap {
     /// (via this worst-case width estimate) does not.
     fn text_bbox(node: roxmltree::Node, style: &str) -> (Rectf, (f64, f64)) {
         const WORST_CASE_CHAR_W: f64 = 8.0;
+        const CHECK_CHAR_W: f64 = 5.5;
         let (ox, oy) = absolute_offset(node);
         let x: f64 = node.attribute("x").unwrap_or("0").parse::<f64>().unwrap() + ox;
         let y: f64 = node.attribute("y").unwrap_or("0").parse::<f64>().unwrap() + oy;
         let chars = node.text().unwrap_or("").chars().count() as f64;
-        let full_w = chars * WORST_CASE_CHAR_W;
+        let char_w = if node.attribute("class") == Some("fn-checks") {
+            CHECK_CHAR_W
+        } else {
+            WORST_CASE_CHAR_W
+        };
+        let full_w = chars * char_w;
         let is_middle = node.attribute("class").is_some_and(|c| {
             let needle = format!(".{c}{{");
             style
@@ -3744,11 +3758,7 @@ fn the_render_opens_with_a_line_saying_how_much_is_actually_claimed() {
     );
 }
 
-/// `B3 F4096 M` means nothing to someone who has not read the spec, and
-/// hovering is not glancing. The same rule the contract clauses follow
-/// applies: the overview keeps the compact form, and zooming in spells it
-/// out. Not a new construct — the words already exist, as the tooltip prose,
-/// and were simply never drawn.
+/// Focus adds fuller sentences beneath the already-readable overview labels.
 #[test]
 fn a_focused_functions_checks_are_spelled_out_in_words() {
     use ply_render::svg::{RenderOptions, render_svg_with_options};
@@ -3775,11 +3785,11 @@ fn a_focused_functions_checks_are_spelled_out_in_words() {
         .join(" ");
 
     // check_order declares bounded(3), fuzz(4096), mutate.
-    for word in ["proves", "random inputs", "plants"] {
+    for word in ["symbolic inputs", "generated cases", "plants"] {
         assert!(
             drawn.contains(word),
-            "zoomed in, `check_order`'s checks must be readable as words rather than \
-             the letters B3/F4096/M -- expected to find {word:?}. Drawn: {drawn}"
+            "zoomed in, `check_order`'s checks must explain what each mode does -- expected \
+             to find {word:?}. Drawn: {drawn}"
         );
     }
 }
@@ -4224,7 +4234,7 @@ fn the_transcript_states_what_it_is_and_what_the_document_declares() {
         // a component and its anchor
         "component risk — maps to Rust module risk",
         // a check, in words rather than a code
-        "proves the contract for every input, unrolling loops at most 3 times",
+        "3 is the maximum loop-unwind depth, not a numeric input limit",
         // a contract clause
         "order.qty > 0 && order.px > 0",
         // a fact the diagram only ever showed on hover
@@ -4295,9 +4305,9 @@ fn the_transcript_does_not_depend_on_where_the_file_lives() {
 /// a committed copy in `vetting/`.
 ///
 /// Names only, and deliberately so. The rest of what the picture says is
-/// glyph shorthand the text form spells out in words instead, so demanding
-/// verbatim agreement there would force the text to be as terse as the
-/// picture. That everything *declared* survives into the text is the separate
+/// labels the text form expands in words, so demanding verbatim agreement
+/// there would duplicate presentation. That everything *declared* survives
+/// into the text is the separate
 /// and stronger check in `the_transcript_leaves_nothing_in_the_document_out`,
 /// which walks the document rather than the drawing.
 ///
@@ -4356,8 +4366,8 @@ fn the_transcript_and_the_drawing_state_the_same_facts() {
 /// skip the check, because the walk visits every field.
 ///
 /// It is not spelled as a substring sweep over the drawing's own sentences.
-/// About a third of what the picture says is glyph shorthand — `B2 F1024`,
-/// `e×1`, `⛉`, `*` — that the text form deliberately spells out in words,
+/// Some of what the picture says is visual shorthand — `e×1`, `⛉`, `*` —
+/// that the text form deliberately spells out in words,
 /// so verbatim agreement between the two is the wrong bar and would force
 /// the text to be as terse as the picture.
 #[test]
@@ -4817,8 +4827,7 @@ fn the_three_sentences_that_carry_the_inheritance_rules_are_pinned() {
          of its own, and component switched_off sets an empty default list, which switches \
          checking off for everything inside it (unclaimed)",
         // A function that wrote nothing and had a real list handed to it.
-        "inherited from component handed_down: bounded(2) — proves the contract for every \
-         input, unrolling loops at most 2 times",
+        "inherited from component handed_down: bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2",
     ] {
         assert!(
             text.contains(expected),

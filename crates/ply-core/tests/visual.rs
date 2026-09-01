@@ -3,7 +3,7 @@ use std::fs;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use ply_core::diag::{Diagnostic, Envelope, Node, Span};
+use ply_core::diag::{Contract, Diagnostic, Envelope, Node, Span};
 use ply_core::model::parse_document;
 use ply_core::visual::{
     DEFAULT_RETAINED_RUNS, ElementEvidence, RootIdentity, RunMetadata, RunOutcome, SourceLocation,
@@ -36,6 +36,7 @@ fn envelope(id: &str, completed_at: &str, outcome: RunOutcome) -> VisualEnvelope
                     kind: "workspace".into(),
                     label: "workspace".into(),
                     parent_id: None,
+                    declaration: None,
                     evidence: ElementEvidence {
                         verdict: "bounded(2)".into(),
                         statuses: vec![],
@@ -55,6 +56,7 @@ fn envelope(id: &str, completed_at: &str, outcome: RunOutcome) -> VisualEnvelope
                     kind: "fn".into(),
                     label: "billing::total".into(),
                     parent_id: Some(workspace_id),
+                    declaration: None,
                     evidence: ElementEvidence {
                         verdict: "bounded(2)".into(),
                         statuses: vec!["conditional".into()],
@@ -591,6 +593,10 @@ fn qualified_function_identity_keeps_same_named_claims_sources_and_diagnostics_a
         statuses: vec![],
         reused: false,
         evidence: None,
+        contract: Contract {
+            requires: vec!["amount_cents <= 100_000_000 && tier < 4".into()],
+            ensures: vec!["result <= amount_cents".into()],
+        },
         children: vec![],
         ..Default::default()
     };
@@ -689,6 +695,23 @@ fn qualified_function_identity_keeps_same_named_claims_sources_and_diagnostics_a
     );
     assert_eq!(visual.elements[&billing_id].diagnostic_ids.len(), 1);
     assert_eq!(visual.elements[&shipping_id].diagnostic_ids.len(), 1);
+    assert_eq!(
+        visual.elements[&billing_id].declaration.as_deref(),
+        Some(
+            "Input (requires): amount_cents <= 100_000_000 && tier < 4\n\
+             Postcondition (ensures): result <= amount_cents"
+        )
+    );
+    assert!(
+        visual
+            .svg
+            .contains("Input (requires): amount_cents &lt;= 100_000_000 &amp;&amp; tier &lt; 4")
+    );
+    assert!(
+        visual
+            .svg
+            .contains("Postcondition (ensures): result &lt;= amount_cents")
+    );
     assert_eq!(
         visual.diagnostics[0].element_id.as_deref(),
         Some(billing_id.as_str())
