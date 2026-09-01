@@ -1,0 +1,50 @@
+{
+  "format": 2,
+  "written_by": "199c9f95406e7ef97dd41a1d61da642105acec96ad7234c5cee2ed8c54d1719c",
+  "results": {
+    "paramseeded::width": {
+      "fingerprint": "7f6c51ad35235f9c6ebfdb6e468548e7b46c346bd2e4845acd4c46f12e47677f",
+      "verdict": "fuzzed(64)",
+      "statuses": [
+        "seeded"
+      ],
+      "evidence": {
+        "engine": "proptest",
+        "seed": "fb896e065dc3254150cd9520c1fa83b7f9402822ea41fb57c621165790f8969c",
+        "cases": 64
+      },
+      "diagnostics": [
+        {
+          "code": "W0524",
+          "severity": "info",
+          "phase": "verify",
+          "engine": "proptest",
+          "check": "fuzz(64)",
+          "node_id": "paramseeded::width",
+          "title": "Ply's ordinary case generator cannot build a value for `label` on its own -- so the 64 cases for `width` were grown from 1 value(s) you wrote in `examples:`, varied by trying different text (and, for an optional value, sometimes leaving it out). This is evidence about inputs near what you already wrote, not the whole range of possible values. The 64 cases are real and each one ran. (W0524)",
+          "fixes": [
+            {
+              "title": "add another `examples:` entry for an extreme case you care about (a very long value, an empty one) -- varying a short, ordinary seed rarely reaches one on its own"
+            }
+          ],
+          "open_item": "seeded_generation"
+        }
+      ],
+      "inputs": {
+        "its contract": "02641f314bea2fac",
+        "the build of Ply that checked it": "dc2d634316b59e31",
+        "the callees it stands on": "4df68c1409b969ed",
+        "the checks that ran": "6cc3c76e62ef698a",
+        "the code it runs": "f5068da78a983ff0",
+        "the compiler and the build target": "bf70dd442259ad28",
+        "the crate's features": "888ca37d720284f4",
+        "the engines behind them": "651a23e37e8789a4",
+        "the function's own source": "a5abe99e75cd9e29",
+        "the promises it assumes": "d972c487c26e7547",
+        "the versions of everything outside this workspace": "0fabd3141f2a2b8e",
+        "the worked examples it asserts": "6ab4c9bab7deb7cf",
+        "which claim this is": "c94dcbd9619c92d3"
+      }
+    }
+  }
+}

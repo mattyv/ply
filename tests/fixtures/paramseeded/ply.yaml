@@ -1,0 +1,15 @@
+ply: 1
+
+# TODO.md: "an example does not unblock a parameter Ply cannot build" -- the
+# measured gap. `width`'s own parameter is `Option<String>`, a type Ply's
+# ordinary codegen never builds (`String` is deliberately never nested) --
+# but the text inside is mutable, so one `examples:` entry is enough to grow
+# a real corpus the same way a receiver constructor's own seeded text does.
+components:
+  paramseeded:
+    anchor: ply_fixture_paramseeded
+    fns:
+      width:
+        checks: [fuzz(64)]
+        examples:
+          - "width(Some(\"hi\".to_string())) == 2"
