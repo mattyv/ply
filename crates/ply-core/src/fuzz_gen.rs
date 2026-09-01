@@ -1789,7 +1789,7 @@ pub fn generate_fuzz_test_with_examples(
     // built out of ordinary Rust can honour it (§5.4a).
     let (checked_body, entry_values) = crate::contract_rt::lift_entry_values(&self_rewritten_body);
     let entry_lets = crate::contract_rt::entry_value_lets(&entry_values, &" ".repeat(12));
-    let widened = crate::contract_rt::widen(&checked_body).to_string();
+    let widened = crate::contract_rt::widen(&checked_body, cf).to_string();
 
     // Every field's *display text* is computed into its own binding **before**
     // the call, never inline inside the failure-branch marker build that
@@ -2124,7 +2124,7 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
     };
     let (checked_body, entry_values) = crate::contract_rt::lift_entry_values(&closure.body);
     let entry_lets = crate::contract_rt::entry_value_lets(&entry_values, &" ".repeat(8));
-    let widened = crate::contract_rt::widen(&checked_body).to_string();
+    let widened = crate::contract_rt::widen(&checked_body, cf).to_string();
     let requires_cond = cf
         .requires
         .as_ref()

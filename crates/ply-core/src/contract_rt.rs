@@ -134,15 +134,24 @@ pub(crate) fn entry_value_lets(values: &[EntryValue], indent: &str) -> String {
 /// must not fail with "attempt to add with overflow" instead of stating the
 /// broken contract). Leaves non-arithmetic constructs (deref, field access,
 /// method calls used as opaque leaves, logical operators) structurally
-/// alone -- only their *scalar* leaves get cast to i128.
-pub(crate) fn widen(expr: &Expr) -> proc_macro2::TokenStream {
+/// alone -- only their *scalar* leaves get cast to i128, and (2026-09-01)
+/// only when both sides of a comparison are [`is_provably_numeric`]: casting
+/// a leaf that is not a number at all -- text, an `Option`, a struct or enum
+/// -- is not a widening, it is a compile error (`error[E0605]:
+/// non-primitive cast`/`error[E0606]: casting &str as i128 is invalid`),
+/// and because every check in a crate shares one generated harness (§5.4c),
+/// one such comparison used to turn every *other* function's evidence into
+/// a tool error too. `cf` supplies the only two things this decision can be
+/// made from -- the checked fn's parameter types and its return type (see
+/// [`is_provably_numeric`]'s own doc for the exact rule).
+pub(crate) fn widen(expr: &Expr, cf: &ContractFn) -> proc_macro2::TokenStream {
     match expr {
         Expr::Binary(bin) => {
             let op = bin.op;
             match op {
                 BinOp::Add(_) | BinOp::Sub(_) | BinOp::Mul(_) | BinOp::Div(_) | BinOp::Rem(_) => {
-                    let l = widen_leaf(&bin.left);
-                    let r = widen_leaf(&bin.right);
+                    let l = widen_leaf(&bin.left, cf);
+                    let r = widen_leaf(&bin.right, cf);
                     quote::quote!((#l #op #r))
                 }
                 BinOp::Eq(_)
@@ -151,19 +160,29 @@ pub(crate) fn widen(expr: &Expr) -> proc_macro2::TokenStream {
                 | BinOp::Le(_)
                 | BinOp::Gt(_)
                 | BinOp::Ge(_) => {
-                    let l = widen_leaf(&bin.left);
-                    let r = widen_leaf(&bin.right);
-                    quote::quote!((#l) #op (#r))
+                    if is_provably_numeric(&bin.left, cf) && is_provably_numeric(&bin.right, cf) {
+                        let l = widen_leaf(&bin.left, cf);
+                        let r = widen_leaf(&bin.right, cf);
+                        quote::quote!((#l) #op (#r))
+                    } else {
+                        // Not provably numeric on both sides: emit the
+                        // comparison exactly as the user wrote it. This can
+                        // never itself break compilation (it is legal Rust
+                        // already, or `rustc` would have refused the
+                        // function before Ply ever saw it) -- only casting
+                        // it could.
+                        expr.to_token_stream()
+                    }
                 }
                 BinOp::And(_) | BinOp::Or(_) => {
-                    let l = widen(&bin.left);
-                    let r = widen(&bin.right);
+                    let l = widen(&bin.left, cf);
+                    let r = widen(&bin.right, cf);
                     quote::quote!((#l) #op (#r))
                 }
                 _ => expr.to_token_stream(),
             }
         }
-        Expr::Paren(p) => widen(&p.expr),
+        Expr::Paren(p) => widen(&p.expr, cf),
         _ => expr.to_token_stream(),
     }
 }
@@ -186,8 +205,19 @@ pub(crate) fn widen(expr: &Expr) -> proc_macro2::TokenStream {
 /// that nested comparison itself widened to `i128`, so a mixed case (`a + 1
 /// == b`, nested as a leaf) still cannot overflow while being checked --
 /// only the outer parenthesise-then-cast is new, not a second, weaker path
-/// for arithmetic.
-fn widen_leaf(expr: &Expr) -> proc_macro2::TokenStream {
+/// for arithmetic. This cast is always safe regardless of what the nested
+/// comparison itself compares: `widen` on that inner expression already
+/// applies its own [`is_provably_numeric`] gate to *its* operands, and
+/// whatever it evaluates to is a plain `bool` -- always castable to `i128`.
+///
+/// This function itself is reached from `widen`'s comparison arm only
+/// *after* that gate has confirmed both sides numeric, so every leaf it
+/// sees here is safe to cast; the one exception is the arithmetic arm
+/// immediately below, entered unconditionally for `+`/`-`/`*`/`/`/`%`
+/// (arithmetic operators are never applied to a non-numeric leaf without
+/// `rustc` refusing the function outright, before Ply ever sees it, so no
+/// gate is needed there).
+fn widen_leaf(expr: &Expr, cf: &ContractFn) -> proc_macro2::TokenStream {
     match expr {
         Expr::Binary(bin)
             if matches!(
@@ -195,7 +225,7 @@ fn widen_leaf(expr: &Expr) -> proc_macro2::TokenStream {
                 BinOp::Add(_) | BinOp::Sub(_) | BinOp::Mul(_) | BinOp::Div(_) | BinOp::Rem(_)
             ) =>
         {
-            widen(expr)
+            widen(expr, cf)
         }
         Expr::Binary(bin)
             if matches!(
@@ -210,11 +240,160 @@ fn widen_leaf(expr: &Expr) -> proc_macro2::TokenStream {
                     | BinOp::Or(_)
             ) =>
         {
-            let inner = widen(expr);
+            let inner = widen(expr, cf);
             quote::quote!(((#inner) as i128))
         }
-        Expr::Paren(p) => widen_leaf(&p.expr),
+        Expr::Paren(p) => widen_leaf(&p.expr, cf),
         other => quote::quote!((#other as i128)),
+    }
+}
+
+/// The plain integer scalars widen may safely cast to `i128`, plus
+/// `bool`/`char`/`f32`/`f64` -- every `RustType` shape Rust's own `as`
+/// operator can cast to `i128` without a compile error (verified
+/// directly against `rustc`, not assumed: a bare fieldless enum can *also*
+/// take this cast, but only until it gains a `Drop` impl, so enums are
+/// deliberately not on this list -- see the `tests` module's own
+/// `an_enum_variant_comparison_is_rendered_verbatim_never_cast_to_i128`).
+/// Every other `RustType` shape -- `Option`,
+/// `Result`, `Vec`/`VecU8`/`BTreeSet`/`Array`, `String`, `NonZero`,
+/// `Duration`, a struct or enum, `SelfType`, `Unit`, `Unsupported` -- is a
+/// container or opaque wrapper `as i128` cannot reach through, and answers
+/// `false`.
+fn is_numeric_rust_type(ty: &RustType) -> bool {
+    matches!(
+        ty,
+        RustType::U8
+            | RustType::U16
+            | RustType::U32
+            | RustType::U64
+            | RustType::I8
+            | RustType::I16
+            | RustType::I32
+            | RustType::I64
+            | RustType::Usize
+            | RustType::Isize
+            | RustType::Bool
+            | RustType::Char
+            | RustType::F32
+            | RustType::F64
+    )
+}
+
+/// Whether a `syn::Type` written as an explicit cast target (`x as <ty>`) is
+/// itself one of Rust's plain integer primitives -- decided directly from
+/// the cast's own spelling, not through `RustType`'s vocabulary (which has
+/// no `i128`/`u128` variant of its own, and would wrongly answer "not
+/// numeric" for a cast that is already exactly the width widen casts to).
+fn is_numeric_cast_target(ty: &syn::Type) -> bool {
+    let syn::Type::Path(tp) = ty else {
+        return false;
+    };
+    let Some(seg) = tp.path.segments.last() else {
+        return false;
+    };
+    matches!(
+        seg.ident.to_string().as_str(),
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+    )
+}
+
+/// The identifier a checked fn's own `#[ply::ensures(|result| ...)]` closure
+/// binds its result to (conventionally `result`, but not enforced) -- the
+/// one bare name in the contract that resolves to the *return* type rather
+/// than a parameter's.
+fn cf_result_ident(cf: &ContractFn) -> Option<String> {
+    let (closure, _) = cf.ensures.as_ref()?;
+    closure_result_ident(closure).ok()
+}
+
+/// A bare identifier's resolved type, decided only from what a `ContractFn`
+/// already knows about itself: a parameter's declared type, or -- if the
+/// name is the closure's own result binding -- the function's return type.
+/// `false` for any name that resolves to neither (a local Ply cannot see
+/// the type of, e.g. a constant or a binding introduced elsewhere).
+fn resolved_type_is_numeric(name: &str, cf: &ContractFn) -> bool {
+    if let Some(p) = cf.params.iter().find(|p| p.name == name) {
+        return is_numeric_rust_type(&p.ty);
+    }
+    if cf_result_ident(cf).as_deref() == Some(name) {
+        return is_numeric_rust_type(&cf.return_type);
+    }
+    false
+}
+
+/// Is `expr` **provably** a number? Decided only from information already
+/// available -- the checked fn's own parameter and return types -- never
+/// guessed:
+///
+/// - a numeric literal is numeric;
+/// - a name that refers to a parameter (or the result) whose resolved type
+///   is a number is numeric;
+/// - a dereference or parenthesised form of a numeric thing is numeric;
+/// - an explicit cast to a numeric type is numeric;
+/// - arithmetic (`+`/`-`/`*`/`/`/`%`) whose operands are all numeric is
+///   numeric;
+/// - a comparison or logical expression (`==`, `&&`, ...) is always
+///   numeric here, whatever it compares: it always evaluates to `bool`,
+///   which is always castable to `i128` (see [`is_numeric_rust_type`]) --
+///   `widen_leaf`'s own nested-comparison arm applies this same
+///   [`is_provably_numeric`] gate to *that* expression's own operands
+///   before it casts anything, so nothing about its insides is assumed;
+/// - anything else -- a method call, a field access, a path to a constant,
+///   an enum variant -- is **not**, because there is no information here
+///   that could prove otherwise.
+///
+/// Conservative by design: treating a genuinely numeric expression as "not
+/// numeric" only means widen leaves that one comparison uncast, which is
+/// always legal Rust (`rustc` already accepted the function's own body with
+/// that comparison in it, unwidened, before Ply ever ran); treating a
+/// non-numeric expression as numeric is what casts a `&str`/`Option`/
+/// struct/enum `as i128` and breaks compilation for the whole crate's
+/// shared generated harness. When unsure, this answers `false`.
+fn is_provably_numeric(expr: &Expr, cf: &ContractFn) -> bool {
+    match expr {
+        Expr::Lit(lit) => matches!(lit.lit, syn::Lit::Int(_)),
+        Expr::Path(p) => match p.path.get_ident() {
+            Some(ident) => resolved_type_is_numeric(&ident.to_string(), cf),
+            None => false,
+        },
+        Expr::Unary(u) if matches!(u.op, syn::UnOp::Deref(_)) => is_provably_numeric(&u.expr, cf),
+        Expr::Paren(p) => is_provably_numeric(&p.expr, cf),
+        Expr::Cast(c) => is_numeric_cast_target(&c.ty),
+        Expr::Binary(bin)
+            if matches!(
+                bin.op,
+                BinOp::Add(_) | BinOp::Sub(_) | BinOp::Mul(_) | BinOp::Div(_) | BinOp::Rem(_)
+            ) =>
+        {
+            is_provably_numeric(&bin.left, cf) && is_provably_numeric(&bin.right, cf)
+        }
+        Expr::Binary(bin)
+            if matches!(
+                bin.op,
+                BinOp::Eq(_)
+                    | BinOp::Ne(_)
+                    | BinOp::Lt(_)
+                    | BinOp::Le(_)
+                    | BinOp::Gt(_)
+                    | BinOp::Ge(_)
+                    | BinOp::And(_)
+                    | BinOp::Or(_)
+            ) =>
+        {
+            true
+        }
+        _ => false,
     }
 }
 
@@ -335,7 +514,7 @@ pub fn render_cex_test(
     let (checked_body, entry_values) = lift_entry_values(&closure.body);
     let entry_lets = entry_value_lets(&entry_values, "    ");
 
-    let widened = widen(&checked_body);
+    let widened = widen(&checked_body, cf);
     let widened_str = widened.to_string();
 
     let test_name = format!("ply_cex_{}_{:02}", cf.ident(), index);
@@ -389,7 +568,13 @@ fn closure_result_ident(closure: &ExprClosure) -> Result<String> {
 /// Builds the `panic!(...)` argument list (format string + interpolated
 /// args) for a top-level comparison. Falls back to a generic
 /// "this expression evaluated to false" message for anything else, per the
-/// D7 plan's own fallback clause -- never a bare, uninterpreted panic.
+/// D7 plan's own fallback clause -- never a bare, uninterpreted panic. Also
+/// falls back to that same generic message when the comparison's sides are
+/// not [`is_provably_numeric`] (2026-09-01): the value-naming message below
+/// only works by casting each side to `i128` so it can share one format
+/// string regardless of the comparison's real type, and that cast is
+/// exactly what breaks compilation for a non-numeric comparison -- so this
+/// message must decline the same cases `widen` does, for the same reason.
 fn render_message(cf: &ContractFn, body: &Expr, contract_text: &str, code: &str) -> Result<String> {
     let fname = &cf.path;
     if let Expr::Binary(bin) = body
@@ -397,9 +582,11 @@ fn render_message(cf: &ContractFn, body: &Expr, contract_text: &str, code: &str)
             bin.op,
             BinOp::Eq(_) | BinOp::Ne(_) | BinOp::Lt(_) | BinOp::Le(_) | BinOp::Gt(_) | BinOp::Ge(_)
         )
+        && is_provably_numeric(&bin.left, cf)
+        && is_provably_numeric(&bin.right, cf)
     {
-        let l = widen_leaf(&bin.left).to_string();
-        let r = widen_leaf(&bin.right).to_string();
+        let l = widen_leaf(&bin.left, cf).to_string();
+        let r = widen_leaf(&bin.right, cf).to_string();
         let msg = format!(
             "\"Broken promise in `{fname}`: the function declares the postcondition \\\n         `{contract_text}` -- a postcondition is the guarantee a function makes about \\\n         its return value. For this input, the left side of the contract evaluated to \\\n         {{}}, and the right side evaluated to {{}}, which does not satisfy the contract's \\\n         comparison. One of the two is wrong: fix the body or fix the `#[ply::ensures]` \\\n         line, and this test will pass. ({code})\", {l}, {r}"
         );
@@ -619,6 +806,90 @@ pub fn same(a: u64, b: u64) -> bool { a == b }
         assert!(
             text.contains("__ply_receiver . a") || text.contains("__ply_receiver.a"),
             "`self.a` must still become a read of the receiver binding:\n{text}"
+        );
+    }
+
+    // -- 2026-09-01: widening a comparison's leaves to i128 (so `result ==
+    // x + 1` at x's maximum value reports the broken promise instead of
+    // overflowing while checking it) used to cast *every* leaf it reached,
+    // including ones that are not numbers at all. `&str`, `Option<T>`, and a
+    // fieldless enum variant all fail to compile cast `as i128` (E0605/
+    // E0606) -- so a promise comparing any of them never got checked at
+    // all, and because every check in a crate shares one generated harness,
+    // that one comparison broke every other function's evidence too.
+
+    /// The exact shape a `Result`-returning constructor's own postcondition
+    /// writes most naturally: comparing the text it was built from back out
+    /// through the type. Found pointing Ply at `semver`'s own
+    /// `Prerelease::new` (docs/reach-measurement-2.md).
+    #[test]
+    fn a_text_comparison_is_rendered_verbatim_never_cast_to_i128() {
+        let cf = discover(
+            r#"
+pub struct Wrapper { text: String }
+impl Wrapper {
+    #[ply::ensures(|result| result.is_err() || result.as_ref().unwrap().as_str() == text)]
+    pub fn new(text: &str) -> Result<Wrapper, String> {
+        if text.is_empty() { Err("empty".to_string()) } else { Ok(Wrapper { text: text.to_string() }) }
+    }
+}
+"#,
+            "Wrapper::new",
+        );
+        let widened = widen(&cf.ensures.as_ref().unwrap().0.body, &cf).to_string();
+        assert!(
+            !widened.replace(' ', "").contains("asi128"),
+            "a `&str` comparison must never be cast `as i128` -- that is exactly \
+             `error[E0606]: casting &str as i128 is invalid`, the defect this test pins:\n{widened}"
+        );
+        assert!(
+            widened.contains("as_str"),
+            "the comparison must still be rendered, just not cast:\n{widened}"
+        );
+    }
+
+    /// An `Option<T>` value compared directly with `==` -- `Option` cannot
+    /// be cast `as i128` either (`error[E0605]: non-primitive cast`).
+    #[test]
+    fn an_option_comparison_is_rendered_verbatim_never_cast_to_i128() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == v)]
+pub fn identity_opt(v: Option<u32>) -> Option<u32> { v }
+"#,
+            "identity_opt",
+        );
+        let widened = widen(&cf.ensures.as_ref().unwrap().0.body, &cf).to_string();
+        assert!(
+            !widened.replace(' ', "").contains("asi128"),
+            "an `Option` comparison must never be cast `as i128`:\n{widened}"
+        );
+    }
+
+    /// A fieldless enum variant compared directly with `==`. A plain
+    /// fieldless enum happens to allow the primitive `as i128` cast Rust
+    /// grants "no data, no `Drop`" enums -- so this one carries a (trivial)
+    /// `Drop` impl, the ordinary shape that makes that cast a hard compiler
+    /// error (`E0320: cannot cast enum ... because it implements Drop`),
+    /// confirmed against `rustc` directly rather than assumed.
+    #[test]
+    fn an_enum_variant_comparison_is_rendered_verbatim_never_cast_to_i128() {
+        let cf = discover(
+            r#"
+#[derive(PartialEq, Eq)]
+pub enum Sign { Pos, Neg }
+impl Drop for Sign {
+    fn drop(&mut self) {}
+}
+#[ply::ensures(|result| *result == Sign::Pos)]
+pub fn always_pos(x: i32) -> Sign { let _ = x; Sign::Pos }
+"#,
+            "always_pos",
+        );
+        let widened = widen(&cf.ensures.as_ref().unwrap().0.body, &cf).to_string();
+        assert!(
+            !widened.replace(' ', "").contains("asi128"),
+            "an enum-variant comparison must never be cast `as i128`:\n{widened}"
         );
     }
 
