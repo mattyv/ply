@@ -816,7 +816,30 @@ list of assertions. What the measurement demotes is the expectation that reach s
 spread *evenly* -- proof earns its cost where consequence is concentrated in a small pure
 surface, which is the shape §5.4b's cheapest entries already describe.
 
-v1 supports functions whose parameters and return type are, recursively:
+**The return type is not on this list, on either engine — retracted 2026-09-01, measured
+(`docs/reach-measurement-2.md`).** From 2026-08-27 this section named a return-type gate
+alongside the parameter list below, refusing a function whose return type this list does
+not cover, by analogy with a parameter: `matches!(self, SelfType | Unit) ||
+self.is_bounded_supported()`/`is_fuzz_supported()`, the same list, asked of the return
+type too. The analogy did not hold even when it was written, and its own reasoning said
+so: neither engine ever *constructs* a return value — the real call produces it — so
+nothing this list exists for (constructibility, then the scale bound on top of it) has
+anything to say about a type that is only ever *read back*. It stood anyway, as "a
+deliberate, requested narrowing... on principle," until measured against a real library
+(`semver`) rather than argued about: it alone blocked 10 of that library's 16
+independently-written properties — the single largest blocker after `&str` parameters.
+Measured directly before removal, on *both* engines, over a return type this list does
+not model at all (`std::cmp::Ordering`): the fuzz engine earned `fuzzed(64)` on a correct
+implementation and a real `violation` with a shrunk failing input on a broken one; the
+bounded (Kani) engine earned a genuine `bounded(2)` proof on the correct implementation
+(completed in seconds — not a timeout mislabeled) and a real `violation` with a concrete
+counterexample on the same broken one. Both engines pay this gate's cost for nothing in
+return, so it is gone on both, not narrowed to one: **a function's return type is never a
+reason either engine refuses it.** This is the one respect in which "one list per engine,
+not one list" (above) still understates it — the list below binds *parameters* per
+engine; a return type is never checked against either engine's list at all.
+
+v1 supports functions whose parameters are, recursively:
 
 - **integers, `bool`, `char`, `Option<T>`, `Result<T,E>`** of supported types — cheap
   unconditionally (~0.1s);

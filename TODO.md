@@ -19,15 +19,34 @@ Measured rather than taken on the comment's word. With the gate temporarily remo
   `error[E0433]: cannot find type Ordering in this scope`. The generated harness brings
   parameter types into scope and not types the contract text names.
 
-- [ ] **Decide whether the gate comes off.** It is a reviewed, deliberate narrowing recorded
-      in the code, and §5.4b's stated rule that a supported signature covers "parameters
-      *and* return type" would need amending with it. The evidence the original review did
-      not have is the measurement: it costs 10 of 16 on a real library. Recommended, but it
-      is a spec change and a reversal of a recorded decision, so it is the maintainer's.
-- [ ] **The import defect is worth fixing either way**, and probably first: a contract may
-      name any type the crate can see, and today naming one in a promise breaks the harness.
-      That is invisible while the gate refuses those functions anyway, which is what "the
-      gate was hiding it" means.
+- [x] **The import defect, fixed** (`cc2121e`). A contract may now name any type the file
+      it lives in can see -- `use_aliases_in_file`'s own scan is carried on `ContractFn` and
+      resolved against every identifier the contract text references
+      (`fuzz_gen::contract_referenced_use_imports`), not only the parameter/receiver types
+      `extra_type_imports` already walked. A glob import of the target crate was considered
+      and rejected: it cannot reach `std::cmp::Ordering` at all (an external crate's own
+      root export list, not the target crate's), and blindly re-emitting every `use` in the
+      file risks importing something private for an unrelated reason and breaking a
+      neighbour function's harness that never asked for it. Proved both directions: a unit
+      test and a new e2e fixture (`tests/fixtures/ensuresimport`) go red with the exact
+      `error[E0433]` before the fix and green after; the fixture also proves the catching
+      direction (a broken implementation still reports `violation`).
+- [x] **The gate decided: off, on both engines, measured** (`<COMMIT>`). Measured directly
+      before removing anything, per the maintainer's brief: a function returning
+      `std::cmp::Ordering` earns `fuzzed(64)` on the fuzz engine and a genuine `bounded(2)`
+      proof on the bounded (Kani) engine, both completing in seconds -- not a timeout
+      mislabeled -- and both independently report `violation` with a real witness on a
+      broken promise about the same type. Both engines pay this gate's cost for nothing in
+      return, so `is_bounded_return_supported`/`is_fuzz_return_supported`
+      (`crates/ply-core/src/harness.rs`) now always answer `true`; the history of why the
+      gate was added is kept in their doc comments, retracted rather than deleted. §5.4b
+      amended in the same change: "parameters and return type" is no longer true --
+      the list binds parameters only, and a function's return type is never a reason
+      either engine refuses it. New permanent fixture `tests/fixtures/orderingreturn`
+      proves the same clean-and-catches pair against a real `cargo ply verify` run on both
+      engines together. **Not yet measured: whether this moves the real 16-property count**
+      -- that re-measurement is the maintainer's to run, per `docs/reach-measurement-2.md`'s
+      own acceptance rule.
 
 ## Design principle, from the maintainer — 2026-09-01
 

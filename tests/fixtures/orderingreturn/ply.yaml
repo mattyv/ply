@@ -1,0 +1,14 @@
+ply: 1
+
+# docs/reach-measurement-2.md / The-Ply-Spec.md §5.4b (measured 2026-09-01):
+# a function whose *return* type Ply's codegen does not itself construct --
+# std::cmp::Ordering, produced only by the real call -- used to be refused
+# outright before either engine ever ran, even though nothing in either
+# engine's codegen ever names or constructs a return type. `compare` is the
+# measured reproduction, checked on both engines.
+components:
+  orderingreturn:
+    anchor: ply_fixture_orderingreturn
+    fns:
+      compare:
+        checks: [fuzz(64), bounded(2)]
