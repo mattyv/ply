@@ -875,6 +875,14 @@ v1 supports functions whose parameters are, recursively:
   "every field public" reduces to "every variant's data is buildable"; admitting only the
   variants that happen to qualify would quietly drop the rest, and a harness that skips a
   case without saying so is the failure this document exists to refuse;
+
+  **A parameter written `Self` names the enclosing `impl` block's own type, and is
+  resolved exactly as that type would be if spelled by name — fixed 2026-09-01, measured
+  against `semver`** (`docs/reach-measurement-2.md`): `cmp_precedence(&self, other:
+  &Self)` was `unsupported`, and only rewriting `&Self` to `&Version`, with nothing else
+  changed, made it `fuzzed(64)`. The receiver's own type was already resolved this way;
+  `Self` in parameter position now reuses that same resolved name rather than a second,
+  narrower answer that disagreed with it;
 - **`f32` and `f64` — sampling tier only.** Proving over floating point is real work not
   attempted in v1, so a `bounded` check on a float is refused by name. Generated floats
   **exclude NaN and infinity by default**: a generated NaN makes almost any promise look

@@ -3966,12 +3966,34 @@ pub fn enrich_contract_fn_user_types(
     crate_dir: &Path,
 ) -> Vec<(String, String, String)> {
     let locations = scan_crate_type_locations(crate_dir);
+    // A parameter written `&Self` parses (`rust_type_from_syn_at`) to
+    // `Unsupported("Self")` -- "Self" is just another bare identifier to
+    // that parser, which has no notion of which `impl` block it sits in.
+    // But it names the *same* type the receiver is a value of, and the
+    // receiver's own plan has already resolved that type once
+    // (`ReceiverPlan::type_name`, set by `scan_impls_for_receiver`) -- so a
+    // `Self` parameter is substituted with that name before the ordinary
+    // by-name lookup below runs, rather than being left to fail it (no
+    // struct/enum is ever actually named "Self"). This is the same
+    // resolution the receiver already goes through, reused rather than
+    // re-derived: a method with no receiver plan attached (a free function,
+    // never inside an `impl` block) has no `Self` to resolve against, so
+    // the parameter is left as found.
+    let self_type_name = cf.receiver.as_ref().map(|r| r.type_name.clone());
     let mut refused = Vec::new();
     for p in &mut cf.params {
         let RustType::Unsupported(src) = &p.ty else {
             continue;
         };
-        let Some(src) = crate_local_type_name(crate_dir, &locations, src) else {
+        let src: String = if src == "Self" {
+            let Some(name) = &self_type_name else {
+                continue;
+            };
+            name.clone()
+        } else {
+            src.clone()
+        };
+        let Some(src) = crate_local_type_name(crate_dir, &locations, &src) else {
             continue;
         };
         match resolve_user_type(crate_dir, &locations, &src, 0) {
@@ -5533,6 +5555,55 @@ impl Bucket {
              checked method alone -- still a real sequence pool, not an absence of one"
         );
         assert_eq!(plan.operations[0].call_path, "Bucket::capacity");
+    }
+
+    /// Defect (2026-09-01, docs/reach-measurement-2.md): a parameter written
+    /// `&Self` was left `Unsupported("Self")` even though the exact same
+    /// type spelled by name (`&Widget`, in a sibling method below) already
+    /// resolves through the enrichment pass to a buildable constructor
+    /// call. `Self` in parameter position names the enclosing `impl`
+    /// block's own type, exactly as the receiver already does, so it must
+    /// resolve the same way -- reusing `ReceiverPlan::type_name`, the
+    /// receiver's own already-resolved answer, rather than a second lookup
+    /// that has to rediscover the same fact.
+    #[test]
+    fn self_typed_parameter_resolves_like_the_named_type() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "widget.rs",
+                r#"
+pub struct Widget { n: u32 }
+impl Widget {
+    pub fn new(n: u32) -> Self { Widget { n } }
+    #[ply::ensures(|result| *result == (self.n == other.n))]
+    pub fn same_as_self(&self, other: &Self) -> bool { self.n == other.n }
+    #[ply::ensures(|result| *result == (self.n == other.n))]
+    pub fn same_as_named(&self, other: &Widget) -> bool { self.n == other.n }
+}
+"#,
+            )],
+        );
+        let cf_self =
+            discover_method_with_receiver(dir.path(), "widget::Widget::same_as_self").unwrap();
+        let cf_named =
+            discover_method_with_receiver(dir.path(), "widget::Widget::same_as_named").unwrap();
+        assert_eq!(
+            cf_named.params[0].ty, cf_self.params[0].ty,
+            "a `&Self` parameter must resolve to exactly the same buildable type as the same \
+             parameter spelled by its name -- got {:?} for `&Self` vs {:?} for `&Widget`",
+            cf_self.params[0].ty, cf_named.params[0].ty,
+        );
+        assert!(
+            matches!(
+                cf_self.params[0].ty,
+                RustType::UserTypeCtor(_) | RustType::UserTypeFields(_)
+            ),
+            "a &Self parameter must resolve to the enclosing type, just like &Widget would: {:?}",
+            cf_self.params[0].ty
+        );
+        assert!(cf_self.is_fuzz_supported());
     }
 
     /// The decisive shape for the sequence feature to mean anything: every

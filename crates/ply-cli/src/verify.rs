@@ -6740,6 +6740,50 @@ mod tests {
         assert!(diag.title.contains("neither the bounded"), "{}", diag.title);
     }
 
+    /// Defect 2 (2026-09-01): before defect 1's fix, a `&Self` parameter
+    /// stayed `Unsupported("Self")` even though the identical type spelled
+    /// by name (`&Widget`, the sibling method below) already resolves and
+    /// varies happily -- so this diagnostic's "No part of `other`'s value
+    /// is one Ply knows how to vary" was false for it. Once defect 1
+    /// resolves `Self` the same way a named type already does, enrichment
+    /// never leaves a `&Self` parameter `Unsupported` in the first place,
+    /// so `unsupported_shape_diag`'s own `bad` list has nothing left to
+    /// name it with -- proven here through the real discovery pipeline
+    /// (`discover_method_with_receiver`, which runs enrichment itself),
+    /// never by asserting anything about the diagnostic's text alone.
+    #[test]
+    fn self_typed_parameter_no_longer_reaches_the_generic_unsupported_diag() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("widget.rs"),
+            "pub struct Widget { n: u32 }\nimpl Widget {\n    pub fn new(n: u32) -> Self { \
+             Widget { n } }\n    #[ply::ensures(|result| *result == (self.n == other.n))]\n    \
+             pub fn same_as(&self, other: &Self) -> bool { self.n == other.n }\n}\n",
+        )
+        .unwrap();
+        let cf =
+            harness::discover_method_with_receiver(dir.path(), "widget::Widget::same_as").unwrap();
+        assert!(
+            cf.is_fuzz_supported(),
+            "a &Self parameter resolving to the same buildable type as &Widget must not leave \
+             the fn refused: {:?}",
+            cf.params[0].ty
+        );
+        // With every parameter now buildable, `unsupported_shape_diag`'s own
+        // `bad` list is empty -- the false "No part of `other`'s value..."
+        // sentence has nothing left to attach to, and this diag would
+        // never actually be called for this fn in the real pipeline (its
+        // call sites are both gated on `!cf.is_fuzz_supported()`).
+        let diag = unsupported_shape_diag("widget::Widget::same_as", "same_as", &cf, &[]);
+        assert!(
+            !diag.title.contains("No part of"),
+            "the false sentence must not appear once the parameter is genuinely buildable: {}",
+            diag.title
+        );
+    }
+
     /// The NaN/infinity decision's own visibility requirement: the
     /// disclosure names the reason (false alarms on values the program may
     /// never see), not just the bare fact that floats were sampled.
