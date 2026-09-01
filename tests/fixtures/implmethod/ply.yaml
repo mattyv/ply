@@ -17,8 +17,11 @@ components:
       # crate tried to `use` a method, which does not compile).
       Bucket::clamped:
         checks: [fuzz(32)]
-      # Receiverless, but its return type is a struct Ply's parser does not
-      # model -- must be refused as unsupported, never a broken harness.
+      # Receiverless, its return type is a struct Ply's parser does not
+      # model -- retracted 2026-09-01, measured: the return type is never
+      # constructed by either engine, so this is no longer a reason to
+      # refuse. Left with no explicit checks list so it earns whatever the
+      # default routing picks (bounded(2), since nothing else blocks it).
       Bucket::make_elsewhere: {}
       # A free function sharing a name with the method above -- must
       # resolve to itself, never to `Bucket::capacity`.

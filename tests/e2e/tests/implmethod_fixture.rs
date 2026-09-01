@@ -204,35 +204,35 @@ fn a_receiverless_method_checked_on_the_fuzz_tier_earns_a_real_verdict_not_a_bro
     );
 }
 
-/// Adversarial review, 2026-08-27: a receiverless method whose *return*
-/// type Ply's parser does not model must be refused honestly as
-/// unsupported, the same way an unrecognised *parameter* type already is
-/// -- never left to reach codegen and fail some other way.
+/// Retracts this test's own former name and assertions (measured
+/// 2026-09-01, docs/reach-measurement-2.md, The-Ply-Spec.md §5.4b): a
+/// receiverless method whose *return* type Ply's parser does not model
+/// used to be refused as `unsupported` on that basis alone. Neither engine
+/// ever constructs a return value -- the real call produces it -- so that
+/// was never a real reason to refuse, and it is gone: `make_elsewhere` now
+/// reaches codegen and earns a genuine proof, same as any other fn whose
+/// parameters are all fine.
 #[test]
-fn a_receiverless_method_with_an_unsupported_return_type_is_refused_not_broken() {
+fn a_receiverless_methods_unsupported_return_type_no_longer_blocks_checking() {
     let cargo_ply = build_cargo_ply();
     let fixture = copy_fixture("implmethod");
     let run = run_verify(&cargo_ply, fixture.path(), 90);
 
     let n = node(&run.json, "Bucket::make_elsewhere");
     assert_eq!(
-        n["verdict"], "unsupported",
-        "an unrecognised return type must be refused, not attempted: {}",
+        n["verdict"], "bounded(2)",
+        "the return type must never gate `bounded` -- `make_elsewhere` has no parameters and \
+         no receiver, so nothing is left to block it: {}",
         run.json
     );
-    let d = diag_for(&run.json, "Bucket::make_elsewhere");
-    assert_eq!(
-        d["code"], "V0505",
-        "the existing unsupported-shape diagnostic, not a new one: {d}"
-    );
     assert!(
-        !d["title"]
-            .as_str()
+        !run.json["diagnostics"]
+            .as_array()
             .unwrap()
-            .to_lowercase()
-            .contains("tool_error")
-            && d["code"] != "X0901",
-        "must be reported before codegen runs, never as a broken-harness tool error: {d}"
+            .iter()
+            .any(|d| d["node_id"] == "implmethod::Bucket::make_elsewhere"),
+        "a clean proof must carry no diagnostic at all: {}",
+        run.json
     );
 }
 

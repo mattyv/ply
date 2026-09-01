@@ -1,0 +1,15 @@
+ply: 1
+
+# docs/reach-measurement-2.md: a contract naming a type nowhere in the
+# checked fn's own signature -- `std::cmp::Ordering`, named only inside the
+# `#[ply::ensures]` text -- used to fail the generated harness to compile
+# (`error[E0433]: cannot find type Ordering in this scope`), because the
+# generated module only ever imported the checked fn's own path and the
+# types its parameters/receiver walk found, never a name the contract text
+# alone refers to.
+components:
+  ensuresimport:
+    anchor: ply_fixture_ensuresimport
+    fns:
+      is_le:
+        checks: [fuzz(64)]

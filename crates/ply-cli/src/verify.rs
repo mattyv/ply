@@ -3489,10 +3489,17 @@ fn bounded_refused_sample_only_diag(
     let what = if !bad_params.is_empty() {
         format!("parameter(s) {}", bad_params.join(", "))
     } else {
-        // Every parameter is fine -- it is the *return* type that blocks
-        // `bounded` (`is_bounded_return_supported`), so name that instead of
-        // reporting an empty list.
-        format!("its return type `{}`", cf.return_type.display_name())
+        // Retraction (measured 2026-09-01, The-Ply-Spec.md §5.4b): this
+        // branch used to name the *return* type, back when
+        // `is_bounded_return_supported` could say `false`. It cannot
+        // anymore -- the return type never gates `bounded` on either
+        // engine now -- so with the receiver case already handled above
+        // and every parameter fine, `is_bounded_supported()` being false at
+        // all has no reason left to point at. Kept as an honest,
+        // never-blame-the-wrong-thing fallback rather than a `panic!` on a
+        // diagnostic path, in case a future change reopens a case this
+        // reasoning does not foresee.
+        "its signature -- Ply could not determine which part".to_string()
     };
     Diagnostic {
         code: "V0508".into(),

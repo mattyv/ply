@@ -579,36 +579,54 @@ impl RustType {
 
     /// The *return*-position gate (added 2026-08-27, for a receiverless
     /// associated function's return type -- adversarial review of the
-    /// method-resolution task). Unlike a parameter, a return value is never
-    /// *constructed* by Ply, so `SelfType`/`Unit` are always fine here --
-    /// `is_bounded_supported`/`is_fuzz_supported` correctly say `false` for
-    /// them (a *parameter* of type `Self` really would need construction
-    /// Ply cannot do), which is the wrong answer for a return, so this is a
-    /// genuinely different question, not an alias.
+    /// method-resolution task; **removed 2026-09-01**, both engines,
+    /// measured -- see the retraction below the history). Unlike a
+    /// parameter, a return value is never *constructed* by Ply, so
+    /// `SelfType`/`Unit` were always fine here -- `is_bounded_supported`/
+    /// `is_fuzz_supported` correctly say `false` for them (a *parameter* of
+    /// type `Self` really would need construction Ply cannot do), which was
+    /// the wrong answer for a return, so this was a genuinely different
+    /// question, never an alias.
     ///
-    /// **Measured, not assumed**: reject an ordinary struct/enum return type
-    /// Ply's parser does not model (`Bucket`, returned from outside its own
-    /// `impl` block) and this refuses `unsupported`, as the review that
-    /// requested this gate asked -- but empirically, once the *actual*
-    /// broken-harness cause is fixed (a zero-parameter fn's fuzz strategy
+    /// **What this gate used to do, kept as history rather than deleted:**
+    /// reject an ordinary struct/enum return type Ply's parser does not
+    /// model (`Bucket`, returned from outside its own `impl` block) with
+    /// `unsupported`, as the review that requested this gate asked -- but
+    /// its own doc already conceded, empirically, that once the *actual*
+    /// broken-harness cause was fixed (a zero-parameter fn's fuzz strategy
     /// was a bare `()`, not a `Strategy` -- `combined_strategy_expr`'s own
-    /// doc), such a return type does not itself break anything on either
+    /// doc), such a return type did not itself break anything on either
     /// engine: nothing in this codegen ever names or constructs a return
-    /// type. This gate is therefore a deliberate, requested narrowing --
-    /// refusing a shape Ply cannot yet reason about by name, on principle,
-    /// matching §5.4b's own stated rule that a supported signature covers
-    /// "parameters *and* return type" -- not a fix for an observed compile
-    /// failure the way the zero-parameter one was. Recorded here rather
-    /// than left to look like the same kind of fix, because the two are not
-    /// (see `return_rust_type_from_syn`'s own doc for the nested-`Self`
-    /// narrowing this same gate also carries).
+    /// type. It stood anyway as a deliberate, requested narrowing --
+    /// refusing a shape Ply cannot yet reason about by name, on principle --
+    /// matching §5.4b's then-stated rule that a supported signature covers
+    /// "parameters *and* return type".
+    ///
+    /// **Retracted 2026-09-01, measured rather than argued
+    /// (docs/reach-measurement-2.md, The-Ply-Spec.md §5.4b).** Run against
+    /// a real library (`semver`), this gate alone blocked 10 of 16
+    /// independently-written properties -- the single largest blocker after
+    /// `&str` parameters. Measured directly before removing it, on both
+    /// engines, with a function returning `std::cmp::Ordering` (a type Ply
+    /// models nowhere): the fuzz engine earned `fuzzed(64)` on a correct
+    /// body and a real `violation` with a shrunk failing input on a broken
+    /// one; the bounded (Kani) engine earned a genuine `bounded(2)` proof
+    /// on the correct body (not a timeout mislabeled -- it completed in
+    /// seconds) and a real `violation` with a concrete counterexample on
+    /// the same broken one. Both engines pay this gate's cost for nothing
+    /// in return, so it is gone on both, not narrowed to one -- unlike the
+    /// parameter side of §5.4b, where the two engines' supported-type lists
+    /// genuinely do differ (`bounded`/`fuzz` are no longer the same
+    /// question once a value must be *constructed*, which is exactly what
+    /// a return value never is).
     pub fn is_bounded_return_supported(&self) -> bool {
-        matches!(self, RustType::SelfType | RustType::Unit) || self.is_bounded_supported()
+        true
     }
 
-    /// The fuzz engine's counterpart to `is_bounded_return_supported`.
+    /// The fuzz engine's counterpart to `is_bounded_return_supported` --
+    /// same retraction, same measurement, same answer.
     pub fn is_fuzz_return_supported(&self) -> bool {
-        matches!(self, RustType::SelfType | RustType::Unit) || self.is_fuzz_supported()
+        true
     }
 
     /// The exact source text used both to declare `let name: <ty> = ...`
@@ -1281,6 +1299,19 @@ pub struct ContractFn {
     /// producer of this field, on purpose (see `find_receiver_plan`'s own
     /// doc: the one and only place a `ReceiverPlan` is built).
     pub receiver: Option<ReceiverPlan>,
+    /// Every top-level `use` item's local name in the file this fn was
+    /// discovered in, mapped to its raw path segments -- exactly
+    /// [`use_aliases_in_file`]'s own return value for that file, carried
+    /// here so `fuzz_gen`'s codegen can resolve a name the *contract text*
+    /// refers to (docs/reach-measurement-2.md: a postcondition naming
+    /// `Ordering` directly -- never a parameter, never the return type --
+    /// failed with `error[E0433]: cannot find type Ordering in this
+    /// scope`, because the generated harness only ever imports the checked
+    /// fn's own path and the types [`crate::fuzz_gen`]'s parameter/receiver
+    /// walk finds; nothing walks the contract text itself). Empty for a
+    /// `ContractFn` built directly with no file context -- same convention
+    /// as `source_span`.
+    pub use_aliases: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl ContractFn {
@@ -1532,6 +1563,7 @@ pub fn resolve_anchor(
             )
             .map_err(AnchorError::Shape)?;
             contract.source_span = Some(source_span);
+            contract.use_aliases = use_aliases_in_file(&found.file);
             Ok(contract)
         }
         crate::callgraph::Resolution::Opaque(reason) => Err(AnchorError::Unreadable(reason)),
@@ -1648,6 +1680,7 @@ pub fn build_contract_fn(
         is_method,
         return_type,
         receiver: None,
+        use_aliases: std::collections::BTreeMap::new(),
     })
 }
 
@@ -2857,6 +2890,7 @@ pub fn discover_method_with_receiver(
         target.span(),
     ));
     cf.receiver = Some(plan);
+    cf.use_aliases = use_aliases_in_file(&file);
     // Struct/enum parameters (2026-08-27): the checked method's own
     // parameters (not the receiver, not the constructor's own arguments --
     // both already resolved inside `scan_impls_for_receiver` above) get the
@@ -5403,7 +5437,20 @@ mod rates { pub fn legacy_rate(t: u8) -> u32 { 150 } }
     }
 
     #[test]
-    fn a_receiverless_methods_unmodelled_return_type_is_unsupported_not_a_silent_pass() {
+    fn a_receiverless_methods_unmodelled_return_type_no_longer_blocks_either_engine() {
+        // Retracts this test's own former name and assertions (measured
+        // 2026-09-01, docs/reach-measurement-2.md, The-Ply-Spec.md §5.4b):
+        // neither engine ever constructs a return value -- the real call
+        // produces it -- so refusing a fn over a return type Ply's parser
+        // does not model was blocking real evidence for no technical
+        // reason. Measured on both engines before this changed (a
+        // `std::cmp::Ordering` return, unmodelled the same way `Elsewhere`
+        // below is): `fuzzed(64)` and `bounded(2)` on a correct fn, and a
+        // real `violation` with a witness on a broken one, on *both*
+        // engines independently. The return type's own classification
+        // (`RustType::Unsupported`) is unchanged and still correct -- it is
+        // only the *gate* that read that classification and refused to
+        // check the fn at all that is gone.
         let dir = tempfile::tempdir().unwrap();
         let path = write_src(
             dir.path(),
@@ -5419,11 +5466,19 @@ impl Bucket {
         let cf = discover_fn(&path, "Bucket::make_elsewhere").unwrap();
         assert!(
             matches!(cf.return_type, RustType::Unsupported(_)),
-            "an ordinary struct Ply's parser does not model is unsupported in return position              exactly as it would be as a parameter: {:?}",
+            "an ordinary struct Ply's parser does not model is still classified the same way \
+             in return position, exactly as it would be as a parameter: {:?}",
             cf.return_type
         );
-        assert!(!cf.is_bounded_supported());
-        assert!(!cf.is_fuzz_supported());
+        assert!(
+            cf.is_bounded_supported(),
+            "the return type must never gate `bounded` -- Kani never constructs a return value"
+        );
+        assert!(
+            cf.is_fuzz_supported(),
+            "the return type must never gate `fuzz` -- proptest never constructs a return value \
+             either"
+        );
     }
 
     #[test]
