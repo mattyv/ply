@@ -45,8 +45,14 @@ Measured rather than taken on the comment's word. With the gate temporarily remo
 ## Design principle, from the maintainer — 2026-09-01
 
 **Requiring the user to write a small declaration is cheap, because an agent writes it.**
-Stated plainly when seeded generation landed: one `examples:` line took a real library's
-function from no evidence to sixty-four real checks, and "one line is one line from an LLM".
+Stated plainly by the maintainer when seeded generation landed: "one line is one line from
+an LLM".
+
+*The example originally cited here has been withdrawn.* It said one `examples:` line took a
+real library's function from no evidence to sixty-four real checks; re-measured by hand
+against `semver` 1.0.28, that function gets there with no example at all (see the correction
+above). The principle is the maintainer's and stands on its own; the measurement that was
+offered in support of it did not.
 
 This changes the economics of a decision already recorded. `docs/rule-registry-design.md`
 and the seeding design both weighed "adds something new for the user to write and keep true"
@@ -82,13 +88,27 @@ the exact shape that produced the dead end:
 
 - **Before:** 1025 of 1074 generated strings rejected, 49 ever checked, verdict `unclaimed`.
   No evidence at all.
-- **After, with one `examples:` entry:** 26 of 90 rejected, verdict
-  `fuzzed(64) [narrower than it looks, seeded]`. Sixty-four real cases, each one run.
+- **After:** 43 of 107 rejected, verdict `fuzzed(64) [narrower than it looks, seeded]`.
+  Sixty-four real cases, each one run.
 
-One example took it from no evidence to real evidence, and the run says exactly where the
-inputs came from: *"the 64 cases were grown from 65 known-valid values: 1 from the
-`examples:` you wrote, 64 that `Prerelease::new` accepted from random draws during this
-run."*
+**Correction, 2026-09-01, after re-running this by hand against a fresh vendored copy of
+`semver` 1.0.28 rather than trusting the earlier record: the `examples:` entry is not what
+moved it, and the earlier version of this section said it was.** The same function reaches
+`fuzzed(64)` with no `examples:` line at all, and the run says so itself: *"the 64 cases
+were grown from 64 known-valid values: 0 from the `examples:` you wrote, 64 that
+`Prerelease::new` accepted from random draws during this run."* What did the work is the
+free half of the mechanism -- harvesting every value the constructor accepts during the run,
+which used to be thrown away. Adding the example changes the verdict not at all.
+
+Both numbers above were re-measured directly, the "before" by building the product as it
+stood at 83949d6 and running it against the same crate, so the delta is real. Only the
+attribution was wrong.
+
+This matters beyond bookkeeping: the design principle recorded below was written on the
+belief that *one line from a model* bought the evidence. On this function nothing was
+bought -- it was free. Examples still matter where the constructor accepts essentially
+nothing and there is no case base to grow from (the `textseedempty` fixture: 1025 of 1025
+rejected), which is a narrower claim than the one that was recorded.
 
 **This is the first change today that moved a number rather than a failure mode.** Both
 reach fixes yesterday and the text fix this morning were real and necessary and left
@@ -102,6 +122,8 @@ breaking the function under test gives `violation`, not a comfortable pass.
 - [ ] **Not measured: whether the whole 1-in-16 count moves.** One property is now reachable
       that was not. The other fifteen are each held by two to four blockers, and this
       addresses one of them. The full re-measurement is owed before any claim about the count.
+      A vendored copy set up for it now lives at `/home/user/semvercheck` (outside this
+      repository; nothing here modifies `semver` upstream).
 - [ ] **KNOWN GAP, disclosed not detected: seeded runs miss the extremes.** Mutations of
       short valid values reach a 280-character identifier or a 20-digit overflow essentially
       never -- and those are exactly the cases `semver`'s author wrote down. The `[seeded]`
