@@ -1553,12 +1553,16 @@ fn render_fn_chip(
     } else {
         PAD
     };
-    let check_w = (!check_labels.is_empty())
-        .then(|| detail_x + text_w(&check_labels, CHECK_CHAR_W) + PAD)
-        .unwrap_or(0.0);
-    let clause_width = (!clauses.is_empty())
-        .then_some(CONTRACT_MARK_W + PAD + clause_w + PAD)
-        .unwrap_or(0.0);
+    let check_w = if check_labels.is_empty() {
+        0.0
+    } else {
+        detail_x + text_w(&check_labels, CHECK_CHAR_W) + PAD
+    };
+    let clause_width = if clauses.is_empty() {
+        0.0
+    } else {
+        CONTRACT_MARK_W + PAD + clause_w + PAD
+    };
     let width = (cursor_x + PAD - BADGE_GAP).max(check_w).max(clause_width);
     if !check_labels.is_empty() {
         inner.push_str(&format!(
