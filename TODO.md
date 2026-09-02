@@ -1,5 +1,31 @@
 # TODO
 
+## Landed: two documentation drawings showed a notation the tool stopped writing — 2026-09-02
+
+Reported by the maintainer looking at the README. Both drawings that had no drift test
+were stale; both that had one were current. The asymmetry predicted exactly which would
+rot.
+
+- [x] **`vetting/004-legacy-extension.svg`, embedded in README.md**, still used the old
+      cryptic badges (`B2`, `F256 T`) rather than the words the renderer has written for
+      months (`bounded: loop≤2`, `fuzz: 256 cases · test`). Regenerated.
+- [x] **`demos/fault3-flagged.svg`** had the same problem, plus a tooltip quoted in
+      `demos/fault-injection.md` naming a diagnostic wording no longer produced.
+- [x] **Every committed drawing now has a drift test**, beside the text forms that always
+      had one — six drawings, byte for byte against a fresh render.
+- [x] **`demos/fault3-as-drawn-by-faulted-toolchain.svg` is deliberately excluded** and
+      the test says why in its own doc comment: it is the record of what a *broken*
+      renderer drew, and regenerating it would delete the evidence it carries. The demo
+      prose now says so too, so a later reader does not "fix" it.
+- [x] **A renderer defect found by regenerating, not by review.** A finding badge is
+      vertically centred on a function chip, so it covers the checks line as well as the
+      name line — but only the name row reserved room for it. A long checks line ran
+      underneath: in the very drawing whose point is that a broken document is visibly
+      flagged, `bounded(0) · fuzz: 4096 cases · mutate` ended with `mutate` buried under
+      the red `E0203` tag. A check fixture collided too, so it was never only the demo.
+      Fixed in the width calculation, pinned by an invariant walking every fixture that
+      carries a finding.
+
 ## Landed: pulling back for less detail no longer leaves empty boxes — 2026-09-02
 
 The viewer folded detail by hiding boxes inside the full drawing, so the boxes around
