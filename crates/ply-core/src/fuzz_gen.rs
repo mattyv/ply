@@ -2871,48 +2871,93 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
 /// type" and "a second parameter of the same type" the same case as the
 /// dedup two parameters of one type already needed, instead of a second
 /// special case next to it.
-fn extra_type_imports(cf: &ContractFn) -> Vec<String> {
-    fn walk(ty: &RustType, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>) {
+/// Resolves one `ReceiverPlan`'s own `import_path` into the exact `use`
+/// target codegen writes: an ordinary (in-crate) parameter's `import_path`
+/// is a bare name this crate declares, so it needs `target_crate_ident`
+/// in front of it -- but a cross-crate route's (`ReceiverPlan::route`'s own
+/// `outside_crate`, §5.4b's extension, defect 2) is already a full,
+/// absolute path (`std::ffi::OsString`), and prefixing it with the target
+/// crate's own name would write a path that does not exist and does not
+/// compile.
+fn resolved_import(plan: &harness::ReceiverPlan, target_crate_ident: &str) -> String {
+    match &plan.route {
+        Some(r) if r.outside_crate => plan.import_path.clone(),
+        _ => format!("{target_crate_ident}::{}", plan.import_path),
+    }
+}
+
+fn extra_type_imports(cf: &ContractFn, target_crate_ident: &str) -> Vec<String> {
+    fn walk(
+        ty: &RustType,
+        target_crate_ident: &str,
+        seen: &mut std::collections::HashSet<String>,
+        out: &mut Vec<String>,
+    ) {
         match ty {
             RustType::UserTypeCtor(plan) => {
-                if seen.insert(plan.import_path.clone()) {
-                    out.push(plan.import_path.clone());
+                let full = resolved_import(plan, target_crate_ident);
+                if seen.insert(full.clone()) {
+                    out.push(full);
                 }
                 for p in &plan.ctor_params {
-                    walk(&p.ty, seen, out);
+                    walk(&p.ty, target_crate_ident, seen, out);
                 }
             }
             RustType::UserTypeFields(plan) => {
-                if seen.insert(plan.import_path.clone()) {
-                    out.push(plan.import_path.clone());
+                // A field/variant plan (rule 2, direct construction) is
+                // never route-built -- `resolve_declared_route` only ever
+                // produces `UserTypeCtor` -- so this is always an ordinary,
+                // in-crate bare name.
+                let full = format!("{target_crate_ident}::{}", plan.import_path);
+                if seen.insert(full.clone()) {
+                    out.push(full);
                 }
                 match &plan.shape {
                     harness::UserTypeShape::Struct(fields) => {
                         for f in fields {
-                            walk(&f.ty, seen, out);
+                            walk(&f.ty, target_crate_ident, seen, out);
                         }
                     }
                     harness::UserTypeShape::Enum(variants) => {
                         for (_, fields) in variants {
                             for f in fields {
-                                walk(&f.ty, seen, out);
+                                walk(&f.ty, target_crate_ident, seen, out);
                             }
                         }
                     }
                 }
             }
+            RustType::Option(inner)
+            | RustType::Array(inner, _)
+            | RustType::Vec(inner)
+            | RustType::BTreeSet(inner)
+            | RustType::Slice(inner)
+            | RustType::BoxT(inner) => walk(inner, target_crate_ident, seen, out),
+            RustType::Result(ok, err) => {
+                walk(ok, target_crate_ident, seen, out);
+                walk(err, target_crate_ident, seen, out);
+            }
+            RustType::Tuple(items) => {
+                for item in items {
+                    walk(item, target_crate_ident, seen, out);
+                }
+            }
+            RustType::BTreeMap(key, value) => {
+                walk(key, target_crate_ident, seen, out);
+                walk(value, target_crate_ident, seen, out);
+            }
             _ => {}
         }
     }
     let mut seen = std::collections::HashSet::new();
-    seen.insert(cf.import_path());
+    seen.insert(format!("{target_crate_ident}::{}", cf.import_path()));
     let mut out = Vec::new();
     for p in &cf.params {
-        walk(&p.ty, &mut seen, &mut out);
+        walk(&p.ty, target_crate_ident, &mut seen, &mut out);
     }
     if let Some(plan) = &cf.receiver {
         for p in &plan.ctor_params {
-            walk(&p.ty, &mut seen, &mut out);
+            walk(&p.ty, target_crate_ident, &mut seen, &mut out);
         }
     }
     out
@@ -3044,9 +3089,11 @@ pub fn wrap_fn_harness_module(
     // Struct/enum parameters (2026-08-27): one `use` per type Ply itself
     // constructs -- assumed to sit at the target crate's own root, same as
     // every other bare struct/enum name this scan resolves
-    // (`scan_crate_type_locations` indexes by bare name, not module path).
-    for extra in extra_type_imports(cf) {
-        let full = format!("{target_crate_ident}::{extra}");
+    // (`scan_crate_type_locations` indexes by bare name, not module path) --
+    // except a cross-crate route (§5.4b's extension, defect 2, 2026-09-02),
+    // whose own import is already a full, absolute path (`extra_type_
+    // imports` resolves the difference; see `resolved_import`'s own doc).
+    for full in extra_type_imports(cf, target_crate_ident) {
         if emitted.insert(full.clone()) {
             out.push_str(&format!("    #[allow(unused_imports)]\n    use {full};\n"));
         }
@@ -3369,6 +3416,48 @@ pub fn f(x: u32) -> bool { x > 0 }
              that same import into the generated harness module, or the harness fails to \
              compile with \"cannot find type `Ordering` in this scope\" even though the type \
              is right there in scope for the real function:\n{module}"
+        );
+    }
+
+    /// Defect 2's codegen half (2026-09-02): a cross-crate route's own
+    /// import is already a full, absolute path (`std::ffi::OsString`), not
+    /// a bare name this crate declares -- `wrap_fn_harness_module` must
+    /// bring it into scope verbatim, never prefixed with the target
+    /// crate's own name the way every ordinary (in-crate) parameter type
+    /// is. Getting this wrong generates `use target_crate::std::ffi::
+    /// OsString;`, which does not compile at all.
+    #[test]
+    fn a_cross_crate_routes_import_is_never_prefixed_with_the_target_crate() {
+        let mut cf = discover(
+            r#"
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_os_string(o: std::ffi::OsString) -> i64 { o.len() as i64 }
+"#,
+            "use_os_string",
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = harness::RouteTable::new();
+        routes.insert(
+            "OsString".to_string(),
+            "std::ffi::OsString::from(String)".to_string(),
+        );
+        let refused = harness::enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert!(cf.is_fuzz_supported(), "{:?}", cf.params[0].ty);
+        let fuzz_body = generate_fuzz_test(&cf, 8, &derive_seed("use_os_string", "")).unwrap();
+        let module = wrap_fn_harness_module(&cf, "target_crate", &[fuzz_body]);
+        assert!(
+            module.contains("use std::ffi::OsString;"),
+            "a cross-crate route's own type must be imported by its real, absolute path:\n{module}"
+        );
+        assert!(
+            !module.contains("target_crate::std"),
+            "a cross-crate route's import must never be prefixed with the target crate's own \
+             name -- that path does not exist and does not compile:\n{module}"
+        );
+        assert!(
+            module.contains("OsString::from("),
+            "the declared route's own function must still be called:\n{module}"
         );
     }
 

@@ -296,6 +296,36 @@ fn the_schema_pattern_and_the_path_checker_accept_exactly_the_same_paths() {
     }
 }
 
+/// §5.4b's cross-crate extension (defect 2, 2026-09-02): a `routes:` value
+/// may now carry an explicit input-type list in parens
+/// (`std::ffi::OsString::from(String)`), alongside the original bare-path
+/// form (`code_path`'s own pattern). `schema/ply.schema.json`'s own
+/// `route_value` definition must accept both shapes, and reject a value
+/// that is neither -- documenting the grammar this task adds, the same way
+/// `code_path_pattern`'s own test documents the original one.
+#[test]
+fn the_schema_route_value_pattern_accepts_both_route_forms() {
+    let re = regex::Regex::new(schema::route_value_pattern()).unwrap();
+    for good in [
+        "open_handle",
+        "Token::via_route",
+        "std::ffi::OsString::from(String)",
+        "std::ffi::OsString::from()",
+        "some::path::f(String, u32)",
+    ] {
+        assert!(
+            re.is_match(good),
+            "{good:?} must match the route value pattern"
+        );
+    }
+    for bad in ["not a type( at all", "open handle", "f(", "f)", ""] {
+        assert!(
+            !re.is_match(bad),
+            "{bad:?} must not match the route value pattern"
+        );
+    }
+}
+
 /// §9's schema goldens: "a fixture set of valid and invalid `ply.yaml`
 /// documents pins validation behavior and E0201 pointer paths".
 ///
