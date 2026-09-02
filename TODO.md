@@ -75,13 +75,20 @@ inputs the function rejects**, because random text essentially never parses. The
 is real; the author's rules about what is *accepted* are barely exercised. Ply prints
 `fuzzed(64)` unqualified and does not say this.
 
-- [ ] **Ply does not disclose that a run took the reject path nearly every time.** It
-      already has the vocabulary (`narrower than it looks`, `seeded`) and does not reach for
-      it here. Writing `examples:` does not help either: seeding only engages where the
-      ordinary generator cannot build the value at all, and a plain text parameter is one it
-      can — so the escape hatch a user would reach for is silently inert. This is the same
-      species of gap the `seeded` status was invented to close, in the one place it does not
-      apply.
+- [x] **Fixed: the branch-decided measurement** (`<pending>` — see the follow-up entry
+      below for the real hash). Ply now instruments a top-level `||` in a postcondition
+      into an `if`/`else if` chain that records which side actually decided each case,
+      preserving `||`'s own left-to-right short-circuit exactly (proved by a fixture whose
+      far side panics if forced to run: it stays green, because the wrong side is never
+      evaluated). The split prints unconditionally, on both a balanced and a skewed
+      promise alike (`orbalanced`/`orskewed` e2e fixtures) — never gated on the skew
+      itself; only the new `promise-lopsided` status is, at the same >50% threshold the
+      high-rejection warning already uses. That status is a sibling of `partial-history`
+      ("narrower than it looks"), never a reuse of it, exactly as this document's own
+      review above concluded it must be: this one is a fact about what happens *inside*
+      the promise after the call, not about an input or operation the run could not build
+      before it. `The-Ply-Spec.md` §5.4c amended in the same commit. Verdicts pinned
+      unchanged (`fuzzed(64)` stays `fuzzed(64)`) by both fixtures' own e2e assertions.
 - [ ] **A promise comparing non-numeric values with `==` or `!=` does not compile.** The
       generated harness casts both sides of a comparison to `i128` (so it can report a
       broken promise rather than overflow while checking one); against a string, an

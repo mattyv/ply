@@ -1791,6 +1791,59 @@ pub fn generate_fuzz_test_with_examples(
     let entry_lets = crate::contract_rt::entry_value_lets(&entry_values, &" ".repeat(12));
     let widened = crate::contract_rt::widen(&checked_body).to_string();
 
+    // The branch-decided measurement (CLAUDE.md, 2026-09-02): "record which
+    // branch of the promise actually decided each case". A promise whose
+    // top level is `||` is checked left to right, exactly like the `||` it
+    // is -- but nothing recorded *which* side was the one that turned out
+    // true, so a promise satisfied almost entirely by its first side (the
+    // real defect found pointing Ply at `semver`'s `Version::parse`, whose
+    // promise is `!text.contains(' ') || result.is_err()`) reported the
+    // same unqualified `fuzzed(n)` as one genuinely exercising every side.
+    // `flatten_top_level_or` returns `None` for any shape that is not a
+    // bare `||` at the top -- this is where that refusal takes effect:
+    // `or_arms` stays `None`, `check_expr` falls back to the plain
+    // `widened` boolean exactly as before, and nothing below this point
+    // changes for the vast majority of fns, which have no top-level `||`
+    // at all.
+    let or_arms = crate::contract_rt::flatten_top_level_or(&checked_body);
+    let (or_cells_decl, check_expr, or_split_marker) = match &or_arms {
+        Some(arms) => {
+            let mut cells_decl = String::new();
+            for i in 0..arms.len() {
+                cells_decl.push_str(&format!(
+                    "        let __ply_or_hit_{i} = std::cell::Cell::new(0u32);\n"
+                ));
+            }
+            // Left to right, exactly the way `||` itself reads: each arm's
+            // condition is only ever evaluated once every earlier arm has
+            // already come back false, the same short-circuit `if`/`else
+            // if` already guarantees in ordinary Rust -- so an arm that
+            // never runs because an earlier one already decided the case
+            // is never evaluated at all here either, never credited and
+            // never penalized for what it "would have" said (CLAUDE.md's
+            // first trap: "evaluating every branch in order to count it").
+            let mut block = String::from("{\n");
+            for (i, arm) in arms.iter().enumerate() {
+                let widened_arm = crate::contract_rt::widen(arm).to_string();
+                let keyword = if i == 0 { "if" } else { "} else if" };
+                block.push_str(&format!(
+                    "            {keyword} ({widened_arm}) {{ __ply_or_hit_{i}.set(__ply_or_hit_{i}.get() + 1); true\n"
+                ));
+            }
+            block.push_str("            } else { false }\n        }");
+            let counts_fmt = vec!["{}"; arms.len()].join(",");
+            let counts_args = (0..arms.len())
+                .map(|i| format!("__ply_or_hit_{i}.get()"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let marker = format!(
+                "        eprintln!(\"PLY_FUZZ_OR_SPLIT|{label}|{counts_fmt}\", {counts_args});\n"
+            );
+            (cells_decl, block, marker)
+        }
+        None => (String::new(), widened.clone(), String::new()),
+    };
+
     // Every field's *display text* is computed into its own binding **before**
     // the call, never inline inside the failure-branch marker build that
     // used to reference `p.name` directly there. Found by this task's own
@@ -1900,13 +1953,14 @@ pub fn generate_fuzz_test_with_examples(
          \x20\x20\x20\x20\x20\x20\x20\x20);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rejected = std::cell::Cell::new(0u32);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_total = std::cell::Cell::new(0u32);\n\
+         {or_cells_decl}\
          {seed_setup}\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {strategy};\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{pattern}| {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{params_preamble_text}{requires_check}{receiver_preamble_text}{entry_lets}{marker_precompute}let __ply_call_result = {fname}({args});\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let result = &__ply_call_result;\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {widened}));\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {check_expr}));\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20match __ply_ok {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(true) => Ok(()),\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(false) => {{\n\
@@ -1924,6 +1978,7 @@ pub fn generate_fuzz_test_with_examples(
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rej = __ply_rejected.get();\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_tot = __ply_total.get();\n\
          {seed_stats_marker}\
+         {or_split_marker}\
          \x20\x20\x20\x20\x20\x20\x20\x20match __ply_outcome {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(()) => {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if __ply_tot > 0 && (__ply_rej as f64) / (__ply_tot as f64) > 0.5 {{\n\
@@ -2427,6 +2482,64 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
             !body.contains(": String = x;"),
             "a bare scalar reference assigned directly to a String-typed binding does not \
              compile (expected String, found u32):\n{body}"
+        );
+    }
+
+    // -- 2026-09-02: the branch-decided measurement (CLAUDE.md, "record
+    // which branch of the promise actually decided each case"). The real
+    // proof that evaluation order is preserved lives in the `orskewed`
+    // e2e fixture (a running harness whose right-hand arm panics if forced
+    // eagerly); these are the cheap, no-subprocess pins on the codegen
+    // shape that produces it.
+
+    /// A top-level `||` postcondition must generate the per-arm counters,
+    /// the `if`/`else if` chain that decides which one, and the marker that
+    /// reports the split back to `verify` -- never silently falling back to
+    /// the plain boolean expression a promise with no `||` still uses.
+    #[test]
+    fn an_or_postcondition_generates_the_split_machinery() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| x < 100 || result.unwrap() == x)]
+pub fn maybe_pass_through(x: u32) -> Option<u32> {
+    if x < 100 { None } else { Some(x) }
+}
+"#,
+            "maybe_pass_through",
+        );
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("maybe_pass_through", "")).unwrap();
+        assert!(
+            body.contains("__ply_or_hit_0") && body.contains("__ply_or_hit_1"),
+            "each arm needs its own counter:\n{body}"
+        );
+        assert!(
+            body.contains("} else if"),
+            "the split must be an `if`/`else if` chain -- the same left-to-right, \
+             short-circuiting shape `||` itself has, never all arms evaluated up front:\n{body}"
+        );
+        assert!(
+            body.contains("PLY_FUZZ_OR_SPLIT|maybe_pass_through|"),
+            "the split must be reported back through its own marker:\n{body}"
+        );
+    }
+
+    /// A promise with no top-level `||` at all must generate none of this --
+    /// `flatten_top_level_or` refuses quietly (CLAUDE.md: "refusing
+    /// quietly rather than guessing"), and the generated harness must stay
+    /// byte-for-byte what it was before this feature existed.
+    #[test]
+    fn a_plain_postcondition_generates_none_of_the_split_machinery() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == x)]
+pub fn clamp(x: u32) -> u32 { x.min(100) }
+"#,
+            "clamp",
+        );
+        let body = generate_fuzz_test(&cf, 256, &derive_seed("clamp", "")).unwrap();
+        assert!(
+            !body.contains("PLY_FUZZ_OR_SPLIT") && !body.contains("__ply_or_hit"),
+            "a promise with no top-level `||` must generate no split machinery at all:\n{body}"
         );
     }
 
