@@ -1,5 +1,32 @@
 # TODO
 
+## NEXT, agreed 2026-09-01: one LLM-assisted way to handle any type
+
+Queued behind the disclosure fix now in progress. The maintainer's framing, and the reason
+this is one mechanism rather than a longer list of supported shapes: **"a universal
+LLM-assisted way to manage types"**, on the standing principle that a declaration an agent
+writes from reading the code is cheap.
+
+This is step 2 of the three-step plan recorded below ("The type wall has a generic answer").
+Step 1 — making the shapes compose — is prerequisite and also not started. Step 3 (paths)
+stays last, behind a check for side effects, and that ordering is not negotiable: Ply runs
+the real function body, and 8 of the 39 path-taking functions in its own crates write files.
+
+The shape agreed so far, to be designed properly when it starts: a type is buildable if
+there is a public way to get one from parts Ply can already build. That mechanism half-exists
+— it is how a user's own structs are built from their constructors — and the missing third
+source is a route declared in the config file, the hook the spec has promised since the first
+spike and never built. An agent writes that line from reading the code; Ply samples the
+route's *inputs* and never takes a list of values from an author.
+
+- [ ] **The guard this cannot ship without.** A route that ignores its inputs and returns the
+      same value every time would have Ply run 64 identical cases and report 64. The compiler
+      catches a stale route (a renamed or private function fails the generated crate's build);
+      it cannot catch a degenerate one. Count distinct built values where the type can be
+      printed, and disclose when that count collapses -- "64 cases ran, 1 distinct value
+      reached the function". Same species as the disclosure fix in progress, and it should
+      reuse whatever that lands.
+
 ## Ponytail review at ultra: 11,900 lines deleted, none load-bearing — 2026-09-01
 
 **Deleted: the scheduler tool (557 lines).** Its own doc comment was the case against it.
