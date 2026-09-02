@@ -66,6 +66,16 @@
       "items": {
         "$ref": "#/$defs/unresolved_entry"
       }
+    },
+    "routes": {
+      "description": "\u00a75.4b's generator hook: a public function -- free or associated -- that returns a value of the named type, for a type with no other way in. Keyed by the type's bare name; Ply samples the named function's own parameters rather than taking values from the author.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/type_name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/code_path"
+      }
     }
   },
   "$defs": {
@@ -73,6 +83,11 @@
       "description": "\u00a75.1a rule 2: component, external and profile names are snake_case ASCII.",
       "type": "string",
       "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "type_name": {
+      "description": "A bare Rust type name, as `routes:` keys it -- not snake_case like `identifier`, since a Rust type is conventionally PascalCase.",
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
     },
     "code_path": {
       "description": "\u00a75.1a rule 3: a plain segment path, where a segment may also be a type name in Type::method position. No generics, no trait-qualified paths, no lifetimes -- anything else is E0304, naming the construct.",

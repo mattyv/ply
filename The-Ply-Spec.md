@@ -333,6 +333,9 @@ profiles:
 
 unresolved:                      # registry entries with no code anchor
   - { id: 151, note: "settlement rounding rule TBD" }
+
+routes:                          # optional; §5.4b's generator hook — bare type name to
+  Handle: open_handle            #   a public function (free or associated) that returns it
 ```
 
 Schema violations produce `E0201` diagnostics carrying the JSON-pointer path and source
@@ -972,11 +975,63 @@ Measured exclusions, each named rather than left for a user to discover by timin
   unwind fix. A 3-node tree produced 64,147 verification conditions and did not finish in
   180s. This is the exact shape of Ply's own verdict tree, which is why it is the spike's
   headline finding rather than a footnote. Everything else — trait objects, generics, smart pointers,
-non-exhaustive or private-field types without a user-supplied generator — yields status
+non-exhaustive or private-field types with no route (below) — yields status
 `unsupported` with diagnostic `V0505` naming the offending type. Unsupported is a
-reported fact, never a harness build failure. A user-supplied generator hook (a
-`pure`-marked constructor function named in `ply.yaml`) lifts a type into the supported
-set; its design is validated in the M0 spike.
+reported fact, never a harness build failure.
+
+**The generator hook, built 2026-09-02** (TODO.md, "one build-route mechanism for named
+types"). This section's own earlier text asserted a `pure`-marked constructor function
+and a `ply.yaml` key for it, and that its design was "validated in the M0 spike" — thinner
+than it read even when the hook was still unbuilt: the spike validated the
+constructor-**harness** pattern (calling a found constructor to build a value), never the
+**declaration surface** a user writes to name one, which did not exist to be validated.
+Corrected here rather than inherited: **a type is buildable if there is a public way to
+get one from parts Ply can already build**, generalised into a route table with three
+sources, tried in this order for a struct/enum parameter the rules above cannot reach:
+
+1. the type's own constructor (already described above — unchanged);
+2. a small curated set for standard-library types, **excluding anything filesystem-path-
+   shaped**. Not populated in this pass — deliberately, not by oversight: codegen has no
+   way yet to import or call a path outside the target crate's own root, which every
+   curated entry would need, and paths themselves stay refused everywhere until a later
+   change adds a check for side effects (Ply runs the real function body, and several of
+   its own path-taking functions write files);
+3. **a route declared in `ply.yaml`**: a top-level `routes:` map, the type's bare name to
+   a public function's path — free or associated, Ply's resolver does not distinguish —
+   that returns the type. Resolved by the same walk that classifies a call (§5.5), so a
+   route is found, or refused, exactly the way any other claim's anchor already is.
+   Variety comes from Ply sampling **the route's own parameters**, never from an author
+   listing values: `routes: { Handle: open_handle }` naming `pub fn open_handle(id: u32)
+   -> Handle` samples `id` exactly the way any other `u32` parameter already is.
+
+A route found but not usable — a renamed or private function, a return type that does not
+name the declared type, or a parameter Ply cannot itself build — is refused loudly,
+naming the broken declaration, never silently falling back to rule 1 or 2: a stale route
+is a fact about that declaration, and reporting it as though nothing were declared would
+bury the real defect under a generic one. A type with no route declared and no other way
+in is still refused as before, with one more sentence naming the declaration
+(`routes: { TypeName: <a public function that returns TypeName> }`) that would unlock it.
+
+**The one failure a stale-route compile error cannot catch.** A route is a function an
+author wrote, and nothing stops it from ignoring its own inputs and returning the same
+value every time — the harness still compiles and every case still runs. Ply counts how
+many genuinely distinct values a route-built *top-level* parameter actually produced
+across a run's cases (by the type's own `#[derive(Debug)]` text — the one thing every
+value comparison here can lean on, since there is no blanket `PartialEq`/`Hash` Ply can
+rely on from outside the crate) and discloses the split unconditionally, the same
+"print the split always, mark only when it is skewed" shape the branch-decided
+measurement (§5.4c) already follows: "64 cases ran, but only 1 distinct value reached the
+function" is the plain sentence this exists to make possible. Severity rises from an
+info-level disclosure to a warning (`W0527`) exactly when a debug-derivable parameter
+built exactly one distinct value across more than one case; a type with no
+`#[derive(Debug)]` gets the honest disclosure that Ply could not count at all, never an
+invented number. Narrowed, stated rather than hidden: only a *top-level* parameter is
+counted this way today — the identical route nested inside a composed shape
+(`Vec<Handle>`) still builds and checks (composition closes over a route-built value
+exactly as it does a constructor-built one), but does not yet carry its own distinct-value
+count (open item, TODO.md). Every value built through a route, top-level or nested, still
+carries a `route-built` status mark — the `seeded` mark's own precedent — naming that the
+evidence came through a declared door rather than the type's whole range.
 
 Generic functions are checkable only through a concrete instantiation: `check_with:
 { T: u64 }` names one concrete type per type parameter, and every harness for that fn

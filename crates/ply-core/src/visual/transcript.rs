@@ -259,6 +259,26 @@ pub fn render_transcript(doc: &Document) -> String {
         }
     }
 
+    out.push('\n');
+    if doc.routes.is_empty() {
+        out.push_str(
+            "routes — a public function this document names as the way to build a value of a \
+             type Ply has no other way in for: none declared\n",
+        );
+    } else {
+        out.push_str(
+            "routes — a public function this document names as the way to build a value of a \
+             type Ply has no other way in for:\n",
+        );
+        for (type_name, fn_path) in &doc.routes {
+            out.push_str(&format!(
+                "{}{type_name}: built by calling `{fn_path}`, sampling that function's own \
+                 parameters rather than the type's whole range\n",
+                pad(1)
+            ));
+        }
+    }
+
     // Author-written strings reach this output: notes, contract clauses,
     // trusted claims and evidence, worked examples, unresolved notes. Tamed
     // once here rather than at each insertion site, so a future one cannot

@@ -148,3 +148,5 @@ profiles — named bundles of extra rules a component can adopt:
 
 unresolved decisions held by the workspace as a whole:
   #8 marks an unresolved decision — a question the design still owes an answer: venue failover: mirror orders to a backup gateway or halt. It belongs to the workspace as a whole, not to any function or component yet; Ply tracks it until someone resolves it (§5.6).
+
+routes — a public function this document names as the way to build a value of a type Ply has no other way in for: none declared

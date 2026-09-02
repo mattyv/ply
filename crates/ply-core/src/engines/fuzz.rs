@@ -692,6 +692,80 @@ pub fn parse_or_split_marker(combined: &str) -> Option<(String, Vec<u32>)> {
     Some((fn_name, counts?))
 }
 
+/// One top-level parameter's own distinct-value count from the degenerate-
+/// route guard (TODO.md) -- present exactly when that parameter's type
+/// derives `Debug`, so Ply could actually tell two built values apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteDistinctStat {
+    pub param: String,
+    pub declared_as: String,
+    pub distinct: u32,
+    pub total: u32,
+}
+
+/// Parses every
+/// `PLY_ROUTE_DISTINCT|<fn>|<param>|<declared_as>|<distinct>|<total>` line
+/// (`fuzz_gen::route_distinct_tracking`) -- one per debug-derivable,
+/// route-built top-level parameter this fn declares, so a fn with more than
+/// one such parameter reports every one of them rather than only the first.
+/// Empty (never `None`) when the fn has no such parameter at all, which is
+/// the vast majority -- distinguishing "printed nothing" from "printed one
+/// empty line" is not a fact this parser needs, unlike the single-marker
+/// parsers above.
+pub fn parse_route_distinct_markers(combined: &str) -> Vec<RouteDistinctStat> {
+    combined
+        .lines()
+        .filter_map(|l| {
+            let after = l.split_once("PLY_ROUTE_DISTINCT|")?.1;
+            let mut parts = after.split('|');
+            let _fn_name = parts.next()?;
+            let param = parts.next()?.trim().to_string();
+            let declared_as = parts.next()?.trim().to_string();
+            let distinct = parts.next()?.trim().parse().ok()?;
+            let total = parts.next()?.trim().parse().ok()?;
+            Some(RouteDistinctStat {
+                param,
+                declared_as,
+                distinct,
+                total,
+            })
+        })
+        .collect()
+}
+
+/// One top-level parameter Ply built through a declared route whose type
+/// does **not** derive `Debug` -- the degenerate-route guard's own honesty
+/// condition: Ply cannot tell built values apart, so it says so rather than
+/// guessing a count (module doc, `RouteOrigin::debug_derivable`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteUnprintableStat {
+    pub param: String,
+    pub declared_as: String,
+    pub total: u32,
+}
+
+/// Parses every `PLY_ROUTE_UNPRINTABLE|<fn>|<param>|<declared_as>|<total>`
+/// line, the counterpart to [`parse_route_distinct_markers`] for a
+/// non-`Debug` route-built parameter.
+pub fn parse_route_unprintable_markers(combined: &str) -> Vec<RouteUnprintableStat> {
+    combined
+        .lines()
+        .filter_map(|l| {
+            let after = l.split_once("PLY_ROUTE_UNPRINTABLE|")?.1;
+            let mut parts = after.split('|');
+            let _fn_name = parts.next()?;
+            let param = parts.next()?.trim().to_string();
+            let declared_as = parts.next()?.trim().to_string();
+            let total = parts.next()?.trim().parse().ok()?;
+            Some(RouteUnprintableStat {
+                param,
+                declared_as,
+                total,
+            })
+        })
+        .collect()
+}
+
 fn parse_u8_list(raw: &str) -> Option<Vec<u8>> {
     let inner = raw.strip_prefix('[')?.strip_suffix(']')?;
     if inner.is_empty() {
@@ -1179,6 +1253,53 @@ mod tests {
             None,
             "an ordinary, ungated constructor's harness must print nothing here -- absence of \
              the marker is how `verify` tells a seeded run from an unseeded one"
+        );
+    }
+
+    #[test]
+    fn parses_a_route_distinct_marker_naming_the_parameter_and_the_route() {
+        let combined = "noise\nPLY_ROUTE_DISTINCT|use_handle|h|open_handle|1|64\nmore\n";
+        assert_eq!(
+            parse_route_distinct_markers(combined),
+            vec![RouteDistinctStat {
+                param: "h".into(),
+                declared_as: "open_handle".into(),
+                distinct: 1,
+                total: 64,
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_one_route_distinct_marker_per_parameter() {
+        let combined = "PLY_ROUTE_DISTINCT|f|a|make_a|1|8\nPLY_ROUTE_DISTINCT|f|b|make_b|8|8\n";
+        let stats = parse_route_distinct_markers(combined);
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].param, "a");
+        assert_eq!(stats[0].distinct, 1);
+        assert_eq!(stats[1].param, "b");
+        assert_eq!(stats[1].distinct, 8);
+    }
+
+    #[test]
+    fn a_run_with_no_route_built_parameter_has_no_route_distinct_markers() {
+        assert_eq!(
+            parse_route_distinct_markers("running 1 test\ntest x ... ok\n"),
+            vec![],
+            "a fn with no declared-route parameter must print nothing here"
+        );
+    }
+
+    #[test]
+    fn parses_a_route_unprintable_marker_naming_the_parameter_and_the_route() {
+        let combined = "noise\nPLY_ROUTE_UNPRINTABLE|use_handle|h|open_handle|64\nmore\n";
+        assert_eq!(
+            parse_route_unprintable_markers(combined),
+            vec![RouteUnprintableStat {
+                param: "h".into(),
+                declared_as: "open_handle".into(),
+                total: 64,
+            }]
         );
     }
 

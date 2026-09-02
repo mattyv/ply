@@ -8,9 +8,17 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use indexmap::IndexMap;
 use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprClosure, FnArg, ItemFn, Pat, Type};
+
+/// `ply.yaml`'s `routes:` map, bare type name -> declared function path,
+/// exactly [`crate::model::Document::routes`]'s own shape -- passed down
+/// from `verify` into every place a struct/enum parameter gets resolved, so
+/// a type with no constructor this scan can find on its own still has one
+/// more door to try before it is refused (§5.4b's generator hook).
+pub type RouteTable = IndexMap<String, String>;
 
 /// The type vocabulary Ply's codegen recognizes. `VecU8` is the only
 /// collection shape the *Kani* path (`bounded`) builds (with the mandatory
@@ -712,6 +720,38 @@ impl RustType {
             RustType::Tuple(items) => items.iter().all(RustType::is_fuzz_nestable),
             RustType::BTreeMap(key, value) => key.is_fuzz_nestable() && value.is_fuzz_nestable(),
             _ => true,
+        }
+    }
+
+    /// Whether this type -- at any depth, top-level or nested inside a
+    /// composed shape -- includes a value built through §5.4b's declared
+    /// route. `verify` uses this (rather than only the runtime distinct-
+    /// value marker, which the degenerate-route guard deliberately narrows
+    /// to a *top-level* parameter) to decide whether a run's evidence earns
+    /// the `route-built` mark: the mark is a plain fact about where the
+    /// values came from, and it is true regardless of how deep the
+    /// route-built value sits.
+    pub fn uses_any_route(&self) -> bool {
+        match self {
+            RustType::UserTypeCtor(plan) => {
+                plan.route.is_some() || plan.ctor_params.iter().any(|p| p.ty.uses_any_route())
+            }
+            RustType::UserTypeFields(plan) => match &plan.shape {
+                UserTypeShape::Struct(fields) => fields.iter().any(|f| f.ty.uses_any_route()),
+                UserTypeShape::Enum(variants) => variants
+                    .iter()
+                    .any(|(_, fields)| fields.iter().any(|f| f.ty.uses_any_route())),
+            },
+            RustType::Option(inner)
+            | RustType::Array(inner, _)
+            | RustType::Vec(inner)
+            | RustType::BTreeSet(inner)
+            | RustType::Slice(inner)
+            | RustType::BoxT(inner) => inner.uses_any_route(),
+            RustType::Result(ok, err) => ok.uses_any_route() || err.uses_any_route(),
+            RustType::Tuple(items) => items.iter().any(RustType::uses_any_route),
+            RustType::BTreeMap(key, value) => key.uses_any_route() || value.uses_any_route(),
+            _ => false,
         }
     }
 
@@ -2188,6 +2228,46 @@ pub struct ReceiverPlan {
     /// caller building the verdict-visibility disclosure never has to
     /// import the constant under a different name than what codegen used.
     pub max_sequence_len: u32,
+    /// `Some` exactly when this plan was built through §5.4b's generator
+    /// hook -- a `routes:` entry in `ply.yaml` naming a public function
+    /// that returns this type, rather than a constructor this scan found on
+    /// its own (rule 1, above). `None` for every other `ReceiverPlan`: a
+    /// receiver's own plan (`scan_impls_for_receiver`), and a parameter
+    /// built by rule 1's ordinary constructor scan.
+    ///
+    /// Carried here, rather than as a separate `RustType` variant, because
+    /// nothing downstream needs to tell a route-built value apart from a
+    /// constructor-built one *structurally* -- codegen calls both exactly
+    /// the same way (this is still a `UserTypeCtor`). What a route adds is
+    /// two things ordinary construction does not need: a mark naming the
+    /// declaration so a reader knows the values came through a declared
+    /// door (`docs/reach-measurement-2.md`'s `seeded` mark is the
+    /// precedent), and the guard a route specifically needs and a found
+    /// constructor does not -- nothing stops an author's function from
+    /// ignoring its own inputs and returning the same value every time, so
+    /// `verify` counts distinct values reaching a route-built parameter and
+    /// says so when that count collapses (TODO.md, "the guard this cannot
+    /// ship without").
+    pub route: Option<RouteOrigin>,
+}
+
+/// What a route-built [`ReceiverPlan`] needs beyond an ordinary
+/// constructor's: the exact declaration a reader would edit (so a mark or a
+/// diagnostic can point at it), and whether the type can even be compared
+/// for the degenerate-route guard above -- a type with no `#[derive(Debug)]`
+/// cannot be printed or hashed by code Ply generates from outside the
+/// crate, so the guard says "Ply could not tell how many distinct values
+/// reached it" rather than guessing a count from nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteOrigin {
+    /// The function path exactly as `ply.yaml`'s `routes:` named it
+    /// (`open_handle`, `Token::via_route`) -- not resolved or canonicalised,
+    /// so a diagnostic quotes back exactly what the author wrote.
+    pub declared_as: String,
+    /// Whether the type declares `#[derive(Debug)]` (by hand or by the
+    /// derive macro -- both count, the same convention
+    /// [`type_declares_default`] already uses for `Default`).
+    pub debug_derivable: bool,
 }
 
 /// Why [`discover_method_with_receiver`] could not build a checkable method
@@ -2924,6 +3004,7 @@ fn scan_impls_for_receiver(
     method_name: &str,
     crate_dir: &Path,
     declaring_file: &Path,
+    routes: &RouteTable,
 ) -> std::result::Result<(syn::ImplItemFn, ReceiverPlan), ReceiverError> {
     let mut target: Option<syn::ImplItemFn> = None;
     let mut ctor_candidates: Vec<CtorCandidate> = Vec::new();
@@ -3014,7 +3095,7 @@ fn scan_impls_for_receiver(
     // unbuildable, just not resolved yet at scan time. `locations` is the
     // same crate-wide scan computed once, above, for `target_absolute`.
     let resolve_or_keep = |p: &Param| -> Param {
-        match resolve_param_type(crate_dir, &locations, &p.ty, 0) {
+        match resolve_param_type(crate_dir, &locations, routes, &p.ty, 0) {
             Ok(ty) => Param { ty, ..(*p).clone() },
             Err(_) => p.clone(),
         }
@@ -3127,6 +3208,7 @@ fn scan_impls_for_receiver(
         excluded_operations: excluded_ops,
         other_constructors,
         max_sequence_len: MAX_RECEIVER_SEQUENCE_LEN,
+        route: None,
     };
     Ok((target, plan))
 }
@@ -3140,6 +3222,7 @@ fn scan_impls_for_receiver(
 pub fn discover_method_with_receiver(
     crate_dir: &Path,
     fn_path: &str,
+    routes: &RouteTable,
 ) -> std::result::Result<ContractFn, ReceiverError> {
     let segs: Vec<&str> = fn_path.split("::").collect();
     if segs.len() < 2 {
@@ -3161,6 +3244,7 @@ pub fn discover_method_with_receiver(
         method_name,
         crate_dir,
         &file_path,
+        routes,
     )?;
 
     let item_fn = strip_receiver_to_item_fn(&target);
@@ -3184,7 +3268,7 @@ pub fn discover_method_with_receiver(
     // than this task's own receiver-adjacent case needs; the generic
     // "type neither engine builds inputs for" message still names the
     // parameter and its type.
-    let _ = enrich_contract_fn_user_types(&mut cf, crate_dir);
+    let _ = enrich_contract_fn_user_types(&mut cf, crate_dir, routes);
     Ok(cf)
 }
 
@@ -3762,6 +3846,7 @@ fn private_ancestor_module(crate_dir: &Path, file_path: &Path) -> Option<String>
 fn resolve_param_type(
     crate_dir: &Path,
     locations: &TypeLocations,
+    routes: &RouteTable,
     ty: &RustType,
     depth: usize,
 ) -> std::result::Result<RustType, UserTypeError> {
@@ -3771,7 +3856,7 @@ fn resolve_param_type(
     if !is_bare_ident(src) {
         return Err(UserTypeError::NotFound);
     }
-    resolve_user_type(crate_dir, locations, src, depth)
+    resolve_user_type(crate_dir, locations, routes, src, depth)
 }
 
 /// The resolver at the centre of this section: try to build `RustType`
@@ -3832,19 +3917,134 @@ fn type_declares_default(file: &syn::File, type_name: &str, inline_mods: &[Strin
 }
 
 fn derives_default(attrs: &[syn::Attribute]) -> bool {
+    derives(attrs, "Default")
+}
+
+/// Whether the type declares `#[derive(Debug)]` -- the degenerate-route
+/// guard's own honesty condition (see [`RouteOrigin::debug_derivable`]): a
+/// hand-written `impl Debug for T` would work too, but is not checked here
+/// (unlike [`type_declares_default`]'s own hand-written-`impl` arm) because
+/// a route is only ever declared for a type this scan already has the bare
+/// declaration open for, and a derive is by far the ordinary case; widening
+/// to a hand-written impl is possible future work, not attempted here.
+fn derives_debug(attrs: &[syn::Attribute]) -> bool {
+    derives(attrs, "Debug")
+}
+
+fn derives(attrs: &[syn::Attribute], trait_name: &str) -> bool {
     attrs.iter().any(|a| {
         a.path().is_ident("derive")
             && a.parse_args_with(
                 syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
             )
-            .map(|paths| paths.iter().any(|p| p.is_ident("Default")))
+            .map(|paths| paths.iter().any(|p| p.is_ident(trait_name)))
             .unwrap_or(false)
     })
+}
+
+/// The bare name a method's own path names its enclosing type by
+/// (`Token::via_route` -> `Some("Token")`), or `None` for a path with no
+/// second-to-last segment at all (a free function, or a bare name with no
+/// module qualification). Used only to check a route function that returns
+/// bare `Self` actually sits inside `impl <type_name>` -- the same question
+/// [`return_names_this_type`] answers for rule 1's own constructor scan,
+/// answered here from a resolved [`ContractFn::path`] instead of a raw
+/// `syn::Type`, since [`discover_fn_with`] is what found this function.
+fn enclosing_type_of(path: &str) -> Option<&str> {
+    let segs: Vec<&str> = path.split("::").collect();
+    (segs.len() >= 2).then(|| segs[segs.len() - 2])
+}
+
+/// §5.4b's generator hook, resolved: `fn_path` is `routes:`'s own value for
+/// `type_name` (`open_handle`, `Token::via_route`, `handles::make_handle`).
+/// Reuses [`discover_fn_with`] -- the exact resolver a `ply.yaml` fn claim's
+/// own anchor goes through (§5.5) -- so a route is found (or refused) by the
+/// same walk over `use`s, inline `mod`s and file modules every other path in
+/// this grammar already is, rather than a second, narrower path-reading
+/// scheme with its own bugs to find. `Err` carries the plain-language reason
+/// a declared route could not be used -- a function that no longer exists at
+/// that path (a stale route, renamed or removed), one that exists but is not
+/// `pub`, one whose return type is not `type_name` at all, or one whose own
+/// parameters include something Ply cannot build -- never a bare "not
+/// found": the module doc's own "stale route" requirement is that this
+/// failure is loud and names what went wrong, not a silent fall-through to
+/// rule 2's direct field construction.
+fn resolve_declared_route(
+    crate_dir: &Path,
+    locations: &TypeLocations,
+    routes: &RouteTable,
+    item: &syn::Item,
+    type_name: &str,
+    fn_path: &str,
+    depth: usize,
+) -> std::result::Result<RustType, String> {
+    let lib_path = crate_dir.join("src").join("lib.rs");
+    let main_path = crate_dir.join("src").join("main.rs");
+    let entry_path = if lib_path.is_file() {
+        lib_path
+    } else {
+        main_path
+    };
+    let mut resolver = resolver_for(&entry_path)
+        .map_err(|e| format!("Ply could not read this crate's own source to look for it: {e}"))?;
+    let route_cf =
+        discover_fn_with(&mut resolver, fn_path, &entry_path).map_err(|e| e.to_string())?;
+
+    let names_it = match (&route_cf.return_type, route_cf.is_method) {
+        (RustType::SelfType, true) => enclosing_type_of(&route_cf.path) == Some(type_name),
+        (RustType::Unsupported(name), _) => name == type_name,
+        _ => false,
+    };
+    if !names_it {
+        return Err(format!(
+            "it does not return a value of `{type_name}` -- its return type is `{}`",
+            route_cf.return_type.display_name()
+        ));
+    }
+
+    let mut resolved_params = Vec::with_capacity(route_cf.params.len());
+    for p in &route_cf.params {
+        match resolve_param_type(crate_dir, locations, routes, &p.ty, depth + 1) {
+            Ok(ty) => resolved_params.push(Param { ty, ..p.clone() }),
+            Err(e) => {
+                return Err(format!(
+                    "its `{}: {}` parameter is {}",
+                    p.name,
+                    p.ty.display_name(),
+                    e
+                ));
+            }
+        }
+    }
+
+    let debug_derivable = match item {
+        syn::Item::Struct(s) => derives_debug(&s.attrs),
+        syn::Item::Enum(e) => derives_debug(&e.attrs),
+        _ => false,
+    };
+
+    Ok(RustType::UserTypeCtor(Box::new(ReceiverPlan {
+        type_name: type_name.to_string(),
+        import_path: route_cf.import_path(),
+        constructor: route_cf.call_expr(),
+        ctor_params: resolved_params,
+        ctor_requires: route_cf.requires.as_ref().map(|(e, _)| e.clone()),
+        ctor_return: CtorReturn::Bare,
+        operations: vec![],
+        excluded_operations: vec![],
+        other_constructors: vec![],
+        max_sequence_len: 0,
+        route: Some(RouteOrigin {
+            declared_as: fn_path.to_string(),
+            debug_derivable,
+        }),
+    })))
 }
 
 fn resolve_user_type(
     crate_dir: &Path,
     locations: &TypeLocations,
+    routes: &RouteTable,
     type_name: &str,
     depth: usize,
 ) -> std::result::Result<RustType, UserTypeError> {
@@ -3984,7 +4184,7 @@ fn resolve_user_type(
         let mut resolved_params = Vec::with_capacity(raw_params.len());
         if fail_reason.is_none() {
             for p in &raw_params {
-                match resolve_param_type(crate_dir, locations, &p.ty, depth + 1) {
+                match resolve_param_type(crate_dir, locations, routes, &p.ty, depth + 1) {
                     Ok(ty) => resolved_params.push(Param { ty, ..p.clone() }),
                     Err(e) => {
                         fail_reason = Some(format!(
@@ -4011,6 +4211,7 @@ fn resolve_user_type(
                     excluded_operations: vec![],
                     other_constructors: vec![],
                     max_sequence_len: 0,
+                    route: None,
                 })));
             }
             Some(reason) if skipped_constructor.is_none() => {
@@ -4022,6 +4223,28 @@ fn resolve_user_type(
         }
     }
 
+    // §5.4b's generator hook (this task, 2026-09-02): a `routes:` entry in
+    // `ply.yaml` names a public function -- free or associated, Ply's
+    // resolver does not care which -- that returns a value of this type.
+    // This is the door rule 1 above cannot open on its own: a type built
+    // only by a *free* function has no `impl` block for the constructor
+    // scan to find at all (`ply_probe_route::Handle`, made only by
+    // `open_handle`, is exactly this shape). Tried before rule 2 (direct
+    // field construction) and, when a route is declared, tried *instead* of
+    // it: a broken route is reported as a broken route, never silently
+    // papered over by falling back to a route the author never asked for.
+    if let Some(fn_path) = routes.get(type_name) {
+        return resolve_declared_route(
+            crate_dir, locations, routes, item, type_name, fn_path, depth,
+        )
+        .map_err(|reason| {
+            UserTypeError::Refused(format!(
+                "Ply cannot build a value of `{type_name}`: the route declared for it in \
+                     ply.yaml (`routes: {{ {type_name}: {fn_path} }}`) is broken -- {reason}"
+            ))
+        });
+    }
+
     // Every refusal below used to open "it has no constructor Ply can
     // call". That is true only while `skipped_constructor` is `None`. A
     // constructor Ply found and could not use -- private, or with an
@@ -4031,13 +4254,20 @@ fn resolve_user_type(
     // it did not exist (2026-08-28, review finding). The note now replaces
     // that clause wherever it exists, so the sentence names what was found
     // and why it could not be used.
+    //
+    // No route was declared for this type either (the `if let Some` above
+    // already returned when one was) -- so the refusal names the one thing
+    // that would still unlock it, rather than leaving a reader to
+    // rediscover §5.4b's generator hook on their own.
     let no_ctor = |extra: &str| -> UserTypeError {
         let opening = match &skipped_constructor {
             None => format!("it has no constructor Ply can call, {extra}"),
             Some(note) => format!("the only constructor it has is {note}; and {extra}"),
         };
         UserTypeError::Refused(format!(
-            "Ply cannot build a value of `{type_name}`: {opening}"
+            "Ply cannot build a value of `{type_name}`: {opening} -- declaring a route for it in \
+             ply.yaml (`routes: {{ {type_name}: <a public function that returns {type_name}> }}`) \
+             would let Ply build it"
         ))
     };
 
@@ -4086,7 +4316,7 @@ fn resolve_user_type(
             }
             let mut resolved = Vec::with_capacity(fields.len());
             for f in fields {
-                match resolve_param_type(crate_dir, locations, &f.ty, depth + 1) {
+                match resolve_param_type(crate_dir, locations, routes, &f.ty, depth + 1) {
                     Ok(ty) => resolved.push(Param { ty, ..f }),
                     Err(e) => {
                         return Err(no_ctor(&format!(
@@ -4151,7 +4381,7 @@ fn resolve_user_type(
                 };
                 let mut resolved = Vec::with_capacity(fields.len());
                 for f in fields {
-                    match resolve_param_type(crate_dir, locations, &f.ty, depth + 1) {
+                    match resolve_param_type(crate_dir, locations, routes, &f.ty, depth + 1) {
                         Ok(ty) => resolved.push(Param { ty, ..f }),
                         Err(e2) => {
                             return Err(UserTypeError::Refused(format!(
@@ -4246,6 +4476,7 @@ fn crate_local_type_name(
 pub fn enrich_contract_fn_user_types(
     cf: &mut ContractFn,
     crate_dir: &Path,
+    routes: &RouteTable,
 ) -> Vec<(String, String, String)> {
     let locations = scan_crate_type_locations(crate_dir);
     // A parameter written `&Self` parses (`rust_type_from_syn_at`) to
@@ -4268,6 +4499,7 @@ pub fn enrich_contract_fn_user_types(
             &mut p.ty,
             crate_dir,
             &locations,
+            routes,
             &p.name,
             self_type_name.as_deref(),
             &mut refused,
@@ -4301,6 +4533,7 @@ fn enrich_rust_type(
     ty: &mut RustType,
     crate_dir: &Path,
     locations: &TypeLocations,
+    routes: &RouteTable,
     param_name: &str,
     self_type_name: Option<&str>,
     refused: &mut Vec<(String, String, String)>,
@@ -4318,7 +4551,7 @@ fn enrich_rust_type(
             let Some(name) = crate_local_type_name(crate_dir, locations, &src) else {
                 return;
             };
-            match resolve_user_type(crate_dir, locations, &name, 0) {
+            match resolve_user_type(crate_dir, locations, routes, &name, 0) {
                 Ok(resolved) => *ty = resolved,
                 Err(UserTypeError::NotFound) => {}
                 Err(e) => refused.push((param_name.to_string(), name, e.to_string())),
@@ -4334,6 +4567,7 @@ fn enrich_rust_type(
                 inner,
                 crate_dir,
                 locations,
+                routes,
                 param_name,
                 self_type_name,
                 refused,
@@ -4344,6 +4578,7 @@ fn enrich_rust_type(
                 ok,
                 crate_dir,
                 locations,
+                routes,
                 param_name,
                 self_type_name,
                 refused,
@@ -4352,6 +4587,7 @@ fn enrich_rust_type(
                 err,
                 crate_dir,
                 locations,
+                routes,
                 param_name,
                 self_type_name,
                 refused,
@@ -4363,6 +4599,7 @@ fn enrich_rust_type(
                     item,
                     crate_dir,
                     locations,
+                    routes,
                     param_name,
                     self_type_name,
                     refused,
@@ -4374,6 +4611,7 @@ fn enrich_rust_type(
                 key,
                 crate_dir,
                 locations,
+                routes,
                 param_name,
                 self_type_name,
                 refused,
@@ -4382,6 +4620,7 @@ fn enrich_rust_type(
                 value,
                 crate_dir,
                 locations,
+                routes,
                 param_name,
                 self_type_name,
                 refused,
@@ -5529,7 +5768,7 @@ pub fn f(t: Instant, foo: Foo, bar: Bar) -> i64 { 0 }
             cf.params[2].ty
         );
 
-        enrich_contract_fn_user_types(&mut cf, dir.path());
+        enrich_contract_fn_user_types(&mut cf, dir.path(), &RouteTable::new());
         assert!(
             matches!(cf.params[0].ty, RustType::Unsupported(_)),
             "Instant must still be unsupported after enrichment -- it is not a struct/enum this \
@@ -5952,7 +6191,12 @@ impl Bucket {
 "#,
             )],
         );
-        let cf = discover_method_with_receiver(dir.path(), "bucket::Bucket::capacity").unwrap();
+        let cf = discover_method_with_receiver(
+            dir.path(),
+            "bucket::Bucket::capacity",
+            &RouteTable::new(),
+        )
+        .unwrap();
         assert_eq!(cf.name, "capacity");
         assert!(cf.is_method);
         let plan = cf.receiver.expect("a receiver plan must be attached");
@@ -5997,10 +6241,18 @@ impl Widget {
 "#,
             )],
         );
-        let cf_self =
-            discover_method_with_receiver(dir.path(), "widget::Widget::same_as_self").unwrap();
-        let cf_named =
-            discover_method_with_receiver(dir.path(), "widget::Widget::same_as_named").unwrap();
+        let cf_self = discover_method_with_receiver(
+            dir.path(),
+            "widget::Widget::same_as_self",
+            &RouteTable::new(),
+        )
+        .unwrap();
+        let cf_named = discover_method_with_receiver(
+            dir.path(),
+            "widget::Widget::same_as_named",
+            &RouteTable::new(),
+        )
+        .unwrap();
         assert_eq!(
             cf_named.params[0].ty, cf_self.params[0].ty,
             "a `&Self` parameter must resolve to exactly the same buildable type as the same \
@@ -6049,7 +6301,9 @@ impl Meter {
 "#,
             )],
         );
-        let cf = discover_method_with_receiver(dir.path(), "meter::Meter::spend").unwrap();
+        let cf =
+            discover_method_with_receiver(dir.path(), "meter::Meter::spend", &RouteTable::new())
+                .unwrap();
         let plan = cf.receiver.expect("a receiver plan must be attached");
         let call_paths: Vec<&str> = plan
             .operations
@@ -6107,7 +6361,9 @@ fn self_n() -> u32 { 0 }
 "#,
             )],
         );
-        let err = discover_method_with_receiver(dir.path(), "gauge::Gauge::read").unwrap_err();
+        let err =
+            discover_method_with_receiver(dir.path(), "gauge::Gauge::read", &RouteTable::new())
+                .unwrap_err();
         match &err {
             ReceiverError::NoConstructor { type_name } => assert_eq!(type_name, "Gauge"),
             other => panic!("expected NoConstructor naming `Gauge`, got {other:?}"),
@@ -6147,8 +6403,12 @@ fn self_label_len() -> u32 { 0 }
 "#,
             )],
         );
-        let err =
-            discover_method_with_receiver(dir.path(), "labelled::Labelled::label_len").unwrap_err();
+        let err = discover_method_with_receiver(
+            dir.path(),
+            "labelled::Labelled::label_len",
+            &RouteTable::new(),
+        )
+        .unwrap_err();
         match err {
             ReceiverError::UnsupportedConstructorParam {
                 type_name,
@@ -6182,7 +6442,9 @@ impl Counter {
 "#,
             )],
         );
-        let err = discover_method_with_receiver(dir.path(), "counter::Counter::bump").unwrap_err();
+        let err =
+            discover_method_with_receiver(dir.path(), "counter::Counter::bump", &RouteTable::new())
+                .unwrap_err();
         assert!(matches!(err, ReceiverError::MutableOrOwnedReceiver));
     }
 
@@ -6210,8 +6472,12 @@ impl Describe for Widget {
 "#,
             )],
         );
-        let err =
-            discover_method_with_receiver(dir.path(), "widget::Widget::describe").unwrap_err();
+        let err = discover_method_with_receiver(
+            dir.path(),
+            "widget::Widget::describe",
+            &RouteTable::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ReceiverError::MethodNotFound));
     }
 
@@ -6238,8 +6504,12 @@ pub mod outer {
 "#,
             )],
         );
-        let err =
-            discover_method_with_receiver(dir.path(), "outer::inner::Deep::value").unwrap_err();
+        let err = discover_method_with_receiver(
+            dir.path(),
+            "outer::inner::Deep::value",
+            &RouteTable::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ReceiverError::UnsupportedModulePath));
     }
 
@@ -6256,7 +6526,7 @@ pub mod outer {
         // `discover_fn` alone never enriches a struct/enum parameter --
         // that is `verify`'s own job (`enrich_contract_fn_user_types`,
         // called once `cf` is resolved), same as it is for a real run.
-        enrich_contract_fn_user_types(&mut cf, dir);
+        enrich_contract_fn_user_types(&mut cf, dir, &RouteTable::new());
         cf
     }
 
@@ -6386,7 +6656,7 @@ pub fn read(l: Locked) -> u32 { l.secret() }
             "unresolved until enrichment runs"
         );
         let crate_dir = dir.path();
-        let refused = enrich_contract_fn_user_types(&mut cf, crate_dir);
+        let refused = enrich_contract_fn_user_types(&mut cf, crate_dir, &RouteTable::new());
         assert_eq!(refused.len(), 1);
         let (param_name, type_name, reason) = &refused[0];
         assert_eq!(param_name, "l");
@@ -6398,6 +6668,166 @@ pub fn read(l: Locked) -> u32 { l.secret() }
         assert!(
             matches!(cf.params[0].ty, RustType::Unsupported(_)),
             "a refused type is left exactly as it was, not silently guessed at"
+        );
+        // §5.4b's generator hook, this task: a type with no other way in and
+        // no route declared for it gains one more sentence naming the
+        // declaration that would unlock it, rather than leaving a reader to
+        // rediscover the feature on their own.
+        assert!(
+            reason.contains("routes:") && reason.contains("Locked"),
+            "the refusal must say a declared route would unlock it: {reason}"
+        );
+    }
+
+    /// §5.4b's generator hook (this task, 2026-09-02): the routeprobe's own
+    /// case in miniature -- a private-field struct made only by a *free*
+    /// function, which rule 1's constructor scan cannot see at all (it only
+    /// ever looks inside `impl` blocks). Declaring a route in `ply.yaml`
+    /// resolves it the same way an associated constructor already does.
+    #[test]
+    fn a_declared_route_to_a_free_function_builds_a_type_no_constructor_scan_can_reach() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert("Handle".to_string(), "open_handle".to_string());
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Handle { id: u32 }
+pub fn open_handle(id: u32) -> Handle { Handle { id } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_handle(h: &Handle) -> i64 { h.id as i64 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "use_handle").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert!(
+            refused.is_empty(),
+            "a declared route must not be reported as a refusal: {refused:?}"
+        );
+        let RustType::UserTypeCtor(plan) = &cf.params[0].ty else {
+            panic!(
+                "expected UserTypeCtor via the declared route, got {:?}",
+                cf.params[0].ty
+            );
+        };
+        assert_eq!(plan.type_name, "Handle");
+        assert_eq!(plan.constructor, "open_handle");
+        assert_eq!(plan.ctor_params.len(), 1);
+        assert_eq!(plan.ctor_params[0].name, "id");
+        let route = plan.route.as_ref().expect("must carry a route mark");
+        assert_eq!(route.declared_as, "open_handle");
+        assert!(cf.is_fuzz_supported());
+        assert!(
+            !cf.is_bounded_supported(),
+            "route-built parameters are fuzz-tier only, matching every other struct/enum \
+             parameter"
+        );
+    }
+
+    /// The same route, nested inside a `Vec` -- the composition grammar
+    /// (2026-09-02) must recurse into a route-built element exactly as it
+    /// already does for a constructor-built one, since a route-built value
+    /// is still `RustType::UserTypeCtor` under the hood.
+    #[test]
+    fn a_declared_route_composes_inside_a_vec() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert("Handle".to_string(), "open_handle".to_string());
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Handle { id: u32 }
+pub fn open_handle(id: u32) -> Handle { Handle { id } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_many_handles(hs: Vec<Handle>) -> i64 { hs.len() as i64 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "use_many_handles").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert!(refused.is_empty(), "{refused:?}");
+        let RustType::Vec(inner) = &cf.params[0].ty else {
+            panic!("expected Vec, got {:?}", cf.params[0].ty);
+        };
+        assert!(
+            matches!(inner.as_ref(), RustType::UserTypeCtor(_)),
+            "the element must resolve through the declared route too, got {inner:?}"
+        );
+        assert!(cf.is_fuzz_supported());
+        assert!(
+            cf.params[0].ty.uses_any_route(),
+            "a route-built element nested inside a Vec must still be reported as route-built"
+        );
+    }
+
+    /// `uses_any_route` must say `false` for an ordinary constructor-built
+    /// value -- the mark exists to tell a route-built run apart from an
+    /// ordinary one, and a type with no route declared for it is ordinary.
+    #[test]
+    fn uses_any_route_is_false_for_a_constructor_built_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct TicketPool { capacity: u32 }
+impl TicketPool {
+    pub fn new(capacity: u32) -> Self { TicketPool { capacity } }
+}
+#[ply::ensures(|result| *result % 2 == 0)]
+pub fn doubled(p: TicketPool) -> u64 { p.capacity as u64 * 2 }
+"#,
+            )],
+            "doubled",
+        );
+        assert!(!cf.params[0].ty.uses_any_route());
+    }
+
+    /// The stale-route requirement: renaming (or removing) the function a
+    /// route names must fail loudly and name it -- never a silent fall
+    /// through to rule 2's direct field construction (which would also
+    /// refuse `Handle` here, for a different reason, and hide the real
+    /// defect: the declaration itself no longer points at anything).
+    #[test]
+    fn a_stale_route_is_refused_loudly_naming_the_function() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert("Handle".to_string(), "open_handle".to_string());
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Handle { id: u32 }
+pub fn renamed_open_handle(id: u32) -> Handle { Handle { id } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_handle(h: &Handle) -> i64 { h.id as i64 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "use_handle").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert_eq!(refused.len(), 1);
+        let (_, type_name, reason) = &refused[0];
+        assert_eq!(type_name, "Handle");
+        assert!(
+            reason.contains("open_handle"),
+            "the refusal must name the stale function: {reason}"
+        );
+        assert!(
+            reason.contains("could not find"),
+            "the refusal must say Ply looked and failed, not merely that the type is \
+             unsupported: {reason}"
+        );
+        assert!(
+            matches!(cf.params[0].ty, RustType::Unsupported(_)),
+            "a stale route must not be silently treated as though nothing were declared"
         );
     }
 
@@ -6449,7 +6879,7 @@ pub fn f(x: NotDeclaredAnywhere) -> u32 { 0 }
             )],
         );
         let mut cf = discover_fn(&src, "f").unwrap();
-        let refused = enrich_contract_fn_user_types(&mut cf, dir.path());
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &RouteTable::new());
         assert!(
             refused.is_empty(),
             "a name that is not a struct/enum this crate declares must not be reported as a \
@@ -6480,7 +6910,7 @@ pub fn f(x: Dup) -> u32 { 0 }
             ],
         );
         let mut cf = discover_fn(&src, "f").unwrap();
-        let refused = enrich_contract_fn_user_types(&mut cf, dir.path());
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &RouteTable::new());
         assert_eq!(refused.len(), 1);
         assert!(
             refused[0].2.contains("more than one"),

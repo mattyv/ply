@@ -37,6 +37,19 @@ pub struct Document {
     pub profiles: IndexMap<String, Vec<String>>,
     #[serde(default)]
     pub unresolved: Vec<UnresolvedEntry>,
+    /// §5.4b's generator hook, promised since the first spike and built
+    /// here: names a public function -- free or associated, Ply's resolver
+    /// does not care which -- that returns a value of the given type. This
+    /// is the one line an author (or an agent reading the code) writes to
+    /// lift a type with no other way in into the set Ply can build values
+    /// of: Ply samples the *named function's own parameters*, the same way
+    /// it already builds any other value, and calls it -- an author never
+    /// lists values by hand. Top-level only, keyed by the bare type name
+    /// (`Handle`, not a module-qualified path): the resolver that reads
+    /// this already scans the whole crate for where a type is declared, the
+    /// same way it does for a type's own constructor.
+    #[serde(default)]
+    pub routes: IndexMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

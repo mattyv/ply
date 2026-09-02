@@ -1,0 +1,18 @@
+ply: 1
+
+# §5.4b's generator hook (this task, 2026-09-02): `routes:` names a public
+# function -- free or associated -- that returns the named type, for a type
+# with no other way in. `Handle` and `Stuck` each have a private field and
+# no associated constructor at all; `Token`'s constructor is an ordinary
+# associated function rule 1 already finds on its own, unchanged.
+components:
+  routehook:
+    anchor: ply_fixture_routehook
+    fns:
+      use_handle: { checks: [fuzz(64)] }
+      use_token: { checks: [fuzz(64)] }
+      use_many_handles: { checks: [fuzz(64)] }
+      use_stuck: { checks: [fuzz(64)] }
+routes:
+  Handle: open_handle
+  Stuck: make_stuck

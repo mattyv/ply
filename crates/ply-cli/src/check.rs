@@ -388,6 +388,7 @@ fn check_anchors(
             resolver.as_mut(),
             diagnostics,
             &mut tally,
+            &doc.routes,
         );
     }
     tally
@@ -403,6 +404,7 @@ fn walk_anchors(
     mut resolver: Option<&mut Resolver>,
     diagnostics: &mut Vec<Diagnostic>,
     tally: &mut AnchorTally,
+    routes: &indexmap::IndexMap<String, String>,
 ) {
     // The same locality test `verify` applies (§5.5): a component anchored
     // to another crate is a boundary component, and this slice reads its
@@ -465,8 +467,10 @@ fn walk_anchors(
                         // refusal when the answer is genuinely no.
                         let buildable = lib_path.parent().and_then(|src| src.parent()).is_some_and(
                             |crate_dir| {
-                                ply_core::harness::discover_method_with_receiver(crate_dir, fn_name)
-                                    .is_ok()
+                                ply_core::harness::discover_method_with_receiver(
+                                    crate_dir, fn_name, routes,
+                                )
+                                .is_ok()
                             },
                         );
                         if !buildable {
@@ -522,6 +526,7 @@ fn walk_anchors(
             resolver.as_deref_mut(),
             diagnostics,
             tally,
+            routes,
         );
     }
 }

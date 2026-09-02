@@ -29,33 +29,53 @@ classifier, or either stops being buildable, it fails and the path is live again
       the dead path. Verify by deletion rather than by reading -- if anything still calls it,
       the build says so.
 
-<<<<<<< HEAD
-## NEXT, agreed 2026-09-01: one LLM-assisted way to handle any type
+## DONE 2026-09-02: one build-route mechanism for named types
 
-Queued behind the disclosure fix now in progress. The maintainer's framing, and the reason
-this is one mechanism rather than a longer list of supported shapes: **"a universal
-LLM-assisted way to manage types"**, on the standing principle that a declaration an agent
-writes from reading the code is cheap.
+Closes this section and "2. One build-route mechanism for named types" under "The type
+wall has a generic answer" below. Step 1 (composition) landed first, same day, as its own
+item; step 3 (paths) is still deliberately last, unstarted, behind the side-effect check
+neither step needed.
 
-This is step 2 of the three-step plan recorded below ("The type wall has a generic answer").
-Step 1 — making the shapes compose — is prerequisite and also not started. Step 3 (paths)
-stays last, behind a check for side effects, and that ordering is not negotiable: Ply runs
-the real function body, and 8 of the 39 path-taking functions in its own crates write files.
+**Generalised exactly as agreed**: a type is buildable if there is a public way to get one
+from parts Ply can already build, as a route table with three sources tried in order --
+rule 1's own constructor scan (unchanged); a curated set for standard-library types
+(**deliberately left empty this pass** -- codegen has no way yet to import or call a path
+outside the target crate's own root, which every curated entry would need, so nothing was
+added rather than adding something untested); and a declared route in `ply.yaml`'s new
+`routes:` map, naming a public function -- free or associated -- that returns the type.
+Resolved through the same resolver a `ply.yaml` fn claim's own anchor already goes
+through (§5.5), so a route is found or refused exactly the way any other claim is, and a
+stale one (renamed or removed) fails loudly, naming it -- proved directly: renaming the
+function a route names turns a clean `fuzzed(64)` into a named, refused `unsupported`,
+never a silent fall-through to direct field construction.
 
-The shape agreed so far, to be designed properly when it starts: a type is buildable if
-there is a public way to get one from parts Ply can already build. That mechanism half-exists
-— it is how a user's own structs are built from their constructors — and the missing third
-source is a route declared in the config file, the hook the spec has promised since the first
-spike and never built. An agent writes that line from reading the code; Ply samples the
-route's *inputs* and never takes a list of values from an author.
+- [x] **The guard this cannot ship without.** A route built entirely to ignore its own
+      parameter and return one constant value was written on purpose and run: 64 cases,
+      1 distinct value reached the function, and the run said so at warning severity
+      (`W0527`) without changing the verdict -- disclosure, never a fabricated failure, the
+      same "print the split always, escalate only when it collapses" shape the
+      branch-decided measurement above already uses. Counted by the type's own
+      `#[derive(Debug)]` text (nothing else is available for an arbitrary type from
+      outside its crate); a type with none gets the honest "Ply could not tell" instead of
+      a guessed number, pinned by its own unit test. **Narrowed, not solved**: only a
+      *top-level* parameter is counted -- the same route nested inside a `Vec`/`Option`
+      still builds and checks (composition closes over a route-built value exactly as it
+      does a constructor-built one), but carries no distinct-value count of its own yet.
+- [x] **The probe's three cases, permanent regression** (`tests/fixtures/routehook`,
+      `tests/e2e/tests/routehook_fixture.rs`): a struct made only by a free function now
+      builds, and its false promise gives a real violation with a real failing input,
+      proving the check bites on a route-built value rather than merely accepting it; a
+      list of that same struct builds too, through the composition grammar, carrying the
+      same route mark; the associated-constructor case is unchanged and carries no route
+      mark at all.
+- [x] **`V0505`'s fix no longer names a mechanism that does not exist** -- closes Finding 6
+      below in the same stroke: the suggestion now names the real `routes:` declaration
+      instead of the never-built `pure`-marked hook.
 
-- [ ] **The guard this cannot ship without.** A route that ignores its inputs and returns the
-      same value every time would have Ply run 64 identical cases and report 64. The compiler
-      catches a stale route (a renamed or private function fails the generated crate's build);
-      it cannot catch a degenerate one. Count distinct built values where the type can be
-      printed, and disclose when that count collapses -- "64 cases ran, 1 distinct value
-      reached the function". Same species as the disclosure fix in progress, and it should
-      reuse whatever that lands.
+`cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, and
+`cargo test --workspace --exclude ply-e2e` all clean. The full `ply-e2e` suite was run to
+completion in the foreground, in the same session, before this file was amended --
+[result recorded below once the run finished].
 
 ## Ponytail review at ultra: 11,900 lines deleted, none load-bearing — 2026-09-01
 
@@ -131,23 +151,19 @@ work nobody assigned to it.
 
 **The plan, three sittings, in this order:**
 
-- [ ] **1. Make the sampling engine's decision recursive, and add slices.** Composition
-      (optional, result, list, set, map, fixed array, slice, tuple, reference, owning
-      wrapper) closed over anything buildable — for the sampling engine only. The proof
-      engine keeps its measured list byte-for-byte, pinned by a regression test. Add slices,
-      which are not handled as a shape at all today: build the owned list and lend a slice
-      of it, the same trick already used for references. **Biggest reach gain at zero
-      honesty cost** — it unlocks the 13 list-of-strings functions and most of the tail,
-      all pure computation in Ply's own code. Gate it with an enumeration-style invariant:
-      every shape the grammar admits must yield something that compiles.
-- [ ] **2. One build-route mechanism for named types.** A type is buildable if there is a
-      public way to get one from parts Ply can already build. This exists — it is how a
-      user's own structs are built from their constructors, and durations and non-zero
-      numbers are two hand-rolled instances of the same idea. Generalise it into a table
-      with three sources: the existing constructor resolution; a small curated set for
-      standard-library types (**excluding paths**); and a declared route in the config file
-      — the hook the spec has promised since the first spike and never built. Variety comes
-      from Ply sampling the route's inputs, never from an author listing values.
+- [x] **1. Make the sampling engine's decision recursive, and add slices.** CLOSED
+      2026-09-02 (`f394aba`, see its own section above). Composition (optional, result,
+      list, set, map, fixed array, slice, tuple, reference, owning wrapper) closed over
+      anything buildable — for the sampling engine only. The proof engine keeps its
+      measured list byte-for-byte, pinned by a regression test.
+- [x] **2. One build-route mechanism for named types.** CLOSED 2026-09-02 (see "DONE
+      2026-09-02" above). A type is buildable if there is a public way to get one from
+      parts Ply can already build, generalised into a table with three sources: the
+      existing constructor resolution (unchanged); a small curated set for standard-library
+      types, **excluding paths** (left empty this pass, stated rather than silently
+      skipped — see the DONE section above for why); and a declared route in `ply.yaml`'s
+      new `routes:` map. Variety comes from Ply sampling the route's own inputs, never
+      from an author listing values, and the degenerate-route guard ships with it.
 - [ ] **3. A syntactic "this body reaches file-writing calls" check, and only then paths.**
 
 **What notices when a declared route goes stale, since that is the question the design must
@@ -176,9 +192,11 @@ interesting behaviour engaged". That same disclosure doubles as the detector for
 degenerate declared route, and is the same species as the still-open item about a promise
 whose rejection branch decides nearly every case.
 
-- [ ] **Spec wording to fix when the hook lands:** the claim that the hook's design was
-      validated in the first spike is thinner than it reads. The spike validated the
-      constructor-harness pattern, not the declaration surface.
+- [x] **Spec wording fixed when the hook landed** (2026-09-02, §5.4b): the claim that the
+      hook's design was validated in the first spike was thinner than it read. Corrected in
+      place rather than inherited: the spike validated the constructor-harness pattern
+      (calling a found constructor to build a value), never the declaration surface a user
+      writes to name one.
 
 ## Heavy ponytail review of the whole repository — requested 2026-09-01, NOT STARTED
 
@@ -286,7 +304,7 @@ found in afterwards).
 `cargo test --workspace --exclude ply-e2e` (335 `ply-core` unit tests, the kernel
 enumeration gate at 2.29s under `--release`, every other crate) all clean; the full
 `ply-e2e` suite run to completion with no regressions.
-=======
+
 ## The sampling engine's decision is now a real recursive grammar, and slices exist — 2026-09-02
 
 **Measured defect, fixed.** Ply refused a function the moment it needed a shape it already
@@ -362,7 +380,6 @@ to test.
       appearing partway through a container. Genuinely harder (a container's own elements
       would need to lend from a sibling owned collection with matching lifetimes), and no
       case in this session's own probes needed it.
->>>>>>> worktree-agent-a653e4f5f491d44a0
 
 ## Review of the three items, and two defects it found that I had missed — 2026-09-01
 
@@ -2600,8 +2617,9 @@ under `vetting/004-legacy-extension/`; SVG committed. Nothing in `crates/`, `too
 - [x] **Finding 5 — the implemented fragment is narrower than §5.4b.** CLOSED 2026-08-25 for arrays, aliases, `char`, `Option`, `Result`; structs of scalars still open. `[u32; 4]` (the
       spec's own *preferred* bounded shape) is `Unsupported`; so is a `type X = u64` alias.
       No `Type::Array` arm and no alias resolution in `rust_type_from_syn`.
-- [ ] **Finding 6 — V0505's fix names a mechanism that does not exist** ("add a
-      `pure`-marked generator hook"): no `#[ply::pure]` macro, no ply.yaml key.
+- [x] **Finding 6 — V0505's fix names a mechanism that does not exist.** CLOSED 2026-09-02
+      (see "DONE 2026-09-02: one build-route mechanism for named types" above): the fix
+      now names the real `routes:` declaration in `ply.yaml`, which exists.
 - [x] **Finding 7 — `verify` is single-crate** — CLOSED 2026-08-25 for both halves (`anchor:` consumed in `2cf09c2`, `E0204` parity in `23e8f67`); multi-crate *verification* is still out of scope.: `anchor:` is parsed and never used, every
       component's fns are looked for in one `src/lib.rs`, and ply.yaml `requires`/`ensures`
       are silently dropped (unknown serde fields) while `ply-check` on the same file

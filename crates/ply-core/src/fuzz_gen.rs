@@ -2068,6 +2068,97 @@ fn seed_apparatus(examples_seeds: &[String]) -> String {
 /// the example/direct-case tests. Never seeded (see
 /// [`generate_fuzz_test_with_examples`] for that): every existing caller of
 /// this exact function keeps the exact behaviour it always had.
+/// The three pieces of generated code the degenerate-route guard needs,
+/// alongside the ordinary construction `fuzz_gen` already emits for any
+/// `RustType::UserTypeCtor` parameter -- see [`route_distinct_tracking`]'s
+/// own doc for how they are built. Every field is an empty string for a fn
+/// with no route-built top-level parameter, which is the vast majority: the
+/// generated harness is then byte-identical to before this guard existed.
+struct RouteDistinctTracking {
+    /// Declares one running set per debug-derivable route-built parameter,
+    /// spliced in *before* the runner closure so it survives across every
+    /// case rather than being rebuilt (and emptied) each time.
+    decl: String,
+    /// Records this case's own built value into that set -- spliced in
+    /// *inside* the closure, right after the parameter is built and before
+    /// anything (the `requires` filter included) can reject the case: the
+    /// guard counts values Ply actually *built*, not values that went on to
+    /// be accepted.
+    capture: String,
+    /// Prints the split back to `verify`, once, after the runner finishes --
+    /// unconditionally, whether the count turned out degenerate or not
+    /// (CLAUDE.md's own trap, named for `PLY_FUZZ_OR_SPLIT`: "a threshold
+    /// that silently blesses ... print the split always").
+    marker: String,
+}
+
+/// The degenerate-route guard's own codegen (TODO.md, "the guard this
+/// cannot ship without"): a route is a function an author wrote, and
+/// nothing stops it from ignoring its own inputs and returning the same
+/// value every time -- the one failure a stale-route compile error cannot
+/// catch, because the code compiles and runs fine. So every top-level
+/// parameter built through a declared route (`RustType::UserTypeCtor` whose
+/// `ReceiverPlan::route` is `Some`) gets a running count of how many
+/// *distinct* values this run actually built, disclosed unconditionally --
+/// "64 cases ran, but only 1 distinct value reached the function" is exactly
+/// the sentence this exists to make possible.
+///
+/// **Deliberately narrow, honestly so**: only ever a *top-level* parameter
+/// (`cf.params`, not a route-built value nested inside a `Vec`/`Option`/etc.
+/// via composition) -- counting a container's own elements would need the
+/// same per-case bookkeeping one level deeper, inside `construct_from_raw_
+/// expr`'s own recursion, which has no closure-scoped state to write into
+/// (TODO.md carries this as an open item, not a silent gap).
+///
+/// **The printability condition, not assumed:** counting distinct values
+/// needs to tell two built values apart, and the only thing every Rust type
+/// offers for free from outside its own crate is nothing at all -- there is
+/// no blanket `PartialEq`/`Hash` Ply can rely on. `Debug` text is what this
+/// uses instead (a real, if imperfect, proxy: two values whose `Debug`
+/// output differs are certainly distinct, though this project makes no
+/// claim about the reverse), and only when the type actually derives it
+/// (`RouteOrigin::debug_derivable`) -- a type that does not gets the plain,
+/// honest disclosure that Ply could not count at all, never an invented
+/// number.
+fn route_distinct_tracking(cf: &ContractFn) -> RouteDistinctTracking {
+    let mut decl = String::new();
+    let mut capture = String::new();
+    let mut marker = String::new();
+    let label = &cf.path;
+    for p in &cf.params {
+        let RustType::UserTypeCtor(plan) = &p.ty else {
+            continue;
+        };
+        let Some(route) = &plan.route else { continue };
+        let name = &p.name;
+        let declared_as = &route.declared_as;
+        if route.debug_derivable {
+            decl.push_str(&format!(
+                "        let __ply_route_seen_{name} = std::cell::RefCell::new(\
+                 std::collections::BTreeSet::<String>::new());\n"
+            ));
+            capture.push_str(&format!(
+                "            __ply_route_seen_{name}.borrow_mut().insert(format!(\"{{:?}}\", \
+                 {name}));\n"
+            ));
+            marker.push_str(&format!(
+                "        eprintln!(\"PLY_ROUTE_DISTINCT|{label}|{name}|{declared_as}|{{}}|{{}}\", \
+                 __ply_route_seen_{name}.borrow().len(), __ply_total.get());\n"
+            ));
+        } else {
+            marker.push_str(&format!(
+                "        eprintln!(\"PLY_ROUTE_UNPRINTABLE|{label}|{name}|{declared_as}|{{}}\", \
+                 __ply_total.get());\n"
+            ));
+        }
+    }
+    RouteDistinctTracking {
+        decl,
+        capture,
+        marker,
+    }
+}
+
 pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Result<String> {
     generate_fuzz_test_with_examples(cf, cases, seed, &[])
 }
@@ -2318,6 +2409,17 @@ pub fn generate_fuzz_test_with_examples(
         None => (String::new(), widened.clone(), String::new()),
     };
 
+    // The degenerate-route guard (TODO.md, "the guard this cannot ship
+    // without"): empty for every fn with no top-level parameter built
+    // through §5.4b's declared-route mechanism, which is the vast majority
+    // and generates byte-identical code to before this feature existed --
+    // see `route_distinct_tracking`'s own doc for what the three pieces do.
+    let RouteDistinctTracking {
+        decl: route_decl,
+        capture: route_capture,
+        marker: route_marker,
+    } = route_distinct_tracking(cf);
+
     // Every field's *display text* is computed into its own binding **before**
     // the call, never inline inside the failure-branch marker build that
     // used to reference `p.name` directly there. Found by this task's own
@@ -2428,11 +2530,12 @@ pub fn generate_fuzz_test_with_examples(
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rejected = std::cell::Cell::new(0u32);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_total = std::cell::Cell::new(0u32);\n\
          {or_cells_decl}\
+         {route_decl}\
          {seed_setup}\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {strategy};\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{pattern}| {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{params_preamble_text}{requires_check}{receiver_preamble_text}{entry_lets}{marker_precompute}let __ply_call_result = {fname}({args});\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{params_preamble_text}{route_capture}{requires_check}{receiver_preamble_text}{entry_lets}{marker_precompute}let __ply_call_result = {fname}({args});\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let result = &__ply_call_result;\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {check_expr}));\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20match __ply_ok {{\n\
@@ -2453,6 +2556,7 @@ pub fn generate_fuzz_test_with_examples(
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_tot = __ply_total.get();\n\
          {seed_stats_marker}\
          {or_split_marker}\
+         {route_marker}\
          \x20\x20\x20\x20\x20\x20\x20\x20match __ply_outcome {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(()) => {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if __ply_tot > 0 && (__ply_rej as f64) / (__ply_tot as f64) > 0.5 {{\n\
@@ -3004,7 +3108,7 @@ pub fn many(a: Vec<Doc>) -> i64 { a.len() as i64 }
         )
         .unwrap();
         let mut cf = discover_fn(&path, "many").unwrap();
-        harness::enrich_contract_fn_user_types(&mut cf, dir.path());
+        harness::enrich_contract_fn_user_types(&mut cf, dir.path(), &Default::default());
         assert!(cf.is_fuzz_supported(), "{:?}", cf.params[0].ty);
         let body =
             generate_fuzz_test(&cf, 8, &derive_seed("many", "")).unwrap_or_else(|e| panic!("{e}"));
@@ -3108,6 +3212,128 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
         assert!(
             !body.contains("PLY_FUZZ_OR_SPLIT") && !body.contains("__ply_or_hit"),
             "a promise with no top-level `||` must generate no split machinery at all:\n{body}"
+        );
+    }
+
+    // -- 2026-09-02: the degenerate-route guard (TODO.md, "the guard this
+    // cannot ship without"). A route-built parameter is still an ordinary
+    // `RustType::UserTypeCtor` -- the only thing new is `ReceiverPlan::route`
+    // -- so these pin the *extra* codegen the guard adds, never a second
+    // construction mechanism.
+
+    fn discover_with_route(
+        src: &str,
+        fn_name: &str,
+        type_name: &str,
+        route_fn: &str,
+    ) -> ContractFn {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let path = src_dir.join("lib.rs");
+        std::fs::write(&path, src).unwrap();
+        let mut cf = discover_fn(&path, fn_name).unwrap();
+        let mut routes = harness::RouteTable::new();
+        routes.insert(type_name.to_string(), route_fn.to_string());
+        let refused = harness::enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert!(refused.is_empty(), "{refused:?}");
+        cf
+    }
+
+    /// A route-built top-level parameter whose type derives `Debug` gets a
+    /// running set that records every distinct value actually built, and
+    /// the harness reports the split unconditionally once the run ends --
+    /// never gated on the count turning out degenerate, the same
+    /// "print always, mark only when it collapses" shape `PLY_FUZZ_OR_SPLIT`
+    /// already follows.
+    #[test]
+    fn a_debug_deriving_route_built_parameter_counts_distinct_values() {
+        let cf = discover_with_route(
+            r#"
+#[derive(Debug)]
+pub struct Handle { id: u32 }
+pub fn open_handle(id: u32) -> Handle { Handle { id } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_handle(h: &Handle) -> i64 { h.id as i64 }
+"#,
+            "use_handle",
+            "Handle",
+            "open_handle",
+        );
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("use_handle", "")).unwrap();
+        assert!(
+            body.contains("BTreeSet::<String>::new()"),
+            "a debug-derivable route-built parameter needs a set to count distinct values \
+             into:\n{body}"
+        );
+        assert!(
+            body.contains("format!(\"{:?}\", h)"),
+            "each case's built value must be recorded by its Debug text:\n{body}"
+        );
+        assert!(
+            body.contains("PLY_ROUTE_DISTINCT|use_handle|h|open_handle|"),
+            "the split must be reported back through its own marker, naming the parameter and \
+             the declared route:\n{body}"
+        );
+    }
+
+    /// A route-built parameter whose type does **not** derive `Debug` cannot
+    /// be printed or compared by code Ply generates from outside the crate
+    /// -- the guard says so plainly instead of guessing a count from
+    /// nothing (module doc: "where the type cannot be compared or printed,
+    /// say so rather than guessing a number").
+    #[test]
+    fn a_non_debug_route_built_parameter_discloses_it_cannot_count_distinct_values() {
+        let cf = discover_with_route(
+            r#"
+pub struct Handle { id: u32 }
+pub fn open_handle(id: u32) -> Handle { Handle { id } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_handle(h: &Handle) -> i64 { h.id as i64 }
+"#,
+            "use_handle",
+            "Handle",
+            "open_handle",
+        );
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("use_handle", "")).unwrap();
+        assert!(
+            !body.contains("BTreeSet::<String>::new()"),
+            "there is nothing to count into when the type cannot be printed:\n{body}"
+        );
+        assert!(
+            body.contains("PLY_ROUTE_UNPRINTABLE|use_handle|h|open_handle|"),
+            "the run must say plainly that it could not count distinct values, rather than \
+             staying silent:\n{body}"
+        );
+    }
+
+    /// An ordinary constructor-built parameter (rule 1, no route declared at
+    /// all) must generate none of this -- the guard exists for the one
+    /// failure the compiler cannot catch on its own (an author's route
+    /// ignoring its inputs), and a found constructor is not that.
+    #[test]
+    fn a_constructor_built_parameter_with_no_route_generates_no_distinct_tracking() {
+        let cf = discover_with_route(
+            r#"
+#[derive(Debug)]
+pub struct TicketPool { capacity: u32 }
+impl TicketPool { pub fn new(capacity: u32) -> Self { TicketPool { capacity } } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn doubled(p: TicketPool) -> i64 { p.capacity as i64 * 2 }
+"#,
+            "doubled",
+            // No route declared for `TicketPool` at all -- routes is keyed
+            // by a type nothing here names, so `enrich` resolves `p` via
+            // rule 1's own constructor scan, exactly as if `discover_with_route`
+            // were never called with a route in the first place.
+            "Unrelated",
+            "unrelated_fn",
+        );
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("doubled", "")).unwrap();
+        assert!(
+            !body.contains("PLY_ROUTE_DISTINCT") && !body.contains("PLY_ROUTE_UNPRINTABLE"),
+            "a constructor Ply found on its own is not a declared route, and must not be \
+             flagged as needing this guard:\n{body}"
         );
     }
 
@@ -3578,7 +3804,7 @@ pub fn increment(x: f64) -> f64 { x + 1.0 }
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src").join("m.rs"), src).unwrap();
-        harness::discover_method_with_receiver(dir.path(), fn_path).unwrap()
+        harness::discover_method_with_receiver(dir.path(), fn_path, &Default::default()).unwrap()
     }
 
     #[test]

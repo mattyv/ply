@@ -57,3 +57,5 @@ forbidden calls: none declared
 profiles — named bundles of extra rules a component can adopt: none declared
 
 unresolved decisions held by the workspace as a whole: none declared
+
+routes — a public function this document names as the way to build a value of a type Ply has no other way in for: none declared

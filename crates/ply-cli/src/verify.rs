@@ -469,7 +469,7 @@ fn verify_loaded_crate(
                     // block, a `&mut self` target) by simply not finding
                     // what it is looking for, so falling back to `reason`
                     // below is always the right thing on its own `Err`.
-                    match harness::discover_method_with_receiver(crate_dir, fn_name) {
+                    match harness::discover_method_with_receiver(crate_dir, fn_name, &file.routes) {
                         Ok(cf) => cf,
                         // Two kinds of `Err` here, and they need two
                         // different sentences (2026-08-27). A `NoConstructor`/
@@ -550,7 +550,7 @@ fn verify_loaded_crate(
             // (rule 3) earns its own named diagnostic rather than the
             // generic "type neither engine builds inputs for" one.
             for (param_name, type_name, reason) in
-                harness::enrich_contract_fn_user_types(&mut cf, crate_dir)
+                harness::enrich_contract_fn_user_types(&mut cf, crate_dir, &file.routes)
             {
                 diagnostics.push(user_type_param_refused_diag(
                     &node_id,
@@ -2877,6 +2877,21 @@ fn run_fn_checks(
                 if run.promise_lopsided && !statuses.iter().any(|s| s == "promise-lopsided") {
                     statuses.push("promise-lopsided".into());
                 }
+                // §5.4b's generator hook (this task): a value this run
+                // built came through a declared route rather than Ply's own
+                // generator, the same structural pattern `seeded` above
+                // follows -- a reader needs to know the evidence came
+                // through a declared door, not something incidental to warn
+                // about.
+                if run.route_used && !statuses.iter().any(|s| s == "route-built") {
+                    statuses.push("route-built".into());
+                }
+                // The degenerate-route guard's own mark: at least one
+                // debug-derivable route-built parameter built exactly one
+                // distinct value across more than one case.
+                if run.route_collapsed && !statuses.iter().any(|s| s == "route-collapsed") {
+                    statuses.push("route-collapsed".into());
+                }
                 // §1: a verdict names the evidence that produced it. Only a
                 // run that happened has any to name.
                 if run.fuzz_ran
@@ -3421,9 +3436,17 @@ fn unsupported_shape_diag(
             .map(|(_, p)| format!("{}: {:?}", p.name, p.ty))
             .collect::<Vec<_>>()
             .join(", ");
+        // §5.4b's generator hook, built (this task, 2026-09-02): a type
+        // with no other way in is buildable the moment a `routes:` entry in
+        // `ply.yaml` names a public function -- free or associated -- that
+        // returns it. This used to point at a `pure`-marked hook the spec
+        // promised and nothing built yet; that sentence would now be false
+        // about a feature that exists.
         let mut fixes = vec![Fix {
             title: format!(
-                "add a `pure`-marked generator hook for `{fn_name}`'s parameter type (§5.4b)"
+                "declare a route for `{fn_name}`'s unsupported parameter type in ply.yaml's \
+                 `routes:` -- name a public function that returns it, and Ply will call it \
+                 with inputs it generates itself (§5.4b)"
             ),
             edits: vec![],
         }];
@@ -4485,6 +4508,21 @@ struct HarnessRun {
     /// `false` for every fn whose postcondition has no top-level `||` at
     /// all (the vast majority), and for one whose split came back balanced.
     promise_lopsided: bool,
+    /// Whether this run built at least one value through §5.4b's declared
+    /// route (a `ply.yaml` `routes:` entry, or the curated built-in set --
+    /// TODO.md's "one build-route mechanism for named types") -- the same
+    /// structural pattern `seeded` above follows: `run_fn_checks` turns this
+    /// into the `route-built` status so a reader knows the values came
+    /// through a declared door rather than the type's whole range, never a
+    /// warning about an incidental fact. `false` for every fn with no
+    /// route-built parameter at all, which is the vast majority.
+    route_used: bool,
+    /// Whether the degenerate-route guard fired: at least one debug-
+    /// derivable route-built parameter built strictly fewer distinct values
+    /// than the number of cases that ran (TODO.md, "the guard this cannot
+    /// ship without"). `run_fn_checks` turns this into the
+    /// `route-collapsed` status.
+    route_collapsed: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4580,6 +4618,15 @@ fn run_fuzz_and_test_checks(
     // skew rule the high-rejection warning above already uses). `false`
     // for every fn with no top-level `||` at all, and for a balanced split.
     let mut promise_lopsided = false;
+    // Set once, only when this run built at least one value through §5.4b's
+    // declared route (TODO.md). `false` for every fn with no route-built
+    // parameter at all, which is the vast majority.
+    let mut route_used = false;
+    // Set once, only when the degenerate-route guard actually fired -- a
+    // debug-derivable route-built parameter built exactly one distinct
+    // value across more than one case. `false` otherwise, including for
+    // every fn with no route-built parameter.
+    let mut route_collapsed = false;
 
     // The harness never ran at all for this fn (2026-08-24 M4 review, D1 --
     // the review's most serious finding, widened 2026-08-27 to catch the
@@ -4635,6 +4682,8 @@ fn run_fuzz_and_test_checks(
             diagnostics,
             seeded: false,
             promise_lopsided: false,
+            route_used: false,
+            route_collapsed: false,
         });
     }
 
@@ -4924,6 +4973,112 @@ fn run_fuzz_and_test_checks(
                     }
                 }
             }
+            // The degenerate-route guard (TODO.md, "the guard this cannot
+            // ship without"): a route is a function an author wrote, and
+            // nothing but this run stops it from ignoring its own inputs
+            // and returning the same value every time. Disclosed
+            // unconditionally for every debug-derivable route-built
+            // top-level parameter this run measured (CLAUDE.md's own trap:
+            // "print the split always") -- only the mark (`route_collapsed`,
+            // below) is gated on the count actually collapsing, the same
+            // structural pattern the branch-decided split above follows.
+            for stat in fuzz_engine::parse_route_distinct_markers(&run.combined_output) {
+                route_used = true;
+                let collapsed = stat.distinct == 1 && stat.total > 1;
+                let case_word = if stat.total == 1 { "case" } else { "cases" };
+                let value_word = if stat.distinct == 1 {
+                    "value"
+                } else {
+                    "values"
+                };
+                let title = format!(
+                    "`{fn_name}`'s `{param}` parameter is built by calling `{declared_as}` -- \
+                     the function ply.yaml names as the way to make one, rather than a value \
+                     Ply's own generator drew directly. Of the {total} {case_word} that ran, \
+                     {distinct} distinct {value_word} reached `{fn_name}`. (W0527)",
+                    param = stat.param,
+                    declared_as = stat.declared_as,
+                    total = stat.total,
+                    distinct = stat.distinct,
+                );
+                let (severity, fixes, open_item) = if collapsed {
+                    (
+                        "warning",
+                        vec![Fix {
+                            title: format!(
+                                "make `{}` actually use its own parameters -- every one of \
+                                 these cases ran with a different input, but the function \
+                                 returned the same value every time, which is as good as \
+                                 testing nothing new",
+                                stat.declared_as
+                            ),
+                            edits: vec![],
+                        }],
+                        Some("route_collapsed".to_string()),
+                    )
+                } else {
+                    ("info", vec![], None)
+                };
+                diagnostics.push(Diagnostic {
+                    code: "W0527".into(),
+                    severity: severity.into(),
+                    phase: "verify".into(),
+                    engine: "proptest".into(),
+                    check: check_label.clone(),
+                    node_id: node_id.into(),
+                    title,
+                    pointer: None,
+                    primary_span: None,
+                    counterexample: None,
+                    fixes,
+                    assumptions: vec![],
+                    open_item,
+                });
+                if collapsed {
+                    route_collapsed = true;
+                }
+            }
+            // The same disclosure's other honesty condition: a route-built
+            // parameter whose type has no `#[derive(Debug)]` cannot be
+            // compared or printed by code Ply generates outside the crate,
+            // so Ply says plainly that it could not count distinct values
+            // rather than inventing a number (module doc, `RouteOrigin::
+            // debug_derivable`).
+            for stat in fuzz_engine::parse_route_unprintable_markers(&run.combined_output) {
+                route_used = true;
+                let case_word = if stat.total == 1 { "case" } else { "cases" };
+                diagnostics.push(Diagnostic {
+                    code: "W0527".into(),
+                    severity: "info".into(),
+                    phase: "verify".into(),
+                    engine: "proptest".into(),
+                    check: check_label.clone(),
+                    node_id: node_id.into(),
+                    title: format!(
+                        "`{fn_name}`'s `{param}` parameter is built by calling `{declared_as}` -- \
+                         the function ply.yaml names as the way to make one. {total} {case_word} \
+                         ran, but Ply cannot tell how many of them reached a genuinely different \
+                         value: `{param}`'s type does not derive `Debug`, so Ply has no way to \
+                         print or compare the values this run built. (W0527)",
+                        param = stat.param,
+                        declared_as = stat.declared_as,
+                        total = stat.total,
+                    ),
+                    pointer: None,
+                    primary_span: None,
+                    counterexample: None,
+                    fixes: vec![Fix {
+                        title: format!(
+                            "add `#[derive(Debug)]` to the type `{}` returns, so Ply can count \
+                             how many distinct values a run actually reaches",
+                            stat.declared_as
+                        ),
+                        edits: vec![],
+                    }],
+                    assumptions: vec![],
+                    open_item: Some("route_unprintable".into()),
+                });
+            }
             // A receiver method is never the zero-input shape below, even
             // when its own checked call takes no parameters
             // (`Bucket::capacity`, this fixture's own case, found by the
@@ -5169,6 +5324,18 @@ fn run_fuzz_and_test_checks(
         }
     }
 
+    // The `route-built` mark's own static fallback: a route-built value
+    // nested inside a composed shape (`Vec<Handle>`, say) generates no
+    // per-case marker at all -- the degenerate-route guard is deliberately
+    // narrowed to a *top-level* parameter (`fuzz_gen::route_distinct_
+    // tracking`'s own doc) -- but the mark itself is a plain fact about
+    // where the values came from, true regardless of nesting, and answering
+    // it costs nothing at codegen time: `cf`'s own resolved parameter types
+    // already say so.
+    if fuzz_ran && cf.params.iter().any(|p| p.ty.uses_any_route()) {
+        route_used = true;
+    }
+
     Ok(HarnessRun {
         fuzz_label,
         test_label,
@@ -5177,6 +5344,8 @@ fn run_fuzz_and_test_checks(
         diagnostics,
         seeded,
         promise_lopsided,
+        route_used,
+        route_collapsed,
     })
 }
 
@@ -6965,8 +7134,12 @@ mod tests {
              pub fn same_as(&self, other: &Self) -> bool { self.n == other.n }\n}\n",
         )
         .unwrap();
-        let cf =
-            harness::discover_method_with_receiver(dir.path(), "widget::Widget::same_as").unwrap();
+        let cf = harness::discover_method_with_receiver(
+            dir.path(),
+            "widget::Widget::same_as",
+            &Default::default(),
+        )
+        .unwrap();
         assert!(
             cf.is_fuzz_supported(),
             "a &Self parameter resolving to the same buildable type as &Widget must not leave \
@@ -7054,6 +7227,7 @@ mod tests {
             excluded_operations: vec![],
             other_constructors: vec![],
             max_sequence_len: 3,
+            route: None,
         }
     }
 
@@ -7134,8 +7308,12 @@ mod tests {
              #[ply::ensures(|result| *result == *result)]\npub fn level(&self) -> u32 { self.n }\n}\n",
         )
         .unwrap();
-        let cf =
-            ply_core::harness::discover_method_with_receiver(dir.path(), "Gauge::level").unwrap();
+        let cf = ply_core::harness::discover_method_with_receiver(
+            dir.path(),
+            "Gauge::level",
+            &Default::default(),
+        )
+        .unwrap();
         assert!(cf.receiver.is_some());
         let diag = bounded_refused_sample_only_diag(
             "receiverboundedrefuse::Gauge::level",

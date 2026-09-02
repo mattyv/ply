@@ -4570,6 +4570,7 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
             deny,
             profiles,
             unresolved,
+            routes,
         } = &doc;
 
         let mut missing = Vec::new();
@@ -4622,6 +4623,11 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
         for u in unresolved {
             if !text.contains(&u.note) {
                 missing.push(format!("open question #{}", u.id));
+            }
+        }
+        for (type_name, fn_path) in routes {
+            if !text.contains(type_name) || !text.contains(fn_path) {
+                missing.push(format!("route `{type_name}: {fn_path}`"));
             }
         }
 
