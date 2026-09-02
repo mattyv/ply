@@ -2,9 +2,9 @@
   "version": 1,
   "bundleId": "56737745-a03f-4e47-9208-9b86d9a69907",
   "revision": {
-    "number": 4,
-    "updatedAt": "2026-09-01T00:00:00.000Z",
-    "summary": "cargo ply and the engines are built: fold the unbuilt half of Tooling Today back in, attach real source files to the architecture nodes, and re-anchor the spec threads onto The-Ply-Spec.md"
+    "number": 5,
+    "updatedAt": "2026-09-02T00:00:00.000Z",
+    "summary": "Add the five missing diagram types (flow, state, dataflow, ER, concurrency), rebuild the overview, give Tooling Today tour steps, and correct the lock-file note that described a stale status Ply does not have"
   },
   "diagrams": [
     {
@@ -13,85 +13,73 @@
       "type": "overview",
       "origin": "llm",
       "generation": {
-        "focus": "Whole-project map at maximum altitude: the declared-claims \u2192 cargo ply \u2192 checking engines \u2192 verdicts/counterexamples \u2192 agent-repair loop (SPEC.md \u00a71), the three watermark strata (\u00a77.2), and how the repo's current artifacts (SPEC.md, .archi/, tools/render, vetting/, the M0 spike) feed back into the spec. No pipeline code exists yet; only tools/render and the docs are real files."
+        "focus": "What Ply is, who uses it, and what it produces"
       },
       "doc": {
         "type": "overview",
-        "autoLayoutApplied": true,
         "nodes": [
           {
             "id": "claims",
             "label": "Declared claims",
             "files": [],
             "group": "g-loop",
-            "step": 1,
-            "x": 372,
-            "y": 357
+            "step": 1
           },
           {
             "id": "cargoply",
             "label": "cargo ply",
             "files": [
-              "crates/ply-cli/src/main.rs"
+              "crates/ply-cli/src/main.rs",
+              "crates/ply-cli/src/verify.rs"
             ],
             "group": "g-loop",
-            "step": 2,
-            "x": 114,
-            "y": 544
+            "step": 2
           },
           {
             "id": "engines",
             "label": "Checking engines",
-            "files": [],
+            "files": [
+              "crates/ply-core/src/engines/kani.rs",
+              "crates/ply-core/src/engines/fuzz.rs",
+              "crates/ply-core/src/engines/mutants.rs"
+            ],
             "group": "g-loop",
-            "step": 3,
-            "x": 114,
-            "y": 679
+            "step": 3
           },
           {
             "id": "verdicts",
             "label": "Verdicts & counterexamples",
             "files": [],
             "group": "g-loop",
-            "step": 4,
-            "x": 79,
-            "y": 833
+            "step": 4
           },
           {
             "id": "agent",
             "label": "Agent repairs code",
             "files": [],
             "group": "g-loop",
-            "step": 5,
-            "x": 240,
-            "y": 1013
+            "step": 5
           },
           {
             "id": "declarative",
             "label": "Declarative stratum",
             "files": [],
             "group": "g-watermark",
-            "step": 6,
-            "x": 1405,
-            "y": 544
+            "step": 6
           },
           {
             "id": "watermark",
             "label": "The watermark",
             "files": [],
             "group": "g-watermark",
-            "step": 7,
-            "x": 1412,
-            "y": 679
+            "step": 7
           },
           {
             "id": "floor",
             "label": "The floor",
             "files": [],
             "group": "g-watermark",
-            "step": 8,
-            "x": 1412,
-            "y": 833
+            "step": 8
           },
           {
             "id": "spec",
@@ -100,9 +88,7 @@
               "The-Ply-Spec.md"
             ],
             "group": "g-artifacts",
-            "step": 9,
-            "x": 1040,
-            "y": 196
+            "step": 9
           },
           {
             "id": "archi",
@@ -112,9 +98,7 @@
               "docs/ply-tour.html"
             ],
             "group": "g-artifacts",
-            "step": 10,
-            "x": 1180,
-            "y": 357
+            "step": 10
           },
           {
             "id": "render",
@@ -125,371 +109,117 @@
               "tools/render/src/layout.rs"
             ],
             "group": "g-artifacts",
-            "step": 11,
-            "x": 1412,
-            "y": 357
+            "step": 11
           },
           {
             "id": "vetting",
             "label": "vetting/ scenarios",
             "files": [
-              "vetting/001-spsc-disruptor.md"
+              "vetting/001-spsc-disruptor.md",
+              "vetting/002-ingest-pipeline.md",
+              "vetting/003-trading-system.md",
+              "vetting/004-legacy-extension.md"
             ],
             "group": "g-artifacts",
-            "step": 12,
-            "x": 876,
-            "y": 42
+            "step": 12
           },
           {
-            "id": "m0",
-            "label": "M0 feasibility spike",
-            "files": [],
+            "id": "todo",
+            "label": "TODO.md",
+            "files": [
+              "TODO.md"
+            ],
             "group": "g-artifacts",
-            "step": 13,
-            "x": 1264.5,
-            "y": 42
+            "step": 13
           }
         ],
         "edges": [
           {
             "from": "claims",
             "to": "cargoply",
-            "label": "cargo ply verify (\u00a76)",
-            "vertices": [
-              {
-                "x": 199,
-                "y": 439
-              },
-              {
-                "x": 199,
-                "y": 478.5
-              },
-              {
-                "x": 199,
-                "y": 518
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.7675233532091874,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "cargo ply verify (\u00a76)"
           },
           {
             "from": "cargoply",
             "to": "engines",
-            "label": "routes checks to engines (\u00a73)",
-            "vertices": [
-              {
-                "x": 199,
-                "y": 639.5
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.5,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "routes checks to engines (\u00a73)"
           },
           {
             "from": "engines",
             "to": "verdicts",
-            "label": "results \u2192 verdicts + counterexamples (\u00a78)",
-            "vertices": [
-              {
-                "x": 199,
-                "y": 784
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.5,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "results \u2192 verdicts + counterexamples (\u00a78)"
           },
           {
             "from": "verdicts",
             "to": "agent",
-            "label": "counterexample feeds repair (\u00a71 finding 2)",
-            "vertices": [
-              {
-                "x": 199,
-                "y": 915
-              },
-              {
-                "x": 199,
-                "y": 964
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.4396173418407729,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "counterexample feeds repair (\u00a71 finding 2)"
           },
           {
             "from": "agent",
             "to": "claims",
-            "label": "repairs code / tightens claims (\u00a71)",
-            "vertices": [
-              {
-                "x": 457,
-                "y": 964
-              },
-              {
-                "x": 457,
-                "y": 915
-              },
-              {
-                "x": 457,
-                "y": 861
-              },
-              {
-                "x": 457,
-                "y": 784
-              },
-              {
-                "x": 457,
-                "y": 707
-              },
-              {
-                "x": 457,
-                "y": 639.5
-              },
-              {
-                "x": 457,
-                "y": 572
-              },
-              {
-                "x": 457,
-                "y": 518
-              },
-              {
-                "x": 457,
-                "y": 478.5
-              },
-              {
-                "x": 457,
-                "y": 439
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.5453159996925223,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "repairs code / tightens claims (\u00a71)"
           },
           {
             "from": "claims",
             "to": "declarative",
-            "label": "is the declarative stratum (\u00a77.2)",
-            "vertices": [
-              {
-                "x": 616,
-                "y": 439
-              },
-              {
-                "x": 616,
-                "y": 478.5
-              },
-              {
-                "x": 616,
-                "y": 518
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.12664029649474656,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "is the declarative stratum (\u00a77.2)"
           },
           {
             "from": "declarative",
             "to": "watermark",
-            "label": "declaration stops here (\u00a77.2)",
-            "vertices": [
-              {
-                "x": 1497,
-                "y": 639.5
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.5,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "declaration stops here (\u00a77.2)"
           },
           {
             "from": "watermark",
             "to": "floor",
-            "label": "verified below, never specified (\u00a77.2)",
-            "vertices": [
-              {
-                "x": 1497,
-                "y": 784
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.5,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "verified below, never specified (\u00a77.2)"
           },
           {
             "from": "spec",
             "to": "claims",
-            "label": "normative schema for every claim (\u00a75)",
-            "vertices": [
-              {
-                "x": 970,
-                "y": 291.5
-              },
-              {
-                "x": 970,
-                "y": 331
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.17393115957365823,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "normative schema for every claim (\u00a75)"
           },
           {
             "from": "spec",
             "to": "archi",
-            "label": "diagrammed and toured in .archi/",
-            "vertices": [
-              {
-                "x": 1280,
-                "y": 291.5
-              },
-              {
-                "x": 1280,
-                "y": 331
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.6016574680165662,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "diagrammed and toured in .archi/"
           },
           {
             "from": "render",
             "to": "declarative",
-            "label": "proves the visual grammar total (\u00a77.1)",
-            "vertices": [
-              {
-                "x": 1497,
-                "y": 439
-              },
-              {
-                "x": 1497,
-                "y": 478.5
-              },
-              {
-                "x": 1497,
-                "y": 518
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.5,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "proves the visual grammar total (\u00a77.1)"
           },
           {
             "from": "vetting",
             "to": "spec",
-            "label": "design scenarios \u2192 spec amendments",
-            "vertices": [
-              {
-                "x": 964,
-                "y": 147
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.3014103464037866,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "design scenarios \u2192 spec amendments"
           },
           {
-            "from": "m0",
+            "from": "todo",
             "to": "spec",
-            "label": "ADR-0003 findings \u2192 spec amendments (\u00a710)",
-            "vertices": [
-              {
-                "x": 1360.5,
-                "y": 147
-              }
-            ],
-            "labelPosition": {
-              "distance": 0.23632634425111854,
-              "offset": {
-                "x": 0,
-                "y": 0
-              }
-            }
+            "label": "review findings \u2192 spec amendments"
           }
         ],
         "groups": [
           {
             "id": "g-loop",
-            "label": "Core verification loop (\u00a71)",
-            "labelPosition": {
-              "x": 12,
-              "y": 7
-            }
+            "label": "Core verification loop (\u00a71)"
           },
           {
             "id": "g-watermark",
-            "label": "The watermark strata (\u00a77.2)",
-            "labelPosition": {
-              "x": 6,
-              "y": 6
-            }
+            "label": "The watermark strata (\u00a77.2)"
           },
           {
             "id": "g-artifacts",
-            "label": "Repo artifacts & feedback (current state)",
-            "labelPosition": {
-              "x": 14,
-              "y": 6
-            }
+            "label": "Repo artifacts & feedback (current state)"
           }
         ],
         "comments": {
           "__diagram__": [
             {
               "id": "n-ov-diag-1",
-              "text": "The whole-project map at maximum altitude. The core loop (\u00a71) is what Ply exists to close: declared claims routed through cargo ply to checking engines, back as verdicts and counterexamples an agent repairs code against. The watermark (\u00a77.2) bounds what that declarative layer can ever say \u2014 declarative stratum, then the watermark itself, then the unspecifiable floor. The artifacts group shows the project's actual current state: SPEC.md is the normative design; .archi/ diagrams and tours it; tools/render proves the \u00a77.1 visual grammar is total; vetting/ scenarios and the M0 spike (\u00a710) both feed findings back into spec amendments. No pipeline code exists yet \u2014 only tools/render and the docs are real files.",
-              "ts": 1787500000000
+              "text": "The whole-project map at maximum altitude. The core loop (\u00a71) is what Ply exists to close: declared claims routed through cargo ply to checking engines, back as verdicts and counterexamples an agent repairs code against. The watermark (\u00a77.2) bounds what that declarative layer can ever say \u2014 declarative stratum, then the watermark itself, then the unspecifiable floor. The artifacts group shows the project's actual current state: SPEC.md is the normative design; .archi/ diagrams and tours it; tools/render proves the \u00a77.1 visual grammar is total; vetting/ scenarios (001\u2013004) and TODO.md's running review findings both feed back into spec amendments. Unlike an earlier version of this diagram, the pipeline is no longer aspirational: cargo ply (crates/ply-cli) now has six real subcommands, and the Kani/fuzz/mutate engines it drives are real, working adapters, not a plan. See the separate 'Ply and the Processes It Spawns' concurrency diagram for exactly how it runs them.",
+              "ts": 1788307200000
             }
           ],
           "claims": [
@@ -502,14 +232,14 @@
           "cargoply": [
             {
               "id": "n-ov-cargoply-1",
-              "text": "The cargo-ply binary: check | verify | tree | worklist | audit | accept | synth | skill, each emitting the same JSON envelope under --json (\u00a74, \u00a76, \u00a78). It has no logic of its own here \u2014 it drives config load, anchor resolution, extraction, and engine dispatch in order.",
+              "text": "The cargo-ply binary (crates/ply-cli), with six subcommands: render (draw ply.yaml as SVG \u2014 needs only the declaration file, not code), check (validate ply.yaml and the anchors it points at), audit (list what a codebase's evidence rests on, and what Ply never checks), worklist (list unresolved markers and assumed contracts still owed evidence), verify (run the checking engines and write counterexample tests), and clean-views (remove older published visual runs). It has no checking logic of its own \u2014 it drives config load, anchor resolution, extraction, and engine dispatch in order (\u00a76).",
               "ts": 1787500000002
             }
           ],
           "engines": [
             {
               "id": "n-ov-engines-1",
-              "text": "External checking tools driven as subprocesses and never re-implemented: rustc/cargo, Kani, proptest, cargo-mutants, and the optional Verus/Miri (\u00a73). Ply is glue and UX over these engines, never a solver (\u00a71).",
+              "text": "External checking tools driven as subprocesses and never re-implemented: rustc/cargo (build), Kani (the `bounded` check), a generated proptest-based test harness run via `cargo test` (the `fuzz` check), and cargo-mutants (the `mutate` check). Verus (the `prove` check) is named in the schema but not built yet (M7) \u2014 declaring it today reports a missing-engine warning, never a failure. Ply is glue and UX over these engines, never a solver (\u00a71, \u00a73).",
               "ts": 1787500000003
             }
           ],
@@ -558,7 +288,7 @@
           "archi": [
             {
               "id": "n-ov-archi-1",
-              "text": "The .archi/ bundle: named diagrams (architecture, verify-pipeline, verdict-model, and this overview) plus a guided tour of comments and reading-order steps, exportable as the standalone docs/ply-tour.html walkthrough.",
+              "text": "The .archi/ bundle: named diagrams (overview, architecture, verify-pipeline, verdict-model, and tools-today) plus a guided tour of comments and reading-order steps, exportable as the standalone docs/ply-tour.html walkthrough.",
               "ts": 1787500000010
             }
           ],
@@ -572,15 +302,15 @@
           "vetting": [
             {
               "id": "n-ov-vetting-1",
-              "text": "Design scenarios that stress the grammar before the tool exists. vetting/001-spsc-disruptor.md found three grammar gaps \u2014 no way to record externally-verified properties, generics breaking checkability, an over-broad example rule \u2014 and each fed back into a spec amendment (trusted claims, check_with, the \u00a75.4a scope fix).",
+              "text": "Four scenarios (001\u2013004) that stress the grammar and the tool, each written up with what held and what broke. 001 (an SPSC ring) found three grammar gaps that became spec amendments: no way to record externally-verified properties, generics breaking checkability, an over-broad example rule. 002 (a market-data ingest pipeline) exercised architecture-tier edges, deny rules, capability containment, modular composition (D5), and the first use of `old()`. 003 (a trading system) nested a whole scenario inside one component and used dotted cross-component references, the first real stress on aggregation and the zoom model. 004 (a new feature beside an old codebase) was the first scenario run against the real `cargo ply verify` rather than reasoned about on paper \u2014 a fragment-first design testing whether the boundary between checkable new code and unchecked old code produces an honest verdict.",
               "ts": 1787500000012
             }
           ],
-          "m0": [
+          "todo": [
             {
-              "id": "n-ov-m0-1",
-              "text": "The feasibility spike (\u00a710): a throwaway fixture crate exercising contracted functions, a stubbed callee, cargo-mutants, and a real counterexample with playback replay, before anything else starts. Its ADR-0003 records what works, fails, or needs a flag, and lists every spec amendment that follows.",
-              "ts": 1787500000013
+              "id": "n-ov-todo-1",
+              "text": "The project's running list of what's agreed but not yet done, ticked off with a commit hash the moment it lands. It is also where a finished review's findings about the tool itself get written down, including honest gaps left open on purpose \u2014 and those findings are exactly what turns into the next spec amendment.",
+              "ts": 1788307200000
             }
           ]
         }
@@ -776,7 +506,7 @@
               "schema/ply.schema.json"
             ],
             "group": "g-artifacts",
-            "x": 2867.5,
+            "x": 2883.5,
             "y": 1188,
             "step": 2
           },
@@ -851,7 +581,7 @@
               }
             ],
             "labelPosition": {
-              "distance": 0.06363096658031182,
+              "distance": 0.06298222564392056,
               "offset": {
                 "x": 0,
                 "y": 0
@@ -1461,9 +1191,9 @@
           ],
           "plylock": [
             {
-              "id": "n-plylock-1",
-              "text": "Committed. Per claim: item token-stream hash, merged contract text, callee contract hashes, engine name+version+flags, active features, target triple (D14). A verdict is stale when any part changed (W0302); cargo ply accept re-blesses fingerprints and refuses (E0303) nodes whose last run failed (\u00a75.2).",
-              "ts": 1755877962000
+              "id": "plylock-2",
+              "ts": 1756771200000,
+              "text": "A committed file of results Ply already earned, so an unchanged function is not re-checked every run. Each entry stores a fingerprint of everything the result depended on: a hash of the function's own tokens, the contract text it was checked against, the contracts of everything it calls, and the engine's name, version and flags (D14). A stored result is used only if that fingerprint still matches at the moment of use; otherwise it is thrown away and re-earned. CORRECTION, 2026-09-02: an earlier version of this note described a `W0302 claim may be stale` warning, a `cargo ply accept` command and an `E0303` code. None of the three exist. The spec rules them out by design (The-Ply-Spec.md around line 594) and crates/ply-core/src/registry.rs says so in as many words, because a claim is never left in the state of \"recorded but possibly no longer true\" that those would manage. Verified in the code: crates/ply-core/src/record.rs."
             }
           ],
           "envelope": [
@@ -2527,6 +2257,7 @@
       },
       "doc": {
         "type": "architecture",
+        "autoLayoutApplied": true,
         "nodes": [
           {
             "id": "model",
@@ -2535,8 +2266,9 @@
               "crates/ply-core/src/model.rs"
             ],
             "group": "built",
-            "x": 40,
-            "y": 60
+            "x": 851,
+            "y": 582,
+            "step": 3
           },
           {
             "id": "check",
@@ -2546,8 +2278,9 @@
               "tools/check/src/main.rs"
             ],
             "group": "built",
-            "x": 260,
-            "y": 20
+            "x": 1165.5,
+            "y": 447,
+            "step": 4
           },
           {
             "id": "kernel",
@@ -2557,8 +2290,9 @@
               "crates/ply-core/tests/kernel_enumeration.rs"
             ],
             "group": "built",
-            "x": 260,
-            "y": 150
+            "x": 301,
+            "y": 447,
+            "step": 5
           },
           {
             "id": "render",
@@ -2568,8 +2302,9 @@
               "tools/render/src/layout.rs"
             ],
             "group": "built",
-            "x": 500,
-            "y": 80
+            "x": 812,
+            "y": 312,
+            "step": 6
           },
           {
             "id": "vetting",
@@ -2580,8 +2315,9 @@
               "vetting/003-trading-system.ply.yaml"
             ],
             "group": "built",
-            "x": 40,
-            "y": 190
+            "x": 1102,
+            "y": 177,
+            "step": 2
           },
           {
             "id": "ci",
@@ -2590,8 +2326,9 @@
               ".github/workflows/ci.yml"
             ],
             "group": "built",
-            "x": 500,
-            "y": 230
+            "x": 609.5,
+            "y": 177,
+            "step": 9
           },
           {
             "id": "spec",
@@ -2600,8 +2337,9 @@
               "The-Ply-Spec.md"
             ],
             "group": "built",
-            "x": 40,
-            "y": 300
+            "x": 1102,
+            "y": 42,
+            "step": 1
           },
           {
             "id": "cargoply",
@@ -2614,9 +2352,10 @@
               "crates/ply-cli/src/worklist.rs"
             ],
             "group": "built",
-            "x": 760,
-            "y": 80,
-            "change": "added"
+            "x": 65.5,
+            "y": 312,
+            "change": "added",
+            "step": 7
           },
           {
             "id": "engines",
@@ -2628,85 +2367,299 @@
               "crates/ply-core/src/engines/mutants.rs"
             ],
             "group": "built",
-            "x": 760,
-            "y": 210,
-            "change": "added"
+            "x": 565,
+            "y": 447,
+            "change": "added",
+            "step": 8
           }
         ],
         "edges": [
           {
             "from": "check",
             "to": "model",
-            "label": "parses with"
+            "label": "parses with",
+            "vertices": [
+              {
+                "x": 1250.5,
+                "y": 542.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.14404157099319267,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "render",
             "to": "model",
-            "label": "parses with"
+            "label": "parses with",
+            "vertices": [
+              {
+                "x": 986,
+                "y": 407.5
+              },
+              {
+                "x": 986,
+                "y": 475
+              },
+              {
+                "x": 986,
+                "y": 542.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5324814360995361,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "render",
             "to": "check",
-            "label": "runs rules \u2192 red findings"
+            "label": "runs rules \u2192 red findings",
+            "vertices": [
+              {
+                "x": 1314,
+                "y": 407.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.8611416355511804,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "render",
             "to": "kernel",
-            "label": "aggregate() \u2192 ceiling fill"
+            "label": "aggregate() \u2192 ceiling fill",
+            "vertices": [
+              {
+                "x": 513,
+                "y": 407.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.7829426863071625,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "vetting",
             "to": "check",
-            "label": "validated by"
+            "label": "validated by",
+            "vertices": [
+              {
+                "x": 1187,
+                "y": 272.5
+              },
+              {
+                "x": 1187,
+                "y": 340
+              },
+              {
+                "x": 1187,
+                "y": 407.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.4677973021775272,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "vetting",
             "to": "render",
-            "label": "drawn by"
+            "label": "drawn by",
+            "vertices": [
+              {
+                "x": 986.5,
+                "y": 272.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.6536452130900644,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "ci",
             "to": "check",
-            "label": "gates"
+            "label": "gates",
+            "vertices": [
+              {
+                "x": 1085,
+                "y": 272.5
+              },
+              {
+                "x": 1085,
+                "y": 340
+              },
+              {
+                "x": 1085,
+                "y": 407.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.6868885458911347,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "ci",
             "to": "render",
-            "label": "gates + SVG drift"
+            "label": "gates + SVG drift",
+            "vertices": [
+              {
+                "x": 495,
+                "y": 272.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.27715391308025217,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "ci",
             "to": "kernel",
-            "label": "runs 991k-tree proof"
+            "label": "runs 991k-tree proof",
+            "vertices": [
+              {
+                "x": 348.5,
+                "y": 272.5
+              },
+              {
+                "x": 348.5,
+                "y": 340
+              },
+              {
+                "x": 348.5,
+                "y": 407.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.7474003796938583,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "spec",
             "to": "vetting",
-            "label": "vetted against"
+            "label": "vetted against",
+            "vertices": [
+              {
+                "x": 1187,
+                "y": 137.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.5,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "cargoply",
             "to": "kernel",
             "label": "aggregates with",
-            "change": "added"
+            "change": "added",
+            "vertices": [
+              {
+                "x": 206,
+                "y": 407.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.31251281806202774,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "cargoply",
             "to": "model",
             "label": "parses with",
-            "change": "added"
+            "change": "added",
+            "vertices": [
+              {
+                "x": 107,
+                "y": 407.5
+              },
+              {
+                "x": 107,
+                "y": 475
+              },
+              {
+                "x": 107,
+                "y": 542.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.1233145167245796,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           },
           {
             "from": "cargoply",
             "to": "engines",
             "label": "routes to",
-            "change": "added"
+            "change": "added",
+            "vertices": [
+              {
+                "x": 737,
+                "y": 407.5
+              }
+            ],
+            "labelPosition": {
+              "distance": 0.9274311138010267,
+              "offset": {
+                "x": 0,
+                "y": 0
+              }
+            }
           }
         ],
         "groups": [
           {
             "id": "built",
-            "label": "Built today"
+            "label": "Built today",
+            "labelPosition": {
+              "x": 12,
+              "y": 7
+            }
           }
         ],
         "comments": {
@@ -2754,9 +2707,1370 @@
           ]
         }
       }
+    },
+    {
+      "id": "verify-decision",
+      "name": "What Verify Decides Per Function",
+      "type": "flow",
+      "origin": "llm",
+      "generation": {
+        "focus": "The decision path cargo ply verify walks for a single function claim"
+      },
+      "doc": {
+        "type": "flow",
+        "nodes": [
+          {
+            "id": "scheduled",
+            "label": "Claim Scheduled",
+            "files": [
+              "crates/ply-core/src/schedule.rs"
+            ],
+            "step": 1
+          },
+          {
+            "id": "hascontract",
+            "label": "Does The Callee Have\nA Declared Contract?",
+            "files": [
+              "crates/ply-cli/src/verify.rs",
+              "The-Ply-Spec.md"
+            ],
+            "shape": "decision",
+            "step": 2
+          },
+          {
+            "id": "refuse",
+            "label": "Refuse To Descend",
+            "files": [
+              "crates/ply-cli/src/verify.rs"
+            ],
+            "step": 3
+          },
+          {
+            "id": "proofpassed",
+            "label": "Did The Callee's Own\nProof Already Pass?",
+            "files": [
+              "crates/ply-cli/src/verify.rs",
+              "crates/ply-core/src/schedule.rs"
+            ],
+            "shape": "decision",
+            "step": 4
+          },
+          {
+            "id": "stubclean",
+            "label": "Stand In For The Callee,\nVerdict Clean",
+            "files": [
+              "crates/ply-cli/src/verify.rs"
+            ],
+            "step": 5
+          },
+          {
+            "id": "assume",
+            "label": "Verify Against An\nAssumed Promise",
+            "files": [
+              "crates/ply-cli/src/verify.rs"
+            ],
+            "step": 6
+          },
+          {
+            "id": "enginecheck",
+            "label": "Is The Required\nTool Installed?",
+            "files": [
+              "crates/ply-cli/src/verify.rs",
+              "crates/ply-core/src/engines/kani.rs",
+              "crates/ply-core/src/engines/mutants.rs"
+            ],
+            "shape": "decision",
+            "step": 7
+          },
+          {
+            "id": "enginemissing",
+            "label": "Report Engine Missing",
+            "files": [
+              "crates/ply-cli/src/verify.rs"
+            ],
+            "step": 8
+          },
+          {
+            "id": "runengine",
+            "label": "Run The Engine",
+            "files": [
+              "crates/ply-core/src/engines/kani.rs",
+              "crates/ply-core/src/engines/fuzz.rs",
+              "crates/ply-core/src/engines/mutants.rs"
+            ],
+            "step": 9
+          },
+          {
+            "id": "parseresult",
+            "label": "Read What It Reported",
+            "files": [
+              "crates/ply-core/src/engines/mod.rs",
+              "crates/ply-core/src/engines/kani.rs"
+            ],
+            "step": 10
+          },
+          {
+            "id": "producevverdict",
+            "label": "Produce Verdict And\nAny Counterexample",
+            "files": [
+              "crates/ply-cli/src/verify.rs",
+              "crates/ply-core/src/engines/kani.rs"
+            ],
+            "step": 11
+          }
+        ],
+        "edges": [
+          {
+            "from": "scheduled",
+            "to": "hascontract",
+            "label": "checking a bounded (Kani) claim"
+          },
+          {
+            "from": "hascontract",
+            "to": "refuse",
+            "label": "no contract declared anywhere"
+          },
+          {
+            "from": "hascontract",
+            "to": "proofpassed",
+            "label": "yes, callee is contracted"
+          },
+          {
+            "from": "proofpassed",
+            "to": "stubclean",
+            "label": "yes, clean all the way down"
+          },
+          {
+            "from": "proofpassed",
+            "to": "assume",
+            "label": "no"
+          },
+          {
+            "from": "stubclean",
+            "to": "enginecheck",
+            "label": "run the proof"
+          },
+          {
+            "from": "assume",
+            "to": "enginecheck",
+            "label": "run the proof"
+          },
+          {
+            "from": "refuse",
+            "to": "producevverdict",
+            "label": "no evidence earned"
+          },
+          {
+            "from": "enginecheck",
+            "to": "enginemissing",
+            "label": "not installed"
+          },
+          {
+            "from": "enginecheck",
+            "to": "runengine",
+            "label": "installed"
+          },
+          {
+            "from": "enginemissing",
+            "to": "producevverdict",
+            "label": "no evidence earned"
+          },
+          {
+            "from": "runengine",
+            "to": "parseresult",
+            "label": ""
+          },
+          {
+            "from": "parseresult",
+            "to": "producevverdict",
+            "label": ""
+          }
+        ],
+        "groups": [],
+        "comments": {
+          "__diagram__": [
+            {
+              "id": "d1",
+              "text": "This walks the decisions Ply makes for ONE function claim that declares a `bounded` check -- the Kani-backed proof, and the only check kind where D5's three-branch split applies. A `fuzz` or `test` check on the same function skips the top decision entirely: it just runs the callee's real code, contract or not, so it never needs to stand in for anything. Left out on purpose: whether a previously recorded result can be reused instead of running any of this again -- that re-check, and what makes a stored result go unusable, is the subject of the companion state diagram (verdict-lifecycle), not this one.",
+              "ts": 1756771200000
+            }
+          ],
+          "scheduled": [
+            {
+              "id": "n1",
+              "text": "Before Ply checks a function, it first checks every function that function calls, within the same crate. It orders all of them so that a callee always gets its turn before its caller -- ties between two functions with no dependency on each other are broken by name, so re-running on unchanged code always produces the same order. A function stuck in a dependency cycle with another function -- or one that merely depends on something stuck in a cycle, however many calls away -- never gets a clean turn in this order at all, and falls straight through to \"verify against an assumed promise\" below for every contracted function it calls.",
+              "ts": 1756771200000
+            }
+          ],
+          "hascontract": [
+            {
+              "id": "n2",
+              "text": "A promise can be declared two ways: written directly on the callee's own function, or written separately for it in the project's `ply.yaml` file when the callee is old code nobody wants to annotate. Either counts as \"has a contract\" here. If neither exists, Ply will not open the callee's body to find out what it does -- see \"Refuse To Descend\" below. (Diagnostic W0512, described in section 5.5 of the spec.)",
+              "ts": 1756771200000
+            }
+          ],
+          "refuse": [
+            {
+              "id": "n3",
+              "text": "Ply will not silently read through code nobody has made a promise about, and it will not pretend the check ran anyway. The check earns nothing this run -- not a guess, not a partial credit, not a timeout -- and the verdict reads plainly as \"nothing was checked.\" The warning that comes with it names the exact callee, and where in the caller's code it's called from, so this is something a person can actually go fix. It suggests two ways out: add a promise for the callee, or switch the check to `fuzz`, which crosses the same boundary by simply running the real code instead of needing a promise about it. Added 2026-08-25, closing a gap where a two-year-old, unannotated function used to just time out with no explanation instead.",
+              "ts": 1756771200000
+            }
+          ],
+          "proofpassed": [
+            {
+              "id": "n4",
+              "text": "\"Already passed, clean\" means the callee's own proof holds and that proof itself is not standing on some further unproven promise -- clean all the way down, not merely bounded-shaped. Everything else counts as \"no\" here: a callee that was only ever fuzz-tested or unit-tested, one that lives in a different crate, one that's part of a dependency cycle with this function, or one this run simply hasn't reached yet.",
+              "ts": 1756771200000
+            }
+          ],
+          "stubclean": [
+            {
+              "id": "n5",
+              "text": "Ply swaps the callee's real body out for a stand-in built purely from its promise, and checks the caller against that stand-in instead (Kani calls this stub_verified). Because the callee's own proof already held on its own, nothing here is being assumed -- but the result is only as deep as the shallower of the two: this function's own declared depth, or whatever depth the callee was actually proved to. A function declaring depth 5 that stands on a callee only proved to depth 2 gets a depth-2 result, never the deeper number.",
+              "ts": 1756771200000
+            }
+          ],
+          "assume": [
+            {
+              "id": "n6",
+              "text": "Ply still swaps in a stand-in for the callee, but this time the stand-in is built from a promise nobody has actually checked against the callee's real code yet. The result carries a visible mark saying it rests on an assumption, and that assumption itself is tracked as unproven debt until something runs the real callee against the same promise -- usually by fuzz-testing it. (Diagnostic W0511, section 5.5 of the spec.)",
+              "ts": 1756771200000
+            }
+          ],
+          "enginecheck": [
+            {
+              "id": "n7",
+              "text": "Every check Ply performs is actually carried out by a separate external tool -- Kani for a bounded proof, cargo-mutants for the mutation-testing tier. Before spending any time on the check itself, Ply confirms the tool is actually on the machine.",
+              "ts": 1756771200000
+            }
+          ],
+          "enginemissing": [
+            {
+              "id": "n8",
+              "text": "A missing tool is reported by name, with what to install -- never treated as a silent skip and never reported as though the check quietly passed. The check earns no evidence this run, and the run says exactly why.",
+              "ts": 1756771200000
+            }
+          ],
+          "runengine": [
+            {
+              "id": "n9",
+              "text": "Ply hands the work to the real tool and waits -- cargo kani for a bounded proof, the generated test harness for a fuzz or test check, cargo-mutants for the mutation tier -- until it finishes or runs out of its time budget.",
+              "ts": 1756771200000
+            }
+          ],
+          "parseresult": [
+            {
+              "id": "n10",
+              "text": "Ply strips out terminal colour codes before reading anything the tool printed -- a coloured \"error:\" line once slipped past every text match Ply had for it and was reported as an unattributable failure instead of the plain compiler error it actually was. Once the colour is gone, Ply reads the tool's own output closely enough to tell a genuine broken promise apart from the tool simply running out of time, crashing, or refusing to run at all -- three different facts that must never be reported as the same thing.",
+              "ts": 1756771200000
+            }
+          ],
+          "producevverdict": [
+            {
+              "id": "n11",
+              "text": "The final answer for this one check: how strong the evidence is (or that it's a genuine violation, or an honest \"couldn't tell\"), plus -- when a check actually found a case that breaks the promise -- the exact input that broke it. That input is kept as replayable data and, wherever it can be, is also turned into an ordinary test that fails on its own, so a person can see the failure without needing Ply at all.",
+              "ts": 1756771200000
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "verdict-lifecycle",
+      "name": "How A Claim's Verdict Changes",
+      "type": "state",
+      "origin": "llm",
+      "generation": {
+        "focus": "The states a single claim's verdict moves through across runs"
+      },
+      "doc": {
+        "type": "state",
+        "nodes": [
+          {
+            "id": "noevidence",
+            "label": "No Evidence Yet",
+            "files": [
+              "crates/ply-core/src/kernel.rs"
+            ],
+            "step": 1
+          },
+          {
+            "id": "tested",
+            "label": "Tested",
+            "files": [
+              "crates/ply-core/src/record.rs"
+            ],
+            "step": 2
+          },
+          {
+            "id": "fuzzed",
+            "label": "Fuzzed",
+            "files": [
+              "crates/ply-core/src/record.rs"
+            ],
+            "step": 3
+          },
+          {
+            "id": "bounded",
+            "label": "Bounded",
+            "files": [
+              "crates/ply-core/src/record.rs",
+              "crates/ply-core/src/kernel.rs"
+            ],
+            "step": 4
+          },
+          {
+            "id": "resting",
+            "label": "Resting On An\nAssumption",
+            "files": [
+              "crates/ply-cli/src/verify.rs"
+            ],
+            "step": 5
+          },
+          {
+            "id": "discharged",
+            "label": "Assumption Checked,\nDebt Cleared",
+            "files": [
+              "crates/ply-cli/src/verify.rs",
+              "The-Ply-Spec.md"
+            ],
+            "step": 6
+          },
+          {
+            "id": "violation",
+            "label": "Violation Found",
+            "files": [
+              "crates/ply-core/src/engines/kani.rs",
+              "crates/ply-core/src/kernel.rs"
+            ],
+            "step": 7
+          }
+        ],
+        "edges": [
+          {
+            "from": "noevidence",
+            "to": "tested",
+            "label": "declares `test`, and every worked example holds"
+          },
+          {
+            "from": "noevidence",
+            "to": "fuzzed",
+            "label": "declares `fuzz(n)`, and every generated case holds"
+          },
+          {
+            "from": "noevidence",
+            "to": "bounded",
+            "label": "declares `bounded(k)`, proved exhaustively to depth k"
+          },
+          {
+            "from": "noevidence",
+            "to": "bounded",
+            "label": "stands on a callee whose own proof already passed cleanly this run"
+          },
+          {
+            "from": "noevidence",
+            "to": "resting",
+            "label": "stands on a callee's promise instead of a clean proof of it"
+          },
+          {
+            "from": "noevidence",
+            "to": "violation",
+            "label": "a check finds a concrete case that breaks the promise"
+          },
+          {
+            "from": "resting",
+            "to": "discharged",
+            "label": "the assumed promise is fuzz-checked against the callee's real body, and holds"
+          },
+          {
+            "from": "tested",
+            "to": "noevidence",
+            "label": "an input the fingerprint tracks changes (source, contract, engine version, ...)"
+          },
+          {
+            "from": "fuzzed",
+            "to": "noevidence",
+            "label": "an input the fingerprint tracks changes (source, contract, engine version, ...)"
+          },
+          {
+            "from": "bounded",
+            "to": "noevidence",
+            "label": "an input the fingerprint tracks changes (source, contract, a callee's own bound, ...)"
+          },
+          {
+            "from": "bounded",
+            "to": "noevidence",
+            "label": "the stored record doesn't match anything its own checks could earn (hand-edited or corrupted)"
+          },
+          {
+            "from": "resting",
+            "to": "noevidence",
+            "label": "an input the fingerprint tracks changes (source, contract, engine version, ...)"
+          },
+          {
+            "from": "discharged",
+            "to": "noevidence",
+            "label": "an input the fingerprint tracks changes (source, contract, engine version, ...)"
+          },
+          {
+            "from": "violation",
+            "to": "noevidence",
+            "label": "an input the fingerprint tracks changes (source, contract, engine version, ...)"
+          }
+        ],
+        "groups": [],
+        "comments": {
+          "__diagram__": [
+            {
+              "id": "d1",
+              "text": "This shows the states one claim's verdict can occupy across runs, and the event that moves it from one to another. It deliberately does not repeat the shape of a verdict node itself (fields, types, statuses as data) -- that is already drawn in this bundle's class diagram, verdict-model. It also does not show how several checks declared on the same function combine into one reported verdict; that is an implementation detail, not a lifecycle state. Two things worth naming plainly: first, the kernel's own evidence scale has a strongest rung above Bounded called Proved, but nothing in Ply can earn it today -- the check that would produce it (`prove`) has no engine behind it yet, so this diagram stops at Bounded rather than drawing a state nothing can reach. Second, the tool's rendering code still carries a leftover `Stale` status it knows how to draw, from an earlier design -- but nothing anywhere in the checking pipeline ever actually sets it any more, matching the current spec's own claim that there is no stale state: a claim whose recorded answer no longer matches simply gets re-checked from scratch, which is what the loop back to \"No Evidence Yet\" below shows instead.",
+              "ts": 1756771200000
+            }
+          ],
+          "noevidence": [
+            {
+              "id": "n1",
+              "text": "This is where every claim starts, and it is also exactly what \"unclaimed\" means everywhere else in Ply: a claim nobody has answered yet, and a claim Ply refused to check (because a callee it needed to look through had no promise attached) both read identically -- there is no separate \"refused\" state.",
+              "ts": 1756771200000
+            }
+          ],
+          "tested": [
+            {
+              "id": "n2",
+              "text": "Earned when the function declares a `test` check and its worked examples all hold. This is one rung above having no evidence at all, and one rung below Fuzzed.",
+              "ts": 1756771200000
+            }
+          ],
+          "fuzzed": [
+            {
+              "id": "n3",
+              "text": "Earned when the function declares `fuzz(n)` and every one of the n generated cases holds. Stronger than Tested (more cases, generated rather than hand-written), weaker than Bounded (sampled, not exhaustive).",
+              "ts": 1756771200000
+            }
+          ],
+          "bounded": [
+            {
+              "id": "n4",
+              "text": "Earned when a `bounded(k)` check is proved exhaustively up to size k, either directly or by standing cleanly on a callee's own already-passed proof (in which case the reported depth is capped at whichever is shallower: this function's own declared depth, or the callee's proved depth). This is the strongest evidence Ply can currently earn -- the kernel's evidence scale defines one rung above it, Proved, but no check today has an engine behind it that can produce that rung.",
+              "ts": 1756771200000
+            }
+          ],
+          "resting": [
+            {
+              "id": "n5",
+              "text": "The claim still earned Tested, Fuzzed, or Bounded evidence at whatever strength its check produced -- this mark rides alongside that evidence rather than replacing it, because standing on an unproven promise doesn't erase what was otherwise checked. It's reached whenever the callee being stood on wasn't itself clean this run: merely fuzz- or unit-tested, living in a different crate, caught in a dependency cycle, or simply not checked yet. The moment this mark is set, the assumption behind it is also tracked as unpaid debt.",
+              "ts": 1756771200000
+            }
+          ],
+          "discharged": [
+            {
+              "id": "n6",
+              "text": "The \"resting on an assumption\" mark itself never goes away while the proof is still standing on a promise instead of the callee's real body -- only the debt half clears, once something has actually run the real callee against that same promise (typically by fuzz-testing it) and it held. `cargo ply audit` and `cargo ply worklist` are what track this debt in the meantime, from two different angles: audit lists it as permanent trust surface, worklist lists it as work that can still be closed.",
+              "ts": 1756771200000
+            }
+          ],
+          "violation": [
+            {
+              "id": "n7",
+              "text": "The weakest result there is -- weaker even than having no evidence at all. Found when a check turns up a concrete case where the code breaks its own promise. A violation anywhere drags everything containing it down to a violation too, no matter how much else nearby was cleanly proved.",
+              "ts": 1756771200000
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "artifact-dataflow",
+      "name": "What Ply Reads and Writes",
+      "type": "dataflow",
+      "origin": "llm",
+      "generation": {
+        "focus": "Every file Ply reads, generates, or emits, and how data moves between them"
+      },
+      "doc": {
+        "type": "dataflow",
+        "nodes": [
+          {
+            "id": "yaml",
+            "label": "ply.yaml",
+            "step": 1,
+            "group": "g_in",
+            "files": [
+              "ply.yaml",
+              "vetting/003-trading-system.ply.yaml"
+            ]
+          },
+          {
+            "id": "schema",
+            "label": "ply.schema.json",
+            "step": 2,
+            "group": "g_in",
+            "files": [
+              "schema/ply.schema.json"
+            ]
+          },
+          {
+            "id": "document",
+            "label": "Parsed Declaration",
+            "step": 3,
+            "files": [
+              "crates/ply-core/src/model.rs",
+              "crates/ply-core/src/config.rs"
+            ]
+          },
+          {
+            "id": "source",
+            "label": "The Checked Crate's\nRust Source",
+            "step": 4,
+            "group": "g_in",
+            "files": [
+              "crates/ply-cli/src/check.rs",
+              "crates/ply-core/src/harness.rs"
+            ]
+          },
+          {
+            "id": "lock",
+            "label": "ply.lock",
+            "step": 5,
+            "group": "g_gen",
+            "files": [
+              "crates/ply-core/src/record.rs",
+              "tests/fixtures/paramseedopaque/ply.lock"
+            ]
+          },
+          {
+            "id": "verify_engine",
+            "label": "Verification Engines",
+            "step": 6,
+            "group": "g_gen",
+            "files": [
+              "crates/ply-cli/src/verify.rs"
+            ]
+          },
+          {
+            "id": "proof_harness",
+            "label": "Generated Proof Harness\nsrc/ply_generated.rs",
+            "step": 7,
+            "group": "g_gen",
+            "files": [
+              "crates/ply-core/src/harness.rs",
+              "tests/fixtures/vecbound/src/ply_generated.rs"
+            ]
+          },
+          {
+            "id": "cex_test",
+            "label": "Generated Counterexample Test\nsrc/ply_generated_cex.rs",
+            "step": 8,
+            "group": "g_gen",
+            "files": []
+          },
+          {
+            "id": "fuzz_crate",
+            "label": "Generated Test Harness Crate\ntarget/ply/fuzz/<name>/",
+            "step": 9,
+            "group": "g_gen",
+            "files": [
+              "crates/ply-core/src/harness_crate.rs"
+            ]
+          },
+          {
+            "id": "svg",
+            "label": "Rendered SVG Drawing",
+            "step": 10,
+            "group": "g_out",
+            "files": [
+              "crates/ply-core/src/visual/svg.rs",
+              "vetting/003-trading-system.svg"
+            ]
+          },
+          {
+            "id": "text",
+            "label": "Plain-Text Transcript",
+            "step": 11,
+            "group": "g_out",
+            "files": [
+              "crates/ply-core/src/visual/transcript.rs",
+              "vetting/003-trading-system-full.txt"
+            ]
+          },
+          {
+            "id": "json_envelope",
+            "label": "JSON Diagnostics Report",
+            "step": 12,
+            "group": "g_out",
+            "files": [
+              "crates/ply-core/src/diag.rs"
+            ]
+          },
+          {
+            "id": "visual_snapshot",
+            "label": "Published Visual Snapshot\ntarget/ply/views/<run>/visual.json",
+            "step": 13,
+            "group": "g_out",
+            "files": [
+              "crates/ply-core/src/visual/mod.rs",
+              "target/ply/views/1788168166-166428000-17374/visual.json",
+              "target/ply/view.json"
+            ]
+          }
+        ],
+        "edges": [
+          {
+            "from": "yaml",
+            "to": "document",
+            "label": "raw YAML text: components, edges, checks, deny rules"
+          },
+          {
+            "from": "schema",
+            "to": "document",
+            "label": "the grammar its keys and values are checked against first"
+          },
+          {
+            "from": "document",
+            "to": "verify_engine",
+            "label": "which functions to check, and what each one promises"
+          },
+          {
+            "from": "source",
+            "to": "verify_engine",
+            "label": "the real body of each anchored function"
+          },
+          {
+            "from": "lock",
+            "to": "verify_engine",
+            "label": "last run's verdict and fingerprint, reused if nothing it depended on changed"
+          },
+          {
+            "from": "verify_engine",
+            "to": "lock",
+            "label": "this run's new verdict and fingerprint"
+          },
+          {
+            "from": "verify_engine",
+            "to": "proof_harness",
+            "label": "one promise, translated into a bounded proof"
+          },
+          {
+            "from": "verify_engine",
+            "to": "fuzz_crate",
+            "label": "one promise, translated into randomised test cases"
+          },
+          {
+            "from": "proof_harness",
+            "to": "cex_test",
+            "label": "the exact failing input, if the proof finds one"
+          },
+          {
+            "from": "verify_engine",
+            "to": "json_envelope",
+            "label": "verdicts, evidence and violations for this run"
+          },
+          {
+            "from": "document",
+            "to": "json_envelope",
+            "label": "schema, anchor and architecture problems (no engines needed for this)"
+          },
+          {
+            "from": "source",
+            "to": "json_envelope",
+            "label": "which anchors actually resolve to real functions"
+          },
+          {
+            "from": "verify_engine",
+            "to": "visual_snapshot",
+            "label": "this run's completed outcome"
+          },
+          {
+            "from": "document",
+            "to": "visual_snapshot",
+            "label": "the declared picture the outcome is laid over"
+          },
+          {
+            "from": "document",
+            "to": "svg",
+            "label": "components, edges and checks, laid out as boxes and arrows"
+          },
+          {
+            "from": "document",
+            "to": "text",
+            "label": "the same facts, written as prose instead of drawn"
+          }
+        ],
+        "groups": [
+          {
+            "id": "g_in",
+            "label": "What Ply Reads"
+          },
+          {
+            "id": "g_gen",
+            "label": "What Verification Generates"
+          },
+          {
+            "id": "g_out",
+            "label": "What The CLI Hands Back"
+          }
+        ],
+        "comments": {
+          "__diagram__": [
+            {
+              "id": "d0",
+              "text": "Shows every artifact cargo-ply reads, generates, or writes, and how data moves between them, across all five subcommands (render, check, audit, worklist, verify). It deliberately leaves out the verdict kernel's internal computation -- that is how results are combined, not what moves between files, and it leaves out the exact shape of one diagnostic (the JSON envelope's own fields do that job). ply.lock and the generated harnesses only ever appear when `cargo ply verify` runs; render, check, audit and worklist read only the declaration file, plus -- for check, audit and worklist -- the crate's own Rust source, just to confirm each anchor resolves to real code.",
+              "ts": 1788357723267
+            }
+          ],
+          "yaml": [
+            {
+              "id": "n1",
+              "text": "The declaration file a user writes by hand: which components exist, which function each one makes a promise about, and what that promise is. Ply reads this file's text before touching any Rust source, and rejects an unsupported `ply:` schema version before parsing goes any further (crates/ply-core/src/config.rs:69-87, `load`/`load_str`, code E0201). The repo's own ply.yaml and vetting/003-trading-system.ply.yaml are real examples of this file.",
+              "ts": 1788357723267
+            }
+          ],
+          "schema": [
+            {
+              "id": "n2",
+              "text": "The JSON Schema that fixes the declaration file's grammar -- which keys are allowed and what shape their values take -- rather than the Rust parser deciding that on its own. It is compiled straight into the cargo-ply binary at build time (crates/ply-core/src/schema.rs:28, `include_str!(\"../../../schema/ply.schema.json\")`), so there is exactly one copy of the grammar, never two that could disagree. A typo'd key is checked against it and reported with the nearest real key name before the file is even parsed into a document (crates/ply-core/src/config.rs:51-62, code E0204).",
+              "ts": 1788357723267
+            }
+          ],
+          "document": [
+            {
+              "id": "n3",
+              "text": "The in-memory tree every Ply command actually works with, built by parsing ply.yaml's text (crates/ply-core/src/config.rs:77-86, `load_str`). It holds the component tree, each function's promises, the call and data-flow edges, and the architecture ban rules -- see the declaration-grammar diagram for its full shape. `render`, `check`, `audit` and `worklist` stop here and never invoke a compiler or an external tool; only `verify` goes further and reads real source too.",
+              "ts": 1788357723267
+            }
+          ],
+          "source": [
+            {
+              "id": "n4",
+              "text": "The real .rs files of whatever crate ply.yaml's `anchor:` fields point at -- when Ply checks itself, that is Ply's own crates. `cargo ply check` reads the crate's src/lib.rs to confirm every anchor actually resolves to real code (crates/ply-cli/src/check.rs:332, `std::fs::read_to_string(&lib_path)`), and `verify` reads the same source again to find each promised function's exact body, so it can turn that body into a proof or a test (crates/ply-core/src/harness.rs, the harness codegen). The files listed on this node are the Ply code that does the reading, not the source being read -- that varies by project.",
+              "ts": 1788357723267
+            }
+          ],
+          "lock": [
+            {
+              "id": "n5",
+              "text": "The committed record of every result Ply has already earned, one entry per checked function, each stored beside a fingerprint hash of everything that result depended on -- the function's own source, its declared promises, the callees it stands on, and more (crates/ply-core/src/record.rs:96-140 lists the exact inputs by name). `verify` reads it at the start of a run (crates/ply-cli/src/verify.rs:398-399, `crate_dir.join(\"ply.lock\")`) and, for each function, recomputes today's fingerprint: a match reuses the old result untouched, a mismatch runs the check again. The file is rewritten at the end of every run (crates/ply-cli/src/verify.rs:1288) so the next run starts from today's answers. tests/fixtures/paramseedopaque/ply.lock is a real example of one.",
+              "ts": 1788357723267
+            }
+          ],
+          "verify_engine": [
+            {
+              "id": "n6",
+              "text": "The part of `cargo ply verify` that actually runs a check: it decides, per function, whether Kani (a bounded proof), proptest (randomised fuzzing), or cargo-mutants applies, and drives whichever one is needed (crates/ply-cli/src/verify.rs). It is the only place in Ply that runs an external tool against generated code -- render, check, audit and worklist never do, which is exactly why those four commands run in a fraction of a second and this one can take minutes.",
+              "ts": 1788357723267
+            }
+          ],
+          "proof_harness": [
+            {
+              "id": "n7",
+              "text": "A Kani proof, generated from one function's promises and written straight into the checked crate's own src/ply_generated.rs, with a `mod ply_generated;` line added to its lib.rs if one isn't already there (crates/ply-core/src/harness.rs:4085-4114, `write_generated_module`/`write_generated_file`). Writing it inside the crate rather than off to the side is deliberate: it lets the generated proof see private items the crate never exports. tests/fixtures/vecbound/src/ply_generated.rs is a real example left on disk from an earlier fixture run.",
+              "ts": 1788357723267
+            }
+          ],
+          "cex_test": [
+            {
+              "id": "n8",
+              "text": "An ordinary #[test], generated only when a proof or a fuzz run actually finds an input that breaks a promise, and written into the checked crate as src/ply_generated_cex.rs the same way as the proof harness (crates/ply-core/src/harness.rs:4098-4114, `write_generated_test`; called from crates/ply-cli/src/verify.rs:1219). It replays the exact failing input Kani or proptest found, so a developer can rerun `cargo test` and see the same failure without invoking Ply again. No example is checked into this repo because it only exists for the length of a run that actually found a violation.",
+              "ts": 1788357723267
+            }
+          ],
+          "fuzz_crate": [
+            {
+              "id": "n9",
+              "text": "A separate, disposable Cargo crate that Ply writes under the checked crate's own target/ply/fuzz/<name>/ (crates/ply-core/src/harness_crate.rs:146-149, `harness_rel_path`), holding the generated property tests for the `fuzz`/`test` checks and whatever `mutate` needs to run cargo-mutants against. It is a separate crate, not a file inside the checked crate, because these checks need their own Cargo.toml and a dependency on proptest; the module comment at the top of harness_crate.rs explains the two different ways it gets wired into the checked crate's own workspace.",
+              "ts": 1788357723267
+            }
+          ],
+          "svg": [
+            {
+              "id": "n10",
+              "text": "The picture `cargo ply render` produces: every component as a box, every call and data-flow edge as an arrow (crates/ply-core/src/visual/svg.rs). It needs only the declaration file to draw -- no compiler, no engines -- so it can draw a document `check` would refuse. Printed to stdout by default, or written to a file with -o (crates/ply-cli/src/main.rs, the final branch of `render_command_with_format`). vetting/003-trading-system.svg is a real rendered example.",
+              "ts": 1788357723267
+            }
+          ],
+          "text": [
+            {
+              "id": "n11",
+              "text": "The --text output of `cargo ply render`: the same facts as the SVG, written out as prose instead of drawn, including a few details the drawing only shows on hover (crates/ply-core/src/visual/transcript.rs). Meant for a terminal, a pipe, or a model -- none of which can hover over an SVG. vetting/003-trading-system-full.txt is a real example.",
+              "ts": 1788357723267
+            }
+          ],
+          "json_envelope": [
+            {
+              "id": "n12",
+              "text": "The machine-readable report any command can produce with the global --json flag: one diagnostic per finding, each with a verdict, its evidence, and a stable code (crates/ply-core/src/diag.rs, `Envelope`/`to_json_pretty`). `check`, `audit` and `worklist` fill it in from the declaration file and the resolved anchors alone, in well under a second; `verify` fills the same shape in from what the engines actually found (crates/ply-cli/src/main.rs, the `cli.json` branch under each subcommand). It always goes to stdout -- there is no file output for this report.",
+              "ts": 1788357723267
+            }
+          ],
+          "visual_snapshot": [
+            {
+              "id": "n13",
+              "text": "A frozen combination of the declared picture and one completed `verify` run's outcome, written only when --publish-view is passed (crates/ply-cli/src/main.rs:248-257). It lands at target/ply/views/<run-id>/visual.json, one folder per run, with target/ply/view.json as the index every editor client reads first to find the current run (crates/ply-core/src/visual/mod.rs:764-769, 796-839). `cargo ply clean-views` prunes older runs from this index without touching the current one (crates/ply-core/src/visual/mod.rs:873). This lets an editor extension show live results without ever parsing ply.yaml or running engines itself.",
+              "ts": 1788357723267
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "declaration-grammar",
+      "name": "The Declaration File's Grammar",
+      "type": "er",
+      "origin": "llm",
+      "generation": {
+        "focus": "The entities a ply.yaml declaration file is built from and how they relate"
+      },
+      "doc": {
+        "type": "er",
+        "nodes": [
+          {
+            "id": "document",
+            "label": "Document",
+            "step": 1,
+            "files": [
+              "crates/ply-core/src/model.rs",
+              "schema/ply.schema.json",
+              "ply.yaml"
+            ],
+            "members": [
+              "ply: u32",
+              "components: Map<string, Component>",
+              "externals: Map<string, External>",
+              "edges: string[]",
+              "deny: string[]",
+              "profiles: Map<string, string[]>",
+              "unresolved: UnresolvedEntry[]"
+            ]
+          },
+          {
+            "id": "component",
+            "label": "Component",
+            "step": 2,
+            "files": [
+              "crates/ply-core/src/model.rs"
+            ],
+            "members": [
+              "anchor: string",
+              "note: string?",
+              "pure: bool",
+              "strict: bool",
+              "uses: string[]",
+              "owns: string[]",
+              "profile: string?",
+              "checks: string[]?",
+              "components: Map<string, Component>",
+              "fns: Map<string, FnClaim>"
+            ]
+          },
+          {
+            "id": "fnclaim",
+            "label": "FnClaim",
+            "step": 3,
+            "files": [
+              "crates/ply-core/src/model.rs"
+            ],
+            "members": [
+              "checks: string[]?",
+              "mode: Check | Synth",
+              "requires: string[]",
+              "ensures: string[]",
+              "examples: string[]",
+              "check_with: Map<string, string>",
+              "trusted: TrustedClaim[]",
+              "unresolved: UnresolvedEntry[]",
+              "entry: string[]"
+            ]
+          },
+          {
+            "id": "check",
+            "label": "Check",
+            "step": 4,
+            "files": [
+              "crates/ply-core/src/model.rs"
+            ],
+            "members": [
+              "variant: Test | Fuzz(n: u32) | Bounded(k: u32) | Prove | Mutate"
+            ]
+          },
+          {
+            "id": "external",
+            "label": "External",
+            "step": 5,
+            "files": [
+              "crates/ply-core/src/model.rs"
+            ],
+            "members": [
+              "note: string"
+            ]
+          },
+          {
+            "id": "profile",
+            "label": "Profile",
+            "step": 6,
+            "files": [
+              "crates/ply-core/src/model.rs",
+              "schema/ply.schema.json"
+            ],
+            "members": [
+              "name: string",
+              "bans: string[]"
+            ]
+          },
+          {
+            "id": "edge",
+            "label": "Edge",
+            "step": 7,
+            "files": [
+              "crates/ply-core/src/model.rs"
+            ],
+            "members": [
+              "from: string",
+              "to: string",
+              "kind: Call | Flow(payload: string)"
+            ]
+          },
+          {
+            "id": "deny",
+            "label": "Deny",
+            "step": 8,
+            "files": [
+              "crates/ply-core/src/model.rs"
+            ],
+            "members": [
+              "from: string",
+              "to: string",
+              "except: string[]"
+            ]
+          },
+          {
+            "id": "trusted",
+            "label": "TrustedClaim",
+            "step": 9,
+            "files": [
+              "crates/ply-core/src/model.rs"
+            ],
+            "members": [
+              "claim: string",
+              "evidence: string"
+            ]
+          },
+          {
+            "id": "unresolved",
+            "label": "UnresolvedEntry",
+            "step": 10,
+            "files": [
+              "crates/ply-core/src/model.rs"
+            ],
+            "members": [
+              "id: u64",
+              "note: string"
+            ]
+          }
+        ],
+        "edges": [
+          {
+            "from": "document",
+            "to": "component",
+            "label": "declares (0 or more)"
+          },
+          {
+            "from": "component",
+            "to": "component",
+            "label": "nests (0 or more)"
+          },
+          {
+            "from": "component",
+            "to": "fnclaim",
+            "label": "declares (0 or more)"
+          },
+          {
+            "from": "document",
+            "to": "external",
+            "label": "declares (0 or more)"
+          },
+          {
+            "from": "document",
+            "to": "profile",
+            "label": "declares (0 or more)"
+          },
+          {
+            "from": "component",
+            "to": "profile",
+            "label": "opts into (0 or 1)"
+          },
+          {
+            "from": "document",
+            "to": "edge",
+            "label": "declares (0 or more)"
+          },
+          {
+            "from": "document",
+            "to": "deny",
+            "label": "declares (0 or more)"
+          },
+          {
+            "from": "document",
+            "to": "unresolved",
+            "label": "records (0 or more)"
+          },
+          {
+            "from": "fnclaim",
+            "to": "unresolved",
+            "label": "records (0 or more)"
+          },
+          {
+            "from": "fnclaim",
+            "to": "trusted",
+            "label": "trusts (0 or more)"
+          },
+          {
+            "from": "fnclaim",
+            "to": "check",
+            "label": "declares as its own (0 or more)"
+          },
+          {
+            "from": "component",
+            "to": "check",
+            "label": "declares as a default (0 or more)"
+          },
+          {
+            "from": "fnclaim",
+            "to": "external",
+            "label": "admits calls from (0 or more)"
+          },
+          {
+            "from": "edge",
+            "to": "component",
+            "label": "names as an endpoint, by name (0 or more)"
+          },
+          {
+            "from": "edge",
+            "to": "external",
+            "label": "names as an endpoint, by name (0 or more)"
+          },
+          {
+            "from": "deny",
+            "to": "component",
+            "label": "forbids, by name or wildcard (0 or more)"
+          }
+        ],
+        "groups": [],
+        "comments": {
+          "__diagram__": [
+            {
+              "id": "e0",
+              "text": "Shows the entities a ply.yaml declaration file is actually built from, in the parsed form crates/ply-core/src/model.rs defines, and how they relate. It deliberately leaves out the three engines that check these promises (Kani, proptest, cargo-mutants -- see the dataflow diagram) and the verdict kernel that combines their results; this diagram is only about what a user writes and what it turns into in memory, not what happens to it afterward. `anchor` -- a component's link to real code -- is drawn as a plain string field on Component here, not as its own entity: the code has no separate struct for it, only a resolver function that either finds the code it names or reports that it couldn't.",
+              "ts": 1788357723267
+            }
+          ],
+          "document": [
+            {
+              "id": "c1",
+              "text": "The whole declaration file, parsed into one tree (crates/ply-core/src/model.rs:19-38, `struct Document`). `ply: 1` is the only schema version this build accepts -- anything else is refused before the rest of the file is even read (crates/ply-core/src/config.rs:80-85, code E0201). `components` and `externals` preserve the order they were written in (an IndexMap, not a sorted map), so a rendered drawing lists things in the same order a human reading the file would.",
+              "ts": 1788357723267
+            }
+          ],
+          "component": [
+            {
+              "id": "c2",
+              "text": "One named unit of the checked codebase -- usually a crate or a module -- declared under `components:` (crates/ply-core/src/model.rs:44-89, `struct Component`). `anchor` is the one field with no default: it names the real crate or module path this component actually is, and an anchor nobody's code matches is reported as E0301. `pure`, `strict`, `uses` and `owns` are architecture rules -- which capabilities a component may use, which types only it may touch; `checks` is a default every function inside it inherits unless it declares its own (a fn's own list always replaces the inherited one rather than joining it -- an empty list on purpose means \"check nothing here\", which is a different statement from declaring no list at all). `components` nests further components the same shape, so the tree can be as deep as the codebase it describes.",
+              "ts": 1788357723267
+            }
+          ],
+          "fnclaim": [
+            {
+              "id": "c3",
+              "text": "One promise about one function, declared under a component's `fns:` map and keyed by that function's name (crates/ply-core/src/model.rs:111-133, `struct FnClaim`). `requires`/`ensures` are the actual contract text an engine attacks; `examples` are worked test cases; `check_with` fills in a generic type parameter so a proof has a concrete type to reason about. `entry` names which declared externals are allowed to call into this function, which turns its `requires` into an assumption about the environment rather than something the caller must prove -- it changes what a reader sees, never the verdict itself.",
+              "ts": 1788357723267
+            }
+          ],
+          "check": [
+            {
+              "id": "c4",
+              "text": "One entry from a checks: list -- either a component's default or a function's own -- parsed from one of five literal spellings (crates/ply-core/src/model.rs:252-322, `enum Check`/`parse_check`): test, fuzz(N), bounded(K), prove, or mutate. fuzz's count is how many random inputs get tried (1 to 1,000,000); bounded's count is how many times a loop gets unrolled during the proof (1 to 64) -- both refuse an out-of-range or malformed number with a plain-language reason rather than a bare parse error.",
+              "ts": 1788357723267
+            }
+          ],
+          "external": [
+            {
+              "id": "c5",
+              "text": "An outside party this codebase talks to but Ply never verifies -- a payment processor, an exchange, a person -- declared under the top-level externals: map, keyed by name (crates/ply-core/src/model.rs:97-101, `struct External`). Its note is required rather than optional: an external is nothing but a name and a sentence, and a bare name with no explanation tells a reader nothing about what it is or why it's trusted.",
+              "ts": 1788357723267
+            }
+          ],
+          "profile": [
+            {
+              "id": "c6",
+              "text": "A named, reusable set of architecture bans, declared once under the document's top-level profiles: map and opted into by any component's own profile: field (crates/ply-core/src/model.rs:37, `Document.profiles`; schema/ply.schema.json's `profiles`/`profile` properties). `bans` is a list of names drawn from a fixed vocabulary the schema defines (crates/ply-core/src/schema.rs:199-200, `fn bans`). vetting/003-trading-system.ply.yaml declares `hot_path: [no_panics, exhaustive_match]` and its `ring` and `decoder` components opt into it by name.",
+              "ts": 1788357723267
+            }
+          ],
+          "edge": [
+            {
+              "id": "c7",
+              "text": "One relationship line from the document's edges: list, parsed from one of two micro-syntaxes (crates/ply-core/src/model.rs:333-388, `struct Edge`/`parse_edge`): \"a -> b\" means a may call b, \"a ~> b : Type\" means data of that type actually flows from a to b. `from` and `to` are plain names, each naming either a declared component (by its dotted path) or a declared external -- vetting/003-trading-system.ply.yaml's \"gateway ~> venue : FixMessage\" is a real example naming an external on the right-hand side.",
+              "ts": 1788357723267
+            }
+          ],
+          "deny": [
+            {
+              "id": "c8",
+              "text": "One architecture ban from the document's deny: list, parsed as \"a -> b\" or \"a -> b except c, d\" (crates/ply-core/src/model.rs:391-420, `struct Deny`/`parse_deny`). Either side may be a literal component name or the wildcard *, and `except` lists specific names the ban does not apply to. A violated deny rule is what makes an architecture check fail -- it is the one rule in this grammar written as a negative.",
+              "ts": 1788357723267
+            }
+          ],
+          "trusted": [
+            {
+              "id": "c9",
+              "text": "One human assertion a function's contract stands on instead of an engine's proof -- \"this was checked some other way, and here's where\" -- declared under a function's trusted: list (crates/ply-core/src/model.rs:203-207, `struct TrustedClaim`). `evidence` is free text naming where that other checking happened (a test file, an audit, a certification run); Ply reads it and shows it, but never verifies the claim itself -- that is the whole point of the word \"trusted\".",
+              "ts": 1788357723267
+            }
+          ],
+          "unresolved": [
+            {
+              "id": "c10",
+              "text": "One open question the author has recorded rather than answered -- \"we haven't decided this yet, and here's what's undecided\" -- with a stable numeric id so it can be referenced elsewhere and a note explaining it (crates/ply-core/src/model.rs:210-214, `struct UnresolvedEntry`). It can appear at the top of the whole document or on a single function's own unresolved: list, wherever the open question actually belongs.",
+              "ts": 1788357723267
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "engine-processes",
+      "name": "Ply and the Processes It Spawns",
+      "type": "concurrency",
+      "origin": "llm",
+      "generation": {
+        "focus": "How Ply runs external checking tools as child processes, and what orders that work"
+      },
+      "doc": {
+        "type": "concurrency",
+        "nodes": [
+          {
+            "id": "ply-verify",
+            "label": "Ply\n(cargo ply verify)",
+            "files": [
+              "crates/ply-cli/src/main.rs",
+              "crates/ply-cli/src/verify.rs"
+            ],
+            "group": "g-ply-process",
+            "kind": "process",
+            "step": 1
+          },
+          {
+            "id": "verify-loop",
+            "label": "Per-function check loop",
+            "files": [
+              "crates/ply-cli/src/verify.rs",
+              "crates/ply-core/src/schedule.rs"
+            ],
+            "group": "g-ply-process",
+            "kind": "loop",
+            "step": 2
+          },
+          {
+            "id": "harness-files",
+            "label": "Generated test harness",
+            "files": [
+              "crates/ply-core/src/harness_crate.rs"
+            ],
+            "kind": "resource",
+            "step": 3
+          },
+          {
+            "id": "workspace-manifest",
+            "label": "Checked crate's Cargo.toml",
+            "files": [
+              "crates/ply-core/src/harness_crate.rs"
+            ],
+            "kind": "resource",
+            "step": 4
+          },
+          {
+            "id": "cargo-kani",
+            "label": "cargo kani",
+            "files": [
+              "crates/ply-core/src/engines/kani.rs"
+            ],
+            "kind": "process",
+            "step": 5
+          },
+          {
+            "id": "cargo-fuzz",
+            "label": "cargo test\n(fuzz harness)",
+            "files": [
+              "crates/ply-core/src/engines/fuzz.rs"
+            ],
+            "kind": "process",
+            "step": 6
+          },
+          {
+            "id": "cargo-mutants",
+            "label": "cargo mutants",
+            "files": [
+              "crates/ply-core/src/engines/mutants.rs"
+            ],
+            "kind": "process",
+            "step": 7
+          },
+          {
+            "id": "mutants-out",
+            "label": "mutants.out/",
+            "files": [
+              "crates/ply-core/src/engines/mutants.rs"
+            ],
+            "kind": "resource",
+            "step": 8
+          }
+        ],
+        "edges": [
+          {
+            "from": "ply-verify",
+            "to": "verify-loop",
+            "label": "drives, in the same thread"
+          },
+          {
+            "from": "verify-loop",
+            "to": "workspace-manifest",
+            "label": "registers the harness as a workspace member for the whole run"
+          },
+          {
+            "from": "verify-loop",
+            "to": "harness-files",
+            "label": "writes, before checking each function"
+          },
+          {
+            "from": "verify-loop",
+            "to": "cargo-kani",
+            "label": "spawns, then blocks until it exits"
+          },
+          {
+            "from": "verify-loop",
+            "to": "cargo-fuzz",
+            "label": "spawns, then blocks until it exits"
+          },
+          {
+            "from": "verify-loop",
+            "to": "cargo-mutants",
+            "label": "spawns, then blocks until it exits"
+          },
+          {
+            "from": "cargo-kani",
+            "to": "harness-files",
+            "label": "builds and runs against"
+          },
+          {
+            "from": "cargo-fuzz",
+            "to": "harness-files",
+            "label": "builds and runs against"
+          },
+          {
+            "from": "cargo-mutants",
+            "to": "harness-files",
+            "label": "builds and runs against"
+          },
+          {
+            "from": "cargo-kani",
+            "to": "workspace-manifest",
+            "label": "reads, to resolve the harness package"
+          },
+          {
+            "from": "cargo-fuzz",
+            "to": "workspace-manifest",
+            "label": "reads, to resolve the harness package"
+          },
+          {
+            "from": "cargo-mutants",
+            "to": "workspace-manifest",
+            "label": "reads, to resolve the harness package"
+          },
+          {
+            "from": "verify-loop",
+            "to": "mutants-out",
+            "label": "deletes any stale copy first, reads results after cargo-mutants exits"
+          },
+          {
+            "from": "cargo-mutants",
+            "to": "mutants-out",
+            "label": "writes result files while running"
+          }
+        ],
+        "groups": [
+          {
+            "id": "g-ply-process",
+            "label": "One OS process, one thread"
+          }
+        ],
+        "comments": {
+          "__diagram__": [
+            {
+              "id": "n-cp-diag-1",
+              "text": "How Ply actually runs the tools that check a function's promises. Ply is one single-threaded process: there is no thread pool, no async runtime, and no sign anywhere in the codebase of two things running at once (checked directly: grepping every crate under crates/*/src for thread::spawn, tokio, rayon, and channel types such as std::sync::mpsc turns up nothing). Ply drives one loop that checks one function at a time, and inside that loop it spawns exactly one external tool at a time -- Kani, the fuzz harness's tests, or cargo-mutants -- and blocks until that tool exits before doing anything else (every engine call in the codebase is a plain Command::new(...).output(), which waits for the child to finish). The order the loop checks functions in is decided by a callees-before-callers rule (crates/ply-core/src/schedule.rs), not by a scheduler trying to go faster: a function can only be credited with its callee's result once that callee has genuinely been checked, so getting the order wrong would let a caller claim evidence its callee never actually earned. That is a soundness requirement -- the same kind of rule this project's own verdict-kernel proof protects elsewhere -- not a performance optimisation. Left out of this picture on purpose: the short version-probe calls to rustc and cargo-mutants (they answer 'which version is installed', not part of the checking work itself), and the fact that cargo kani / cargo test / cargo mutants are each free to use their own internal build parallelism once Ply has started them -- that happens inside the child process, is invisible to Ply, and is not what this diagram is about.",
+              "ts": 1788307200000
+            }
+          ],
+          "ply-verify": [
+            {
+              "id": "n-cp-plyverify-1",
+              "text": "Ply itself: the single process a developer or CI job starts by running `cargo ply verify`. Everything else in this diagram happens inside this one process, on its one thread, one step after another -- there is no background work happening anywhere else.",
+              "ts": 1788307200000
+            }
+          ],
+          "verify-loop": [
+            {
+              "id": "n-cp-loop-1",
+              "text": "The loop, inside the Ply process, that checks each function one at a time (`for idx in processing_order`, crates/ply-cli/src/verify.rs:1162). Before it starts, `ply_core::schedule::order` works out which order to go in: callees are checked before the callers that depend on them, because a caller may only be credited with an assumed contract if its callee's own check already passed cleanly (crates/ply-core/src/schedule.rs's module comment spells this out as the scheduler's entire soundness guarantee). When one function has more than one kind of check -- say both a bounded check and a mutation check -- even those two run one after the other, never together: the mutation check deliberately waits until the other check's result is known before it starts (crates/ply-cli/src/verify.rs:2586).",
+              "ts": 1788307200000
+            }
+          ],
+          "harness-files": [
+            {
+              "id": "n-cp-harness-1",
+              "text": "The small generated test crate Ply writes for the function currently being checked -- a Cargo.toml plus a lib.rs, placed at `<crate>/target/ply/fuzz/<name>` (crates/ply-core/src/harness_crate.rs). Ply writes these files before it spawns any checking tool for that function, and every tool it then spawns builds and runs against exactly these files -- they are the common ground every tool's result is actually about.",
+              "ts": 1788307200000
+            }
+          ],
+          "workspace-manifest": [
+            {
+              "id": "n-cp-manifest-1",
+              "text": "The Cargo.toml belonging to the crate being checked, not to Ply. Ply temporarily adds the generated harness to this file's list of workspace members for the whole verify run so cargo can find and build it, then writes the original file back once the run ends (the `ManifestRegistration` guard, crates/ply-core/src/harness_crate.rs:239-312). Every tool Ply spawns needs this edit in place to resolve the harness package at all -- it is genuinely shared, mutated state, not just a read-only input.",
+              "ts": 1788307200000
+            }
+          ],
+          "cargo-kani": [
+            {
+              "id": "n-cp-kani-1",
+              "text": "Kani, the model checker, spawned as its own process: `cargo kani -Z function-contracts ... --harness <name>` (crates/ply-core/src/engines/kani.rs:135-151). Ply waits for it to finish and reads all of its output before doing anything else. It answers the `bounded` check: does the function hold up against every input Kani can enumerate up to a size limit, not just the ones a test happened to try.",
+              "ts": 1788307200000
+            }
+          ],
+          "cargo-fuzz": [
+            {
+              "id": "n-cp-fuzz-1",
+              "text": "`cargo test -p <harness>`, wrapped in a wall-clock `timeout` and spawned the same blocking way as every other engine here (crates/ply-core/src/engines/fuzz.rs:42-65). It runs the generated harness's randomised test cases -- built on the `proptest` library -- to answer the `fuzz` check.",
+              "ts": 1788307200000
+            }
+          ],
+          "cargo-mutants": [
+            {
+              "id": "n-cp-mutants-1",
+              "text": "cargo-mutants, spawned as `timeout <n>s cargo mutants -p <crate> --test-package <harness> --copy-target true ...` (crates/ply-core/src/engines/mutants.rs:142-196). It deliberately breaks the checked function one small way at a time and reruns the harness's tests, to see whether any of those breakages go unnoticed -- the `mutate` check. `--copy-target true` exists because of a real bug this project found and documented: cargo-mutants' own tree-copy step silently skips any directory literally named `target` sitting at the very top of what it is copying, and that is exactly where the generated harness lives, one level further down (crates/ply-core/src/engines/mutants.rs's own top-of-file comment).",
+              "ts": 1788307200000
+            }
+          ],
+          "mutants-out": [
+            {
+              "id": "n-cp-mutout-1",
+              "text": "`mutants.out/`, the folder cargo-mutants writes its results into. Ply deletes any copy left over from an earlier run before spawning cargo-mutants, so an old run's files can never be mistaken for this run's, then reads the fresh files back afterwards to count which mutations were caught, missed, or timed out (crates/ply-core/src/engines/mutants.rs:174-196).",
+              "ts": 1788307200000
+            }
+          ]
+        }
+      }
     }
   ],
-  "activeId": "tools-today",
+  "activeId": "overview",
   "codeThreads": [
     {
       "id": "t-spec-d2-attrs",
