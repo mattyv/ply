@@ -1,5 +1,33 @@
 # TODO
 
+## Landed: pulling back for less detail no longer leaves empty boxes — 2026-09-02
+
+The viewer folded detail by hiding boxes inside the full drawing, so the boxes around
+them kept the size their contents needed. Ply's own architecture at 66% became two blank
+rectangles five times the height of the crates beside them — more screen for less
+information. Recorded as a known defect in the viewer's own source, with the intended fix
+already named there. Now closed.
+
+- [x] **The envelope carries a properly laid-out drawing for each level a reader can fold
+      to.** Ply could already draw a document at any level; the results now travel with
+      the full drawing, so a client never asks twice and never hides anything. Ply's own
+      document folds from 754 pixels tall to 296; the trading-system scenario from 1772 to
+      624. The folded boxes even say what went away ("5 components, 0 fns") instead of
+      being blank, which hiding could never have produced.
+- [x] **Only levels that change something are sent**, and none at all when the caller
+      already narrowed the drawing with `--depth`/`--focus`/`--collapse` — offering
+      alternatives to a selection would silently undo it.
+- [x] **Measured against a control rather than a threshold.** The viewer test compares a
+      folded box against `e2e`, which has never held anything, so its height is what a box
+      with nothing in it is supposed to look like. Before the fix it was seven times
+      taller.
+- [x] **Every drawing that can reach the screen is sanitized**, not just the first one.
+
+KNOWN GAP, on purpose: the field is additive and absent when empty, but a client built
+before this **refuses the new envelope outright** rather than ignoring the field, because
+it checks for exactly the keys it knows. ply-vis was updated in the same session; any
+other reader of a published view would need the same one-line change.
+
 ## Landed: ARCHITECTURE.md carries both of Ply's own documents — 2026-09-02
 
 The page showed one diagram and described a repository that no longer existed: four boxes
