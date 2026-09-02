@@ -1,5 +1,6 @@
 # TODO
 
+<<<<<<< HEAD
 ## NEXT, agreed 2026-09-01: one LLM-assisted way to handle any type
 
 Queued behind the disclosure fix now in progress. The maintainer's framing, and the reason
@@ -256,6 +257,83 @@ found in afterwards).
 `cargo test --workspace --exclude ply-e2e` (335 `ply-core` unit tests, the kernel
 enumeration gate at 2.29s under `--release`, every other crate) all clean; the full
 `ply-e2e` suite run to completion with no regressions.
+=======
+## The sampling engine's decision is now a real recursive grammar, and slices exist — 2026-09-02
+
+**Measured defect, fixed.** Ply refused a function the moment it needed a shape it already
+builds *nested* inside another one: an optional string, a slice, and a list of a user
+struct were all refused, even though a plain string, a plain user struct, and `&Vec<u8>`
+were all checked happily alone. Every shape added after the original set was individually
+barred from composing, because one shared "is this type supported" decision answered for
+both the sampling engine (proptest) and the exhaustive-proof engine (Kani), and letting a
+new shape compose would have silently made it eligible for the *proof* tier too, whose
+list is measured and deliberate.
+
+**The fix splits the decision, and only ever widens the sampling side.** `Option`, `Result`,
+a fixed array, a list, a set, a map, a slice, a tuple, and an owning wrapper (`Box`) now
+close recursively over anything the sampling engine can already build alone — a plain
+scalar, a string, a float, `NonZero`/`Duration`, a user struct, or another composed shape,
+to any depth. The proof (`bounded`) engine's own list is untouched, byte for byte, pinned
+by a dedicated regression test (`the_bounded_proof_engines_own_supported_list_never_widens`,
+`crates/ply-core/src/harness.rs`) written *before* the composing logic, so a mistake here
+would have shown up as Ply claiming exhaustive proof over an unmeasured shape — the test
+stayed green throughout because the proof engine's own predicates were never touched, only
+read from.
+
+**Slices were not handled as a shape at all before this** (`&[T]`, distinct from `&Vec<T>`)
+— added the same way `&Vec<u8>` already works: build the owned list, lend it as a slice at
+the call site, no second mechanism.
+
+**A real compile-time trap, found and fixed along the way, not merely a nesting rule.**
+Once a user struct/enum can sit *inside* another shape's own sampled value (an
+`Option<Doc>`, a `Vec<Doc>`), constructing it via proptest's own `prop_map` fails to
+compile the moment the struct does not derive `Debug` — `prop_map`'s own trait bound is
+`O: fmt::Debug`, and nothing here can assume a user's own type derives it (a private-field
+type could not derive it honestly even if Ply tried to add it from outside). The fix:
+composition never constructs a nested user type *inside* a proptest strategy at all — the
+strategy only ever draws the raw leaf values (always plain scalars/strings, always
+`Debug`), and the real constructor call happens afterwards, in ordinary Rust code in the
+harness's own preamble, exactly mirroring how a *top-level* struct parameter was already
+built. One honesty condition attaches: a nested constructor carrying its own
+`#[ply::requires]` filter or a fallible (`Result<Self, E>`) return has no proptest
+case-rejection available at that point (no early return reaches back out through an
+already-built container), so **nesting is refused for exactly those two shapes**
+(`RustType::is_fuzz_nestable`) even though the identical type is fine as a bare top-level
+parameter. Not yet measured whether this narrowing costs anything real — no case in this
+session's own probes needed it.
+
+**Superseded, not broken: the corpus-seeding workaround for `Option<String>`/`Vec<String>`**
+(`fuzz_gen::plan_param_seeding`/`classify_seedable_wrap`, built before composition existed)
+now never engages for either shape, since neither is "otherwise unbuildable" any more — its
+own precondition. Left in place rather than removed (out of this task's scope; flagged, not
+silently deleted), but every fixture/test that demonstrated it specifically for these two
+shapes (`paramseeded`) was rewritten to demonstrate the real capability that replaced it.
+Two other fixtures (`skippedctor`, `excludedop`) whose whole premise was "`Option<String>`
+is still unbuildable" had their unbuildable argument changed to `&mut u32` (refused for a
+structural reason composition does not touch) so they go on testing what they were written
+to test.
+
+- [x] Sampling engine composition + slices (f394aba).
+- [ ] **Follow-up not attempted this session**: `classify_seedable_wrap`/`plan_param_seeding`
+      and the rest of the plain-parameter corpus-seeding apparatus are now dead code for
+      their only two shapes (`Option<String>`/`Vec<String>`) — every code path that could
+      reach them requires a param that is simultaneously the *one* unsupported one in its
+      function *and* textually exactly one of those two strings, which composition makes
+      impossible. Still compiles, still unit-tested in isolation, genuinely unreachable from
+      `cargo ply verify`. Worth a deliberate removal pass, not a silent one.
+- [ ] **Not attempted this session**: `HashMap`/`HashSet` were not added as composition
+      shapes (only `BTreeMap`/`BTreeSet`) — deterministic ordering was already the reason
+      `BTreeSet` was chosen over `HashMap` in M4, and this task did not re-open that choice.
+      A real gap if a measured library's own public surface needs the hasher-backed
+      variants specifically.
+- [ ] **Not attempted this session**: a reference nested *inside* a composed shape
+      (`Vec<&str>`, `Option<&Doc>`) — every reference this task's grammar reaches is the
+      existing top-level `&T` mechanism (already correct for any inner shape, since it
+      strips the reference before parsing whatever is inside), never a *new* reference
+      appearing partway through a container. Genuinely harder (a container's own elements
+      would need to lend from a sibling owned collection with matching lifetimes), and no
+      case in this session's own probes needed it.
+>>>>>>> worktree-agent-a653e4f5f491d44a0
 
 ## Review of the three items, and two defects it found that I had missed — 2026-09-01
 

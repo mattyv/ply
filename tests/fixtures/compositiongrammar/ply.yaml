@@ -1,0 +1,39 @@
+ply: 1
+
+# The invariant test: every fn here is one shape the composition grammar
+# (TODO.md, 2026-09-02) admits, depth <= 2, mixing every combinator over
+# the two base leaves (u32, String) it already builds alone. Small case
+# counts -- this is about compiling and running, not about finding a bug.
+components:
+  compositiongrammar:
+    anchor: ply_fixture_compositiongrammar
+    fns:
+      option_u32: { checks: [fuzz(8)] }
+      option_string: { checks: [fuzz(8)] }
+      option_option_u32: { checks: [fuzz(8)] }
+      option_vec_u32: { checks: [fuzz(8)] }
+      option_leaf: { checks: [fuzz(8)] }
+      result_u32_string: { checks: [fuzz(8)] }
+      result_string_u32: { checks: [fuzz(8)] }
+      vec_u32: { checks: [fuzz(8)] }
+      vec_string: { checks: [fuzz(8)] }
+      vec_option_u32: { checks: [fuzz(8)] }
+      vec_vec_u32: { checks: [fuzz(8)] }
+      vec_leaf: { checks: [fuzz(8)] }
+      btreeset_u32: { checks: [fuzz(8)] }
+      btreeset_string: { checks: [fuzz(8)] }
+      btreemap_u32_string: { checks: [fuzz(8)] }
+      btreemap_string_u32: { checks: [fuzz(8)] }
+      array_u32: { checks: [fuzz(8)] }
+      array_string: { checks: [fuzz(8)] }
+      array_option_u32: { checks: [fuzz(8)] }
+      slice_u32: { checks: [fuzz(8)] }
+      slice_string: { checks: [fuzz(8)] }
+      slice_option_u32: { checks: [fuzz(8)] }
+      tuple_u32_string: { checks: [fuzz(8)] }
+      tuple_u32_string_option: { checks: [fuzz(8)] }
+      box_u32: { checks: [fuzz(8)] }
+      box_string: { checks: [fuzz(8)] }
+      box_vec_u32: { checks: [fuzz(8)] }
+      box_leaf: { checks: [fuzz(8)] }
+      tuple_leaf_u32: { checks: [fuzz(8)] }

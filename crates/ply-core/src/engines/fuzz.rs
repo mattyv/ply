@@ -804,6 +804,16 @@ pub fn decode_marker_fields(
             // via `fields`, just not turned into a `WitnessValue` literal.
             | RustType::UserTypeCtor(_)
             | RustType::UserTypeFields(_)
+            // The four composition shapes added 2026-09-02 (`Slice`,
+            // `Tuple`, `BTreeMap`, `BoxT`): none is `is_witness_renderable`
+            // either -- `WitnessValue` has no literal form for any of
+            // them, same reasoning as `Vec`/`BTreeSet`/a struct parameter
+            // just above. A failure on one is reported witness-only
+            // (`W0541`), never a fabricated Rust literal.
+            | RustType::Slice(_)
+            | RustType::Tuple(_)
+            | RustType::BTreeMap(_, _)
+            | RustType::BoxT(_)
             | RustType::Unsupported(_) => return None,
         };
         out.push(value);

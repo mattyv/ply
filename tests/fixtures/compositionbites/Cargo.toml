@@ -1,0 +1,21 @@
+[workspace]
+# Empty table: this fixture is its own workspace root, per tests/spike's
+# convention -- it must never be swept into the product workspace (each
+# fixture is its own cargo project, per The-Ply-Spec.md §4) or into tools/.
+
+[package]
+name = "ply-fixture-compositionbites"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Composition (TODO.md, 2026-09-02) must not just refuse less -- a false promise over a list of strings, a slice, and a nested user struct must be found for real, with a real failing input, not turned into a comfortable green."
+
+[lib]
+name = "ply_fixture_compositionbites"
+path = "src/lib.rs"
+
+[dependencies]
+ply = { package = "ply-attrs", path = "../../../crates/ply-attrs" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

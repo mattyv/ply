@@ -1,0 +1,13 @@
+ply: 1
+
+# Composition (TODO.md, 2026-09-02): each of these three parameters was
+# refused outright before this task -- proving they now compose is only
+# half the story; each promise below is genuinely false, so a real run must
+# catch it, not turn a former refusal into a comfortable green.
+components:
+  compositionbites:
+    anchor: ply_fixture_compositionbites
+    fns:
+      longest_len: { checks: [fuzz(256)] }
+      sum_slice: { checks: [fuzz(256)] }
+      total_n: { checks: [fuzz(256)] }

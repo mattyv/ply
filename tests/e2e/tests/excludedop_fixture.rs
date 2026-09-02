@@ -1,7 +1,7 @@
 //! The fourteenth false clean (docs/review-structs-enums.md finding 1,
 //! 2026-08-28): `Acc::note` is the only operation that ever changes `Acc`'s
-//! state, and it takes a `&str` -- a type Ply's fuzz tier cannot build an
-//! argument for. `Acc::get`'s promise (always 0) is false after one
+//! state, and it takes a `&mut u32` -- a type Ply's fuzz tier cannot build
+//! an argument for. `Acc::get`'s promise (always 0) is false after one
 //! ordinary `note` call, but Ply genuinely cannot call `note`, so this run
 //! cannot find that violation by running cases. What it must do instead is
 //! say so: name `note` in the disclosure, and mark the verdict with a
@@ -17,9 +17,10 @@ fn an_excluded_mutator_is_named_and_the_verdict_is_marked_narrower() {
     let fixture = copy_fixture("excludedop");
     let run = run_verify(&cargo_ply, fixture.path(), 90);
 
-    // Ply genuinely cannot call `note` (a separate, known gap -- borrowed
-    // text is not yet a buildable argument), so this run cannot find
-    // `Acc::get`'s promise false by running cases: the verdict really is
+    // Ply genuinely cannot call `note` (a `&mut u32` argument -- a value
+    // the function writes back through, which no engine here can construct
+    // and observe), so this run cannot find `Acc::get`'s promise false by
+    // running cases: the verdict really is
     // `fuzzed(256)`, real evidence about the receivers this run could
     // reach. What must NOT happen is that verdict standing alone, unmarked,
     // as if it meant "every history was explored".
