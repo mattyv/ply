@@ -78,8 +78,8 @@ codes!(
     // (§5.4). ---
     E0501, E0502, E0503, W0502, W0503, W0510, W0511, W0512, W0513, W0514, W0515, W0516, W0517,
     V0505, V0506, V0507, V0508, V0509, V0510, W0518, W0519, W0520, W0521, W0522, W0523, W0524,
-    W0525, W0526, W0527, W0528, W0541, W0110, W0111, W0303, W0531, K0502, K0601, M0601, P0502,
-    P0601, R0502, R0601, X0901, X0902,
+    W0525, W0526, W0527, W0528, W0529, W0541, W0110, W0111, W0303, W0531, K0502, K0601, M0601,
+    P0502, P0601, R0502, R0601, X0901, X0902,
 );
 
 /// The stage of Ply's own pipeline a code belongs to. See the module doc
@@ -652,6 +652,14 @@ impl Code {
                 severity: Warning,
                 spec_anchor: "§5.4b",
                 gloss: "A `routes:` entry names a function to build a value of some type, but no function or field anywhere in this crate ever needs one -- so nothing checked whether the declaration actually works. Ply validates it on its own once the run is otherwise done, and this names what went wrong: every declared route is used or refused by name, never merely unmentioned.",
+            },
+            W0529 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.4c",
+                gloss: "A constructor taking no arguments has nothing to vary, so every case ran against the same value however many cases ran -- `fuzzed(256)` on one value is one test run 256 times. Ply already refuses to build through `T::default()` for exactly this reason; this is the same rule for an inherent `new()` that takes nothing, said rather than assumed.",
             },
             W0541 => RuleEntry {
                 code: self,

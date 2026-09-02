@@ -77,40 +77,43 @@ the real `cargo ply check` output, not from memory.
       modules appear as nested components in that file. They do not, and cannot: a function
       claimed inside a module-anchored box stops resolving. The comment now says that.
 
-## FALSE GREEN, reproduced: a broken function reports `fuzzed(256)` — 2026-09-02
+## Landed: the false green is marked — 2026-09-02
 
-**The highest-priority open item in the project.** Found by review, then reproduced by hand
-on a fresh probe rather than taken on trust.
+**Was the highest-priority open item.** A method on a type whose only way in is a
+constructor taking no arguments was checked against one value 256 times and reported a
+clean `fuzzed(256)`. Both deliberately broken functions of Ply's own status-set shape now
+carry `one value over and over` where the count is read, and the argument that previously
+carried no disclosure at all now has its own.
 
-A method on a type whose only public way in is a constructor taking no arguments is checked
-against **one value, 256 times**, and reports a clean count. Deliberately breaking both
-functions of Ply's own status-set shape -- one returns 99 for any non-empty set, the other
-discards everything handed to it -- both still come back `fuzzed(256)`. Every case ran
-against the empty set, so neither bug is reachable by any case that ran.
+The fix is not the route guard extended. A route needs a runtime count because an author's
+function *might* ignore its inputs; a constructor with no inputs has none to ignore, so one
+value follows from the signature. That makes it stronger and cheaper: no `#[derive(Debug)]`
+needed, nothing generated, and it holds for a type that can be neither printed nor compared.
 
-Ply is half-honest here, and the half it gets right is what makes the other half worse. The
-receiver disclosure names the operations it never called and says plainly *"if the promise
-depends on what this run never reached, this run says nothing about it."* But:
+- [x] **A value built by a no-argument constructor is counted like any other** (`W0529`),
+      for a top-level parameter and for the receiver alike. Suppressed for a receiver when
+      the type has an operation taking `&mut self` this run could call, which really does
+      move the value off what the constructor made.
+- [x] **The `default()` reasoning is generalised.** Ply refused `T::default()` in its own
+      words — "it produces a single value, and reporting that as many sampled cases would
+      overstate what was checked" — while accepting an inherent `new()` of the identical
+      shape. Same rule now, said rather than assumed.
+- [x] **The verdict itself carries it.** A reader scanning the tree sees the number long
+      before any diagnostic beneath it, which is how a broken function came to read clean.
+      Same mark a collapsed route earns, because it is the same fact.
+- [x] **The reassuring sentence beside it is gone.** `W0520` said "that covers every value
+      this type can reach within 3 steps of a fresh one — nothing else was assumed", which
+      is a broad-sounding phrase for a set with one member. Where the set is one value it
+      now says so. Two pinned-wording tests had been standing in for the ordinary case with
+      a fixture that could not vary — itself part of why this went unnoticed — and now
+      carry a constructor argument so they test what they claim to.
 
-- the verdict line still reads `fuzzed(256)`, a number that means 256 real cases;
-- **the second argument gets no disclosure at all** -- it was silently built by the same
-  no-argument constructor, and nothing counted or mentioned it. One of the two broken
-  functions carries no mark whatsoever.
-
-- [ ] **A value built by a no-argument constructor must be counted like any other.** The
-      distinct-value guard built today does exactly this for a declared route and would have
-      caught both cases. It does not run for a constructor Ply finds by itself, which is the
-      commoner path by far.
-- [ ] **The same reasoning was already applied once and not carried across.** Ply refuses a
-      `default()` by name, for producing a single value -- this file's own words, "256 runs
-      of one value is one test run 256 times". An inherent zero-argument `new()` is the
-      identical shape and is accepted. The rule was written against the trait and never
-      generalised.
-- [ ] **What would make this evidence real is not a route.** The receiver mechanism would
-      vary the set if it could call `insert`, and it refuses because it cannot build an
-      ordinary unit enum for the operation pool -- while refusal messages elsewhere imply
-      unit-only enums are buildable. That inconsistency is the unlock, and it is a defect
-      rather than a missing feature.
+STILL OPEN, unchanged by this: the third bullet of the original finding. **What would make
+this evidence real is not a route.** The receiver mechanism would vary the set if it could
+call `insert`, and it refuses because it cannot build an ordinary unit enum for the
+operation pool — while refusal messages elsewhere imply unit-only enums are buildable. That
+inconsistency is the unlock, and it is a defect rather than a missing feature. Marking the
+gap is honest; closing it is what makes the evidence worth having.
 
 ## Decided: `ply-core` does NOT take a dependency on `ply-attrs` — 2026-09-02
 

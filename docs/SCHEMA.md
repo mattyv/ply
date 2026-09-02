@@ -593,6 +593,15 @@ naming its fields when they are all public. When neither is available, say how t
 one with `routes:` (below). A type with no public way in at all stays unsupported: there
 is nothing for Ply to call.
 
+**A constructor that takes no arguments makes one value, and Ply says so** (`W0529`).
+Nothing about the number of cases changes that: a hundred runs against `Thing::new()`
+are one test run a hundred times, and the verdict is marked `one value over and over`
+so a reader sees it beside the count rather than below it. The same holds for the value
+a method is called on — unless the type has an operation taking `&mut self` that Ply can
+call, which really does move it off what the constructor made. Ply has always refused to
+build values through `T::default()` for this reason; this is the same rule for an
+inherent `new()` that takes nothing.
+
 Type aliases resolve, so `pub type AccountId = u64;` is a `u64` here. Anything in the
 last row is reported as an unsupported shape, by name, rather than attempted (`V0505`). That is deliberate: an unsupported shape is a fact Ply reports, not
 a crash and not a silent skip. If a function has a contract but neither engine can build
@@ -1501,6 +1510,7 @@ on something stable. These are the ones this build emits.
 | `W0525` | A function declares worked `examples:` and nothing declared will run them. They are read and recorded, but nothing checks them. |
 | `W0526` | The promise joins conditions with `\|\|`, and this says which side decided each case that held — always, whether the split is even or not. |
 | `W0527` | A value was built through a `routes:` entry, with how many genuinely distinct values reached the function. One, across many cases, means one test ran many times. |
+| `W0529` | Every case ran against the same value, because the only constructor Ply could call takes no arguments and nothing in reach changes what it made. The count says how many times the check ran, not how many different values it saw. |
 | `V0509` | A `routes:` entry names a function Ply cannot use, and says which — never silently ignored. |
 | `W0510` | A contract written in `ply.yaml` for a checked function was used at the boundary but not merged into that function's own check. |
 | `W0511` | The verdict is conditional: it used a declared contract instead of a callee's real body, and names what it assumed. |

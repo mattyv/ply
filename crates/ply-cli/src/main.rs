@@ -545,6 +545,14 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
     if node.statuses.iter().any(|s| s == "route-collapsed") {
         marks.push("one value over and over");
     }
+    // The same fact reached a different way, and the commoner way by far: a
+    // constructor Ply found rather than one a document declared. A
+    // no-argument constructor cannot vary, so this needs no run to notice --
+    // and the mark is the same because what a reader has to know is the
+    // same.
+    if node.statuses.iter().any(|s| s == "one-value") {
+        marks.push("one value over and over");
+    }
     // Last, and from its own field rather than from `statuses`: reuse is
     // not a qualifier on the evidence (D6), it is a fact about when the run
     // happened. A person reading `bounded(2)` should be able to tell
@@ -599,9 +607,11 @@ const MARK_GLOSS: [(&str, &str); 8] = [
     ),
     (
         "one value over and over",
-        "the way this document names for making this value handed back the same value on every \
-         case, so the count above is the number of times one test ran rather than the number of \
-         different things tried — the lines below name the function that did it",
+        "every case ran against the same value, so the count above is the number of \
+         times one test ran rather than the number of different things tried. Either \
+         the only way in this type has makes one value and nothing can change it \
+         afterwards, or the function this document names for making one handed back \
+         the same value every time — the lines below say which, and name it",
     ),
     (
         "lopsided",
@@ -1406,10 +1416,12 @@ mod tests {
         );
         assert!(
             collapsed.contains(
-                "  [one value over and over]  the way this document names for making this value \
-                 handed back the same value on every case, so the count above is the number of \
-                 times one test ran rather than the number of different things tried — the lines \
-                 below name the function that did it"
+                "  [one value over and over]  every case ran against the same value, so \
+                 the count above is the number of times one test ran rather than the \
+                 number of different things tried. Either the only way in this type has \
+                 makes one value and nothing can change it afterwards, or the function \
+                 this document names for making one handed back the same value every \
+                 time — the lines below say which, and name it"
             ),
             "a marker nobody can read is not a report: {collapsed}"
         );
