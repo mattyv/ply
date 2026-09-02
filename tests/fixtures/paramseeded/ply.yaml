@@ -1,15 +1,14 @@
 ply: 1
 
-# TODO.md: "an example does not unblock a parameter Ply cannot build" -- the
-# measured gap. `width`'s own parameter is `Option<String>`, a type Ply's
-# ordinary codegen never builds (`String` is deliberately never nested) --
-# but the text inside is mutable, so one `examples:` entry is enough to grow
-# a real corpus the same way a receiver constructor's own seeded text does.
+# Composition (TODO.md, "make the sampling engine's decision recursive"),
+# 2026-09-02: `width`'s own parameter is `Option<String>` -- until this
+# task, a type Ply's ordinary codegen never built at all (`String` was
+# deliberately never nested), refused outright with no `examples:` entry
+# able to unblock it. It is now fuzz-supported directly, exactly like any
+# other buildable shape, no seed required.
 components:
   paramseeded:
     anchor: ply_fixture_paramseeded
     fns:
       width:
         checks: [fuzz(64)]
-        examples:
-          - "width(Some(\"hi\".to_string())) == 2"

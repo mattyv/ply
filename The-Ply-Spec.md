@@ -896,7 +896,41 @@ v1 supports functions whose parameters are, recursively:
   slow run;
 - **structs and enums** of the above with Ply-derivable `Arbitrary` (public,
   invariant-free fields);
-- **`&T`/`&[T]`** of the above (built from an owned value in the harness).
+- **`&T`**, of the above (built from an owned value in the harness) — `&[T]` never actually
+  was, on either engine, until the composition amendment below; this bullet's own spelling
+  was aspirational until then.
+
+**Composition is a real recursive grammar, sampling engine only — 2026-09-02, measured
+(TODO.md, "make the sampling engine's decision recursive, and add slices").** Until this
+date, every shape added to this list after the original set was individually barred from
+*nesting* inside another: `Option<String>`, a list of a user struct, and `&[T]` were all
+refused outright, even though a plain `String`, a plain user struct, and `&Vec<u8>` were
+all checked happily alone — one shared "is this type supported" decision answered for
+both engines, and letting a newly-added shape compose would have silently made it eligible
+for the *proof* tier too, whose list above is measured and deliberate. The fix splits the
+decision and only ever widens the sampling side: `Option`, `Result`, a fixed array, a list
+(`Vec`), a set (`BTreeSet`), a map (`BTreeSet`'s own sibling, `BTreeMap`), a slice (`&[T]`,
+finally a real shape rather than an aspiration — built the same way `&Vec<u8>` already is:
+an owned `Vec<T>`, lent), a tuple, and an owning wrapper (`Box<T>`) now close recursively
+over *any* sampling-buildable element — a scalar, a `String`, a float, `NonZero`/
+`Duration`, a user struct, or another composed shape, to any depth. **The bounded (Kani)
+engine's own list above does not move, byte for byte**, pinned by a dedicated regression
+test written before the composing logic (`crates/ply-core/src/harness.rs`,
+`the_bounded_proof_engines_own_supported_list_never_widens`): none of the four new shapes,
+and no newly-nestable inner, is ever bounded-supported.
+
+One honesty condition attaches, found while building this, not merely asserted: a struct
+or enum *nested* inside another shape's own sampled value cannot be built by calling its
+constructor from inside a proptest strategy — proptest's own `prop_map` requires its
+output type to implement `Debug` (`Map<S, F>` only implements `Strategy` when `F::Output:
+Debug`), which cannot be assumed of an arbitrary user type. So a nested struct/enum's
+strategy only ever draws the raw leaf values its constructor or fields need (always plain,
+always `Debug`), and the real construction happens afterwards in ordinary Rust code in the
+harness's own preamble — exactly how a *top-level* struct parameter was already built, now
+reached one level of nesting later. That mechanism has no proptest case-rejection
+available partway through an already-built container, so nesting is refused, by name, for
+a constructor carrying its own `requires` filter or a fallible (`Result<Self, E>`) return —
+even though the identical type is fine as a bare top-level parameter.
 
 Two documented limits narrow what *every* `bounded` verdict means, however clean it looks:
 generated arguments **never alias each other**, so a bug that needs two parameters to

@@ -141,14 +141,101 @@ fn strategy_expr(ty: &RustType) -> Result<String> {
                 strategy_expr(inner)?
             )
         }
-        // `char`, `Option<T>`, `Result<T, E>` and `[T; N]` all have
-        // proptest `Arbitrary` impls, so their strategy is just `any()`.
-        // No small-magnitude bias here: the interesting values of these
-        // shapes are the variants and the element pattern, not the size.
-        RustType::Char | RustType::Option(_) | RustType::Result(..) | RustType::Array(..) => {
-            let name = ty.rust_name().expect("composite has a rust name");
-            format!("proptest::prelude::any::<{name}>()")
+        // `char` still has proptest's own blanket `Arbitrary` impl -- no
+        // small-magnitude bias needed, the interesting values are the code
+        // points, not a size.
+        RustType::Char => "proptest::prelude::any::<char>()".to_string(),
+        // `Option<T>`, `Result<T, E>` and `[T; N]` used to reuse proptest's
+        // own blanket `Arbitrary` impl (`any::<Option<T>>()`) here, which
+        // only ever worked because -- until this task -- the parser itself
+        // refused to build one of these three around anything but a leaf
+        // scalar or another already-composite-constructible shape (never a
+        // `String`, a `Vec`, a user struct, ...). Composition (TODO.md,
+        // 2026-09-02) widens what these three can wrap, and `any::<T>()`
+        // would either not compile for the new inner shapes (no blanket
+        // `Arbitrary` for a user struct) or -- worse, for `String` -- quietly
+        // swap in proptest's own unbounded, uncurated `Arbitrary` sampling
+        // in place of this module's own deliberate content/length/NaN
+        // decisions (`RustType::String`/`F32`'s own doc comments). So all
+        // three are now built explicitly, recursing into this same function
+        // for the inner strategy -- the exact same combinator `Vec`/
+        // `BTreeSet` above already use, extended to every shape here.
+        RustType::Option(inner) => {
+            format!("proptest::option::of({})", strategy_expr(inner)?)
         }
+        // Draws *both* an `Ok` value and an `Err` value on every case (a
+        // small, disclosed inefficiency, never a correctness problem: only
+        // one is kept) rather than naming either type explicitly -- neither
+        // has a spellable name here in general (`rust_name()` only knows
+        // the old leaf/composite-constructible vocabulary, and this arm now
+        // reaches `String`, a user struct, or another container). The
+        // `if`/`else` gives the compiler both branches together, which is
+        // enough to infer the concrete `Result<OkT, ErrT>` from the two
+        // already-concrete leaf values alone -- no type name spelled by
+        // this codegen at all.
+        RustType::Result(ok, err) => format!(
+            "proptest::strategy::Strategy::prop_map(\
+             (proptest::prelude::any::<bool>(), {ok_s}, {err_s}), \
+             |(__ply_ok, __ply_ok_v, __ply_err_v)| if __ply_ok {{ Ok(__ply_ok_v) }} else {{ \
+             Err(__ply_err_v) }})",
+            ok_s = strategy_expr(ok)?,
+            err_s = strategy_expr(err)?,
+        ),
+        // Built via a `Vec` of exactly `n` elements, then converted with
+        // `TryInto` -- never `any::<[T; N]>()` (which needed `T: Arbitrary`,
+        // wrong for the new inner shapes this arm now reaches) and never a
+        // literal `[s1, s2, ..., sn]` array of strategies (whether proptest
+        // implements `Strategy` for an array of strategies at every arity
+        // this codegen could produce is not something this module verifies,
+        // so it does not rely on it). `0..=8`'s own `Vec` combinator
+        // narrowed to `n..=n` always yields exactly `n` elements, so the
+        // `.try_into().unwrap()` never fails.
+        RustType::Array(inner, n) => format!(
+            "proptest::strategy::Strategy::prop_map(\
+             proptest::collection::vec({elem}, {n}..={n}), \
+             |__ply_v| <[_; {n}]>::try_from(__ply_v).unwrap())",
+            elem = strategy_expr(inner)?,
+        ),
+        // A tuple of independent strategies -- proptest implements
+        // `Strategy` for a plain Rust tuple of two or more strategies
+        // directly (already relied on above, `Duration`'s own pair), which
+        // is why 2+ elements are spliced as a bare tuple. Rust's own tuple
+        // syntax needs its own two edge cases: `()` is a value, never a
+        // `Strategy`, so an empty tuple type reuses `Just(())`; a one-tuple
+        // needs the trailing comma (`(v,)`) that a *strategy* tuple of one
+        // element does not parse as (`(s)` is just `s`, not a 1-tuple), so
+        // it is built via `prop_map` instead of spliced as one.
+        RustType::Tuple(items) => match items.len() {
+            0 => "proptest::strategy::Just(())".to_string(),
+            1 => format!(
+                "proptest::strategy::Strategy::prop_map({}, |__ply_v| (__ply_v,))",
+                strategy_expr(&items[0])?
+            ),
+            _ => {
+                let elems: Vec<String> = items.iter().map(strategy_expr).collect::<Result<_>>()?;
+                format!("({})", elems.join(", "))
+            }
+        },
+        // A shared reference to `[T]` is built the same way `&Vec<u8>`
+        // already is (see `RustType::VecU8`'s own doc): sample an owned
+        // `Vec<T>` -- the call site (`by_ref`) lends it as `&name`, and
+        // `Vec<T>: Deref<Target = [T]>` coerces that into the `&[T]` the
+        // real function wants. No second construction mechanism.
+        RustType::Slice(inner) => format!(
+            "proptest::collection::vec({}, 0..=8)",
+            strategy_expr(inner)?
+        ),
+        RustType::BTreeMap(key, value) => format!(
+            "proptest::collection::btree_map({}, {}, 0..=8)",
+            strategy_expr(key)?,
+            strategy_expr(value)?
+        ),
+        // An owned wrapper: build `T` and box it. `Strategy::prop_map` is
+        // exactly what every other wrapping shape in this file already uses.
+        RustType::BoxT(inner) => format!(
+            "proptest::strategy::Strategy::prop_map({}, Box::new)",
+            strategy_expr(inner)?
+        ),
         // Never `any::<NonZeroU32>()`: proptest's own coverage of the
         // `NonZero` family is not this module's concern one way or the
         // other -- the inner integer's own (small-biased) strategy is
@@ -272,25 +359,265 @@ fn strategy_expr(ty: &RustType) -> Result<String> {
                 ty.display_name()
             )
         }
-        // Never reached either, for a different reason: a struct/enum
-        // parameter is never handed to `strategy_expr` directly -- it has
-        // no single scalar `Strategy` of its own. `plan_for_param`/
-        // `build_user_value_stmt` (below) draw a *leaf* strategy per
-        // constructor argument or field instead, and call `strategy_expr`
-        // only on each of those (always an ordinary type by the time it
-        // gets there -- `resolve_user_type` never resolves a leaf to
-        // another unresolved shape). Reaching this arm would mean some
-        // caller skipped that machinery, which is a Ply bug, not a user
-        // error.
-        RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => {
-            bail!(
-                "`{}` has no strategy of its own -- it is built from its own constructor's or \
-                 fields' leaf strategies, never sampled directly; this is a Ply bug, not a user \
-                 error",
-                ty.display_name()
-            )
-        }
+        // A *top-level* struct/enum parameter is never handed to
+        // `strategy_expr` directly -- `plan_for_param`/`build_user_value_
+        // stmt` draw a flat leaf-per-field strategy instead, spliced into
+        // the checked call's own outer parameter tuple, so a top-level
+        // struct/enum param's marker text can be precomputed field by field
+        // before the call (`build_marker_stmt`) rather than needing the
+        // built value itself to implement `Debug`.
+        //
+        // A *nested* struct/enum -- `Option<Doc>`, `Vec<Doc>`, a tuple
+        // element, a `BTreeMap` key -- has no such outer splice to reach:
+        // composition (TODO.md, 2026-09-02) recurses into this same
+        // function from `Option`/`Result`/`Vec`/`BTreeSet`/`Array`/`Slice`/
+        // `Tuple`/`BTreeMap`/`Box`'s own arms above, so it must have a real
+        // self-contained `Strategy` of its own here -- `user_type_strategy_
+        // expr` builds exactly that, reusing `build_user_value_stmt`'s same
+        // three-rule construction, just closed over its own leaf tuple
+        // instead of the caller's.
+        // A struct/enum reached *through* composition (`Option<Doc>`,
+        // `Vec<Doc>`, ...) never builds its own value here -- proptest's
+        // own `prop_map`/`Map<S, F>` requires its *output* type to be
+        // `Debug` (`Strategy` is only ever implemented for `Map<S, F>`
+        // when `F::Output: Debug`), which this codegen cannot discharge
+        // honestly for an arbitrary user struct (measured directly against
+        // this exact shape: constructing `Doc` via `prop_map` inside
+        // `Vec`'s own element strategy fails to compile with `E0277: Doc
+        // doesn't implement Debug`, even though `Doc` is never itself
+        // handed to `TestRunner::run`). So this only ever returns the
+        // *raw leaf tuple* -- always scalars/`String`/other already-Debug
+        // leaves, all the way down -- and the real value is constructed
+        // afterwards from *ordinary* Rust code (`construct_from_raw_expr`,
+        // called from `plan_for_param`), which carries no such bound at
+        // all.
+        RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => raw_user_type_strategy_expr(ty)?,
     })
+}
+
+/// The pattern (bare name, or a parenthesized tuple of names) and matching
+/// strategy (bare strategy, or a parenthesized tuple of strategies) for a
+/// list of same-length `names`/`strategies` -- the 0/1/N cases every
+/// tuple-folding site in this file already handles for `cf.params` as a
+/// whole, pulled out once so [`raw_user_type_strategy_expr`] does not carry
+/// a fourth copy of them.
+fn tuple_pattern_and_strategy(names: &[String], strategies: &[String]) -> (String, String) {
+    match names.len() {
+        0 => ("_".to_string(), "proptest::strategy::Just(())".to_string()),
+        1 => (names[0].clone(), strategies[0].clone()),
+        _ => (
+            format!("({})", names.join(", ")),
+            format!("({})", strategies.join(", ")),
+        ),
+    }
+}
+
+/// A self-contained proptest `Strategy` **expression** for a struct/enum
+/// Ply builds *nested* inside another shape's own strategy (`Option<Doc>`,
+/// `Vec<Doc>`, a tuple element, a `BTreeMap` key, ...) -- added 2026-09-02
+/// for the composition task (TODO.md). Its `Value` is deliberately **not**
+/// `ty`'s own constructed value: it is the *raw leaf tuple* every
+/// constructor argument or field would need (recursing the same way for a
+/// nested user type two levels deep), leaving the actual construction to
+/// [`construct_from_raw_expr`], called once from [`plan_for_param`] on the
+/// value this strategy hands back.
+///
+/// **Why not construct the value here, the way [`build_user_value_stmt`]
+/// does for a top-level parameter's own preamble:** measured directly
+/// against this exact shape (a `Vec<Doc>` parameter, `Doc` deriving no
+/// `Debug` impl) -- `proptest::strategy::Strategy::prop_map`'s own trait
+/// bound is `fn prop_map<O: fmt::Debug, F: Fn(Self::Value) -> O>(...)`
+/// (`Map<S, F>` only implements `Strategy` at all when its *output* type is
+/// `Debug`), so a `prop_map` that builds `Doc` fails to compile with
+/// `error[E0277]: Doc doesn't implement Debug` regardless of anything
+/// wrapped *around* it afterwards -- wrapping the final value in a
+/// Debug-defeating newtype (tried first, reverted) does not help, because
+/// the failure is in the *inner* `prop_map` that builds `Doc` in the first
+/// place, before any outer wrapping ever runs. Returning only ever-`Debug`
+/// leaves here, and constructing `Doc` afterwards with ordinary (non-
+/// proptest) Rust code, carries no such bound at all.
+fn raw_user_type_strategy_expr(ty: &RustType) -> Result<String> {
+    match ty {
+        RustType::UserTypeCtor(plan) => {
+            let arg_strategies: Vec<String> = plan
+                .ctor_params
+                .iter()
+                .map(|p| strategy_expr(&p.ty))
+                .collect::<Result<_>>()?;
+            let arg_names: Vec<String> = plan.ctor_params.iter().map(|p| p.name.clone()).collect();
+            let (_, strategy) = tuple_pattern_and_strategy(&arg_names, &arg_strategies);
+            Ok(strategy)
+        }
+        RustType::UserTypeFields(plan) => match &plan.shape {
+            harness::UserTypeShape::Struct(fields) => {
+                let field_strategies: Vec<String> = fields
+                    .iter()
+                    .map(|f| strategy_expr(&f.ty))
+                    .collect::<Result<_>>()?;
+                let field_names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                let (_, strategy) = tuple_pattern_and_strategy(&field_names, &field_strategies);
+                Ok(strategy)
+            }
+            // The raw shape of an enum is its own discriminant (which
+            // variant) alongside *every* variant's own raw leaf tuple,
+            // drawn unconditionally -- exactly mirroring
+            // `build_user_value_stmt`'s own reasoning for a top-level enum
+            // parameter (a few wasted draws per case, proptest does not
+            // notice, and every variant's data is real regardless of which
+            // one a case ends up using).
+            harness::UserTypeShape::Enum(variants) => {
+                let mut parts = vec![format!("0u8..{}u8", variants.len())];
+                for (_, vfields) in variants {
+                    let strategies: Vec<String> = vfields
+                        .iter()
+                        .map(|f| strategy_expr(&f.ty))
+                        .collect::<Result<_>>()?;
+                    let names: Vec<String> = vfields.iter().map(|f| f.name.clone()).collect();
+                    let (_, strategy) = tuple_pattern_and_strategy(&names, &strategies);
+                    parts.push(strategy);
+                }
+                Ok(format!("({})", parts.join(", ")))
+            }
+        },
+        other => bail!(
+            "raw_user_type_strategy_expr called on a non-user type `{}` -- this is a Ply bug, \
+             not a user error",
+            other.display_name()
+        ),
+    }
+}
+
+/// The exact reverse of [`raw_user_type_strategy_expr`]: given `var` bound
+/// to the raw shape that function's strategy draws, builds an expression of
+/// `ty`'s own real type, via ordinary (non-proptest) Rust code -- a
+/// constructor call, or a field/variant literal, recursing into itself for
+/// any nested user type at any depth. Never reached for a constructor that
+/// carries its own `#[ply::requires]` filter or a fallible (`Result<Self,
+/// E>`) return: [`RustType::is_fuzz_nestable`] refuses those *when nested*
+/// before this is ever called, because there is no proptest case-rejection
+/// available down here (see that method's own doc for why) -- this
+/// function only ever needs to render the two shapes nesting actually
+/// admits: an infallible constructor call, and a field/variant literal.
+fn construct_from_raw_expr(ty: &RustType, var: &str) -> String {
+    match ty {
+        RustType::UserTypeCtor(plan) => {
+            let names: Vec<String> = plan.ctor_params.iter().map(|p| p.name.clone()).collect();
+            let bindings = tuple_field_bindings(&names, var);
+            let ctor_call = harness::last_two_segments(&plan.constructor);
+            let args: Vec<String> = plan
+                .ctor_params
+                .iter()
+                .zip(&bindings)
+                .map(|(p, raw)| {
+                    let built = construct_from_raw_expr(&p.ty, raw);
+                    if p.by_ref { format!("&{built}") } else { built }
+                })
+                .collect();
+            format!("{ctor_call}({})", args.join(", "))
+        }
+        RustType::UserTypeFields(plan) => match &plan.shape {
+            harness::UserTypeShape::Struct(fields) => {
+                let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                let bindings = tuple_field_bindings(&names, var);
+                let inits: Vec<String> = fields
+                    .iter()
+                    .zip(&bindings)
+                    .map(|(f, raw)| format!("{}: {}", f.name, construct_from_raw_expr(&f.ty, raw)))
+                    .collect();
+                format!("{} {{ {} }}", plan.type_name, inits.join(", "))
+            }
+            harness::UserTypeShape::Enum(variants) => {
+                // `var` is `(discriminant, variant0_raw, variant1_raw, ...)`
+                // -- match on the discriminant, building only the chosen
+                // variant's own value from its own raw slot (the others
+                // were drawn but never used, same as the strategy side).
+                let mut arms = String::new();
+                for (i, (vname, vfields)) in variants.iter().enumerate() {
+                    let variant_raw = format!("{var}.{}", i + 1);
+                    let body = if vfields.is_empty() {
+                        format!("{}::{vname}", plan.type_name)
+                    } else {
+                        let names: Vec<String> = vfields.iter().map(|f| f.name.clone()).collect();
+                        let bindings = tuple_field_bindings(&names, &variant_raw);
+                        let inits: Vec<String> = vfields
+                            .iter()
+                            .zip(&bindings)
+                            .map(|(f, raw)| {
+                                format!("{}: {}", f.name, construct_from_raw_expr(&f.ty, raw))
+                            })
+                            .collect();
+                        format!("{}::{vname} {{ {} }}", plan.type_name, inits.join(", "))
+                    };
+                    arms.push_str(&format!("{i} => {body}, "));
+                }
+                format!(
+                    "match {var}.0 {{ {arms}_ => unreachable!(\"enum discriminant is generated \
+                     in 0..{}\") }}",
+                    variants.len()
+                )
+            }
+        },
+        // Everything else: no wrapping was ever applied (`raw_user_type_
+        // strategy_expr`'s recursion bottoms out at an ordinary leaf's own
+        // `strategy_expr`, which already produces the real value directly),
+        // so the raw binding *is* the real one.
+        _ => var.to_string(),
+    }
+}
+
+/// The per-field expressions `var.0`, `var.1`, ... for `names.len()`
+/// fields, matching [`tuple_pattern_and_strategy`]'s own 0/1/N shape
+/// exactly: a 0-field tuple has nothing to index (never referenced), a
+/// 1-field one *is* the value itself (no `.0` -- `tuple_pattern_and_
+/// strategy` never wraps a single field in a 1-tuple), and 2+ fields index
+/// an ordinary tuple positionally.
+fn tuple_field_bindings(names: &[String], var: &str) -> Vec<String> {
+    match names.len() {
+        0 => vec![],
+        1 => vec![var.to_string()],
+        n => (0..n).map(|i| format!("{var}.{i}")).collect(),
+    }
+}
+
+/// Whether `ty` recursively contains a user-defined struct/enum anywhere --
+/// used by [`marker_display_expr`] to decide whether `{:?}` is safe to
+/// print: nothing here reads whether the user wrote `#[derive(Debug)]`, so
+/// a value containing one cannot be assumed `Debug` the way every built-in
+/// leaf and container this codegen builds already is.
+fn contains_user_type(ty: &RustType) -> bool {
+    match ty {
+        RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => true,
+        RustType::Option(inner)
+        | RustType::Array(inner, _)
+        | RustType::Vec(inner)
+        | RustType::BTreeSet(inner)
+        | RustType::Slice(inner)
+        | RustType::BoxT(inner) => contains_user_type(inner),
+        RustType::Result(ok, err) => contains_user_type(ok) || contains_user_type(err),
+        RustType::Tuple(items) => items.iter().any(contains_user_type),
+        RustType::BTreeMap(key, value) => contains_user_type(key) || contains_user_type(value),
+        _ => false,
+    }
+}
+
+/// `format!("{:?}", value_expr)`, then escaped exactly the way
+/// `RustType::String`'s own arm below already escapes a bare string's
+/// content -- the seven characters this hand-rolled `PLY_FUZZED_CEX` wire
+/// format is sensitive to (`\`, `;`, `=`, `[`, `]`, `\n`, `\r`), so a nested
+/// value that happens to contain one (an embedded `;` inside a `String`
+/// composition now reaches, say `Option<String>`, or a `[`/`]` inside a
+/// nested collection) can never be mistaken for this format's own field
+/// separator or bracket-depth marker. Added 2026-09-02 alongside
+/// composition: before this task nothing composed, so nothing but a bare
+/// `String` (already escaped, using its own `Display` rather than `Debug`)
+/// ever reached this wire format containing a character it cares about.
+/// `split_top_level_semicolons` (`engines::fuzz`) is already escape-aware
+/// (a `\` before `;`/`[`/`]` does not count toward either), so this is safe
+/// to use anywhere `{:?}` was going to be printed regardless of nesting.
+fn debug_escaped_marker_expr(value_expr: &str) -> String {
+    format!(
+        r#"{{ let mut __ply_s = String::new(); for __ply_c in format!("{{:?}}", {value_expr}).chars() {{ match __ply_c {{ '\\' => __ply_s.push_str("\\\\"), ';' => __ply_s.push_str("\\;"), '=' => __ply_s.push_str("\\="), '[' => __ply_s.push_str("\\["), ']' => __ply_s.push_str("\\]"), '\n' => __ply_s.push_str("\\n"), '\r' => __ply_s.push_str("\\r"), __ply_other => __ply_s.push(__ply_other), }} }} __ply_s }}"#
+    )
 }
 
 /// The Rust expression text that turns a bound variable `var: ty` into a
@@ -299,18 +626,46 @@ fn strategy_expr(ty: &RustType) -> Result<String> {
 /// block that joins a collection into `[a,b,c]` text (no spaces, so the
 /// decoder's split-on-comma is exact) for `Vec`/`BTreeSet`.
 fn marker_display_expr(ty: &RustType, var: &str) -> String {
+    // A value that recursively contains a user-defined struct/enum is not
+    // guaranteed to implement `Debug` at all -- nothing here reads whether
+    // the user wrote `#[derive(Debug)]`. This is purely the human-readable
+    // counterexample line (`engines::fuzz::decode_marker_fields` already
+    // reports such a shape witness-only, never decoding it into a
+    // structured value), so a fixed, honest placeholder is safe here: it
+    // says nothing about the value's fields it cannot back up, rather than
+    // guessing at a `Debug` impl that may not exist. A *top-level*
+    // user-type parameter is excluded from this check -- its own arm below
+    // already has a real, precomputed per-field marker string built before
+    // its value is constructed, strictly more informative than this
+    // placeholder.
+    if !matches!(ty, RustType::UserTypeCtor(_) | RustType::UserTypeFields(_))
+        && contains_user_type(ty)
+    {
+        return "\"<value containing a user-defined type, not shown>\".to_string()".to_string();
+    }
     match ty {
         // No `Display` impl for any of these; `Debug` is what a reader of
         // the diagnostic wants to see anyway (`Some(3)`, `'x'`, `[1, 2]`).
-        RustType::Char | RustType::Option(_) | RustType::Result(..) | RustType::Array(..) => {
-            format!("format!(\"{{:?}}\", {var})")
-        }
-        RustType::Vec(_) | RustType::VecU8 | RustType::BTreeSet(_) => format!(
+        // `char` alone needs no escaping (a bare `char` can never itself
+        // collide with this wire format -- `format_args`'s own quoting
+        // already keeps it inert), but `Option`/`Result`/`[T; N]`/a tuple/
+        // `BTreeMap`/`Box` can now nest anything composition reaches
+        // (a `String`, another collection, ...), so those six go through
+        // `debug_escaped_marker_expr` instead of a bare `{:?}`.
+        RustType::Char => format!("format!(\"{{:?}}\", {var})"),
+        RustType::Option(_)
+        | RustType::Result(..)
+        | RustType::Array(..)
+        | RustType::Tuple(_)
+        | RustType::BTreeMap(_, _)
+        | RustType::BoxT(_) => debug_escaped_marker_expr(var),
+        RustType::Vec(_) | RustType::VecU8 | RustType::BTreeSet(_) | RustType::Slice(_) => format!(
             "{{ let mut __ply_s = String::from(\"[\"); \
              for (__ply_i, __ply_e) in {var}.iter().enumerate() {{ \
              if __ply_i > 0 {{ __ply_s.push(','); }} \
-             __ply_s.push_str(&__ply_e.to_string()); }} \
-             __ply_s.push(']'); __ply_s }}"
+             __ply_s.push_str(&{elem_expr}); }} \
+             __ply_s.push(']'); __ply_s }}",
+            elem_expr = debug_escaped_marker_expr("__ply_e")
         ),
         // `Duration`'s own `Display` picks whichever SI unit reads best
         // ("1.5s", "500ms") -- exactly the ambiguity a decoder must not
@@ -693,11 +1048,87 @@ fn plan_for_param(p: &Param) -> Result<ParamPlan> {
                 preamble: format!("{marker_stmt}{preamble}"),
             })
         }
+        // Composition (2026-09-02, TODO.md): `p.ty` is not itself a
+        // struct/enum, but nests one somewhere (`Option<Doc>`, `Vec<Doc>`,
+        // ...) -- `strategy_expr` already builds it, wrapped in
+        // `__PlyOpaque` wherever it reaches the nested type (see
+        // `wrap_fn_harness_module`'s own doc for why), so the value bound
+        // to `p.name` here still needs one preamble statement to strip that
+        // wrapper back off before the real function ever sees it.
+        ty if contains_user_type(ty) => {
+            let raw_name = format!("__ply_raw_{}", p.name);
+            Ok(ParamPlan {
+                pattern: raw_name.clone(),
+                strategy: strategy_expr(ty)?,
+                preamble: format!(
+                    "            let {name} = {unwrap};\n",
+                    name = p.name,
+                    unwrap = unwrap_composed_expr(ty, &raw_name)
+                ),
+            })
+        }
         _ => Ok(ParamPlan {
             pattern: p.name.clone(),
             strategy: strategy_expr(&p.ty)?,
             preamble: String::new(),
         }),
+    }
+}
+
+/// The container-level reverse of [`raw_user_type_strategy_expr`]'s own
+/// recursion into `strategy_expr` -- an expression of `ty`'s own real type,
+/// built from `var` (whose actual runtime type is `ty` with every nested
+/// struct/enum replaced by its raw leaf tuple). Recurses the same way
+/// `strategy_expr`'s own composing arms do, so the conversion reaches a
+/// nested type at any depth (a `Doc` two levels down inside
+/// `Vec<Option<Doc>>`, say), stopping the instant a branch contains no user
+/// type at all (`var` unchanged from there down -- nothing was ever
+/// replaced, so there is nothing to convert).
+fn unwrap_composed_expr(ty: &RustType, var: &str) -> String {
+    if !contains_user_type(ty) {
+        return var.to_string();
+    }
+    match ty {
+        RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => construct_from_raw_expr(ty, var),
+        RustType::Option(inner) => format!(
+            "{var}.map(|__ply_v| {})",
+            unwrap_composed_expr(inner, "__ply_v")
+        ),
+        RustType::Result(ok, err) => format!(
+            "{var}.map(|__ply_v| {}).map_err(|__ply_v| {})",
+            unwrap_composed_expr(ok, "__ply_v"),
+            unwrap_composed_expr(err, "__ply_v"),
+        ),
+        RustType::Array(inner, _) => format!(
+            "{var}.map(|__ply_v| {})",
+            unwrap_composed_expr(inner, "__ply_v")
+        ),
+        RustType::Vec(inner) | RustType::BTreeSet(inner) | RustType::Slice(inner) => format!(
+            "{var}.into_iter().map(|__ply_v| {}).collect()",
+            unwrap_composed_expr(inner, "__ply_v")
+        ),
+        RustType::Tuple(items) => {
+            let parts: Vec<String> = items
+                .iter()
+                .enumerate()
+                .map(|(i, t)| unwrap_composed_expr(t, &format!("{var}.{i}")))
+                .collect();
+            match parts.len() {
+                0 => "()".to_string(),
+                1 => format!("({},)", parts[0]),
+                _ => format!("({})", parts.join(", ")),
+            }
+        }
+        RustType::BTreeMap(key, value) => format!(
+            "{var}.into_iter().map(|(__ply_k, __ply_v)| ({}, {})).collect()",
+            unwrap_composed_expr(key, "__ply_k"),
+            unwrap_composed_expr(value, "__ply_v"),
+        ),
+        RustType::BoxT(inner) => format!(
+            "Box::new({})",
+            unwrap_composed_expr(inner, &format!("*{var}"))
+        ),
+        _ => var.to_string(),
     }
 }
 
@@ -808,6 +1239,16 @@ fn moves_on_by_value_call(ty: &RustType) -> bool {
         // harness for the (real, common) case where the type is not
         // actually `Copy`.
         RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => true,
+        // Composition (2026-09-02): a tuple moves if any element does
+        // (mirroring `derive(Copy)`'s own all-or-nothing rule, same as
+        // `Result` just above); `BTreeMap` and `Box` always own heap
+        // allocations, so both always move, the same as `Vec`/`BTreeSet`/
+        // `String` above. `Slice` is conservatively `true` too, though it
+        // is never actually reached here -- a slice parameter is only ever
+        // written `&[T]`, so `by_ref` is always set and `moved_names`
+        // (this fn's only caller) already filters those out before asking.
+        RustType::Tuple(items) => items.iter().any(moves_on_by_value_call),
+        RustType::BTreeMap(_, _) | RustType::BoxT(_) | RustType::Slice(_) => true,
         _ => false,
     }
 }
@@ -1985,22 +2426,30 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
             "vec![0u8]".to_string(),
             "vec![1u8; 8]".to_string(),
         ],
-        RustType::Vec(inner) => {
-            let n = inner.scalar_rust_name().unwrap_or("i64");
-            vec![
+        // Composition (2026-09-02) widened `Vec`'s own element gate past a
+        // plain scalar -- but a fixed boundary *literal* still only makes
+        // sense when the element has one: `scalar_rust_name` returning
+        // `None` for the new inner shapes (`String`, a user struct, another
+        // container) now means "no literal", never the old `.unwrap_or
+        // ("i64")` fallback, which would have silently spliced a wrong-
+        // typed literal (`vec![0i64]` for a `Vec<String>`) into generated
+        // code and failed to *compile*, not merely to typecheck sensibly.
+        RustType::Vec(inner) => match inner.scalar_rust_name() {
+            Some(n) => vec![
                 "vec![]".to_string(),
                 format!("vec![0{n}]"),
                 format!("vec![1{n}; 8]"),
-            ]
-        }
-        RustType::BTreeSet(inner) => {
-            let n = inner.scalar_rust_name().unwrap_or("i64");
-            vec![
+            ],
+            None => vec![],
+        },
+        RustType::BTreeSet(inner) => match inner.scalar_rust_name() {
+            Some(n) => vec![
                 "std::collections::BTreeSet::new()".to_string(),
                 format!("std::collections::BTreeSet::from([0{n}])"),
                 format!("std::collections::BTreeSet::from([0{n}, 1{n}, 2{n}])"),
-            ]
-        }
+            ],
+            None => vec![],
+        },
         RustType::Char => vec![
             "'a'".to_string(),
             "'0'".to_string(),
@@ -2075,6 +2524,27 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
         // it already gives for a receiver method -- `fuzz(n)` still runs
         // and still earns a real verdict.
         RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => vec![],
+        // Same reasoning as `Vec`'s own arm above, reusing it directly: a
+        // slice's owned representation *is* a `Vec<T>` (see
+        // `RustType::Slice`'s own doc), so a literal that builds one is
+        // exactly a `Vec` literal -- the by-ref call site (`&name`) coerces
+        // it to `&[T]` regardless of which literal was used to build it.
+        RustType::Slice(inner) => boundary_literals(&RustType::Vec(inner.clone())),
+        // `Box::new(v)` around every literal `T` already has, when it has
+        // any -- free and correct, the same recursive pattern `Option`/
+        // `Result`/`Array` above already use.
+        RustType::BoxT(inner) => boundary_literals(inner)
+            .into_iter()
+            .map(|lit| format!("Box::new({lit})"))
+            .collect(),
+        // No fixed literal makes sense for an arbitrary tuple or map the
+        // same general way `Option`/`Result`/`Array` recurse -- doing so
+        // correctly for every arity/element combination is real, separate
+        // work this task did not take on. `fuzz(n)` still runs and still
+        // earns a real verdict; only the `test` tier's own fixed direct
+        // cases are narrower here, the same honest degradation the
+        // `UserTypeCtor`/`UserTypeFields` arm above already accepts.
+        RustType::Tuple(_) | RustType::BTreeMap(_, _) => vec![],
     }
 }
 
@@ -2400,6 +2870,52 @@ mod tests {
         let path = dir.path().join("lib.rs");
         std::fs::write(&path, src).unwrap();
         discover_fn(&path, name).unwrap()
+    }
+
+    /// The composition task's own headline case (TODO.md, compprobe's
+    /// `many`): a list of a user struct with an infallible constructor.
+    /// Generates real, compiling proptest code -- never a `prop_map` that
+    /// tries to build `Doc` directly (which `Doc` deriving no `Debug` would
+    /// break, see `raw_user_type_strategy_expr`'s own doc for the measured
+    /// compile error that shape produced before this fix): the strategy
+    /// draws only a raw `u32` leaf per element, and the real `Doc::new`
+    /// call happens in the preamble, via ordinary (non-proptest) code.
+    #[test]
+    fn a_list_of_a_user_struct_generates_a_real_construction_preamble_not_a_prop_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let path = src_dir.join("lib.rs");
+        std::fs::write(
+            &path,
+            r#"
+pub struct Doc { n: u32 }
+impl Doc { pub fn new(n: u32) -> Self { Doc { n } } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn many(a: Vec<Doc>) -> i64 { a.len() as i64 }
+"#,
+        )
+        .unwrap();
+        let mut cf = discover_fn(&path, "many").unwrap();
+        harness::enrich_contract_fn_user_types(&mut cf, dir.path());
+        assert!(cf.is_fuzz_supported(), "{:?}", cf.params[0].ty);
+        let body =
+            generate_fuzz_test(&cf, 8, &derive_seed("many", "")).unwrap_or_else(|e| panic!("{e}"));
+        let strategy_line = body
+            .lines()
+            .find(|l| l.contains("__ply_strategy ="))
+            .unwrap_or_else(|| panic!("no strategy line in generated body:\n{body}"));
+        assert!(
+            !strategy_line.contains("Doc::new"),
+            "the constructor must never be called *inside* the proptest strategy line (that is \
+             exactly the shape that fails to compile with `Doc doesn't implement Debug`) -- only \
+             the raw u32 leaf may be drawn there:\n{strategy_line}"
+        );
+        assert!(
+            body.contains("let a = ") && body.contains("Doc::new"),
+            "the real Vec<Doc> must be built from the raw draw via an ordinary preamble \
+             statement that calls the real constructor on each drawn leaf:\n{body}"
+        );
     }
 
     /// Regression pin (task, 2026-08-27): the marker-precompute fix for the
@@ -3289,12 +3805,18 @@ impl Label {
         );
     }
 
-    /// The worked example (TODO.md, "the measured gap"): a plain fn's own
-    /// `Option<String>` parameter, refused outright before this task, now
-    /// builds a real seeded strategy once an `examples:` entry supplies a
-    /// starting value.
+    /// The worked example (TODO.md, "the measured gap"), superseded
+    /// 2026-09-02 by composition: a plain fn's own `Option<String>`
+    /// parameter, refused outright before this task, now builds a real
+    /// strategy on its own -- **no `examples:` entry needed at all**. The
+    /// old corpus-seeding workaround (`plan_param_seeding`, immediately
+    /// below) existed only because `String` could not yet nest; now that it
+    /// can, it never engages for this shape (its own precondition is
+    /// exactly one otherwise-unbuildable parameter, and `Option<String>` is
+    /// no longer one), so this test pins the real capability that replaced
+    /// it rather than the workaround.
     #[test]
-    fn a_plain_fns_option_string_parameter_is_seeded_when_an_example_provides_one() {
+    fn a_plain_fns_option_string_parameter_is_fuzz_supported_via_composition() {
         let cf = discover(
             r#"
 #[ply::ensures(|result| *result >= 0)]
@@ -3302,33 +3824,24 @@ pub fn width(label: Option<String>) -> usize { label.map(|s| s.len()).unwrap_or(
 "#,
             "width",
         );
-        let examples = vec!["width(Some(\"hi\".to_string())) == 2".to_string()];
-        let body = generate_fuzz_test_with_examples(&cf, 64, &derive_seed("width", ""), &examples)
-            .unwrap();
-        assert!(
-            body.contains("__PlySeedStrategy"),
-            "the parameter must draw from the seeded corpus instead of staying refused:\n{body}"
-        );
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("width", "")).unwrap();
         assert!(
             body.contains("proptest::option::of("),
             "an `Option<String>` parameter must be wrapped with proptest's own `Option` \
-             combinator around the seeded string strategy:\n{body}"
+             combinator around the ordinary curated string strategy, no seed required:\n{body}"
         );
         assert!(
-            body.contains("\"hi\".to_string()"),
-            "the example's literal text must seed the corpus:\n{body}"
-        );
-        assert!(
-            body.contains("PLY_FUZZ_SEED_STATS|") && body.contains("param=label"),
-            "the run must report which parameter was seeded, so the verdict can name it \
-             honestly:\n{body}"
+            !body.contains("__PlySeedStrategy"),
+            "the old corpus-seeding workaround must not engage for a shape that is now directly \
+             buildable:\n{body}"
         );
     }
 
-    /// The `Vec<String>` sibling: growth by element and by length, not just
-    /// by mutating one string's text.
+    /// The `Vec<String>` sibling, superseded the same way: growth by
+    /// element and by length comes from `proptest::collection::vec` around
+    /// the ordinary `String` strategy directly, no seed needed.
     #[test]
-    fn a_plain_fns_vec_string_parameter_is_seeded_when_an_example_provides_one() {
+    fn a_plain_fns_vec_string_parameter_is_fuzz_supported_via_composition() {
         let cf = discover(
             r#"
 #[ply::ensures(|result| *result >= 0)]
@@ -3336,42 +3849,16 @@ pub fn total_len(tags: Vec<String>) -> usize { tags.iter().map(|s| s.len()).sum(
 "#,
             "total_len",
         );
-        let examples = vec!["total_len(vec![\"hi\".to_string()]) == 2".to_string()];
-        let body =
-            generate_fuzz_test_with_examples(&cf, 64, &derive_seed("total_len", ""), &examples)
-                .unwrap();
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("total_len", "")).unwrap();
         assert!(
-            body.contains("__PlySeedStrategy"),
-            "the parameter's elements must draw from the seeded corpus:\n{body}"
+            body.contains("proptest::collection::vec("),
+            "a `Vec<String>` parameter must vary both element text and length via the ordinary \
+             collection combinator, no seed required:\n{body}"
         );
         assert!(
-            body.contains("proptest::collection::vec(__PlySeedStrategy"),
-            "a `Vec<String>` parameter must vary both element text and length -- \
-             `proptest::collection::vec` around the seeded string strategy:\n{body}"
-        );
-        assert!(
-            body.contains("\"hi\".to_string()"),
-            "the example's literal text must seed the corpus:\n{body}"
-        );
-    }
-
-    /// Revert-proof (CLAUDE.md: prove every fix bites): with no `examples:`
-    /// entry naming a value for `label`, `Option<String>` remains exactly as
-    /// unbuildable as it always was -- this must still bail, not silently
-    /// produce a harness with nothing to draw from.
-    #[test]
-    fn without_an_example_an_option_string_parameter_still_bails() {
-        let cf = discover(
-            r#"
-#[ply::ensures(|result| *result >= 0)]
-pub fn width(label: Option<String>) -> usize { label.map(|s| s.len()).unwrap_or(0) }
-"#,
-            "width",
-        );
-        let err = generate_fuzz_test(&cf, 64, &derive_seed("width", "")).unwrap_err();
-        assert!(
-            err.to_string().contains("V0505"),
-            "no example, no seed, so this parameter is still refused by name: {err}"
+            !body.contains("__PlySeedStrategy"),
+            "the old corpus-seeding workaround must not engage for a shape that is now directly \
+             buildable:\n{body}"
         );
     }
 
