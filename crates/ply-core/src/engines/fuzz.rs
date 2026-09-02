@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -45,22 +46,23 @@ pub fn run_harness_tests(
     filter: &str,
     timeout_secs: u32,
 ) -> Result<HarnessTestRun> {
-    let timeout_arg = format!("{timeout_secs}s");
-    let output = Command::new("timeout")
-        .arg(&timeout_arg)
-        .arg("cargo")
-        .arg("test")
+    let mut cmd = Command::new("cargo");
+    cmd.arg("test")
         .arg("-p")
         .arg(harness_package)
         .arg("--lib")
         .arg(filter)
         .arg("--")
         .arg("--nocapture")
-        .current_dir(workspace_root)
-        .output()
+        .current_dir(workspace_root);
+    // The wall-clock budget is enforced in-process (`engines::run_with_timeout`),
+    // never by shelling out to a `timeout`/`gtimeout` binary -- macOS ships
+    // neither, so that used to fail every run outright on macOS, before a
+    // single test of this harness ever got to run.
+    let output = super::run_with_timeout(&mut cmd, Duration::from_secs(timeout_secs as u64))
         .with_context(|| {
             format!(
-                "spawning `cargo test -p {harness_package}` in {}",
+                "running `cargo test -p {harness_package}` in {}",
                 workspace_root.display()
             )
         })?;
@@ -70,8 +72,7 @@ pub fn run_harness_tests(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     ));
-    // GNU `timeout` exits 124 when it had to kill the child.
-    let timed_out = output.status.code() == Some(124);
+    let timed_out = output.timed_out;
     let failed_tests = parse_failed_test_names(&combined);
     Ok(HarnessTestRun {
         timed_out,
@@ -105,20 +106,17 @@ pub fn check_harness_builds(
     harness_package: &str,
     timeout_secs: u32,
 ) -> Result<HarnessBuildCheck> {
-    let timeout_arg = format!("{timeout_secs}s");
-    let output = Command::new("timeout")
-        .arg(&timeout_arg)
-        .arg("cargo")
-        .arg("test")
+    let mut cmd = Command::new("cargo");
+    cmd.arg("test")
         .arg("-p")
         .arg(harness_package)
         .arg("--lib")
         .arg("--no-run")
-        .current_dir(workspace_root)
-        .output()
+        .current_dir(workspace_root);
+    let output = super::run_with_timeout(&mut cmd, Duration::from_secs(timeout_secs as u64))
         .with_context(|| {
             format!(
-                "spawning `cargo test -p {harness_package} --lib --no-run` in {}",
+                "running `cargo test -p {harness_package} --lib --no-run` in {}",
                 workspace_root.display()
             )
         })?;
@@ -127,7 +125,7 @@ pub fn check_harness_builds(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     ));
-    let timed_out = output.status.code() == Some(124);
+    let timed_out = output.timed_out;
     Ok(HarnessBuildCheck {
         timed_out,
         build_ok: output.status.success() && !timed_out,
