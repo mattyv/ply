@@ -200,6 +200,9 @@ externals:                        # systems or people outside this codebase
   venue:
     note: "the exchange: sends us market data, accepts our orders"
 
+routes:                           # how to build a type Ply cannot make itself (section 6)
+  Handle: open_handle
+
 components:                       # the architecture: named units of your code
   ingest:
     anchor: ingest                # the crate or module this component IS
@@ -560,20 +563,65 @@ A function can only be checked if the engine can construct its arguments. This i
 narrower than you would guess, and narrower than the design specification's own list,
 so here is what this build actually handles:
 
+The two engines answer this separately, and the gap between the columns is wide on
+purpose: the model checker's list is measured and deliberate, while the sampling engine
+composes freely.
+
 | Shape | `bounded` (model checker) | `fuzz` / `test` |
 |---|---|---|
 | `u8`–`u64`, `i8`–`i64`, `bool`, `char` | yes, cheap | yes |
-| `Option<T>`, `Result<T, E>` of the above | yes | yes |
+| `f32`, `f64`, `String`, `Duration`, the `NonZero` family | **no** | yes |
+| `Option<T>`, `Result<T, E>` of the above | yes, for the scalars only | yes |
 | `[T; N]` — a fixed-size array | yes, and this is the *preferred* way to express bounded data | yes |
 | `Vec<u8>` | yes | yes |
 | `Vec<T>` for other scalar `T`, `BTreeSet<T>` | **no** | yes |
 | `&T` — a shared reference to any of the above | yes | yes |
-| `&mut T`, `&[T]`, `String`, structs, enums, `HashMap`, generics, trait objects | **no** | **no** |
+| `&[T]` — a slice | **no** | yes |
+| tuples, `BTreeMap<K, V>`, `Box<T>` | **no** | yes |
+| a struct or enum of your own | **no** | yes, when Ply can build one — see below |
+| `&mut T`, `HashMap`, generics, trait objects, a filesystem path | **no** | **no** |
+
+**Nesting works for the sampling engine, to any depth.** Anything the `fuzz`/`test`
+column can build, it can also build inside anything else in that column: a list of text,
+text that might be missing, a map from text to a struct of your own. This was not true
+before 2026-09-02 — each shape had been added in a way that stopped it nesting, so every
+addition created a fresh set of impossible combinations. **It is deliberately still not
+true of the model checker**, whose list above is exactly what it was measured to handle.
+
+**A struct or enum of your own** is built by calling its own public constructor, or by
+naming its fields when they are all public. When neither is available, say how to build
+one with `routes:` (below). A type with no public way in at all stays unsupported: there
+is nothing for Ply to call.
 
 Type aliases resolve, so `pub type AccountId = u64;` is a `u64` here. Anything in the
 last row is reported as an unsupported shape, by name, rather than attempted (`V0505`). That is deliberate: an unsupported shape is a fact Ply reports, not
 a crash and not a silent skip. If a function has a contract but neither engine can build
 its inputs, it gets no checks and an unsupported verdict.
+
+### `routes:` — saying how to build a type Ply cannot
+
+A top-level key, beside `components:`. Each entry names a type and a public function that
+returns one:
+
+```yaml
+routes:
+  Handle: open_handle                          # a function in this crate, free or associated
+  OsString: std::ffi::OsString::from(String)   # a function elsewhere: say what it takes
+```
+
+Ply calls that function, **varying what it passes in** — you name the door, not the
+values. For a function in another crate Ply has no source to read, so the argument types
+go in the route itself.
+
+Three things it will tell you rather than let pass:
+
+- a route naming a function that does not exist is refused up front, naming both the
+  function and the line that named it (`V0509`) — never silently ignored;
+- a route whose function ignores its inputs and hands back the same value every time is
+  reported (`W0527`): *"Of the 64 cases that ran, 1 distinct value reached this
+  function"* — the difference between 64 tests and one test run 64 times;
+- evidence built this way is marked `built to order`, because it is evidence about what
+  that function returns rather than about everything the type could hold.
 
 Two limits narrow what *every* `bounded` verdict means, however clean it looks.
 Generated arguments never point at the same thing as each other, so a bug that needs two
@@ -889,6 +937,31 @@ workspace — bounded(2)  [assumed, evidence owed]
 
   [reused]         this result was not re-run: an earlier run recorded it, and every input Ply hashes still hashes the same — the function's own source, the code it calls, the promises it assumes, the examples it checks, the checks themselves, the engines, the compiler and target, the crate's features, the resolved versions of its dependencies, and Ply's own version
 ```
+
+### The marks that say what a number is a count *of*
+
+Four more marks qualify a count without changing it. The verdict stays exactly what it
+was; what changes is that you can tell what it means.
+
+| Mark | What it is telling you |
+|---|---|
+| `seeded` | The value is built by parsing text, and random text almost never parses, so inputs were grown from values already known to be valid. The count is real; it is evidence about text *near* what already works. |
+| `lopsided` | The promise is written "either this, or that", and one side decided nearly every case that held. The lines below say which side decided how often, so you can judge whether the side you care about was tested at all. |
+| `built to order` | The value is not one Ply drew itself: your document named a function that makes one, and Ply called it, varying what it passed in. Evidence about what that function returns, not about everything the type could hold. |
+| `one value over and over` | That function handed back the same value every time, so the count is the number of times **one** test ran rather than the number of different things tried. |
+
+The last one is worth dwelling on, because it is the difference between a number that
+means something and a number that does not:
+
+```
+use_frozen — fuzzed(8)  [built to order, one value over and over]
+use_handle — fuzzed(8)  [built to order]
+
+[W0527] Of the 8 cases that ran, 1 distinct value reached `use_frozen`.
+[W0527] Of the 8 cases that ran, 8 distinct values reached `use_handle`.
+```
+
+Both say `fuzzed(8)`. Only one of them ran eight tests.
 
 The other marks travel upward the way the statuses do, so a qualified result deep in the tree
 is visible at the root without expanding anything — the same job the corner markers do
@@ -1425,6 +1498,10 @@ on something stable. These are the ones this build emits.
 | `W0110` | A check was declared whose engine does not exist in this build (`prove`). |
 | `W0502` | A `mutate` run found bugs your checks did not catch. Note that an *equivalent* mutant — a change that cannot alter behaviour — survives any specification, so not every survivor is a gap. |
 | `W0503` | The `requires` filter rejected so much of the generated input that the spread was narrow, or the run was abandoned entirely. |
+| `W0525` | A function declares worked `examples:` and nothing declared will run them. They are read and recorded, but nothing checks them. |
+| `W0526` | The promise joins conditions with `\|\|`, and this says which side decided each case that held — always, whether the split is even or not. |
+| `W0527` | A value was built through a `routes:` entry, with how many genuinely distinct values reached the function. One, across many cases, means one test ran many times. |
+| `V0509` | A `routes:` entry names a function Ply cannot use, and says which — never silently ignored. |
 | `W0510` | A contract written in `ply.yaml` for a checked function was used at the boundary but not merged into that function's own check. |
 | `W0511` | The verdict is conditional: it used a declared contract instead of a callee's real body, and names what it assumed. |
 | `W0512` | Ply refused to descend into a callee no contract describes, and names the callee and the call site. |
