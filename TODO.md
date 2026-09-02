@@ -55,7 +55,7 @@ is still unbuildable" had their unbuildable argument changed to `&mut u32` (refu
 structural reason composition does not touch) so they go on testing what they were written
 to test.
 
-- [x] Sampling engine composition + slices, this commit.
+- [x] Sampling engine composition + slices (f394aba).
 - [ ] **Follow-up not attempted this session**: `classify_seedable_wrap`/`plan_param_seeding`
       and the rest of the plain-parameter corpus-seeding apparatus are now dead code for
       their only two shapes (`Option<String>`/`Vec<String>`) — every code path that could
