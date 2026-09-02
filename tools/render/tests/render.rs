@@ -5661,3 +5661,68 @@ fn neither_view_says_a_check_has_happened_that_has_not() {
         );
     }
 }
+
+/// A finding badge sits on the right of a fn chip, vertically centred, so it
+/// covers the checks line as well as the name line. The chip's width reserved
+/// room for it against the name only, so a long checks line ran underneath
+/// it: `demos/fault3-flagged.svg` -- the drawing whose whole point is that a
+/// broken document is visibly flagged -- read
+/// "bounded(0) · fuzz: 4096 cases · mutate" with `mutate` buried under the
+/// red `E0203` tag.
+///
+/// This walks every fixture that carries a finding and fails on the first
+/// chip where the two collide, so a construct added later cannot quietly
+/// reintroduce it. Widths use the renderer's own monospace estimate, which is
+/// the model it lays out against and therefore the one it has to respect.
+#[test]
+fn no_chip_puts_its_finding_badge_on_top_of_its_own_check_text() {
+    /// `CHECK_CHAR_W` in the renderer: the per-character width it lays the
+    /// `fn-checks` line out with.
+    const CHECK_CHAR_W: f64 = 5.5;
+    let mut collisions = Vec::new();
+    for fixture in [
+        "../../demos/fault3.ply.yaml",
+        "../check/tests/fixtures/bad_check_syntax.ply.yaml",
+        "../check/tests/fixtures/bad_path_form.ply.yaml",
+        "../check/tests/fixtures/duplicate_unresolved_id.ply.yaml",
+        "tests/fixtures/strict_with_finding.ply.yaml",
+    ] {
+        let svg = render_fixture(fixture);
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        for chip in doc
+            .descendants()
+            .filter(|n| n.attribute("class") == Some("fn-chip"))
+        {
+            let Some(badge) = chip
+                .descendants()
+                .find(|n| n.attribute("class") == Some("finding-badge"))
+                .and_then(|g| g.children().find(|c| c.tag_name().name() == "rect"))
+            else {
+                continue;
+            };
+            let Some(checks) = chip
+                .descendants()
+                .find(|n| n.attribute("class") == Some("fn-checks"))
+            else {
+                continue;
+            };
+            let text = checks.text().unwrap_or_default();
+            let left: f64 = checks.attribute("x").unwrap().parse().unwrap();
+            let right = left + text.chars().count() as f64 * CHECK_CHAR_W;
+            let badge_left: f64 = badge.attribute("x").unwrap().parse().unwrap();
+            if right > badge_left {
+                collisions.push(format!(
+                    "{fixture}: `{}` on chip `{}` runs to {right:.0} but its finding badge \
+                     starts at {badge_left:.0}, so the end of the line is hidden under it",
+                    text,
+                    chip.attribute("data-fn").unwrap_or("?"),
+                ));
+            }
+        }
+    }
+    assert!(
+        collisions.is_empty(),
+        "a finding badge is drawn over the check text it sits beside:\n  {}",
+        collisions.join("\n  ")
+    );
+}

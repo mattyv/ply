@@ -62,6 +62,66 @@ fn the_architecture_diagrams_match_the_specs_they_claim_to_be_rendered_from() {
     }
 }
 
+/// The committed drawings beside each vetting scenario and demo.
+///
+/// These went unchecked while the text forms next to them were pinned, and
+/// the result is exactly what that asymmetry predicts: the two nobody
+/// regenerated kept the renderer's old cryptic badges (`B2`, `F256 T`) long
+/// after every drawing under test had moved to words a reader can follow
+/// (`bounded: loop<=2`, `fuzz: 256 cases - test`). One of them is embedded in
+/// README.md, so the project's front page was showing a notation the tool no
+/// longer writes.
+///
+/// `demos/fault3-as-drawn-by-faulted-toolchain.svg` is deliberately absent
+/// from this list and must stay absent. It is not current output and is not
+/// supposed to be: it is the record of what a *broken* renderer drew, kept so
+/// the demo can show the difference. Regenerating it would delete the
+/// evidence it exists to carry.
+#[test]
+fn the_committed_drawings_still_match_what_the_documents_render_to() {
+    let root = repo_root();
+    for (yaml_path, svg_path) in [
+        (
+            "vetting/001-spsc-disruptor.ply.yaml",
+            "vetting/001-spsc-disruptor.svg",
+        ),
+        (
+            "vetting/002-ingest-pipeline.ply.yaml",
+            "vetting/002-ingest-pipeline.svg",
+        ),
+        (
+            "vetting/003-trading-system.ply.yaml",
+            "vetting/003-trading-system.svg",
+        ),
+        (
+            "vetting/003-trading-system.ply.yaml",
+            "vetting/003-trading-system-full.svg",
+        ),
+        (
+            "vetting/004-legacy-extension/feature/ply.yaml",
+            "vetting/004-legacy-extension.svg",
+        ),
+        ("demos/fault3.ply.yaml", "demos/fault3-flagged.svg"),
+    ] {
+        let yaml = std::fs::read_to_string(root.join(yaml_path))
+            .unwrap_or_else(|e| panic!("reading {yaml_path}: {e}"));
+        let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{yaml_path} must parse: {e}"));
+        let fresh = render_svg_with_options(&doc, &RenderOptions::default())
+            .unwrap_or_else(|e| panic!("{yaml_path} must render: {e}"));
+
+        let committed = std::fs::read_to_string(root.join(svg_path)).unwrap_or_else(|e| {
+            panic!(
+                "{svg_path} could not be read ({e}). Regenerate it from the tools workspace                  with:\n  cargo run --release -p ply-render -- ../{yaml_path} -o ../{svg_path}"
+            )
+        });
+
+        assert_eq!(
+            committed, fresh,
+            "{svg_path} no longer matches what {yaml_path} renders to, so a drawing in the              documentation is showing something the tool no longer draws. Regenerate it from              the tools workspace, then look at the result before committing it:\n               cargo run --release -p ply-render -- ../{yaml_path} -o ../{svg_path}"
+        );
+    }
+}
+
 /// The committed text forms beside each vetting scenario, checked the same
 /// way and for the same reason as the drawings next to them.
 ///

@@ -74,12 +74,19 @@ is what the *faulted* toolchain made of it: **`B0`** in the same confident green
 as every honest claim. The picture cannot distinguish a vacuous claim from a
 proved one.
 
+That file is kept exactly as the broken toolchain drew it and is never
+regenerated — it is the evidence, not a picture of today's output. Its `B0`
+shorthand is part of that: the renderer has since replaced those codes with
+words a reader can follow, so nothing current writes `B0` any more.
+
 That gap is now half closed. The renderer runs the document-local rules itself
 (§7.1 "finding" row) and draws every finding in error red:
 [`fault3-flagged.svg`](fault3-flagged.svg) is the same faulty document through
 the fixed toolchain — the `decode` chip is red-bordered with a red `E0203`
 badge, and its tooltip leads with
-`FINDING E0203: bounded(K) out of range 1..=64: "bounded(0)" (fn decode)`.
+`FINDING E0203: "bounded(0)" is not a valid check: the number is how many times loops are
+unrolled during the proof, and it must be between 1 and 64 — a bound of 0 would prove
+nothing (fn decode)`.
 An invalid document can no longer render respectable, and
 `every_finding_is_visibly_flagged_or_counted_at_the_title` walks every bad
 fixture to keep it that way.
