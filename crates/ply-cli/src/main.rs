@@ -1335,6 +1335,30 @@ mod tests {
         );
     }
 
+    /// The branch-decided measurement's own mark (CLAUDE.md, 2026-09-02),
+    /// pinned the same way `a_result_resting_on_an_unchecked_promise_says_
+    /// so_on_the_node_line` pins `assumed`/`evidence owed` above -- a
+    /// person reading the tree, not just the JSON, must see this too.
+    #[test]
+    fn a_lopsided_or_promise_says_so_on_the_node_line() {
+        let envelope = envelope_with_statuses(&["fuzzed(64)"], &["promise-lopsided"]);
+        let report = tree_report(&envelope);
+        assert!(
+            report.contains("  f — fuzzed(64)  [lopsided]"),
+            "the node line must carry the mark: {report}"
+        );
+        assert!(
+            report.contains(
+                "  [lopsided]       this promise is written as \"either this, or that\" (`||`), \
+                 and one side of it decided almost every case where the promise held — real \
+                 cases ran and the promise really held, but the other side of it was barely \
+                 exercised. The lines below say which side decided how often, so you can judge \
+                 whether the side you actually care about was tested at all"
+            ),
+            "a marker nobody can read is not a report: {report}"
+        );
+    }
+
     /// A run with nothing to qualify prints exactly what it printed before:
     /// no markers, and no explanation of markers that are not there.
     #[test]
