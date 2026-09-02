@@ -1,0 +1,51 @@
+ply: 1
+
+# Ply's own library, described at the level where promises live.
+#
+# The workspace file one directory up says which crates exist and which may
+# depend on which. It cannot carry function claims: Ply resolves those against
+# a single crate's `src/lib.rs`, and a workspace root has none -- it says so
+# rather than reporting zero problems ("this is not a count of zero problems,
+# it is a count of zero searches"). So the function-level picture lives here.
+#
+# The one component is anchored at the crate, because that is what makes its
+# function claims resolvable: a component anchored at a module inside the
+# crate is treated as belonging to somewhere else, and its functions are read
+# but never looked for. The modules appear as nested components beneath it,
+# which is what gives a reader something to go into.
+#
+# Every promise below can be checked against the code by eye. They are
+# declarations, not results: `cargo ply verify` turns them into evidence, and
+# a promise written in this file is not yet folded into a function's own
+# checks -- a recorded gap, not a claim being made here.
+
+components:
+  core:
+    anchor: ply_core
+    note: >-
+      Everything Ply knows how to do, with no terminal attached.
+    fns:
+      kernel::StatusSet::len:
+        ensures:
+          - "result <= 7"
+        checks: [fuzz(256)]
+      kernel::StatusSet::union:
+        ensures:
+          - "result.len() >= self.len()"
+        checks: [fuzz(256)]
+      harness::last_two_segments:
+        ensures:
+          - "!result.is_empty() || path.is_empty()"
+        checks: [fuzz(256)]
+      harness::rust_type_from_source:
+        ensures:
+          - "result.is_none() || !src.is_empty()"
+        checks: [fuzz(256)]
+      visual::stable_element_id:
+        ensures:
+          - "result.starts_with(\"ply-\")"
+        checks: [fuzz(256)]
+      record::fingerprint:
+        ensures:
+          - "result.len() == 64"
+        checks: [fuzz(256)]
