@@ -94,4 +94,11 @@ fn a_lopsided_or_promise_is_measured_marked_and_never_changes_the_verdict() {
          15 times. That count says which side of the promise did the work; it says nothing \
          about which lines inside `maybe_pass_through` itself ran. (W0525)"
     );
+    assert_eq!(
+        run.exit_code,
+        Some(0),
+        "a warning-severity disclosure must not fail the run under the default `--fail-on`, \
+         the same rule W0503's own high-rejection warning already follows: {}",
+        run.json
+    );
 }

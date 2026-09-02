@@ -72,4 +72,10 @@ fn a_balanced_or_promise_prints_the_split_without_the_lopsided_mark() {
          2` decided it 18 times. That count says which side of the promise did the work; it \
          says nothing about which lines inside `thirds` itself ran. (W0525)"
     );
+    assert_eq!(
+        run.exit_code,
+        Some(0),
+        "an info-severity disclosure must not fail the run: {}",
+        run.json
+    );
 }
