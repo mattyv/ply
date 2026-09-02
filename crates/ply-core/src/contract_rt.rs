@@ -128,6 +128,65 @@ pub(crate) fn entry_value_lets(values: &[EntryValue], indent: &str) -> String {
     out
 }
 
+/// Splits a top-level `||` chain into its arms, left to right, the same
+/// order `||` itself reads in (2026-09-02, the branch-decided measurement:
+/// "record which branch of the promise actually decided each case"). `a ||
+/// b || c` parses as `(a || b) || c` (`||` is left-associative), so this
+/// walks down the left spine and collects each right-hand side as it goes,
+/// producing `[a, b, c]`.
+///
+/// Returns `None` for any shape that is not a bare `||` at the top --
+/// including a body with no `||` at all, and one buried under `&&` or some
+/// other operator -- rather than a shape it was not asked to read. A single
+/// layer of parentheses around the whole body is stripped first, since
+/// `(a || b)` is the same promise as `a || b`; parentheses *inside* an arm
+/// are left to `widen` to see through, unrelated to whether the arm itself
+/// is `||`-shaped.
+pub fn flatten_top_level_or(expr: &Expr) -> Option<Vec<Expr>> {
+    fn strip_paren(mut e: &Expr) -> &Expr {
+        while let Expr::Paren(p) = e {
+            e = &p.expr;
+        }
+        e
+    }
+    fn flatten_into(expr: &Expr, out: &mut Vec<Expr>) {
+        let stripped = strip_paren(expr);
+        if let Expr::Binary(bin) = stripped
+            && matches!(bin.op, BinOp::Or(_))
+        {
+            flatten_into(&bin.left, out);
+            out.push((*bin.right).clone());
+        } else {
+            out.push(stripped.clone());
+        }
+    }
+
+    let top = strip_paren(expr);
+    let Expr::Binary(bin) = top else { return None };
+    if !matches!(bin.op, BinOp::Or(_)) {
+        return None;
+    }
+    let mut out = Vec::new();
+    flatten_into(top, &mut out);
+    Some(out)
+}
+
+/// [`flatten_top_level_or`], rendered as the newbie-bar text a diagnostic
+/// quotes back at the reader -- each arm's source, tidied the same way
+/// [`harness::tidy_contract_text`] already cleans up a whole contract's
+/// text for a diagnostic or a generated test's doc comment. Kept in this
+/// crate (rather than `ply-cli`, the only caller) so the caller building the
+/// branch-decided disclosure never needs `syn`/`quote` as dependencies of
+/// its own just to read an `Expr` back out as a string.
+pub fn or_arm_texts(body: &Expr) -> Option<Vec<String>> {
+    let arms = flatten_top_level_or(body)?;
+    Some(
+        arms.iter()
+            .map(|a| crate::harness::tidy_contract_text(&a.to_token_stream().to_string()))
+            .collect(),
+    )
+}
+
 /// Recursively widens every arithmetic/comparison subexpression to `i128` so
 /// the rendered assertion can never itself overflow while checking the
 /// contract (the D7 plan's "spike trap" fix: `result == x + 1` at x = 255
@@ -595,6 +654,97 @@ fn render_message(cf: &ContractFn, body: &Expr, contract_text: &str, code: &str)
     Ok(format!(
         "\"Broken promise in `{fname}`: the function declares the postcondition `{contract_text}` \\\n         -- a postcondition is the guarantee a function makes about its return value. For \\\n         this input, that expression evaluated to false. Fix the body or fix the \\\n         `#[ply::ensures]` line, and this test will pass. ({code})\""
     ))
+}
+
+// -- 2026-09-02: the branch-decided measurement (CLAUDE.md, "record which
+// branch of the promise actually decided each case") needs to read a
+// top-level `||` chain back out of the AST honestly -- these pin exactly
+// what `flatten_top_level_or` returns before any codegen is built on top
+// of it.
+#[cfg(test)]
+mod flatten_top_level_or_tests {
+    use super::*;
+    use quote::ToTokens;
+
+    fn arm_texts(expr: &Expr) -> Option<Vec<String>> {
+        flatten_top_level_or(expr).map(|arms| {
+            arms.iter()
+                .map(|a| a.to_token_stream().to_string())
+                .collect()
+        })
+    }
+
+    #[test]
+    fn a_two_arm_or_chain_splits_left_to_right() {
+        let expr: Expr = syn::parse_str("a || b").unwrap();
+        let texts = arm_texts(&expr).expect("a bare `||` must split");
+        assert_eq!(texts, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn a_three_arm_or_chain_splits_in_source_order() {
+        // `a || b || c` parses as `(a || b) || c` (`||` is left-
+        // associative) -- this must still read out as `[a, b, c]`, the
+        // order a person reads the line in, not `[(a || b), c]`.
+        let expr: Expr = syn::parse_str("a || b || c").unwrap();
+        let texts = arm_texts(&expr).expect("a three-arm `||` chain must split");
+        assert_eq!(
+            texts,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_body_with_no_top_level_or_returns_none() {
+        let expr: Expr = syn::parse_str("*result == x").unwrap();
+        assert!(
+            flatten_top_level_or(&expr).is_none(),
+            "a shape with no top-level `||` must get no split, never an invented one"
+        );
+    }
+
+    #[test]
+    fn or_nested_under_and_is_not_a_top_level_or() {
+        // `a && (b || c)` -- the `||` is real, but it is not the shape this
+        // whole promise is at the top, and CLAUDE.md is explicit: refuse
+        // quietly rather than guess for a shape not asked about.
+        let expr: Expr = syn::parse_str("a && (b || c)").unwrap();
+        assert!(
+            flatten_top_level_or(&expr).is_none(),
+            "an `||` buried under `&&` is not a top-level `||` chain"
+        );
+    }
+
+    #[test]
+    fn one_layer_of_parens_around_the_whole_body_is_stripped() {
+        let expr: Expr = syn::parse_str("(a || b)").unwrap();
+        let texts = arm_texts(&expr).expect("a parenthesised `||` is still a `||`");
+        assert_eq!(texts, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn or_arm_texts_renders_each_arm_the_way_a_reader_wrote_it() {
+        let expr: Expr = syn::parse_str("x < 100 || result . unwrap () == x").unwrap();
+        let texts = or_arm_texts(&expr).expect("this is a bare `||` chain");
+        assert_eq!(
+            texts,
+            vec!["x < 100".to_string(), "result.unwrap() == x".to_string()],
+            "each arm must be tidied the same way a whole contract's text already is, not \
+             left with `quote`'s own token-by-token spacing"
+        );
+    }
+
+    #[test]
+    fn a_real_ensures_style_or_chain_splits_into_its_two_conditions() {
+        // The exact shape from the real defect this measurement exists for
+        // (CLAUDE.md): `semver`'s `Version::parse` promise, `!text.contains(
+        // ' ') || result.is_err()`.
+        let expr: Expr = syn::parse_str("! text . contains(' ') || result . is_err()").unwrap();
+        let texts = arm_texts(&expr).expect("this real-world shape must split");
+        assert_eq!(texts.len(), 2);
+        assert!(texts[0].contains("contains"));
+        assert!(texts[1].contains("is_err"));
+    }
 }
 
 #[cfg(test)]

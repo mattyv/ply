@@ -1596,7 +1596,7 @@ pub fn discover_fn(src_path: &Path, fn_path: &str) -> Result<ContractFn> {
 /// test's doc comment. This is a deliberately narrow cosmetic cleanup for
 /// the closure-pipe and leading-deref shapes this slice's own contracts
 /// use -- not a general Rust pretty-printer.
-fn tidy_contract_text(s: &str) -> String {
+pub fn tidy_contract_text(s: &str) -> String {
     s.replace("| ", "|")
         .replace(" |", "|")
         .replace("* ", "*")

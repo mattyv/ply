@@ -520,6 +520,18 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
     if node.statuses.iter().any(|s| s == "seeded") {
         marks.push("seeded");
     }
+    // A promise written as `a || b` is checked left to right, and every
+    // case really did run -- nothing here is unbuildable, which is what
+    // `partial-history`'s own mark ("narrower than it looks") means, so
+    // this is deliberately a sibling mark rather than a reuse of it
+    // (correction recorded 2026-09-01, TODO.md: reusing that one would make
+    // its own printed legend false). This one is about what happens
+    // *inside* the promise, after the call: one side of it decided almost
+    // every case that held, so the other side is barely exercised even
+    // though the count itself is real.
+    if node.statuses.iter().any(|s| s == "promise-lopsided") {
+        marks.push("lopsided");
+    }
     // Last, and from its own field rather than from `statuses`: reuse is
     // not a qualifier on the evidence (D6), it is a fact about when the run
     // happened. A person reading `bounded(2)` should be able to tell
@@ -533,7 +545,7 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
 
 /// What each mark means, printed once beneath the tree and only when the
 /// tree actually carries it. A mark a reader cannot decode is decoration.
-const MARK_GLOSS: [(&str, &str); 5] = [
+const MARK_GLOSS: [(&str, &str); 6] = [
     (
         "assumed",
         "this result rests on a promise Ply was handed and did not check — if the promise is \
@@ -566,10 +578,17 @@ const MARK_GLOSS: [(&str, &str); 5] = [
          is real, but it is evidence about text similar to what is already known to work, not about \
          arbitrary text",
     ),
+    (
+        "lopsided",
+        "this promise is written as \"either this, or that\" (`||`), and one side of it decided \
+         almost every case where the promise held — real cases ran and the promise really held, but \
+         the other side of it was barely exercised. The lines below say which side decided how \
+         often, so you can judge whether the side you actually care about was tested at all",
+    ),
 ];
 
 /// `a`, `a and b`, `a, b and c` — a list a person reads, not a debug print.
-fn join_plainly(items: &[String]) -> String {
+pub(crate) fn join_plainly(items: &[String]) -> String {
     match items {
         [] => String::new(),
         [one] => one.clone(),
@@ -1313,6 +1332,30 @@ mod tests {
                 "  [evidence owed]  nothing has run the real code against that promise yet"
             ),
             "{report}"
+        );
+    }
+
+    /// The branch-decided measurement's own mark (CLAUDE.md, 2026-09-02),
+    /// pinned the same way `a_result_resting_on_an_unchecked_promise_says_
+    /// so_on_the_node_line` pins `assumed`/`evidence owed` above -- a
+    /// person reading the tree, not just the JSON, must see this too.
+    #[test]
+    fn a_lopsided_or_promise_says_so_on_the_node_line() {
+        let envelope = envelope_with_statuses(&["fuzzed(64)"], &["promise-lopsided"]);
+        let report = tree_report(&envelope);
+        assert!(
+            report.contains("  f — fuzzed(64)  [lopsided]"),
+            "the node line must carry the mark: {report}"
+        );
+        assert!(
+            report.contains(
+                "  [lopsided]       this promise is written as \"either this, or that\" (`||`), \
+                 and one side of it decided almost every case where the promise held — real \
+                 cases ran and the promise really held, but the other side of it was barely \
+                 exercised. The lines below say which side decided how often, so you can judge \
+                 whether the side you actually care about was tested at all"
+            ),
+            "a marker nobody can read is not a report: {report}"
         );
     }
 

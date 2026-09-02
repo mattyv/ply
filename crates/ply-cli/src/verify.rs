@@ -2869,6 +2869,14 @@ fn run_fn_checks(
                 if run.seeded && !statuses.iter().any(|s| s == "seeded") {
                     statuses.push("seeded".into());
                 }
+                // The branch-decided measurement's own mark (CLAUDE.md,
+                // 2026-09-02): a top-level `||` promise whose split came
+                // back skewed -- one side deciding more than half of every
+                // case -- the same structural pattern `seeded` just above
+                // follows.
+                if run.promise_lopsided && !statuses.iter().any(|s| s == "promise-lopsided") {
+                    statuses.push("promise-lopsided".into());
+                }
                 // §1: a verdict names the evidence that produced it. Only a
                 // run that happened has any to name.
                 if run.fuzz_ran
@@ -4468,6 +4476,15 @@ struct HarnessRun {
     /// travels with the verdict, propagates into the recorded result, and
     /// survives a reused verdict, never a warning about an incidental fact).
     seeded: bool,
+    /// Whether this fn's postcondition is a top-level `||` chain whose
+    /// branch-decided split (2026-09-02, CLAUDE.md: "record which branch of
+    /// the promise actually decided each case") came back skewed -- one
+    /// side deciding more than half of every case the promise held for.
+    /// `run_fn_checks` turns this into the `promise-lopsided` status, the
+    /// same structural pattern `seeded`/`partial-history` already follow.
+    /// `false` for every fn whose postcondition has no top-level `||` at
+    /// all (the vast majority), and for one whose split came back balanced.
+    promise_lopsided: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4557,6 +4574,12 @@ fn run_fuzz_and_test_checks(
     // reach-measurement-2.md) -- `false` otherwise, including for every fn
     // whose constructor was never seeded at all.
     let mut seeded = false;
+    // Set once, only when this fn's postcondition is a top-level `||` chain
+    // and its branch-decided split came back skewed -- one side deciding
+    // more than half of every case the promise held for (the same >0.5
+    // skew rule the high-rejection warning above already uses). `false`
+    // for every fn with no top-level `||` at all, and for a balanced split.
+    let mut promise_lopsided = false;
 
     // The harness never ran at all for this fn (2026-08-24 M4 review, D1 --
     // the review's most serious finding, widened 2026-08-27 to catch the
@@ -4611,6 +4634,7 @@ fn run_fuzz_and_test_checks(
             fuzz_cases_reached: None,
             diagnostics,
             seeded: false,
+            promise_lopsided: false,
         });
     }
 
@@ -4820,6 +4844,85 @@ fn run_fuzz_and_test_checks(
                     assumptions: vec![],
                     open_item: Some("high_rejection_rate".into()),
                 });
+            }
+            // The branch-decided measurement (CLAUDE.md, 2026-09-02):
+            // "record which branch of the promise actually decided each
+            // case, then report the split." Fires whenever the generated
+            // harness printed a split at all -- which happens exactly when
+            // `fuzz_gen::flatten_top_level_or` found a top-level `||` in
+            // this fn's postcondition, never merely because `fuzz` ran.
+            // Printed unconditionally, regardless of how the split came
+            // out (CLAUDE.md's second trap: "a threshold that silently
+            // blesses ... print the split always") -- only the *mark*
+            // (`promise_lopsided`, below) is gated on the same >0.5 skew
+            // rule the high-rejection warning above already uses, so the
+            // product has one notion of "too narrow", not two.
+            if let Some((_, counts)) = fuzz_engine::parse_or_split_marker(&run.combined_output) {
+                let total: u32 = counts.iter().sum();
+                if total > 0
+                    && let Some((closure, contract_text)) = cf.ensures.as_ref()
+                    && let Some(arm_texts) = contract_rt::or_arm_texts(&closure.body)
+                    && arm_texts.len() == counts.len()
+                {
+                    let max = *counts.iter().max().expect("counts is non-empty: total > 0");
+                    let skewed = (max as f64) / (total as f64) > 0.5;
+                    let parts: Vec<String> = arm_texts
+                        .iter()
+                        .zip(counts.iter())
+                        .map(|(text, c)| {
+                            format!(
+                                "`{text}` decided it {c} time{s}",
+                                s = if *c == 1 { "" } else { "s" }
+                            )
+                        })
+                        .collect();
+                    let list = crate::join_plainly(&parts);
+                    let case_word = if total == 1 { "case" } else { "cases" };
+                    let title = format!(
+                        "`{fn_name}`'s postcondition joins {n} conditions with `||`: \
+                         `{contract_text}`. Rust only evaluates a later one when every earlier \
+                         one already came back false, and Ply's count preserves that order. Of \
+                         the {total} {case_word} where the promise held, {list}. That count says \
+                         which side of the promise did the work; it says nothing about which \
+                         lines inside `{fn_name}` itself ran. (W0526)",
+                        n = arm_texts.len(),
+                    );
+                    let (severity, fixes, open_item) = if skewed {
+                        (
+                            "warning",
+                            vec![Fix {
+                                title: format!(
+                                    "give `{fn_name}` a case that reaches the far side of its \
+                                     `||` more often -- an `examples:` entry, a narrower \
+                                     `#[ply::requires]`, or a parameter type that lands there by \
+                                     construction"
+                                ),
+                                edits: vec![],
+                            }],
+                            Some("promise_lopsided".to_string()),
+                        )
+                    } else {
+                        ("info", vec![], None)
+                    };
+                    diagnostics.push(Diagnostic {
+                        code: "W0526".into(),
+                        severity: severity.into(),
+                        phase: "verify".into(),
+                        engine: "proptest".into(),
+                        check: check_label.clone(),
+                        node_id: node_id.into(),
+                        title,
+                        pointer: None,
+                        primary_span: None,
+                        counterexample: None,
+                        fixes,
+                        assumptions: vec![],
+                        open_item,
+                    });
+                    if skewed {
+                        promise_lopsided = true;
+                    }
+                }
             }
             // A receiver method is never the zero-input shape below, even
             // when its own checked call takes no parameters
@@ -5073,6 +5176,7 @@ fn run_fuzz_and_test_checks(
         fuzz_cases_reached,
         diagnostics,
         seeded,
+        promise_lopsided,
     })
 }
 

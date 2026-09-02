@@ -1112,6 +1112,36 @@ reached; a high-but-survivable rejection rate (the ordinary `W0503` case) does k
 `fuzzed(n)`, because proptest draws until it has *n* accepted cases — what is weak there
 is their spread, not their count.
 
+**A `fuzz(n)` verdict can be honest about its count and still overstate what was tested,
+when the promise itself is an "either this, or that" (2026-09-02).** A high rejection rate
+(above) is thrown away *before* the checked call ever runs. A different emptiness lives
+*inside* the call: a postcondition whose top level is `||` is true the moment its first
+side is true, and the real behaviour on the far side of it may never run. Found pointing
+Ply at `semver`'s `Version::parse`, whose own promise is `!text.contains(' ') ||
+result.is_err()` — most generated text contains no space at all, so the promise's first
+side alone already decides most cases, and the whitespace-rejection rule the author
+actually wrote the promise to check — `result.is_err()`, the only side ever reached on
+the text that *does* contain one — ran on only a small minority of the 64 cases.
+`fuzz(n)` reported this unqualified.
+
+Ply now measures which side of a top-level `||` decided each case that held, and prints
+the split unconditionally — a promise with no top-level `||` earns no split, and neither
+does one whose structure this measurement cannot read; both get silence, never an
+invented number. The count preserves `||`'s own left-to-right, short-circuit evaluation:
+a side that never ran because an earlier one already decided the case is never credited
+or blamed for what it "would have" said, so the measurement can never itself trigger a
+side effect (a panic, say) the checked promise's own author relied on `||` to avoid. When
+one side decides more than half of every case (the same threshold the high-rejection
+warning above already uses), the verdict carries the `promise-lopsided` status — a
+sibling of `partial-history`'s "narrower than it looks", never a reuse of it: that mark
+describes an input the run could not build or a call it could not make, *before* the
+checked call; this one describes which side of the promise the call's own result
+satisfied, *after* it. Both real, both distinct facts about the same evidence. This
+count is a fact about the promise's own text, never a claim about which lines of the
+checked function ran — a `||`'s left side deciding every case says nothing about which of
+the function's internal branches those cases exercised, and Ply's wording does not say
+otherwise.
+
 Per-harness time budget: every engine invocation carries a hard cap (`--engine-timeout`,
 §6). Exceeding it yields `timeout`, never a silent hang and never a `violation`. The cap
 is on the **whole invocation**, not on one phase of it: cargo-mutants copies the tree,
