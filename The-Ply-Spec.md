@@ -1074,9 +1074,11 @@ when the promise itself is an "either this, or that" (2026-09-02).** A high reje
 *inside* the call: a postcondition whose top level is `||` is true the moment its first
 side is true, and the real behaviour on the far side of it may never run. Found pointing
 Ply at `semver`'s `Version::parse`, whose own promise is `!text.contains(' ') ||
-result.is_err()` — random text essentially never parses, so `result.is_err()` is true for
-nearly every generated case, and the whitespace rule the author actually wrote the
-promise for is barely exercised. `fuzz(n)` reported this unqualified.
+result.is_err()` — most generated text contains no space at all, so the promise's first
+side alone already decides most cases, and the whitespace-rejection rule the author
+actually wrote the promise to check — `result.is_err()`, the only side ever reached on
+the text that *does* contain one — ran on only a small minority of the 64 cases.
+`fuzz(n)` reported this unqualified.
 
 Ply now measures which side of a top-level `||` decided each case that held, and prints
 the split unconditionally — a promise with no top-level `||` earns no split, and neither
