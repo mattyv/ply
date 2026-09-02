@@ -30,6 +30,7 @@ fn envelope(id: &str, completed_at: &str, outcome: RunOutcome) -> VisualEnvelope
             outcome,
         },
         svg: format!("<svg><g id=\"{element_id}\"/></svg>"),
+        folded: vec![],
         elements: BTreeMap::from([
             (
                 workspace_id.clone(),
@@ -823,4 +824,75 @@ fn qualified_function_identity_keeps_same_named_claims_sources_and_diagnostics_a
             .svg
             .contains(&format!("data-element-id=\"{shipping_id}\""))
     );
+}
+
+#[test]
+fn a_drawing_carries_a_shorter_one_for_every_level_it_can_be_folded_to() {
+    // A viewer that folds detail by hiding parts of the full drawing leaves
+    // the boxes at the size their hidden contents needed: two large empty
+    // rectangles where the contents used to be, which is exactly the shape a
+    // reader pulls back to get away from. The fix is not to hide anything --
+    // it is to show the drawing Ply already knows how to make at that level.
+    // So the envelope carries them, and a client never has to ask twice.
+    let document = parse_document(
+        "ply: 1\ncomponents:\n  market_data:\n    anchor: app::market_data\n    components:\n      decoder:\n        anchor: app::decoder\n        fns:\n          decode:\n            ensures: [\"result.is_ok()\"]\n",
+    )
+    .unwrap();
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "folded".into(),
+            completed_at: "2026-09-01T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "render".into(),
+            },
+            outcome: RunOutcome::Clean,
+        },
+        &RenderOptions::default(),
+    )
+    .unwrap();
+
+    let folded = visual
+        .folded
+        .iter()
+        .find(|drawing| drawing.depth == 1)
+        .unwrap_or_else(|| {
+            panic!(
+                "this document nests two levels, so it can be folded to one; the envelope \
+                 offered levels {:?}",
+                visual.folded.iter().map(|d| d.depth).collect::<Vec<_>>()
+            )
+        });
+
+    let decoder = stable_element_id("component", "market_data.decoder");
+    assert!(
+        !folded.svg.contains(&decoder),
+        "the drawing folded to one level still draws the box nested inside"
+    );
+    assert!(
+        svg_height(&folded.svg) < svg_height(&visual.svg),
+        "folding to one level must make the drawing shorter, not just empty out its \
+         boxes: folded is {} tall, the full drawing is {} tall",
+        svg_height(&folded.svg),
+        svg_height(&visual.svg)
+    );
+    assert!(
+        !visual
+            .folded
+            .iter()
+            .any(|drawing| drawing.svg == visual.svg),
+        "a level that folds nothing away would repeat the full drawing for no gain"
+    );
+}
+
+/// The `height="..."` a browser lays the drawing out at.
+fn svg_height(svg: &str) -> f64 {
+    let start = svg
+        .find("height=\"")
+        .expect("every drawing states its height")
+        + 8;
+    let rest = &svg[start..];
+    rest[..rest.find('"').unwrap()].parse().unwrap()
 }

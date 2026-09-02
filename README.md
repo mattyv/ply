@@ -196,6 +196,12 @@ direct `ply.yaml` path; omit `-o` to print SVG to standard output. Add `--json` 
 the declaration-only visual envelope used for semantic navigation; every item is
 explicitly `unclaimed` because no verification has run.
 
+That envelope carries the drawing more than once. Alongside the full picture it holds a
+shorter one for each level the document can be folded to, laid out properly at that
+level. A viewer that lets a reader pull back for less detail shows one of those instead of
+hiding parts of the full drawing, which would leave every box at the size its hidden
+contents needed.
+
 This specification, from `vetting/004-legacy-extension/` — a new feature written beside a
 ledger module that carries no promises of its own:
 

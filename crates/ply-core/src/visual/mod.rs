@@ -196,6 +196,25 @@ pub struct VisualDiagnostic {
     pub source: Option<SourceLocation>,
 }
 
+/// The same document drawn again with everything below `depth` folded into
+/// its containing box.
+///
+/// A client that wants less detail on screen has two ways to get it, and only
+/// one of them works. Hiding parts of the full drawing leaves every box at
+/// the size its hidden contents needed, so pulling back produces large empty
+/// rectangles -- the shape a reader pulled back to get away from. Drawing it
+/// again at that level lays it out properly. Ply can already do that, so the
+/// envelope carries the results rather than making a client ask for them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+pub struct FoldedDrawing {
+    /// Boxes nested this many levels or deeper are folded away. Top-level
+    /// boxes are level 1, so `depth: 1` draws only the outermost boxes.
+    pub depth: usize,
+    pub svg: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
@@ -205,6 +224,11 @@ pub struct VisualEnvelope {
     pub svg: String,
     pub elements: BTreeMap<String, VisualElement>,
     pub diagnostics: Vec<VisualDiagnostic>,
+    /// Shallower drawings of the same document, shallowest first. Empty when
+    /// nothing nests deeply enough for folding to change anything -- a client
+    /// that finds no entry for the level it wants should draw the full one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folded: Vec<FoldedDrawing>,
 }
 
 impl VisualEnvelope {
@@ -238,6 +262,15 @@ impl VisualEnvelope {
         require_non_empty("run.tool.name", &self.run.tool.name)?;
         require_non_empty("run.tool.version", &self.run.tool.version)?;
         require_non_empty("svg", &self.svg)?;
+        for drawing in &self.folded {
+            if drawing.depth == 0 {
+                return Err(VisualEnvelopeError::Invalid(
+                    "a folded drawing at depth 0 would select nothing: nesting levels start                      at 1 for top-level boxes"
+                        .into(),
+                ));
+            }
+            require_non_empty("folded svg", &drawing.svg)?;
+        }
         let diagnostic_ids = self
             .diagnostics
             .iter()
@@ -476,6 +509,7 @@ pub fn build_declared_visual_envelope(
     let mut visual = build_visual_envelope(document, &result, run)?;
     visual.svg =
         svg::render_svg_with_evidence_and_options(document, &visual.elements, &[], options)?;
+    visual.folded = folded_drawings(document, &visual.elements, &[], options)?;
     visual.validate()?;
     Ok(visual)
 }
@@ -507,15 +541,68 @@ pub fn build_visual_envelope_with_sources(
         .map(|(index, diagnostic)| visual_diagnostic(index, diagnostic, &semantic_ids))
         .collect::<Vec<_>>();
     let svg = svg::render_svg_with_evidence(document, &elements, &diagnostics)?;
+    let folded = folded_drawings(
+        document,
+        &elements,
+        &diagnostics,
+        &svg::RenderOptions::default(),
+    )?;
     let envelope = VisualEnvelope {
         protocol_version: VISUAL_PROTOCOL_VERSION,
         run,
         svg,
         elements,
         diagnostics,
+        folded,
     };
     envelope.validate()?;
     Ok(envelope)
+}
+
+/// Draw the document again at every level shallower than it actually nests.
+///
+/// Only levels that change something are kept. A drawing identical to the one
+/// the caller already has is pure weight in the envelope, and a client reading
+/// the list would have no way to tell a real choice from a repeat.
+fn folded_drawings(
+    document: &Document,
+    elements: &BTreeMap<String, VisualElement>,
+    diagnostics: &[VisualDiagnostic],
+    base: &svg::RenderOptions,
+) -> Result<Vec<FoldedDrawing>, VisualEnvelopeError> {
+    // A reader who already narrowed the drawing by hand has made this choice
+    // themselves; offering alternatives to a selection would silently undo it.
+    if base.depth.is_some() || base.focus.is_some() || !base.collapse.is_empty() {
+        return Ok(Vec::new());
+    }
+    let full = svg::render_svg_with_evidence_and_options(document, elements, diagnostics, base)?;
+    let mut folded = Vec::new();
+    for depth in 1..nesting_levels(document) {
+        let options = svg::RenderOptions {
+            depth: Some(depth),
+            ..base.clone()
+        };
+        let svg =
+            svg::render_svg_with_evidence_and_options(document, elements, diagnostics, &options)?;
+        if svg != full {
+            folded.push(FoldedDrawing { depth, svg });
+        }
+    }
+    Ok(folded)
+}
+
+/// How many levels of boxes the document actually has: 1 when no component
+/// contains another.
+fn nesting_levels(document: &Document) -> usize {
+    fn deepest(component: &crate::model::Component) -> usize {
+        1 + component
+            .components
+            .values()
+            .map(deepest)
+            .max()
+            .unwrap_or(0)
+    }
+    document.components.values().map(deepest).max().unwrap_or(0)
 }
 
 fn collect_elements(
