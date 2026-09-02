@@ -196,6 +196,12 @@ direct `ply.yaml` path; omit `-o` to print SVG to standard output. Add `--json` 
 the declaration-only visual envelope used for semantic navigation; every item is
 explicitly `unclaimed` because no verification has run.
 
+That envelope carries the drawing more than once. Alongside the full picture it holds a
+shorter one for each level the document can be folded to, laid out properly at that
+level. A viewer that lets a reader pull back for less detail shows one of those instead of
+hiding parts of the full drawing, which would leave every box at the size its hidden
+contents needed.
+
 This specification, from `vetting/004-legacy-extension/` — a new feature written beside a
 ledger module that carries no promises of its own:
 
@@ -262,11 +268,13 @@ unchecked code begins, so an unverified boundary is visible rather than implied.
 Four more rendered scenarios live in [`vetting/`](vetting/), each a design written in the
 grammar before the tool could check it.
 
-Ply's own crate structure is specified the same way, in the [`ply.yaml`](ply.yaml) at the
-root of this repository, and checked by `cargo ply check .` like anyone else's.
-[**ARCHITECTURE.md**](ARCHITECTURE.md) is that spec rendered and explained — including the
-rule this codebase was found to be breaking when the checker was pointed at it, and what
-declaring the exception cost.
+Ply is specified the same way, in two documents of its own: the [`ply.yaml`](ply.yaml) at
+the root of this repository says which crates exist and who may depend on whom, and
+[`crates/ply-core/ply.yaml`](crates/ply-core/ply.yaml) says what the library promises
+about six of its own functions. Both are checked by `cargo ply check` like anyone else's.
+[**ARCHITECTURE.md**](ARCHITECTURE.md) is both of them rendered and explained — including
+the rule this codebase was found to be breaking when the checker was pointed at it, and
+what declaring the exception would have cost.
 
 ### Interactive evidence views
 

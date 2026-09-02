@@ -1,5 +1,82 @@
 # TODO
 
+## Landed: two documentation drawings showed a notation the tool stopped writing — 2026-09-02
+
+Reported by the maintainer looking at the README. Both drawings that had no drift test
+were stale; both that had one were current. The asymmetry predicted exactly which would
+rot.
+
+- [x] **`vetting/004-legacy-extension.svg`, embedded in README.md**, still used the old
+      cryptic badges (`B2`, `F256 T`) rather than the words the renderer has written for
+      months (`bounded: loop≤2`, `fuzz: 256 cases · test`). Regenerated.
+- [x] **`demos/fault3-flagged.svg`** had the same problem, plus a tooltip quoted in
+      `demos/fault-injection.md` naming a diagnostic wording no longer produced.
+- [x] **Every committed drawing now has a drift test**, beside the text forms that always
+      had one — six drawings, byte for byte against a fresh render.
+- [x] **`demos/fault3-as-drawn-by-faulted-toolchain.svg` is deliberately excluded** and
+      the test says why in its own doc comment: it is the record of what a *broken*
+      renderer drew, and regenerating it would delete the evidence it carries. The demo
+      prose now says so too, so a later reader does not "fix" it.
+- [x] **A renderer defect found by regenerating, not by review.** A finding badge is
+      vertically centred on a function chip, so it covers the checks line as well as the
+      name line — but only the name row reserved room for it. A long checks line ran
+      underneath: in the very drawing whose point is that a broken document is visibly
+      flagged, `bounded(0) · fuzz: 4096 cases · mutate` ended with `mutate` buried under
+      the red `E0203` tag. A check fixture collided too, so it was never only the demo.
+      Fixed in the width calculation, pinned by an invariant walking every fixture that
+      carries a finding.
+
+## Landed: pulling back for less detail no longer leaves empty boxes — 2026-09-02
+
+The viewer folded detail by hiding boxes inside the full drawing, so the boxes around
+them kept the size their contents needed. Ply's own architecture at 66% became two blank
+rectangles five times the height of the crates beside them — more screen for less
+information. Recorded as a known defect in the viewer's own source, with the intended fix
+already named there. Now closed.
+
+- [x] **The envelope carries a properly laid-out drawing for each level a reader can fold
+      to.** Ply could already draw a document at any level; the results now travel with
+      the full drawing, so a client never asks twice and never hides anything. Ply's own
+      document folds from 754 pixels tall to 296; the trading-system scenario from 1772 to
+      624. The folded boxes even say what went away ("5 components, 0 fns") instead of
+      being blank, which hiding could never have produced.
+- [x] **Only levels that change something are sent**, and none at all when the caller
+      already narrowed the drawing with `--depth`/`--focus`/`--collapse` — offering
+      alternatives to a selection would silently undo it.
+- [x] **Measured against a control rather than a threshold.** The viewer test compares a
+      folded box against `e2e`, which has never held anything, so its height is what a box
+      with nothing in it is supposed to look like. Before the fix it was seven times
+      taller.
+- [x] **Every drawing that can reach the screen is sanitized**, not just the first one.
+
+KNOWN GAP, on purpose: the field is additive and absent when empty, but a client built
+before this **refuses the new envelope outright** rather than ignoring the field, because
+it checks for exactly the keys it knows. ply-vis was updated in the same session; any
+other reader of a published view would need the same one-line change.
+
+## Landed: ARCHITECTURE.md carries both of Ply's own documents — 2026-09-02
+
+The page showed one diagram and described a repository that no longer existed: four boxes
+when there are six components with thirteen boxes, one arrow when there are three, and a
+crate table missing `render` and `check`. All of it corrected against the real render and
+the real `cargo ply check` output, not from memory.
+
+- [x] **The library-level drawing is on the page.** `crates/ply-core/ply.yaml` now renders
+      to `docs/ply-core-self.svg` and `docs/ply-core-self.txt`, both committed and both in
+      the drift test beside the workspace pair. It is the first drawing of Ply's own code
+      that is not hatched white — six functions, each promising something about what it
+      returns and how that will be tested.
+- [x] **The drift test covers all four artifacts.** It was two hard-coded paths and is now
+      two loops. Verified by breaking each new file and watching the failure name it.
+- [x] **The "grey is not green" distinction is stated on the page**, so a mid-grey box is
+      not read as a passing run.
+- [x] **The unfolded-promise gap is disclosed there too**, rather than left for a reader to
+      discover — a promise in a `ply.yaml` is drawn and counted but not yet checked, which
+      the tool's own `anchors` line says as well.
+- [x] **A false sentence in `crates/ply-core/ply.yaml` retracted.** Its header claimed the
+      modules appear as nested components in that file. They do not, and cannot: a function
+      claimed inside a module-anchored box stops resolving. The comment now says that.
+
 ## FALSE GREEN, reproduced: a broken function reports `fuzzed(256)` — 2026-09-02
 
 **The highest-priority open item in the project.** Found by review, then reproduced by hand

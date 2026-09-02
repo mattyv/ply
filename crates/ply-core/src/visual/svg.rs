@@ -1562,10 +1562,21 @@ fn render_fn_chip(
     } else {
         PAD
     };
+    // The finding badge is vertically centred in the chip, so it covers the
+    // checks line as much as the name line -- but only the name row reserved
+    // room for it, so a long checks line ran underneath the badge. In
+    // `demos/fault3-flagged.svg`, the drawing whose entire point is that a
+    // broken document is visibly flagged, "bounded(0) - fuzz: 4096 cases -
+    // mutate" ended with `mutate` buried under the red E0203 tag.
+    let badge_reserve = if findings.is_empty() {
+        0.0
+    } else {
+        BADGE_GAP + badge_w
+    };
     let check_w = if check_labels.is_empty() {
         0.0
     } else {
-        detail_x + text_w(&check_labels, CHECK_CHAR_W) + PAD
+        detail_x + text_w(&check_labels, CHECK_CHAR_W) + badge_reserve + PAD
     };
     let clause_width = if clauses.is_empty() {
         0.0

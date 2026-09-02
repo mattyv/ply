@@ -11,8 +11,11 @@ ply: 1
 # The one component is anchored at the crate, because that is what makes its
 # function claims resolvable: a component anchored at a module inside the
 # crate is treated as belonging to somewhere else, and its functions are read
-# but never looked for. The modules appear as nested components beneath it,
-# which is what gives a reader something to go into.
+# but never looked for. That is also why the modules are not nested components
+# here the way they are in the workspace file -- a function claimed inside a
+# module-anchored box would stop resolving. The module is carried in the
+# function's own name instead, so `kernel::` and `visual::` still group the
+# list for a reader.
 #
 # Every promise below can be checked against the code by eye. They are
 # declarations, not results: `cargo ply verify` turns them into evidence, and
