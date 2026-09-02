@@ -1,5 +1,34 @@
 # TODO
 
+## The composition fix made a whole mechanism unreachable — 2026-09-02
+
+Found while verifying that fix, by a unit test whose premise it killed. The
+plain-parameter seeding path -- growing inputs from `examples:` for a parameter Ply cannot
+build -- accepts **exactly two shapes**, `Option<String>` and `Vec<String>`. Composition
+now builds both directly, so nothing ever reaches it.
+
+Confirmed by running it, not by reading the code: both shapes, each with a perfectly good
+`examples:` entry, come back plainly checked with no seeding mark and no seeding
+diagnostic. Neither is seeded because neither needs to be.
+
+**Receiver seeding is untouched and still alive** -- a value built by a fallible
+constructor that parses text is exactly the case that has no other route, which is the
+case that motivated the whole mechanism.
+
+The unit test that caught it now records why rather than being deleted: it asserts the
+examples really are unconsumed, and pins both halves of the reason (the classifier still
+names those two shapes; both shapes are buildable). If a third shape is ever added to that
+classifier, or either stops being buildable, it fails and the path is live again.
+
+- [ ] **Delete the plain-parameter seeding path.** Deliberately not done in the same change
+      as the fix that killed it: that was a composition change, and removing a mechanism
+      threaded through codegen, diagnostics and a fixture is adjacent work with its own risk.
+      What goes: the plan, its shape classifier, its per-parameter seed extractor, the
+      `SeedableWrap` shapes, their diagnostic, and the `paramseeded` fixture's seeding
+      premise. What must NOT go with it: receiver seeding, which shares vocabulary but not
+      the dead path. Verify by deletion rather than by reading -- if anything still calls it,
+      the build says so.
+
 <<<<<<< HEAD
 ## NEXT, agreed 2026-09-01: one LLM-assisted way to handle any type
 

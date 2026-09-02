@@ -4152,11 +4152,25 @@ pub fn increment(x: u32) -> u32 { x + 1 }
         assert!(!examples_are_consumed(&cf, &[Check::Fuzz(64)], &examples));
     }
 
-    /// `paramseeded`'s own shape: a plain `Option<String>` parameter Ply
-    /// cannot build on its own, seeded by `fuzz` alone (no `test`
-    /// declared). The warning must not fire here -- seeding is real.
+    /// **This test's premise died on 2026-09-02 and it now records why.**
+    ///
+    /// It used to assert that a plain `Option<String>` parameter is seeded
+    /// from `examples:`, because Ply could not build one. Making the
+    /// sampling engine's shapes compose means it now builds one directly,
+    /// so nothing is seeded and the examples are genuinely unconsumed --
+    /// which is what this now asserts.
+    ///
+    /// The consequence is bigger than one test, and is recorded in TODO.md:
+    /// [`classify_seedable_wrap`] accepts exactly two shapes,
+    /// `Option<String>` and `Vec<String>`, and composition now builds both.
+    /// **The whole plain-parameter seeding path is therefore unreachable.**
+    /// The assertions below are what makes that concrete: if either shape
+    /// ever stops being buildable, or a third shape is added to that
+    /// classifier, this test fails and the dead path is live again.
+    /// Receiver seeding -- a value built by a fallible constructor that
+    /// parses text -- is untouched and still very much alive.
     #[test]
-    fn examples_are_consumed_by_fuzz_when_a_plain_parameter_is_seeded() {
+    fn composition_subsumed_the_plain_parameter_seeding_path() {
         let cf = discover(
             r#"
 #[ply::ensures(|result| *result >= 0)]
@@ -4165,7 +4179,23 @@ pub fn width(label: Option<String>) -> usize { label.map(|s| s.len()).unwrap_or(
             "width",
         );
         let examples = vec!["width(Some(\"hi\".to_string())) == 2".to_string()];
-        assert!(examples_are_consumed(&cf, &[Check::Fuzz(64)], &examples));
+        assert!(
+            !examples_are_consumed(&cf, &[Check::Fuzz(64)], &examples),
+            "an `Option<String>` parameter is built directly now, so nothing seeds it \
+             and the example really is unconsumed"
+        );
+        for src in ["Option<String>", "Vec<String>"] {
+            assert!(
+                classify_seedable_wrap(src).is_some(),
+                "the seeding classifier is expected to still name {src}"
+            );
+            let ty = crate::harness::rust_type_from_source(src)
+                .unwrap_or_else(|| panic!("{src} should parse as a type"));
+            assert!(
+                ty.is_fuzz_supported(),
+                "{src} is buildable now, which is what makes the seeding path for it dead"
+            );
+        }
     }
 
     /// `textseeded`'s own shape: a receiver built by a fallible,
