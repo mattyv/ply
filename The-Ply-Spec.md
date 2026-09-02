@@ -336,6 +336,7 @@ unresolved:                      # registry entries with no code anchor
 
 routes:                          # optional; §5.4b's generator hook — bare type name to
   Handle: open_handle            #   a public function (free or associated) that returns it
+  OsString: std::ffi::OsString::from(String)  # outside the crate: declare its input type(s)
 ```
 
 Schema violations produce `E0201` diagnostics carrying the JSON-pointer path and source
@@ -1011,6 +1012,54 @@ is a fact about that declaration, and reporting it as though nothing were declar
 bury the real defect under a generic one. A type with no route declared and no other way
 in is still refused as before, with one more sentence naming the declaration
 (`routes: { TypeName: <a public function that returns TypeName> }`) that would unlock it.
+
+**A declared route is tried first, unconditionally (corrected 2026-09-02, three defects
+found while proving this section, none by reading).** The order above ("tried in this
+order") originally meant a route was only ever *reached* once rule 1 and rule 2 had
+already failed to find the type at all — and that reading hid two silences. First: a type
+this crate does not declare locally has no source for rule 1 or rule 2 to fail *against*,
+so the door to rule 3 never opened either — a route naming a real, correct function
+outside the crate refused with the same sentence as no route at all (`V0505`, "no part of
+its value is one Ply knows how to vary"), never naming the declaration. Second: a type
+this crate *does* declare, whose only public constructor happens to also satisfy rule 1
+(`StatusSet::new()`, a zero-argument fn returning `Self`, is both), had its declared route
+silently skipped in favour of whichever constructor rule 1 found first — an explicit
+`routes:` entry, quietly never called. Both are the same defect wearing different hats: a
+declared route must be tried, and reported on, before either rule ever runs, not only when
+they fail. Fixed by moving the check: `routes:` is now consulted before rule 1's
+constructor scan even starts, for every type whether or not it is declared in this crate.
+A working route always wins; a broken one is always named. The type's own constructor
+(rule 1) and direct field construction (rule 2) are unreachable for a type with a
+declared route — which is exactly right, since the author already said which function to
+call.
+
+**A route to a function outside the crate declares its own input types (built
+2026-09-02).** Source two's own constraint — "codegen has no way yet to import or call a
+path outside the target crate's own root" — is why entries there stayed empty; it is not
+why a *declared* route to such a function must stay unbuildable. Ply cannot read that
+function's source to infer its parameters, so the author states them instead, in
+parentheses after the path: `routes: { OsString: std::ffi::OsString::from(String) }`
+builds a `String` the ordinary way (recursively, so a composed or user-defined declared
+type works too) and calls `std::ffi::OsString::from` on it directly — no crate-local
+lookup is attempted for this form at all. The original form (no parentheses) is unchanged:
+its parameters are still inferred from this crate's own source. Ply never reads the named
+function's real signature in the parenthesized form — not its return type, not its real
+parameter count or order — so a mismatched declaration is not refused here: it is caught
+by the compiler when the generated harness fails to build, reported as a tool error naming
+the route. That trade (a wrong signature surfacing as a compiler error rather than a named
+Ply refusal) is honest only because the route was explicitly declared; an ordinary
+unsupported type is never reported this way. Filesystem paths remain excluded from this
+extension exactly as source two's own text already excludes them — a later change behind
+a check for side effects, not this one.
+
+**Every declared route is used or refused by name (added 2026-09-02).** A route whose
+type nothing in the document's own parameters or fields ever names would never be
+resolved at all under the rules above — nothing asks for it, so nothing notices a broken
+one. Once every function in the crate has been checked, `verify` validates any `routes:`
+entry its own per-function walk never touched, on its own terms, and reports a broken one
+by name (`W0528`) attached to the whole run rather than to any one function. A route that
+resolves fine but happens to be unused earns no diagnostic — only a broken declaration is
+worth a reader's attention.
 
 **The one failure a stale-route compile error cannot catch.** A route is a function an
 author wrote, and nothing stops it from ignoring its own inputs and returning the same

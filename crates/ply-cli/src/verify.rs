@@ -371,6 +371,15 @@ fn verify_loaded_crate(
     let mut early_nodes_by_component: BTreeMap<String, Vec<Node>> = BTreeMap::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut source_map: BTreeMap<String, Span> = BTreeMap::new();
+    // Every `routes:` type name some function's own parameters actually
+    // asked Ply to build, whether the route worked or was refused --
+    // accumulated across every fn in the document so that, once the whole
+    // tree has been walked, any declared route this set never touched can
+    // still be validated on its own (below): every declared route ends up
+    // either used or refused by name, never merely unmentioned (TODO.md,
+    // "a route naming a type nothing in the document uses").
+    let mut used_route_types: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
 
     // `anchor:` is finally consumed (vetting 004 finding 7: it was parsed
     // and ignored, so *every* component's fns were looked for in this
@@ -549,15 +558,20 @@ fn verify_loaded_crate(
             // a real struct/enum declaration but still could not build
             // (rule 3) earns its own named diagnostic rather than the
             // generic "type neither engine builds inputs for" one.
-            for (param_name, type_name, reason) in
-                harness::enrich_contract_fn_user_types(&mut cf, crate_dir, &file.routes)
-            {
+            let refused = harness::enrich_contract_fn_user_types(&mut cf, crate_dir, &file.routes);
+            // Every declared route this fn's own parameters ever asked
+            // about, used or refused -- tracked here so the check after
+            // every fn is processed (below) knows which `routes:` entries
+            // still need its own standalone validation (defect 1's third
+            // required proof, TODO.md: "a route naming a type nothing in
+            // the document uses").
+            used_route_types.extend(harness::route_types_used_by(&cf, &file.routes));
+            for (param_name, type_name, reason) in &refused {
+                if file.routes.contains_key(type_name) {
+                    used_route_types.insert(type_name.clone());
+                }
                 diagnostics.push(user_type_param_refused_diag(
-                    &node_id,
-                    fn_name,
-                    &param_name,
-                    &type_name,
-                    &reason,
+                    &node_id, fn_name, param_name, type_name, reason,
                 ));
             }
 
@@ -1311,6 +1325,20 @@ fn verify_loaded_crate(
 
     record.retain_claims(&kept_claims);
     record::save(&record_path, &record)?;
+
+    // Every declared route no function's own parameters ever asked about
+    // (TODO.md, "a route naming a type nothing in the document uses"):
+    // validated here, on its own, so a broken one of this shape is still
+    // used or refused by name rather than merely unmentioned (defect 1's
+    // third required proof).
+    for (type_name, _) in &file.routes {
+        if used_route_types.contains(type_name) {
+            continue;
+        }
+        if let Some(reason) = harness::validate_declared_route(crate_dir, &file.routes, type_name) {
+            diagnostics.push(unused_route_diag(type_name, &reason));
+        }
+    }
 
     // The tree the document declares, with each claim's node under the
     // component that declares it however deep that is (§5.1's nested
@@ -3923,6 +3951,38 @@ fn user_type_param_refused_diag(
     }
 }
 
+/// A `routes:` entry no function's own parameters ever asked Ply to build
+/// (defect 1's third required proof, TODO.md: "a route naming a type
+/// nothing in the document uses"): `reason` is already the complete,
+/// route-naming sentence [`harness::validate_declared_route`] built at the
+/// point of refusal, exactly the same wording a used-and-broken route
+/// would get from [`user_type_param_refused_diag`] -- the only difference
+/// here is that nothing in this crate ever tried to use it, so there is no
+/// function or parameter to name alongside it. Attached to the whole run
+/// (`node_id: "workspace"`) rather than any one fn, since no fn's own claim
+/// is at fault.
+fn unused_route_diag(type_name: &str, reason: &str) -> Diagnostic {
+    Diagnostic {
+        code: "W0528".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: "workspace".into(),
+        title: format!(
+            "ply.yaml declares a route for `{type_name}`, but no function or field anywhere in \
+             this crate ever needs to build one, so nothing else in this run checked whether the \
+             declaration actually works. It does not: {reason} (W0528)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: Some("unused_route".into()),
+    }
+}
+
 /// The named assumption `docs/review-self-construction.md` requires for
 /// rule 2 (direct field/variant construction): "Ply assumes a public-field
 /// type has no invariant" is false in general (the review's own
@@ -6511,6 +6571,64 @@ mod tests {
             v0505.title.contains("no `#[ply::ensures]`"),
             "must still say why nothing ran: {}",
             v0505.title
+        );
+    }
+
+    /// Defect 1's third required proof, end to end (TODO.md: "a route
+    /// naming a type nothing in the document uses"): a document with no
+    /// function anywhere near this route -- nothing in `used_route_types`
+    /// ever names it -- must still be checked once the whole run is
+    /// otherwise done, and a broken one reported by name. No fn is
+    /// declared at all, so this never builds or runs a real harness (`needs
+    /// _harness` stays `false`), keeping this test fast.
+    #[test]
+    fn an_unused_broken_route_is_still_validated_and_named() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"routeunused-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn ordinary() -> u32 { 7 }\n",
+        )
+        .unwrap();
+        let yaml_path = dir.path().join("ply.yaml");
+        std::fs::write(
+            &yaml_path,
+            "ply: 1\nroutes:\n  NeverAsked: totally::bogus::path\n",
+        )
+        .unwrap();
+        let loaded = config::load(&yaml_path).unwrap();
+
+        let result = verify_loaded_crate(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: Some(5),
+                seed: None,
+            },
+            loaded,
+        )
+        .unwrap();
+
+        let unused = result
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "W0528")
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a W0528 diagnostic for the unused, broken route: {:#?}",
+                    result.envelope.diagnostics
+                )
+            });
+        assert_eq!(unused.node_id, "workspace");
+        assert!(
+            unused.title.contains("NeverAsked") && unused.title.contains("totally::bogus::path"),
+            "must name both the declared type and the route it names: {}",
+            unused.title
         );
     }
 

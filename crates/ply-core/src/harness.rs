@@ -2266,8 +2266,22 @@ pub struct RouteOrigin {
     pub declared_as: String,
     /// Whether the type declares `#[derive(Debug)]` (by hand or by the
     /// derive macro -- both count, the same convention
-    /// [`type_declares_default`] already uses for `Default`).
+    /// [`type_declares_default`] already uses for `Default`). Always
+    /// `false` for a cross-crate route (`outside_crate`, below): there is
+    /// no local source to read a derive off of, so "could not tell" is the
+    /// honest answer, never a guess.
     pub debug_derivable: bool,
+    /// Whether this route names a function §5.4b's cross-crate extension
+    /// resolved (2026-09-02, defect 2) -- a path this crate's own source
+    /// does not declare, whose own input types the author wrote out in
+    /// `ply.yaml` (`routes: { T: path::to::fn(Type1, Type2) }`) because Ply
+    /// has no source to infer them from. `false` for the original, local
+    /// form (`routes: { T: local_fn }`), inferred from source exactly as
+    /// before. The one thing this changes downstream: codegen's `use`
+    /// import for this type must not be prefixed with the target crate's
+    /// own name (`import_path` is already a full, absolute path -- `std::
+    /// ffi::OsString`, not a bare name this crate declares).
+    pub outside_crate: bool,
 }
 
 /// Why [`discover_method_with_receiver`] could not build a checkable method
@@ -3955,16 +3969,46 @@ fn enclosing_type_of(path: &str) -> Option<&str> {
     (segs.len() >= 2).then(|| segs[segs.len() - 2])
 }
 
-/// §5.4b's generator hook, resolved: `fn_path` is `routes:`'s own value for
-/// `type_name` (`open_handle`, `Token::via_route`, `handles::make_handle`).
-/// Reuses [`discover_fn_with`] -- the exact resolver a `ply.yaml` fn claim's
-/// own anchor goes through (§5.5) -- so a route is found (or refused) by the
-/// same walk over `use`s, inline `mod`s and file modules every other path in
-/// this grammar already is, rather than a second, narrower path-reading
-/// scheme with its own bugs to find. `Err` carries the plain-language reason
-/// a declared route could not be used -- a function that no longer exists at
-/// that path (a stale route, renamed or removed), one that exists but is not
-/// `pub`, one whose return type is not `type_name` at all, or one whose own
+/// Splits one `routes:` value into its function path and, when the author
+/// wrote an explicit input-type list, those types verbatim -- §5.4b's
+/// cross-crate extension (defect 2, 2026-09-02): `open_handle` (no parens)
+/// is the original, local form, unchanged; `std::ffi::OsString::from(String)`
+/// parses to `("std::ffi::OsString::from", Some(["String"]))`, because a
+/// function outside this crate has no source here for Ply to read its
+/// parameters from, so the author states them instead. A parenthesized,
+/// empty list (`f()`) is `Some(vec![])` -- a real, if unusual, zero-argument
+/// declared function, distinct from `None`'s "infer from source".
+fn parse_route_value(raw: &str) -> (&str, Option<Vec<&str>>) {
+    let raw = raw.trim();
+    if let Some(open) = raw.find('(')
+        && raw.ends_with(')')
+    {
+        let fn_path = raw[..open].trim();
+        let inner = raw[open + 1..raw.len() - 1].trim();
+        let types = if inner.is_empty() {
+            Vec::new()
+        } else {
+            inner.split(',').map(str::trim).collect()
+        };
+        return (fn_path, Some(types));
+    }
+    (raw, None)
+}
+
+/// §5.4b's generator hook, resolved: `raw_route` is `routes:`'s own value for
+/// `type_name` (`open_handle`, `Token::via_route`, `handles::make_handle`, or
+/// -- defect 2 -- `std::ffi::OsString::from(String)`). The local form (no
+/// parens) reuses [`discover_fn_with`] -- the exact resolver a `ply.yaml` fn
+/// claim's own anchor goes through (§5.5) -- so a route is found (or
+/// refused) by the same walk over `use`s, inline `mod`s and file modules
+/// every other path in this grammar already is, rather than a second,
+/// narrower path-reading scheme with its own bugs to find. `Err` carries the
+/// plain-language reason a declared route could not be used -- a function
+/// that no longer exists at that path (a stale route, renamed or removed,
+/// or one this crate's own source simply never had -- defect 1: a real
+/// function outside the crate looks identical to this scan, which has no
+/// way to read outside its own crate), one that exists but is not `pub`,
+/// one whose return type is not `type_name` at all, or one whose own
 /// parameters include something Ply cannot build -- never a bare "not
 /// found": the module doc's own "stale route" requirement is that this
 /// failure is loud and names what went wrong, not a silent fall-through to
@@ -3973,11 +4017,26 @@ fn resolve_declared_route(
     crate_dir: &Path,
     locations: &TypeLocations,
     routes: &RouteTable,
-    item: &syn::Item,
+    debug_derivable: bool,
     type_name: &str,
-    fn_path: &str,
+    raw_route: &str,
     depth: usize,
 ) -> std::result::Result<RustType, String> {
+    let (fn_path, declared_types) = parse_route_value(raw_route);
+
+    if let Some(type_strs) = declared_types {
+        return resolve_declared_route_typed(
+            crate_dir,
+            locations,
+            routes,
+            type_name,
+            fn_path,
+            &type_strs,
+            debug_derivable,
+            depth,
+        );
+    }
+
     let lib_path = crate_dir.join("src").join("lib.rs");
     let main_path = crate_dir.join("src").join("main.rs");
     let entry_path = if lib_path.is_file() {
@@ -4017,12 +4076,6 @@ fn resolve_declared_route(
         }
     }
 
-    let debug_derivable = match item {
-        syn::Item::Struct(s) => derives_debug(&s.attrs),
-        syn::Item::Enum(e) => derives_debug(&e.attrs),
-        _ => false,
-    };
-
     Ok(RustType::UserTypeCtor(Box::new(ReceiverPlan {
         type_name: type_name.to_string(),
         import_path: route_cf.import_path(),
@@ -4037,8 +4090,224 @@ fn resolve_declared_route(
         route: Some(RouteOrigin {
             declared_as: fn_path.to_string(),
             debug_derivable,
+            outside_crate: false,
         }),
     })))
+}
+
+/// §5.4b's cross-crate extension (defect 2, 2026-09-02): `fn_path` names a
+/// function Ply never reads the source of -- `type_strs` are the input
+/// types the author wrote instead of the ones Ply would ordinarily infer.
+/// Each is built the same way any other parameter of that type would be
+/// (recursing through [`resolve_param_type`], so a declared `Vec<String>`
+/// or a locally-declared user type both compose exactly as they would
+/// anywhere else), then the named path is called directly with them. Ply
+/// never reads `fn_path`'s real signature at all here -- not its return
+/// type, not its real parameter count or order -- so a mismatch is not
+/// caught by this function: it is caught by the compiler when the
+/// generated harness tries to build, and reported there as a tool error
+/// naming this exact route. That trade -- a wrong signature surfacing as a
+/// compiler error rather than a named Ply refusal -- is only honest
+/// because the route was explicitly declared; an ordinary unsupported type
+/// is never reported this way.
+#[allow(clippy::too_many_arguments)]
+fn resolve_declared_route_typed(
+    crate_dir: &Path,
+    locations: &TypeLocations,
+    routes: &RouteTable,
+    type_name: &str,
+    fn_path: &str,
+    type_strs: &[&str],
+    debug_derivable: bool,
+    depth: usize,
+) -> std::result::Result<RustType, String> {
+    let Some((type_path, _fn_name)) = fn_path.rsplit_once("::") else {
+        return Err(format!(
+            "`{fn_path}` is not a full path to a function -- write it the way it would be \
+             written to call it directly (`some::module::Type::method`, or `some::module::\
+             function`)"
+        ));
+    };
+    let mut resolved_params = Vec::with_capacity(type_strs.len());
+    for (i, type_str) in type_strs.iter().enumerate() {
+        let Some(raw_ty) = rust_type_from_source(type_str) else {
+            return Err(format!(
+                "its declared input type `{type_str}` does not parse as a Rust type"
+            ));
+        };
+        match resolve_param_type(crate_dir, locations, routes, &raw_ty, depth + 1) {
+            Ok(ty) => resolved_params.push(Param {
+                name: format!("arg{i}"),
+                ty,
+                by_ref: false,
+            }),
+            Err(e) => {
+                return Err(format!("its declared input type `{type_str}` is {e}"));
+            }
+        }
+    }
+    Ok(RustType::UserTypeCtor(Box::new(ReceiverPlan {
+        type_name: type_name.to_string(),
+        import_path: type_path.to_string(),
+        constructor: fn_path.to_string(),
+        ctor_params: resolved_params,
+        ctor_requires: None,
+        ctor_return: CtorReturn::Bare,
+        operations: vec![],
+        excluded_operations: vec![],
+        other_constructors: vec![],
+        max_sequence_len: 0,
+        route: Some(RouteOrigin {
+            declared_as: fn_path.to_string(),
+            debug_derivable,
+            outside_crate: true,
+        }),
+    })))
+}
+
+/// Whether the type this crate declares locally as `type_name` has
+/// `#[derive(Debug)]` -- computed independently of whichever rule ends up
+/// building it (the degenerate-route guard's own honesty condition,
+/// [`RouteOrigin::debug_derivable`]), so a declared route can be checked
+/// before rule 1's constructor scan even runs (defect 3, 2026-09-02: a
+/// route must never be silently shadowed by a rule that happens to find a
+/// *different* way to build the same type first). `false` when `type_name`
+/// is not declared in this crate at all, or its declaring file cannot be
+/// read or parsed -- honest either way: there is no source here to answer
+/// from, and a route naming a genuinely external type (§5.4b's cross-crate
+/// extension) always falls into exactly this case.
+fn locally_declared_type_derives_debug(
+    crate_dir: &Path,
+    locations: &TypeLocations,
+    type_name: &str,
+) -> bool {
+    let _ = crate_dir;
+    let Some(Some(decl)) = locations.get(type_name) else {
+        return false;
+    };
+    let Ok(src) = std::fs::read_to_string(&decl.file) else {
+        return false;
+    };
+    let Ok(file) = syn::parse_file(&src) else {
+        return false;
+    };
+    let mut items: &Vec<syn::Item> = &file.items;
+    for m in &decl.inline_mods {
+        let Some(next) = items.iter().find_map(|it| match it {
+            syn::Item::Mod(md) if md.ident == m.as_str() => md.content.as_ref().map(|(_, i)| i),
+            _ => None,
+        }) else {
+            return false;
+        };
+        items = next;
+    }
+    items.iter().any(|it| match it {
+        syn::Item::Struct(s) if s.ident == type_name => derives_debug(&s.attrs),
+        syn::Item::Enum(e) if e.ident == type_name => derives_debug(&e.attrs),
+        _ => false,
+    })
+}
+
+/// Every declared route this crate is asked to check, exercised regardless
+/// of whether any function's parameter actually needs it (defect 1's third
+/// required proof, TODO.md: "a route naming a type nothing in the document
+/// uses"). `enrich_contract_fn_user_types`'s own per-parameter walk only
+/// ever visits a route whose type some parameter actually names -- correct
+/// for that walk's own job, but it leaves a route nobody happens to ask for
+/// completely unvisited, so a broken one of *this* shape would still pass
+/// in total silence. `verify` calls this once per `routes:` entry that its
+/// own per-function walk never touched, so every declared route ends up
+/// either used or refused by name, never merely unmentioned. `Some` names
+/// exactly why (the same sentence a used-and-broken route gets); `None`
+/// means the route resolves fine on its own terms.
+pub fn validate_declared_route(
+    crate_dir: &Path,
+    routes: &RouteTable,
+    type_name: &str,
+) -> Option<String> {
+    let locations = scan_crate_type_locations(crate_dir);
+    match resolve_user_type(crate_dir, &locations, routes, type_name, 0) {
+        Err(UserTypeError::Refused(reason)) => Some(reason),
+        _ => None,
+    }
+}
+
+/// The bare type names among `cf`'s own parameters -- recursively through
+/// `Option`/`Result`/`Vec`/`Array`/`Slice`/`Box`/`BTreeSet`/`BTreeMap`/tuple
+/// composition and a constructor's or a struct/enum's own nested fields --
+/// that a declared route in `routes` actually built, computed *after*
+/// [`enrich_contract_fn_user_types`] has run on `cf`. Paired with the
+/// `refused` list that same call already returns (a route it tried and
+/// could not use), the union of the two is every route this one fn's
+/// parameters ever asked about; `verify` accumulates that union across
+/// every fn in the crate to know which declared routes still need
+/// [`validate_declared_route`]'s own standalone check (TODO.md, "a route
+/// naming a type nothing in the document uses").
+pub fn route_types_used_by(
+    cf: &ContractFn,
+    routes: &RouteTable,
+) -> std::collections::BTreeSet<String> {
+    fn walk(ty: &RustType, routes: &RouteTable, out: &mut std::collections::BTreeSet<String>) {
+        match ty {
+            RustType::UserTypeCtor(plan) => {
+                if routes.contains_key(&plan.type_name) {
+                    out.insert(plan.type_name.clone());
+                }
+                for p in &plan.ctor_params {
+                    walk(&p.ty, routes, out);
+                }
+            }
+            RustType::UserTypeFields(plan) => {
+                if routes.contains_key(&plan.type_name) {
+                    out.insert(plan.type_name.clone());
+                }
+                match &plan.shape {
+                    UserTypeShape::Struct(fields) => {
+                        for f in fields {
+                            walk(&f.ty, routes, out);
+                        }
+                    }
+                    UserTypeShape::Enum(variants) => {
+                        for (_, fields) in variants {
+                            for f in fields {
+                                walk(&f.ty, routes, out);
+                            }
+                        }
+                    }
+                }
+            }
+            RustType::Option(inner)
+            | RustType::Array(inner, _)
+            | RustType::Vec(inner)
+            | RustType::BTreeSet(inner)
+            | RustType::Slice(inner)
+            | RustType::BoxT(inner) => walk(inner, routes, out),
+            RustType::Result(ok, err) => {
+                walk(ok, routes, out);
+                walk(err, routes, out);
+            }
+            RustType::Tuple(items) => {
+                for item in items {
+                    walk(item, routes, out);
+                }
+            }
+            RustType::BTreeMap(key, value) => {
+                walk(key, routes, out);
+                walk(value, routes, out);
+            }
+            _ => {}
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    for p in &cf.params {
+        walk(&p.ty, routes, &mut out);
+    }
+    if let Some(plan) = &cf.receiver {
+        for p in &plan.ctor_params {
+            walk(&p.ty, routes, &mut out);
+        }
+    }
+    out
 }
 
 fn resolve_user_type(
@@ -4054,6 +4323,38 @@ fn resolve_user_type(
              constructor arguments or fields -- Ply stops following the chain here rather than \
              risk it not terminating"
         )));
+    }
+    // §5.4b's generator hook, checked first (2026-09-02, defects 1 and 3):
+    // a declared route is the author's explicit statement of how to build
+    // this type, and it must never be silently shadowed -- neither by a
+    // type this scan cannot even find declared in this crate (rule 1/2's
+    // door can never open at all: a type built only by a function outside
+    // this crate has no local source to scan, defect 1), nor by an
+    // unrelated constructor rule 1's own scan happens to find first (a
+    // zero-argument, `Self`-returning associated fn is both a legitimate
+    // rule-1 constructor *and* the exact shape a route commonly names,
+    // defect 3: the route was silently never called, because rule 1 ran
+    // first and won without a trace). Trying it here, before rule 1 or rule
+    // 2 ever run, means a broken route is always reported as a broken
+    // route and a working one always wins -- neither rule ever silently
+    // steps in front of a route the author explicitly wrote.
+    if let Some(raw_route) = routes.get(type_name) {
+        let debug_derivable = locally_declared_type_derives_debug(crate_dir, locations, type_name);
+        return resolve_declared_route(
+            crate_dir,
+            locations,
+            routes,
+            debug_derivable,
+            type_name,
+            raw_route,
+            depth,
+        )
+        .map_err(|reason| {
+            UserTypeError::Refused(format!(
+                "Ply cannot build a value of `{type_name}`: the route declared for it in \
+                 ply.yaml (`routes: {{ {type_name}: {raw_route} }}`) is broken -- {reason}"
+            ))
+        });
     }
     let decl = match locations.get(type_name) {
         Some(Some(d)) => d.clone(),
@@ -4223,27 +4524,12 @@ fn resolve_user_type(
         }
     }
 
-    // §5.4b's generator hook (this task, 2026-09-02): a `routes:` entry in
-    // `ply.yaml` names a public function -- free or associated, Ply's
-    // resolver does not care which -- that returns a value of this type.
-    // This is the door rule 1 above cannot open on its own: a type built
-    // only by a *free* function has no `impl` block for the constructor
-    // scan to find at all (`ply_probe_route::Handle`, made only by
-    // `open_handle`, is exactly this shape). Tried before rule 2 (direct
-    // field construction) and, when a route is declared, tried *instead* of
-    // it: a broken route is reported as a broken route, never silently
-    // papered over by falling back to a route the author never asked for.
-    if let Some(fn_path) = routes.get(type_name) {
-        return resolve_declared_route(
-            crate_dir, locations, routes, item, type_name, fn_path, depth,
-        )
-        .map_err(|reason| {
-            UserTypeError::Refused(format!(
-                "Ply cannot build a value of `{type_name}`: the route declared for it in \
-                     ply.yaml (`routes: {{ {type_name}: {fn_path} }}`) is broken -- {reason}"
-            ))
-        });
-    }
+    // §5.4b's generator hook is no longer tried here: a declared route is
+    // now checked at the very top of this function, before rule 1 even
+    // runs (2026-09-02, defects 1 and 3) -- so by this point, either no
+    // route was declared for `type_name` at all, or it was and this
+    // function already returned through it. `item` (below) is used only by
+    // rule 1/2 from here on.
 
     // Every refusal below used to open "it has no constructor Ply can
     // call". That is true only while `skipped_constructor` is `None`. A
@@ -4548,8 +4834,22 @@ fn enrich_rust_type(
             } else {
                 src.clone()
             };
-            let Some(name) = crate_local_type_name(crate_dir, locations, &src) else {
-                return;
+            // A declared route names a type by its bare name alone (model.rs:
+            // "keyed by the bare type name... not a module-qualified path"),
+            // so it is checked directly off the last path segment here --
+            // *before* `crate_local_type_name`'s own module-matching check,
+            // which would otherwise refuse a genuinely external path
+            // (`std::ffi::OsString`, written out in full because there is no
+            // local declaration to match it against) before a route for it
+            // is ever tried (defect 1, 2026-09-02).
+            let bare_name = src.rsplit("::").next().unwrap_or(&src);
+            let name = if routes.contains_key(bare_name) {
+                bare_name.to_string()
+            } else {
+                let Some(name) = crate_local_type_name(crate_dir, locations, &src) else {
+                    return;
+                };
+                name
             };
             match resolve_user_type(crate_dir, locations, routes, &name, 0) {
                 Ok(resolved) => *ty = resolved,
@@ -6828,6 +7128,225 @@ pub fn use_handle(h: &Handle) -> i64 { h.id as i64 }
         assert!(
             matches!(cf.params[0].ty, RustType::Unsupported(_)),
             "a stale route must not be silently treated as though nothing were declared"
+        );
+    }
+
+    /// Defect 1 (2026-09-02): a route naming a real, public function that
+    /// Ply simply cannot see -- because it lives outside this crate, and
+    /// route lookup only ever reads this crate's own source -- used to fail
+    /// in total silence, reading exactly as if no route had been declared
+    /// at all (the bug this task exists to fix). Fixed here: routes are now
+    /// tried before the "is this type even declared in this crate" gate
+    /// that used to bar the door, so a real function Ply cannot read the
+    /// source of is refused by name, the same way a stale local one already
+    /// was.
+    #[test]
+    fn a_route_to_a_type_outside_the_crate_with_no_input_types_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert(
+            "OsString".to_string(),
+            "std::ffi::OsString::from".to_string(),
+        );
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_os_string(o: std::ffi::OsString) -> i64 { 0 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "use_os_string").unwrap();
+        assert!(
+            matches!(cf.params[0].ty, RustType::Unsupported(_)),
+            "unresolved until enrichment runs"
+        );
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert_eq!(
+            refused.len(),
+            1,
+            "a declared route Ply cannot use must be refused by name, never silently dropped: \
+             {refused:?}"
+        );
+        let (param_name, type_name, reason) = &refused[0];
+        assert_eq!(param_name, "o");
+        assert_eq!(type_name, "OsString");
+        assert!(
+            reason.contains("routes:")
+                && reason.contains("OsString")
+                && reason.contains("std::ffi::OsString::from"),
+            "the refusal must name the declared route, not read as though nothing had been \
+             declared: {reason}"
+        );
+        assert!(
+            matches!(cf.params[0].ty, RustType::Unsupported(_)),
+            "a route Ply could not use must not be silently guessed at"
+        );
+    }
+
+    /// The same defect, proven for a route naming a path that is not stale
+    /// (it never existed) rather than renamed -- distinct evidence from
+    /// `a_stale_route_is_refused_loudly_and_names_the_function`'s rename
+    /// case, both required by this task's own brief.
+    #[test]
+    fn a_route_naming_a_path_that_does_not_exist_anywhere_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert("Handle".to_string(), "totally::bogus::path".to_string());
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Handle { id: u32 }
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_handle(h: &Handle) -> i64 { h.id as i64 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "use_handle").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        let (_, type_name, reason) = &refused[0];
+        assert_eq!(type_name, "Handle");
+        assert!(
+            reason.contains("routes:") && reason.contains("totally::bogus::path"),
+            "the refusal must name the declared route: {reason}"
+        );
+        assert!(
+            reason.contains("could not find"),
+            "must say Ply looked and failed: {reason}"
+        );
+    }
+
+    /// Defect 3, found while verifying this task (coordinator probe): a
+    /// declared route was silently never called whenever the ordinary
+    /// constructor scan (rule 1) *also* happened to find a way to build the
+    /// same type -- `StatusSet::new()` is both a legitimate rule-1
+    /// constructor (a zero-argument, `Self`-returning associated fn) and
+    /// the exact function a route names, and rule 1 ran first and won
+    /// without a trace. An explicit `routes:` declaration is the author
+    /// stating which function to call; it must never be silently shadowed
+    /// by a rule that happens to find something else first. Fixed by
+    /// checking a declared route before rule 1 runs at all, so a route
+    /// always wins when one is declared, working or not.
+    #[test]
+    fn a_declared_route_wins_over_an_ordinary_constructor_rule_finds_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert("StatusSet".to_string(), "StatusSet::other".to_string());
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+#[derive(Debug, Clone, Copy)]
+pub struct StatusSet(u8);
+impl StatusSet {
+    pub const fn new() -> Self { StatusSet(0) }
+    pub const fn other() -> Self { StatusSet(1) }
+    pub fn len(&self) -> usize { self.0.count_ones() as usize }
+}
+#[ply::ensures(|result| *result <= 8)]
+pub fn set_len(s: &StatusSet) -> usize { s.len() }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "set_len").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert!(refused.is_empty(), "{refused:?}");
+        let RustType::UserTypeCtor(plan) = &cf.params[0].ty else {
+            panic!("expected UserTypeCtor, got {:?}", cf.params[0].ty);
+        };
+        assert_eq!(
+            plan.constructor, "StatusSet::other",
+            "the declared route must be used even though rule 1's own constructor scan would \
+             have found `StatusSet::new` first: got {}",
+            plan.constructor
+        );
+        assert!(
+            plan.route.is_some(),
+            "a route-built value must carry its route mark"
+        );
+    }
+
+    /// Defect 2 (2026-09-02): a route to a function outside the crate
+    /// declares its own input types, since Ply has no source to read them
+    /// from -- `routes: { OsString: std::ffi::OsString::from(String) }`.
+    /// Ply builds the declared `String` the ordinary way and calls the
+    /// named path directly, never reading `OsString::from`'s real
+    /// signature at all.
+    #[test]
+    fn a_declared_route_with_explicit_input_types_builds_a_cross_crate_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert(
+            "OsString".to_string(),
+            "std::ffi::OsString::from(String)".to_string(),
+        );
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_os_string(o: std::ffi::OsString) -> i64 { o.len() as i64 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "use_os_string").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert!(
+            refused.is_empty(),
+            "a well-formed cross-crate route must not be reported as broken: {refused:?}"
+        );
+        let RustType::UserTypeCtor(plan) = &cf.params[0].ty else {
+            panic!("expected UserTypeCtor, got {:?}", cf.params[0].ty);
+        };
+        assert_eq!(plan.type_name, "OsString");
+        assert_eq!(plan.constructor, "std::ffi::OsString::from");
+        assert_eq!(plan.import_path, "std::ffi::OsString");
+        assert_eq!(plan.ctor_params.len(), 1);
+        assert!(matches!(plan.ctor_params[0].ty, RustType::String));
+        let route = plan.route.as_ref().expect("must carry a route mark");
+        assert_eq!(route.declared_as, "std::ffi::OsString::from");
+        assert!(
+            route.outside_crate,
+            "a cross-crate route must be marked as such, so codegen never assumes its type \
+             lives in the target crate"
+        );
+        assert!(cf.is_fuzz_supported());
+    }
+
+    /// Defect 1's third required scenario: a route naming a type nothing in
+    /// the document ever asks Ply to build. Nothing in `enrich_contract_fn_
+    /// user_types`'s own per-parameter walk would ever visit it -- so a
+    /// broken route of this shape needs its own check, run once per
+    /// declared route regardless of whether anything uses it, or "every
+    /// declared route is used or refused by name" would be false exactly
+    /// when nothing asks.
+    #[test]
+    fn a_route_naming_a_type_nothing_in_the_document_uses_is_still_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert("NeverAsked".to_string(), "totally::bogus::path".to_string());
+        write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+#[ply::ensures(|result| *result >= 0)]
+pub fn ordinary(n: u32) -> i64 { n as i64 }
+"#,
+            )],
+        );
+        let reason = validate_declared_route(dir.path(), &routes, "NeverAsked")
+            .expect("a broken route must be reported even when nothing uses it");
+        assert!(
+            reason.contains("NeverAsked") && reason.contains("totally::bogus::path"),
+            "the refusal must name the route: {reason}"
         );
     }
 

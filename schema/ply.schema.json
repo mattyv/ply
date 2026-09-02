@@ -68,13 +68,13 @@
       }
     },
     "routes": {
-      "description": "\u00a75.4b's generator hook: a public function -- free or associated -- that returns a value of the named type, for a type with no other way in. Keyed by the type's bare name; Ply samples the named function's own parameters rather than taking values from the author.",
+      "description": "\u00a75.4b's generator hook: a public function -- free or associated -- that returns a value of the named type, for a type with no other way in. Keyed by the type's bare name. A bare path (`open_handle`) infers its parameters from this crate's own source, the same as any other function Ply reads; a path followed by a parenthesized, comma-separated type list (`std::ffi::OsString::from(String)`) names a function outside this crate, whose parameters Ply has no source to read -- the author states them instead, and Ply builds and samples them itself.",
       "type": "object",
       "propertyNames": {
         "$ref": "#/$defs/type_name"
       },
       "additionalProperties": {
-        "$ref": "#/$defs/code_path"
+        "$ref": "#/$defs/route_value"
       }
     }
   },
@@ -93,6 +93,11 @@
       "description": "\u00a75.1a rule 3: a plain segment path, where a segment may also be a type name in Type::method position. No generics, no trait-qualified paths, no lifetimes -- anything else is E0304, naming the construct.",
       "type": "string",
       "pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$"
+    },
+    "route_value": {
+      "description": "\u00a75.4b's cross-crate extension (defect 2): a `code_path` (unchanged -- infers its parameters from this crate's own source), optionally followed by a parenthesized, comma-separated list of the input types a function outside this crate takes, since Ply has no source there to read them from.",
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*(\\([^()]*\\))?$"
     },
     "check_string": {
       "description": "\u00a75 item 1 and \u00a75.1a rule 4: test | fuzz(N) | bounded(K) | prove | mutate, with 1 <= N <= 1000000 and 1 <= K <= 64. Out of range, or any other form, is E0203.",

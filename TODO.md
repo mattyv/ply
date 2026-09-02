@@ -1,5 +1,65 @@
 # TODO
 
+## DONE 2026-09-02: a declared route can no longer be silently unused
+
+Three defects in the build-route mechanism above, all variants of the same silence: a
+route the author wrote in `ply.yaml` doing nothing, with nothing said about it. Each had
+a failing test first, watched fail, then fixed.
+
+**Defect 1 — a route to a real function outside the crate was refused in total silence.**
+Route lookup only ever read the target crate's own source, so a type with no local
+declaration at all never even reached the `routes:` check: `resolve_user_type` returned
+"not found" (folded into the generic `V0505` "no part of its value is one Ply knows how
+to vary") before the route table was ever consulted. Fixed by checking a declared route
+*first*, before asking whether the type is declared locally at all — a working route
+still resolves the same way; a broken one is now refused by name
+(`crates/ply-core/src/harness.rs`'s `resolve_user_type`).
+
+**Defect 2 — the crate boundary itself, for the 42 of Ply's own 97 unbuildable public
+functions blocked by an outside-crate type (the largest group after filesystem paths,
+deliberately excluded here as before).** Ply cannot read a function's real signature if
+it has no source to parse, so a route to one now declares its own input types:
+`routes: { OsString: std::ffi::OsString::from(String) }`. Ply builds the declared type
+(here, `String`) the ordinary way and calls the named path directly, never reading the
+real function's signature at all — a wrong declaration is caught by the compiler as a
+tool error naming the route, acceptable only because the route was explicit. Proved on
+`/home/user/routeprobe`: a false promise on such a parameter earns a real `violation` with
+a real shrunk failing input, not a silent skip.
+
+**Defect 3 — found by a coordinator probing the fix in progress, same mechanism wearing a
+third hat.** A declared route to a zero-argument, `Self`-returning function
+(`StatusSet::new`) was *also* a legitimate match for the ordinary constructor scan that
+runs before routes are tried — so the scan won, silently, and the route was never called
+at all: `fuzzed(16)`, flat and clean, no mark, no warning, despite the route being able to
+vary nothing. Fixed by the same reordering that fixes defect 1: a declared route is now
+tried before the constructor scan even runs, so it can never be shadowed by a rule that
+happens to find a different way to build the same type. Proved on the same probe: the
+run now carries `route-built`/`route-collapsed` and a `W0527` warning naming exactly one
+distinct value across 16 cases.
+
+**A route nothing uses is still checked.** None of the three defects above are reachable
+from a route no function's parameters ever name — so `verify` now validates every
+declared route once the whole document has been walked, for any entry its own
+per-function pass never touched, and reports a broken one (`W0528`) by name against the
+whole run.
+
+Existing guards re-verified, not just re-read: a route that ignores its input still
+reports its own distinct-value count (`W0527`, unchanged wording); a stale local route is
+still refused loudly by name (`crates/ply-core/src/harness.rs`'s
+`a_stale_route_is_refused_loudly_naming_the_function`, `tests/e2e/tests/
+routehook_fixture.rs`'s `a_stale_route_is_refused_loudly_and_names_the_function`, both
+still green, neither weakened).
+
+Filesystem paths were not added to the curated set, as an example, or anywhere else --
+they stay a separate, later change behind a check for side effects.
+
+`cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, and
+`cargo test --workspace --exclude ply-e2e` all clean (also regenerated `docs/ply-self.svg`
+and `docs/ply-self.txt`, stale from before this session for an unrelated reason — the
+architecture file had already dropped two crates these hadn't been re-rendered against).
+The full `ply-e2e` suite was run to completion in the foreground, in the same session,
+before this file was amended -- [result recorded below once the run finished].
+
 ## The composition fix made a whole mechanism unreachable — 2026-09-02
 
 Found while verifying that fix, by a unit test whose premise it killed. The

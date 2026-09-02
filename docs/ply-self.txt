@@ -4,7 +4,7 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 
 ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
 
-8 components · 0 functions · 0 promise nothing
+6 components · 0 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
 components:
@@ -32,14 +32,6 @@ components:
     note: The standalone spec validator, which predates the installed `cargo ply check` command and overlaps it. Retiring one of the two is recorded work, not a decision taken here.
     hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
 
-  component kernel — maps to Rust module ply_kernel
-    note: The verdict kernel's own crate: the evidence order, worst-of aggregation and status propagation, kept apart from everything that might tempt it to grow a special case. Its invariants are checked by exhaustive enumeration over every tree up to a bound.
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
-
-  component schedule — maps to Rust module ply_schedule
-    note: Check ordering. A second implementation of this ordering also lives inside the verify command, and only this copy has the exhaustive test suite -- recorded as a known gap, because two implementations of a soundness rule is one more than can be trusted.
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
-
 externals — systems and people outside this codebase: none declared
 
 edges — who may call whom, and what data flows where:
@@ -47,10 +39,7 @@ edges — who may call whom, and what data flows where:
   ("a ~> b : T" means T data flows from a to b — declared so the flow is visible; nothing checks flows in v1)
   cli -> core
   render -> core
-  render -> kernel
   check -> core
-  kernel -> core
-  schedule -> kernel
 
 forbidden calls: none declared
 
