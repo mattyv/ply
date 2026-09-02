@@ -1,5 +1,77 @@
 # TODO
 
+## FALSE GREEN, reproduced: a broken function reports `fuzzed(256)` — 2026-09-02
+
+**The highest-priority open item in the project.** Found by review, then reproduced by hand
+on a fresh probe rather than taken on trust.
+
+A method on a type whose only public way in is a constructor taking no arguments is checked
+against **one value, 256 times**, and reports a clean count. Deliberately breaking both
+functions of Ply's own status-set shape -- one returns 99 for any non-empty set, the other
+discards everything handed to it -- both still come back `fuzzed(256)`. Every case ran
+against the empty set, so neither bug is reachable by any case that ran.
+
+Ply is half-honest here, and the half it gets right is what makes the other half worse. The
+receiver disclosure names the operations it never called and says plainly *"if the promise
+depends on what this run never reached, this run says nothing about it."* But:
+
+- the verdict line still reads `fuzzed(256)`, a number that means 256 real cases;
+- **the second argument gets no disclosure at all** -- it was silently built by the same
+  no-argument constructor, and nothing counted or mentioned it. One of the two broken
+  functions carries no mark whatsoever.
+
+- [ ] **A value built by a no-argument constructor must be counted like any other.** The
+      distinct-value guard built today does exactly this for a declared route and would have
+      caught both cases. It does not run for a constructor Ply finds by itself, which is the
+      commoner path by far.
+- [ ] **The same reasoning was already applied once and not carried across.** Ply refuses a
+      `default()` by name, for producing a single value -- this file's own words, "256 runs
+      of one value is one test run 256 times". An inherent zero-argument `new()` is the
+      identical shape and is accepted. The rule was written against the trait and never
+      generalised.
+- [ ] **What would make this evidence real is not a route.** The receiver mechanism would
+      vary the set if it could call `insert`, and it refuses because it cannot build an
+      ordinary unit enum for the operation pool -- while refusal messages elsewhere imply
+      unit-only enums are buildable. That inconsistency is the unlock, and it is a defect
+      rather than a missing feature.
+
+## Decided: `ply-core` does NOT take a dependency on `ply-attrs` — 2026-09-02
+
+Asked, reviewed and answered no, before anything was built.
+
+The macro's only expansion is a hook for the proof engine, which this project has decided
+never to run on its own kernel. For the sampling tier -- the only one self-hosting could use
+-- the checker reads the promise text out of the source file and never consults the macro's
+output. So the dependency would exist purely to make the attribute syntax parse: a
+dependency on a crate whose behaviour is never used, taken by the crate every other crate
+stands on.
+
+Measured costs are small and were not the reason (clean build 15.5s to 15.9s; a lint entry
+would be needed or CI fails; the dependency must be aliased to exactly `ply`). Two are worth
+keeping: the build identity hashes the library and the manifests but not the macro's source,
+so once the library's compiled form depends on the macro's expansion a change there moves
+the binary without moving the identity -- inert today, real the moment the macro grows.
+
+**The alternative is strictly better and is what to build instead: close the recorded gap so
+a promise written in a `ply.yaml` is folded into the function's own checks.** With no
+dependency at all, five of six promises on Ply's own functions fail for that one reason and
+nothing else, so the fold produces the same five results without the edge -- and serves
+every user with code they will never annotate, which the spec names as where all legacy code
+lands. Sequencing matters: if the edge lands first, the pressure to close the user-facing
+gap disappears, which is the wrong incentive for a tool whose author is its first user.
+
+- [ ] **Inline promises on the kernel would be ceremony, and are refused on that ground.**
+      Ply cannot build the kernel's input tree at all; the suggested fix is to add a
+      constructor for the verifier's benefit, which is the reshaping this project already
+      refuses. And 256 random trees is strictly weaker than 991,389 enumerated ones with an
+      independent oracle. The honest way to put that evidence in the picture is a trusted
+      claim citing the enumeration and the inductive proof -- a human's attestation, drawn
+      as such, and the maintainer's to write.
+- [ ] **A stale `cargo ply` sits on this machine's PATH** (28 Aug), and it rejects both
+      `note:` and `routes:` outright. Today's measurements all used the freshly built binary
+      by absolute path, so they stand -- but anything measured through `cargo ply` since
+      28 August was measured with the wrong tool.
+
 ## DONE 2026-09-02: a declared route can no longer be silently unused
 
 Three defects in the build-route mechanism above, all variants of the same silence: a
