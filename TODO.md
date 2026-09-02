@@ -75,9 +75,9 @@ inputs the function rejects**, because random text essentially never parses. The
 is real; the author's rules about what is *accepted* are barely exercised. Ply prints
 `fuzzed(64)` unqualified and does not say this.
 
-- [x] **Fixed: the branch-decided measurement** (`<pending>` — see the follow-up entry
-      below for the real hash). Ply now instruments a top-level `||` in a postcondition
-      into an `if`/`else if` chain that records which side actually decided each case,
+- [x] **Fixed: the branch-decided measurement** (`297dd8f`). Ply now instruments a
+      top-level `||` in a postcondition into an `if`/`else if` chain that records which
+      side actually decided each case,
       preserving `||`'s own left-to-right short-circuit exactly (proved by a fixture whose
       far side panics if forced to run: it stays green, because the wrong side is never
       evaluated). The split prints unconditionally, on both a balanced and a skewed
