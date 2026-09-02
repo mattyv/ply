@@ -262,11 +262,13 @@ unchecked code begins, so an unverified boundary is visible rather than implied.
 Four more rendered scenarios live in [`vetting/`](vetting/), each a design written in the
 grammar before the tool could check it.
 
-Ply's own crate structure is specified the same way, in the [`ply.yaml`](ply.yaml) at the
-root of this repository, and checked by `cargo ply check .` like anyone else's.
-[**ARCHITECTURE.md**](ARCHITECTURE.md) is that spec rendered and explained — including the
-rule this codebase was found to be breaking when the checker was pointed at it, and what
-declaring the exception cost.
+Ply is specified the same way, in two documents of its own: the [`ply.yaml`](ply.yaml) at
+the root of this repository says which crates exist and who may depend on whom, and
+[`crates/ply-core/ply.yaml`](crates/ply-core/ply.yaml) says what the library promises
+about six of its own functions. Both are checked by `cargo ply check` like anyone else's.
+[**ARCHITECTURE.md**](ARCHITECTURE.md) is both of them rendered and explained — including
+the rule this codebase was found to be breaking when the checker was pointed at it, and
+what declaring the exception would have cost.
 
 ### Interactive evidence views
 

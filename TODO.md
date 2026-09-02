@@ -1,5 +1,28 @@
 # TODO
 
+## Landed: ARCHITECTURE.md carries both of Ply's own documents — 2026-09-02
+
+The page showed one diagram and described a repository that no longer existed: four boxes
+when there are six components with thirteen boxes, one arrow when there are three, and a
+crate table missing `render` and `check`. All of it corrected against the real render and
+the real `cargo ply check` output, not from memory.
+
+- [x] **The library-level drawing is on the page.** `crates/ply-core/ply.yaml` now renders
+      to `docs/ply-core-self.svg` and `docs/ply-core-self.txt`, both committed and both in
+      the drift test beside the workspace pair. It is the first drawing of Ply's own code
+      that is not hatched white — six functions, each promising something about what it
+      returns and how that will be tested.
+- [x] **The drift test covers all four artifacts.** It was two hard-coded paths and is now
+      two loops. Verified by breaking each new file and watching the failure name it.
+- [x] **The "grey is not green" distinction is stated on the page**, so a mid-grey box is
+      not read as a passing run.
+- [x] **The unfolded-promise gap is disclosed there too**, rather than left for a reader to
+      discover — a promise in a `ply.yaml` is drawn and counted but not yet checked, which
+      the tool's own `anchors` line says as well.
+- [x] **A false sentence in `crates/ply-core/ply.yaml` retracted.** Its header claimed the
+      modules appear as nested components in that file. They do not, and cannot: a function
+      claimed inside a module-anchored box stops resolving. The comment now says that.
+
 ## FALSE GREEN, reproduced: a broken function reports `fuzzed(256)` — 2026-09-02
 
 **The highest-priority open item in the project.** Found by review, then reproduced by hand

@@ -1,28 +1,44 @@
 # Ply's own architecture
 
 This document describes how Ply is put together, and it is not a hand-drawn picture of
-what someone remembers being true. The diagram below is rendered from
-[`ply.yaml`](ply.yaml) — the same file `cargo ply check` reads when Ply is pointed at its
-own repository — so the shape you are looking at is the shape the checker enforces. If
-someone adds a dependency this page does not show, the build says so.
+what someone remembers being true. Both diagrams below are rendered from the same files
+`cargo ply check` reads when Ply is pointed at its own repository, so the shapes you are
+looking at are the shapes the checker enforces. If someone adds a dependency this page
+does not show, the build says so.
+
+There are two of them because they answer two different questions. The first says **what
+the parts are and who may depend on whom**. The second says **what the library actually
+promises about itself**, which is a claim of a different kind and lives in a different
+file.
+
+## What the parts are
+
+Rendered from [`ply.yaml`](ply.yaml) at the repository root.
 
 <p align="center">
-  <img src="docs/ply-self.svg" alt="A frame labelled ply.yaml, with a line reading 4 components, 0 functions, 0 promise nothing. Inside are four boxes: e2e, attrs, cli and core, each dashed and filled with diagonal hatching to mark that nothing is promised about them. One arrow runs from cli down to core. e2e and attrs stand alone with no arrows." width="620">
+  <img src="docs/ply-self.svg" alt="A frame labelled ply.yaml, with a line reading 13 components, 0 functions, 0 promise nothing. Inside are six top-level boxes: e2e, attrs, core, cli, render and check. Every box is filled with diagonal hatching, meaning nothing inside promises anything yet, and every box that holds nothing else inside it is also dashed. core is a large box containing five smaller ones — kernel, engines, harness, visual and record — and cli contains two, verify and report. Three arrows run into core: one from cli, one from render, one from check. e2e and attrs stand alone with no arrows." width="760">
 </p>
 
-Each box is a crate. The boxes are **dashed** because none of them declares a function
-contract yet: Ply's own `ply.yaml` says only how the crates may depend on one another, and
-a dashed box is Ply's way of showing code that carries no claims of its own. That single
-arrow is the only dependency permitted between components. Anything else is a violation.
+The six outer boxes are the crates. The smaller boxes inside `core` and `cli` are modules
+within those crates: they carry no rules of their own yet, and they are there so that a
+reader can go one level in rather than being told that `core` does everything.
 
-## The four crates
+Every box is filled with **diagonal hatching**, which is how Ply draws code that carries
+no claims about its own behaviour. That is honest and it is the point of the second
+diagram further down: this file says only how the crates may depend on one another, and
+saying nothing about behaviour has to look like saying nothing. Those three arrows are the
+only dependencies permitted between components. Anything else is a violation.
+
+## The six components
 
 | Component | Crate | What it is |
 |---|---|---|
 | `attrs` | `ply-attrs` | The `#[ply::requires]` / `#[ply::ensures]` attribute macros. A proc-macro crate: it is compiled for the machine doing the building, not the machine the program will run on. |
-| `core` | `ply-core` | The model, the schema, the call graph, the engine adapters (Kani, proptest, cargo-mutants), the result records, and the verdict kernel. Everything Ply knows how to do, with no terminal attached. |
-| `cli` | `ply-cli` | The `cargo ply` commands — `check`, `verify`, `audit`, `worklist` — and every sentence a user reads. |
+| `core` | `ply-core` | The model, the schema, the call graph, the engine adapters (Kani, proptest, cargo-mutants), the result records, and the verdict kernel. Everything Ply knows how to do, with no terminal attached. Its five modules are drawn inside it: `kernel` decides what a pile of results adds up to, `engines` drives each outside checking tool, `harness` works out whether a function's inputs can be built at all, `visual` produces the drawing and the prose, and `record` stores what a result depended on. |
+| `cli` | `ply-cli` | The `cargo ply` commands — `check`, `verify`, `audit`, `worklist` — and every sentence a user reads. `verify` is the one command that produces evidence; `report` says what this codebase's evidence rests on that Ply never checks. |
 | `e2e` | `ply-e2e` | The end-to-end suite. It builds the real binary and drives it the way a user would. |
+| `render` | `ply-render` | Draws a document before any code exists, and writes the same facts as prose. |
+| `check` | `ply-check` | The standalone spec validator, which predates the installed `cargo ply check` command and overlaps it. Retiring one of the two is recorded work, not a decision taken here. |
 
 ## The rules, and why each one exists
 
@@ -35,16 +51,53 @@ terminal. That constraint is what makes the engine adapters testable at all — 
 diagnostic's wording lives in `core`, the wording and the engine can only be tested
 together.
 
-**`cli` is the top of the stack.** It is the only component allowed to depend on `core`,
-and nothing may depend on `cli`. This is what makes the direction of the whole graph
-unambiguous.
+**Nothing may depend on `cli`.** It is a top of the stack, and so are `render` and
+`check`: all three are allowed to depend on `core` and nothing is allowed to depend on
+them. That is what makes the direction of the whole graph unambiguous — everything points
+at the library, and the library points at nothing.
 
 **`e2e` drives the built binary, not the library.** A suite that links the library instead
 stops testing what ships.
 
+## What the library promises about itself
+
+Rendered from [`crates/ply-core/ply.yaml`](crates/ply-core/ply.yaml).
+
+<p align="center">
+  <img src="docs/ply-core-self.svg" alt="A frame labelled ply.yaml, with a line reading 1 component, 6 functions, 0 promise nothing. Inside is a single solid box named core, filled mid-grey rather than hatched. It holds six small chips, one per function, each reading fuzz: 256 cases — kernel::StatusSet::len, kernel::StatusSet::union, harness::last_two_segments, harness::rust_type_from_source, visual::stable_element_id and record::fingerprint. There are no arrows." width="440">
+</p>
+
+This is the first drawing of Ply's own code that is not hatched. Each chip is a function
+that now states something that must be true of what it returns, and how that statement is
+to be tested — 256 generated inputs each. The box is filled mid-grey because grey depth is
+how strongly a thing promises to be checked, and a box is never shown as stronger than the
+weakest function inside it.
+
+**Grey is not green.** Nothing on either page is green, and that is deliberate: green is
+kept for evidence a run has actually earned. These drawings are made from the documents
+alone, without running anything, so a picture full of promises must not look like a
+picture full of results. `cargo ply verify` is what turns one into the other.
+
+Two of these promises are load-bearing rather than decorative. `StatusSet` is the type the
+verdict machinery carries flags in, and the two claims about it — that it never holds more
+than seven, and that combining two sets never loses one — are the properties the rest of
+the machinery quietly assumes. The other four are the smaller kind: a function that splits
+a path, one that reads a type out of source text, one that mints an identifier for a
+drawn element, and one that hashes what a result depended on.
+
+Why they live in a second file rather than the one above: Ply resolves a function claim
+against a single crate's `src/lib.rs`, and a workspace root has none. Pointed at the root,
+it says so rather than reporting no problems — "this is not a count of zero problems, it
+is a count of zero searches."
+
+One caveat that belongs here rather than in a footnote: a promise written in this file is
+**not yet folded into the function's own checks**. It is drawn, it is counted, and the
+plumbing that would make a failing promise fail the run is a recorded gap in
+[TODO.md](TODO.md), not a claim being made on this page.
+
 ## What happened when Ply was pointed at itself
 
-That last rule is the interesting one, because Ply caught this codebase breaking it.
+The `e2e` rule above is the interesting one, because Ply caught this codebase breaking it.
 
 `e2e` has no outgoing edge. Running `cargo ply check` on this repository while writing this
 document reported that `ply_e2e` had grown a dependency on `ply_core` anyway, and that
@@ -73,8 +126,8 @@ rule quietly abandoned, wearing the green tick of a rule enforced.
 So the test moved instead. It now lives in `ply-core`'s own tests, next to the classifier
 it measures, where the dependency is native and needs no exception. Nothing about that
 measurement ever wanted to be end-to-end: it reads one function and counts what it
-returns. The rule is intact, the edge is gone, and the diagram above shows one arrow
-rather than two.
+returns. The rule is intact, the edge is gone, and no arrow leaves `e2e` in the diagram
+above.
 
 The general lesson is the one Ply is built around. A checker earns its keep at the moment
 it disagrees with you — and the useful response is usually to fix the thing it found, not
@@ -92,9 +145,9 @@ cargo ply check — ./ply.yaml
                 settled from the document alone.
   anchors       This document declares no fn claims, so there was nothing for this tier to
                 resolve.
-  architecture  1 real crate dependency crosses between two differently-declared components:
-                1 permitted by a declared edge or by nesting, 0 not permitted (reported
-                below). 4 of 4 crates in this workspace belong to a declared component.
+  architecture  3 real crate dependencies cross between two differently-declared components:
+                3 permitted by a declared edge or by nesting, 0 not permitted (reported
+                below). 6 of 6 crates in this workspace belong to a declared component.
 
   No problems found in the document.
 
@@ -113,13 +166,39 @@ mistaken for "this architecture is fully enforced" — the checking that happens
 functions does not exist yet, and the tool says so itself rather than letting you assume
 otherwise.
 
-## Regenerating the diagram
-
-The SVG is committed, and a test fails if it stops matching the spec it was rendered from:
+Point it at the library document and it discloses the gap named above in its own words,
+rather than leaving it to this page:
 
 ```console
-$ cargo run --release -p ply-render -- ply.yaml -o docs/ply-self.svg   # from tools/
+$ cargo ply check crates/ply-core
+cargo ply check — crates/ply-core/ply.yaml
+
+  anchors       6 of 6 fn claims in this crate point at a function Ply can find. 6 of them
+                also write a `requires:`/`ensures:` contract directly in ply.yaml. A
+                ply.yaml contract is only used one way -- a caller of those functions may
+                assume it, but it is not added to their own checks, so `verify` does not
+                check them against it. Move the contract onto those functions as
+                `#[ply::requires]`/`#[ply::ensures]` attributes if you want them checked.
 ```
+
+## Regenerating the diagrams
+
+Both SVGs are committed, and so is the prose form of each — the same facts written out in
+full, including every sentence the drawing only shows on hover. A test fails if any of the
+four stops matching the document it was rendered from, which is what stops this page
+quietly describing a shape the repository no longer has.
+
+From `tools/`:
+
+```console
+$ cargo run --release -p ply-render -- ../ply.yaml                   -o ../docs/ply-self.svg
+$ cargo run --release -p ply-render -- ../ply.yaml            --text -o ../docs/ply-self.txt
+$ cargo run --release -p ply-render -- ../crates/ply-core/ply.yaml   -o ../docs/ply-core-self.svg
+$ cargo run --release -p ply-render -- ../crates/ply-core/ply.yaml --text -o ../docs/ply-core-self.txt
+```
+
+The text forms are the ones to read when you want the detail: [`docs/ply-self.txt`](docs/ply-self.txt)
+and [`docs/ply-core-self.txt`](docs/ply-core-self.txt).
 
 ## Where the rest is written down
 
