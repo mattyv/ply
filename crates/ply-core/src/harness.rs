@@ -4350,9 +4350,30 @@ fn resolve_user_type(
             depth,
         )
         .map_err(|reason| {
+            // A path that plainly lives outside this crate needs the reader
+            // pointed at the right fix rather than at their own source. The
+            // message underneath names the crate's own library, which is
+            // where Ply looked -- true, and exactly the wrong place to send
+            // someone whose function is in the standard library. Added
+            // 2026-09-02, after the untyped form of a real external route
+            // was refused with an accurate sentence that read as "your
+            // function is missing".
+            let looks_external = !raw_route.contains('(')
+                && raw_route.contains("::")
+                && !crate::harness::route_path_is_local(locations, raw_route);
+            let hint = if looks_external {
+                format!(
+                    " If `{raw_route}` is a function in another crate rather than this one, \
+                     Ply cannot read its source to learn what it takes, so say so in the \
+                     route itself -- write `{raw_route}(String)`, naming the type of each \
+                     argument, and Ply will build those and call it."
+                )
+            } else {
+                String::new()
+            };
             UserTypeError::Refused(format!(
                 "Ply cannot build a value of `{type_name}`: the route declared for it in \
-                 ply.yaml (`routes: {{ {type_name}: {raw_route} }}`) is broken -- {reason}"
+                 ply.yaml (`routes: {{ {type_name}: {raw_route} }}`) is broken -- {reason}{hint}"
             ))
         });
     }
@@ -4815,6 +4836,15 @@ pub fn enrich_contract_fn_user_types(
 /// one way and checked spelled the other). It is threaded through the
 /// recursion rather than handled only at the top, so `Option<Self>` and
 /// `Vec<Self>` resolve too -- the shapes this recursion exists to reach.
+/// Whether a route's path names something this crate itself declares. Used
+/// only to decide how to word a refusal: a path we cannot find AND cannot
+/// see locally is almost certainly in another crate, where the fix is to
+/// declare the argument types rather than to go looking in your own source.
+pub(crate) fn route_path_is_local(locations: &TypeLocations, raw_route: &str) -> bool {
+    let head = raw_route.split("::").next().unwrap_or(raw_route);
+    locations.contains_key(head)
+}
+
 fn enrich_rust_type(
     ty: &mut RustType,
     crate_dir: &Path,

@@ -1,0 +1,152 @@
+This is a Ply transcript: everything the diagram of this document shows — every box, arrow, and rule, and all the text that is otherwise visible only by hovering — written out in full.
+It is generated from that document, like a compiler's output, and nothing in it is written by hand. Editing this text changes nothing; edit the ply.yaml document and generate it again.
+No result reaches this page. Every line below is a declaration or a promise, never a result — whatever `cargo ply verify` has found, it is reported there and never here.
+
+ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
+
+11 components · 14 functions · 2 promise nothing
+("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
+
+components:
+
+  component ingest — maps to Rust module ingest
+    promises nothing as a whole — something inside declares no checks, and one unchecked thing sets the level of everything around it (unclaimed)
+    that level comes from its weakest part, feed.Feed::pump — nothing here counts as checked more strongly than the weakest thing inside it
+    component feed — maps to Rust module ingest::feed
+      capabilities: net — this component may use only the capabilities it declares. That limit is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so use of a capability this component never declared can still go unnoticed (§5.3)
+      promises nothing as a whole — something inside declares no checks, and one unchecked thing sets the level of everything around it (unclaimed)
+      that level comes from its weakest part, Feed::pump — nothing here counts as checked more strongly than the weakest thing inside it
+      fn Feed::pump
+        checks: [] — a written empty list: this document says to check nothing here, so nothing about this function is verified (unclaimed)
+    component ring — maps to Rust module disruptor::spsc
+      capabilities: unsafe — this component may use only the capabilities it declares. That limit is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so use of a capability this component never declared can still go unnoticed (§5.3)
+      owns disruptor::spsc::Spsc — only this component may mutate them
+      profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
+      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, Spsc::try_push — nothing here counts as checked more strongly than the weakest thing inside it
+      fn Spsc::try_push
+        bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3
+        generic — every check runs with T=ingest::feed::RawFrame; whatever they earn covers only that type
+      fn Spsc::try_pop
+        bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3
+        generic — every check runs with T=ingest::feed::RawFrame; whatever they earn covers only that type
+    component decoder — maps to Rust module ingest::decode
+      pure — a sealed promise: this component declares no capabilities and may not use any. That is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so capability use inside this sealed component can still go unnoticed (§5.3)
+      profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
+      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, decode — nothing here counts as checked more strongly than the weakest thing inside it
+      fn decode
+        bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+        fuzz(4096) — tries 4096 generated inputs that satisfy requires, then checks ensures
+        mutate — plants small deliberate bugs; test/fuzz must catch each one or the requires/ensures are too weak
+        1 worked example, written down but not run: no check here asks for the declared examples, so nothing compiles them:
+          decode(&RawFrame::of(&[2, 1, 0, 100, 0, 42])).is_ok() == true
+    component book — maps to Rust module ingest::book
+      owns ingest::book::OrderBook — only this component may mutate them
+      profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
+      strict — this component asks that architecture findings inside it fail the build rather than warn. Nothing acts on that yet: no check this build runs reads the flag
+      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, OrderBook::apply — nothing here counts as checked more strongly than the weakest thing inside it
+      fn OrderBook::apply
+        bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        mutate — plants small deliberate bugs; test/fuzz must catch each one or the requires/ensures are too weak
+      fn OrderBook::updates
+        bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+      fn OrderBook::last_px
+        bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+
+  component strategy — maps to Rust module strat
+    declares checks up to tested — checked once against the declared examples and generated inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+    that level comes from its weakest part, Strategy::on_update — nothing here counts as checked more strongly than the weakest thing inside it
+    fn Strategy::on_update
+      test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+    component signals — maps to Rust module strat::signals
+      pure — a sealed promise: this component declares no capabilities and may not use any. That is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so capability use inside this sealed component can still go unnoticed (§5.3)
+      declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, momentum — nothing here counts as checked more strongly than the weakest thing inside it
+      fn momentum
+        bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+        fuzz(2048) — tries 2048 generated inputs that satisfy requires, then checks ensures
+
+  component risk — maps to Rust module risk
+    owns risk::Limits — only this component may mutate them
+    strict — this component asks that architecture findings inside it fail the build rather than warn. Nothing acts on that yet: no check this build runs reads the flag
+    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+    that level comes from its weakest part, check_order — nothing here counts as checked more strongly than the weakest thing inside it
+    fn check_order
+      bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3
+      fuzz(4096) — tries 4096 generated inputs that satisfy requires, then checks ensures
+      mutate — plants small deliberate bugs; test/fuzz must catch each one or the requires/ensures are too weak
+      what this function promises — the last thing the document states before the code itself takes over:
+        requires: order.qty > 0 && order.px > 0 (what the caller must guarantee going in)
+        ensures: |r| r.is_err() == (order.qty > limits.max_qty) (what the function guarantees coming out)
+        the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+
+  component oms — maps to Rust module oms
+    owns oms::OrderStore — only this component may mutate them
+    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+    that level comes from its weakest part, Oms::submit — nothing here counts as checked more strongly than the weakest thing inside it
+    fn Oms::submit
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+      fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+      #9 marks an unresolved decision — a question this function still owes an answer: order id after venue reject: fresh id or reuse. While it is open, this function's checks are meant to be held down to the weakest level — but that cap is not applied yet, so everything below still runs in full (§5.6)
+      entry — venue can reach this function from outside this codebase; Ply never checks this — it is declared, not verified
+        no requires are declared on this function, so it makes no environmental assumption yet
+    fn Oms::on_fill
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+
+  component gateway — maps to Rust module gw
+    capabilities: net — this component may use only the capabilities it declares. That limit is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so use of a capability this component never declared can still go unnoticed (§5.3)
+    promises nothing as a whole — something inside declares no checks, and one unchecked thing sets the level of everything around it (unclaimed)
+    that level comes from its weakest part, Gateway::send — nothing here counts as checked more strongly than the weakest thing inside it
+    fn Gateway::send
+      checks: [] — a written empty list: this document says to check nothing here, so nothing about this function is verified (unclaimed)
+      trusted (a human vouches for this; no machine checks it): venue protocol conformance — evidence: exchange certification suite, 2026-Q2 run
+
+  component pnl — maps to Rust module pnl
+    owns pnl::Positions — only this component may mutate them
+    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+    that level comes from its weakest part, Positions::apply_fill — nothing here counts as checked more strongly than the weakest thing inside it
+    fn Positions::apply_fill
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+      fuzz(512) — tries 512 generated inputs that satisfy requires, then checks ensures
+
+externals — systems and people outside this codebase:
+  venue — a system or person outside this codebase: the exchange: accepts orders, returns fills; market data source. Ply lists it so the boundary is visible, but checks nothing about it — every edge naming it is a declaration, not a verified fact.
+
+edges — who may call whom, and what data flows where:
+  ("a -> b" means a may call b; that an undeclared cross-component call is forbidden is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so a call that crosses this line can still go unnoticed (§5.3))
+  ("a ~> b : T" means T data flows from a to b — declared so the flow is visible; nothing checks flows in v1)
+  ingest.feed -> ingest.ring
+  ingest.decoder -> ingest.ring
+  ingest.decoder -> ingest.book
+  ingest.feed ~> ingest.ring : RawFrame
+  ingest.ring ~> ingest.decoder : RawFrame
+  ingest.decoder ~> ingest.book : Tick
+  strategy -> ingest.book
+  strategy -> oms
+  oms -> risk
+  oms -> gateway
+  oms -> pnl
+  ingest.book ~> strategy : BookUpdate
+  strategy ~> oms : OrderIntent
+  oms ~> gateway : Order
+  gateway ~> oms : Fill
+  oms ~> pnl : Fill
+  gateway ~> venue : FixMessage — venue is outside this codebase, so this edge is a declaration, never a verified fact
+  venue ~> gateway : Fill — venue is outside this codebase, so this edge is a declaration, never a verified fact
+  venue ~> ingest.feed : RawFrame — venue is outside this codebase, so this edge is a declaration, never a verified fact
+
+forbidden calls:
+  no component may call gateway — except oms — such a call fails the build
+  no component may call risk — except oms — such a call fails the build
+  no component may call ingest.book — except ingest.decoder, strategy — such a call fails the build
+
+profiles — named bundles of extra rules a component can adopt:
+  hot_path: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
+
+unresolved decisions held by the workspace as a whole:
+  #8 marks an unresolved decision — a question the design still owes an answer: venue failover: mirror orders to a backup gateway or halt. It belongs to the workspace as a whole, not to any function or component yet; Ply tracks it until someone resolves it (§5.6).
+
+routes — a public function this document names as the way to build a value of a type Ply has no other way in for: none declared

@@ -4,7 +4,7 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 
 ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
 
-6 components · 0 functions · 0 promise nothing
+13 components · 0 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
 components:
@@ -19,10 +19,33 @@ components:
 
   component core — maps to Rust module ply_core
     note: Everything Ply knows how to do, with no terminal attached. It must never reach up into the command-line layer: that constraint is what makes the engine adapters testable at all, because the moment a diagnostic's wording lives here, the wording and the engine can only be tested together.
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    promises nothing as a whole — something inside declares no checks, and one unchecked thing sets the level of everything around it (unclaimed)
+    that level comes from its weakest part, which here is the absence of any: nothing inside this component declares a check at all — not its own functions, and not anything in the components within it
+    component kernel — maps to Rust module ply_core::kernel
+      note: Decides what a pile of results adds up to: the order that ranks one kind of evidence above another, the rule that a parent is never reported as stronger than its weakest part, and the flags that travel upward beside a verdict without being confused for one. It is kept deliberately small and free of special cases, and its rules are checked by trying every shape of result tree up to a size.
+      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    component engines — maps to Rust module ply_core::engines
+      note: The adapters that drive each outside checking tool as a separate program and read back what it said. Ply never re-implements a checker; everything here is translation, in both directions.
+      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    component harness — maps to Rust module ply_core::harness
+      note: Works out what a function's inputs are and whether Ply can make one of each. This is the part that decides whether a function can be checked at all, and it is where a refusal gets its reason.
+      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    component visual — maps to Rust module ply_core::visual
+      note: The drawing, the prose form of the same facts, and the portable package an editor reads. Nothing here decides anything; it only shows what was decided.
+      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    component record — maps to Rust module ply_core::record
+      note: What was checked, and everything a result depended on. A stored result is only reused when every one of those inputs still hashes the same, which is what stops a stale green outliving the code that earned it.
+      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
 
   component cli — maps to Rust module ply_cli
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    promises nothing as a whole — something inside declares no checks, and one unchecked thing sets the level of everything around it (unclaimed)
+    that level comes from its weakest part, which here is the absence of any: nothing inside this component declares a check at all — not its own functions, and not anything in the components within it
+    component verify — maps to Rust module ply_cli::verify
+      note: Runs the checks and assembles what comes back. The one command that produces evidence rather than describing intent.
+      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    component report — maps to Rust module ply_cli::audit
+      note: Says what this codebase's evidence rests on that Ply never checks -- the promises taken on trust, listed rather than assumed.
+      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
 
   component render — maps to Rust module ply_render
     note: Draws a document before any code exists, and writes the same facts as prose. It is the surface a reader judges the whole tool by, which is why its wording is tested by exact string rather than by shape.

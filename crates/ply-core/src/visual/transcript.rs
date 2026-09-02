@@ -385,11 +385,23 @@ fn write_component(
             "{q}{}\n",
             ceiling_tooltip_line(component_ceiling(name, comp, inherited))
         ));
-        if let Some((path, _)) = weakest_declaration(comp, inherited, "", name) {
-            out.push_str(&format!(
+        match weakest_declaration(comp, inherited, "", name) {
+            Some((path, _)) => out.push_str(&format!(
                 "{q}that level comes from its weakest part, {path} — nothing here counts as \
                  checked more strongly than the weakest thing inside it\n"
-            ));
+            )),
+            // Nothing anywhere beneath this box declares a check, so there is
+            // no weakest part to point at -- and until 2026-09-02 the box
+            // stated a level and then said nothing about where it came from.
+            // It first happened when Ply's own document grew boxes inside
+            // boxes. Naming an empty child as the cause would be worse: an
+            // empty child does not drag the shade down, so the words would
+            // disagree with the picture.
+            None => out.push_str(&format!(
+                "{q}that level comes from its weakest part, which here is the absence of any: \
+                 nothing inside this component declares a check at all — not its own \
+                 functions, and not anything in the components within it\n"
+            )),
         }
     }
 
