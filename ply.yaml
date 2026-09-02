@@ -75,8 +75,14 @@ components:
   # already depended on `core`), and these four arrive with it.
   #
   # Each depends on `core`, which is the honest direction: the product owns
-  # the `ply.yaml` model and this tooling consumes it. `render` additionally
-  # depends on `kernel`, and `schedule` depends on `kernel` alone.
+  # the `ply.yaml` model and this tooling consumes it.
+  #
+  # There were four. `kernel` and `schedule` were deleted on 2026-09-02: the
+  # first was a crate whose entire body was one re-export, the second held a
+  # rule nothing ran that was looser than the one that ships. Ply reported
+  # their absence here itself (A0410, "this component owns no crate at all,
+  # and every edge written for it is silently inert") before this file was
+  # corrected -- which is the check this document exists to be subject to.
   render:
     anchor: ply_render
     note: >-
@@ -89,25 +95,8 @@ components:
       The standalone spec validator, which predates the installed `cargo ply
       check` command and overlaps it. Retiring one of the two is recorded
       work, not a decision taken here.
-  kernel:
-    anchor: ply_kernel
-    note: >-
-      The verdict kernel's own crate: the evidence order, worst-of
-      aggregation and status propagation, kept apart from everything that
-      might tempt it to grow a special case. Its invariants are checked by
-      exhaustive enumeration over every tree up to a bound.
-  schedule:
-    anchor: ply_schedule
-    note: >-
-      Check ordering. A second implementation of this ordering also lives
-      inside the verify command, and only this copy has the exhaustive test
-      suite -- recorded as a known gap, because two implementations of a
-      soundness rule is one more than can be trusted.
 
 edges:
   - "cli -> core"
   - "render -> core"
-  - "render -> kernel"
   - "check -> core"
-  - "kernel -> core"
-  - "schedule -> kernel"

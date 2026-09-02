@@ -520,6 +520,31 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
     if node.statuses.iter().any(|s| s == "seeded") {
         marks.push("seeded");
     }
+    // A promise written as `a || b` is checked left to right, and every
+    // case really did run -- nothing here is unbuildable, which is what
+    // `partial-history`'s own mark ("narrower than it looks") means, so
+    // this is deliberately a sibling mark rather than a reuse of it
+    // (correction recorded 2026-09-01, TODO.md: reusing that one would make
+    // its own printed legend false). This one is about what happens
+    // *inside* the promise, after the call: one side of it decided almost
+    // every case that held, so the other side is barely exercised even
+    // though the count itself is real.
+    if node.statuses.iter().any(|s| s == "promise-lopsided") {
+        marks.push("lopsided");
+    }
+    // A value the document told Ply how to make, rather than one Ply's own
+    // generator drew. Both facts already reached the JSON envelope as
+    // statuses; until 2026-09-02 neither reached the terminal, so a run that
+    // tested one value sixty-four times read as a clean `fuzzed(64)` to the
+    // only reader who cannot query the envelope -- a person. Same rule as
+    // the two marks above: the count is real, what it is a count *of* is
+    // what needs saying.
+    if node.statuses.iter().any(|s| s == "route-built") {
+        marks.push("built to order");
+    }
+    if node.statuses.iter().any(|s| s == "route-collapsed") {
+        marks.push("one value over and over");
+    }
     // Last, and from its own field rather than from `statuses`: reuse is
     // not a qualifier on the evidence (D6), it is a fact about when the run
     // happened. A person reading `bounded(2)` should be able to tell
@@ -533,7 +558,7 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
 
 /// What each mark means, printed once beneath the tree and only when the
 /// tree actually carries it. A mark a reader cannot decode is decoration.
-const MARK_GLOSS: [(&str, &str); 5] = [
+const MARK_GLOSS: [(&str, &str); 8] = [
     (
         "assumed",
         "this result rests on a promise Ply was handed and did not check — if the promise is \
@@ -566,10 +591,29 @@ const MARK_GLOSS: [(&str, &str); 5] = [
          is real, but it is evidence about text similar to what is already known to work, not about \
          arbitrary text",
     ),
+    (
+        "built to order",
+        "this value is not one Ply drew itself — the document names a function that makes one, and \
+         Ply called it, varying what it passed in. The count below is real, but it is evidence \
+         about the values that function returns, not about everything this type could ever hold",
+    ),
+    (
+        "one value over and over",
+        "the way this document names for making this value handed back the same value on every \
+         case, so the count above is the number of times one test ran rather than the number of \
+         different things tried — the lines below name the function that did it",
+    ),
+    (
+        "lopsided",
+        "this promise is written as \"either this, or that\" (`||`), and one side of it decided \
+         almost every case where the promise held — real cases ran and the promise really held, but \
+         the other side of it was barely exercised. The lines below say which side decided how \
+         often, so you can judge whether the side you actually care about was tested at all",
+    ),
 ];
 
 /// `a`, `a and b`, `a, b and c` — a list a person reads, not a debug print.
-fn join_plainly(items: &[String]) -> String {
+pub(crate) fn join_plainly(items: &[String]) -> String {
     match items {
         [] => String::new(),
         [one] => one.clone(),
@@ -1313,6 +1357,61 @@ mod tests {
                 "  [evidence owed]  nothing has run the real code against that promise yet"
             ),
             "{report}"
+        );
+    }
+
+    /// The branch-decided measurement's own mark (CLAUDE.md, 2026-09-02),
+    /// pinned the same way `a_result_resting_on_an_unchecked_promise_says_
+    /// so_on_the_node_line` pins `assumed`/`evidence owed` above -- a
+    /// person reading the tree, not just the JSON, must see this too.
+    #[test]
+    fn a_lopsided_or_promise_says_so_on_the_node_line() {
+        let envelope = envelope_with_statuses(&["fuzzed(64)"], &["promise-lopsided"]);
+        let report = tree_report(&envelope);
+        assert!(
+            report.contains("  f — fuzzed(64)  [lopsided]"),
+            "the node line must carry the mark: {report}"
+        );
+        assert!(
+            report.contains(
+                "  [lopsided]       this promise is written as \"either this, or that\" (`||`), \
+                 and one side of it decided almost every case where the promise held — real \
+                 cases ran and the promise really held, but the other side of it was barely \
+                 exercised. The lines below say which side decided how often, so you can judge \
+                 whether the side you actually care about was tested at all"
+            ),
+            "a marker nobody can read is not a report: {report}"
+        );
+    }
+
+    /// The same rule as the lopsided mark above, for a value built through a
+    /// route the document names. Both facts already reach the JSON envelope
+    /// as statuses; a person reading the terminal saw neither, so a run that
+    /// tested one value sixty-four times read as a clean `fuzzed(64)`.
+    #[test]
+    fn a_route_built_value_and_a_collapsed_one_say_so_on_the_node_line() {
+        let built = tree_report(&envelope_with_statuses(&["fuzzed(64)"], &["route-built"]));
+        assert!(
+            built.contains("  f — fuzzed(64)  [built to order]"),
+            "a value made by a named route is not one Ply drew itself, and the line must say so: {built}"
+        );
+
+        let collapsed = tree_report(&envelope_with_statuses(
+            &["fuzzed(64)"],
+            &["route-built", "route-collapsed"],
+        ));
+        assert!(
+            collapsed.contains("  f — fuzzed(64)  [built to order, one value over and over]"),
+            "a route that returned the same value every time must say so where the count is read: {collapsed}"
+        );
+        assert!(
+            collapsed.contains(
+                "  [one value over and over]  the way this document names for making this value \
+                 handed back the same value on every case, so the count above is the number of \
+                 times one test ran rather than the number of different things tried — the lines \
+                 below name the function that did it"
+            ),
+            "a marker nobody can read is not a report: {collapsed}"
         );
     }
 

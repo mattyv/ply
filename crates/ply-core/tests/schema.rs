@@ -111,6 +111,7 @@ fn every_key_the_schema_declares_is_a_key_the_model_reads() {
     assert_eq!(doc.deny.len(), 1);
     assert_eq!(doc.profiles["hot_path"], ["no_panics"]);
     assert_eq!(doc.unresolved[0].id, 151);
+    assert_eq!(doc.routes["Handle"], "open_handle");
 
     // And every key named above is exactly the schema's own vocabulary —
     // so a key added to the model without a schema entry fails here too.
@@ -248,6 +249,8 @@ profiles:
 unresolved:
   - id: 151
     note: "settlement rounding rule TBD"
+routes:
+  Handle: open_handle
 "#;
 
 /// Every node of the schema document, with its JSON pointer.

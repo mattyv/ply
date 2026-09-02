@@ -1,0 +1,13 @@
+ply: 1
+
+# `thirds`'s postcondition (`x % 3 == 0 || x % 3 == 1 || x % 3 == 2`) is a
+# three-way tautology: each arm decides roughly a third of the 64 cases, so
+# no single side does almost all the deciding. This is the "genuinely
+# balanced" fixture -- the split must still print, but nothing here should
+# be marked as narrow.
+components:
+  orbalanced:
+    anchor: ply_fixture_orbalanced
+    fns:
+      thirds:
+        checks: [fuzz(64)]

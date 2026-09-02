@@ -16,10 +16,18 @@ fn a_function_returning_an_unmodelled_type_earns_real_evidence_on_both_engines()
 
     let run = run_verify(&cargo_ply, fixture.path(), 180);
 
-    assert_eq!(
-        run.json["diagnostics"].as_array().unwrap().len(),
-        0,
-        "the contract holds for its whole domain -- no diagnostic should appear: {}",
+    // `compare`'s own postcondition is a top-level `||`
+    // (`*result != Ordering::Greater || a > b`), so the branch-decided
+    // measurement (CLAUDE.md, 2026-09-02) now reports which side decided
+    // each case -- a real, always-printed disclosure, not a sign anything
+    // is wrong. What "the contract holds for its whole domain" still rules
+    // out is a diagnostic saying otherwise (a tool error, a warning about
+    // this run rather than about the promise's own shape).
+    let diagnostics = run.json["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics.iter().all(|d| d["code"] == "W0526"),
+        "the contract holds for its whole domain -- only the branch-split disclosure may \
+         appear, nothing saying the run itself was weak or broken: {}",
         run.json
     );
     assert_eq!(

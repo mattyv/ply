@@ -122,17 +122,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "ply-kernel"
-version = "0.1.0"
-dependencies = [
- "ply-core",
-]
-
-[[package]]
 name = "ply-verus-diff-spike"
 version = "0.0.0"
 dependencies = [
- "ply-kernel",
+ "ply-core",
 ]
 
 [[package]]

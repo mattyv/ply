@@ -666,6 +666,106 @@ pub fn parse_seed_stats_marker(combined: &str) -> Option<SeedStats> {
     })
 }
 
+/// Parses the `PLY_FUZZ_OR_SPLIT|<fn>|<c0>,<c1>,...` marker (the
+/// branch-decided measurement, CLAUDE.md 2026-09-02): printed
+/// unconditionally by a generated harness whose postcondition's top level is
+/// a bare `||` chain (`fuzz_gen::flatten_top_level_or` decided so at codegen
+/// time) -- one count per arm, left to right in source order, each counting
+/// how many of this run's cases were decided *by that arm specifically*
+/// (short-circuit preserved: an arm never reached because an earlier one
+/// already came back true is never counted, for it or against it). `None`
+/// means either the postcondition has no top-level `||` at all, or the
+/// harness output carries no such line for some other reason -- both read
+/// the same way to a caller: no split to report, never an invented one.
+pub fn parse_or_split_marker(combined: &str) -> Option<(String, Vec<u32>)> {
+    let line = combined
+        .lines()
+        .find(|l| l.contains("PLY_FUZZ_OR_SPLIT|"))?;
+    let after = line.split_once("PLY_FUZZ_OR_SPLIT|")?.1;
+    let mut parts = after.splitn(2, '|');
+    let fn_name = parts.next()?.trim().to_string();
+    let counts_part = parts.next()?.trim();
+    let counts: Option<Vec<u32>> = counts_part
+        .split(',')
+        .map(|c| c.trim().parse().ok())
+        .collect();
+    Some((fn_name, counts?))
+}
+
+/// One top-level parameter's own distinct-value count from the degenerate-
+/// route guard (TODO.md) -- present exactly when that parameter's type
+/// derives `Debug`, so Ply could actually tell two built values apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteDistinctStat {
+    pub param: String,
+    pub declared_as: String,
+    pub distinct: u32,
+    pub total: u32,
+}
+
+/// Parses every
+/// `PLY_ROUTE_DISTINCT|<fn>|<param>|<declared_as>|<distinct>|<total>` line
+/// (`fuzz_gen::route_distinct_tracking`) -- one per debug-derivable,
+/// route-built top-level parameter this fn declares, so a fn with more than
+/// one such parameter reports every one of them rather than only the first.
+/// Empty (never `None`) when the fn has no such parameter at all, which is
+/// the vast majority -- distinguishing "printed nothing" from "printed one
+/// empty line" is not a fact this parser needs, unlike the single-marker
+/// parsers above.
+pub fn parse_route_distinct_markers(combined: &str) -> Vec<RouteDistinctStat> {
+    combined
+        .lines()
+        .filter_map(|l| {
+            let after = l.split_once("PLY_ROUTE_DISTINCT|")?.1;
+            let mut parts = after.split('|');
+            let _fn_name = parts.next()?;
+            let param = parts.next()?.trim().to_string();
+            let declared_as = parts.next()?.trim().to_string();
+            let distinct = parts.next()?.trim().parse().ok()?;
+            let total = parts.next()?.trim().parse().ok()?;
+            Some(RouteDistinctStat {
+                param,
+                declared_as,
+                distinct,
+                total,
+            })
+        })
+        .collect()
+}
+
+/// One top-level parameter Ply built through a declared route whose type
+/// does **not** derive `Debug` -- the degenerate-route guard's own honesty
+/// condition: Ply cannot tell built values apart, so it says so rather than
+/// guessing a count (module doc, `RouteOrigin::debug_derivable`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteUnprintableStat {
+    pub param: String,
+    pub declared_as: String,
+    pub total: u32,
+}
+
+/// Parses every `PLY_ROUTE_UNPRINTABLE|<fn>|<param>|<declared_as>|<total>`
+/// line, the counterpart to [`parse_route_distinct_markers`] for a
+/// non-`Debug` route-built parameter.
+pub fn parse_route_unprintable_markers(combined: &str) -> Vec<RouteUnprintableStat> {
+    combined
+        .lines()
+        .filter_map(|l| {
+            let after = l.split_once("PLY_ROUTE_UNPRINTABLE|")?.1;
+            let mut parts = after.split('|');
+            let _fn_name = parts.next()?;
+            let param = parts.next()?.trim().to_string();
+            let declared_as = parts.next()?.trim().to_string();
+            let total = parts.next()?.trim().parse().ok()?;
+            Some(RouteUnprintableStat {
+                param,
+                declared_as,
+                total,
+            })
+        })
+        .collect()
+}
+
 fn parse_u8_list(raw: &str) -> Option<Vec<u8>> {
     let inner = raw.strip_prefix('[')?.strip_suffix(']')?;
     if inner.is_empty() {
@@ -778,6 +878,16 @@ pub fn decode_marker_fields(
             // via `fields`, just not turned into a `WitnessValue` literal.
             | RustType::UserTypeCtor(_)
             | RustType::UserTypeFields(_)
+            // The four composition shapes added 2026-09-02 (`Slice`,
+            // `Tuple`, `BTreeMap`, `BoxT`): none is `is_witness_renderable`
+            // either -- `WitnessValue` has no literal form for any of
+            // them, same reasoning as `Vec`/`BTreeSet`/a struct parameter
+            // just above. A failure on one is reported witness-only
+            // (`W0541`), never a fabricated Rust literal.
+            | RustType::Slice(_)
+            | RustType::Tuple(_)
+            | RustType::BTreeMap(_, _)
+            | RustType::BoxT(_)
             | RustType::Unsupported(_) => return None,
         };
         out.push(value);
@@ -1110,12 +1220,86 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_or_split_marker_with_every_count_in_source_order() {
+        let combined = "noise\nPLY_FUZZ_OR_SPLIT|maybe_pass_through|61,3\nmore\n";
+        let (fname, counts) = parse_or_split_marker(combined).unwrap();
+        assert_eq!(fname, "maybe_pass_through");
+        assert_eq!(counts, vec![61, 3]);
+    }
+
+    #[test]
+    fn parses_the_or_split_markers_three_arm_shape() {
+        let combined = "noise\nPLY_FUZZ_OR_SPLIT|thirds|20,22,22\nmore\n";
+        let (fname, counts) = parse_or_split_marker(combined).unwrap();
+        assert_eq!(fname, "thirds");
+        assert_eq!(counts, vec![20, 22, 22]);
+    }
+
+    #[test]
+    fn a_run_with_no_top_level_or_has_no_or_split_marker() {
+        assert_eq!(
+            parse_or_split_marker("running 1 test\ntest x ... ok\n"),
+            None,
+            "a postcondition with no top-level `||` prints nothing here -- absence of the \
+             marker is how `verify` tells `flatten_top_level_or` refused this shape, rather \
+             than reading a split that was never measured"
+        );
+    }
+
+    #[test]
     fn an_unseeded_runs_output_has_no_seed_stats_marker() {
         assert_eq!(
             parse_seed_stats_marker("running 1 test\ntest x ... ok\n"),
             None,
             "an ordinary, ungated constructor's harness must print nothing here -- absence of \
              the marker is how `verify` tells a seeded run from an unseeded one"
+        );
+    }
+
+    #[test]
+    fn parses_a_route_distinct_marker_naming_the_parameter_and_the_route() {
+        let combined = "noise\nPLY_ROUTE_DISTINCT|use_handle|h|open_handle|1|64\nmore\n";
+        assert_eq!(
+            parse_route_distinct_markers(combined),
+            vec![RouteDistinctStat {
+                param: "h".into(),
+                declared_as: "open_handle".into(),
+                distinct: 1,
+                total: 64,
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_one_route_distinct_marker_per_parameter() {
+        let combined = "PLY_ROUTE_DISTINCT|f|a|make_a|1|8\nPLY_ROUTE_DISTINCT|f|b|make_b|8|8\n";
+        let stats = parse_route_distinct_markers(combined);
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].param, "a");
+        assert_eq!(stats[0].distinct, 1);
+        assert_eq!(stats[1].param, "b");
+        assert_eq!(stats[1].distinct, 8);
+    }
+
+    #[test]
+    fn a_run_with_no_route_built_parameter_has_no_route_distinct_markers() {
+        assert_eq!(
+            parse_route_distinct_markers("running 1 test\ntest x ... ok\n"),
+            vec![],
+            "a fn with no declared-route parameter must print nothing here"
+        );
+    }
+
+    #[test]
+    fn parses_a_route_unprintable_marker_naming_the_parameter_and_the_route() {
+        let combined = "noise\nPLY_ROUTE_UNPRINTABLE|use_handle|h|open_handle|64\nmore\n";
+        assert_eq!(
+            parse_route_unprintable_markers(combined),
+            vec![RouteUnprintableStat {
+                param: "h".into(),
+                declared_as: "open_handle".into(),
+                total: 64,
+            }]
         );
     }
 

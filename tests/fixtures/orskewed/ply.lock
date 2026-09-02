@@ -1,0 +1,50 @@
+{
+  "format": 2,
+  "written_by": "2cd1fa1beb83c9375f87e2fb60fe6af6a37dd43d0d38f4843a1fe2b8432e1b22",
+  "results": {
+    "orskewed::maybe_pass_through": {
+      "fingerprint": "5198f0ab87a46d46b665873b469fd307d27192eb346fd640b3a8135fe646b3bc",
+      "verdict": "fuzzed(64)",
+      "statuses": [
+        "promise-lopsided"
+      ],
+      "evidence": {
+        "engine": "proptest",
+        "seed": "33f7e2e5bc9f47a1f4b649ccb0bfd810edc742b7cdf0bf17ae2e05fc6a1036be",
+        "cases": 64
+      },
+      "diagnostics": [
+        {
+          "code": "W0526",
+          "severity": "warning",
+          "phase": "verify",
+          "engine": "proptest",
+          "check": "fuzz(64)",
+          "node_id": "orskewed::maybe_pass_through",
+          "title": "`maybe_pass_through`'s postcondition joins 2 conditions with `||`: `|result|x < 100||result.unwrap() == x`. Rust only evaluates a later one when every earlier one already came back false, and Ply's count preserves that order. Of the 64 cases where the promise held, `x < 100` decided it 49 times and `result.unwrap() == x` decided it 15 times. That count says which side of the promise did the work; it says nothing about which lines inside `maybe_pass_through` itself ran. (W0526)",
+          "fixes": [
+            {
+              "title": "give `maybe_pass_through` a case that reaches the far side of its `||` more often -- an `examples:` entry, a narrower `#[ply::requires]`, or a parameter type that lands there by construction"
+            }
+          ],
+          "open_item": "promise_lopsided"
+        }
+      ],
+      "inputs": {
+        "its contract": "d8af849ce2df313a",
+        "the build of Ply that checked it": "0365d8ebc176347c",
+        "the callees it stands on": "4df68c1409b969ed",
+        "the checks that ran": "1b7e218581e10fbc",
+        "the code it runs": "f5068da78a983ff0",
+        "the compiler and the build target": "bf70dd442259ad28",
+        "the crate's features": "888ca37d720284f4",
+        "the engines behind them": "651a23e37e8789a4",
+        "the function's own source": "005487cf0a555e37",
+        "the promises it assumes": "d972c487c26e7547",
+        "the versions of everything outside this workspace": "0fabd3141f2a2b8e",
+        "the worked examples it asserts": "7d5529f841102c10",
+        "which claim this is": "12a43d0648ea9a87"
+      }
+    }
+  }
+}

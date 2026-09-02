@@ -469,7 +469,7 @@ fn verify_loaded_crate(
                     // block, a `&mut self` target) by simply not finding
                     // what it is looking for, so falling back to `reason`
                     // below is always the right thing on its own `Err`.
-                    match harness::discover_method_with_receiver(crate_dir, fn_name) {
+                    match harness::discover_method_with_receiver(crate_dir, fn_name, &file.routes) {
                         Ok(cf) => cf,
                         // Two kinds of `Err` here, and they need two
                         // different sentences (2026-08-27). A `NoConstructor`/
@@ -550,7 +550,7 @@ fn verify_loaded_crate(
             // (rule 3) earns its own named diagnostic rather than the
             // generic "type neither engine builds inputs for" one.
             for (param_name, type_name, reason) in
-                harness::enrich_contract_fn_user_types(&mut cf, crate_dir)
+                harness::enrich_contract_fn_user_types(&mut cf, crate_dir, &file.routes)
             {
                 diagnostics.push(user_type_param_refused_diag(
                     &node_id,
@@ -693,6 +693,33 @@ fn verify_loaded_crate(
                 continue;
             }
 
+            // §5.4a: an `examples:` entry is only ever compiled into an
+            // assertion by `test`, or consumed as a seed by `fuzz` when the
+            // shape it seeds is otherwise unbuildable
+            // (`fuzz_gen::examples_are_consumed` asks the seeding machinery
+            // itself, rather than re-deriving the answer here and getting it
+            // wrong for `paramseeded`/`textseeded`, where seeding is real).
+            // Declaring examples that nothing consumes used to run this
+            // claim's other checks and say nothing about them at all: they
+            // are still read and fingerprinted (§5.2a input 4, so editing
+            // one still re-earns this claim), which reads as though it
+            // mattered to the verdict, but nothing ever compiled or ran it
+            // (found by hand, 2026-09-01: `Version::parse("1.2.3").is_err()`
+            // -- a plainly false sentence -- passed in total silence under
+            // `checks: [fuzz(64)]`). The drawing already discloses exactly
+            // this state on the function's own tooltip (`examples_prose`'s
+            // non-`test` branch); this reuses that same sentence rather
+            // than saying it a second, different way.
+            if !claim.examples.is_empty()
+                && !ply_core::fuzz_gen::examples_are_consumed(&cf, &checks, &claim.examples)
+            {
+                diagnostics.push(examples_not_run_diag(
+                    &node_id,
+                    fn_name,
+                    claim.examples.len(),
+                ));
+            }
+
             // §5.5's three-way split, decided from the call graph before
             // any engine starts. Only `bounded` needs it: Kani descends into
             // callee bodies, proptest simply runs them.
@@ -805,7 +832,7 @@ fn verify_loaded_crate(
             // it is the one assertion the author wrote out by hand, and the
             // verdict claimed it had been checked.
             if let Some(bad) = claim.examples.iter().enumerate().find_map(|(i, example)| {
-                ply_core::fuzz_gen::generate_example_test(fn_name, (i + 1) as u32, example)
+                ply_core::fuzz_gen::generate_example_test(&cf, (i + 1) as u32, example)
                     .err()
                     .map(|e| e.to_string())
             }) {
@@ -977,11 +1004,9 @@ fn verify_loaded_crate(
             // fuzz half.
             if has_test {
                 for (i, example) in plan.claim.examples.iter().enumerate() {
-                    if let Ok(body) = ply_core::fuzz_gen::generate_example_test(
-                        plan.fn_name,
-                        (i + 1) as u32,
-                        example,
-                    ) {
+                    if let Ok(body) =
+                        ply_core::fuzz_gen::generate_example_test(&plan.cf, (i + 1) as u32, example)
+                    {
                         bodies.push(body);
                     }
                 }
@@ -2143,6 +2168,51 @@ fn empty_checks_diag(
     }
 }
 
+/// §5.4a: a `test` check compiles `examples:` entries into real assertions
+/// -- nothing else does. `fuzz`, `bounded`, `prove` and `mutate` never read
+/// them at all, so a function that declares `examples:` without also
+/// declaring `test` earns whatever its other checks find while its
+/// examples silently do nothing. Worse than plain neglect: §5.2a still
+/// reads and fingerprints them as part of what this claim's result depends
+/// on, so editing a never-run example still re-earns the claim -- exactly
+/// as though it mattered to the verdict, when nothing ever compiled or ran
+/// it (found by hand, 2026-09-01: `Version::parse("1.2.3").is_err()`, a
+/// plainly false sentence about a real function, passed in total silence
+/// under `checks: [fuzz(64)]`).
+///
+/// The drawing already discloses exactly this state, on the function's own
+/// tooltip (`examples_prose`'s non-`test` branch, `crate::visual::svg`).
+/// This reuses that same sentence rather than saying the same fact a
+/// second, different way -- the whole point being that the picture and the
+/// terminal output must never disagree about what ran.
+fn examples_not_run_diag(node_id: &str, fn_name: &str, n: usize) -> Diagnostic {
+    let pronoun = if n == 1 { "it" } else { "them" };
+    Diagnostic {
+        code: "W0525".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` declares {}. Add `test` to its `checks:` list to actually run \
+             {pronoun} as a real test. (W0525, §5.4a)",
+            ply_core::visual::svg::examples_prose(n, false),
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![Fix {
+            title: format!(
+                "add `test` to `{fn_name}`'s `checks:` list so its worked examples actually run"
+            ),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: Some("examples_not_run".into()),
+    }
+}
+
 /// `verify` resolves every claim against one crate's `src/lib.rs`. A claim
 /// whose component anchors elsewhere is not checked here, and that is said
 /// rather than reported as a missing function (which is what happened before
@@ -2799,6 +2869,29 @@ fn run_fn_checks(
                 if run.seeded && !statuses.iter().any(|s| s == "seeded") {
                     statuses.push("seeded".into());
                 }
+                // The branch-decided measurement's own mark (CLAUDE.md,
+                // 2026-09-02): a top-level `||` promise whose split came
+                // back skewed -- one side deciding more than half of every
+                // case -- the same structural pattern `seeded` just above
+                // follows.
+                if run.promise_lopsided && !statuses.iter().any(|s| s == "promise-lopsided") {
+                    statuses.push("promise-lopsided".into());
+                }
+                // §5.4b's generator hook (this task): a value this run
+                // built came through a declared route rather than Ply's own
+                // generator, the same structural pattern `seeded` above
+                // follows -- a reader needs to know the evidence came
+                // through a declared door, not something incidental to warn
+                // about.
+                if run.route_used && !statuses.iter().any(|s| s == "route-built") {
+                    statuses.push("route-built".into());
+                }
+                // The degenerate-route guard's own mark: at least one
+                // debug-derivable route-built parameter built exactly one
+                // distinct value across more than one case.
+                if run.route_collapsed && !statuses.iter().any(|s| s == "route-collapsed") {
+                    statuses.push("route-collapsed".into());
+                }
                 // §1: a verdict names the evidence that produced it. Only a
                 // run that happened has any to name.
                 if run.fuzz_ran
@@ -3343,9 +3436,17 @@ fn unsupported_shape_diag(
             .map(|(_, p)| format!("{}: {:?}", p.name, p.ty))
             .collect::<Vec<_>>()
             .join(", ");
+        // §5.4b's generator hook, built (this task, 2026-09-02): a type
+        // with no other way in is buildable the moment a `routes:` entry in
+        // `ply.yaml` names a public function -- free or associated -- that
+        // returns it. This used to point at a `pure`-marked hook the spec
+        // promised and nothing built yet; that sentence would now be false
+        // about a feature that exists.
         let mut fixes = vec![Fix {
             title: format!(
-                "add a `pure`-marked generator hook for `{fn_name}`'s parameter type (§5.4b)"
+                "declare a route for `{fn_name}`'s unsupported parameter type in ply.yaml's \
+                 `routes:` -- name a public function that returns it, and Ply will call it \
+                 with inputs it generates itself (§5.4b)"
             ),
             edits: vec![],
         }];
@@ -4398,6 +4499,30 @@ struct HarnessRun {
     /// travels with the verdict, propagates into the recorded result, and
     /// survives a reused verdict, never a warning about an incidental fact).
     seeded: bool,
+    /// Whether this fn's postcondition is a top-level `||` chain whose
+    /// branch-decided split (2026-09-02, CLAUDE.md: "record which branch of
+    /// the promise actually decided each case") came back skewed -- one
+    /// side deciding more than half of every case the promise held for.
+    /// `run_fn_checks` turns this into the `promise-lopsided` status, the
+    /// same structural pattern `seeded`/`partial-history` already follow.
+    /// `false` for every fn whose postcondition has no top-level `||` at
+    /// all (the vast majority), and for one whose split came back balanced.
+    promise_lopsided: bool,
+    /// Whether this run built at least one value through §5.4b's declared
+    /// route (a `ply.yaml` `routes:` entry, or the curated built-in set --
+    /// TODO.md's "one build-route mechanism for named types") -- the same
+    /// structural pattern `seeded` above follows: `run_fn_checks` turns this
+    /// into the `route-built` status so a reader knows the values came
+    /// through a declared door rather than the type's whole range, never a
+    /// warning about an incidental fact. `false` for every fn with no
+    /// route-built parameter at all, which is the vast majority.
+    route_used: bool,
+    /// Whether the degenerate-route guard fired: at least one debug-
+    /// derivable route-built parameter built strictly fewer distinct values
+    /// than the number of cases that ran (TODO.md, "the guard this cannot
+    /// ship without"). `run_fn_checks` turns this into the
+    /// `route-collapsed` status.
+    route_collapsed: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4487,6 +4612,21 @@ fn run_fuzz_and_test_checks(
     // reach-measurement-2.md) -- `false` otherwise, including for every fn
     // whose constructor was never seeded at all.
     let mut seeded = false;
+    // Set once, only when this fn's postcondition is a top-level `||` chain
+    // and its branch-decided split came back skewed -- one side deciding
+    // more than half of every case the promise held for (the same >0.5
+    // skew rule the high-rejection warning above already uses). `false`
+    // for every fn with no top-level `||` at all, and for a balanced split.
+    let mut promise_lopsided = false;
+    // Set once, only when this run built at least one value through §5.4b's
+    // declared route (TODO.md). `false` for every fn with no route-built
+    // parameter at all, which is the vast majority.
+    let mut route_used = false;
+    // Set once, only when the degenerate-route guard actually fired -- a
+    // debug-derivable route-built parameter built exactly one distinct
+    // value across more than one case. `false` otherwise, including for
+    // every fn with no route-built parameter.
+    let mut route_collapsed = false;
 
     // The harness never ran at all for this fn (2026-08-24 M4 review, D1 --
     // the review's most serious finding, widened 2026-08-27 to catch the
@@ -4541,6 +4681,9 @@ fn run_fuzz_and_test_checks(
             fuzz_cases_reached: None,
             diagnostics,
             seeded: false,
+            promise_lopsided: false,
+            route_used: false,
+            route_collapsed: false,
         });
     }
 
@@ -4749,6 +4892,191 @@ fn run_fuzz_and_test_checks(
                     ],
                     assumptions: vec![],
                     open_item: Some("high_rejection_rate".into()),
+                });
+            }
+            // The branch-decided measurement (CLAUDE.md, 2026-09-02):
+            // "record which branch of the promise actually decided each
+            // case, then report the split." Fires whenever the generated
+            // harness printed a split at all -- which happens exactly when
+            // `fuzz_gen::flatten_top_level_or` found a top-level `||` in
+            // this fn's postcondition, never merely because `fuzz` ran.
+            // Printed unconditionally, regardless of how the split came
+            // out (CLAUDE.md's second trap: "a threshold that silently
+            // blesses ... print the split always") -- only the *mark*
+            // (`promise_lopsided`, below) is gated on the same >0.5 skew
+            // rule the high-rejection warning above already uses, so the
+            // product has one notion of "too narrow", not two.
+            if let Some((_, counts)) = fuzz_engine::parse_or_split_marker(&run.combined_output) {
+                let total: u32 = counts.iter().sum();
+                if total > 0
+                    && let Some((closure, contract_text)) = cf.ensures.as_ref()
+                    && let Some(arm_texts) = contract_rt::or_arm_texts(&closure.body)
+                    && arm_texts.len() == counts.len()
+                {
+                    let max = *counts.iter().max().expect("counts is non-empty: total > 0");
+                    let skewed = (max as f64) / (total as f64) > 0.5;
+                    let parts: Vec<String> = arm_texts
+                        .iter()
+                        .zip(counts.iter())
+                        .map(|(text, c)| {
+                            format!(
+                                "`{text}` decided it {c} time{s}",
+                                s = if *c == 1 { "" } else { "s" }
+                            )
+                        })
+                        .collect();
+                    let list = crate::join_plainly(&parts);
+                    let case_word = if total == 1 { "case" } else { "cases" };
+                    let title = format!(
+                        "`{fn_name}`'s postcondition joins {n} conditions with `||`: \
+                         `{contract_text}`. Rust only evaluates a later one when every earlier \
+                         one already came back false, and Ply's count preserves that order. Of \
+                         the {total} {case_word} where the promise held, {list}. That count says \
+                         which side of the promise did the work; it says nothing about which \
+                         lines inside `{fn_name}` itself ran. (W0526)",
+                        n = arm_texts.len(),
+                    );
+                    let (severity, fixes, open_item) = if skewed {
+                        (
+                            "warning",
+                            vec![Fix {
+                                title: format!(
+                                    "give `{fn_name}` a case that reaches the far side of its \
+                                     `||` more often -- an `examples:` entry, a narrower \
+                                     `#[ply::requires]`, or a parameter type that lands there by \
+                                     construction"
+                                ),
+                                edits: vec![],
+                            }],
+                            Some("promise_lopsided".to_string()),
+                        )
+                    } else {
+                        ("info", vec![], None)
+                    };
+                    diagnostics.push(Diagnostic {
+                        code: "W0526".into(),
+                        severity: severity.into(),
+                        phase: "verify".into(),
+                        engine: "proptest".into(),
+                        check: check_label.clone(),
+                        node_id: node_id.into(),
+                        title,
+                        pointer: None,
+                        primary_span: None,
+                        counterexample: None,
+                        fixes,
+                        assumptions: vec![],
+                        open_item,
+                    });
+                    if skewed {
+                        promise_lopsided = true;
+                    }
+                }
+            }
+            // The degenerate-route guard (TODO.md, "the guard this cannot
+            // ship without"): a route is a function an author wrote, and
+            // nothing but this run stops it from ignoring its own inputs
+            // and returning the same value every time. Disclosed
+            // unconditionally for every debug-derivable route-built
+            // top-level parameter this run measured (CLAUDE.md's own trap:
+            // "print the split always") -- only the mark (`route_collapsed`,
+            // below) is gated on the count actually collapsing, the same
+            // structural pattern the branch-decided split above follows.
+            for stat in fuzz_engine::parse_route_distinct_markers(&run.combined_output) {
+                route_used = true;
+                let collapsed = stat.distinct == 1 && stat.total > 1;
+                let case_word = if stat.total == 1 { "case" } else { "cases" };
+                let value_word = if stat.distinct == 1 {
+                    "value"
+                } else {
+                    "values"
+                };
+                let title = format!(
+                    "`{fn_name}`'s `{param}` parameter is built by calling `{declared_as}` -- \
+                     the function ply.yaml names as the way to make one, rather than a value \
+                     Ply's own generator drew directly. Of the {total} {case_word} that ran, \
+                     {distinct} distinct {value_word} reached `{fn_name}`. (W0527)",
+                    param = stat.param,
+                    declared_as = stat.declared_as,
+                    total = stat.total,
+                    distinct = stat.distinct,
+                );
+                let (severity, fixes, open_item) = if collapsed {
+                    (
+                        "warning",
+                        vec![Fix {
+                            title: format!(
+                                "make `{}` actually use its own parameters -- every one of \
+                                 these cases ran with a different input, but the function \
+                                 returned the same value every time, which is as good as \
+                                 testing nothing new",
+                                stat.declared_as
+                            ),
+                            edits: vec![],
+                        }],
+                        Some("route_collapsed".to_string()),
+                    )
+                } else {
+                    ("info", vec![], None)
+                };
+                diagnostics.push(Diagnostic {
+                    code: "W0527".into(),
+                    severity: severity.into(),
+                    phase: "verify".into(),
+                    engine: "proptest".into(),
+                    check: check_label.clone(),
+                    node_id: node_id.into(),
+                    title,
+                    pointer: None,
+                    primary_span: None,
+                    counterexample: None,
+                    fixes,
+                    assumptions: vec![],
+                    open_item,
+                });
+                if collapsed {
+                    route_collapsed = true;
+                }
+            }
+            // The same disclosure's other honesty condition: a route-built
+            // parameter whose type has no `#[derive(Debug)]` cannot be
+            // compared or printed by code Ply generates outside the crate,
+            // so Ply says plainly that it could not count distinct values
+            // rather than inventing a number (module doc, `RouteOrigin::
+            // debug_derivable`).
+            for stat in fuzz_engine::parse_route_unprintable_markers(&run.combined_output) {
+                route_used = true;
+                let case_word = if stat.total == 1 { "case" } else { "cases" };
+                diagnostics.push(Diagnostic {
+                    code: "W0527".into(),
+                    severity: "info".into(),
+                    phase: "verify".into(),
+                    engine: "proptest".into(),
+                    check: check_label.clone(),
+                    node_id: node_id.into(),
+                    title: format!(
+                        "`{fn_name}`'s `{param}` parameter is built by calling `{declared_as}` -- \
+                         the function ply.yaml names as the way to make one. {total} {case_word} \
+                         ran, but Ply cannot tell how many of them reached a genuinely different \
+                         value: `{param}`'s type does not derive `Debug`, so Ply has no way to \
+                         print or compare the values this run built. (W0527)",
+                        param = stat.param,
+                        declared_as = stat.declared_as,
+                        total = stat.total,
+                    ),
+                    pointer: None,
+                    primary_span: None,
+                    counterexample: None,
+                    fixes: vec![Fix {
+                        title: format!(
+                            "add `#[derive(Debug)]` to the type `{}` returns, so Ply can count \
+                             how many distinct values a run actually reaches",
+                            stat.declared_as
+                        ),
+                        edits: vec![],
+                    }],
+                    assumptions: vec![],
+                    open_item: Some("route_unprintable".into()),
                 });
             }
             // A receiver method is never the zero-input shape below, even
@@ -4996,6 +5324,18 @@ fn run_fuzz_and_test_checks(
         }
     }
 
+    // The `route-built` mark's own static fallback: a route-built value
+    // nested inside a composed shape (`Vec<Handle>`, say) generates no
+    // per-case marker at all -- the degenerate-route guard is deliberately
+    // narrowed to a *top-level* parameter (`fuzz_gen::route_distinct_
+    // tracking`'s own doc) -- but the mark itself is a plain fact about
+    // where the values came from, true regardless of nesting, and answering
+    // it costs nothing at codegen time: `cf`'s own resolved parameter types
+    // already say so.
+    if fuzz_ran && cf.params.iter().any(|p| p.ty.uses_any_route()) {
+        route_used = true;
+    }
+
     Ok(HarnessRun {
         fuzz_label,
         test_label,
@@ -5003,6 +5343,9 @@ fn run_fuzz_and_test_checks(
         fuzz_cases_reached,
         diagnostics,
         seeded,
+        promise_lopsided,
+        route_used,
+        route_collapsed,
     })
 }
 
@@ -6283,6 +6626,34 @@ mod tests {
         );
     }
 
+    /// The exact wording of the `examples_not_run` warning (W0525) --
+    /// exact-string, per CLAUDE.md's newbie bar ("the test for new wording
+    /// is exact-string, so the words are reviewed like code").
+    #[test]
+    fn examples_not_run_diag_names_the_count_and_the_fix() {
+        let d = examples_not_run_diag("semver::Version::parse", "Version::parse", 1);
+        assert_eq!(d.code, "W0525");
+        assert_eq!(d.severity, "warning");
+        assert_eq!(
+            d.title,
+            "`Version::parse` declares 1 worked example, written down but not run: no check \
+             here asks for the declared examples, so nothing compiles them. Add `test` to its \
+             `checks:` list to actually run it as a real test. (W0525, §5.4a)"
+        );
+    }
+
+    /// Plural count, plural pronoun.
+    #[test]
+    fn examples_not_run_diag_pluralises_more_than_one_example() {
+        let d = examples_not_run_diag("crate::f", "f", 2);
+        assert_eq!(
+            d.title,
+            "`f` declares 2 worked examples, written down but not run: no check here asks for \
+             the declared examples, so nothing compiles them. Add `test` to its `checks:` list \
+             to actually run them as a real test. (W0525, §5.4a)"
+        );
+    }
+
     fn node_with(verdict: &str, statuses: &[&str]) -> Node {
         Node {
             id: "f".into(),
@@ -6740,6 +7111,54 @@ mod tests {
         assert!(diag.title.contains("neither the bounded"), "{}", diag.title);
     }
 
+    /// Defect 2 (2026-09-01): before defect 1's fix, a `&Self` parameter
+    /// stayed `Unsupported("Self")` even though the identical type spelled
+    /// by name (`&Widget`, the sibling method below) already resolves and
+    /// varies happily -- so this diagnostic's "No part of `other`'s value
+    /// is one Ply knows how to vary" was false for it. Once defect 1
+    /// resolves `Self` the same way a named type already does, enrichment
+    /// never leaves a `&Self` parameter `Unsupported` in the first place,
+    /// so `unsupported_shape_diag`'s own `bad` list has nothing left to
+    /// name it with -- proven here through the real discovery pipeline
+    /// (`discover_method_with_receiver`, which runs enrichment itself),
+    /// never by asserting anything about the diagnostic's text alone.
+    #[test]
+    fn self_typed_parameter_no_longer_reaches_the_generic_unsupported_diag() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("widget.rs"),
+            "pub struct Widget { n: u32 }\nimpl Widget {\n    pub fn new(n: u32) -> Self { \
+             Widget { n } }\n    #[ply::ensures(|result| *result == (self.n == other.n))]\n    \
+             pub fn same_as(&self, other: &Self) -> bool { self.n == other.n }\n}\n",
+        )
+        .unwrap();
+        let cf = harness::discover_method_with_receiver(
+            dir.path(),
+            "widget::Widget::same_as",
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(
+            cf.is_fuzz_supported(),
+            "a &Self parameter resolving to the same buildable type as &Widget must not leave \
+             the fn refused: {:?}",
+            cf.params[0].ty
+        );
+        // With every parameter now buildable, `unsupported_shape_diag`'s own
+        // `bad` list is empty -- the false "No part of `other`'s value..."
+        // sentence has nothing left to attach to, and this diag would
+        // never actually be called for this fn in the real pipeline (its
+        // call sites are both gated on `!cf.is_fuzz_supported()`).
+        let diag = unsupported_shape_diag("widget::Widget::same_as", "same_as", &cf, &[]);
+        assert!(
+            !diag.title.contains("No part of"),
+            "the false sentence must not appear once the parameter is genuinely buildable: {}",
+            diag.title
+        );
+    }
+
     /// The NaN/infinity decision's own visibility requirement: the
     /// disclosure names the reason (false alarms on values the program may
     /// never see), not just the bare fact that floats were sampled.
@@ -6808,6 +7227,7 @@ mod tests {
             excluded_operations: vec![],
             other_constructors: vec![],
             max_sequence_len: 3,
+            route: None,
         }
     }
 
@@ -6888,8 +7308,12 @@ mod tests {
              #[ply::ensures(|result| *result == *result)]\npub fn level(&self) -> u32 { self.n }\n}\n",
         )
         .unwrap();
-        let cf =
-            ply_core::harness::discover_method_with_receiver(dir.path(), "Gauge::level").unwrap();
+        let cf = ply_core::harness::discover_method_with_receiver(
+            dir.path(),
+            "Gauge::level",
+            &Default::default(),
+        )
+        .unwrap();
         assert!(cf.receiver.is_some());
         let diag = bounded_refused_sample_only_diag(
             "receiverboundedrefuse::Gauge::level",

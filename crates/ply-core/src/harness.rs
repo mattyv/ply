@@ -8,9 +8,17 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use indexmap::IndexMap;
 use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprClosure, FnArg, ItemFn, Pat, Type};
+
+/// `ply.yaml`'s `routes:` map, bare type name -> declared function path,
+/// exactly [`crate::model::Document::routes`]'s own shape -- passed down
+/// from `verify` into every place a struct/enum parameter gets resolved, so
+/// a type with no constructor this scan can find on its own still has one
+/// more door to try before it is refused (§5.4b's generator hook).
+pub type RouteTable = IndexMap<String, String>;
 
 /// The type vocabulary Ply's codegen recognizes. `VecU8` is the only
 /// collection shape the *Kani* path (`bounded`) builds (with the mandatory
@@ -280,6 +288,45 @@ pub enum RustType {
     /// (`keys_before - keys_removed == keys_after`, enforced by nothing but
     /// `sweep` itself) is exactly the risk the disclosure names.
     UserTypeFields(Box<UserTypeFieldsPlan>),
+    /// `[T]` behind a shared reference (`&[T]`) -- added 2026-09-02
+    /// (TODO.md, "make the sampling engine's decision recursive, and add
+    /// slices"). Not handled as a shape at all before this: `&[T]` reaches
+    /// this parser as `Type::Reference` around `Type::Slice`, and nothing
+    /// matched `Type::Slice` on its own, so it fell to the catch-all
+    /// `Unsupported`. Built the same way `&Vec<u8>` already is (see
+    /// [`RustType::VecU8`]'s own doc): an owned `Vec<T>` is constructed and
+    /// lent at the call site as `&name`, relying on `Vec<T>`'s `Deref<Target
+    /// = [T]>` to coerce the reference into the `&[T]` the real function
+    /// wants -- the exact same trick, no second mechanism. **Fuzz-only**,
+    /// like `Vec`/`BTreeSet`: Kani's harness codegen here has never built
+    /// anything but `VecU8`, so a slice earns no more than `Vec<T>` already
+    /// does on the proof engine -- never bounded-supported, and this is
+    /// unchanged from before this task (`&[T]` was `Unsupported`, hence
+    /// already not bounded-supported, on both engines).
+    Slice(Box<RustType>),
+    /// `(A, B, ...)` -- a tuple of supported element types, added for the
+    /// same task as [`RustType::Slice`]. Fuzz-only, built element by
+    /// element; never bounded-supported (Kani's harness codegen here has
+    /// never built a tuple literal either, matching the struct/enum
+    /// parameter reasoning `is_bounded_supported`'s own doc already gives).
+    Tuple(Vec<RustType>),
+    /// `BTreeMap<K, V>` -- the "map" composition shape, added alongside
+    /// [`RustType::BTreeSet`] for the same reason: proptest has no trouble
+    /// building one of any supported `K`/`V`, and `BTreeMap` (unlike
+    /// `HashMap`) needs no extra hasher plumbing and gives deterministic
+    /// iteration order, which is what `BTreeSet` was already chosen for.
+    /// Fuzz-only, never bounded-supported (Kani's harness codegen here has
+    /// never built one, and `BTreeMap::insert` is exactly the same
+    /// generic-algorithm shape §5.4b already measured as intractable for
+    /// `BTreeSet` past one element).
+    BTreeMap(Box<RustType>, Box<RustType>),
+    /// `Box<T>` -- an owning wrapper, added for the same task as the three
+    /// shapes above. Built by constructing an owned `T` and wrapping it,
+    /// `Box::new(value)`. Fuzz-only: `Box` is not in §5.4b's bounded list,
+    /// and this task's own standing obligation is that the bounded list
+    /// does not change, so it stays unsupported there rather than being
+    /// newly added.
+    BoxT(Box<RustType>),
     Unsupported(String),
 }
 
@@ -531,6 +578,16 @@ impl RustType {
             // reached today (`is_bounded_supported` already says `false`).
             | RustType::UserTypeCtor(_)
             | RustType::UserTypeFields(_)
+            // The four composition shapes (2026-09-02): never reached
+            // today either (none is ever `is_bounded_supported`), and
+            // correct for the same "sampled, not exhaustive" reason as
+            // `Vec`/`String` above if they ever were -- a slice/list/map is
+            // sampled up to a length bound, a tuple/`Box` is exactly as
+            // exhaustive (or not) as its own element(s).
+            | RustType::Slice(_)
+            | RustType::Tuple(_)
+            | RustType::BTreeMap(_, _)
+            | RustType::BoxT(_)
             | RustType::Unsupported(_) => false,
             RustType::Option(inner) => inner.is_full_domain(),
             RustType::Result(ok, err) => ok.is_full_domain() && err.is_full_domain(),
@@ -540,11 +597,59 @@ impl RustType {
 
     /// The M4 gate: can the *fuzz* (proptest) codegen build this type?
     /// Strictly broader than `is_bounded_supported` -- every Kani-supported
-    /// shape is fuzz-supported too, plus `Vec`/`BTreeSet` of any scalar.
+    /// shape is fuzz-supported too.
+    ///
+    /// **Made a real recursive grammar, 2026-09-02 (TODO.md, "the type wall
+    /// has a generic answer").** Before this task, every arm below except
+    /// `Vec`/`BTreeSet` answered a *bare* type (a `String`, a float, a user
+    /// struct), and composition was refused one constructor at a time:
+    /// `Option`/`Result`/`[T; N]` fell through to `is_bounded_supported`'s
+    /// own fallback, which asks `is_composite_constructible` -- a question
+    /// that only ever recurses into `is_leaf`/itself, never into any of the
+    /// arms *this* function adds, so `Option<String>` inherited `false` from
+    /// the *proof* engine's own narrower answer even though a `String` is
+    /// fuzz-supported alone. That is the defect this task measures: every
+    /// shape below is buildable by itself, and none of them could nest
+    /// inside another. Composition closes that: `Option`, `Result`, a fixed
+    /// array, a list, a set, a map, a slice, a tuple, and an owning wrapper
+    /// (`Box`) are now each answered by recursing into this same function
+    /// for their own element(s), so *any* fuzz-supported element (a plain
+    /// scalar, a `String`, a float, a `NonZero`/`Duration`, a user struct,
+    /// or another composed shape) may nest inside any of them, to any
+    /// depth. Only the leaf answers themselves are unchanged.
     pub fn is_fuzz_supported(&self) -> bool {
         match self {
-            RustType::Vec(inner) | RustType::BTreeSet(inner) => inner.is_scalar(),
             RustType::Unsupported(_) => false,
+            RustType::Option(inner) | RustType::Array(inner, _) => {
+                inner.is_fuzz_supported() && inner.is_fuzz_nestable()
+            }
+            RustType::Result(ok, err) => {
+                ok.is_fuzz_supported()
+                    && ok.is_fuzz_nestable()
+                    && err.is_fuzz_supported()
+                    && err.is_fuzz_nestable()
+            }
+            // `Vec`/`BTreeSet` no longer stop at a scalar element -- any
+            // fuzz-supported inner composes, the parser's own widened gate
+            // (`is_composable`) already lets any such inner reach here.
+            RustType::Vec(inner) | RustType::BTreeSet(inner) => {
+                inner.is_fuzz_supported() && inner.is_fuzz_nestable()
+            }
+            // The four brand-new composition shapes (TODO.md, "add
+            // slices" and "make the sampling engine's decision recursive"):
+            // each answered the same recursive way as `Vec`/`Option` above.
+            RustType::Slice(inner) | RustType::BoxT(inner) => {
+                inner.is_fuzz_supported() && inner.is_fuzz_nestable()
+            }
+            RustType::Tuple(items) => items
+                .iter()
+                .all(|t| t.is_fuzz_supported() && t.is_fuzz_nestable()),
+            RustType::BTreeMap(key, value) => {
+                key.is_fuzz_supported()
+                    && key.is_fuzz_nestable()
+                    && value.is_fuzz_supported()
+                    && value.is_fuzz_nestable()
+            }
             // The one type this gate says `true` for where
             // `is_bounded_supported` says `false` for a reason other than a
             // measured Kani exclusion (`BTreeSet`/`Vec` fall out of the
@@ -574,6 +679,79 @@ impl RustType {
             // backwards here too.
             RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => true,
             other => other.is_bounded_supported(),
+        }
+    }
+
+    /// Whether `self` is safe to *nest* inside another shape's own sampled
+    /// value -- narrower than [`is_fuzz_supported`](Self::is_fuzz_supported)
+    /// for a struct/enum specifically, where that method always says `true`
+    /// (correct for a *top-level* parameter, which has the full
+    /// `fuzz_gen::plan_for_param`/`__ply_rejected` rejection mechanism
+    /// available). Nested composition builds a struct/enum from a raw leaf
+    /// tuple with ordinary Rust code (`fuzz_gen::construct_from_raw_expr`),
+    /// which has no access to proptest's own case-rejection partway through
+    /// a container -- so a constructor carrying its own `#[ply::requires]`
+    /// filter, or one with a fallible (`Result<Self, E>`) return, is refused
+    /// **only when reached this way**, even though the exact same type is
+    /// fine as a bare top-level parameter. Every other shape recurses
+    /// through its own element(s), since a `requires`-gated constructor
+    /// buried two containers deep is exactly as unrenderable as one nested
+    /// directly.
+    pub fn is_fuzz_nestable(&self) -> bool {
+        match self {
+            RustType::UserTypeCtor(plan) => {
+                plan.ctor_requires.is_none()
+                    && matches!(plan.ctor_return, CtorReturn::Bare)
+                    && plan.ctor_params.iter().all(|p| p.ty.is_fuzz_nestable())
+            }
+            RustType::UserTypeFields(plan) => match &plan.shape {
+                UserTypeShape::Struct(fields) => fields.iter().all(|f| f.ty.is_fuzz_nestable()),
+                UserTypeShape::Enum(variants) => variants
+                    .iter()
+                    .all(|(_, fields)| fields.iter().all(|f| f.ty.is_fuzz_nestable())),
+            },
+            RustType::Option(inner)
+            | RustType::Array(inner, _)
+            | RustType::Vec(inner)
+            | RustType::BTreeSet(inner)
+            | RustType::Slice(inner)
+            | RustType::BoxT(inner) => inner.is_fuzz_nestable(),
+            RustType::Result(ok, err) => ok.is_fuzz_nestable() && err.is_fuzz_nestable(),
+            RustType::Tuple(items) => items.iter().all(RustType::is_fuzz_nestable),
+            RustType::BTreeMap(key, value) => key.is_fuzz_nestable() && value.is_fuzz_nestable(),
+            _ => true,
+        }
+    }
+
+    /// Whether this type -- at any depth, top-level or nested inside a
+    /// composed shape -- includes a value built through §5.4b's declared
+    /// route. `verify` uses this (rather than only the runtime distinct-
+    /// value marker, which the degenerate-route guard deliberately narrows
+    /// to a *top-level* parameter) to decide whether a run's evidence earns
+    /// the `route-built` mark: the mark is a plain fact about where the
+    /// values came from, and it is true regardless of how deep the
+    /// route-built value sits.
+    pub fn uses_any_route(&self) -> bool {
+        match self {
+            RustType::UserTypeCtor(plan) => {
+                plan.route.is_some() || plan.ctor_params.iter().any(|p| p.ty.uses_any_route())
+            }
+            RustType::UserTypeFields(plan) => match &plan.shape {
+                UserTypeShape::Struct(fields) => fields.iter().any(|f| f.ty.uses_any_route()),
+                UserTypeShape::Enum(variants) => variants
+                    .iter()
+                    .any(|(_, fields)| fields.iter().any(|f| f.ty.uses_any_route())),
+            },
+            RustType::Option(inner)
+            | RustType::Array(inner, _)
+            | RustType::Vec(inner)
+            | RustType::BTreeSet(inner)
+            | RustType::Slice(inner)
+            | RustType::BoxT(inner) => inner.uses_any_route(),
+            RustType::Result(ok, err) => ok.uses_any_route() || err.uses_any_route(),
+            RustType::Tuple(items) => items.iter().any(RustType::uses_any_route),
+            RustType::BTreeMap(key, value) => key.uses_any_route() || value.uses_any_route(),
+            _ => false,
         }
     }
 
@@ -703,6 +881,19 @@ impl RustType {
             RustType::Unit => "()".to_string(),
             RustType::UserTypeCtor(plan) => plan.type_name.clone(),
             RustType::UserTypeFields(plan) => plan.type_name.clone(),
+            RustType::Slice(inner) => format!("[{}]", inner.display_name()),
+            RustType::Tuple(items) => format!(
+                "({})",
+                items
+                    .iter()
+                    .map(RustType::display_name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            RustType::BTreeMap(key, value) => {
+                format!("BTreeMap<{}, {}>", key.display_name(), value.display_name())
+            }
+            RustType::BoxT(inner) => format!("Box<{}>", inner.display_name()),
             other => other.scalar_rust_name().unwrap_or("?").to_string(),
         }
     }
@@ -784,6 +975,15 @@ impl RustType {
             // no byte-width witness decoder is needed.
             | RustType::UserTypeCtor(_)
             | RustType::UserTypeFields(_)
+            // Same reasoning as the struct/enum arms just above -- none of
+            // these four composition shapes (added 2026-09-02) ever reaches
+            // the bounded/Kani path (`is_bounded_supported` is `false` for
+            // all of them), so there is no byte-width witness decoder to
+            // give one.
+            | RustType::Slice(_)
+            | RustType::Tuple(_)
+            | RustType::BTreeMap(_, _)
+            | RustType::BoxT(_)
             | RustType::Unsupported(_) => None,
         }
     }
@@ -1004,7 +1204,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                 ));
             };
             let elem = rust_type_from_syn_at(&arr.elem, aliases, depth);
-            if elem.is_leaf() || elem.is_composite_constructible() {
+            if is_composable(&elem) {
                 RustType::Array(Box::new(elem), n)
             } else {
                 RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
@@ -1031,7 +1231,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                         && let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first()
                     {
                         let inner = rust_type_from_syn_at(inner_ty, aliases, depth);
-                        if inner.is_leaf() || inner.is_composite_constructible() {
+                        if is_composable(&inner) {
                             return RustType::Option(Box::new(inner));
                         }
                     }
@@ -1050,9 +1250,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                         if args.len() == 2 {
                             let ok = rust_type_from_syn_at(args[0], aliases, depth);
                             let err = rust_type_from_syn_at(args[1], aliases, depth);
-                            let usable =
-                                |r: &RustType| r.is_leaf() || r.is_composite_constructible();
-                            if usable(&ok) && usable(&err) {
+                            if is_composable(&ok) && is_composable(&err) {
                                 return RustType::Result(Box::new(ok), Box::new(err));
                             }
                         }
@@ -1134,6 +1332,16 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                 // is unsized), so mapping it here can only ever be reached
                 // through a reference.
                 "str" => RustType::String,
+                // Composition (2026-09-02, TODO.md) widened `Vec`'s own
+                // element gate past a plain scalar: any element Ply can
+                // already build alone (a `String`, a user struct, another
+                // container) now composes too, for the *sampling* engine --
+                // `is_scalar` still decides the *bounded* (Kani) engine's
+                // own, narrower `is_bounded_supported`/`is_full_domain`
+                // answer for a `Vec`, unaffected by this parser change
+                // (Kani's harness codegen here has never built anything but
+                // `VecU8`, so a wider element was never going to change what
+                // it builds).
                 "Vec" => {
                     if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments
                         && let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first()
@@ -1144,7 +1352,7 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                             return RustType::VecU8;
                         }
                         let inner = rust_type_from_syn_at(inner_ty, aliases, depth);
-                        if inner.is_scalar() {
+                        if is_composable(&inner) {
                             return RustType::Vec(Box::new(inner));
                         }
                     }
@@ -1152,14 +1360,55 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
                 }
                 // Fuzz-only (§5.4b measured exclusion): proptest has no
                 // trouble generating a BTreeSet of scalars; Kani does, past
-                // one element, at any bound.
+                // one element, at any bound. Widened past a scalar element
+                // the same way `Vec` just above is -- sampling only.
                 "BTreeSet" => {
                     if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments
                         && let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first()
                     {
                         let inner = rust_type_from_syn_at(inner_ty, aliases, depth);
-                        if inner.is_scalar() {
+                        if is_composable(&inner) {
                             return RustType::BTreeSet(Box::new(inner));
+                        }
+                    }
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
+                }
+                // The "map" composition shape (2026-09-02, TODO.md) --
+                // added alongside `BTreeSet` above, for the same reason:
+                // deterministic ordering, no extra hasher plumbing. Sampling
+                // only, same as `BTreeSet`.
+                "BTreeMap" => {
+                    if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
+                        let args: Vec<&Type> = ab
+                            .args
+                            .iter()
+                            .filter_map(|a| match a {
+                                syn::GenericArgument::Type(t) => Some(t),
+                                _ => None,
+                            })
+                            .collect();
+                        if args.len() == 2 {
+                            let key = rust_type_from_syn_at(args[0], aliases, depth);
+                            let value = rust_type_from_syn_at(args[1], aliases, depth);
+                            if is_composable(&key) && is_composable(&value) {
+                                return RustType::BTreeMap(Box::new(key), Box::new(value));
+                            }
+                        }
+                    }
+                    RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
+                }
+                // The "owning wrapper" composition shape (2026-09-02,
+                // TODO.md). Matched on the bare last segment, same as every
+                // other `std` type this parser recognises by name (`String`,
+                // `Duration`, ...) -- deliberately as vulnerable to a
+                // same-named unrelated type as those already are.
+                "Box" => {
+                    if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments
+                        && let Some(syn::GenericArgument::Type(inner_ty)) = ab.args.first()
+                    {
+                        let inner = rust_type_from_syn_at(inner_ty, aliases, depth);
+                        if is_composable(&inner) {
+                            return RustType::BoxT(Box::new(inner));
                         }
                     }
                     RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
@@ -1214,8 +1463,81 @@ fn rust_type_from_syn_at(ty: &Type, aliases: &AliasMap, depth: usize) -> RustTyp
             rust_type_from_syn_at(&r.elem, aliases, depth).display_name()
         )),
         Type::Reference(r) => rust_type_from_syn_at(&r.elem, aliases, depth),
+        // `[T]` -- unsized, so the only legal spelling for a parameter is
+        // behind a reference (`&[T]`, looked through just above), but this
+        // arm is reached exactly that way: `Type::Reference`'s own `elem`
+        // is this bare `Type::Slice`. Added 2026-09-02 (TODO.md, "add
+        // slices"): not handled as a shape at all before this task, so
+        // `&[T]` fell straight through to `Unsupported` regardless of `T`.
+        // Built the same way `&Vec<u8>` already is -- see `RustType::
+        // Slice`'s own doc.
+        Type::Slice(s) => {
+            let elem = rust_type_from_syn_at(&s.elem, aliases, depth);
+            if is_composable(&elem) {
+                RustType::Slice(Box::new(elem))
+            } else {
+                RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
+            }
+        }
+        // `(A, B, ...)` -- added 2026-09-02 alongside slices (TODO.md). A
+        // 0-element tuple is `()`, ordinary Rust for "no data"; as a
+        // *parameter* type it is legal but never produced by real code, so
+        // it is simply built as an empty tuple rather than special-cased.
+        Type::Tuple(t) => {
+            let elems: Vec<RustType> = t
+                .elems
+                .iter()
+                .map(|e| rust_type_from_syn_at(e, aliases, depth))
+                .collect();
+            if elems.iter().all(is_composable) {
+                RustType::Tuple(elems)
+            } else {
+                RustType::Unsupported(normalise_type_source(&ty.to_token_stream().to_string()))
+            }
+        }
+        // A parenthesized type (`(u32)`, redundant parens around one type,
+        // never a tuple -- `syn` only produces `Type::Tuple` when there is
+        // a trailing comma or more than one element) is transparent: what
+        // matters is the type behind the parens, the same "looked through"
+        // treatment already given to a reference.
+        Type::Paren(p) => rust_type_from_syn_at(&p.elem, aliases, depth),
         other => RustType::Unsupported(normalise_type_source(&other.to_token_stream().to_string())),
     }
+}
+
+/// Composition (2026-09-02, TODO.md) removed every per-shape "is this
+/// leaf/scalar/composite-constructible" gate a composing arm above (`Vec`,
+/// `BTreeSet`, `BTreeMap`, `Box`, `Option`, `Result`, `[T; N]`, `&[T]`, a
+/// tuple) used to check its own inner type against before deciding to wrap
+/// it -- **parsing decides shape, never buildability**. Whether either
+/// engine can actually *build* a value of a composed type is
+/// `is_bounded_supported`/`is_fuzz_supported`'s question, asked once the
+/// whole tree is assembled; baking a narrower answer into the parser one
+/// constructor at a time is exactly the "each shape barred from nesting"
+/// defect this task fixes.
+///
+/// Always wrapping (this function is deliberately, permanently `true`) is
+/// not merely harmless, it is required: the one thing the old
+/// collapse-to-one-opaque-string behaviour could never do, and preserving
+/// structure here fixes, is a **bare identifier not yet resolved to a user
+/// type at parse time**. `Vec<Doc>`, parsed before `Doc`'s own crate-wide
+/// scan ever runs, must stay `Vec<Unsupported("Doc")>` so the later
+/// enrichment pass (`enrich_contract_fn_user_types`) can still find and
+/// resolve the nested `Doc` -- flattening it to `Unsupported("Vec<Doc>")`
+/// the way every composing arm used to on any non-composable inner would
+/// destroy that one string's structure irrecoverably, the exact defect
+/// measured in this task's own probe (a list of a user struct, refused).
+/// An inner type genuinely unresolvable at parsing time (an opaque path, a
+/// trait object, a generic parameter) already comes back its own
+/// `Unsupported`, and wrapping it changes nothing observable: both support
+/// predicates already propagate `false` through any composite whose
+/// element is `Unsupported`, and `display_name`'s own recursive composition
+/// reproduces the identical text the old flat fallback did. Kept as a named
+/// call at every composing site above, rather than deleted outright, so
+/// this reasoning lives in one place every one of them can point a reader
+/// to instead of repeating it nine times.
+fn is_composable(_ty: &RustType) -> bool {
+    true
 }
 
 /// Collects top-level `type X = T;` items from a parsed file.
@@ -1596,7 +1918,7 @@ pub fn discover_fn(src_path: &Path, fn_path: &str) -> Result<ContractFn> {
 /// test's doc comment. This is a deliberately narrow cosmetic cleanup for
 /// the closure-pipe and leading-deref shapes this slice's own contracts
 /// use -- not a general Rust pretty-printer.
-fn tidy_contract_text(s: &str) -> String {
+pub fn tidy_contract_text(s: &str) -> String {
     s.replace("| ", "|")
         .replace(" |", "|")
         .replace("* ", "*")
@@ -1906,6 +2228,46 @@ pub struct ReceiverPlan {
     /// caller building the verdict-visibility disclosure never has to
     /// import the constant under a different name than what codegen used.
     pub max_sequence_len: u32,
+    /// `Some` exactly when this plan was built through §5.4b's generator
+    /// hook -- a `routes:` entry in `ply.yaml` naming a public function
+    /// that returns this type, rather than a constructor this scan found on
+    /// its own (rule 1, above). `None` for every other `ReceiverPlan`: a
+    /// receiver's own plan (`scan_impls_for_receiver`), and a parameter
+    /// built by rule 1's ordinary constructor scan.
+    ///
+    /// Carried here, rather than as a separate `RustType` variant, because
+    /// nothing downstream needs to tell a route-built value apart from a
+    /// constructor-built one *structurally* -- codegen calls both exactly
+    /// the same way (this is still a `UserTypeCtor`). What a route adds is
+    /// two things ordinary construction does not need: a mark naming the
+    /// declaration so a reader knows the values came through a declared
+    /// door (`docs/reach-measurement-2.md`'s `seeded` mark is the
+    /// precedent), and the guard a route specifically needs and a found
+    /// constructor does not -- nothing stops an author's function from
+    /// ignoring its own inputs and returning the same value every time, so
+    /// `verify` counts distinct values reaching a route-built parameter and
+    /// says so when that count collapses (TODO.md, "the guard this cannot
+    /// ship without").
+    pub route: Option<RouteOrigin>,
+}
+
+/// What a route-built [`ReceiverPlan`] needs beyond an ordinary
+/// constructor's: the exact declaration a reader would edit (so a mark or a
+/// diagnostic can point at it), and whether the type can even be compared
+/// for the degenerate-route guard above -- a type with no `#[derive(Debug)]`
+/// cannot be printed or hashed by code Ply generates from outside the
+/// crate, so the guard says "Ply could not tell how many distinct values
+/// reached it" rather than guessing a count from nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteOrigin {
+    /// The function path exactly as `ply.yaml`'s `routes:` named it
+    /// (`open_handle`, `Token::via_route`) -- not resolved or canonicalised,
+    /// so a diagnostic quotes back exactly what the author wrote.
+    pub declared_as: String,
+    /// Whether the type declares `#[derive(Debug)]` (by hand or by the
+    /// derive macro -- both count, the same convention
+    /// [`type_declares_default`] already uses for `Default`).
+    pub debug_derivable: bool,
 }
 
 /// Why [`discover_method_with_receiver`] could not build a checkable method
@@ -2642,6 +3004,7 @@ fn scan_impls_for_receiver(
     method_name: &str,
     crate_dir: &Path,
     declaring_file: &Path,
+    routes: &RouteTable,
 ) -> std::result::Result<(syn::ImplItemFn, ReceiverPlan), ReceiverError> {
     let mut target: Option<syn::ImplItemFn> = None;
     let mut ctor_candidates: Vec<CtorCandidate> = Vec::new();
@@ -2732,7 +3095,7 @@ fn scan_impls_for_receiver(
     // unbuildable, just not resolved yet at scan time. `locations` is the
     // same crate-wide scan computed once, above, for `target_absolute`.
     let resolve_or_keep = |p: &Param| -> Param {
-        match resolve_param_type(crate_dir, &locations, &p.ty, 0) {
+        match resolve_param_type(crate_dir, &locations, routes, &p.ty, 0) {
             Ok(ty) => Param { ty, ..(*p).clone() },
             Err(_) => p.clone(),
         }
@@ -2845,6 +3208,7 @@ fn scan_impls_for_receiver(
         excluded_operations: excluded_ops,
         other_constructors,
         max_sequence_len: MAX_RECEIVER_SEQUENCE_LEN,
+        route: None,
     };
     Ok((target, plan))
 }
@@ -2858,6 +3222,7 @@ fn scan_impls_for_receiver(
 pub fn discover_method_with_receiver(
     crate_dir: &Path,
     fn_path: &str,
+    routes: &RouteTable,
 ) -> std::result::Result<ContractFn, ReceiverError> {
     let segs: Vec<&str> = fn_path.split("::").collect();
     if segs.len() < 2 {
@@ -2879,6 +3244,7 @@ pub fn discover_method_with_receiver(
         method_name,
         crate_dir,
         &file_path,
+        routes,
     )?;
 
     let item_fn = strip_receiver_to_item_fn(&target);
@@ -2902,7 +3268,7 @@ pub fn discover_method_with_receiver(
     // than this task's own receiver-adjacent case needs; the generic
     // "type neither engine builds inputs for" message still names the
     // parameter and its type.
-    let _ = enrich_contract_fn_user_types(&mut cf, crate_dir);
+    let _ = enrich_contract_fn_user_types(&mut cf, crate_dir, routes);
     Ok(cf)
 }
 
@@ -3480,6 +3846,7 @@ fn private_ancestor_module(crate_dir: &Path, file_path: &Path) -> Option<String>
 fn resolve_param_type(
     crate_dir: &Path,
     locations: &TypeLocations,
+    routes: &RouteTable,
     ty: &RustType,
     depth: usize,
 ) -> std::result::Result<RustType, UserTypeError> {
@@ -3489,7 +3856,7 @@ fn resolve_param_type(
     if !is_bare_ident(src) {
         return Err(UserTypeError::NotFound);
     }
-    resolve_user_type(crate_dir, locations, src, depth)
+    resolve_user_type(crate_dir, locations, routes, src, depth)
 }
 
 /// The resolver at the centre of this section: try to build `RustType`
@@ -3550,19 +3917,134 @@ fn type_declares_default(file: &syn::File, type_name: &str, inline_mods: &[Strin
 }
 
 fn derives_default(attrs: &[syn::Attribute]) -> bool {
+    derives(attrs, "Default")
+}
+
+/// Whether the type declares `#[derive(Debug)]` -- the degenerate-route
+/// guard's own honesty condition (see [`RouteOrigin::debug_derivable`]): a
+/// hand-written `impl Debug for T` would work too, but is not checked here
+/// (unlike [`type_declares_default`]'s own hand-written-`impl` arm) because
+/// a route is only ever declared for a type this scan already has the bare
+/// declaration open for, and a derive is by far the ordinary case; widening
+/// to a hand-written impl is possible future work, not attempted here.
+fn derives_debug(attrs: &[syn::Attribute]) -> bool {
+    derives(attrs, "Debug")
+}
+
+fn derives(attrs: &[syn::Attribute], trait_name: &str) -> bool {
     attrs.iter().any(|a| {
         a.path().is_ident("derive")
             && a.parse_args_with(
                 syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
             )
-            .map(|paths| paths.iter().any(|p| p.is_ident("Default")))
+            .map(|paths| paths.iter().any(|p| p.is_ident(trait_name)))
             .unwrap_or(false)
     })
+}
+
+/// The bare name a method's own path names its enclosing type by
+/// (`Token::via_route` -> `Some("Token")`), or `None` for a path with no
+/// second-to-last segment at all (a free function, or a bare name with no
+/// module qualification). Used only to check a route function that returns
+/// bare `Self` actually sits inside `impl <type_name>` -- the same question
+/// [`return_names_this_type`] answers for rule 1's own constructor scan,
+/// answered here from a resolved [`ContractFn::path`] instead of a raw
+/// `syn::Type`, since [`discover_fn_with`] is what found this function.
+fn enclosing_type_of(path: &str) -> Option<&str> {
+    let segs: Vec<&str> = path.split("::").collect();
+    (segs.len() >= 2).then(|| segs[segs.len() - 2])
+}
+
+/// §5.4b's generator hook, resolved: `fn_path` is `routes:`'s own value for
+/// `type_name` (`open_handle`, `Token::via_route`, `handles::make_handle`).
+/// Reuses [`discover_fn_with`] -- the exact resolver a `ply.yaml` fn claim's
+/// own anchor goes through (§5.5) -- so a route is found (or refused) by the
+/// same walk over `use`s, inline `mod`s and file modules every other path in
+/// this grammar already is, rather than a second, narrower path-reading
+/// scheme with its own bugs to find. `Err` carries the plain-language reason
+/// a declared route could not be used -- a function that no longer exists at
+/// that path (a stale route, renamed or removed), one that exists but is not
+/// `pub`, one whose return type is not `type_name` at all, or one whose own
+/// parameters include something Ply cannot build -- never a bare "not
+/// found": the module doc's own "stale route" requirement is that this
+/// failure is loud and names what went wrong, not a silent fall-through to
+/// rule 2's direct field construction.
+fn resolve_declared_route(
+    crate_dir: &Path,
+    locations: &TypeLocations,
+    routes: &RouteTable,
+    item: &syn::Item,
+    type_name: &str,
+    fn_path: &str,
+    depth: usize,
+) -> std::result::Result<RustType, String> {
+    let lib_path = crate_dir.join("src").join("lib.rs");
+    let main_path = crate_dir.join("src").join("main.rs");
+    let entry_path = if lib_path.is_file() {
+        lib_path
+    } else {
+        main_path
+    };
+    let mut resolver = resolver_for(&entry_path)
+        .map_err(|e| format!("Ply could not read this crate's own source to look for it: {e}"))?;
+    let route_cf =
+        discover_fn_with(&mut resolver, fn_path, &entry_path).map_err(|e| e.to_string())?;
+
+    let names_it = match (&route_cf.return_type, route_cf.is_method) {
+        (RustType::SelfType, true) => enclosing_type_of(&route_cf.path) == Some(type_name),
+        (RustType::Unsupported(name), _) => name == type_name,
+        _ => false,
+    };
+    if !names_it {
+        return Err(format!(
+            "it does not return a value of `{type_name}` -- its return type is `{}`",
+            route_cf.return_type.display_name()
+        ));
+    }
+
+    let mut resolved_params = Vec::with_capacity(route_cf.params.len());
+    for p in &route_cf.params {
+        match resolve_param_type(crate_dir, locations, routes, &p.ty, depth + 1) {
+            Ok(ty) => resolved_params.push(Param { ty, ..p.clone() }),
+            Err(e) => {
+                return Err(format!(
+                    "its `{}: {}` parameter is {}",
+                    p.name,
+                    p.ty.display_name(),
+                    e
+                ));
+            }
+        }
+    }
+
+    let debug_derivable = match item {
+        syn::Item::Struct(s) => derives_debug(&s.attrs),
+        syn::Item::Enum(e) => derives_debug(&e.attrs),
+        _ => false,
+    };
+
+    Ok(RustType::UserTypeCtor(Box::new(ReceiverPlan {
+        type_name: type_name.to_string(),
+        import_path: route_cf.import_path(),
+        constructor: route_cf.call_expr(),
+        ctor_params: resolved_params,
+        ctor_requires: route_cf.requires.as_ref().map(|(e, _)| e.clone()),
+        ctor_return: CtorReturn::Bare,
+        operations: vec![],
+        excluded_operations: vec![],
+        other_constructors: vec![],
+        max_sequence_len: 0,
+        route: Some(RouteOrigin {
+            declared_as: fn_path.to_string(),
+            debug_derivable,
+        }),
+    })))
 }
 
 fn resolve_user_type(
     crate_dir: &Path,
     locations: &TypeLocations,
+    routes: &RouteTable,
     type_name: &str,
     depth: usize,
 ) -> std::result::Result<RustType, UserTypeError> {
@@ -3702,7 +4184,7 @@ fn resolve_user_type(
         let mut resolved_params = Vec::with_capacity(raw_params.len());
         if fail_reason.is_none() {
             for p in &raw_params {
-                match resolve_param_type(crate_dir, locations, &p.ty, depth + 1) {
+                match resolve_param_type(crate_dir, locations, routes, &p.ty, depth + 1) {
                     Ok(ty) => resolved_params.push(Param { ty, ..p.clone() }),
                     Err(e) => {
                         fail_reason = Some(format!(
@@ -3729,6 +4211,7 @@ fn resolve_user_type(
                     excluded_operations: vec![],
                     other_constructors: vec![],
                     max_sequence_len: 0,
+                    route: None,
                 })));
             }
             Some(reason) if skipped_constructor.is_none() => {
@@ -3740,6 +4223,28 @@ fn resolve_user_type(
         }
     }
 
+    // §5.4b's generator hook (this task, 2026-09-02): a `routes:` entry in
+    // `ply.yaml` names a public function -- free or associated, Ply's
+    // resolver does not care which -- that returns a value of this type.
+    // This is the door rule 1 above cannot open on its own: a type built
+    // only by a *free* function has no `impl` block for the constructor
+    // scan to find at all (`ply_probe_route::Handle`, made only by
+    // `open_handle`, is exactly this shape). Tried before rule 2 (direct
+    // field construction) and, when a route is declared, tried *instead* of
+    // it: a broken route is reported as a broken route, never silently
+    // papered over by falling back to a route the author never asked for.
+    if let Some(fn_path) = routes.get(type_name) {
+        return resolve_declared_route(
+            crate_dir, locations, routes, item, type_name, fn_path, depth,
+        )
+        .map_err(|reason| {
+            UserTypeError::Refused(format!(
+                "Ply cannot build a value of `{type_name}`: the route declared for it in \
+                     ply.yaml (`routes: {{ {type_name}: {fn_path} }}`) is broken -- {reason}"
+            ))
+        });
+    }
+
     // Every refusal below used to open "it has no constructor Ply can
     // call". That is true only while `skipped_constructor` is `None`. A
     // constructor Ply found and could not use -- private, or with an
@@ -3749,13 +4254,20 @@ fn resolve_user_type(
     // it did not exist (2026-08-28, review finding). The note now replaces
     // that clause wherever it exists, so the sentence names what was found
     // and why it could not be used.
+    //
+    // No route was declared for this type either (the `if let Some` above
+    // already returned when one was) -- so the refusal names the one thing
+    // that would still unlock it, rather than leaving a reader to
+    // rediscover §5.4b's generator hook on their own.
     let no_ctor = |extra: &str| -> UserTypeError {
         let opening = match &skipped_constructor {
             None => format!("it has no constructor Ply can call, {extra}"),
             Some(note) => format!("the only constructor it has is {note}; and {extra}"),
         };
         UserTypeError::Refused(format!(
-            "Ply cannot build a value of `{type_name}`: {opening}"
+            "Ply cannot build a value of `{type_name}`: {opening} -- declaring a route for it in \
+             ply.yaml (`routes: {{ {type_name}: <a public function that returns {type_name}> }}`) \
+             would let Ply build it"
         ))
     };
 
@@ -3804,7 +4316,7 @@ fn resolve_user_type(
             }
             let mut resolved = Vec::with_capacity(fields.len());
             for f in fields {
-                match resolve_param_type(crate_dir, locations, &f.ty, depth + 1) {
+                match resolve_param_type(crate_dir, locations, routes, &f.ty, depth + 1) {
                     Ok(ty) => resolved.push(Param { ty, ..f }),
                     Err(e) => {
                         return Err(no_ctor(&format!(
@@ -3869,7 +4381,7 @@ fn resolve_user_type(
                 };
                 let mut resolved = Vec::with_capacity(fields.len());
                 for f in fields {
-                    match resolve_param_type(crate_dir, locations, &f.ty, depth + 1) {
+                    match resolve_param_type(crate_dir, locations, routes, &f.ty, depth + 1) {
                         Ok(ty) => resolved.push(Param { ty, ..f }),
                         Err(e2) => {
                             return Err(UserTypeError::Refused(format!(
@@ -3964,23 +4476,158 @@ fn crate_local_type_name(
 pub fn enrich_contract_fn_user_types(
     cf: &mut ContractFn,
     crate_dir: &Path,
+    routes: &RouteTable,
 ) -> Vec<(String, String, String)> {
     let locations = scan_crate_type_locations(crate_dir);
+    // A parameter written `&Self` parses (`rust_type_from_syn_at`) to
+    // `Unsupported("Self")` -- "Self" is just another bare identifier to
+    // that parser, which has no notion of which `impl` block it sits in.
+    // But it names the *same* type the receiver is a value of, and the
+    // receiver's own plan has already resolved that type once
+    // (`ReceiverPlan::type_name`, set by `scan_impls_for_receiver`) -- so a
+    // `Self` parameter is substituted with that name before the ordinary
+    // by-name lookup below runs, rather than being left to fail it (no
+    // struct/enum is ever actually named "Self"). This is the same
+    // resolution the receiver already goes through, reused rather than
+    // re-derived: a method with no receiver plan attached (a free function,
+    // never inside an `impl` block) has no `Self` to resolve against, so
+    // the parameter is left as found.
+    let self_type_name = cf.receiver.as_ref().map(|r| r.type_name.clone());
     let mut refused = Vec::new();
     for p in &mut cf.params {
-        let RustType::Unsupported(src) = &p.ty else {
-            continue;
-        };
-        let Some(src) = crate_local_type_name(crate_dir, &locations, src) else {
-            continue;
-        };
-        match resolve_user_type(crate_dir, &locations, &src, 0) {
-            Ok(ty) => p.ty = ty,
-            Err(UserTypeError::NotFound) => {}
-            Err(e) => refused.push((p.name.clone(), src, e.to_string())),
-        }
+        enrich_rust_type(
+            &mut p.ty,
+            crate_dir,
+            &locations,
+            routes,
+            &p.name,
+            self_type_name.as_deref(),
+            &mut refused,
+        );
     }
     refused
+}
+
+/// [`enrich_contract_fn_user_types`]'s own recursion, added 2026-09-02 for
+/// composition (TODO.md): a bare top-level parameter is all this ever
+/// walked before, so `Vec<Doc>` -- parsed, before this task, straight to one
+/// opaque `Unsupported("Vec<Doc>")` string, never a composite with a `Doc`
+/// inside it to resolve -- never had anything here to find. Now that the
+/// parser preserves structure through every composition shape (`Option`,
+/// `Result`, `[T; N]`, `Vec`, `BTreeSet`, `BTreeMap`, `&[T]`, a tuple,
+/// `Box` -- see `is_composable`'s own doc), this walks into all of them,
+/// resolving every nested `Unsupported(bare-ident)` leaf it finds exactly
+/// the way the old top-level-only version resolved the one at the root.
+/// Any leaf that does not resolve (an unrelated type, or a real struct/enum
+/// rule 3 refuses) is simply left `Unsupported` where it sits -- the
+/// ordinary support predicates already propagate `false` up through it, and
+/// a genuine rule-3 refusal is still reported, named by the parameter it
+/// came from.
+/// `self_type_name` is the enclosing `impl`'s own type, so a parameter written
+/// as the shorthand `Self` resolves to exactly what naming that type would
+/// resolve to (fixed 2026-09-01; the same function was `unsupported` spelled
+/// one way and checked spelled the other). It is threaded through the
+/// recursion rather than handled only at the top, so `Option<Self>` and
+/// `Vec<Self>` resolve too -- the shapes this recursion exists to reach.
+fn enrich_rust_type(
+    ty: &mut RustType,
+    crate_dir: &Path,
+    locations: &TypeLocations,
+    routes: &RouteTable,
+    param_name: &str,
+    self_type_name: Option<&str>,
+    refused: &mut Vec<(String, String, String)>,
+) {
+    match ty {
+        RustType::Unsupported(src) => {
+            let src = if src == "Self" {
+                let Some(name) = self_type_name else {
+                    return;
+                };
+                name.to_string()
+            } else {
+                src.clone()
+            };
+            let Some(name) = crate_local_type_name(crate_dir, locations, &src) else {
+                return;
+            };
+            match resolve_user_type(crate_dir, locations, routes, &name, 0) {
+                Ok(resolved) => *ty = resolved,
+                Err(UserTypeError::NotFound) => {}
+                Err(e) => refused.push((param_name.to_string(), name, e.to_string())),
+            }
+        }
+        RustType::Option(inner)
+        | RustType::Array(inner, _)
+        | RustType::Vec(inner)
+        | RustType::BTreeSet(inner)
+        | RustType::Slice(inner)
+        | RustType::BoxT(inner) => {
+            enrich_rust_type(
+                inner,
+                crate_dir,
+                locations,
+                routes,
+                param_name,
+                self_type_name,
+                refused,
+            );
+        }
+        RustType::Result(ok, err) => {
+            enrich_rust_type(
+                ok,
+                crate_dir,
+                locations,
+                routes,
+                param_name,
+                self_type_name,
+                refused,
+            );
+            enrich_rust_type(
+                err,
+                crate_dir,
+                locations,
+                routes,
+                param_name,
+                self_type_name,
+                refused,
+            );
+        }
+        RustType::Tuple(items) => {
+            for item in items {
+                enrich_rust_type(
+                    item,
+                    crate_dir,
+                    locations,
+                    routes,
+                    param_name,
+                    self_type_name,
+                    refused,
+                );
+            }
+        }
+        RustType::BTreeMap(key, value) => {
+            enrich_rust_type(
+                key,
+                crate_dir,
+                locations,
+                routes,
+                param_name,
+                self_type_name,
+                refused,
+            );
+            enrich_rust_type(
+                value,
+                crate_dir,
+                locations,
+                routes,
+                param_name,
+                self_type_name,
+                refused,
+            );
+        }
+        _ => {}
+    }
 }
 
 /// One callee stubbed out of a proof under D5's second branch (§5.5): its
@@ -5121,7 +5768,7 @@ pub fn f(t: Instant, foo: Foo, bar: Bar) -> i64 { 0 }
             cf.params[2].ty
         );
 
-        enrich_contract_fn_user_types(&mut cf, dir.path());
+        enrich_contract_fn_user_types(&mut cf, dir.path(), &RouteTable::new());
         assert!(
             matches!(cf.params[0].ty, RustType::Unsupported(_)),
             "Instant must still be unsupported after enrichment -- it is not a struct/enum this \
@@ -5188,11 +5835,14 @@ pub fn scalar(x: u32) -> u32 { x }
     }
 
     #[test]
-    fn nested_string_stays_unsupported_never_silently_bounded() {
-        // Same narrowing as `NonZero`/`Duration`/`F32`/`F64`: only a bare
-        // top-level `String` is supported. `Option<String>` must not fall
-        // through to `is_composite_constructible`'s generic fallback and
-        // read as bounded-supported.
+    fn nested_string_is_fuzz_supported_but_never_silently_bounded() {
+        // Composition (2026-09-02, TODO.md) is what makes `Option<String>`
+        // buildable at all now -- the defect this task measures and fixes.
+        // What this test still pins, and must always pin, is the standing
+        // obligation composition is not allowed to touch: nesting a
+        // `String` must never make the *proof* engine's own answer widen,
+        // even though the sampling engine's answer correctly flips to
+        // `true`.
         let dir = tempfile::tempdir().unwrap();
         let path = write_src(
             dir.path(),
@@ -5202,15 +5852,29 @@ pub fn f(s: Option<String>) -> Option<String> { s }
 "#,
         );
         let cf = discover_fn(&path, "f").unwrap();
+        assert_eq!(
+            cf.params[0].ty,
+            RustType::Option(Box::new(RustType::String))
+        );
         assert!(
-            matches!(cf.params[0].ty, RustType::Unsupported(_)),
-            "Option<String>: {:?}",
+            cf.is_fuzz_supported(),
+            "a `String` is buildable alone -- nesting it must not refuse it: {:?}",
+            cf.params[0].ty
+        );
+        assert!(
+            !cf.is_bounded_supported(),
+            "Option<String> must never read as bounded-supported: {:?}",
             cf.params[0].ty
         );
     }
 
     #[test]
-    fn an_array_of_a_shape_kani_cannot_build_is_still_unsupported() {
+    fn an_array_of_a_shape_kani_cannot_build_is_fuzz_supported_but_never_bounded() {
+        // `BTreeSet<u8>` was always fuzz-supported alone; composition
+        // (2026-09-02) is what lets it nest inside `[T; 2]` too. What this
+        // test still pins is that the *proof* engine's own list does not
+        // move: Kani has never built a `BTreeSet` past one element, and
+        // nesting one inside an array must not change that.
         let dir = tempfile::tempdir().unwrap();
         let path = write_src(
             dir.path(),
@@ -5221,9 +5885,18 @@ pub fn f(x: [BTreeSet<u8>; 2]) -> i32 { 0 }
 "#,
         );
         let cf = discover_fn(&path, "f").unwrap();
+        assert_eq!(
+            cf.params[0].ty,
+            RustType::Array(Box::new(RustType::BTreeSet(Box::new(RustType::U8))), 2)
+        );
         assert!(
-            matches!(cf.params[0].ty, RustType::Unsupported(_)),
-            "widening the fragment must not widen it past what the engines build: {:?}",
+            cf.is_fuzz_supported(),
+            "every element (BTreeSet<u8>) is buildable alone: {:?}",
+            cf.params[0].ty
+        );
+        assert!(
+            !cf.is_bounded_supported(),
+            "widening the fragment must not widen it past what the proof engine builds: {:?}",
             cf.params[0].ty
         );
     }
@@ -5518,7 +6191,12 @@ impl Bucket {
 "#,
             )],
         );
-        let cf = discover_method_with_receiver(dir.path(), "bucket::Bucket::capacity").unwrap();
+        let cf = discover_method_with_receiver(
+            dir.path(),
+            "bucket::Bucket::capacity",
+            &RouteTable::new(),
+        )
+        .unwrap();
         assert_eq!(cf.name, "capacity");
         assert!(cf.is_method);
         let plan = cf.receiver.expect("a receiver plan must be attached");
@@ -5533,6 +6211,63 @@ impl Bucket {
              checked method alone -- still a real sequence pool, not an absence of one"
         );
         assert_eq!(plan.operations[0].call_path, "Bucket::capacity");
+    }
+
+    /// Defect (2026-09-01, docs/reach-measurement-2.md): a parameter written
+    /// `&Self` was left `Unsupported("Self")` even though the exact same
+    /// type spelled by name (`&Widget`, in a sibling method below) already
+    /// resolves through the enrichment pass to a buildable constructor
+    /// call. `Self` in parameter position names the enclosing `impl`
+    /// block's own type, exactly as the receiver already does, so it must
+    /// resolve the same way -- reusing `ReceiverPlan::type_name`, the
+    /// receiver's own already-resolved answer, rather than a second lookup
+    /// that has to rediscover the same fact.
+    #[test]
+    fn self_typed_parameter_resolves_like_the_named_type() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "widget.rs",
+                r#"
+pub struct Widget { n: u32 }
+impl Widget {
+    pub fn new(n: u32) -> Self { Widget { n } }
+    #[ply::ensures(|result| *result == (self.n == other.n))]
+    pub fn same_as_self(&self, other: &Self) -> bool { self.n == other.n }
+    #[ply::ensures(|result| *result == (self.n == other.n))]
+    pub fn same_as_named(&self, other: &Widget) -> bool { self.n == other.n }
+}
+"#,
+            )],
+        );
+        let cf_self = discover_method_with_receiver(
+            dir.path(),
+            "widget::Widget::same_as_self",
+            &RouteTable::new(),
+        )
+        .unwrap();
+        let cf_named = discover_method_with_receiver(
+            dir.path(),
+            "widget::Widget::same_as_named",
+            &RouteTable::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            cf_named.params[0].ty, cf_self.params[0].ty,
+            "a `&Self` parameter must resolve to exactly the same buildable type as the same \
+             parameter spelled by its name -- got {:?} for `&Self` vs {:?} for `&Widget`",
+            cf_self.params[0].ty, cf_named.params[0].ty,
+        );
+        assert!(
+            matches!(
+                cf_self.params[0].ty,
+                RustType::UserTypeCtor(_) | RustType::UserTypeFields(_)
+            ),
+            "a &Self parameter must resolve to the enclosing type, just like &Widget would: {:?}",
+            cf_self.params[0].ty
+        );
+        assert!(cf_self.is_fuzz_supported());
     }
 
     /// The decisive shape for the sequence feature to mean anything: every
@@ -5566,7 +6301,9 @@ impl Meter {
 "#,
             )],
         );
-        let cf = discover_method_with_receiver(dir.path(), "meter::Meter::spend").unwrap();
+        let cf =
+            discover_method_with_receiver(dir.path(), "meter::Meter::spend", &RouteTable::new())
+                .unwrap();
         let plan = cf.receiver.expect("a receiver plan must be attached");
         let call_paths: Vec<&str> = plan
             .operations
@@ -5624,7 +6361,9 @@ fn self_n() -> u32 { 0 }
 "#,
             )],
         );
-        let err = discover_method_with_receiver(dir.path(), "gauge::Gauge::read").unwrap_err();
+        let err =
+            discover_method_with_receiver(dir.path(), "gauge::Gauge::read", &RouteTable::new())
+                .unwrap_err();
         match &err {
             ReceiverError::NoConstructor { type_name } => assert_eq!(type_name, "Gauge"),
             other => panic!("expected NoConstructor naming `Gauge`, got {other:?}"),
@@ -5664,8 +6403,12 @@ fn self_label_len() -> u32 { 0 }
 "#,
             )],
         );
-        let err =
-            discover_method_with_receiver(dir.path(), "labelled::Labelled::label_len").unwrap_err();
+        let err = discover_method_with_receiver(
+            dir.path(),
+            "labelled::Labelled::label_len",
+            &RouteTable::new(),
+        )
+        .unwrap_err();
         match err {
             ReceiverError::UnsupportedConstructorParam {
                 type_name,
@@ -5699,7 +6442,9 @@ impl Counter {
 "#,
             )],
         );
-        let err = discover_method_with_receiver(dir.path(), "counter::Counter::bump").unwrap_err();
+        let err =
+            discover_method_with_receiver(dir.path(), "counter::Counter::bump", &RouteTable::new())
+                .unwrap_err();
         assert!(matches!(err, ReceiverError::MutableOrOwnedReceiver));
     }
 
@@ -5727,8 +6472,12 @@ impl Describe for Widget {
 "#,
             )],
         );
-        let err =
-            discover_method_with_receiver(dir.path(), "widget::Widget::describe").unwrap_err();
+        let err = discover_method_with_receiver(
+            dir.path(),
+            "widget::Widget::describe",
+            &RouteTable::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ReceiverError::MethodNotFound));
     }
 
@@ -5755,8 +6504,12 @@ pub mod outer {
 "#,
             )],
         );
-        let err =
-            discover_method_with_receiver(dir.path(), "outer::inner::Deep::value").unwrap_err();
+        let err = discover_method_with_receiver(
+            dir.path(),
+            "outer::inner::Deep::value",
+            &RouteTable::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ReceiverError::UnsupportedModulePath));
     }
 
@@ -5773,7 +6526,7 @@ pub mod outer {
         // `discover_fn` alone never enriches a struct/enum parameter --
         // that is `verify`'s own job (`enrich_contract_fn_user_types`,
         // called once `cf` is resolved), same as it is for a real run.
-        enrich_contract_fn_user_types(&mut cf, dir);
+        enrich_contract_fn_user_types(&mut cf, dir, &RouteTable::new());
         cf
     }
 
@@ -5903,7 +6656,7 @@ pub fn read(l: Locked) -> u32 { l.secret() }
             "unresolved until enrichment runs"
         );
         let crate_dir = dir.path();
-        let refused = enrich_contract_fn_user_types(&mut cf, crate_dir);
+        let refused = enrich_contract_fn_user_types(&mut cf, crate_dir, &RouteTable::new());
         assert_eq!(refused.len(), 1);
         let (param_name, type_name, reason) = &refused[0];
         assert_eq!(param_name, "l");
@@ -5915,6 +6668,166 @@ pub fn read(l: Locked) -> u32 { l.secret() }
         assert!(
             matches!(cf.params[0].ty, RustType::Unsupported(_)),
             "a refused type is left exactly as it was, not silently guessed at"
+        );
+        // §5.4b's generator hook, this task: a type with no other way in and
+        // no route declared for it gains one more sentence naming the
+        // declaration that would unlock it, rather than leaving a reader to
+        // rediscover the feature on their own.
+        assert!(
+            reason.contains("routes:") && reason.contains("Locked"),
+            "the refusal must say a declared route would unlock it: {reason}"
+        );
+    }
+
+    /// §5.4b's generator hook (this task, 2026-09-02): the routeprobe's own
+    /// case in miniature -- a private-field struct made only by a *free*
+    /// function, which rule 1's constructor scan cannot see at all (it only
+    /// ever looks inside `impl` blocks). Declaring a route in `ply.yaml`
+    /// resolves it the same way an associated constructor already does.
+    #[test]
+    fn a_declared_route_to_a_free_function_builds_a_type_no_constructor_scan_can_reach() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert("Handle".to_string(), "open_handle".to_string());
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Handle { id: u32 }
+pub fn open_handle(id: u32) -> Handle { Handle { id } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_handle(h: &Handle) -> i64 { h.id as i64 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "use_handle").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert!(
+            refused.is_empty(),
+            "a declared route must not be reported as a refusal: {refused:?}"
+        );
+        let RustType::UserTypeCtor(plan) = &cf.params[0].ty else {
+            panic!(
+                "expected UserTypeCtor via the declared route, got {:?}",
+                cf.params[0].ty
+            );
+        };
+        assert_eq!(plan.type_name, "Handle");
+        assert_eq!(plan.constructor, "open_handle");
+        assert_eq!(plan.ctor_params.len(), 1);
+        assert_eq!(plan.ctor_params[0].name, "id");
+        let route = plan.route.as_ref().expect("must carry a route mark");
+        assert_eq!(route.declared_as, "open_handle");
+        assert!(cf.is_fuzz_supported());
+        assert!(
+            !cf.is_bounded_supported(),
+            "route-built parameters are fuzz-tier only, matching every other struct/enum \
+             parameter"
+        );
+    }
+
+    /// The same route, nested inside a `Vec` -- the composition grammar
+    /// (2026-09-02) must recurse into a route-built element exactly as it
+    /// already does for a constructor-built one, since a route-built value
+    /// is still `RustType::UserTypeCtor` under the hood.
+    #[test]
+    fn a_declared_route_composes_inside_a_vec() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert("Handle".to_string(), "open_handle".to_string());
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Handle { id: u32 }
+pub fn open_handle(id: u32) -> Handle { Handle { id } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_many_handles(hs: Vec<Handle>) -> i64 { hs.len() as i64 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "use_many_handles").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert!(refused.is_empty(), "{refused:?}");
+        let RustType::Vec(inner) = &cf.params[0].ty else {
+            panic!("expected Vec, got {:?}", cf.params[0].ty);
+        };
+        assert!(
+            matches!(inner.as_ref(), RustType::UserTypeCtor(_)),
+            "the element must resolve through the declared route too, got {inner:?}"
+        );
+        assert!(cf.is_fuzz_supported());
+        assert!(
+            cf.params[0].ty.uses_any_route(),
+            "a route-built element nested inside a Vec must still be reported as route-built"
+        );
+    }
+
+    /// `uses_any_route` must say `false` for an ordinary constructor-built
+    /// value -- the mark exists to tell a route-built run apart from an
+    /// ordinary one, and a type with no route declared for it is ordinary.
+    #[test]
+    fn uses_any_route_is_false_for_a_constructor_built_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct TicketPool { capacity: u32 }
+impl TicketPool {
+    pub fn new(capacity: u32) -> Self { TicketPool { capacity } }
+}
+#[ply::ensures(|result| *result % 2 == 0)]
+pub fn doubled(p: TicketPool) -> u64 { p.capacity as u64 * 2 }
+"#,
+            )],
+            "doubled",
+        );
+        assert!(!cf.params[0].ty.uses_any_route());
+    }
+
+    /// The stale-route requirement: renaming (or removing) the function a
+    /// route names must fail loudly and name it -- never a silent fall
+    /// through to rule 2's direct field construction (which would also
+    /// refuse `Handle` here, for a different reason, and hide the real
+    /// defect: the declaration itself no longer points at anything).
+    #[test]
+    fn a_stale_route_is_refused_loudly_naming_the_function() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert("Handle".to_string(), "open_handle".to_string());
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Handle { id: u32 }
+pub fn renamed_open_handle(id: u32) -> Handle { Handle { id } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_handle(h: &Handle) -> i64 { h.id as i64 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "use_handle").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert_eq!(refused.len(), 1);
+        let (_, type_name, reason) = &refused[0];
+        assert_eq!(type_name, "Handle");
+        assert!(
+            reason.contains("open_handle"),
+            "the refusal must name the stale function: {reason}"
+        );
+        assert!(
+            reason.contains("could not find"),
+            "the refusal must say Ply looked and failed, not merely that the type is \
+             unsupported: {reason}"
+        );
+        assert!(
+            matches!(cf.params[0].ty, RustType::Unsupported(_)),
+            "a stale route must not be silently treated as though nothing were declared"
         );
     }
 
@@ -5966,7 +6879,7 @@ pub fn f(x: NotDeclaredAnywhere) -> u32 { 0 }
             )],
         );
         let mut cf = discover_fn(&src, "f").unwrap();
-        let refused = enrich_contract_fn_user_types(&mut cf, dir.path());
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &RouteTable::new());
         assert!(
             refused.is_empty(),
             "a name that is not a struct/enum this crate declares must not be reported as a \
@@ -5997,7 +6910,7 @@ pub fn f(x: Dup) -> u32 { 0 }
             ],
         );
         let mut cf = discover_fn(&src, "f").unwrap();
-        let refused = enrich_contract_fn_user_types(&mut cf, dir.path());
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &RouteTable::new());
         assert_eq!(refused.len(), 1);
         assert!(
             refused[0].2.contains("more than one"),
@@ -6041,5 +6954,198 @@ pub fn f(q: Quota) -> u32 { q.capacity }
             "`refill`'s own type must have resolved recursively, not stayed `Unsupported`: {:?}",
             plan.ctor_params[1].ty
         );
+    }
+
+    // -- composition (TODO.md, "make the sampling engine's decision
+    // recursive, and add slices", 2026-09-02): every shape the sampling
+    // engine already builds alone must also compose inside `Option`,
+    // `Result`, a list, a set, a map, a fixed array, a slice, a tuple, and
+    // `Box` -- the proof engine's own supported-parameter list is a
+    // standing obligation that must NOT move a single inch while this
+    // happens. This block is written, and watched to fail, before the
+    // grammar work that makes the five `is_fuzz_supported` assertions below
+    // pass -- see the task's own commit history for the red run.
+
+    /// The regression pin the task requires **before** any grammar change:
+    /// every shape the *bounded* (Kani) engine accepts today stays accepted,
+    /// and none of the four newly-added composition shapes -- nor a
+    /// previously-unsupported inner type newly allowed to nest inside an
+    /// old composite -- ever becomes bounded-supported. If this test ever
+    /// goes red, Ply has started claiming exhaustive proof over a shape
+    /// nobody has measured, which is worse than the defect this task fixes.
+    #[test]
+    fn the_bounded_proof_engines_own_supported_list_never_widens() {
+        // Unchanged shapes: every one of these was bounded-supported before
+        // this task and must still be, byte for byte.
+        for ty in [
+            RustType::U32,
+            RustType::Bool,
+            RustType::Char,
+            RustType::Usize,
+            RustType::VecU8,
+            RustType::Duration,
+            RustType::NonZero(Box::new(RustType::U32)),
+            RustType::Option(Box::new(RustType::U32)),
+            RustType::Result(Box::new(RustType::U32), Box::new(RustType::U8)),
+            RustType::Array(Box::new(RustType::U32), 4),
+        ] {
+            assert!(
+                ty.is_bounded_supported(),
+                "{ty:?} was bounded-supported before this task and must still be"
+            );
+        }
+        // Unchanged shapes that were already refused on the proof engine
+        // and must stay refused.
+        for ty in [
+            RustType::F32,
+            RustType::String,
+            RustType::Vec(Box::new(RustType::U32)),
+            RustType::BTreeSet(Box::new(RustType::U32)),
+        ] {
+            assert!(
+                !ty.is_bounded_supported(),
+                "{ty:?} was already refused on the proof engine and must stay refused"
+            );
+        }
+        // The four brand-new composition shapes: never bounded-supported,
+        // whatever they wrap.
+        for ty in [
+            RustType::Slice(Box::new(RustType::U8)),
+            RustType::Slice(Box::new(RustType::String)),
+            RustType::Tuple(vec![RustType::U32, RustType::String]),
+            RustType::BTreeMap(Box::new(RustType::U32), Box::new(RustType::String)),
+            RustType::BoxT(Box::new(RustType::U32)),
+        ] {
+            assert!(
+                !ty.is_bounded_supported(),
+                "{ty:?} is a brand-new composition shape and must never be bounded-supported"
+            );
+        }
+        // A previously-refused inner type (`String`, a user struct) newly
+        // allowed to *nest* for the sampling engine must still be refused
+        // on the proof engine when nested -- composition only ever widens
+        // the fuzz side.
+        for ty in [
+            RustType::Option(Box::new(RustType::String)),
+            RustType::Vec(Box::new(RustType::String)),
+            RustType::Array(Box::new(RustType::String), 3),
+        ] {
+            assert!(
+                !ty.is_bounded_supported(),
+                "{ty:?} nests a shape the proof engine has never built and must stay refused there"
+            );
+        }
+    }
+
+    #[test]
+    fn an_optional_string_is_fuzz_supported_via_composition() {
+        let ty = rust_type_from_source("Option<String>").unwrap();
+        assert_eq!(ty, RustType::Option(Box::new(RustType::String)));
+        assert!(
+            ty.is_fuzz_supported(),
+            "a `String` is buildable alone -- nesting it inside `Option` must not refuse it: {ty:?}"
+        );
+        assert!(
+            !ty.is_bounded_supported(),
+            "the proof engine's own list does not change: {ty:?}"
+        );
+    }
+
+    #[test]
+    fn a_list_of_strings_is_fuzz_supported_via_composition() {
+        let ty = rust_type_from_source("Vec<String>").unwrap();
+        assert_eq!(ty, RustType::Vec(Box::new(RustType::String)));
+        assert!(
+            ty.is_fuzz_supported(),
+            "a `Vec` of anything buildable must compose, not just a scalar element: {ty:?}"
+        );
+        assert!(!ty.is_bounded_supported());
+    }
+
+    #[test]
+    fn a_shared_reference_to_a_slice_is_fuzz_supported() {
+        // Not handled as a shape at all before this task -- `&[T]` fell
+        // straight through to `Unsupported` (V0505).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_src(
+            dir.path(),
+            r#"
+#[ply::ensures(|result| *result >= 0)]
+pub fn total(xs: &[u32]) -> u64 { xs.iter().map(|x| *x as u64).sum() }
+"#,
+        );
+        let cf = discover_fn(&path, "total").unwrap();
+        assert!(
+            cf.params[0].by_ref,
+            "a slice parameter is only ever reachable through a reference"
+        );
+        assert_eq!(cf.params[0].ty, RustType::Slice(Box::new(RustType::U32)));
+        assert!(
+            cf.is_fuzz_supported(),
+            "&[u32] must be sample-buildable -- build the owned Vec<u32> and lend it, the same \
+             trick already used for &Vec<u8>: {:?}",
+            cf.params[0].ty
+        );
+        assert!(
+            !cf.is_bounded_supported(),
+            "a slice earns no more than Vec<T> already does on the proof engine: never bounded"
+        );
+    }
+
+    #[test]
+    fn a_list_of_a_user_struct_is_fuzz_supported_via_composition() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Doc { n: u32 }
+impl Doc { pub fn new(n: u32) -> Self { Doc { n } } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn many(a: Vec<Doc>) -> i64 { a.len() as i64 }
+"#,
+            )],
+            "many",
+        );
+        assert!(
+            matches!(&cf.params[0].ty, RustType::Vec(inner) if matches!(inner.as_ref(), RustType::UserTypeCtor(_))),
+            "a `Vec` of a user struct Ply already knows how to build must resolve recursively, \
+             not stay Unsupported: {:?}",
+            cf.params[0].ty
+        );
+        assert!(
+            cf.is_fuzz_supported(),
+            "every element is buildable alone (`Doc::new`) -- the list around it must not \
+             refuse the whole parameter: {:?}",
+            cf.params[0].ty
+        );
+        assert!(!cf.is_bounded_supported());
+    }
+
+    #[test]
+    fn an_optional_user_struct_is_fuzz_supported_via_composition() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Doc { n: u32 }
+impl Doc { pub fn new(n: u32) -> Self { Doc { n } } }
+#[ply::ensures(|result| *result >= 0)]
+pub fn optional(a: Option<Doc>) -> i64 { a.map(|d| d.n).unwrap_or(0) as i64 }
+"#,
+            )],
+            "optional",
+        );
+        assert!(
+            matches!(&cf.params[0].ty, RustType::Option(inner) if matches!(inner.as_ref(), RustType::UserTypeCtor(_))),
+            "an `Option` of a user struct Ply already knows how to build must resolve \
+             recursively, not stay Unsupported: {:?}",
+            cf.params[0].ty
+        );
+        assert!(cf.is_fuzz_supported(), "{:?}", cf.params[0].ty);
+        assert!(!cf.is_bounded_supported());
     }
 }

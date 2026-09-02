@@ -1,0 +1,31 @@
+ply: 1
+
+# Every fn below shares this crate's one generated harness (§5.4c). Before
+# the widening fix, `Wrapper::new`'s text comparison alone made the whole
+# generated file fail to compile, so *every* fn here -- however unrelated --
+# came back `tool_error` quoting the same compiler error. `good_fn` proves
+# that contagion is gone.
+components:
+  nonnumericcompare:
+    anchor: ply_fixture_nonnumericcompare
+    fns:
+      Wrapper::new:
+        checks: [fuzz(64)]
+      BrokenWrapper::new:
+        checks: [fuzz(64)]
+      identity_opt:
+        checks: [fuzz(64)]
+      always_none:
+        checks: [fuzz(64)]
+      always_pos:
+        checks: [fuzz(64)]
+      maybe_pos:
+        checks: [fuzz(64)]
+      # `bounded` rather than `fuzz`: `u8` has only 256 values, and Kani's
+      # exhaustive check is guaranteed to reach the edge case
+      # (`saturating_bump(255)`) that proves overflow protection, where 64
+      # random samples might simply miss it.
+      saturating_bump:
+        checks: [bounded(2)]
+      good_fn:
+        checks: [fuzz(64)]
