@@ -118,11 +118,18 @@ pub fn run_with_timeout(cmd: &mut Command, budget: Duration) -> Result<TimedOutp
     let start = Instant::now();
     let mut timed_out = false;
     let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .with_context(|| format!("checking whether `{program}` has finished"))?
-        {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            // Kill and reap before propagating: returning through `?` here
+            // would leave the child running with nothing ever waiting on it
+            // -- an orphan that outlives the budget it was spawned under.
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error)
+                    .with_context(|| format!("checking whether `{program}` has finished"));
+            }
         }
         if start.elapsed() >= budget {
             timed_out = true;
