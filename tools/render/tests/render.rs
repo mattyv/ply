@@ -899,14 +899,14 @@ fn every_drawn_item_resolves_a_tooltip() {
 
 /// §7.1 "declared ceiling": walks every fixture below, recomputes each
 /// component's ceiling with an oracle built independently in this test (real
-/// `ply_kernel::aggregate`, not the renderer's own tree-building code), and
+/// `ply_core::kernel::aggregate`, not the renderer's own tree-building code), and
 /// checks the rendered SVG's component-box fill class against it. This is
 /// the invariant, not a spot-check: a construct added later that the
 /// renderer forgets to feed into its own ceiling computation fails here on
 /// its own fixture, without a bespoke assertion for it.
 mod declared_ceiling {
     use super::*;
-    use ply_kernel::{Evidence, NodeKind, VerdictNode, aggregate};
+    use ply_core::kernel::{Evidence, NodeKind, VerdictNode, aggregate};
     use ply_render::model::{
         Check, Component, FnClaim, InheritedChecks, component_default_checks, effective_checks,
         parse_check,
@@ -952,7 +952,7 @@ mod declared_ceiling {
             .values()
             .map(|fc| VerdictNode {
                 kind: NodeKind::Claimable(fn_ceiling(fc, this_default)),
-                statuses: ply_kernel::StatusSet::new(),
+                statuses: ply_core::kernel::StatusSet::new(),
                 conditional: None,
                 children: Vec::new(),
             })
@@ -964,7 +964,7 @@ mod declared_ceiling {
         );
         VerdictNode {
             kind: NodeKind::Container,
-            statuses: ply_kernel::StatusSet::new(),
+            statuses: ply_core::kernel::StatusSet::new(),
             conditional: None,
             children,
         }
@@ -4570,6 +4570,7 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
             deny,
             profiles,
             unresolved,
+            routes,
         } = &doc;
 
         let mut missing = Vec::new();
@@ -4622,6 +4623,11 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
         for u in unresolved {
             if !text.contains(&u.note) {
                 missing.push(format!("open question #{}", u.id));
+            }
+        }
+        for (type_name, fn_path) in routes {
+            if !text.contains(type_name) || !text.contains(fn_path) {
+                missing.push(format!("route `{type_name}: {fn_path}`"));
             }
         }
 

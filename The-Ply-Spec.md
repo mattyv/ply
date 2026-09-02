@@ -333,6 +333,10 @@ profiles:
 
 unresolved:                      # registry entries with no code anchor
   - { id: 151, note: "settlement rounding rule TBD" }
+
+routes:                          # optional; §5.4b's generator hook — bare type name to
+  Handle: open_handle            #   a public function (free or associated) that returns it
+  OsString: std::ffi::OsString::from(String)  # outside the crate: declare its input type(s)
 ```
 
 Schema violations produce `E0201` diagnostics carrying the JSON-pointer path and source
@@ -729,6 +733,20 @@ This subset applies to `requires`/`ensures` — the expressions sent to proof en
 `examples` entries are exempt: they are arbitrary Rust `==` expressions, compiled as
 plain `#[test]`s and never translated for an engine.
 
+**Declaring `examples:` is not the same as running them (added 2026-09-01).** Only
+`test` compiles an entry into a real assertion; `fuzz` reads one only when it seeds a
+shape it could not otherwise build at all (an unbuildable receiver constructor or plain
+parameter — §5.4c), and `bounded`/`prove`/`mutate` never read `examples` at all. A
+function whose declared checks include none of these earns whatever those checks find
+while its examples silently do nothing — worse than plain neglect, because §5.2a still
+reads and fingerprints them as part of what the claim's result depends on, so editing a
+never-run example still re-earns the claim, exactly as though it mattered to the
+verdict. `verify` now warns (`W0525`) whenever this is so, naming how many examples will
+not run and that `test` is what makes them run — a warning, not a verdict change: the
+declared checks that did run are reported exactly as they would be without this
+disclosure. The rendered drawing already carried this exact disclosure on a function's
+own tooltip; `W0525` is the same fact, said once, reaching the terminal too.
+
 Boolean Rust expressions over the function's parameters and `result`; literals (integer,
 bool, char, string); calls to `pure`-marked helper fns; `==,!=,<,<=,>,>=`; `&&,||,!`;
 arithmetic; field access; `.len()`; `.is_ok()/.is_err()/.is_some()`; `matches!()`. The
@@ -875,6 +893,14 @@ v1 supports functions whose parameters are, recursively:
   "every field public" reduces to "every variant's data is buildable"; admitting only the
   variants that happen to qualify would quietly drop the rest, and a harness that skips a
   case without saying so is the failure this document exists to refuse;
+
+  **A parameter written `Self` names the enclosing `impl` block's own type, and is
+  resolved exactly as that type would be if spelled by name — fixed 2026-09-01, measured
+  against `semver`** (`docs/reach-measurement-2.md`): `cmp_precedence(&self, other:
+  &Self)` was `unsupported`, and only rewriting `&Self` to `&Version`, with nothing else
+  changed, made it `fuzzed(64)`. The receiver's own type was already resolved this way;
+  `Self` in parameter position now reuses that same resolved name rather than a second,
+  narrower answer that disagreed with it;
 - **`f32` and `f64` — sampling tier only.** Proving over floating point is real work not
   attempted in v1, so a `bounded` check on a float is refused by name. Generated floats
   **exclude NaN and infinity by default**: a generated NaN makes almost any promise look
@@ -896,7 +922,41 @@ v1 supports functions whose parameters are, recursively:
   slow run;
 - **structs and enums** of the above with Ply-derivable `Arbitrary` (public,
   invariant-free fields);
-- **`&T`/`&[T]`** of the above (built from an owned value in the harness).
+- **`&T`**, of the above (built from an owned value in the harness) — `&[T]` never actually
+  was, on either engine, until the composition amendment below; this bullet's own spelling
+  was aspirational until then.
+
+**Composition is a real recursive grammar, sampling engine only — 2026-09-02, measured
+(TODO.md, "make the sampling engine's decision recursive, and add slices").** Until this
+date, every shape added to this list after the original set was individually barred from
+*nesting* inside another: `Option<String>`, a list of a user struct, and `&[T]` were all
+refused outright, even though a plain `String`, a plain user struct, and `&Vec<u8>` were
+all checked happily alone — one shared "is this type supported" decision answered for
+both engines, and letting a newly-added shape compose would have silently made it eligible
+for the *proof* tier too, whose list above is measured and deliberate. The fix splits the
+decision and only ever widens the sampling side: `Option`, `Result`, a fixed array, a list
+(`Vec`), a set (`BTreeSet`), a map (`BTreeSet`'s own sibling, `BTreeMap`), a slice (`&[T]`,
+finally a real shape rather than an aspiration — built the same way `&Vec<u8>` already is:
+an owned `Vec<T>`, lent), a tuple, and an owning wrapper (`Box<T>`) now close recursively
+over *any* sampling-buildable element — a scalar, a `String`, a float, `NonZero`/
+`Duration`, a user struct, or another composed shape, to any depth. **The bounded (Kani)
+engine's own list above does not move, byte for byte**, pinned by a dedicated regression
+test written before the composing logic (`crates/ply-core/src/harness.rs`,
+`the_bounded_proof_engines_own_supported_list_never_widens`): none of the four new shapes,
+and no newly-nestable inner, is ever bounded-supported.
+
+One honesty condition attaches, found while building this, not merely asserted: a struct
+or enum *nested* inside another shape's own sampled value cannot be built by calling its
+constructor from inside a proptest strategy — proptest's own `prop_map` requires its
+output type to implement `Debug` (`Map<S, F>` only implements `Strategy` when `F::Output:
+Debug`), which cannot be assumed of an arbitrary user type. So a nested struct/enum's
+strategy only ever draws the raw leaf values its constructor or fields need (always plain,
+always `Debug`), and the real construction happens afterwards in ordinary Rust code in the
+harness's own preamble — exactly how a *top-level* struct parameter was already built, now
+reached one level of nesting later. That mechanism has no proptest case-rejection
+available partway through an already-built container, so nesting is refused, by name, for
+a constructor carrying its own `requires` filter or a fallible (`Result<Self, E>`) return —
+even though the identical type is fine as a bare top-level parameter.
 
 Two documented limits narrow what *every* `bounded` verdict means, however clean it looks:
 generated arguments **never alias each other**, so a bug that needs two parameters to
@@ -916,11 +976,111 @@ Measured exclusions, each named rather than left for a user to discover by timin
   unwind fix. A 3-node tree produced 64,147 verification conditions and did not finish in
   180s. This is the exact shape of Ply's own verdict tree, which is why it is the spike's
   headline finding rather than a footnote. Everything else — trait objects, generics, smart pointers,
-non-exhaustive or private-field types without a user-supplied generator — yields status
+non-exhaustive or private-field types with no route (below) — yields status
 `unsupported` with diagnostic `V0505` naming the offending type. Unsupported is a
-reported fact, never a harness build failure. A user-supplied generator hook (a
-`pure`-marked constructor function named in `ply.yaml`) lifts a type into the supported
-set; its design is validated in the M0 spike.
+reported fact, never a harness build failure.
+
+**The generator hook, built 2026-09-02** (TODO.md, "one build-route mechanism for named
+types"). This section's own earlier text asserted a `pure`-marked constructor function
+and a `ply.yaml` key for it, and that its design was "validated in the M0 spike" — thinner
+than it read even when the hook was still unbuilt: the spike validated the
+constructor-**harness** pattern (calling a found constructor to build a value), never the
+**declaration surface** a user writes to name one, which did not exist to be validated.
+Corrected here rather than inherited: **a type is buildable if there is a public way to
+get one from parts Ply can already build**, generalised into a route table with three
+sources, tried in this order for a struct/enum parameter the rules above cannot reach:
+
+1. the type's own constructor (already described above — unchanged);
+2. a small curated set for standard-library types, **excluding anything filesystem-path-
+   shaped**. Not populated in this pass — deliberately, not by oversight: codegen has no
+   way yet to import or call a path outside the target crate's own root, which every
+   curated entry would need, and paths themselves stay refused everywhere until a later
+   change adds a check for side effects (Ply runs the real function body, and several of
+   its own path-taking functions write files);
+3. **a route declared in `ply.yaml`**: a top-level `routes:` map, the type's bare name to
+   a public function's path — free or associated, Ply's resolver does not distinguish —
+   that returns the type. Resolved by the same walk that classifies a call (§5.5), so a
+   route is found, or refused, exactly the way any other claim's anchor already is.
+   Variety comes from Ply sampling **the route's own parameters**, never from an author
+   listing values: `routes: { Handle: open_handle }` naming `pub fn open_handle(id: u32)
+   -> Handle` samples `id` exactly the way any other `u32` parameter already is.
+
+A route found but not usable — a renamed or private function, a return type that does not
+name the declared type, or a parameter Ply cannot itself build — is refused loudly,
+naming the broken declaration, never silently falling back to rule 1 or 2: a stale route
+is a fact about that declaration, and reporting it as though nothing were declared would
+bury the real defect under a generic one. A type with no route declared and no other way
+in is still refused as before, with one more sentence naming the declaration
+(`routes: { TypeName: <a public function that returns TypeName> }`) that would unlock it.
+
+**A declared route is tried first, unconditionally (corrected 2026-09-02, three defects
+found while proving this section, none by reading).** The order above ("tried in this
+order") originally meant a route was only ever *reached* once rule 1 and rule 2 had
+already failed to find the type at all — and that reading hid two silences. First: a type
+this crate does not declare locally has no source for rule 1 or rule 2 to fail *against*,
+so the door to rule 3 never opened either — a route naming a real, correct function
+outside the crate refused with the same sentence as no route at all (`V0505`, "no part of
+its value is one Ply knows how to vary"), never naming the declaration. Second: a type
+this crate *does* declare, whose only public constructor happens to also satisfy rule 1
+(`StatusSet::new()`, a zero-argument fn returning `Self`, is both), had its declared route
+silently skipped in favour of whichever constructor rule 1 found first — an explicit
+`routes:` entry, quietly never called. Both are the same defect wearing different hats: a
+declared route must be tried, and reported on, before either rule ever runs, not only when
+they fail. Fixed by moving the check: `routes:` is now consulted before rule 1's
+constructor scan even starts, for every type whether or not it is declared in this crate.
+A working route always wins; a broken one is always named. The type's own constructor
+(rule 1) and direct field construction (rule 2) are unreachable for a type with a
+declared route — which is exactly right, since the author already said which function to
+call.
+
+**A route to a function outside the crate declares its own input types (built
+2026-09-02).** Source two's own constraint — "codegen has no way yet to import or call a
+path outside the target crate's own root" — is why entries there stayed empty; it is not
+why a *declared* route to such a function must stay unbuildable. Ply cannot read that
+function's source to infer its parameters, so the author states them instead, in
+parentheses after the path: `routes: { OsString: std::ffi::OsString::from(String) }`
+builds a `String` the ordinary way (recursively, so a composed or user-defined declared
+type works too) and calls `std::ffi::OsString::from` on it directly — no crate-local
+lookup is attempted for this form at all. The original form (no parentheses) is unchanged:
+its parameters are still inferred from this crate's own source. Ply never reads the named
+function's real signature in the parenthesized form — not its return type, not its real
+parameter count or order — so a mismatched declaration is not refused here: it is caught
+by the compiler when the generated harness fails to build, reported as a tool error naming
+the route. That trade (a wrong signature surfacing as a compiler error rather than a named
+Ply refusal) is honest only because the route was explicitly declared; an ordinary
+unsupported type is never reported this way. Filesystem paths remain excluded from this
+extension exactly as source two's own text already excludes them — a later change behind
+a check for side effects, not this one.
+
+**Every declared route is used or refused by name (added 2026-09-02).** A route whose
+type nothing in the document's own parameters or fields ever names would never be
+resolved at all under the rules above — nothing asks for it, so nothing notices a broken
+one. Once every function in the crate has been checked, `verify` validates any `routes:`
+entry its own per-function walk never touched, on its own terms, and reports a broken one
+by name (`W0528`) attached to the whole run rather than to any one function. A route that
+resolves fine but happens to be unused earns no diagnostic — only a broken declaration is
+worth a reader's attention.
+
+**The one failure a stale-route compile error cannot catch.** A route is a function an
+author wrote, and nothing stops it from ignoring its own inputs and returning the same
+value every time — the harness still compiles and every case still runs. Ply counts how
+many genuinely distinct values a route-built *top-level* parameter actually produced
+across a run's cases (by the type's own `#[derive(Debug)]` text — the one thing every
+value comparison here can lean on, since there is no blanket `PartialEq`/`Hash` Ply can
+rely on from outside the crate) and discloses the split unconditionally, the same
+"print the split always, mark only when it is skewed" shape the branch-decided
+measurement (§5.4c) already follows: "64 cases ran, but only 1 distinct value reached the
+function" is the plain sentence this exists to make possible. Severity rises from an
+info-level disclosure to a warning (`W0527`) exactly when a debug-derivable parameter
+built exactly one distinct value across more than one case; a type with no
+`#[derive(Debug)]` gets the honest disclosure that Ply could not count at all, never an
+invented number. Narrowed, stated rather than hidden: only a *top-level* parameter is
+counted this way today — the identical route nested inside a composed shape
+(`Vec<Handle>`) still builds and checks (composition closes over a route-built value
+exactly as it does a constructor-built one), but does not yet carry its own distinct-value
+count (open item, TODO.md). Every value built through a route, top-level or nested, still
+carries a `route-built` status mark — the `seeded` mark's own precedent — naming that the
+evidence came through a declared door rather than the type's whole range.
 
 Generic functions are checkable only through a concrete instantiation: `check_with:
 { T: u64 }` names one concrete type per type parameter, and every harness for that fn
@@ -1044,6 +1204,28 @@ could not be reported at any seed (docs/review-post-004-strategy.md's correction
 vetting 004's finding 4). `tool_error` remains for the case where neither source yields an
 input.
 
+**A comparison is widened to `i128` only when both sides are provably numeric
+(2026-09-01).** The D7 table row above says the rendered assertion is "widened/checked
+arithmetic" so `result == x + 1` at `x`'s maximum value reports the broken promise instead
+of panicking on the overflow while checking it — but the widening that protects arithmetic
+used to cast **every** leaf a comparison reached, including text, an `Option`, a struct, or
+an enum, none of which can be cast `as i128` at all. Found pointing Ply at `semver`: the
+author's own most natural phrasing of "the constructor stores the text it was given
+verbatim" — comparing two `&str` values with `==` — could not compile
+(`error[E0606]: casting &str as i128 is invalid`), and because `fuzz`/`test` checks in a
+crate share one generated harness (immediately above), that one comparison's compile
+failure reported `tool_error` for every other function still waiting on that harness too,
+however correct. The fix narrows widening to a comparison whose *both* sides are provably
+numeric — a numeric literal; a parameter or the result whose declared type is a plain
+integer scalar, `bool`, `char`, or a float; a dereference, parenthesised form, or explicit
+numeric cast of a numeric thing; arithmetic over numeric operands; or a nested comparison/
+logical expression, always safe to cast since it is always `bool` regardless of what it
+compares. Anything else — a method call, a field access, a path to a constant, an enum
+variant — leaves that comparison exactly as written, which is always legal Rust: `rustc`
+already accepted the function's own body with that comparison unwidened before Ply ever
+ran, so declining to cast can never itself break compilation, only casting a non-numeric
+leaf could.
+
 **A `fuzz(n)` verdict names the run that produced it (2026-08-25).** The generated
 harness's RNG is built from a seed Ply chooses and records — in the §8 envelope, on the
 node whose verdict it produced — never from entropy, and proptest's own persisted-failure
@@ -1067,6 +1249,36 @@ overstated number. The `n` in `fuzzed(n)` is the count the engine was asked for 
 reached; a high-but-survivable rejection rate (the ordinary `W0503` case) does keep
 `fuzzed(n)`, because proptest draws until it has *n* accepted cases — what is weak there
 is their spread, not their count.
+
+**A `fuzz(n)` verdict can be honest about its count and still overstate what was tested,
+when the promise itself is an "either this, or that" (2026-09-02).** A high rejection rate
+(above) is thrown away *before* the checked call ever runs. A different emptiness lives
+*inside* the call: a postcondition whose top level is `||` is true the moment its first
+side is true, and the real behaviour on the far side of it may never run. Found pointing
+Ply at `semver`'s `Version::parse`, whose own promise is `!text.contains(' ') ||
+result.is_err()` — most generated text contains no space at all, so the promise's first
+side alone already decides most cases, and the whitespace-rejection rule the author
+actually wrote the promise to check — `result.is_err()`, the only side ever reached on
+the text that *does* contain one — ran on only a small minority of the 64 cases.
+`fuzz(n)` reported this unqualified.
+
+Ply now measures which side of a top-level `||` decided each case that held, and prints
+the split unconditionally — a promise with no top-level `||` earns no split, and neither
+does one whose structure this measurement cannot read; both get silence, never an
+invented number. The count preserves `||`'s own left-to-right, short-circuit evaluation:
+a side that never ran because an earlier one already decided the case is never credited
+or blamed for what it "would have" said, so the measurement can never itself trigger a
+side effect (a panic, say) the checked promise's own author relied on `||` to avoid. When
+one side decides more than half of every case (the same threshold the high-rejection
+warning above already uses), the verdict carries the `promise-lopsided` status — a
+sibling of `partial-history`'s "narrower than it looks", never a reuse of it: that mark
+describes an input the run could not build or a call it could not make, *before* the
+checked call; this one describes which side of the promise the call's own result
+satisfied, *after* it. Both real, both distinct facts about the same evidence. This
+count is a fact about the promise's own text, never a claim about which lines of the
+checked function ran — a `||`'s left side deciding every case says nothing about which of
+the function's internal branches those cases exercised, and Ply's wording does not say
+otherwise.
 
 Per-harness time budget: every engine invocation carries a hard cap (`--engine-timeout`,
 §6). Exceeding it yields `timeout`, never a silent hang and never a `violation`. The cap

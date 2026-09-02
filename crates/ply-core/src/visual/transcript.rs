@@ -259,6 +259,26 @@ pub fn render_transcript(doc: &Document) -> String {
         }
     }
 
+    out.push('\n');
+    if doc.routes.is_empty() {
+        out.push_str(
+            "routes — a public function this document names as the way to build a value of a \
+             type Ply has no other way in for: none declared\n",
+        );
+    } else {
+        out.push_str(
+            "routes — a public function this document names as the way to build a value of a \
+             type Ply has no other way in for:\n",
+        );
+        for (type_name, fn_path) in &doc.routes {
+            out.push_str(&format!(
+                "{}{type_name}: built by calling `{fn_path}`, sampling that function's own \
+                 parameters rather than the type's whole range\n",
+                pad(1)
+            ));
+        }
+    }
+
     // Author-written strings reach this output: notes, contract clauses,
     // trusted claims and evidence, worked examples, unresolved notes. Tamed
     // once here rather than at each insertion site, so a future one cannot
@@ -365,11 +385,23 @@ fn write_component(
             "{q}{}\n",
             ceiling_tooltip_line(component_ceiling(name, comp, inherited))
         ));
-        if let Some((path, _)) = weakest_declaration(comp, inherited, "", name) {
-            out.push_str(&format!(
+        match weakest_declaration(comp, inherited, "", name) {
+            Some((path, _)) => out.push_str(&format!(
                 "{q}that level comes from its weakest part, {path} — nothing here counts as \
                  checked more strongly than the weakest thing inside it\n"
-            ));
+            )),
+            // Nothing anywhere beneath this box declares a check, so there is
+            // no weakest part to point at -- and until 2026-09-02 the box
+            // stated a level and then said nothing about where it came from.
+            // It first happened when Ply's own document grew boxes inside
+            // boxes. Naming an empty child as the cause would be worse: an
+            // empty child does not drag the shade down, so the words would
+            // disagree with the picture.
+            None => out.push_str(&format!(
+                "{q}that level comes from its weakest part, which here is the absence of any: \
+                 nothing inside this component declares a check at all — not its own \
+                 functions, and not anything in the components within it\n"
+            )),
         }
     }
 

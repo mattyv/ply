@@ -59,6 +59,46 @@ components:
       exists to annotate.
   core:
     anchor: ply_core
+    # Added 2026-09-02, and this is the first detail below crate level this
+    # document has ever carried. Each of these is a real module, named so
+    # that a reader can go one level in rather than being told "core does
+    # everything". No promises are declared here yet: what each part is
+    # allowed to do is one question, what it promises is the next.
+    components:
+      kernel:
+        anchor: ply_core::kernel
+        note: >-
+          Decides what a pile of results adds up to: the order that ranks one
+          kind of evidence above another, the rule that a parent is never
+          reported as stronger than its weakest part, and the flags that
+          travel upward beside a verdict without being confused for one. It
+          is kept deliberately small and free of special cases, and its rules
+          are checked by trying every shape of result tree up to a size.
+      engines:
+        anchor: ply_core::engines
+        note: >-
+          The adapters that drive each outside checking tool as a separate
+          program and read back what it said. Ply never re-implements a
+          checker; everything here is translation, in both directions.
+      harness:
+        anchor: ply_core::harness
+        note: >-
+          Works out what a function's inputs are and whether Ply can make one
+          of each. This is the part that decides whether a function can be
+          checked at all, and it is where a refusal gets its reason.
+      visual:
+        anchor: ply_core::visual
+        note: >-
+          The drawing, the prose form of the same facts, and the portable
+          package an editor reads. Nothing here decides anything; it only
+          shows what was decided.
+      record:
+        anchor: ply_core::record
+        note: >-
+          What was checked, and everything a result depended on. A stored
+          result is only reused when every one of those inputs still hashes
+          the same, which is what stops a stale green outliving the code
+          that earned it.
     note: >-
       Everything Ply knows how to do, with no terminal attached. It must
       never reach up into the command-line layer: that constraint is what
@@ -67,6 +107,17 @@ components:
       be tested together.
   cli:
     anchor: ply_cli
+    components:
+      verify:
+        anchor: ply_cli::verify
+        note: >-
+          Runs the checks and assembles what comes back. The one command that
+          produces evidence rather than describing intent.
+      report:
+        anchor: ply_cli::audit
+        note: >-
+          Says what this codebase's evidence rests on that Ply never checks --
+          the promises taken on trust, listed rather than assumed.
 
   # The spec-validation tooling, which lived in a second cargo workspace
   # until 2026-08-30 and so was absent from this document entirely -- Ply's
@@ -75,8 +126,14 @@ components:
   # already depended on `core`), and these four arrive with it.
   #
   # Each depends on `core`, which is the honest direction: the product owns
-  # the `ply.yaml` model and this tooling consumes it. `render` additionally
-  # depends on `kernel`, and `schedule` depends on `kernel` alone.
+  # the `ply.yaml` model and this tooling consumes it.
+  #
+  # There were four. `kernel` and `schedule` were deleted on 2026-09-02: the
+  # first was a crate whose entire body was one re-export, the second held a
+  # rule nothing ran that was looser than the one that ships. Ply reported
+  # their absence here itself (A0410, "this component owns no crate at all,
+  # and every edge written for it is silently inert") before this file was
+  # corrected -- which is the check this document exists to be subject to.
   render:
     anchor: ply_render
     note: >-
@@ -89,25 +146,8 @@ components:
       The standalone spec validator, which predates the installed `cargo ply
       check` command and overlaps it. Retiring one of the two is recorded
       work, not a decision taken here.
-  kernel:
-    anchor: ply_kernel
-    note: >-
-      The verdict kernel's own crate: the evidence order, worst-of
-      aggregation and status propagation, kept apart from everything that
-      might tempt it to grow a special case. Its invariants are checked by
-      exhaustive enumeration over every tree up to a bound.
-  schedule:
-    anchor: ply_schedule
-    note: >-
-      Check ordering. A second implementation of this ordering also lives
-      inside the verify command, and only this copy has the exhaustive test
-      suite -- recorded as a known gap, because two implementations of a
-      soundness rule is one more than can be trusted.
 
 edges:
   - "cli -> core"
   - "render -> core"
-  - "render -> kernel"
   - "check -> core"
-  - "kernel -> core"
-  - "schedule -> kernel"

@@ -13,7 +13,6 @@ path = "src/main.rs"
 
 [dependencies]
 ply-core = { path = "../../crates/ply-core" }
-ply-kernel = { path = "../kernel" }
 clap = { version = "4", features = ["derive"] }
 indexmap = { version = "2", features = ["serde"] }
 

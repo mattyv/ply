@@ -1,0 +1,43 @@
+{
+  "format": 2,
+  "written_by": "2cd1fa1beb83c9375f87e2fb60fe6af6a37dd43d0d38f4843a1fe2b8432e1b22",
+  "results": {
+    "orbalanced::thirds": {
+      "fingerprint": "6b5085a24b1339c1f4e96c5556094f647526c4db0e167f28e635fc2d6153c1c6",
+      "verdict": "fuzzed(64)",
+      "statuses": [],
+      "evidence": {
+        "engine": "proptest",
+        "seed": "5696daa42da8d6f79fe8e38d61b23bae444d12466731303775ff2c2eedc1a2a7",
+        "cases": 64
+      },
+      "diagnostics": [
+        {
+          "code": "W0526",
+          "severity": "info",
+          "phase": "verify",
+          "engine": "proptest",
+          "check": "fuzz(64)",
+          "node_id": "orbalanced::thirds",
+          "title": "`thirds`'s postcondition joins 3 conditions with `||`: `|result|x % 3 == 0||x % 3 == 1||x % 3 == 2`. Rust only evaluates a later one when every earlier one already came back false, and Ply's count preserves that order. Of the 64 cases where the promise held, `x % 3 == 0` decided it 22 times, `x % 3 == 1` decided it 24 times and `x % 3 == 2` decided it 18 times. That count says which side of the promise did the work; it says nothing about which lines inside `thirds` itself ran. (W0526)",
+          "open_item": null
+        }
+      ],
+      "inputs": {
+        "its contract": "357a661d5e180d4d",
+        "the build of Ply that checked it": "0365d8ebc176347c",
+        "the callees it stands on": "4df68c1409b969ed",
+        "the checks that ran": "05e465aaeb0bdc43",
+        "the code it runs": "f5068da78a983ff0",
+        "the compiler and the build target": "bf70dd442259ad28",
+        "the crate's features": "888ca37d720284f4",
+        "the engines behind them": "651a23e37e8789a4",
+        "the function's own source": "ae13418a6ad07dd1",
+        "the promises it assumes": "d972c487c26e7547",
+        "the versions of everything outside this workspace": "0fabd3141f2a2b8e",
+        "the worked examples it asserts": "7d5529f841102c10",
+        "which claim this is": "b86bbf7f7ea28ba3"
+      }
+    }
+  }
+}

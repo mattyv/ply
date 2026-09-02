@@ -1,8 +1,9 @@
 //! Is the disclosure enough? (docs/review-structs-enums.md finding 2,
 //! 2026-08-28). `Point::labeled` is a real constructor Ply's scan finds but
-//! cannot use (its `&str` argument is unbuildable), so Ply correctly falls
-//! through to direct field construction. The old W0522 wording never said
-//! whether a constructor existed at all -- this test pins that it now does.
+//! cannot use (its `&mut u32` argument is unbuildable), so Ply correctly
+//! falls through to direct field construction. The old W0522 wording never
+//! said whether a constructor existed at all -- this test pins that it now
+//! does.
 
 use ply_e2e::{build_cargo_ply, copy_fixture, run_verify};
 
@@ -31,7 +32,7 @@ fn a_found_but_unusable_constructor_is_named_in_the_disclosure() {
          {title}"
     );
     assert!(
-        title.contains("str"),
+        title.contains("mut"),
         "the disclosure should say *why* the constructor could not be used, not just that one \
          exists: {title}"
     );

@@ -136,6 +136,16 @@ pub fn code_path_pattern() -> &'static str {
     pattern("/$defs/code_path")
 }
 
+/// The `routes:` value pattern from the schema (§5.4b's cross-crate
+/// extension, defect 2, 2026-09-02): a plain `code_path`, or the same path
+/// followed by a parenthesized, comma-separated input-type list
+/// (`std::ffi::OsString::from(String)`) -- the form a route to a function
+/// outside the crate needs, since Ply has no source there to infer its
+/// parameters from.
+pub fn route_value_pattern() -> &'static str {
+    pattern("/$defs/route_value")
+}
+
 /// The keys `/$defs/{level}`'s `required` array names, and for each the
 /// schema's own `description` of it — so a "this is missing" diagnostic
 /// explains what the key is for without a second copy of that sentence.

@@ -1,0 +1,15 @@
+ply: 1
+
+# `maybe_pass_through`'s postcondition is `x < 100 || result.unwrap() == x`.
+# Ply's int generator draws 3-in-4 of its values from 0..=16 (§10 M4: "ints
+# biased small"), and every one of those satisfies `x < 100` -- so the left
+# side of the `||` decides almost every one of the 64 cases, and the right
+# side (the one actually calling `.unwrap()` and comparing the result) only
+# ever runs on the rare draw at 100 or above. The fix under test measures
+# and discloses exactly this split; it must never change the verdict below.
+components:
+  orskewed:
+    anchor: ply_fixture_orskewed
+    fns:
+      maybe_pass_through:
+        checks: [fuzz(64)]

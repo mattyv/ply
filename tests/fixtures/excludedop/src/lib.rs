@@ -15,13 +15,15 @@
 //! ```
 //!
 //! `note` took a `&str` until 2026-09-01, when borrowed text became a
-//! buildable argument -- at which point Ply started calling `note`, found
-//! this violation for real, and this fixture stopped testing what it was
-//! written to test. It is preserved by giving `note` a parameter that is
-//! *still* unbuildable (`Option<String>`: a `String` nested inside another
-//! type, deliberately never built -- see `RustType::String`'s own doc).
-//! The companion fixture `textmutator` records the other half: the same
-//! shape with a `&str`, where Ply now finds the violation it used to miss.
+//! buildable argument, and `Option<String>` until 2026-09-02, when
+//! composition (TODO.md) made a `String` buildable no matter how it nests
+//! -- both stopped making `note` uncallable, so this fixture is preserved by
+//! giving `note` a parameter still unbuildable for a structural reason
+//! composition does not touch: `&mut u32` (§5.4b stops at a shared `&T`; a
+//! value the function writes back through is not one either engine can
+//! construct and observe). The companion fixture `textmutator` records the
+//! other half: the same shape with a `&str`, where Ply now finds the
+//! violation it used to miss.
 //!
 //! So this run genuinely cannot
 //! call `note` and genuinely cannot find this violation by running cases.
@@ -39,9 +41,9 @@ impl Acc {
         Acc { total: 0 }
     }
 
-    /// The only way `Acc`'s state ever changes -- and Ply cannot build an
-    /// `Option<String>` argument to call it with.
-    pub fn note(&mut self, _s: Option<String>) {
+    /// The only way `Acc`'s state ever changes -- and Ply cannot build a
+    /// `&mut u32` argument to call it with.
+    pub fn note(&mut self, _s: &mut u32) {
         self.total += 5;
     }
 

@@ -111,6 +111,7 @@ fn every_key_the_schema_declares_is_a_key_the_model_reads() {
     assert_eq!(doc.deny.len(), 1);
     assert_eq!(doc.profiles["hot_path"], ["no_panics"]);
     assert_eq!(doc.unresolved[0].id, 151);
+    assert_eq!(doc.routes["Handle"], "open_handle");
 
     // And every key named above is exactly the schema's own vocabulary —
     // so a key added to the model without a schema entry fails here too.
@@ -248,6 +249,8 @@ profiles:
 unresolved:
   - id: 151
     note: "settlement rounding rule TBD"
+routes:
+  Handle: open_handle
 "#;
 
 /// Every node of the schema document, with its JSON pointer.
@@ -289,6 +292,36 @@ fn the_schema_pattern_and_the_path_checker_accept_exactly_the_same_paths() {
             by_regex, by_checker,
             "{s:?}: schema pattern says {by_regex}, is_valid_path_form says {by_checker} — \
              E0304 must refuse exactly what the schema refuses"
+        );
+    }
+}
+
+/// §5.4b's cross-crate extension (defect 2, 2026-09-02): a `routes:` value
+/// may now carry an explicit input-type list in parens
+/// (`std::ffi::OsString::from(String)`), alongside the original bare-path
+/// form (`code_path`'s own pattern). `schema/ply.schema.json`'s own
+/// `route_value` definition must accept both shapes, and reject a value
+/// that is neither -- documenting the grammar this task adds, the same way
+/// `code_path_pattern`'s own test documents the original one.
+#[test]
+fn the_schema_route_value_pattern_accepts_both_route_forms() {
+    let re = regex::Regex::new(schema::route_value_pattern()).unwrap();
+    for good in [
+        "open_handle",
+        "Token::via_route",
+        "std::ffi::OsString::from(String)",
+        "std::ffi::OsString::from()",
+        "some::path::f(String, u32)",
+    ] {
+        assert!(
+            re.is_match(good),
+            "{good:?} must match the route value pattern"
+        );
+    }
+    for bad in ["not a type( at all", "open handle", "f(", "f)", ""] {
+        assert!(
+            !re.is_match(bad),
+            "{bad:?} must not match the route value pattern"
         );
     }
 }
