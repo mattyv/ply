@@ -532,6 +532,19 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
     if node.statuses.iter().any(|s| s == "promise-lopsided") {
         marks.push("lopsided");
     }
+    // A value the document told Ply how to make, rather than one Ply's own
+    // generator drew. Both facts already reached the JSON envelope as
+    // statuses; until 2026-09-02 neither reached the terminal, so a run that
+    // tested one value sixty-four times read as a clean `fuzzed(64)` to the
+    // only reader who cannot query the envelope -- a person. Same rule as
+    // the two marks above: the count is real, what it is a count *of* is
+    // what needs saying.
+    if node.statuses.iter().any(|s| s == "route-built") {
+        marks.push("built to order");
+    }
+    if node.statuses.iter().any(|s| s == "route-collapsed") {
+        marks.push("one value over and over");
+    }
     // Last, and from its own field rather than from `statuses`: reuse is
     // not a qualifier on the evidence (D6), it is a fact about when the run
     // happened. A person reading `bounded(2)` should be able to tell
@@ -545,7 +558,7 @@ fn node_marks(node: &ply_core::diag::Node) -> Vec<&'static str> {
 
 /// What each mark means, printed once beneath the tree and only when the
 /// tree actually carries it. A mark a reader cannot decode is decoration.
-const MARK_GLOSS: [(&str, &str); 6] = [
+const MARK_GLOSS: [(&str, &str); 8] = [
     (
         "assumed",
         "this result rests on a promise Ply was handed and did not check — if the promise is \
@@ -577,6 +590,18 @@ const MARK_GLOSS: [(&str, &str); 6] = [
          inputs from values already known to be valid instead of guessing blindly — the count below \
          is real, but it is evidence about text similar to what is already known to work, not about \
          arbitrary text",
+    ),
+    (
+        "built to order",
+        "this value is not one Ply drew itself — the document names a function that makes one, and \
+         Ply called it, varying what it passed in. The count below is real, but it is evidence \
+         about the values that function returns, not about everything this type could ever hold",
+    ),
+    (
+        "one value over and over",
+        "the way this document names for making this value handed back the same value on every \
+         case, so the count above is the number of times one test ran rather than the number of \
+         different things tried — the lines below name the function that did it",
     ),
     (
         "lopsided",
@@ -1356,6 +1381,37 @@ mod tests {
                  whether the side you actually care about was tested at all"
             ),
             "a marker nobody can read is not a report: {report}"
+        );
+    }
+
+    /// The same rule as the lopsided mark above, for a value built through a
+    /// route the document names. Both facts already reach the JSON envelope
+    /// as statuses; a person reading the terminal saw neither, so a run that
+    /// tested one value sixty-four times read as a clean `fuzzed(64)`.
+    #[test]
+    fn a_route_built_value_and_a_collapsed_one_say_so_on_the_node_line() {
+        let built = tree_report(&envelope_with_statuses(&["fuzzed(64)"], &["route-built"]));
+        assert!(
+            built.contains("  f — fuzzed(64)  [built to order]"),
+            "a value made by a named route is not one Ply drew itself, and the line must say so: {built}"
+        );
+
+        let collapsed = tree_report(&envelope_with_statuses(
+            &["fuzzed(64)"],
+            &["route-built", "route-collapsed"],
+        ));
+        assert!(
+            collapsed.contains("  f — fuzzed(64)  [built to order, one value over and over]"),
+            "a route that returned the same value every time must say so where the count is read: {collapsed}"
+        );
+        assert!(
+            collapsed.contains(
+                "  [one value over and over]  the way this document names for making this value \
+                 handed back the same value on every case, so the count above is the number of \
+                 times one test ran rather than the number of different things tried — the lines \
+                 below name the function that did it"
+            ),
+            "a marker nobody can read is not a report: {collapsed}"
         );
     }
 
