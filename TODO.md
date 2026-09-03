@@ -1,5 +1,24 @@
 # TODO
 
+## Agreed 2026-09-03, not started: hand-written tests as evidence on a claim
+
+- [ ] **A claim may name existing `#[test]`s as its `test` evidence.** Today the `test`
+      check runs only what Ply generates from `examples:`; a hand-written test is not a
+      claim source at all. Tests reach what the engines cannot — calls through traits,
+      closures and macros; sequences of state; collections at real sizes; a boundary
+      promise on legacy code; anything behind a fake — so a claim gains a list of test
+      names beside its checks, Ply runs exactly those, records their bodies in the
+      fingerprint, and the verdict stays `tested`. No new engine.
+      **Honesty condition:** a hand test is opaque, so Ply can say "these passed", never
+      "this promise was checked" — either the test calls the contract helper so the
+      promise is visibly asserted, or the claim is an attestation with automated evidence
+      (hollow shield, audit row). `mutate` already takes the `test` tier as its kill
+      signal, and that is the meter: a named test that kills no mutants is `W0502`, not
+      evidence. Post-code tier only; it does not close the "trust beyond the bound"
+      gap on collections, it makes that trust cheaper to believe.
+      **First step:** one fixture with a hand test that kills a mutant the generated
+      examples miss, red before the feature and green after.
+
 ## Landed: two documentation drawings showed a notation the tool stopped writing — 2026-09-02
 
 Reported by the maintainer looking at the README. Both drawings that had no drift test
