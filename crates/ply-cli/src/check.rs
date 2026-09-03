@@ -256,11 +256,33 @@ fn verify_state(
         return;
     };
     // The crate the anchor names, when the document spans a workspace;
-    // otherwise the crate the document sits in.
-    let head = comp.anchor.split("::").next().unwrap_or(&comp.anchor);
-    let dir = local
-        .map(Path::to_path_buf)
-        .or_else(|| crates.get(head).cloned());
+    // otherwise the crate the document sits in. Either way the rest of the
+    // anchor is a module path *inside* that crate, and the type has to be
+    // declared at or under it -- "resolved under its own anchor, never
+    // guessed at" is what this file tells the user two messages down, and a
+    // crate-wide scan would make that untrue.
+    let mut segments: Vec<String> = comp.anchor.split("::").map(str::to_string).collect();
+    let head = segments.first().cloned().unwrap_or_default();
+    let dir = match local {
+        Some(dir) => {
+            // The anchor may name this crate itself rather than a module of
+            // it (`crates/ply-core/ply.yaml` anchors at `ply_core`), and
+            // reading that as a module would look for `ply_core` inside
+            // `ply_core`. Caught by running `check` on that document, not
+            // by review.
+            if ply_core::harness::crate_own_name(dir).as_deref() == Some(head.as_str()) {
+                segments.remove(0);
+            }
+            Some(dir.to_path_buf())
+        }
+        None => {
+            let found = crates.get(&head).cloned();
+            if found.is_some() {
+                segments.remove(0);
+            }
+            found
+        }
+    };
     // A claim Ply could not look at must not read like a claim it looked at
     // and was satisfied by (§1). Measured before this existed: a completely
     // invented type in a workspace-root document passed with exit 0, which
@@ -272,25 +294,26 @@ fn verify_state(
             format!(
                 "`{qualified}` says its state lives in `{of}`, and Ply could not check that. \
                  Resolving a state claim means reading the crate this component is anchored \
-                 at, and Ply found no crate named `{head}` with a library under this \
-                 document. The claim is not wrong; it is unverified, and this line says so \
-                 rather than letting it pass in silence. (W0413)",
+                 at, and Ply found no crate named `{head}` with source of its own under \
+                 this document. The claim is not wrong; it is unverified, and this line \
+                 says so rather than letting it pass in silence. (W0413)",
                 of = state.of,
             ),
         ));
         return;
     };
-    let Some(fields) = ply_core::harness::scan_type_fields(&dir, &state.of) else {
+    let Some(fields) = ply_core::harness::scan_type_fields_under(&dir, &segments, &state.of) else {
         diagnostics.push(state_diag(
             "A0414",
             qualified,
             format!(
-                "`{qualified}` says its state lives in `{of}`, but the crate it is anchored \
-                 at declares no type called that. Ply looked through every `.rs` file under \
-                 that crate's `src/`. Check the spelling, or point `state:` at a type that \
-                 crate really has -- a component's state is resolved under its own anchor, \
-                 never guessed at. (A0414)",
+                "`{qualified}` says its state lives in `{of}`, but `{anchor}` declares no \
+                 type called that. A component's state is resolved under its own anchor, \
+                 never guessed at, so a type of that name declared elsewhere in the crate \
+                 is not this component's and was not accepted. Check the spelling, or move \
+                 the claim to the component the type really belongs to. (A0414)",
                 of = state.of,
+                anchor = comp.anchor,
             ),
         ));
         return;
@@ -1109,10 +1132,20 @@ pub fn print_human(report: &CheckReport) {
 
 #[cfg(test)]
 mod tests {
+    /// A crate whose code sits in a module named `probe`, matching the
+    /// anchor every document below uses.
+    ///
+    /// The module matters: a component's state is resolved *under its own
+    /// anchor*, so a type sitting at the crate root is not the state of a
+    /// component anchored at `probe`, however much its name matches. These
+    /// fixtures used to put the type at the root and pass, which is the
+    /// misfiling this rule exists to catch -- they were testing a checker
+    /// that could not tell where a type lived.
     fn state_probe(lib: &str, yaml: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/lib.rs"), lib).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub mod probe;\n").unwrap();
+        std::fs::write(dir.path().join("src/probe.rs"), lib).unwrap();
         std::fs::write(dir.path().join("ply.yaml"), yaml).unwrap();
         dir
     }
@@ -1289,6 +1322,43 @@ pub struct OrderBook {
             found.title.contains("`bids`") && found.title.contains("`ticks`"),
             "and it must list the fields the other crate's type really has: {}",
             found.title
+        );
+    }
+
+    /// An anchor may name the crate itself rather than a module of it, and
+    /// that is not a misfiling. `crates/ply-core/ply.yaml` anchors its one
+    /// component at `ply_core`, which is the crate, not a `ply_core` module
+    /// inside `ply_core`.
+    ///
+    /// Caught by running `check` on that very document after anchor-scoped
+    /// resolution landed, not by review: it went from exit 0 to exit 1 with
+    /// an `A0414` about a type plainly sitting right there.
+    #[test]
+    fn an_anchor_naming_the_crate_itself_resolves_at_its_root() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"my-crate\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub struct Book { pub bids: u64 }",
+        )
+        .unwrap();
+        let yaml = "ply: 1\ncomponents:\n  book:\n    anchor: my_crate\n    state:\n      of: Book\n      show: [bids]\n";
+        std::fs::write(dir.path().join("ply.yaml"), yaml).unwrap();
+
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(yaml).unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| ["W0413", "A0414", "A0415"].contains(&d.code.as_str())),
+            "the anchor names this crate, so its root is where the type lives: {:?}",
+            diagnostics.iter().map(|d| &d.title).collect::<Vec<_>>()
         );
     }
 

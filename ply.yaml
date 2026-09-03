@@ -76,6 +76,9 @@ components:
     components:
       kernel:
         anchor: ply_core::kernel
+        state:
+          of: VerdictNode
+          show: [kind, statuses, conditional, children]
         note: >-
           Decides what a pile of results adds up to: the order that ranks one
           kind of evidence above another, the rule that a parent is never
@@ -85,24 +88,36 @@ components:
           are checked by trying every shape of result tree up to a size.
       engines:
         anchor: ply_core::engines
+        state:
+          of: TimedOutput
+          show: [stdout, stderr, status]
         note: >-
           The adapters that drive each outside checking tool as a separate
           program and read back what it said. Ply never re-implements a
           checker; everything here is translation, in both directions.
       harness:
         anchor: ply_core::harness
+        state:
+          of: ContractFn
+          show: [name, params, requires, ensures]
         note: >-
           Works out what a function's inputs are and whether Ply can make one
           of each. This is the part that decides whether a function can be
           checked at all, and it is where a refusal gets its reason.
       visual:
         anchor: ply_core::visual
+        state:
+          of: VisualEnvelope
+          show: [svg, elements, diagnostics]
         note: >-
           The drawing, the prose form of the same facts, and the portable
           package an editor reads. Nothing here decides anything; it only
           shows what was decided.
       record:
         anchor: ply_core::record
+        state:
+          of: RecordEntry
+          show: [verdict, statuses, inputs]
         note: >-
           What was checked, and everything a result depended on. A stored
           result is only reused when every one of those inputs still hashes
@@ -119,11 +134,17 @@ components:
     components:
       verify:
         anchor: ply_cli::verify
+        state:
+          of: VerificationResult
+          show: [document, envelope, source_map]
         note: >-
           Runs the checks and assembles what comes back. The one command that
           produces evidence rather than describing intent.
       report:
         anchor: ply_cli::audit
+        state:
+          of: AuditReport
+          show: [envelope, document]
         note: >-
           Says what this codebase's evidence rests on that Ply never checks --
           the promises taken on trust, listed rather than assumed.

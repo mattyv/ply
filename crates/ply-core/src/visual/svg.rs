@@ -1677,6 +1677,20 @@ fn render_fn_chip(
     FnChip { width, height, svg }
 }
 
+/// The half-sentence that contrasts `state` with `owns`, when there is an
+/// `owns` line to contrast it against.
+///
+/// Naming `owns` on a component that declares none sends a reader looking
+/// for a line that is not there. The two answer different questions and the
+/// contrast is worth drawing -- but only where both are on the box.
+fn owns_contrast(comp: &Component) -> &'static str {
+    if comp.owns.is_empty() {
+        ""
+    } else {
+        ", where `owns` says who may change one"
+    }
+}
+
 /// The component tooltip lines that depend only on this node's own declared
 /// fields — findings, the anchor line, pure/capabilities, owns, profile,
 /// strict — shared verbatim by both an expanded box (`render_component`) and
@@ -1740,25 +1754,27 @@ fn component_tip_lines(
         tip.push(if drawn_state_fields.is_empty() {
             match st.show.as_slice() {
                 [] => format!(
-                    "state {} — the structure this component holds, where `owns` says who \
-                     may change one. No fields chosen to show",
-                    st.of
+                    "state {of} — the structure this component holds{contrast}. No fields \
+                     chosen to show",
+                    of = st.of,
+                    contrast = owns_contrast(comp),
                 ),
                 show => format!(
-                    "state {} — the structure this component holds, where `owns` says who \
-                     may change one. This document asks to show {}, and there is no code \
-                     here to read them from, so none is drawn: the shapes come from the \
-                     source, never from the document",
-                    st.of,
-                    show.join(", ")
+                    "state {of}{contrast} — this document asks to show {names}, and there \
+                     is no code here to read them from, so none is drawn: the shapes come \
+                     from the source, never from the document",
+                    of = st.of,
+                    contrast = owns_contrast(comp),
+                    names = show.join(", ")
                 ),
             }
         } else {
             format!(
-                "state {} — the structure this component holds, where `owns` says who may \
-                 change one. The rows below are its fields: each name was found in the \
-                 code, and each shape read off what that field really is",
-                st.of
+                "state {of} — the structure this component holds{contrast}. The rows below \
+                 are its fields: each name was found in the code, and each shape read off \
+                 what that field really is",
+                of = st.of,
+                contrast = owns_contrast(comp),
             )
         });
     }
@@ -2560,9 +2576,14 @@ fn render_component<'a>(
     // collapsed box (plenty inside, folded away), which stays solid.
     let is_hollow = comp.fns.is_empty() && comp.components.is_empty();
     if is_hollow {
+        // "Nothing inside" stopped being true the day a box could draw what
+        // its component holds: a dashed box can now be full of state rows.
+        // What the dashed border has always meant is narrower and still
+        // exactly right -- nothing here promises anything.
         tip.push(
-            "hollow — declares nothing inside yet: no functions, no nested components. \
-             Nothing to zoom into; a sketch waiting for claims."
+            "hollow — promises nothing yet: no functions, no nested components. Saying \
+             what it holds is not a promise about how it behaves. Nothing to zoom into; \
+             a sketch waiting for claims."
                 .into(),
         );
     }

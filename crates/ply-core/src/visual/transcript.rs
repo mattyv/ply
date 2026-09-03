@@ -312,6 +312,18 @@ pub fn render_transcript_with_state(
 
 /// Components, functions, and functions promising nothing — the summary
 /// strip's three numbers, counted the same way it counts them.
+/// The half-sentence contrasting `state` with `owns`, when the component
+/// has an `owns` line for it to contrast against. Same reasoning as the
+/// drawing's own copy: naming `owns` on a component that declares none
+/// sends a reader looking for a line that is not there.
+fn owns_contrast(comp: &Component) -> &'static str {
+    if comp.owns.is_empty() {
+        ""
+    } else {
+        ", where `owns` says who may change one"
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_component(
     out: &mut String,
@@ -377,17 +389,18 @@ fn write_component(
             .map(|f| f.len());
         match total {
             Some(total) if !rows.is_empty() => out.push_str(&format!(
-                "{q}state {of} — the structure this component holds, where `owns` says who \
-                 may change one. {shown} of {total} of its fields shown\n",
+                "{q}state {of} — the structure this component holds{contrast}. {shown} of \
+                 {total} of its fields shown\n",
                 q = q,
                 of = st.of,
+                contrast = owns_contrast(comp),
                 shown = rows.len(),
             )),
             _ => out.push_str(&format!(
-                "{q}state {of} — the structure this component holds, where `owns` says who \
-                 may change one\n",
+                "{q}state {of} — the structure this component holds{contrast}\n",
                 q = q,
                 of = st.of,
+                contrast = owns_contrast(comp),
             )),
         }
         if rows.is_empty() {
@@ -466,8 +479,9 @@ fn write_component(
     let default = component_default_checks(name, comp, inherited);
     if comp.fns.is_empty() && comp.components.is_empty() {
         out.push_str(&format!(
-            "{q}hollow — declares nothing inside yet: no functions, no nested components. A \
-             sketch waiting for claims.\n"
+            "{q}hollow — promises nothing yet: no functions, no nested components. Saying \
+             what it holds is not a promise about how it behaves. A sketch waiting for \
+             claims.\n"
         ));
     } else {
         out.push_str(&format!(

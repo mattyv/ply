@@ -11,15 +11,15 @@ components:
 
   component e2e — maps to Rust module ply_e2e
     note: Drives the built binary the way a user does, and depends on nothing. A suite that links the library instead stops testing what ships. It had grown exactly that dependency once; the fix was to move the test rather than widen the rule.
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
   component attrs — maps to Rust module ply_attrs
     note: Stands alone. It is a proc-macro crate, compiled for the machine doing the building rather than the machine the program will run on, so a dependency from here into the library would compile perfectly well and would be wrong: the macro would begin depending on the very thing it exists to annotate.
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
   component core — maps to Rust module ply_core
     note: Everything Ply knows how to do, with no terminal attached. It must never reach up into the command-line layer: that constraint is what makes the engine adapters testable at all, because the moment a diagnostic's wording lives here, the wording and the engine can only be tested together.
-    state Envelope — the structure this component holds, where `owns` says who may change one. 4 of 8 of its fields shown
+    state Envelope — the structure this component holds. 4 of 8 of its fields shown
       command is text, written `String`
       root is a structure of your own, written `Node` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
       diagnostics is a list, written `Vec<Diagnostic>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
@@ -28,37 +28,66 @@ components:
     that level comes from its weakest part, which here is the absence of any: nothing inside this component declares a check at all — not its own functions, and not anything in the components within it
     component kernel — maps to Rust module ply_core::kernel
       note: Decides what a pile of results adds up to: the order that ranks one kind of evidence above another, the rule that a parent is never reported as stronger than its weakest part, and the flags that travel upward beside a verdict without being confused for one. It is kept deliberately small and free of special cases, and its rules are checked by trying every shape of result tree up to a size.
-      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+      state VerdictNode — the structure this component holds. 4 of 4 of its fields shown
+        kind is a structure of your own, written `NodeKind` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        statuses is a structure of your own, written `StatusSet` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        conditional is something that might not be there, written `Option<Vec<String>>`
+        children is a list, written `Vec<VerdictNode>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
     component engines — maps to Rust module ply_core::engines
       note: The adapters that drive each outside checking tool as a separate program and read back what it said. Ply never re-implements a checker; everything here is translation, in both directions.
-      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+      state TimedOutput — the structure this component holds. 3 of 4 of its fields shown
+        stdout is a list, written `Vec<u8>`
+        stderr is a list, written `Vec<u8>`
+        status is a structure of your own, written `ExitStatus` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
     component harness — maps to Rust module ply_core::harness
       note: Works out what a function's inputs are and whether Ply can make one of each. This is the part that decides whether a function can be checked at all, and it is where a refusal gets its reason.
-      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+      state ContractFn — the structure this component holds. 4 of 12 of its fields shown
+        name is text, written `String`
+        params is a list, written `Vec<Param>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        requires is something that might not be there, written `Option<(Expr, String)>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        ensures is something that might not be there, written `Option<(ExprClosure, String)>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
     component visual — maps to Rust module ply_core::visual
       note: The drawing, the prose form of the same facts, and the portable package an editor reads. Nothing here decides anything; it only shows what was decided.
-      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+      state VisualEnvelope — the structure this component holds. 3 of 6 of its fields shown
+        svg is text, written `String`
+        elements is a lookup table, written `BTreeMap<String, VisualElement>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        diagnostics is a list, written `Vec<VisualDiagnostic>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
     component record — maps to Rust module ply_core::record
       note: What was checked, and everything a result depended on. A stored result is only reused when every one of those inputs still hashes the same, which is what stops a stale green outliving the code that earned it.
-      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+      state RecordEntry — the structure this component holds. 3 of 6 of its fields shown
+        verdict is text, written `String`
+        statuses is a list, written `Vec<String>`
+        inputs is a lookup table, written `BTreeMap<String, String>`
+      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
   component cli — maps to Rust module ply_cli
     promises nothing as a whole — something inside declares no checks, and one unchecked thing sets the level of everything around it (unclaimed)
     that level comes from its weakest part, which here is the absence of any: nothing inside this component declares a check at all — not its own functions, and not anything in the components within it
     component verify — maps to Rust module ply_cli::verify
       note: Runs the checks and assembles what comes back. The one command that produces evidence rather than describing intent.
-      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+      state VerificationResult — the structure this component holds. 3 of 3 of its fields shown
+        document is a structure of your own, written `Document` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        envelope is a structure of your own, written `Envelope` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        source_map is a lookup table, written `BTreeMap<String, Span>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
     component report — maps to Rust module ply_cli::audit
       note: Says what this codebase's evidence rests on that Ply never checks -- the promises taken on trust, listed rather than assumed.
-      hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+      state AuditReport — the structure this component holds. 2 of 2 of its fields shown
+        envelope is a structure of your own, written `Envelope` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        document is text, written `String`
+      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
   component render — maps to Rust module ply_render
     note: Draws a document before any code exists, and writes the same facts as prose. It is the surface a reader judges the whole tool by, which is why its wording is tested by exact string rather than by shape.
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
   component check — maps to Rust module ply_check
     note: The standalone spec validator, which predates the installed `cargo ply check` command and overlaps it. Retiring one of the two is recorded work, not a decision taken here.
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
 externals — systems and people outside this codebase: none declared
 

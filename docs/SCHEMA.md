@@ -1327,10 +1327,18 @@ Three things are checked:
   passing you (`W0413`). A `state:` line nobody could check is a claim nobody checked,
   and Ply tells you that instead of exiting quietly.
 
-**Where Ply looks.** In the crate your component's `anchor:` names. If your document
-sits in one crate, that is that crate. If it sits at a workspace root and names
-components across several crates, each one is checked against the crate that actually
-holds it — so a top-level document gets the same checking a single-crate one does.
+**Where Ply looks.** Under your component's `anchor:`, and nowhere else. If the anchor
+names a crate and a module (`ply_core::visual`), the type has to be declared in that
+module or one below it. A type of the same name sitting somewhere else in the crate is
+**not** your component's state, and saying it is fails the build — that is a real
+mistake, and one that reads exactly like a correct document if nobody checks for it.
+
+A binary-only crate works too: its modules are code like any other, and a crate whose
+root is `main.rs` can still say what it holds.
+
+Two cases Ply cannot follow, both of which warn rather than pass you: a crate that
+renames its library with `[lib] name` different from its package name, and a crate you
+reach as a dependency rather than one sitting beside your document.
 
 Three things are **not** checked, and the tier table below says so — that the component
 actually holds one, that no one else does, and that you picked the right fields.

@@ -3520,8 +3520,42 @@ pub struct StateField {
 /// declare is the failure `state:` exists to catch (`A0414`), while a unit
 /// struct really does hold nothing.
 pub fn scan_type_fields(crate_dir: &Path, type_name: &str) -> Option<Vec<StateField>> {
+    scan_type_fields_under(crate_dir, &[], type_name)
+}
+
+/// [`scan_type_fields`], restricted to types declared at or under one
+/// module of the crate.
+///
+/// `under` is the component's anchor with the crate name removed:
+/// `ply_core::visual` anchors at `["visual"]`, and a bare `ply_core` at the
+/// empty slice, which accepts anything in the crate.
+///
+/// The restriction is the point rather than an optimisation. The spec says
+/// a component's state is "resolved under its own anchor, never guessed
+/// at", and `A0414` repeats that sentence to the user; a crate-wide scan
+/// makes both untrue. The failure it lets through is one level subtler than
+/// the one `state:` was built to catch -- the type really exists, so
+/// nothing looks wrong, and only its *attribution* is false. Measured
+/// before this existed: a component anchored at this crate's kernel
+/// claimed a type declared in its diagnostics module and passed with exit
+/// 0.
+///
+/// A type in a module *below* the anchor counts as under it: a component
+/// anchored at `visual` may name a type declared in `visual::svg`, which is
+/// still its own code.
+pub fn scan_type_fields_under(
+    crate_dir: &Path,
+    under: &[String],
+    type_name: &str,
+) -> Option<Vec<StateField>> {
     let locations = scan_crate_type_locations(crate_dir);
     let decl = locations.get(type_name)?.as_ref()?;
+    if !under.is_empty() {
+        let declared_in = decl.module_segments(crate_dir);
+        if !declared_in.starts_with(under) {
+            return None;
+        }
+    }
     let src = std::fs::read_to_string(&decl.file).ok()?;
     let file: syn::File = syn::parse_file(&src).ok()?;
     let aliases = alias_map(&file);
@@ -5610,8 +5644,13 @@ fn write_generated_file(
 /// qualified path (`pricing.curves`), in declaration order.
 pub type StateFieldIndex = std::collections::BTreeMap<String, Vec<StateField>>;
 
-/// Every crate under `root` that has a library target, keyed by the module
+/// Every crate under `root` with source of its own, keyed by the module
 /// path its code is reached by -- `ply_core` for `crates/ply-core`.
+///
+/// A binary-only crate counts. Its modules are real code that a document
+/// can anchor a component at, and refusing to look at them would mean a
+/// command-line crate could never say what it holds -- for no better reason
+/// than that its crate root is `main.rs`.
 ///
 /// **How the key is decided, and where that is an approximation.** The name
 /// comes from `name = "..."` in the crate's `Cargo.toml`, with dashes
@@ -5653,7 +5692,7 @@ pub fn workspace_library_crates(root: &Path) -> std::collections::BTreeMap<Strin
     }
 
     fn walk(dir: &Path, depth: usize, out: &mut std::collections::BTreeMap<String, PathBuf>) {
-        if dir.join("src/lib.rs").exists()
+        if (dir.join("src/lib.rs").exists() || dir.join("src/main.rs").exists())
             && let Some(name) = package_name(dir)
         {
             out.entry(name).or_insert_with(|| dir.to_path_buf());
@@ -5743,8 +5782,8 @@ fn walk_state(
             format!("{prefix}.{name}")
         };
         if let Some(state) = &comp.state
-            && let Some(dir) = crate_for_anchor(&comp.anchor, root, crates)
-            && let Some(fields) = scan_type_fields(&dir, &state.of)
+            && let Some((dir, under)) = crate_and_module_for_anchor(&comp.anchor, root, crates)
+            && let Some(fields) = scan_type_fields_under(&dir, &under, &state.of)
         {
             out.insert(qualified.clone(), fields);
         }
@@ -5752,21 +5791,60 @@ fn walk_state(
     }
 }
 
+/// A crate's own module name, read from its `Cargo.toml` package name with
+/// dashes underscored -- the name its code is reached by from outside.
+pub fn crate_own_name(crate_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(crate_dir.join("Cargo.toml")).ok()?;
+    let mut in_package = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("name") {
+            let rest = rest.trim_start().strip_prefix('=')?.trim();
+            let name = rest.trim_matches(|c| c == '"' || c == '\'');
+            if !name.is_empty() {
+                return Some(name.replace('-', "_"));
+            }
+        }
+    }
+    None
+}
+
 /// The crate directory a component's code lives in. The anchor's first
 /// segment is a crate name when the document spans a workspace
 /// (`ply_core::visual`); in a single-crate document it is a module of the
 /// crate the document sits in (`ingest::book`), so `root` is the answer
 /// whenever it has a library of its own.
-fn crate_for_anchor(
+fn crate_and_module_for_anchor(
     anchor: &str,
     root: &Path,
     crates: &std::collections::BTreeMap<String, PathBuf>,
-) -> Option<PathBuf> {
-    let head = anchor.split("::").next().unwrap_or(anchor);
-    if root.join("src/lib.rs").exists() {
-        return Some(root.to_path_buf());
+) -> Option<(PathBuf, Vec<String>)> {
+    let mut segments: Vec<String> = anchor.split("::").map(str::to_string).collect();
+    let head = segments.first().cloned().unwrap_or_default();
+    // In a workspace document the anchor's first segment names the crate
+    // (`ply_core::visual`) and the rest is a module path inside it. In a
+    // single-crate document it is usually a plain module path
+    // (`ingest::book`) -- but it may *also* name the crate itself
+    // (`crates/ply-core/ply.yaml` anchors its one component at `ply_core`),
+    // and treating that as a module would look for a `ply_core` module
+    // inside `ply_core`. So the crate's own name is stripped wherever it
+    // leads.
+    if root.join("src/lib.rs").exists() || root.join("src/main.rs").exists() {
+        if crate_own_name(root).as_deref() == Some(head.as_str()) {
+            segments.remove(0);
+        }
+        return Some((root.to_path_buf(), segments));
     }
-    crates.get(head).cloned()
+    let dir = crates.get(&head)?.clone();
+    segments.remove(0);
+    Some((dir, segments))
 }
 
 #[cfg(test)]
@@ -5815,6 +5893,49 @@ pub struct OrderBook {
         assert!(
             !fields[2].ty.is_fuzz_supported(),
             "a clock is not a shape Ply builds values of, and that is the fact worth drawing"
+        );
+    }
+
+    /// A component's state is "resolved under its own anchor, never guessed
+    /// at" -- the spec says so and `A0414`'s own message repeats it to the
+    /// user. So a type declared somewhere else in the same crate is not
+    /// this component's state, and saying it is must fail.
+    ///
+    /// This is the failure mode one level down from the one `state:` was
+    /// built for. The type exists, so a crate-wide scan finds it and passes;
+    /// what is wrong is the *attribution*, and a document that misfiles a
+    /// type reads exactly like one that does not. Measured before this rule
+    /// existed: `ply_core::kernel` claiming a type declared in
+    /// `ply_core::diag` passed with exit 0.
+    #[test]
+    fn a_type_declared_outside_the_anchors_module_is_not_this_components_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("kernel")).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub mod kernel;\npub mod diag;\n").unwrap();
+        std::fs::write(
+            src.join("kernel/mod.rs"),
+            "pub struct Verdict { pub level: u8 }",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("diag.rs"),
+            "pub struct Envelope { pub command: String }",
+        )
+        .unwrap();
+
+        assert!(
+            scan_type_fields_under(dir.path(), &["kernel".to_string()], "Verdict").is_some(),
+            "a type declared in the anchored module is this component's state"
+        );
+        assert!(
+            scan_type_fields_under(dir.path(), &["kernel".to_string()], "Envelope").is_none(),
+            "`Envelope` is declared in `diag`, not under `kernel`, so a component anchored \
+             at `kernel` must not be allowed to claim it"
+        );
+        assert!(
+            scan_type_fields_under(dir.path(), &[], "Envelope").is_some(),
+            "a component anchored at the crate root may claim anything in the crate"
         );
     }
 

@@ -10,7 +10,7 @@ ply: 1 — the format version every rule below is read under; a version this bui
 components:
 
   component ledger — maps to Rust module ledger
-    hollow — declares nothing inside yet: no functions, no nested components. A sketch waiting for claims.
+    hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
   component withdrawal — maps to Rust module withdrawal
     pure — a sealed promise: this component declares no capabilities and may not use any. That is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so capability use inside this sealed component can still go unnoticed (§5.3)

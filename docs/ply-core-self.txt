@@ -11,7 +11,7 @@ components:
 
   component core — maps to Rust module ply_core
     note: Everything Ply knows how to do, with no terminal attached.
-    state Envelope — the structure this component holds, where `owns` says who may change one. 4 of 8 of its fields shown
+    state Envelope — the structure this component holds. 4 of 8 of its fields shown
       command is text, written `String`
       root is a structure of your own, written `Node` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
       diagnostics is a list, written `Vec<Diagnostic>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
