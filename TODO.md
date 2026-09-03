@@ -19,6 +19,81 @@
       **First step:** one fixture with a hand test that kills a mutant the generated
       examples miss, red before the feature and green after.
 
+## Landed: a promise written in the document is now actually checked — 2026-09-03
+
+The audit below named this as the most valuable thing open, and it was already next on
+the maintainer's own list. §5.4 has said since the beginning that a `requires:`/`ensures:`
+written in `ply.yaml` is "ANDed in" to the function's own contract. It was not. The
+clauses were read, drawn, written into the transcript, and offered to callers as a
+boundary assumption -- and never checked against the function they were written for, with
+a warning saying so on every run.
+
+Disclosed is not checked. This is the project's own central failure mode, a promise that
+reads as checked and is not, in the file whose entire purpose is that its claims are
+checked.
+
+- [x] **Measured both ways, on the two fixtures that already existed for it.** A document
+      promising `*result == 99` of a function returning 7, with a passing example beside
+      it, used to report a clean `tested`; it now reports `violation`. A document
+      promising `*result == 7` of the same function is now genuinely checked and holds.
+      Both pinned by tests that assert the verdict, not the diagnostics.
+- [x] **Both sources hold, and nothing half-merges.** A document clause is ANDed with an
+      inline attribute rather than replacing it, several clauses in a list are a
+      conjunction, and every clause is parsed before any is applied -- a partially applied
+      contract would be checked against something nobody wrote. Clauses are parenthesised
+      when conjoined, because `a || b` joined to `c` without them silently becomes
+      `a || (b && c)`, a different promise from the one written.
+- [x] **A clause Ply cannot read is refused by name** (`E0505`) and the function's checks
+      do not run. Dropping one clause while running the rest would be the same failure in
+      smaller clothes.
+- [x] **Two `ensures:` clauses that name the returned value differently are reconciled,
+      not refused.** `|result|` is the convention and everything here uses it, but
+      refusing `|r|` would be a new way for a valid document to stop working.
+- [x] **`W0510` is retired**, not reworded: its whole condition -- "declared here, not
+      folded in" -- can no longer occur. Spec §5.4 and SCHEMA.md both said this was
+      unimplemented and now describe what it does.
+
+## Landed: this file audited, and nineteen entries that were no longer true removed — 2026-09-03
+
+Asked for by the maintainer ("anything stale just remove"). Every one of the 128 open
+items was classified and the candidates checked against the source rather than against
+what a later entry claimed. Nineteen described work that has since been done or a design
+that changed under them; they are gone. Two more were only half stale and were narrowed
+rather than deleted, because deleting them would have taken a real remaining limit with
+them:
+
+- **`NonZero`/`Duration` nesting** — they nest on the sampling tier now; the proving tier
+  still refuses them, deliberately, and that half is the part worth keeping.
+- **The three-part assumed-contract loop** — the vacuity check and the two reporting
+  commands are built; only the missing fingerprint tying a declared boundary contract to
+  the callee's body survives, and the entry's own "the conjunction is the risk" argument
+  no longer applies to what is left.
+
+The count went 128 open to 107. What remains is roughly 55 deliberate known gaps and
+about 40 items of genuine open work.
+
+**The most valuable thing the audit found still open** was that a promise written in
+`ply.yaml` was never folded into the function's own check. That is the section above:
+built the same day, so this list does not outlive its own conclusion.
+
+## Landed: TODO.md was contradicting itself in a committed merge conflict — 2026-09-03
+
+Found while auditing this file for stale items, not by anyone reading it. Conflict
+markers from an agent worktree merge were committed to `main` and had been sitting
+there: `<<<<<<< HEAD`, `=======`, `>>>>>>>`, with both sides kept verbatim.
+
+The damage was not cosmetic. The two sides disagreed about the *status* of two items,
+so the file simultaneously said each one was done and not done — a reader taking either
+at face value would have been misled, and the whole point of this file is that it can be
+taken at face value. This is the failure CLAUDE.md's own rule names: a stale list is
+worse than none.
+
+- [x] **Resolved against the code rather than by picking a side.** Both items are in fact
+      done, and both were verified before the resolution: the reject-path disclosure
+      exists (`promise-lopsided`, raised in `verify.rs`, commit `297dd8f`), and the
+      non-numeric comparison no longer breaks the build (`is_provably_numeric` gates the
+      cast in `contract_rt.rs`). Both now read `[x]`.
+
 ## Landed: two documentation drawings showed a notation the tool stopped writing — 2026-09-02
 
 Reported by the maintainer looking at the README. Both drawings that had no drift test
@@ -883,16 +958,6 @@ inputs the function rejects**, because random text essentially never parses. The
 is real; the author's rules about what is *accepted* are barely exercised. Ply prints
 `fuzzed(64)` unqualified and does not say this.
 
-<<<<<<< HEAD
-- [ ] **Ply does not disclose that a run took the reject path nearly every time.** It
-      already has the vocabulary (`narrower than it looks`, `seeded`) and does not reach for
-      it here. Writing `examples:` does not help either: seeding only engages where the
-      ordinary generator cannot build the value at all, and a plain text parameter is one it
-      can — so the escape hatch a user would reach for is silently inert. This is the same
-      species of gap the `seeded` status was invented to close, in the one place it does not
-      apply.
-- [x] **A promise comparing non-numeric values with `==` or `!=` does not compile.** The
-=======
 - [x] **Fixed: the branch-decided measurement** (`297dd8f`). Ply now instruments a
       top-level `||` in a postcondition into an `if`/`else if` chain that records which
       side actually decided each case,
@@ -907,8 +972,7 @@ is real; the author's rules about what is *accepted* are barely exercised. Ply p
       the promise after the call, not about an input or operation the run could not build
       before it. `The-Ply-Spec.md` §5.4c amended in the same commit. Verdicts pinned
       unchanged (`fuzzed(64)` stays `fuzzed(64)`) by both fixtures' own e2e assertions.
-- [ ] **A promise comparing non-numeric values with `==` or `!=` does not compile.** The
->>>>>>> worktree-agent-a261567353ee7bf69
+- [x] **A promise comparing non-numeric values with `==` or `!=` does not compile.** The
       generated harness casts both sides of a comparison to `i128` (so it can report a
       broken promise rather than overflow while checking one); against a string, an
       `Option` or a struct that cast is invalid — `error[E0606]: casting &str as i128 is
@@ -1454,20 +1518,6 @@ at once, so the first fix moves the count by nothing.
 
 ### Three defects, each reproduced independently before being written down
 
-- [ ] **Ply generates a harness that does not compile whenever a method's parameter has the
-      same type as its receiver.** `a.same_as(b)`, `merge`, `union`, `cmp`, `min` — all of
-      them. Reproduced from scratch in a nine-line crate: `error[E0252]: the name Pair is
-      defined multiple times`. The report of it is good — refuses to call it a pass or a
-      violation, quotes the compiler — but the harness is still wrong.
-- [ ] **A user-facing sentence is false, and one run proves it false by itself.** For a type
-      whose constructor returns `Result<Self, E>`, Ply says: "it has no associated function
-      in the file it is declared in that builds a `A` value ... and none was found."
-      Reproduced with the same type, same constructor, same file, same run: used as a
-      *parameter* it earns `fuzzed(64)`, because Ply built the value by calling exactly the
-      constructor it says does not exist; used as a *receiver* it is refused with that
-      sentence. The `Result<Self, E>` widening reached the parameter path and not the
-      receiver path. Every constructor in `semver` is that shape and every `semver` type is
-      used as a receiver.
 - [ ] **Contracts written the documented out-of-source way are accepted, then ignored.**
       `check` reports "6 of 6 fn claims point at a function Ply can find"; `verify` runs none
       of them and explains it with two warnings on the same function that contradict each
@@ -1700,11 +1750,6 @@ Left in the working tree, not committed (explicit constraint for this session) �
       baseline + 12). `cargo fmt --all` and `cargo clippy --all-targets -- -D
       warnings` both clean. `git diff --stat -- vetting/ docs/` is empty — no
       committed artifact changed.
-- [ ] Not attempted, named rather than silently skipped: wiring
-      `render_svg_with_evidence_and_options` into `cargo ply verify`'s actual publish
-      path (`visual::build_visual_envelope_with_sources` still always renders fully
-      expanded); a CLI flag to preview a folded evidence render outside of `verify`.
-      Neither was asked for.
 
 ## Verus pin moved forward — 2026-08-30
 
@@ -2045,12 +2090,6 @@ in their words, and what happened to each.
       the first to the third. Fixing it means routing a line around obstacles -- a
       waypoint on the path and an obstacle test -- rather than the single straight
       segment `render_edge` draws today.
-- [ ] **The architecture summary counts crates it never names.** "1 of 2 crates in this
-      workspace belong to a declared component" is honest but not actionable: the crate
-      that belongs to nothing is not named, so the reader cannot tell which. Found while
-      checking a reviewer's claim that an undeclared dependency is skipped silently --
-      it is skipped, but the coverage count does disclose it, so the fix is naming
-      rather than counting.
 - [x] **`check` cannot check architecture without a Cargo workspace**, so the pre-code
       half of the loop is render-only. True, and the README implied otherwise. The
       development-loop section now says which half of step 2 works before the code
@@ -2303,8 +2342,6 @@ Full write-up with verbatim red-first failures: `docs/phase-1a.md`.
       (`coverage.not_checked`) and says plainly that every node reading `unclaimed` means
       this command gathered no evidence, not that the code is unverified.
 
-- [ ] `check`'s staleness tier — blocked on `ply.lock` (Phase 1c); its absence is currently
-      declared in `coverage.not_checked`.
 - [x] `check`'s architecture tier — crate level BUILT (`6fac707`), and it reads the real
       dependency graph rather than guessing. Carries a known defect found by review: it is
       blind to binary-only crates, so it reports a clean pass on this repo's own violation.
@@ -2324,11 +2361,6 @@ Full write-up with verbatim red-first failures: `docs/phase-1a.md`.
 - [ ] Wire `--fail-on` / `--only-changed` to `check` once a tier exists they can mean
       something for.
 - [ ] `check` should accept a loose `*.ply.yaml` path, so `tools/check`'s binary can retire.
-- [ ] `.archi/ply.json`'s "Tooling Today" diagram still shows `cargo ply` as not built —
-      stale since M3, not since this phase.
-- [ ] KNOWN GAP, deliberate: `discover_fn` sees only top-level fns in `src/lib.rs`. `check`
-      inherits the limit so it never passes an anchor `verify` would fail; the diagnostic
-      now says which of the two failures you hit, which makes the limit visible.
 
 ## Result reuse, and the gap a review found in it — landed 2026-08-25
 
@@ -2439,14 +2471,13 @@ project existed. Every number below is measured against it.
       remaining type work", which is a guess dressed as a ranking. Build it when a
       property somebody wrote down is blocked on it and nothing else, not as a programme.
       See "What widening the types is actually worth" below.
-- [ ] KNOWN GAP: a constructor returning `Result<Self, E>` — a real shape in the yardstick
-      — is still refused.
-- [ ] KNOWN GAP: `NonZero` and `Duration` are top-level only, never nested inside `Option`,
-      `Result`, arrays or collections.
-- [ ] Building a receiver, so methods that need one become checkable. Design settled in
-      `docs/review-self-construction.md`; the fourth option there (constructor plus a
-      bounded sequence of the type's own operations, with the length reported) is the one
-      to build, not constructor-only.
+- [ ] KNOWN GAP, **narrowed 2026-09-03**: `NonZero` and `Duration` nest fine on the
+      sampling tier — the 2026-09-02 composition work made `is_fuzz_nestable` fall through
+      to true for both. What is still refused is the *proving* tier: neither is part of
+      `is_leaf`, deliberately, because nesting one inside `Option`/`Result`/`[T; N]` there
+      would hand construction back to a generic `kani::any::<T>()` this module does not
+      control, and the whole point of the `NonZero` wrapper is that its constraint reaches
+      the solver rather than being assumed by convention.
 - [ ] **The suite re-proves the same fixture up to eight times per run**, which is most of
       the wall clock on every verification cycle. Making a proof earned once in a run serve
       the other tests that need it would turn forty-minute waits into minutes. Deferred all
@@ -2470,15 +2501,6 @@ adversarial review, none by the suite.
       unreadable on exactly the boxes a reader most wants to read. Both fixed, and held by
       a contrast floor over every ink/fill pair.
 
-- [ ] **KNOWN GAP -- the render is monotone by construction until results reach pixels.**
-      The palette is a two-state design: grey means promised, green means earned. Only the
-      first state can be drawn today, because `render_svg_with_evidence` post-processes a
-      finished string, so no run result can change a pixel. That means every diagram
-      anyone sees is the "before" half, permanently, and the moment the design pays off
-      never arrives. The colour was removed and the thing that puts it back was deferred.
-      This is the strongest argument yet for doing the evidence plumbing next: it is not
-      one blocked feature among five, it is the half of the palette that makes the other
-      half worth having.
 
 - [x] **A dark palette, following the reader's system setting** (2026-08-29). The render
       paints its own near-white background, so a dark-mode reader got a bright panel. One
@@ -2567,12 +2589,6 @@ adversarial review, none by the suite.
       was rewritten around the guarantee that actually holds: every meaning also carries a
       non-colour mark. The weak floor is kept, documented as weak.
 
-- [ ] **KNOWN GAP -- five of the document's items are blocked on one missing thing.**
-      `render_svg_with_evidence` calls `render_svg(doc)` and then post-processes the
-      finished string, so run results cannot affect a single pixel. Broken, evolving, the
-      promise/earned split, "working well", and the result-side counts in the strip all
-      need evidence to reach the drawing stage. That plumbing, not any individual glyph, is
-      the next real piece of work, and the research document never mentions it.
 
 - [ ] **Judgement call to revisit: at focus, a fn chip now shows both `B3 F4096 M` and the
       spelled-out lines.** The document wanted the letters confined to hover. Kept both so
@@ -2875,6 +2891,14 @@ Six commits, one per finding.
       (the hazard §5.4d closed for `trusted`, reopened one mechanism over); (3) no
       accumulating surface — `audit`/`worklist` are not built, so the debt lives only in
       per-run output that scrolls away, and the run is CI-green by default.
+
+      **Narrowed 2026-09-03**: two of the three parts are now built and only part (2)
+      survives. The vacuity check exists — `crates/ply-core/src/promise.rs` generates
+      satisfiability and tautology harnesses, wired in from `verify.rs` — and both
+      `audit` and `worklist` are real commands with their own modules. Nothing
+      fingerprints a declared boundary contract against the callee's body, so legacy code
+      can still change under a standing assumption; that is the whole of what is left, and
+      the conjunction argument above no longer applies to it.
 - [ ] **KNOWN GAP (review G3) — declared-contract keying assumes the anchor equals the
       Cargo.toml dependency key.** `ledger = { package = "real-name", path = ... }` with
       `anchor: real-name` would not match the path a caller writes, and the callee would
@@ -2948,7 +2972,9 @@ costs: `docs/post-004-fixes.md`. Four commits, one per item plus item 1's spec-a
       against the real legacy body is not built either.
 - [ ] **KNOWN GAP — `ply.yaml` `requires`/`ensures` are still not ANDed into the fn's own
       check** (§5.4 says they are). They are read, and used for §5.5's boundary
-      assumption; `W0510` now says out loud which of the two a user is getting.
+      assumption; a warning said out loud which of the two a user was getting. Retired
+      2026-09-03, when the contract began being merged into the fn's own checks and the
+      "declared here, not folded in" condition stopped existing.
 - [ ] **KNOWN GAP — no witness decoder for the newly admitted shapes.** `char`,
       `Option`, `Result` and `[T; N]` reach the engines, but `WitnessValue` cannot spell
       them, so a Kani violation on one is reported `X0901`/`tool_error` naming the
@@ -3014,10 +3040,6 @@ under `vetting/004-legacy-extension/`; SVG committed. Nothing in `crates/`, `too
       component's fns are looked for in one `src/lib.rs`, and ply.yaml `requires`/`ensures`
       are silently dropped (unknown serde fields) while `ply-check` on the same file
       enforces `additionalProperties: false`.
-- [ ] **Finding 8 — the render draws declared ceilings as earned.** `tier_fee_cents B2`
-      and `withdraw B2` (unsupported!) draw exactly like the fn that really earned
-      `bounded(2)`. Already on this list as "separate declared ceilings from earned
-      verdicts"; 004 is the first live instance.
 - [ ] **Finding 9 — `--only-changed` is the delta thesis's mechanism**, not a convenience.
 - [ ] **Finding 10 — `verify` writes into the crate under test** (generated modules in
       `src/`, harness member appended to `[workspace]`), which is why `run.sh` copies to a
@@ -3115,14 +3137,6 @@ plus an "external-elements gate" section in `vetting/003-trading-system.md`.
 - [ ] Out of scope by the task brief, not attempted: `crates/` (the
       `entry:`/audit surface lands there at M5); `tools/kernel` untouched (and
       correctly so — externals never enter the verdict tree).
-- [ ] NOT FIXED, recorded: 13 pre-existing `edge-label`-vs-line violations on
-      edges that predate this feature (`BookUpdate`, `OrderIntent`, `Order`,
-      `Fill` between `gateway`/`oms`/`pnl`), now surfaced by the general
-      check added above but not failed on. Fixing them means extending this
-      session's two-pass restructure and multi-anchor escalation to the
-      regular-edge and deny-edge label placement code too — a larger, riskier
-      change to well-tested code, not attempted here. Full list printed by the
-      test itself; see `docs/external-elements-adoption.md`.
 
 ## M4 — fuzz + test + mutate tier — landed 2026-08-24 (2520f8b)
 
@@ -3193,8 +3207,6 @@ in docs/m4-findings.md along with two deliberate self-mutations, each caught and
       substring of another's in the same crate could see cross-fn mutate scope leak; no
       fixture here exercises more than one fn per crate, so this was not reproduced, only
       named.
-- [ ] TODO(M1, carried from M3): reconcile the hand-rolled `ply.yaml` model in
-      `crates/ply-core/src/config.rs` with `tools/model`'s full model.
 
 ## M4 adversarial review — closed 2026-08-24 (see docs/review-m4-2026-08-24.md and docs/m4-review-closure.md)
 
@@ -3285,10 +3297,6 @@ wall clock, 72 tests (was 53), zero warnings on `cargo check --workspace --tests
 - [ ] Mutants whose tests time out land in cargo-mutants' `timeout.txt` and do not block
       `all_caught()`, so a fn can earn `·spec-strong` with timed-out (uncaught) mutants.
       Defensible as cargo-mutants' own convention; undocumented until now.
-- [ ] §6's exit-code table reserves 2 for a tool error, but `main::exit_code_for` returns 1
-      for every error-severity diagnostic (M3-inherited; now visible on D1's new path). The
-      new e2e tests assert *non-zero* rather than pinning 1, so no test blesses either
-      behaviour.
 
 
 - [x] `ply-render --depth N` / `--focus` / `--collapse <component>` (8d8910f) —
@@ -3411,15 +3419,6 @@ are the items below; the transcript itself is in git history if anyone ever want
 - [ ] **KNOWN GAP — is an empty assumption list representable, and should it be?** Raised
       by the same 2026-08-25 reduction work and never carried into this list. A spec
       question, not a bug: decide and write it into The-Ply-Spec.md either way.
-- [ ] **Pull a thin M3 vertical slice ahead of M1/M2** (fable's sequencing call, and the
-      external review's undone recommendation #2): one hand-written ply.yaml, one
-      contracted fn, generated harness WITH the unwind emission, one real cex, the D7
-      rendered red test, one JSON diagnostic. Seven sessions of engine-free scaffolding
-      before re-contacting the layer that just falsified five spec claims is the
-      reviewed failure mode, rescheduled.
-- [ ] **Reweigh M4 above the bulk of M3**: M3 is 8-10 sessions for an engine covering a
-      sliver of signatures; M4 is 4 sessions covering every signature, and its scariest
-      mechanism is already proven end to end.
 - [ ] **Generalise D13 beyond M0**: each milestone opens by spiking its riskiest
       external-tool claim, and no spec sentence may say "confirmed"/"verified" without
       naming the artifact that shows it. §5.4c carried a fabricated confirmation until
@@ -3427,30 +3426,6 @@ are the items below; the transcript itself is in git history if anyone ever want
 - [ ] Measure whether the unwind annotation rescues ITERATOR-CHAIN bodies (marked NOT RUN
       in the scale sweep). Until measured, §5.4b's gate still admits functions that hit
       the exact failure it was rewritten to prevent.
-- [ ] **D7 correction: the generated playback test does not reproduce contract
-      violations.** Adversarial re-verification found `cargo kani playback` never
-      evaluates contract closures — only the real body runs — so an `ensures` violation
-      replays and the generated test PASSES. Playback preserves the witness *input*
-      exactly, but the rendered plain `#[test]` is the only artifact that can be a red
-      reproduction, and that is most Ply counterexamples. §8/D7 wording needs a pass.
-      It is a documented Kani limitation, not a defect, and the fix is ours: Ply's
-      generated test must assert the postcondition explicitly so the failure is
-      panic-shaped and therefore replayable. Kani reportedly warns when it declines to
-      generate a test; no warning appeared in our run, so don't depend on it.
-      → PLAN WRITTEN: docs/plans/d7-replayable-tests.md (worked example compiled and
-      run red-for-the-right-reason). Decisions to review before implementing: the
-      generated test lives in an in-crate `cfg(test)` module (private items are
-      unreachable from `tests/`); contract expressions render through one shared
-      overflow-safe assertion renderer, widening to i128 so the assertion states the
-      broken promise instead of re-triggering the overflow; refusals reuse W0541 with
-      a reason field; and `counterexample.kani_playback` is renamed `kani_witness` so
-      the schema stops implying it reproduces anything. DECIDED: witnesses are
-      generated for EVERY falsified claim (default `all`); §1 states the concrete
-      failing input as a MUST, so a default cap would have violated the spec for
-      findings past it. `--witnesses=N|none` is an explicit opt-out only, and when
-      used it must announce the skip (W0541 reason `budget_exhausted`). The ~20s
-      near-fixed cost is accepted, shown in progress output, and optimised by making
-      it cheaper — never by skipping it.
 - [x] **Callee-before-caller ordering got kernel-grade treatment** — new `ply-schedule`
       crate: SCC-condensation planning (cycles land in one batch, never deadlock) and a
       `may_stub` decision that returns Allowed ONLY when the callee's proof actually
@@ -3488,21 +3463,6 @@ are the items below; the transcript itself is in git history if anyone ever want
 - [ ] `trusted` claims are unrestricted prose — no identity, date, commit, scope, or
       expiry. The shield can read as approval.
 - [ ] `conditional` assumptions are free-form strings, untied to the call graph.
-- [ ] Kani harnesses do not terminate (e46e4a9): CBMC unwinds BTreeMap's generic clone
-      on every recursive `aggregate_raw` call. Kani's docs confirm heap collections
-      blow up the encoding AND that generic std methods cannot be stubbed — so the
-      documented workaround does not apply directly. ATTEMPT 1 (done): statuses are
-      now a `StatusSet` bitmask instead of a BTreeSet — behaviour identical (991k-tree
-      enumeration green, untouched assertions) and 40% faster, and Kani moved from an
-      indefinite hang to a deterministic timeout at 5 min. Still no verdict: CBMC now
-      stalls one field over, sorting/dedup'ing `Option<Vec<String>>` assumptions.
-      Deliberately NOT collapsing assumptions to a count — D5 and the newbie-bar rule
-      need callers to read them verbatim, so that would narrow what a passing proof
-      means. Untried: `-Z stubbing` of the String sort/compare for the harness only.
-      **Bigger implication for the project:** Ply routes `bounded` checks to Kani; if
-      Kani struggles this much with std collections in a 300-line pure module, the
-      supported-signature story (§5.4b) is optimistic. This is exactly the kind of
-      engine limit M0 exists to find — more evidence for doing M0 next.
 - [x] Renderer CLI now covered — 11 tests over flags, exit codes, and error wording;
       two messages rewritten to the newbie bar (`--depth 0` and a non-numeric depth
       used to fail silently or with clap's raw error).

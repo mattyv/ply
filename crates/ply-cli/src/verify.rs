@@ -613,8 +613,25 @@ fn verify_loaded_crate(
             // there is no inline attribute -- is fixed in the diagnostic's
             // own text below instead, so the fix is restoring when this
             // fires, not narrowing it further.
-            if declares_contract {
-                diagnostics.push(declared_contract_not_anded_diag(&node_id, fn_name));
+            // §5.4's "ANDed in", finally done. Until 2026-09-03 the
+            // document's clauses were read, drawn, written into the
+            // transcript, offered to callers as an assumption -- and never
+            // checked against the function they were written for, with a
+            // warning saying so on every run. That is this project's own
+            // central failure mode, a promise that reads as checked and is
+            // not, in the one file whose entire purpose is that its claims
+            // are checked.
+            //
+            // After the boundary-declaration check above, deliberately: a
+            // contract with no checks beside it is an assumption for
+            // callers and contributes no node, and merging before that test
+            // would turn it into one.
+            if declares_contract
+                && let Err(bad) =
+                    harness::merge_declared_contract(&mut cf, &claim.requires, &claim.ensures)
+            {
+                diagnostics.push(unreadable_declared_contract_diag(&node_id, fn_name, &bad));
+                continue;
             }
 
             // §5.4c: **an empty list is a list.** `checks: []` reads to a
@@ -2467,41 +2484,48 @@ fn union_statuses(children: &[Node]) -> Vec<String> {
     out
 }
 
-/// §5.4 says `ply.yaml` `requires`/`ensures` "are ANDed in" to a fn's own
-/// contract. That merge is not implemented (it needs the contract to reach
-/// harness codegen as an expression, not a string). What *is* implemented is
-/// the boundary use (§5.5): callers assume it. Saying which of the two a
-/// user is getting beats letting them assume the other -- the silent drop
-/// this replaces is vetting 004 finding 7.
-fn declared_contract_not_anded_diag(node_id: &str, fn_name: &str) -> Diagnostic {
+/// A `requires:`/`ensures:` line written in `ply.yaml` that Ply could not
+/// read as Rust.
+///
+/// An error rather than a warning, and it stops this function's checks:
+/// a clause the author wrote and Ply cannot use is a promise nobody is
+/// checking, which is worse than a promise nobody wrote. The old behaviour
+/// here was to drop the whole `ply.yaml` contract silently and warn that it
+/// had; now the contract is merged (§5.4's "ANDed in") and only a clause
+/// that cannot be parsed at all reaches this.
+fn unreadable_declared_contract_diag(
+    node_id: &str,
+    fn_name: &str,
+    bad: &harness::DeclaredContractError,
+) -> Diagnostic {
     Diagnostic {
-        code: "W0510".into(),
-        severity: "warning".into(),
+        code: "E0505".into(),
+        severity: "error".into(),
         phase: "verify".into(),
         engine: "ply".into(),
         check: "".into(),
         node_id: node_id.into(),
         title: format!(
-            "the `requires:`/`ensures:` declared for `{fn_name}` in ply.yaml is used only where \
-             §5.5 needs it -- callers of `{fn_name}` may assume it at a boundary -- it is \
-             **not** yet ANDed into `{fn_name}`'s own checks, which §5.4 says it should be. So \
-             this run does not check `{fn_name}` against it; only an inline \
-             `#[ply::requires]`/`#[ply::ensures]` attribute written on `{fn_name}` itself counts \
-             toward `{fn_name}`'s own checks. (W0510)"
+            "the line `{clause}` written for `{fn_name}` in ply.yaml could not be read, so \
+             `{fn_name}` was not checked at all this run. {reason}. Nothing here was checked \
+             against a half-understood promise, and nothing was quietly dropped either. \
+             (E0505)",
+            clause = bad.clause,
+            reason = bad.reason,
         ),
         pointer: None,
         primary_span: None,
         counterexample: None,
         fixes: vec![Fix {
             title: format!(
-                "move the clause onto `{fn_name}` itself as `#[ply::requires(..)]`/\
-                 `#[ply::ensures(..)]` if you want this run to check it -- inline attributes are \
-                 the canonical contract source (D2)"
+                "fix the line so it reads as Rust, or move it onto `{fn_name}` itself as \
+                 `#[ply::requires(..)]`/`#[ply::ensures(..)]`, where the compiler will point \
+                 at the mistake for you"
             ),
             edits: vec![],
         }],
         assumptions: vec![],
-        open_item: Some("declared_contract_not_merged".into()),
+        open_item: None,
     }
 }
 
@@ -2742,15 +2766,13 @@ fn run_fn_checks(
             // This diagnostic used to also name, inline, whether ply.yaml
             // *also* declares a `requires:`/`ensures:` contract for this
             // same fn (2026-08-30, "a documented way of writing contracts
-            // is accepted, then silently ignored"). That note is gone: the
-            // fix for a later regression (2026-08-31, "a promise nobody
-            // checks is now reported green in total silence") made
-            // `declared_contract_not_anded_diag` (`W0510`) fire unconditionally
-            // whenever ply.yaml declares a contract here, which is the same
-            // condition this note used to check -- so the two diagnostics
-            // said the same thing about the ply.yaml contract whenever both
-            // fired, and repeating it here would just be noise now that
-            // `W0510` always carries it.
+            // is accepted, then silently ignored"), and later deferred that
+            // to a warning whose whole job was saying so. Both are gone for
+            // the same reason: since 2026-09-03 a ply.yaml contract is
+            // merged into the fn's own (§5.4's "ANDed in"), so a fn that
+            // declares one *has* a contract and never reaches here. What
+            // this says -- there is nothing to check the result against --
+            // is now only ever true when there really is nothing.
             diagnostics.push(Diagnostic {
                 code: "V0505".into(),
                 severity: "warning".into(),
@@ -6582,14 +6604,21 @@ fn earned_evidence(node: &Node, diagnostics: &[Diagnostic]) -> bool {
 /// was reused. Wired to the run first, the second run came back bare --
 /// which is how that was found.
 fn attach_claim_text(node: &mut Node, cf: &ContractFn, claim: &FnClaim) {
-    let mut requires: Vec<String> = claim.requires.clone();
-    if let Some((_, src)) = &cf.requires {
-        requires.push(src.clone());
-    }
-    let mut ensures: Vec<String> = claim.ensures.clone();
-    if let Some((_, src)) = &cf.ensures {
-        ensures.push(src.clone());
-    }
+    // The contract Ply actually checked, once. Since 2026-09-03 the
+    // document's clauses are merged into `cf` rather than sitting beside it
+    // (§5.4's "ANDed in"), so listing the document's list *and* the merged
+    // text puts every clause in twice -- the envelope reported
+    // `requires: ["true", "true"]` for a document with one clause, in the
+    // channel an agent reads. The document's own list is the fallback for
+    // the case the merge never reached: a boundary declaration, which
+    // contributes an assumption for callers and no checks of its own.
+    let (requires, ensures) = match (&cf.requires, &cf.ensures) {
+        (None, None) => (claim.requires.clone(), claim.ensures.clone()),
+        (req, ens) => (
+            req.iter().map(|(_, s)| s.clone()).collect(),
+            ens.iter().map(|(_, s)| s.clone()).collect(),
+        ),
+    };
     node.contract = ply_core::diag::Contract { requires, ensures };
     node.trusted = claim
         .trusted
@@ -6621,28 +6650,82 @@ fn unused(_p: &PathBuf) {}
 mod tests {
     use super::*;
 
-    /// Defect 2 (2026-08-30, "a documented way of writing contracts is
-    /// accepted, then silently ignored"): a fn claimed with `checks:
-    /// [fuzz(64)]` plus a `requires:`/`ensures:` contract written directly
-    /// in ply.yaml, on a function with no inline `#[ply::requires]`/
-    /// `#[ply::ensures]` attribute at all, used to earn *two* warnings that
-    /// flatly contradicted each other: one (`W0510`) said the ply.yaml
-    /// contract "is used ... so this run checked `seven` against its inline
-    /// attributes only" -- which is false, there are no inline attributes,
-    /// nothing was checked against them -- and the other (`V0505`) said
-    /// "there is nothing to check its result against, so nothing was run".
-    /// A reader had to reconcile those alone.
+    /// The case that makes the merge worth having: a promise written in the
+    /// document that the code does **not** keep.
     ///
-    /// The actual fix is not fewer diagnostics: it is diagnostics that never
-    /// claim more than they know. `W0510` still fires every time ply.yaml
-    /// declares a contract (a later regression, 2026-08-31, narrowed that to
-    /// only fire alongside an inline attribute, which silently dropped it
-    /// for the case that matters most -- a `ply.yaml` contract with no
-    /// inline attribute at all). It just no longer says what specifically
-    /// was or was not checked, so having both `V0505` and `W0510` fire
-    /// together is no longer a contradiction, only two honest facts.
+    /// Measured before the merge landed, on this exact shape: a passing
+    /// example alongside a wrong `ensures:` in ply.yaml reported a clean
+    /// `tested` with the wrong promise never checked at all. A promise that
+    /// reads as checked and is not is the one failure this project exists
+    /// to refuse, so this test exists to keep that door shut.
     #[test]
-    fn a_yaml_only_contract_on_an_unattributed_fn_earns_two_diagnostics_that_agree() {
+    fn a_promise_the_document_makes_and_the_code_breaks_is_a_violation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"wrongpromise-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn seven() -> u32 {\n    7\n}\n",
+        )
+        .unwrap();
+        let yaml_path = dir.path().join("ply.yaml");
+        std::fs::write(
+            &yaml_path,
+            "ply: 1\ncomponents:\n  demo:\n    anchor: wrongpromise_demo\n    fns:\n      \
+             seven:\n        checks: [test]\n        ensures: [\"|result| *result == 99\"]\n        \
+             examples:\n          - \"seven() == 7\"\n",
+        )
+        .unwrap();
+        let loaded = config::load(&yaml_path).unwrap();
+
+        let result = verify_loaded_crate(
+            dir.path(),
+            &VerifyOptions {
+                // Generous on purpose. These two assert on a *verdict*, so the
+                // engine has to actually finish; a five-second budget loses a
+                // race with the other tests' cargo builds when the suite runs
+                // in parallel and comes back a timeout, which is neither the
+                // pass nor the failure this test is about.
+                engine_timeout_secs: Some(120),
+                seed: None,
+            },
+            loaded,
+        )
+        .unwrap();
+
+        fn verdict_of<'a>(node: &'a Node, id: &str) -> Option<&'a str> {
+            if node.id == id {
+                return Some(node.verdict.as_str());
+            }
+            node.children.iter().find_map(|c| verdict_of(c, id))
+        }
+        assert_eq!(
+            verdict_of(&result.envelope.root, "seven"),
+            Some("violation"),
+            "`seven` returns 7 and the document promises 99. The example passes, which is \
+             exactly how this used to come back clean: {:#?}",
+            result.envelope.diagnostics
+        );
+    }
+
+    /// The same fixture the old "silently ignored" defect used, now
+    /// asserting the opposite thing.
+    ///
+    /// History, because it explains the shape of this test: a fn claimed
+    /// with `checks: [fuzz(64)]` plus a `requires:`/`ensures:` written
+    /// directly in ply.yaml, on a function with no inline attribute at all,
+    /// used to earn two warnings that contradicted each other -- one saying
+    /// the ply.yaml contract was not folded in, one saying there was
+    /// nothing to check the result against. The fix at the time was to make
+    /// the two agree. The real fix, 2026-09-03, is that the contract is now
+    /// folded in (§5.4's "ANDed in"), so neither warning has anything to
+    /// say: there is a contract, and it is checked.
+    #[test]
+    fn a_contract_written_only_in_the_document_is_checked() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(
@@ -6668,7 +6751,12 @@ mod tests {
         let result = verify_loaded_crate(
             dir.path(),
             &VerifyOptions {
-                engine_timeout_secs: Some(5),
+                // Generous on purpose. These two assert on a *verdict*, so the
+                // engine has to actually finish; a five-second budget loses a
+                // race with the other tests' cargo builds when the suite runs
+                // in parallel and comes back a timeout, which is neither the
+                // pass nor the failure this test is about.
+                engine_timeout_secs: Some(120),
                 seed: None,
             },
             loaded,
@@ -6681,40 +6769,26 @@ mod tests {
             .iter()
             .filter(|d| d.node_id == "demo::seven")
             .collect();
-        assert_eq!(
-            on_seven.len(),
-            2,
-            "two diagnostics that agree, not one that omits the ply.yaml fact: {on_seven:#?}"
-        );
         for d in &on_seven {
             assert!(
-                !d.title.contains("checked `seven` against its inline"),
-                "must never claim inline attributes were checked when there are none: {}",
+                !d.title.contains("not** yet ANDed") && !d.title.contains("nothing to check"),
+                "the document's contract is checked now, so nothing may say it was not: {}",
                 d.title
             );
         }
-        let v0505 = on_seven
-            .iter()
-            .find(|d| d.code == "V0505")
-            .unwrap_or_else(|| panic!("expected a V0505 diagnostic: {on_seven:#?}"));
-        let w0510 = on_seven
-            .iter()
-            .find(|d| d.code == "W0510")
-            .unwrap_or_else(|| panic!("expected a W0510 diagnostic: {on_seven:#?}"));
-        assert!(
-            w0510.title.contains("ply.yaml"),
-            "must name that ply.yaml declares a contract here, and that it is not checked: {}",
-            w0510.title
-        );
-        assert!(
-            w0510.title.contains("#[ply::requires]") || w0510.title.contains("#[ply::ensures]"),
-            "must say what a reader should write instead: {}",
-            w0510.title
-        );
-        assert!(
-            v0505.title.contains("no `#[ply::ensures]`"),
-            "must still say why nothing ran: {}",
-            v0505.title
+        fn verdict_of<'a>(node: &'a Node, id: &str) -> Option<&'a str> {
+            if node.id == id {
+                return Some(node.verdict.as_str());
+            }
+            node.children.iter().find_map(|c| verdict_of(c, id))
+        }
+        let verdict =
+            verdict_of(&result.envelope.root, "seven").expect("the claim produced a node");
+        assert_eq!(
+            verdict, "tested",
+            "`seven` takes no input, so one call is the whole input space -- the contract \
+             written in the document is checked against it and holds: {:#?}",
+            on_seven
         );
     }
 

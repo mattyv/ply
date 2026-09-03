@@ -76,7 +76,7 @@ codes!(
     A0402, A0403, A0404, A0406, A0407, A0408, W0411, W0412,
     // --- Tier::Contract: verify-time, per-function proof-engine checks
     // (§5.4). ---
-    E0501, E0502, E0503, W0502, W0503, W0510, W0511, W0512, W0513, W0514, W0515, W0516, W0517,
+    E0501, E0502, E0503, E0505, W0502, W0503, W0511, W0512, W0513, W0514, W0515, W0516, W0517,
     V0505, V0506, V0507, V0508, V0509, V0510, W0518, W0519, W0520, W0521, W0522, W0523, W0524,
     W0525, W0526, W0527, W0528, W0529, W0541, W0110, W0111, W0303, W0531, K0502, K0601, M0601,
     P0502, P0601, R0502, R0601, X0901, X0902,
@@ -464,13 +464,13 @@ impl Code {
                 spec_anchor: "§5.4c",
                 gloss: "The random-sample check gave up generating inputs for this function before it reached the case count asked for, because too many generated values were rejected by the function's own precondition -- so no evidence was earned at all, not a smaller passing count.",
             },
-            W0510 => RuleEntry {
+            E0505 => RuleEntry {
                 code: self,
                 tier: Contract,
                 status: Enforced,
-                severity: Warning,
+                severity: Error,
                 spec_anchor: "§5.4",
-                gloss: "This function also has a contract entry written directly in ply.yaml, but Ply does not yet combine it with the contract written in the code -- only the in-code one is actually checked, and this says so rather than silently dropping the ply.yaml one.",
+                gloss: "A requires: or ensures: line written in ply.yaml could not be read as Rust, so it cannot be checked -- the line is quoted back with what was expected, rather than dropped, because a promise nobody checks is worse than one nobody wrote.",
             },
             W0511 => RuleEntry {
                 code: self,

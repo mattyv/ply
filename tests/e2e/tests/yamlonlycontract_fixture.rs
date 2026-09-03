@@ -44,13 +44,15 @@ fn run(args: &[&str]) -> (i32, String, String) {
 }
 
 /// `check` is the command people run first, and it used to give no hint at
-/// all that this claim's contract does nothing. The one sentence a user
-/// needs now rides on the same line that already reports the claim as
-/// resolved. `seven` has its own `checks:` list here, so this is the "you
-/// asked for this to be checked" case, not the boundary-declaration case
-/// (see `boundarycontract_check`).
+/// all that this claim's contract did nothing -- then, once it did, said so
+/// on the line reporting the claim as resolved. Since the contract is
+/// merged into the function's own checks (2026-09-03), that sentence would
+/// be false, so it now says what actually happens: both ways, not one.
+/// `seven` has its own `checks:` list here, so this is the "you asked for
+/// this to be checked" case, not the boundary-declaration case (see
+/// `boundarycontract_check`).
 #[test]
-fn check_names_the_yaml_only_contract_as_unread_on_the_anchors_line() {
+fn check_says_a_yaml_contract_is_used_both_ways() {
     let fixture = copy_fixture("yamlonlycontract");
     let (code, stdout, stderr) = run(&["check", fixture.path().to_str().unwrap()]);
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
@@ -61,64 +63,63 @@ fn check_names_the_yaml_only_contract_as_unread_on_the_anchors_line() {
     );
     assert!(
         flat.contains(
-            "1 of them also writes a `requires:`/`ensures:` contract directly in ply.yaml. A \
-             ply.yaml contract is only used one way -- a caller of `seven` may assume it, but it \
-             is not added to `seven`'s own checks, so `verify` does not check `seven` against \
-             it. Move the contract onto `seven` as a `#[ply::requires]`/`#[ply::ensures]` \
-             attribute if you want it checked."
+            "1 of them also writes a `requires:`/`ensures:` contract directly in ply.yaml. \
+             That contract is used both ways: `verify` checks `seven` against it, alongside \
+             any `#[ply::requires]`/`#[ply::ensures]` attribute written on `seven` itself, \
+             and a caller of `seven` may assume it at a boundary."
         ),
         "check must name the fact plainly, before verify is ever run: {flat}"
     );
 }
 
-/// `verify` used to run none of the declared checks and explain that with
-/// two diagnostics on `seven` that contradicted each other. Now there are
-/// still two, but they no longer disagree: each says only what it actually
-/// knows, and the ply.yaml fact is said exactly once, by the diagnostic
-/// whose whole job is saying it.
+/// `verify` used to run none of the declared checks here and explain that
+/// with two diagnostics that contradicted each other; then with two that
+/// agreed. Both were descriptions of a contract nobody checked.
+///
+/// Now it is checked (§5.4's "ANDed in", 2026-09-03), so the interesting
+/// assertion is not about diagnostics at all: it is that the promise the
+/// document makes reaches the verdict.
 #[test]
-fn verify_reports_two_diagnostics_that_no_longer_contradict_each_other() {
+fn a_contract_written_only_in_the_document_is_checked_and_holds() {
     let cargo_ply = build_cargo_ply();
     let fixture = copy_fixture("yamlonlycontract");
     let run = run_verify(&cargo_ply, fixture.path(), 60);
 
+    let seven = &run.json["root"]["children"][0]["children"][0];
+    assert_eq!(
+        seven["id"], "seven",
+        "expected the one claim this fixture declares: {}",
+        run.json
+    );
+    assert_eq!(
+        seven["verdict"], "tested",
+        "`seven` returns 7 and the document promises 7. It takes no input, so one call is \
+         the whole input space -- checked, and it holds: {}",
+        run.json
+    );
+
+    let ensures = seven["contract"]["ensures"].as_array().unwrap();
+    assert_eq!(
+        ensures.len(),
+        1,
+        "the contract Ply checked, once. Listing the document's clause and the merged text \
+         both put every clause in twice: {ensures:?}"
+    );
+    assert!(
+        ensures[0].as_str().unwrap().contains("== 7"),
+        "and it is the clause the document wrote: {ensures:?}"
+    );
+
     let diagnostics = run.json["diagnostics"].as_array().unwrap();
-    let on_seven: Vec<&serde_json::Value> = diagnostics
+    for d in diagnostics
         .iter()
         .filter(|d| d["node_id"] == "yamlonlycontract::seven")
-        .collect();
-    assert_eq!(on_seven.len(), 2, "envelope: {}", run.json);
-
-    let v0505 = on_seven
-        .iter()
-        .find(|d| d["code"] == "V0505")
-        .unwrap_or_else(|| panic!("expected a V0505 diagnostic: {:#?}", on_seven));
-    let title = v0505["title"].as_str().unwrap();
-    assert!(
-        !title.contains("checked `seven` against its inline"),
-        "must never claim inline attributes were checked when there are none: {title}"
-    );
-    assert!(
-        title.contains("no `#[ply::ensures]`") && title.contains("no `examples:`"),
-        "must still say why nothing ran: {title}"
-    );
-
-    let w0510 = on_seven
-        .iter()
-        .find(|d| d["code"] == "W0510")
-        .unwrap_or_else(|| panic!("expected a W0510 diagnostic: {:#?}", on_seven));
-    let title = w0510["title"].as_str().unwrap();
-    assert!(
-        title.contains("ply.yaml"),
-        "must name that ply.yaml also declares a contract here, unread for seven's own checks: \
-         {title}"
-    );
-    assert!(
-        !title.contains("checked `seven` against its inline"),
-        "must never claim inline attributes were checked when there are none: {title}"
-    );
-    assert!(
-        title.contains("does not check `seven` against it"),
-        "must say plainly that nothing checks the ply.yaml contract itself: {title}"
-    );
+    {
+        let title = d["title"].as_str().unwrap_or("");
+        assert!(
+            !title.contains("nothing to check its result against")
+                && !title.contains("not** yet ANDed"),
+            "nothing may say the contract went unchecked: {title}"
+        );
+    }
 }

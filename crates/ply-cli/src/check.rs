@@ -966,19 +966,17 @@ fn anchor_detail(t: &AnchorTally) -> String {
             .as_deref()
             .unwrap_or("the function");
         s.push_str(&format!(
-            " 1 of them also writes a `requires:`/`ensures:` contract directly in ply.yaml. A \
-             ply.yaml contract is only used one way -- a caller of `{fn_name}` may assume it, \
-             but it is not added to `{fn_name}`'s own checks, so `verify` does not check \
-             `{fn_name}` against it. Move the contract onto `{fn_name}` as a \
-             `#[ply::requires]`/`#[ply::ensures]` attribute if you want it checked."
+            " 1 of them also writes a `requires:`/`ensures:` contract directly in ply.yaml. \
+             That contract is used both ways: `verify` checks `{fn_name}` against it, \
+             alongside any `#[ply::requires]`/`#[ply::ensures]` attribute written on \
+             `{fn_name}` itself, and a caller of `{fn_name}` may assume it at a boundary."
         ));
     } else if t.yaml_contract_checked_fns > 1 {
         s.push_str(&format!(
-            " {} of them also write a `requires:`/`ensures:` contract directly in ply.yaml. A \
-             ply.yaml contract is only used one way -- a caller of those functions may assume \
-             it, but it is not added to their own checks, so `verify` does not check them \
-             against it. Move the contract onto those functions as \
-             `#[ply::requires]`/`#[ply::ensures]` attributes if you want them checked.",
+            " {} of them also write a `requires:`/`ensures:` contract directly in ply.yaml. \
+             Those contracts are used both ways: `verify` checks each function against its \
+             own, alongside any `#[ply::requires]`/`#[ply::ensures]` attribute written on it, \
+             and callers may assume them at a boundary.",
             t.yaml_contract_checked_fns
         ));
     }
@@ -1589,11 +1587,10 @@ pub struct OrderBook {
         assert_eq!(
             cov.checked[1].detail,
             "1 of 1 fn claims in this crate point at a function Ply can find. 1 of them also \
-             writes a `requires:`/`ensures:` contract directly in ply.yaml. A ply.yaml contract \
-             is only used one way -- a caller of `seven` may assume it, but it is not added to \
-             `seven`'s own checks, so `verify` does not check `seven` against it. Move the \
-             contract onto `seven` as a `#[ply::requires]`/`#[ply::ensures]` attribute if you \
-             want it checked."
+             writes a `requires:`/`ensures:` contract directly in ply.yaml. That contract is \
+             used both ways: `verify` checks `seven` against it, alongside any \
+             `#[ply::requires]`/`#[ply::ensures]` attribute written on `seven` itself, and a \
+             caller of `seven` may assume it at a boundary."
         );
     }
 
@@ -1644,16 +1641,15 @@ pub struct OrderBook {
         let cov = report.envelope.coverage.as_ref().unwrap();
         assert_eq!(
             cov.checked[1].detail,
-            "4 of 4 fn claims in this crate point at a function Ply can find. 2 of them also \
-             write a `requires:`/`ensures:` contract directly in ply.yaml. A ply.yaml contract \
-             is only used one way -- a caller of those functions may assume it, but it is not \
-             added to their own checks, so `verify` does not check them against it. Move the \
-             contract onto those functions as `#[ply::requires]`/`#[ply::ensures]` attributes \
-             if you want them checked. 2 of them declare a `requires:`/`ensures:` contract in \
-             ply.yaml but ask for no checks of their own -- that is deliberate: it lets any \
-             function calling them assume the promise is true, without Ply ever verifying that \
-             they keep it. This is the normal way to describe legacy code you do not want to \
-             edit; any caller's result will say it rests on these unchecked promises."
+            "4 of 4 fn claims in this crate point at a function Ply can find. 2 of them also write \
+             a `requires:`/`ensures:` contract directly in ply.yaml. Those contracts are used both \
+             ways: `verify` checks each function against its own, alongside any \
+             `#[ply::requires]`/`#[ply::ensures]` attribute written on it, and callers may assume \
+             them at a boundary. 2 of them declare a `requires:`/`ensures:` contract in ply.yaml \
+             but ask for no checks of their own -- that is deliberate: it lets any function calling \
+             them assume the promise is true, without Ply ever verifying that they keep it. This is \
+             the normal way to describe legacy code you do not want to edit; any caller's result \
+             will say it rests on these unchecked promises."
         );
     }
 
