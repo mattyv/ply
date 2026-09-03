@@ -1,5 +1,23 @@
 # TODO
 
+## Landed: TODO.md was contradicting itself in a committed merge conflict — 2026-09-03
+
+Found while auditing this file for stale items, not by anyone reading it. Conflict
+markers from an agent worktree merge were committed to `main` and had been sitting
+there: `<<<<<<< HEAD`, `=======`, `>>>>>>>`, with both sides kept verbatim.
+
+The damage was not cosmetic. The two sides disagreed about the *status* of two items,
+so the file simultaneously said each one was done and not done — a reader taking either
+at face value would have been misled, and the whole point of this file is that it can be
+taken at face value. This is the failure CLAUDE.md's own rule names: a stale list is
+worse than none.
+
+- [x] **Resolved against the code rather than by picking a side.** Both items are in fact
+      done, and both were verified before the resolution: the reject-path disclosure
+      exists (`promise-lopsided`, raised in `verify.rs`, commit `297dd8f`), and the
+      non-numeric comparison no longer breaks the build (`is_provably_numeric` gates the
+      cast in `contract_rt.rs`). Both now read `[x]`.
+
 ## Landed: two documentation drawings showed a notation the tool stopped writing — 2026-09-02
 
 Reported by the maintainer looking at the README. Both drawings that had no drift test
@@ -864,16 +882,6 @@ inputs the function rejects**, because random text essentially never parses. The
 is real; the author's rules about what is *accepted* are barely exercised. Ply prints
 `fuzzed(64)` unqualified and does not say this.
 
-<<<<<<< HEAD
-- [ ] **Ply does not disclose that a run took the reject path nearly every time.** It
-      already has the vocabulary (`narrower than it looks`, `seeded`) and does not reach for
-      it here. Writing `examples:` does not help either: seeding only engages where the
-      ordinary generator cannot build the value at all, and a plain text parameter is one it
-      can — so the escape hatch a user would reach for is silently inert. This is the same
-      species of gap the `seeded` status was invented to close, in the one place it does not
-      apply.
-- [x] **A promise comparing non-numeric values with `==` or `!=` does not compile.** The
-=======
 - [x] **Fixed: the branch-decided measurement** (`297dd8f`). Ply now instruments a
       top-level `||` in a postcondition into an `if`/`else if` chain that records which
       side actually decided each case,
@@ -888,8 +896,7 @@ is real; the author's rules about what is *accepted* are barely exercised. Ply p
       the promise after the call, not about an input or operation the run could not build
       before it. `The-Ply-Spec.md` §5.4c amended in the same commit. Verdicts pinned
       unchanged (`fuzzed(64)` stays `fuzzed(64)`) by both fixtures' own e2e assertions.
-- [ ] **A promise comparing non-numeric values with `==` or `!=` does not compile.** The
->>>>>>> worktree-agent-a261567353ee7bf69
+- [x] **A promise comparing non-numeric values with `==` or `!=` does not compile.** The
       generated harness casts both sides of a comparison to `i128` (so it can report a
       broken promise rather than overflow while checking one); against a string, an
       `Option` or a struct that cast is invalid — `error[E0606]: casting &str as i128 is
