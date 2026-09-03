@@ -293,6 +293,9 @@ components:
     strict: false                # optional: item-level violations become errors (D4)
     uses: [time]                 # optional; caps: net fs db time rand proc unsafe
     owns: [pricing::Book]        # optional; only this component may mutate these types
+    state:                       # optional; the structure this component's state lives in
+      of: Book                   #   required inside `state:` — resolved under the anchor
+      show: [quotes, curve]      #   optional; the fields worth drawing. Omitted = none
     profile: hot_path            # optional; must name a declared profile
     checks: [bounded(2)]         # optional default checks for all fns in scope
     components:                  # optional nested components, same shape
@@ -690,6 +693,53 @@ Item-tier rules (each `W`-severity by default, `A`-severity error under `strict`
 4. `owns T`: an item outside the owning component mutates `T` → `A0406`.
 5. Profile bans (syntactic checks over the component's items — these are reliable and
    always errors) → `A0407`.
+
+**`state:` — the structure a component's state lives in** (2026-09-03). `owns` answers
+"who may change this type"; `state` answers the question a reader asks first, which is
+"what does this component *hold*". It names one type and, optionally, the fields of it
+worth drawing:
+
+```yaml
+components:
+  book:
+    anchor: ingest::book
+    state:
+      of: OrderBook          # resolved under this component's anchor
+      show: [bids, ticks]    # the fields a reader should see; omitted draws none
+```
+
+**The document names, the code says what.** `show:` lists field *names* only — never
+their types, never their shapes. Ply reads `OrderBook` from source and draws each named
+field as whatever it actually is. Writing the shapes in the document would be a second,
+hand-maintained copy of a fact the compiler already owns, and it would drift the first
+time somebody changed a field: the exact rot this project has spent its documentation
+budget removing. A field's *name* is a stable thing an author chooses; its type is not
+theirs to restate.
+
+**Not every field.** A real state struct has twenty fields and two that matter. `show:`
+is the author saying which two, and the box carries `N of M shown` so a reader can tell
+a deliberate selection from a small type. This is the one place in the grammar where
+Ply draws less than it knows, on purpose.
+
+Two things are checked, both cheap and both resolution facts rather than behaviour:
+
+1. `of:` names a type Ply can find under the component's anchor → else `A0414`.
+2. every name in `show:` is a field of that type → else `A0415`, naming the field and
+   the fields that do exist.
+
+Three things are **not** checked, and the tier table in SCHEMA.md says so: that the
+component actually holds a value of that type, that no other component holds one, and
+that the fields named are the important ones. `state` is a declaration in the sense
+`owns` is — its value is that it is written down, drawn, and kept honest about
+existence.
+
+**What it earns beyond the picture.** A component whose declared state cannot be built
+is the reason its functions come back `unsupported`, and today that connection is only
+visible by reading a diagnostic. Drawn, it is the first thing a reader sees. This is
+also the grammar's natural home for a future type invariant (§5.4c's "type invariants
+are assumed, never asserted"): the fields are already named, and the receiver machinery
+already builds constructor-plus-mutator sequences that such an invariant would be
+checked across. That is recorded as the next step, not claimed here.
 
 The per-item escape `#[ply::allow(name, reason = "...")]` accepts a ban name or an
 item-tier diagnostic code (`A0402`–`A0404`, `A0406`, `A0408`) and suppresses that finding
@@ -1979,6 +2029,9 @@ grammar.**
 | `~>` data flow | dashed arrow labeled with the type |
 | deny | barred red arrow between the matched patterns; a `*` pattern draws its own per-rule "any" marker — wildcards have no shared identity, so unrelated rules never appear connected |
 | `owns` | header line under the anchor, `owns T, U` — the types this component is sole mutator of |
+| `state:` | a header line under the anchor, `state T — N of M shown`, then one row per field named in `show:`: its shape glyph, its field name, and its element type. The count is always drawn, so a reader can tell two fields chosen from twenty apart from a type that has two. A component with `state` and no `show` draws the header line alone. Rows sit below the capability badges and above the fn chips — state is what the component *is*, chips are what it *does* |
+| a state field's shape | one glyph per row, drawn in ink only — **no new colour channel**, since every hue is already spoken for (green earned, red violation, violet authorship, the grey ceiling ramp). Seven forms, each a distinct silhouette at 12px: **scalar** a filled cell; **text** a cell with a written line across it; **list** three stacked equal bars (order carried); **map** a narrow key cell beside a wide value cell, twice; **set** three loose discs, unaligned (each once, no order); **might be missing** a dashed cell (`Option`); **a shape of your own** two overlapping outlined cells (a struct or enum — there is more inside). Proposal sheet: `docs/state-shapes.svg` |
+| a state field Ply cannot build | the same diagonal hatching unclaimed code already carries, on the glyph itself — no eighth form. A component whose state Ply cannot make is why its functions report unsupported, and this is that fact drawn rather than left in a diagnostic |
 | capabilities / `pure` | badge row on the box; `pure` = a sealed border, no badges |
 | profile | tag on the box |
 | checks list | a readable second row on the fn chip, in declaration order: `test`, `fuzz: n cases`, `bounded: loop≤k`, `prove`, `mutate`. The tooltip and transcript expand each check and state what its number measures. |

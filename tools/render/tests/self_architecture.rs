@@ -72,11 +72,19 @@ fn the_architecture_diagrams_match_the_specs_they_claim_to_be_rendered_from() {
 /// README.md, so the project's front page was showing a notation the tool no
 /// longer writes.
 ///
-/// `demos/fault3-as-drawn-by-faulted-toolchain.svg` is deliberately absent
-/// from this list and must stay absent. It is not current output and is not
-/// supposed to be: it is the record of what a *broken* renderer drew, kept so
-/// the demo can show the difference. Regenerating it would delete the
+/// Two committed drawings are deliberately absent from this list and must
+/// stay absent, for opposite reasons.
+///
+/// `demos/fault3-as-drawn-by-faulted-toolchain.svg` is not current output and
+/// is not supposed to be: it is the record of what a *broken* renderer drew,
+/// kept so the demo can show the difference. Regenerating it would delete the
 /// evidence it exists to carry.
+///
+/// `docs/state-shapes.svg` is not output at all. It is a hand-drawn proposal
+/// for a §7.1 grammar feature that does not exist yet — the drawable gate
+/// made concrete, so the visual forms could be reviewed before the words were
+/// agreed. Nothing renders it, and it retires the day the renderer draws
+/// state fields for real.
 #[test]
 fn the_committed_drawings_still_match_what_the_documents_render_to() {
     let root = repo_root();

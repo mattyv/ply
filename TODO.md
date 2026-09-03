@@ -77,6 +77,42 @@ the real `cargo ply check` output, not from memory.
       modules appear as nested components in that file. They do not, and cannot: a function
       claimed inside a module-anchored box stops resolving. The comment now says that.
 
+## Agreed, not built: `state:` — the structure a component holds — 2026-09-03
+
+Spec amendment only. The grammar, the visual forms and the honest limits are written
+down; nothing parses `state:` yet and no code fires `A0414`/`A0415`. Those registry
+entries land with the implementation rather than now, because a registry entry for a rule
+that never runs is the same lie this project spent yesterday removing.
+
+The shape of it, settled with the maintainer:
+
+- [x] **The document names, the code says what.** `state: { of: OrderBook, show: [bids,
+      ticks] }`. `show:` takes field *names* only. Ply reads the type from source and
+      draws each field as whatever it actually is. Listing the shapes in the document
+      would be a second hand-maintained copy of a fact the compiler owns, and would drift
+      the first time a field changed.
+- [x] **Not every field — the main ones.** The maintainer's own framing. The box carries
+      `N of M shown`, so a deliberate selection never reads as a small type. This is the
+      one place in the grammar where Ply draws less than it knows, on purpose.
+- [x] **Seven glyphs, ink only, no new colour channel.** Every hue is already spoken for
+      (green earned, red violation, violet authorship, the grey ceiling ramp), so the
+      shapes are silhouettes: filled cell, written line, stacked bars, key-beside-value,
+      loose discs, dashed cell, overlapping cells. A field Ply cannot build reuses the
+      existing unclaimed hatch rather than inventing an eighth form.
+- [x] **The drawable gate was actually run, not asserted.** `docs/state-shapes.svg` is a
+      hand-drawn proposal sheet, rasterised and looked at before the spec text was
+      written. A first draft was thrown away: `text` and `a shape of your own` were
+      indistinguishable at 12px, and `Result` was in the set despite being a return shape
+      rather than a state one. The sheet is excluded from the drawing drift test with its
+      reason recorded there, and retires when the renderer draws state for real.
+
+NEXT, and the reason this is worth building rather than just drawing: `state` is where a
+**type invariant** belongs. §5.4c admits that type invariants are "assumed, never
+asserted", so a proof can rest on an invariant the code itself breaks. Once the fields are
+named, the receiver machinery that already builds constructor-plus-mutator sequences is
+exactly what would check one across them. That also needs the still-open unit-enum defect
+below closed first — the same prerequisite the false-green work ended on.
+
 ## Landed: the false green is marked — 2026-09-02
 
 **Was the highest-priority open item.** A method on a type whose only way in is a
