@@ -30,6 +30,12 @@ components:
       book:
         anchor: trading::market_data::book
         owns: [trading::OrderBook]
+        # Design-only, like vetting/002 and vetting/003's own `book`, whose
+        # field names this reuses: no `trading` crate exists to check this
+        # against.
+        state:
+          of: OrderBook
+          show: [bids, asks, last]
         fns:
           OrderBook::apply:
             checks: [bounded(3), fuzz(256), mutate]

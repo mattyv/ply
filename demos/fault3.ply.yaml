@@ -10,6 +10,11 @@ components:
     anchor: disruptor::spsc
     uses: [unsafe]
     owns: [disruptor::spsc::Spsc]
+    # Same component as vetting/002's ring, which is what this document is
+    # a fork of (see demos/fault-injection.md).
+    state:
+      of: Spsc
+      show: [slots, head, tail]
     profile: hot_path
     fns:
       Spsc::try_push:
@@ -31,6 +36,10 @@ components:
     anchor: ingest::book
     strict: true
     owns: [ingest::book::OrderBook]
+    # Same component as vetting/002's book -- see the note on `ring` above.
+    state:
+      of: OrderBook
+      show: [bids, last]
     profile: hot_path
     fns:
       OrderBook::apply:

@@ -131,6 +131,14 @@ components:
       be tested together.
   cli:
     anchor: ply_cli
+    # What the command line itself holds before dispatching to a
+    # subcommand: `clap`'s own parsed struct, resolved at the crate root
+    # since that is where `main.rs` declares it. `command` is the chosen
+    # subcommand (a shape of its own -- `Commands` is an enum); `json`
+    # is the one global flag every subcommand shares.
+    state:
+      of: Cli
+      show: [command, json]
     components:
       verify:
         anchor: ply_cli::verify
@@ -166,6 +174,15 @@ components:
   # corrected -- which is the check this document exists to be subject to.
   render:
     anchor: ply_render
+    # The renderer's own library is a facade over `ply_core::visual` (see
+    # `tools/render/src/lib.rs`) and owns no struct of its own -- the one
+    # real type at this anchor is the binary's own parsed arguments.
+    # `collapse` is the field worth seeing: a document can name any number
+    # of components to fold, so it is the one list in this whole file's
+    # command-line surface.
+    state:
+      of: Cli
+      show: [collapse, focus, text]
     note: >-
       Draws a document before any code exists, and writes the same facts as
       prose. It is the surface a reader judges the whole tool by, which is
