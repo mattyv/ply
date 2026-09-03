@@ -199,6 +199,27 @@
           "additionalProperties": {
             "$ref": "#/$defs/fn_claim"
           }
+        },
+        "state": {
+          "type": "object",
+          "description": "The structure this component holds. `of` names the type; `show` names the fields worth drawing. Field names only -- the shapes come from the real source.",
+          "properties": {
+            "of": {
+              "type": "string",
+              "description": "The type this component's state lives in, resolved under the component's anchor."
+            },
+            "show": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Field names worth drawing. Omitted draws the header line alone."
+            }
+          },
+          "required": [
+            "of"
+          ],
+          "additionalProperties": false
         }
       }
     },

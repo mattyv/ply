@@ -617,6 +617,41 @@ fn disruptor_fixture_golden_snapshot() {
 /// nothing, and some shapes are styled through an ancestor's descendant
 /// selector (`.cap-badge rect`), so a shape passes if any class on its own
 /// element or its ancestors resolves a rule.
+/// §7.1's `state:` row. The static renderer reads the document and nothing
+/// else -- no code, no Cargo -- so what it can honestly draw here is the
+/// *declaration*: the type this component says its state lives in, and which
+/// of its fields the author chose to show. The field shapes are facts about
+/// code, and belong to the path that reads code.
+///
+/// Pinned exact-string like every other user-facing sentence, and drawn as
+/// its own header line beside `owns` rather than folded into the anchor,
+/// because the two say different things: `owns` is who may change a type,
+/// `state` is what this component holds.
+#[test]
+fn state_draws_as_its_own_header_line() {
+    let yaml = "ply: 1\ncomponents:\n  book:\n    anchor: ingest::book\n    state:\n      of: OrderBook\n      show: [bids, ticks]\n";
+    let doc = parse_document(yaml).expect("fixture should parse");
+    let svg = render_svg(&doc).expect("fixture should render");
+    assert!(
+        svg.contains("state OrderBook"),
+        "the box must say what this component holds:\n{svg}"
+    );
+    assert!(
+        svg.contains("Showing bids, ticks"),
+        "and the chosen fields must be reachable, in the tooltip -- a comma list of field \
+         names across every box buries the question the overview answers:\n{svg}"
+    );
+
+    let bare =
+        "ply: 1\ncomponents:\n  book:\n    anchor: ingest::book\n    state:\n      of: OrderBook\n";
+    let doc = parse_document(bare).expect("fixture should parse");
+    let svg = render_svg(&doc).expect("fixture should render");
+    assert!(
+        svg.contains("state OrderBook") && !svg.contains("Showing"),
+        "naming the type without choosing fields draws the header line alone:\n{svg}"
+    );
+}
+
 #[test]
 fn every_painted_element_resolves_a_style_rule() {
     // §7.1 finding classes live in a separate constant (`FINDING_STYLE`,
@@ -4427,6 +4462,7 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
                 strict,
                 uses,
                 owns,
+                state,
                 profile,
                 checks,
                 components,
@@ -4440,6 +4476,12 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
             }
             for o in owns {
                 want.push((format!("{path} owns `{o}`"), o.clone()));
+            }
+            if let Some(st) = state {
+                want.push((format!("{path}'s state type `{}`", st.of), st.of.clone()));
+                for f in &st.show {
+                    want.push((format!("{path}'s shown field `{f}`"), f.clone()));
+                }
             }
             if let Some(p) = profile {
                 want.push((format!("{path}'s profile `{p}`"), p.clone()));

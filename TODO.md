@@ -77,41 +77,54 @@ the real `cargo ply check` output, not from memory.
       modules appear as nested components in that file. They do not, and cannot: a function
       claimed inside a module-anchored box stops resolving. The comment now says that.
 
-## Agreed, not built: `state:` — the structure a component holds — 2026-09-03
+## Landed: `state:` — the structure a component holds, and Ply checks it exists — 2026-09-03
 
-Spec amendment only. The grammar, the visual forms and the honest limits are written
-down; nothing parses `state:` yet and no code fires `A0414`/`A0415`. Those registry
-entries land with the implementation rather than now, because a registry entry for a rule
-that never runs is the same lie this project spent yesterday removing.
-
-The shape of it, settled with the maintainer:
+The maintainer's question was the whole point of building it rather than just drawing it:
+*"Can ply verify these items exist in the code. Heaven forbid the llm decides otherwise"*.
+It can. Naming a type that is not there, or a field that type does not have, fails the
+build and names what is really there.
 
 - [x] **The document names, the code says what.** `state: { of: OrderBook, show: [bids,
-      ticks] }`. `show:` takes field *names* only. Ply reads the type from source and
-      draws each field as whatever it actually is. Listing the shapes in the document
+      ticks] }`. `show:` takes field *names* only. Listing the field types in the document
       would be a second hand-maintained copy of a fact the compiler owns, and would drift
       the first time a field changed.
-- [x] **Not every field — the main ones.** The maintainer's own framing. The box carries
-      `N of M shown`, so a deliberate selection never reads as a small type. This is the
-      one place in the grammar where Ply draws less than it knows, on purpose.
-- [x] **Seven glyphs, ink only, no new colour channel.** Every hue is already spoken for
-      (green earned, red violation, violet authorship, the grey ceiling ramp), so the
-      shapes are silhouettes: filled cell, written line, stacked bars, key-beside-value,
-      loose discs, dashed cell, overlapping cells. A field Ply cannot build reuses the
-      existing unclaimed hatch rather than inventing an eighth form.
-- [x] **The drawable gate was actually run, not asserted.** `docs/state-shapes.svg` is a
-      hand-drawn proposal sheet, rasterised and looked at before the spec text was
-      written. A first draft was thrown away: `text` and `a shape of your own` were
-      indistinguishable at 12px, and `Result` was in the set despite being a return shape
-      rather than a state one. The sheet is excluded from the drawing drift test with its
-      reason recorded there, and retires when the renderer draws state for real.
+- [x] **A made-up field is caught and the real ones are listed.** Proven end to end against
+      Ply's own document: `show: [invented_field]` on the envelope type exits 1 with the
+      eight fields that actually exist printed beside it; the honest version exits 0. The
+      source scan reads private fields too — a state struct's fields usually are private,
+      and a checker that only saw the public ones would pass exactly the claims worth
+      catching.
+- [x] **"I could not check this" is its own message, never silence.** When there is no
+      library source to resolve against, Ply warns that the line went unchecked rather
+      than exiting 0. Found by testing it: an invented type in the workspace-root document
+      passed silently. The two messages come from two separate call sites on purpose, so
+      "this is false" and "I could not check" can never be confused for one another.
+- [x] **All three documents that can carry it, carry it**, and every drawing and text form
+      was regenerated: Ply's own library, and vetting scenarios 001 and 002.
+- [x] **The drawable gate was run, not asserted.** A first draft of the glyph sheet was
+      thrown away after rasterising it: two glyphs were indistinguishable at 12px, and one
+      shape in the set was a return shape rather than a state one.
 
-NEXT, and the reason this is worth building rather than just drawing: `state` is where a
-**type invariant** belongs. §5.4c admits that type invariants are "assumed, never
-asserted", so a proof can rest on an invariant the code itself breaks. Once the fields are
-named, the receiver machinery that already builds constructor-plus-mutator sequences is
-exactly what would check one across them. That also needs the still-open unit-enum defect
-below closed first — the same prerequisite the false-green work ended on.
+**KNOWN GAP — field rows are designed and not built.** The box draws the type name only;
+the chosen fields are in the tooltip and the text form. The measurement that settled it:
+the *single* header line, added to vetting 003, made its boxes tall enough to push two
+arrows onto the same path — the crossing ratchet went from 4 overlapping lines to 6,
+hiding a rule that drawing exists to show. So `state:` is absent from vetting 003
+entirely, and a row per field, being taller than the line that already broke it, is not
+attempted. `docs/state-shapes.svg` stays a proposal sheet excluded from the drift test.
+Closing this needs edge routing that reroutes when boxes grow, not a taller box budget.
+Spec and SCHEMA both say "not implemented" now, rather than describing the rows as though
+they were drawn.
+
+**KNOWN GAP — a state type in another crate cannot be resolved.** The workspace-root
+document names components across six crates, and the scan reads one crate's source. That
+is why the root document carries no `state:` and why the unchecked warning exists.
+
+NEXT, and the reason this was worth building: `state` is where a **type invariant**
+belongs. §5.4c admits type invariants are "assumed, never asserted", so a proof can rest
+on an invariant the code itself breaks. The fields are now named and verified, and the
+receiver machinery that already builds constructor-plus-mutator sequences is exactly what
+would check one across them.
 
 ## Landed: the false green is marked — 2026-09-02
 

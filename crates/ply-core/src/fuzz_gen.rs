@@ -3448,7 +3448,10 @@ impl Log {
 
         let plan = cf.receiver.as_ref().expect("a method has a receiver plan");
         assert!(
-            !plan.operations.iter().any(|op| op.call_path.ends_with("::write_to")),
+            !plan
+                .operations
+                .iter()
+                .any(|op| op.call_path.ends_with("::write_to")),
             "a path is not a type Ply builds values of, so `write_to` must not be pooled"
         );
         let named = plan

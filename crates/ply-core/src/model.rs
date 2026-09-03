@@ -88,6 +88,10 @@ pub struct Component {
     pub uses: Vec<String>,
     #[serde(default)]
     pub owns: Vec<String>,
+    /// §5.1's `state:` -- the structure this component holds, and which of
+    /// its fields are worth drawing.
+    #[serde(default)]
+    pub state: Option<StateClaim>,
     #[serde(default)]
     pub profile: Option<String>,
     /// §5.1's "optional default checks for all fns in scope". `None` is *no
@@ -99,6 +103,28 @@ pub struct Component {
     pub components: IndexMap<String, Component>,
     #[serde(default)]
     pub fns: IndexMap<String, FnClaim>,
+}
+
+/// §5.1's `state:`: the structure a component holds.
+///
+/// `show:` carries field **names** only, never their types. The shapes come
+/// from the real source, which is the entire point: a document that restated
+/// them would be a second hand-maintained copy of what the compiler already
+/// owns, wrong the first time somebody changed a field. Naming a field the
+/// type does not declare is `A0415`, and naming a type the crate does not
+/// declare is `A0414` -- neither is a picture with a gap in it, both are the
+/// document claiming something about code that is not there.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StateClaim {
+    /// The type this component's state lives in, resolved under the
+    /// component's own anchor.
+    pub of: String,
+    /// The fields worth drawing. Empty -- the default -- draws the header
+    /// line alone: a real state struct has twenty fields and two that
+    /// matter, and choosing is the author's job, not Ply's.
+    #[serde(default)]
+    pub show: Vec<String>,
 }
 
 /// docs/plans/external-elements.md §3: a named outside party — a system or

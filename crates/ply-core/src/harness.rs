@@ -3440,6 +3440,95 @@ impl TypeDecl {
     }
 }
 
+/// One field of a type a component declares as its `state:` (§5.1).
+///
+/// `ty` is the parsed shape, so a drawing can tell a map from a list without
+/// re-parsing the source, and `rendered` is the type spelled the way the
+/// author wrote it, for the row's own label.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StateField {
+    pub name: String,
+    pub ty: RustType,
+    pub rendered: String,
+}
+
+/// Every field a type declares, in declaration order, whatever its
+/// visibility -- `None` when the crate declares no type by that name.
+///
+/// Deliberately **not** [`resolve_user_type`]: that answers "can Ply build
+/// one of these", and refuses a type with one private or unbuildable field.
+/// This answers "what does this type hold", which is a different question
+/// with a different honest answer. A private field is still something the
+/// component holds, and a field of a type Ply has no strategy for is the
+/// single most useful thing a reader can be shown -- it is usually the
+/// reason that component's functions come back unsupported.
+///
+/// The distinction between "no type by that name" and "a type with no
+/// fields" is kept, because a document naming a type the code does not
+/// declare is the failure `state:` exists to catch (`A0414`), while a unit
+/// struct really does hold nothing.
+pub fn scan_type_fields(crate_dir: &Path, type_name: &str) -> Option<Vec<StateField>> {
+    let locations = scan_crate_type_locations(crate_dir);
+    let decl = locations.get(type_name)?.as_ref()?;
+    let src = std::fs::read_to_string(&decl.file).ok()?;
+    let file: syn::File = syn::parse_file(&src).ok()?;
+    let aliases = alias_map(&file);
+    let items: &[syn::Item] = if decl.inline_mods.is_empty() {
+        &file.items
+    } else {
+        items_at_inline_mods(&file.items, &decl.inline_mods)?
+    };
+    for item in items {
+        let named = match item {
+            syn::Item::Struct(st) if st.ident == type_name => match &st.fields {
+                syn::Fields::Named(n) => Some(&n.named),
+                // A tuple struct's fields have no names to write in `show:`,
+                // so there is nothing a document could name. Reported as a
+                // type with no nameable fields rather than as a missing
+                // type: the type is real, it just cannot be shown this way.
+                _ => return Some(Vec::new()),
+            },
+            _ => None,
+        };
+        if let Some(named) = named {
+            return Some(
+                named
+                    .iter()
+                    .filter_map(|f| {
+                        let name = f.ident.as_ref()?.to_string();
+                        Some(StateField {
+                            name,
+                            ty: rust_type_from_syn_at(&f.ty, &aliases, 0),
+                            rendered: render_type_path(&f.ty),
+                        })
+                    })
+                    .collect(),
+            );
+        }
+    }
+    None
+}
+
+/// Walks a non-empty chain of inline `mod` blocks, returning the items at
+/// the end of it -- `None` if the chain does not exist. Callers handle the
+/// empty chain themselves, since the answer there is the file's own items.
+fn items_at_inline_mods<'a>(
+    items: &'a [syn::Item],
+    inline_mods: &[String],
+) -> Option<&'a Vec<syn::Item>> {
+    let mut current: Option<&Vec<syn::Item>> = None;
+    let mut search: &[syn::Item] = items;
+    for name in inline_mods {
+        let found = search.iter().find_map(|it| match it {
+            syn::Item::Mod(m) if m.ident == name.as_str() => m.content.as_ref().map(|(_, its)| its),
+            _ => None,
+        })?;
+        current = Some(found);
+        search = found;
+    }
+    current
+}
+
 pub type TypeLocations = std::collections::BTreeMap<String, Option<TypeDecl>>;
 
 /// Builds [`TypeLocations`] for `crate_dir` -- a name -> file index, not a
@@ -5467,6 +5556,68 @@ fn write_generated_file(
 
 #[cfg(test)]
 mod tests {
+    /// `state:` names a type and the fields worth drawing, and the whole
+    /// point of the grammar is that a document cannot lie about them: the
+    /// fields come from the real source, and a name nobody declared is a
+    /// finding rather than a picture. This is the scan that reads them.
+    ///
+    /// It deliberately reads **every** field, not the ones Ply can build
+    /// values of: a private field, or one of a type Ply has no strategy for,
+    /// is exactly what a reader most needs shown -- an unbuildable field is
+    /// usually why the component's functions report unsupported.
+    #[test]
+    fn a_types_real_fields_are_read_whatever_their_visibility() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            r#"
+use std::collections::BTreeMap;
+pub struct OrderBook {
+    pub bids: BTreeMap<u64, u32>,
+    ticks: Vec<u64>,
+    pub clock: std::time::SystemTime,
+}
+"#,
+        )
+        .unwrap();
+
+        let fields = scan_type_fields(dir.path(), "OrderBook")
+            .expect("the crate declares `OrderBook`, so its fields are readable");
+        let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["bids", "ticks", "clock"],
+            "every declared field is read, in declaration order -- a private one is still \
+             something the component holds"
+        );
+        assert!(
+            matches!(fields[0].ty, RustType::BTreeMap(_, _)),
+            "a map must be recognised as a map so it can be drawn as one: {:?}",
+            fields[0].ty
+        );
+        assert!(
+            !fields[2].ty.is_fuzz_supported(),
+            "a clock is not a shape Ply builds values of, and that is the fact worth drawing"
+        );
+    }
+
+    /// A type the crate does not declare is not a picture with a missing
+    /// row -- it is the document making a claim about code that is not
+    /// there, which is the failure `state:` exists to make impossible.
+    #[test]
+    fn a_type_the_crate_does_not_declare_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub struct Real { pub a: u8 }").unwrap();
+        assert!(
+            scan_type_fields(dir.path(), "Invented").is_none(),
+            "a type nobody declared must come back as not found, never as an empty shape"
+        );
+    }
+
     use super::*;
 
     /// Contract text is quoted verbatim into diagnostics and into the

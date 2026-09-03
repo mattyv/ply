@@ -232,6 +232,38 @@ fn arch_unavailable_diag(reason: &str) -> Diagnostic {
 /// §5.3: the crate tier is exact and sound, so every finding it produces is
 /// an error -- there is no advisory form the way item-tier findings have
 /// one under `strict: false`.
+/// The same shape as [`state_diag`], at warning severity: the document is not
+/// wrong, Ply just could not look. Kept a separate function so the two can
+/// never be confused at a call site -- "this is false" and "I could not
+/// check this" are different sentences and must not share one.
+fn state_diag_warning(code: &str, node_id: &str, title: String) -> Diagnostic {
+    Diagnostic {
+        severity: "warning".into(),
+        ..state_diag(code, node_id, title)
+    }
+}
+
+/// A `state:` finding: the document claimed something about the code that
+/// the code does not say. An error, not a warning -- a picture drawn from an
+/// invented field is worse than no picture, and the fix is always one edit.
+fn state_diag(code: &str, node_id: &str, title: String) -> Diagnostic {
+    Diagnostic {
+        code: code.into(),
+        severity: "error".into(),
+        phase: "check".into(),
+        engine: "ply".into(),
+        check: "anchors".into(),
+        node_id: node_id.into(),
+        title,
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
 fn arch_diag(f: &ArchFinding) -> Diagnostic {
     Diagnostic {
         code: f.code.into(),
@@ -349,6 +381,25 @@ fn check_anchors(
             diagnostics: &mut Vec<Diagnostic>,
             tally: &mut AnchorTally,
         ) {
+            // A `state:` claim here is exactly as unresolvable as a fn claim,
+            // and for the same reason -- there is no library to read. Said
+            // out loud for the same reason too: measured before this rule
+            // existed, an invented state type in a workspace-root document
+            // passed with exit 0.
+            if let Some(state) = &comp.state {
+                diagnostics.push(state_diag_warning(
+                    "W0413",
+                    qualified,
+                    format!(
+                        "`{qualified}` says its state lives in `{of}`, and Ply could not \
+                         check that: there is no library at {path} to resolve it against. \
+                         The claim is not wrong; it is unverified, and this line says so \
+                         rather than letting it pass in silence. (W0413)",
+                        of = state.of,
+                        path = lib_path.display(),
+                    ),
+                ));
+            }
             for fn_name in comp.fns.keys() {
                 tally.unresolved += 1;
                 diagnostics.push(no_library_diag(
@@ -409,6 +460,87 @@ fn walk_anchors(
     // The same locality test `verify` applies (§5.5): a component anchored
     // to another crate is a boundary component, and this slice reads its
     // declared contracts rather than its code.
+    // `state:` is checked against the real source before anything else in
+    // this component, because it is the one claim in the grammar whose whole
+    // value is that it cannot be invented. A document names a type and some
+    // of its fields; nothing stops whoever wrote it -- a person in a hurry,
+    // or a model that guessed -- from naming a field nobody declared. Drawn
+    // unchecked, that is a confident picture of code that does not exist.
+    if let Some(state) = &comp.state {
+        let crate_dir = lib_path
+            .parent()
+            .and_then(|src| src.parent())
+            .filter(|_| is_local(local_anchors, &comp.anchor) && lib_path.exists());
+        // A claim Ply could not look at must not read like a claim it looked
+        // at and was satisfied by (§1). Measured before this existed: a
+        // completely invented type in a workspace-root document -- where
+        // there is no `src/lib.rs` to resolve against -- passed with exit 0,
+        // which is the false clean this whole grammar was added to prevent.
+        if crate_dir.is_none() {
+            diagnostics.push(state_diag_warning(
+                "W0413",
+                qualified,
+                format!(
+                    "`{q}` says its state lives in `{of}`, and Ply could not check that. \
+                     Resolving a state claim means reading the crate this component is \
+                     anchored at, and `{anchor}` is not a crate whose source is here -- a \
+                     workspace-root document, or a component anchored at another crate. The \
+                     claim is not wrong; it is unverified, and this line says so rather than \
+                     letting it pass in silence. (W0413)",
+                    q = qualified,
+                    of = state.of,
+                    anchor = comp.anchor,
+                ),
+            ));
+        }
+        if let Some(crate_dir) = crate_dir {
+            match ply_core::harness::scan_type_fields(crate_dir, &state.of) {
+                None => diagnostics.push(state_diag(
+                    "A0414",
+                    qualified,
+                    format!(
+                        "`{q}` says its state lives in `{of}`, but this crate declares no type \
+                         called that. Ply looked through every `.rs` file under `src/`. Check \
+                         the spelling, or drop `state:` if the type moved to another crate -- \
+                         a component's state is resolved under its own anchor, never guessed \
+                         at. (A0414)",
+                        q = qualified,
+                        of = state.of,
+                    ),
+                )),
+                Some(fields) => {
+                    let declared: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+                    for wanted in &state.show {
+                        if !declared.iter().any(|d| d == wanted) {
+                            diagnostics.push(state_diag(
+                                "A0415",
+                                qualified,
+                                format!(
+                                    "`{q}` asks to show `{of}`'s `{wanted}` field, but `{of}` \
+                                     has no field called that. The fields it does have are: \
+                                     {have}. Field names come from the code, so this line \
+                                     cannot be drawn as written. (A0415)",
+                                    q = qualified,
+                                    of = state.of,
+                                    have = if declared.is_empty() {
+                                        "none it can name -- it is a tuple struct, whose \
+                                         fields have no names to show"
+                                            .to_string()
+                                    } else {
+                                        declared
+                                            .iter()
+                                            .map(|d| format!("`{d}`"))
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    },
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
     if is_local(local_anchors, &comp.anchor) {
         for (fn_name, claim) in &comp.fns {
             let node_id = format!("{qualified}::{fn_name}");
@@ -953,6 +1085,152 @@ pub fn print_human(report: &CheckReport) {
 
 #[cfg(test)]
 mod tests {
+    fn state_probe(lib: &str, yaml: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), lib).unwrap();
+        std::fs::write(dir.path().join("ply.yaml"), yaml).unwrap();
+        dir
+    }
+
+    const BOOK: &str = r#"
+use std::collections::BTreeMap;
+pub struct OrderBook {
+    pub bids: BTreeMap<u64, u32>,
+    ticks: Vec<u64>,
+}
+"#;
+
+    /// The reason `state:` is worth having at all. A document names a type
+    /// and the fields worth drawing; nothing stops whoever wrote it -- a
+    /// person in a hurry, or a model that guessed -- from naming a field
+    /// that does not exist. If Ply drew that as a row, the picture would be
+    /// a confident lie about code nobody wrote.
+    ///
+    /// So a field the type does not declare is a finding, and the finding
+    /// names the fields that *do* exist, because "no such field" without
+    /// that list makes a typo take three guesses to fix.
+    #[test]
+    fn a_state_field_the_type_does_not_declare_is_refused_by_name() {
+        let dir = state_probe(
+            BOOK,
+            "ply: 1\ncomponents:\n  book:\n    anchor: probe\n    state:\n      of: OrderBook\n      show: [bids, invented]\n",
+        );
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+
+        let found = diagnostics
+            .iter()
+            .find(|d| d.code == "A0415")
+            .expect("a field nobody declared must be reported, never drawn");
+        assert!(
+            found.title.contains("invented"),
+            "the finding must name the field that is not there: {}",
+            found.title
+        );
+        assert!(
+            found.title.contains("bids") && found.title.contains("ticks"),
+            "and the fields that are, so a typo takes one guess rather than three: {}",
+            found.title
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == "A0415" && d.title.contains("`bids` is")),
+            "a field that really exists must not be reported"
+        );
+    }
+
+    /// The same rule one level up: a type the crate does not declare at all.
+    #[test]
+    fn a_state_type_the_crate_does_not_declare_is_refused_by_name() {
+        let dir = state_probe(
+            BOOK,
+            "ply: 1\ncomponents:\n  book:\n    anchor: probe\n    state:\n      of: Invented\n",
+        );
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+
+        let found = diagnostics
+            .iter()
+            .find(|d| d.code == "A0414")
+            .expect("a type nobody declared must be reported");
+        assert!(
+            found.title.contains("Invented"),
+            "the finding must name the type: {}",
+            found.title
+        );
+    }
+
+    /// The dangerous case, and the reason this needed its own rule. A
+    /// workspace-root document has no `src/lib.rs` of its own, so Ply cannot
+    /// resolve a `state:` claim written there -- and a claim that is never
+    /// looked at, passing silently, is precisely the false clean this
+    /// project exists to refuse. Measured before the rule existed: a
+    /// completely invented type in the root document passed with exit 0.
+    ///
+    /// So an unresolvable `state:` says so. It is a warning rather than an
+    /// error because the document is not wrong, it is unverifiable from
+    /// here -- but it is never silence.
+    #[test]
+    fn a_state_claim_ply_cannot_resolve_says_so_rather_than_passing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ply.yaml"),
+            "ply: 1\ncomponents:\n  book:\n    anchor: some_other_crate\n    state:\n      of: Invented\n      show: [nonsense]\n",
+        )
+        .unwrap();
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+
+        let found = diagnostics
+            .iter()
+            .find(|d| d.code == "W0413")
+            .expect("a state claim Ply could not check must be named, never passed in silence");
+        assert!(
+            found.title.contains("Invented"),
+            "it must name the claim it could not check: {}",
+            found.title
+        );
+    }
+
+    /// A document telling the truth earns silence -- the check must not
+    /// invent work for a correct claim.
+    #[test]
+    fn a_state_claim_matching_the_code_reports_nothing() {
+        let dir = state_probe(
+            BOOK,
+            "ply: 1\ncomponents:\n  book:\n    anchor: probe\n    state:\n      of: OrderBook\n      show: [bids, ticks]\n",
+        );
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+        let state_findings: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.code == "A0414" || d.code == "A0415")
+            .map(|d| d.title.as_str())
+            .collect();
+        assert!(
+            state_findings.is_empty(),
+            "a claim that matches the code is not a finding: {state_findings:?}"
+        );
+    }
+
     use super::*;
 
     /// A crate directory with a `src/lib.rs` and a `ply.yaml`, and nothing

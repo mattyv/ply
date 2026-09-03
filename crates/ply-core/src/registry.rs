@@ -70,7 +70,7 @@ codes!(
     E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0208, E0209, E0504, W0409, W0410,
     // --- Tier::Anchor: resolving a claim to real code (§5.2). ---
     E0301, E0304, E0306, // --- Tier::Crate: architecture, exact and sound (§5.3). ---
-    A0401, A0405, A0409, A0410, A0411, A0412, A0413,
+    A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, W0413,
     // --- Tier::Item: architecture, approximate (§5.3) -- none of these
     // are built yet; see each row's status. ---
     A0402, A0403, A0404, A0406, A0407, A0408, W0411, W0412,
@@ -299,6 +299,30 @@ impl Code {
                 severity: Error,
                 spec_anchor: "§5.3",
                 gloss: "Ply could not check any crate-level boundary at all, because it could not get this workspace's real dependency graph -- a broken Cargo.toml, `cargo` missing, or a dependency cycle -- and reports this honestly as a run that did not look, never as a clean pass.",
+            },
+            W0413 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.1",
+                gloss: "A component declares `state:` and Ply could not resolve it -- a workspace-root document, or a component anchored at a crate whose source is not here. The claim is not wrong, it is unverified, and a claim nobody looked at must never read like one that passed.",
+            },
+            A0414 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Error,
+                spec_anchor: "§5.1",
+                gloss: "A component says its state lives in a type this crate does not declare. `state:` earns its keep by being unable to lie about the code, so a type nobody wrote is a finding rather than a box with a name in it.",
+            },
+            A0415 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Error,
+                spec_anchor: "§5.1",
+                gloss: "A component asks to show a field its state type does not declare. The finding names the fields that do exist, so a typo takes one guess to fix rather than three.",
             },
             A0410 => RuleEntry {
                 code: self,

@@ -1686,6 +1686,26 @@ fn component_tip_lines(
             comp.owns.join(", ")
         ));
     }
+    if let Some(st) = &comp.state {
+        // The header line names the type; the chosen fields live here. Same
+        // reasoning §7.1 already applies to contract clauses: the overview
+        // answers "where does attention go", and a comma list of field names
+        // across every box buries that question.
+        tip.push(match st.show.as_slice() {
+            [] => format!(
+                "state {} — the structure this component holds, where `owns` says who may \
+                 change one. No fields chosen to show",
+                st.of
+            ),
+            show => format!(
+                "state {} — the structure this component holds, where `owns` says who may \
+                 change one. Showing {}: field names come from the code, so a name nobody \
+                 declared is refused rather than drawn",
+                st.of,
+                show.join(", ")
+            ),
+        });
+    }
     if let Some(p) = &comp.profile {
         tip.push(match profiles.get(p) {
             Some(rules) => format!(
@@ -2080,8 +2100,23 @@ fn render_component<'a>(
     // §7.1: `owns` is a third header line, `owns T, U` — the types this
     // component is the sole mutator of.
     let owns_line = (!comp.owns.is_empty()).then(|| format!("owns {}", comp.owns.join(", ")));
+    // §7.1's `state:` -- what this component *holds*, where `owns` says who
+    // may change it. The static renderer reads the document and nothing
+    // else, so what it can honestly draw is the declaration: the type, and
+    // which of its fields the author chose. The fields' own shapes are facts
+    // about code and belong to the path that reads code.
+    let state_line = comp.state.as_ref().map(|st| format!("state {}", st.of));
     let owns_w = owns_line.as_deref().map_or(0.0, |s| text_w(s, SUB_CHAR_W));
-    let header_h = HEADER_H + if owns_line.is_some() { LINE_H } else { 0.0 };
+    // Reserved at the widest a character can be, not the average: the
+    // canvas invariant (`tools/render`'s `everything_renders_inside_the_
+    // canvas`) measures a text's right edge pessimistically, and a header
+    // line reserved optimistically is a box its own contents can escape.
+    let state_w = state_line
+        .as_deref()
+        .map_or(0.0, |s| text_w(s, NAME_CHAR_W));
+    let header_h = HEADER_H
+        + if owns_line.is_some() { LINE_H } else { 0.0 }
+        + if state_line.is_some() { LINE_H } else { 0.0 };
 
     // §7.1: `pure` is a sealed border with no capability badges.
     let badges: &[String] = if comp.pure { &[] } else { &comp.uses };
@@ -2161,6 +2196,7 @@ fn render_component<'a>(
         name_w,
         anchor_w,
         owns_w,
+        state_w,
         badges_row_w + profile_w,
         MIN_BOX_W - PAD * 2.0,
     ]
@@ -2383,10 +2419,19 @@ fn render_component<'a>(
         PAD + LINE_H * 2.0 - 4.0,
         esc(&comp.anchor)
     ));
+    let mut extra_line = 0.0;
     if let Some(line) = &owns_line {
         svg.push_str(&format!(
             "<text class=\"component-owns\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
             PAD + LINE_H * 3.0 - 6.0,
+            esc(line)
+        ));
+        extra_line = LINE_H;
+    }
+    if let Some(line) = &state_line {
+        svg.push_str(&format!(
+            "<text class=\"component-owns\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
+            PAD + LINE_H * 3.0 - 6.0 + extra_line,
             esc(line)
         ));
     }

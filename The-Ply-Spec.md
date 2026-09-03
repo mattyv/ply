@@ -717,15 +717,35 @@ budget removing. A field's *name* is a stable thing an author chooses; its type 
 theirs to restate.
 
 **Not every field.** A real state struct has twenty fields and two that matter. `show:`
-is the author saying which two, and the box carries `N of M shown` so a reader can tell
-a deliberate selection from a small type. This is the one place in the grammar where
-Ply draws less than it knows, on purpose.
+is the author saying which two. This is the one place in the grammar where Ply draws
+less than it knows, on purpose.
 
-Two things are checked, both cheap and both resolution facts rather than behaviour:
+**Where the fields appear** (amended 2026-09-03, and this narrows what the morning's
+first draft of this section claimed). The box draws `state T` and nothing else: the
+chosen field names are in the box's tooltip and in the text form, not painted as rows.
+Two reasons, one of principle and one measured. The principle is §7.1's existing rule
+for contract clauses — an overview answers "where does attention go", and a comma list
+of field names repeated across every box is exactly the kind of detail that buries that
+question. The measurement is what one extra header line already costs: adding `state T`
+alone to `vetting/003` made its boxes tall enough to push two arrows onto the same path,
+and the crossing ratchet in `tools/render` went from 4 overlapping lines to 6 — a
+declared rule made invisible. `state:` is therefore absent from that document entirely.
+A row per field is strictly taller than the line that already broke it, so field rows
+and their shape glyphs stay designed (`docs/state-shapes.svg`) and unbuilt until edge
+routing reroutes when boxes grow.
+
+Three things are checked. The first two are cheap resolution facts rather than
+behaviour; the third is the admission that the first two could not run:
 
 1. `of:` names a type Ply can find under the component's anchor → else `A0414`.
 2. every name in `show:` is a field of that type → else `A0415`, naming the field and
    the fields that do exist.
+3. Ply could not resolve the type at all — no library target under the anchor, so
+   neither check above could run → `W0413`, a warning that says the claim went
+   unchecked. A document that Ply cannot check its `state` lines against must say so
+   out loud; the alternative is a silent exit 0 that reads as verification. The
+   workspace-root document is exactly this case today: cross-crate resolution is not
+   implemented, so `state:` there is refused rather than half-checked.
 
 Three things are **not** checked, and the tier table in SCHEMA.md says so: that the
 component actually holds a value of that type, that no other component holds one, and
@@ -2029,9 +2049,9 @@ grammar.**
 | `~>` data flow | dashed arrow labeled with the type |
 | deny | barred red arrow between the matched patterns; a `*` pattern draws its own per-rule "any" marker — wildcards have no shared identity, so unrelated rules never appear connected |
 | `owns` | header line under the anchor, `owns T, U` — the types this component is sole mutator of |
-| `state:` | a header line under the anchor, `state T — N of M shown`, then one row per field named in `show:`: its shape glyph, its field name, and its element type. The count is always drawn, so a reader can tell two fields chosen from twenty apart from a type that has two. A component with `state` and no `show` draws the header line alone. Rows sit below the capability badges and above the fn chips — state is what the component *is*, chips are what it *does* |
-| a state field's shape | one glyph per row, drawn in ink only — **no new colour channel**, since every hue is already spoken for (green earned, red violation, violet authorship, the grey ceiling ramp). Seven forms, each a distinct silhouette at 12px: **scalar** a filled cell; **text** a cell with a written line across it; **list** three stacked equal bars (order carried); **map** a narrow key cell beside a wide value cell, twice; **set** three loose discs, unaligned (each once, no order); **might be missing** a dashed cell (`Option`); **a shape of your own** two overlapping outlined cells (a struct or enum — there is more inside). Proposal sheet: `docs/state-shapes.svg` |
-| a state field Ply cannot build | the same diagonal hatching unclaimed code already carries, on the glyph itself — no eighth form. A component whose state Ply cannot make is why its functions report unsupported, and this is that fact drawn rather than left in a diagnostic |
+| `state:` | one header line under the anchor, `state T` — the structure this component holds. The chosen fields are **not** drawn on the box: they are in the box's tooltip and in the text form. Same reasoning §7.1 already applies to contract clauses — the overview answers "where does attention go", and a comma list of field names across every box buries that question |
+| a state field's shape | **not implemented.** The glyph vocabulary below was designed and drawn (`docs/state-shapes.svg`) but no field rows are painted today, so no glyph is either. Kept as the settled design for the row form if it lands: ink only, **no new colour channel**, since every hue is already spoken for (green earned, red violation, violet authorship, the grey ceiling ramp). Seven forms, each a distinct silhouette at 12px: **scalar** a filled cell; **text** a cell with a written line across it; **list** three stacked equal bars (order carried); **map** a narrow key cell beside a wide value cell, twice; **set** three loose discs, unaligned (each once, no order); **might be missing** a dashed cell (`Option`); **a shape of your own** two overlapping outlined cells (a struct or enum — there is more inside) |
+| a state field Ply cannot build | **not implemented**, and blocked behind the row form above. Design: the same diagonal hatching unclaimed code already carries, on the glyph itself — no eighth form |
 | capabilities / `pure` | badge row on the box; `pure` = a sealed border, no badges |
 | profile | tag on the box |
 | checks list | a readable second row on the fn chip, in declaration order: `test`, `fuzz: n cases`, `bounded: loop≤k`, `prove`, `mutate`. The tooltip and transcript expand each check and state what its number measures. |

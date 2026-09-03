@@ -11,6 +11,8 @@ components:
 
   component core — maps to Rust module ply_core
     note: Everything Ply knows how to do, with no terminal attached.
+    state Envelope — the structure this component holds, where `owns` says who may change one
+      showing root, diagnostics — field names come from the code, so a name nobody declared is refused rather than drawn
     declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, kernel::StatusSet::len — nothing here counts as checked more strongly than the weakest thing inside it
     fn kernel::StatusSet::len

@@ -10,6 +10,9 @@ components:
     anchor: disruptor::spsc
     uses: [unsafe]
     owns: [disruptor::spsc::Spsc]
+    state:
+      of: Spsc
+      show: [slots, head, tail]
     profile: hot_path
     fns:
       Spsc::try_push:
@@ -31,6 +34,12 @@ components:
     anchor: ingest::book
     strict: true
     owns: [ingest::book::OrderBook]
+    # The same type this component owns, now also named as what it holds:
+    # `owns` is who may change it, `state` is what is in it. Two fields of
+    # the several a real book carries -- the ones a reader asks about first.
+    state:
+      of: OrderBook
+      show: [bids, last]
     profile: hot_path
     fns:
       OrderBook::apply:

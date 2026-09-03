@@ -106,6 +106,12 @@ fn every_key_the_schema_declares_is_a_key_the_model_reads() {
     assert_eq!(f.unresolved[0].id, 147);
     assert_eq!(f.unresolved[0].note, "employee discount undecided");
     assert_eq!(f.entry, ["venue"]);
+    let state = doc.components["pricing"]
+        .state
+        .as_ref()
+        .expect("the exhaustive document declares a state");
+    assert_eq!(state.of, "Book");
+    assert_eq!(state.show, ["ticks"]);
     assert_eq!(doc.externals["venue"].note, "the exchange");
     assert_eq!(doc.edges.len(), 2);
     assert_eq!(doc.deny.len(), 1);
@@ -219,6 +225,9 @@ components:
     strict: true
     uses: [time]
     owns: [app::pricing::Book]
+    state:
+      of: Book
+      show: [ticks]
     profile: hot_path
     checks: [bounded(2)]
     components:

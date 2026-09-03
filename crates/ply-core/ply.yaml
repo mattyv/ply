@@ -27,6 +27,14 @@ components:
     anchor: ply_core
     note: >-
       Everything Ply knows how to do, with no terminal attached.
+    # What this component holds. The type and every field named here are
+    # resolved against the real source when `cargo ply check` runs -- a field
+    # nobody declared is refused by name (A0415), never drawn. Two fields of
+    # thirteen, chosen because they are the two a reader needs: the tree of
+    # verdicts, and the diagnostics beside it.
+    state:
+      of: Envelope
+      show: [root, diagnostics]
     fns:
       kernel::StatusSet::len:
         ensures:

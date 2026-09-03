@@ -333,6 +333,26 @@ fn write_component(
             comp.owns.join(", ")
         ));
     }
+    if let Some(st) = &comp.state {
+        out.push_str(&format!(
+            "{q}state {of} — the structure this component holds, where `owns` says who may \
+             change one\n",
+            q = q,
+            of = st.of,
+        ));
+        if st.show.is_empty() {
+            out.push_str(&format!(
+                "{q}  no fields chosen to show — a real state type has many, and naming the \
+                 ones that matter is the author's job\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "{q}  showing {} — field names come from the code, so a name nobody declared \
+                 is refused rather than drawn\n",
+                st.show.join(", ")
+            ));
+        }
+    }
     if let Some(profile) = &comp.profile {
         match profiles.get(profile) {
             Some(rules) => out.push_str(&format!(
