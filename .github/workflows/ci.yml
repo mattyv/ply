@@ -7,6 +7,50 @@ on:
     branches: [main]
 
 jobs:
+  # What kind of change this is: `code`, or `docs` for a change that touches
+  # only documentation. The slow jobs below -- the end-to-end suite behind a
+  # Kani install, and the kernel mutation run -- skip on `docs`, because
+  # nothing they run reads a document. The fast `product` job never skips:
+  # it is where documentation *is* checked (the spec-consistency test, the
+  # drawing drift check), so a docs change still gets every check that can
+  # see it. The classification lives in a script rather than here so the
+  # exact code CI runs can be run by hand against a real range; the script's
+  # own comment says what counts as documentation and why the default for
+  # anything unrecognised is "code".
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      kind: ${{ steps.classify.outputs.kind }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history: a pull request is classified against its
+          # merge base with main, and a push against the commit before it.
+          fetch-depth: 0
+
+      - id: classify
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            base=$(git merge-base "origin/$BASE_REF" HEAD)
+          elif [ -n "$BEFORE" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
+            base="$BEFORE"
+          else
+            # A push with no usable "before" (a new branch): nothing to
+            # classify against, so the safe answer is the full suite.
+            echo "kind=code" >> "$GITHUB_OUTPUT"
+            echo "no base to classify against; running everything"
+            exit 0
+          fi
+          kind=$(.github/scripts/changed-kind.sh "$base" HEAD)
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "changed files are: $kind"
+          git diff --name-only "$base" HEAD | sed 's/^/  /'
+
   # The whole workspace: the product (ply-attrs, ply-core, ply-cli) and the
   # spec-validation tooling (render, check, kernel, schedule), which was a
   # second workspace until 2026-08-30. Fast signal: no
@@ -69,6 +113,8 @@ jobs:
   # 2.3s optimised, far longer unoptimised, once per planted bug.
   kernel-mutants:
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.kind == 'code'
     steps:
       - uses: actions/checkout@v4
 
@@ -99,6 +145,8 @@ jobs:
   # signal above is not held hostage to it; still gates merges to main.
   product-e2e:
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.kind == 'code'
     # The suite is 82 independent test binaries and it ran as one job for
     # over an hour, which is most of the wait on every pull request. They
     # have nothing to say to each other, so they are split across parallel
@@ -163,3 +211,40 @@ jobs:
           args=$(echo "$targets" | sed 's/^/--test /' | tr '\n' ' ')
           # shellcheck disable=SC2086
           cargo test -p ply-e2e $args
+
+  # The one check to require on `main`, and the only one whose name is
+  # fixed. It depends on every job above and does nothing else, so two
+  # things become safe that were not:
+  #
+  #   - The shard count can change. Requiring `product-e2e (0/4)` by name
+  #     meant going to six shards left a pull request waiting forever on a
+  #     check that would never report again -- a *missing* check, which is
+  #     the harder kind to read. Requiring this instead means the shard
+  #     names never matter.
+  #   - The slow jobs can skip. A skipped job is not a passed one, and a
+  #     rule that requires a shard directly is at the mercy of how the
+  #     forge treats "skipped". This job treats it explicitly: skipped is
+  #     fine, failed or cancelled is not.
+  #
+  # `if: always()` so it runs -- and reports -- even when something above
+  # failed; a gate that is itself skipped on failure would report nothing,
+  # which is the missing-check problem again.
+  ci-gate:
+    runs-on: ubuntu-latest
+    needs: [changes, product, kernel-mutants, product-e2e]
+    if: always()
+    steps:
+      - name: Fail if any job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "changes:        ${{ needs.changes.result }}"
+          echo "product:        ${{ needs.product.result }}"
+          echo "kernel-mutants: ${{ needs.kernel-mutants.result }}"
+          echo "product-e2e:    ${{ needs.product-e2e.result }}"
+          exit 1
+      - name: Every job passed or had nothing to do
+        run: |
+          echo "changes:        ${{ needs.changes.result }}"
+          echo "product:        ${{ needs.product.result }}"
+          echo "kernel-mutants: ${{ needs.kernel-mutants.result }}"
+          echo "product-e2e:    ${{ needs.product-e2e.result }}"
