@@ -27,6 +27,10 @@ fn element(
             engine: None,
             seed: None,
             cases: None,
+            // Irrelevant to every test in this file: the renderer derives
+            // its display state from `verdict`/`statuses` directly via
+            // `classify_evidence`, never from this published field.
+            state: "declared".into(),
         },
         source: None,
         diagnostic_ids: vec![],

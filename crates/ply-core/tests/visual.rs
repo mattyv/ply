@@ -47,6 +47,7 @@ fn envelope(id: &str, completed_at: &str, outcome: RunOutcome) -> VisualEnvelope
                         engine: None,
                         seed: None,
                         cases: None,
+                        state: "earned".into(),
                     },
                     source: None,
                     diagnostic_ids: vec![],
@@ -67,6 +68,7 @@ fn envelope(id: &str, completed_at: &str, outcome: RunOutcome) -> VisualEnvelope
                         engine: Some("kani".into()),
                         seed: None,
                         cases: None,
+                        state: "earned".into(),
                     },
                     source: Some(SourceLocation::point("src/lib.rs", 12, 7)),
                     diagnostic_ids: vec!["diag-E1-0".into()],
@@ -884,6 +886,133 @@ fn a_drawing_carries_a_shorter_one_for_every_level_it_can_be_folded_to() {
             .iter()
             .any(|drawing| drawing.svg == visual.svg),
         "a level that folds nothing away would repeat the full drawing for no gain"
+    );
+}
+
+#[test]
+fn published_state_matches_each_verdict_family_a_viewer_must_tell_apart() {
+    // The viewer's Earned/Gap/Violation checkboxes hide items by looking for
+    // a `state` Ply publishes, not by re-deriving one from the verdict
+    // string itself -- Ply already owns that classification for its own SVG
+    // styling, and a second copy of the same rule in the client is exactly
+    // the drift this envelope exists to prevent. One leaf per family a
+    // reader must be able to tell apart, all under one document so a single
+    // published envelope carries all four.
+    let document = parse_document(
+        "ply: 1\ncomponents:\n  billing:\n    anchor: app::billing\n    fns:\n      earned_fn: {}\n      declared_fn: {}\n      gap_fn: {}\n      violated_fn: {}\n",
+    )
+    .unwrap();
+    let leaf = |id: &str, verdict: &str| Node {
+        id: id.into(),
+        kind: "fn".into(),
+        verdict: verdict.into(),
+        ..Default::default()
+    };
+    let result = Envelope {
+        command: "verify".into(),
+        ply_version: "test-build".into(),
+        root: Node {
+            id: "workspace".into(),
+            kind: "workspace".into(),
+            verdict: "violation".into(),
+            children: vec![Node {
+                id: "billing".into(),
+                kind: "component".into(),
+                verdict: "violation".into(),
+                children: vec![
+                    leaf("earned_fn", "fuzzed(64)"),
+                    leaf("declared_fn", "unclaimed"),
+                    leaf("gap_fn", "tool_error"),
+                    leaf("violated_fn", "violation"),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        diagnostics: vec![],
+        coverage: None,
+        trust_surface: None,
+        open_items: None,
+        not_carried_forward: vec![],
+    };
+    let visual = build_visual_envelope_with_sources(
+        &document,
+        &result,
+        RunMetadata {
+            id: "state-run".into(),
+            completed_at: "2026-09-02T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "test-build".into(),
+            },
+            outcome: RunOutcome::Violation,
+        },
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let state_of = |semantic_key: &str| {
+        visual.elements[&stable_element_id("fn", semantic_key)]
+            .evidence
+            .state
+            .clone()
+    };
+    assert_eq!(state_of("billing::earned_fn"), "earned");
+    assert_eq!(state_of("billing::declared_fn"), "declared");
+    assert_eq!(state_of("billing::gap_fn"), "gap");
+    assert_eq!(state_of("billing::violated_fn"), "violation");
+
+    // Assert the observable outcome a viewer actually reads: the raw JSON
+    // string, not just the deserialized struct field.
+    let json = visual.to_json_pretty();
+    assert!(json.contains("\"state\": \"earned\""));
+    assert!(json.contains("\"state\": \"declared\""));
+    assert!(json.contains("\"state\": \"gap\""));
+    assert!(json.contains("\"state\": \"violation\""));
+}
+
+#[test]
+fn an_envelope_published_before_the_state_field_existed_still_parses() {
+    // Runs already sit on disk from before this field existed. Ply must keep
+    // reading them, and the honest default for evidence this old is
+    // "declared": the client's Earned/Gap/Violation checkboxes never hide a
+    // declared item, so an element whose real state nobody recorded stays
+    // visible rather than being silently hidden by a guess.
+    let mut value: serde_json::Value = serde_json::from_str(
+        &envelope("run-1", "2026-08-28T10:11:12Z", RunOutcome::Clean).to_json_pretty(),
+    )
+    .unwrap();
+    for element in value["elements"].as_object_mut().unwrap().values_mut() {
+        element["evidence"].as_object_mut().unwrap().remove("state");
+    }
+    let parsed = VisualEnvelope::from_json(&serde_json::to_string(&value).unwrap())
+        .expect("an envelope published before `state` existed must still parse");
+    assert!(
+        parsed
+            .elements
+            .values()
+            .all(|element| element.evidence.state == "declared")
+    );
+}
+
+#[test]
+fn validate_rejects_a_state_value_outside_the_known_four() {
+    let mut value: serde_json::Value = serde_json::from_str(
+        &envelope("run-1", "2026-08-28T10:11:12Z", RunOutcome::Clean).to_json_pretty(),
+    )
+    .unwrap();
+    let element = value["elements"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+        .next()
+        .unwrap();
+    element["evidence"]["state"] = "sort-of-earned".into();
+    let error = VisualEnvelope::from_json(&serde_json::to_string(&value).unwrap()).unwrap_err();
+    assert!(
+        matches!(error, VisualEnvelopeError::Invalid(_)),
+        "expected a bogus state to be rejected as invalid, got {error:?}"
     );
 }
 

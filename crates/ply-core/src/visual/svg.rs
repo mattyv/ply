@@ -2885,7 +2885,7 @@ struct EvidenceView<'a> {
 /// fn and found nothing to check) — both mean exactly the same thing to a
 /// reader: no promise has been answered yet, so both draw identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DisplayState {
+pub(super) enum DisplayState {
     Declared,
     /// `on_assumptions` is the §5.5 `conditional` status: the verdict rests
     /// on an assumed contract for a callee, not on that callee's own body.
@@ -2908,7 +2908,7 @@ enum DisplayState {
 /// rather than `Unanswered` because it means "nothing was ever asked", not
 /// "something was asked and could not be settled" — the same distinction
 /// `crate::diag::is_absence`'s own vocabulary draws for everything after it.
-fn classify_evidence(evidence: &super::ElementEvidence) -> DisplayState {
+pub(super) fn classify_evidence(evidence: &super::ElementEvidence) -> DisplayState {
     if evidence.verdict == "violation" {
         return DisplayState::Violated;
     }
