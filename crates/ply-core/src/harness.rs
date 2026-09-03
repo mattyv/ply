@@ -2977,22 +2977,24 @@ fn scan_file_for_receiver(
                 // fourteenth false clean", 2026-08-28), so it is recorded
                 // by name and reason rather than only vanishing from
                 // `other_ops`.
-                let call_path = format!("{type_name}::{}", m.sig.ident);
-                match params.iter().find(|p| !p.ty.is_fuzz_supported()) {
-                    None => out.other_ops.push(Operation {
-                        call_path,
-                        params,
-                        takes_mut_self: r.mutability.is_some(),
-                    }),
-                    Some(bad) => out.excluded_ops.push(ExcludedOperation {
-                        call_path,
-                        reason: format!(
-                            "its `{}: {}` argument uses a type Ply cannot build a value for",
-                            bad.name,
-                            bad.ty.display_name()
-                        ),
-                    }),
-                }
+                //
+                // Whether an argument is buildable is decided by the caller
+                // (`scan_impls_for_receiver`), not here. This scan is purely
+                // syntactic: it has no crate-wide type index, so a bare
+                // `Flag` still reads `Unsupported` at this point whether or
+                // not the crate declares a perfectly buildable enum by that
+                // name. Judging here excluded operations for types that were
+                // never unbuildable, only unresolved -- the same defect the
+                // constructor candidates above already deferred out of this
+                // function for the same reason, and the one the false-green
+                // work ended on (TODO.md, 2026-09-03): a mutator taking a
+                // plain enum was dropped from the sequence pool while the
+                // identical enum built fine as an ordinary parameter.
+                out.other_ops.push(Operation {
+                    call_path: format!("{type_name}::{}", m.sig.ident),
+                    params,
+                    takes_mut_self: r.mutability.is_some(),
+                });
             }
         }
     }
@@ -3114,6 +3116,36 @@ fn scan_impls_for_receiver(
             Err(_) => p.clone(),
         }
     };
+    // Every candidate operation gets the same re-resolution the constructor
+    // candidates get just below, and only then is judged. An operation whose
+    // arguments all resolve joins the sequence pool; one with an argument
+    // that genuinely cannot be built is still named and its reason still
+    // recorded -- the "fourteenth false clean" disclosure is unchanged, it
+    // now just says it about operations that are really unbuildable rather
+    // than ones nobody had looked up yet.
+    let (other_ops, newly_excluded): (Vec<Operation>, Vec<ExcludedOperation>) = {
+        let mut keep = Vec::new();
+        let mut drop = Vec::new();
+        for op in other_ops {
+            let resolved: Vec<Param> = op.params.iter().map(resolve_or_keep).collect();
+            match resolved.iter().find(|p| !p.ty.is_fuzz_supported()) {
+                None => keep.push(Operation {
+                    params: resolved,
+                    ..op
+                }),
+                Some(bad) => drop.push(ExcludedOperation {
+                    call_path: op.call_path.clone(),
+                    reason: format!(
+                        "its `{}: {}` argument uses a type Ply cannot build a value for",
+                        bad.name,
+                        bad.ty.display_name()
+                    ),
+                }),
+            }
+        }
+        (keep, drop)
+    };
+    excluded_ops.extend(newly_excluded);
     let ctor_candidates: Vec<CtorCandidate> = ctor_candidates
         .into_iter()
         .map(|(path, params, _bad, req, ctor_return)| {

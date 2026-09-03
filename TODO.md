@@ -144,12 +144,35 @@ needed, nothing generated, and it holds for a type that can be neither printed n
       a fixture that could not vary — itself part of why this went unnoticed — and now
       carry a constructor argument so they test what they claim to.
 
-STILL OPEN, unchanged by this: the third bullet of the original finding. **What would make
-this evidence real is not a route.** The receiver mechanism would vary the set if it could
-call `insert`, and it refuses because it cannot build an ordinary unit enum for the
-operation pool — while refusal messages elsewhere imply unit-only enums are buildable. That
-inconsistency is the unlock, and it is a defect rather than a missing feature. Marking the
-gap is honest; closing it is what makes the evidence worth having.
+NOW CLOSED (2026-09-03), and the evidence is real rather than labelled. The third bullet
+turned out sharper than recorded: the defect was never about enums. An operation's own
+arguments were never put through the type resolution the checked call's arguments get, so
+at the moment the sequence pool was chosen every argument type still read as unbuildable —
+whether or not the crate declared a perfectly good type by that name. That judgment was
+being made inside a purely syntactic scan which has no crate-wide type index and cannot
+make it.
+
+- [x] **The decision moved to where the answer is knowable**, beside the constructor
+      candidates that had already been moved out of that same scan for the same reason. An
+      operation is now resolved first and judged second.
+- [x] **The sequence loop can build an argument, not only draw one.** Each step's arguments
+      go through the same plan the checked call's arguments do, under that step's own name
+      prefix, and the binding runs inside the arm before the call. Without that half an
+      operation would join the pool with an unbound argument and the generated harness
+      would not compile, so the test asserts both halves.
+- [x] **Measured, not asserted.** On a fresh probe the same deliberate break that reported
+      a clean `fuzzed(64)` reports `violation` now, and `narrower than it looks` is gone
+      from the verdict because the mutator really is called.
+- [x] **The negative case is pinned too.** An operation whose argument genuinely cannot be
+      built — a filesystem path — is still left out and still named with its reason.
+      Admitting everything would trade a silent gap for a harness that does not compile.
+
+HONEST LIMIT, and it is why Ply's own status-set probe still reads `one value over and
+over`: that type has no `&mut self` method at all. `union` takes `&self` and returns a new
+value, so no sequence of its own operations can move the receiver off what the constructor
+made. `W0529` is right to fire there, and now fires for the real reason rather than because
+an argument went unresolved.
+
 
 ## Decided: `ply-core` does NOT take a dependency on `ply-attrs` — 2026-09-02
 

@@ -778,22 +778,6 @@ fn op_prefix(i: usize) -> String {
     format!("__ply_op{i}_")
 }
 
-/// [`value_pattern_for`] with every name prefixed for operation `i` --
-/// used for every pooled operation's own slot in the sequence's per-step
-/// tuple pattern except operation zero's.
-fn value_pattern_for_prefixed(params: &[Param], i: usize) -> String {
-    let prefix = op_prefix(i);
-    let names: Vec<String> = params
-        .iter()
-        .map(|p| format!("{prefix}{}", p.name))
-        .collect();
-    match names.len() {
-        0 => "_".to_string(),
-        1 => names[0].clone(),
-        _ => format!("({})", names.join(", ")),
-    }
-}
-
 /// [`call_args_for`] reading the same prefixed names
 /// [`value_pattern_for_prefixed`] bound.
 fn call_args_for_prefixed(params: &[Param], i: usize) -> Vec<String> {
@@ -1313,6 +1297,56 @@ pub fn moved_param_read_in_ensures(cf: &ContractFn) -> Option<&Param> {
     cf.params.iter().find(|p| p.name == found_name)
 }
 
+/// [`plan_for_param`] for one operation's arguments, under that step's own
+/// name prefix.
+///
+/// Every name `plan_for_param` mints is derived from the parameter's own
+/// name, so prefixing the name is enough to prefix the whole plan --
+/// pattern, generated leaves, marker, and the `let` the preamble binds. For
+/// an ordinary scalar argument this is byte-identical to the plain prefixed
+/// pattern that came before it; what it adds is the case that argument
+/// could not have: an argument Ply has to *build* (a struct, or a plain
+/// enum) needs a `let` statement, and the sequence loop had no way to emit
+/// one. That gap is why a mutator taking a plain enum was dropped from the
+/// pool entirely, while the identical enum built fine one line away as an
+/// ordinary parameter (TODO.md, 2026-09-03).
+fn plans_for_op_params(params: &[Param], i: usize) -> Result<Vec<ParamPlan>> {
+    let prefix = op_prefix(i);
+    params
+        .iter()
+        .map(|p| {
+            plan_for_param(&Param {
+                name: format!("{prefix}{}", p.name),
+                ..p.clone()
+            })
+        })
+        .collect()
+}
+
+/// The pattern, strategy and preamble one operation's arguments need, joined
+/// under proptest's own tuple rules -- the same 0/1/many shape
+/// [`combined_strategy_expr_for`] follows, because a one-element tuple is not
+/// a `Strategy` and an empty one is not a value.
+fn op_pattern_strategy_preamble(params: &[Param], i: usize) -> Result<(String, String, String)> {
+    let plans = plans_for_op_params(params, i)?;
+    let join = |parts: Vec<String>, empty: &str| match parts.len() {
+        0 => empty.to_string(),
+        1 => parts[0].clone(),
+        _ => format!("({})", parts.join(", ")),
+    };
+    let pattern = join(plans.iter().map(|p| p.pattern.clone()).collect(), "_");
+    let strategy = join(
+        plans.iter().map(|p| p.strategy.clone()).collect(),
+        "proptest::strategy::Just(())",
+    );
+    let preamble = plans.iter().map(|p| p.preamble.clone()).collect::<String>();
+    Ok((pattern, strategy, preamble))
+}
+/// Every *other* pooled operation gets its own strategy and its own
+/// (prefixed) pattern (2026-08-27, docs/review-caveats.md N3): the pool is
+/// no longer restricted to the checked method's own parameter shape, so a
+/// mixed-shape step needs its own slot per operation rather than one shared
+/// one.
 /// The receiver half of a generated fuzz test (docs/review-self-construction.md's
 /// "fourth option", 2026-08-27): the outer strategy/pattern grow a leading
 /// constructor slot and a bounded-sequence slot, and the closure body grows a
@@ -1326,11 +1360,6 @@ pub fn moved_param_read_in_ensures(cf: &ContractFn) -> Option<&Param> {
 /// always pooled (`ReceiverPlan::operations[0]`), and giving its repeat the
 /// same bare names as the final call is what lets its own `#[ply::requires]`
 /// text be spliced into the loop unmodified (`receiver_preamble`'s doc).
-/// Every *other* pooled operation gets its own strategy and its own
-/// (prefixed) pattern (2026-08-27, docs/review-caveats.md N3): the pool is
-/// no longer restricted to the checked method's own parameter shape, so a
-/// mixed-shape step needs its own slot per operation rather than one shared
-/// one.
 fn receiver_pattern_and_strategy(
     plan: &harness::ReceiverPlan,
     target_pattern: &str,
@@ -1357,8 +1386,8 @@ fn receiver_pattern_and_strategy(
     };
     let num_ops = plan.operations.len();
     let mut step_strategies = vec![target_strategy.to_string()];
-    for op in plan.operations.iter().skip(1) {
-        step_strategies.push(combined_strategy_expr_for(&op.params)?);
+    for (i, op) in plan.operations.iter().enumerate().skip(1) {
+        step_strategies.push(op_pattern_strategy_preamble(&op.params, i)?.1);
     }
     let seq_strategy = format!(
         "proptest::collection::vec((0u8..{num_ops}u8, {}), 0..={max}usize)",
@@ -1462,17 +1491,25 @@ fn receiver_preamble(
         ));
     }
 
-    let step_pattern = plan
+    // Built once and reused by both halves below, so the pattern the loop
+    // destructures and the `let` bindings inside each arm can never drift
+    // apart -- they are two views of the same plan.
+    let op_plans: Vec<(String, String)> = plan
         .operations
         .iter()
         .enumerate()
         .map(|(i, op)| {
             if i == 0 {
-                target_pattern.to_string()
+                Ok((target_pattern.to_string(), String::new()))
             } else {
-                value_pattern_for_prefixed(&op.params, i)
+                let (pattern, _, preamble) = op_pattern_strategy_preamble(&op.params, i)?;
+                Ok((pattern, preamble))
             }
         })
+        .collect::<Result<_>>()?;
+    let step_pattern = op_plans
+        .iter()
+        .map(|(pattern, _)| pattern.clone())
         .collect::<Vec<_>>()
         .join(", ");
     body.push_str(&format!(
@@ -1496,7 +1533,12 @@ fn receiver_preamble(
         } else {
             format!("{recv_ref}, {op_args}")
         };
-        let call_stmt = format!("let _ = {call}({full_args});");
+        // An argument Ply builds rather than draws needs its `let` to run
+        // inside this arm, before the call that reads it -- the piece the
+        // sequence loop never had, and the whole reason an operation taking
+        // one was left out of the pool instead of called.
+        let bind = &op_plans[i].1;
+        let call_stmt = format!("{bind}let _ = {call}({full_args});");
         let arm_body = if i == 0 {
             match &cf.requires {
                 Some((expr, _)) => {
@@ -3285,6 +3327,140 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
         let refused = harness::enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
         assert!(refused.is_empty(), "{refused:?}");
         cf
+    }
+
+    /// The defect the false-green work ended on (TODO.md, 2026-09-02): a
+    /// type whose only way in is a no-argument constructor was checked
+    /// against one value, and the mutator that would have varied it was left
+    /// out of the sequence because Ply "cannot build a value for" its
+    /// argument -- a plain enum with no data in any variant.
+    ///
+    /// The inconsistency is what makes it a defect rather than a missing
+    /// feature: the identical enum builds fine as an ordinary top-level
+    /// parameter. What was missing is not enum support, it is that an
+    /// operation's own parameters were never put through the same
+    /// resolution the checked call's parameters get -- so they stayed
+    /// `Unsupported` and the operation was filtered out of the pool.
+    ///
+    /// Asserts the generated harness both binds a real value for the
+    /// argument and calls the mutator with it, because the operation
+    /// appearing in the pool while its argument is never bound would fail
+    /// to compile -- a defect that trades a silent gap for a loud one.
+    #[test]
+    fn an_operation_taking_a_plain_enum_is_called_rather_than_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            r#"
+#[derive(Clone, Copy)]
+pub enum Flag { Ready, Busy, Failed }
+#[derive(Clone, Copy, Default)]
+pub struct FlagSet(u8);
+impl FlagSet {
+    pub const fn new() -> Self { FlagSet(0) }
+    pub fn insert(&mut self, f: Flag) { let _ = f; }
+    #[ply::ensures(|result| *result <= 3)]
+    pub fn len(&self) -> usize { self.0.count_ones() as usize }
+}
+"#,
+        )
+        .unwrap();
+        let mut cf = harness::discover_method_with_receiver(
+            dir.path(),
+            "FlagSet::len",
+            &harness::RouteTable::new(),
+        )
+        .expect("`FlagSet::len` is a method on a type with a public constructor");
+        let refused = harness::enrich_contract_fn_user_types(
+            &mut cf,
+            dir.path(),
+            &harness::RouteTable::new(),
+        );
+        assert!(refused.is_empty(), "{refused:?}");
+
+        let plan = cf
+            .receiver
+            .as_ref()
+            .expect("`FlagSet::len` is a method, so it has a receiver plan");
+        assert!(
+            plan.operations
+                .iter()
+                .any(|op| op.call_path.ends_with("::insert")),
+            "`insert` takes a plain enum, which Ply builds fine as an ordinary parameter, so \
+             it belongs in the sequence pool rather than the excluded list. Excluded: {:?}",
+            plan.excluded_operations
+        );
+
+        let body = generate_fuzz_test(&cf, 64, &derive_seed("FlagSet::len", "")).unwrap();
+        assert!(
+            body.contains("FlagSet::insert("),
+            "the generated sequence must actually call the mutator:\n{body}"
+        );
+        assert!(
+            body.contains("Flag::Busy"),
+            "the mutator's own argument must be built, not left unbound -- an operation in \
+             the pool whose argument is never bound does not compile:\n{body}"
+        );
+    }
+
+    /// The other half of the same decision, and the reason moving it needed
+    /// its own pin: an operation whose argument is *genuinely* unbuildable
+    /// must still be left out of the pool and still be named, with its
+    /// reason. Admitting everything would trade the old silent gap for a
+    /// harness that does not compile, which is a worse failure than the one
+    /// being fixed.
+    ///
+    /// A filesystem path is the case to hold this against -- Ply's own reach
+    /// measurement records paths as deliberately unbuilt, so this stays true
+    /// as the supported-type list grows.
+    #[test]
+    fn an_operation_whose_argument_really_cannot_be_built_is_still_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            r#"
+#[derive(Clone, Copy, Default)]
+pub struct Log(u8);
+impl Log {
+    pub const fn new() -> Self { Log(0) }
+    pub fn write_to(&mut self, at: std::path::PathBuf) { let _ = at; }
+    #[ply::ensures(|result| *result <= 3)]
+    pub fn count(&self) -> usize { self.0 as usize }
+}
+"#,
+        )
+        .unwrap();
+        let mut cf = harness::discover_method_with_receiver(
+            dir.path(),
+            "Log::count",
+            &harness::RouteTable::new(),
+        )
+        .expect("`Log::count` is a method on a type with a public constructor");
+        let _ = harness::enrich_contract_fn_user_types(
+            &mut cf,
+            dir.path(),
+            &harness::RouteTable::new(),
+        );
+
+        let plan = cf.receiver.as_ref().expect("a method has a receiver plan");
+        assert!(
+            !plan.operations.iter().any(|op| op.call_path.ends_with("::write_to")),
+            "a path is not a type Ply builds values of, so `write_to` must not be pooled"
+        );
+        let named = plan
+            .excluded_operations
+            .iter()
+            .find(|op| op.call_path.ends_with("::write_to"))
+            .expect("an operation left out must be named, never merely absent");
+        assert!(
+            named.reason.contains("at"),
+            "the reason must name the argument that could not be built: {}",
+            named.reason
+        );
     }
 
     /// A route-built top-level parameter whose type derives `Debug` gets a
