@@ -520,12 +520,19 @@ components:
           - "|result| *result <= amount_cents"
 ```
 
-The design intent is that these are combined with the function's own attributes. **They
-are not, in this build.** A contract written in `ply.yaml` for a function that is itself
-being checked is *not* included in that function's own check, and `verify` says so out
-loud rather than dropping it silently (`W0510`). What such an entry *does* do is let
-callers assume it — which is the whole mechanism the rest of this section is about. If
-you want a clause checked against the function it describes, put it on the function.
+**These are combined with the function's own attributes.** A clause you write here is
+ANDed with any `#[ply::requires]`/`#[ply::ensures]` on the function itself — both hold,
+neither replaces the other — and several clauses in one list all hold. So a promise
+written here is checked against the function it describes, exactly like one written on
+the function.
+
+Two things follow that are worth knowing. A promise here that the code does not keep is
+now a **violation**, where until 2026-09-03 it was read, displayed, and never checked. And
+a line Ply cannot read as Rust is an error that stops the function's checks (`E0505`),
+quoted back to you — because a promise nobody checks is worse than one nobody wrote.
+
+Such an entry still does the other thing it always did: it lets callers assume the clause
+at a boundary, which is the mechanism the rest of this section is about.
 
 ### What you can write in a contract
 
@@ -1581,7 +1588,7 @@ on something stable. These are the ones this build emits.
 | `W0527` | A value was built through a `routes:` entry, with how many genuinely distinct values reached the function. One, across many cases, means one test ran many times. |
 | `W0529` | Every case ran against the same value, because the only constructor Ply could call takes no arguments and nothing in reach changes what it made. The count says how many times the check ran, not how many different values it saw. |
 | `V0509` | A `routes:` entry names a function Ply cannot use, and says which — never silently ignored. |
-| `W0510` | A contract written in `ply.yaml` for a checked function was used at the boundary but not merged into that function's own check. |
+| `E0505` | A `requires:` or `ensures:` line written in `ply.yaml` could not be read as Rust, so it could not be checked. The line is quoted back with what was expected, and the function's checks do not run — a promise nobody checks is worse than one nobody wrote. |
 | `W0511` | The verdict is conditional: it used a declared contract instead of a callee's real body, and names what it assumed. |
 | `W0512` | Ply refused to descend into a callee no contract describes, and names the callee and the call site. |
 | `W0513` | Ply followed a path into first-party source and could not read it, so it refused rather than descending. |
@@ -1618,8 +1625,9 @@ Collected in one place, so nothing here has to be discovered at minute eleven.
   *(Actively changing — check the fixtures under `tests/fixtures/` for what is
   actually covered rather than trusting this list.)*
 - `check_with` is parsed and unused; generic functions are unsupported shapes.
-- `ply.yaml` `requires`/`ensures` are not merged into the described function's own check
-  (`W0510`). They work as boundary promises for callers.
+- `ply.yaml` `requires`/`ensures` are merged into the described function's own check
+  (ANDed with any inline attribute) *and* work as boundary promises for callers. A clause
+  Ply cannot read as Rust is refused by name (`E0505`) rather than dropped.
 - `old()` works on both checking paths, over values the function reads. The mutating
   shape it exists for — a parameter the function writes back through — is refused as an
   unsupported signature, by name, rather than attempted.

@@ -5640,6 +5640,231 @@ fn write_generated_file(
     Ok(out_path)
 }
 
+/// A `requires:`/`ensures:` clause written in `ply.yaml` that could not be
+/// folded into the function's own contract, and why.
+///
+/// Never a silent drop: a clause the author wrote and Ply cannot use has to
+/// be named back to them, because the alternative is a promise that reads
+/// as checked and is not.
+#[derive(Debug, Clone)]
+pub struct DeclaredContractError {
+    /// The clause exactly as the document spells it.
+    pub clause: String,
+    /// What went wrong, in a sentence a reader can act on.
+    pub reason: String,
+}
+
+/// Folds the `requires:`/`ensures:` written in `ply.yaml` into a function's
+/// own contract, so what the document promises is what actually gets
+/// checked (§5.4's "ANDed in").
+///
+/// Until 2026-09-03 this did not happen. The document's clauses were read,
+/// displayed in the drawing and the transcript, used as an assumption by
+/// *callers* at a boundary (§5.5), and never checked against the function
+/// they were written for -- a warning said so on every run. That is this
+/// project's own central failure mode, a promise that reads as checked and
+/// is not, in the one file whose entire purpose is that its claims are
+/// checked.
+///
+/// **Both sources hold, rather than one winning.** A document clause is
+/// ANDed with an inline `#[ply::requires]`/`#[ply::ensures]` attribute, not
+/// substituted for it: a clause that quietly replaced an inline one would
+/// be a different silent drop from the one being fixed. Several clauses in
+/// one list are likewise a conjunction, which is what a reader of a list of
+/// promises assumes.
+///
+/// **Nothing half-merges.** Every clause is parsed before any is applied,
+/// so a function whose second clause is malformed keeps the contract it
+/// had rather than a partial one -- a partially-applied contract is checked
+/// against something nobody wrote.
+pub fn merge_declared_contract(
+    cf: &mut ContractFn,
+    declared_requires: &[String],
+    declared_ensures: &[String],
+) -> Result<(), DeclaredContractError> {
+    // Parse everything first; apply nothing until all of it is good.
+    let mut req_exprs: Vec<Expr> = Vec::new();
+    for clause in declared_requires {
+        req_exprs.push(
+            syn::parse_str::<Expr>(clause).map_err(|e| DeclaredContractError {
+                clause: clause.clone(),
+                reason: format!(
+                    "this `requires:` line is not a Rust expression Ply can read ({e}). A \
+                     precondition is written the way you would write it in an `if`, without \
+                     the `if` -- for example `x < 100`"
+                ),
+            })?,
+        );
+    }
+    let mut ens_closures: Vec<ExprClosure> = Vec::new();
+    for clause in declared_ensures {
+        ens_closures.push(parse_ensures_clause(clause)?);
+    }
+
+    if !req_exprs.is_empty() {
+        let mut all = Vec::new();
+        if let Some((expr, _)) = cf.requires.take() {
+            all.push(expr);
+        }
+        all.extend(req_exprs);
+        let text = all
+            .iter()
+            .map(|e| tidy_contract_text(&e.to_token_stream().to_string()))
+            .collect::<Vec<_>>()
+            .join(" && ");
+        cf.requires = Some((conjoin_exprs(all), text));
+    }
+
+    if !ens_closures.is_empty() {
+        let mut all = Vec::new();
+        if let Some((closure, _)) = cf.ensures.take() {
+            all.push(closure);
+        }
+        all.extend(ens_closures);
+        cf.ensures = Some(conjoin_ensures(all));
+    }
+    Ok(())
+}
+
+/// One `ensures:` line from a document, as a `|result| ...` closure.
+///
+/// Documents write postconditions two ways and both are real. The closure
+/// form spells the dereference out (`|result| *result == 7`, how the
+/// vetting scenarios write it); the bare form names the value directly
+/// (`result <= 7`, how this repository's own document writes it). Neither
+/// had ever been compiled before the contract merge landed -- the clauses
+/// were only displayed -- so the first build that tried refused every bare
+/// one by name, on Ply's own fixtures.
+///
+/// **The bare form's `result` means the returned value**, so Ply inserts
+/// the dereference the closure form writes by hand: the generated harness
+/// binds `let result = &f(..)`, and `result <= 7` against a reference does
+/// not compile while `*result <= 7` does. Only the value itself is
+/// dereferenced -- a method or field that merely shares the name is left
+/// alone.
+fn parse_ensures_clause(clause: &str) -> Result<ExprClosure, DeclaredContractError> {
+    if let Ok(closure) = syn::parse_str::<ExprClosure>(clause) {
+        return Ok(closure);
+    }
+    let mut expr = syn::parse_str::<Expr>(clause).map_err(|e| DeclaredContractError {
+        clause: clause.to_string(),
+        reason: format!(
+            "this `ensures:` line is not something Ply can read as a postcondition ({e}). \
+             Write what must be true of the returned value, naming it `result` -- for \
+             example `result > 0`, or `|result| *result > 0` if you prefer to name it \
+             yourself"
+        ),
+    })?;
+    deref_result_value(&mut expr);
+    Ok(syn::parse_quote!(|result| #expr))
+}
+
+/// Rewrites the returned value's own name to a dereference of it, and
+/// nothing else with that name.
+///
+/// Matches only a path expression that is exactly `result`, so
+/// `result.result()` dereferences the receiver and leaves the method
+/// alone. An identifier-level rewrite would have hit both.
+fn deref_result_value(expr: &mut Expr) {
+    use syn::visit_mut::VisitMut;
+    struct Deref;
+    impl VisitMut for Deref {
+        fn visit_expr_mut(&mut self, e: &mut Expr) {
+            if let Expr::Path(p) = e
+                && p.qself.is_none()
+                && p.path.is_ident("result")
+            {
+                *e = syn::parse_quote!(*result);
+                return;
+            }
+            syn::visit_mut::visit_expr_mut(self, e);
+        }
+    }
+    Deref.visit_expr_mut(expr);
+}
+
+/// `a`, `b`, `c` -> `(a) && (b) && (c)`.
+///
+/// Parenthesised at every step because the clauses are the author's own
+/// text: `a || b` and `c` conjoined without parentheses would silently
+/// become `a || (b && c)`, a different promise from the one written.
+fn conjoin_exprs(mut exprs: Vec<Expr>) -> Expr {
+    let mut acc = exprs.remove(0);
+    for next in exprs {
+        acc = syn::parse_quote!((#acc) && (#next));
+    }
+    acc
+}
+
+/// Conjoins `|result| ...` closures into one, renaming each later closure's
+/// own name for the value to the first one's.
+///
+/// `|result|` is the convention and everything in this repository uses it,
+/// but a document that calls the value something else means the same thing.
+/// Refusing would be a new way for a valid document to stop working, and
+/// simply splicing the bodies together would produce a closure that does
+/// not compile -- so the binder is rewritten, which is what a reader assumes
+/// already happens.
+fn conjoin_ensures(closures: Vec<ExprClosure>) -> (ExprClosure, String) {
+    let first = &closures[0];
+    let binder = closure_binder_ident(first);
+    let mut bodies: Vec<Expr> = Vec::new();
+    for c in &closures {
+        let mut body = (*c.body).clone();
+        if let (Some(want), Some(has)) = (binder.as_ref(), closure_binder_ident(c))
+            && *want != has
+        {
+            rename_ident(&mut body, &has, want);
+        }
+        bodies.push(body);
+    }
+    // One binder in front of the whole conjunction, not one per clause.
+    // Repeating it produced `|result| *result >= a && |result| *result <=
+    // 10_000` in the envelope -- text that is not a closure and not what
+    // anybody wrote, in the channel an agent reads.
+    let text = tidy_contract_text(&format!(
+        "|{}| {}",
+        binder.clone().unwrap_or_else(|| "result".into()),
+        bodies
+            .iter()
+            .map(|b| format!("({})", b.to_token_stream()))
+            .collect::<Vec<_>>()
+            .join(" && ")
+    ));
+    let joined = conjoin_exprs(bodies);
+    let mut merged = first.clone();
+    merged.body = Box::new(joined);
+    (merged, text)
+}
+
+/// The single parameter name a `|result| ...` closure binds, when it binds
+/// exactly one plain identifier.
+fn closure_binder_ident(c: &ExprClosure) -> Option<String> {
+    match c.inputs.first() {
+        Some(syn::Pat::Ident(p)) if c.inputs.len() == 1 => Some(p.ident.to_string()),
+        _ => None,
+    }
+}
+
+/// Rewrites every mention of one identifier to another, inside an
+/// expression. Used only to make two authors' names for the returned value
+/// agree before their promises are conjoined.
+fn rename_ident(expr: &mut Expr, from: &str, to: &str) {
+    use syn::visit_mut::VisitMut;
+    struct Rename<'a> {
+        from: &'a str,
+        to: &'a str,
+    }
+    impl VisitMut for Rename<'_> {
+        fn visit_ident_mut(&mut self, ident: &mut syn::Ident) {
+            if *ident == self.from {
+                *ident = syn::Ident::new(self.to, ident.span());
+            }
+        }
+    }
+    Rename { from, to }.visit_expr_mut(expr);
+}
+
 /// Every declared state type's real fields, keyed by the component's
 /// qualified path (`pricing.curves`), in declaration order.
 pub type StateFieldIndex = std::collections::BTreeMap<String, Vec<StateField>>;
@@ -5894,6 +6119,179 @@ pub struct OrderBook {
             !fields[2].ty.is_fuzz_supported(),
             "a clock is not a shape Ply builds values of, and that is the fact worth drawing"
         );
+    }
+
+    /// A bare `ContractFn` for the merge tests: no contract of its own, so
+    /// each test states exactly the contract it is about.
+    fn contract_fn_named(name: &str) -> ContractFn {
+        ContractFn {
+            name: name.to_string(),
+            path: name.to_string(),
+            params: Vec::new(),
+            requires: None,
+            ensures: None,
+            calls: Vec::new(),
+            source: String::new(),
+            source_span: None,
+            is_method: false,
+            return_type: RustType::U32,
+            receiver: None,
+            use_aliases: Default::default(),
+        }
+    }
+
+    /// §5.4 says a `requires:`/`ensures:` written in `ply.yaml` is "ANDed
+    /// in" to the function's own contract. Until now it was not: it was
+    /// read, displayed, reported on, and never actually checked -- the one
+    /// failure this project exists to refuse, sitting in the file whose
+    /// whole purpose is that its claims are checked.
+    #[test]
+    fn a_contract_written_in_the_document_reaches_the_functions_own_checks() {
+        let mut cf = contract_fn_named("seven");
+        merge_declared_contract(&mut cf, &[], &["|result| *result == 7".into()])
+            .expect("a well-formed clause merges");
+        let (_, text) = cf
+            .ensures
+            .as_ref()
+            .expect("the document's clause is now the contract");
+        assert!(
+            text.contains("== 7"),
+            "the clause has to survive into the contract that is actually checked: {text}"
+        );
+        assert!(
+            cf.has_contract(),
+            "and the function now has a contract to check"
+        );
+    }
+
+    /// `ensures:` is written two ways in real documents, and both have to
+    /// work. The closure form spells the dereference out (`|result|
+    /// *result == 7`); the bare form names the value directly (`result <=
+    /// 7`), which is how this repository's own document writes it.
+    ///
+    /// Neither had ever been compiled before the merge landed -- the
+    /// document's clauses were only ever displayed -- so the first run that
+    /// tried refused every bare one by name. Found by CI, on Ply's own
+    /// fixtures.
+    #[test]
+    fn a_postcondition_written_without_a_closure_still_means_the_returned_value() {
+        for clause in ["result <= 7", "result.len() >= 2", "result.is_none()"] {
+            let mut cf = contract_fn_named("f");
+            merge_declared_contract(&mut cf, &[], &[clause.to_string()])
+                .unwrap_or_else(|e| panic!("`{clause}` is how documents write this: {e:?}"));
+            let (closure, _) = cf.ensures.as_ref().unwrap();
+            let rendered = quote::ToTokens::to_token_stream(closure).to_string();
+            assert!(
+                rendered.contains("* result"),
+                "`result` is bound to a reference in the generated harness, so the bare \
+                 form has to be dereferenced or it will not compile: {rendered}"
+            );
+        }
+    }
+
+    /// The dereference goes on the returned value, not on anything that
+    /// merely shares its name.
+    #[test]
+    fn only_the_returned_value_is_dereferenced() {
+        let mut cf = contract_fn_named("f");
+        merge_declared_contract(&mut cf, &[], &["result.result() > 0".into()]).unwrap();
+        let (closure, _) = cf.ensures.as_ref().unwrap();
+        let rendered = quote::ToTokens::to_token_stream(closure).to_string();
+        assert_eq!(
+            rendered.matches('*').count(),
+            1,
+            "a method that happens to be called `result` is not the returned value: {rendered}"
+        );
+    }
+
+    /// Both sources at once means both hold, not the last one wins. A
+    /// document clause that quietly replaced an inline one would be a
+    /// different silent drop from the one being fixed.
+    #[test]
+    fn a_document_clause_and_an_inline_one_must_both_hold() {
+        let mut cf = contract_fn_named("f");
+        cf.ensures = Some((
+            syn::parse_str::<ExprClosure>("|result| *result > 0").unwrap(),
+            "|result| *result > 0".into(),
+        ));
+        cf.requires = Some((syn::parse_str::<Expr>("x < 10").unwrap(), "x < 10".into()));
+        merge_declared_contract(
+            &mut cf,
+            &["x > 2".into()],
+            &["|result| *result < 100".into()],
+        )
+        .expect("both merge");
+
+        let (_, ens) = cf.ensures.as_ref().unwrap();
+        assert!(
+            ens.contains("> 0") && ens.contains("< 100"),
+            "both promises must be checked, not one of them: {ens}"
+        );
+        let (_, req) = cf.requires.as_ref().unwrap();
+        assert!(
+            req.contains("< 10") && req.contains("> 2"),
+            "both preconditions must gate the inputs: {req}"
+        );
+    }
+
+    /// Several clauses in the document are a conjunction, the way a reader
+    /// of a list of promises would expect.
+    #[test]
+    fn every_clause_in_the_list_is_checked() {
+        let mut cf = contract_fn_named("f");
+        merge_declared_contract(
+            &mut cf,
+            &["a > 0".into(), "b > 0".into()],
+            &[
+                "|result| *result != 0".into(),
+                "|result| *result < 9".into(),
+            ],
+        )
+        .unwrap();
+        let (_, req) = cf.requires.as_ref().unwrap();
+        assert!(req.contains("a > 0") && req.contains("b > 0"), "{req}");
+        let (_, ens) = cf.ensures.as_ref().unwrap();
+        assert!(ens.contains("!= 0") && ens.contains("< 9"), "{ens}");
+    }
+
+    /// A clause that is not an expression at all must be named and refused,
+    /// never dropped. Dropping it silently is exactly the behaviour this
+    /// whole change exists to end.
+    #[test]
+    fn a_clause_that_does_not_parse_is_named_rather_than_dropped() {
+        let mut cf = contract_fn_named("f");
+        let err = merge_declared_contract(&mut cf, &["this is not ( an expression".into()], &[])
+            .expect_err("a malformed clause cannot merge");
+        assert!(
+            err.clause.contains("not ( an expression"),
+            "the message has to quote the clause the author wrote: {err:?}"
+        );
+        assert!(
+            cf.requires.is_none(),
+            "and nothing half-merged is left behind"
+        );
+    }
+
+    /// `|result|` is the convention, but a document that names the value
+    /// something else means the same thing. Refusing would be a new way for
+    /// a valid document to stop working; renaming is what a reader assumes
+    /// already happens.
+    #[test]
+    fn a_clause_naming_the_result_differently_still_merges() {
+        let mut cf = contract_fn_named("f");
+        cf.ensures = Some((
+            syn::parse_str::<ExprClosure>("|result| *result > 0").unwrap(),
+            "|result| *result > 0".into(),
+        ));
+        merge_declared_contract(&mut cf, &[], &["|r| *r < 10".into()]).unwrap();
+        let (closure, text) = cf.ensures.as_ref().unwrap();
+        let rendered = quote::ToTokens::to_token_stream(closure).to_string();
+        assert!(
+            !rendered.contains(" r "),
+            "the second clause's own name for the value must be rewritten to the first \
+             clause's, or the merged closure does not compile: {rendered}"
+        );
+        assert!(text.contains("> 0") && text.contains("< 10"), "{text}");
     }
 
     /// A component's state is "resolved under its own anchor, never guessed
