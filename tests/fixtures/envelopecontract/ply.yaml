@@ -10,6 +10,14 @@ components:
     fns:
       add:
         checks: [fuzz(64)]
+        # Bounded so the promise below is actually true of a saturating add.
+        # Before the ply.yaml contract was merged into the fn's own check
+        # (2026-09-03) this clause was never checked, and it was false:
+        # `add(20_000, 0)` is 20_000. The fixture asserted that the clause
+        # reaches the envelope, which it did -- being wrong was invisible.
+        requires:
+          - "a <= 5_000"
+          - "b <= 5_000"
         ensures:
           - "result <= 10_000"
         trusted:

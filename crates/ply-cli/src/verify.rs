@@ -6606,14 +6606,21 @@ fn earned_evidence(node: &Node, diagnostics: &[Diagnostic]) -> bool {
 /// was reused. Wired to the run first, the second run came back bare --
 /// which is how that was found.
 fn attach_claim_text(node: &mut Node, cf: &ContractFn, claim: &FnClaim) {
-    let mut requires: Vec<String> = claim.requires.clone();
-    if let Some((_, src)) = &cf.requires {
-        requires.push(src.clone());
-    }
-    let mut ensures: Vec<String> = claim.ensures.clone();
-    if let Some((_, src)) = &cf.ensures {
-        ensures.push(src.clone());
-    }
+    // The contract Ply actually checked, once. Since 2026-09-03 the
+    // document's clauses are merged into `cf` rather than sitting beside it
+    // (§5.4's "ANDed in"), so listing the document's list *and* the merged
+    // text puts every clause in twice -- the envelope reported
+    // `requires: ["true", "true"]` for a document with one clause, in the
+    // channel an agent reads. The document's own list is the fallback for
+    // the case the merge never reached: a boundary declaration, which
+    // contributes an assumption for callers and no checks of its own.
+    let (requires, ensures) = match (&cf.requires, &cf.ensures) {
+        (None, None) => (claim.requires.clone(), claim.ensures.clone()),
+        (req, ens) => (
+            req.iter().map(|(_, s)| s.clone()).collect(),
+            ens.iter().map(|(_, s)| s.clone()).collect(),
+        ),
+    };
     node.contract = ply_core::diag::Contract { requires, ensures };
     node.trusted = claim
         .trusted

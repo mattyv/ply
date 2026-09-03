@@ -5698,16 +5698,7 @@ pub fn merge_declared_contract(
     }
     let mut ens_closures: Vec<ExprClosure> = Vec::new();
     for clause in declared_ensures {
-        ens_closures.push(syn::parse_str::<ExprClosure>(clause).map_err(|e| {
-            DeclaredContractError {
-                clause: clause.clone(),
-                reason: format!(
-                    "this `ensures:` line is not a `|result| ...` closure Ply can read ({e}). A \
-                     postcondition names the returned value and then says what must be true of \
-                     it -- for example `|result| *result > 0`"
-                ),
-            }
-        })?);
+        ens_closures.push(parse_ensures_clause(clause)?);
     }
 
     if !req_exprs.is_empty() {
@@ -5733,6 +5724,63 @@ pub fn merge_declared_contract(
         cf.ensures = Some(conjoin_ensures(all));
     }
     Ok(())
+}
+
+/// One `ensures:` line from a document, as a `|result| ...` closure.
+///
+/// Documents write postconditions two ways and both are real. The closure
+/// form spells the dereference out (`|result| *result == 7`, how the
+/// vetting scenarios write it); the bare form names the value directly
+/// (`result <= 7`, how this repository's own document writes it). Neither
+/// had ever been compiled before the contract merge landed -- the clauses
+/// were only displayed -- so the first build that tried refused every bare
+/// one by name, on Ply's own fixtures.
+///
+/// **The bare form's `result` means the returned value**, so Ply inserts
+/// the dereference the closure form writes by hand: the generated harness
+/// binds `let result = &f(..)`, and `result <= 7` against a reference does
+/// not compile while `*result <= 7` does. Only the value itself is
+/// dereferenced -- a method or field that merely shares the name is left
+/// alone.
+fn parse_ensures_clause(clause: &str) -> Result<ExprClosure, DeclaredContractError> {
+    if let Ok(closure) = syn::parse_str::<ExprClosure>(clause) {
+        return Ok(closure);
+    }
+    let mut expr = syn::parse_str::<Expr>(clause).map_err(|e| DeclaredContractError {
+        clause: clause.to_string(),
+        reason: format!(
+            "this `ensures:` line is not something Ply can read as a postcondition ({e}). \
+             Write what must be true of the returned value, naming it `result` -- for \
+             example `result > 0`, or `|result| *result > 0` if you prefer to name it \
+             yourself"
+        ),
+    })?;
+    deref_result_value(&mut expr);
+    Ok(syn::parse_quote!(|result| #expr))
+}
+
+/// Rewrites the returned value's own name to a dereference of it, and
+/// nothing else with that name.
+///
+/// Matches only a path expression that is exactly `result`, so
+/// `result.result()` dereferences the receiver and leaves the method
+/// alone. An identifier-level rewrite would have hit both.
+fn deref_result_value(expr: &mut Expr) {
+    use syn::visit_mut::VisitMut;
+    struct Deref;
+    impl VisitMut for Deref {
+        fn visit_expr_mut(&mut self, e: &mut Expr) {
+            if let Expr::Path(p) = e
+                && p.qself.is_none()
+                && p.path.is_ident("result")
+            {
+                *e = syn::parse_quote!(*result);
+                return;
+            }
+            syn::visit_mut::visit_expr_mut(self, e);
+        }
+    }
+    Deref.visit_expr_mut(expr);
 }
 
 /// `a`, `b`, `c` -> `(a) && (b) && (c)`.
@@ -5770,17 +5818,19 @@ fn conjoin_ensures(closures: Vec<ExprClosure>) -> (ExprClosure, String) {
         }
         bodies.push(body);
     }
-    let text = bodies
-        .iter()
-        .map(|b| {
-            tidy_contract_text(&format!(
-                "|{}| {}",
-                binder.clone().unwrap_or_else(|| "result".into()),
-                b.to_token_stream()
-            ))
-        })
-        .collect::<Vec<_>>()
-        .join(" && ");
+    // One binder in front of the whole conjunction, not one per clause.
+    // Repeating it produced `|result| *result >= a && |result| *result <=
+    // 10_000` in the envelope -- text that is not a closure and not what
+    // anybody wrote, in the channel an agent reads.
+    let text = tidy_contract_text(&format!(
+        "|{}| {}",
+        binder.clone().unwrap_or_else(|| "result".into()),
+        bodies
+            .iter()
+            .map(|b| format!("({})", b.to_token_stream()))
+            .collect::<Vec<_>>()
+            .join(" && ")
+    ));
     let joined = conjoin_exprs(bodies);
     let mut merged = first.clone();
     merged.body = Box::new(joined);
@@ -6111,6 +6161,46 @@ pub struct OrderBook {
         assert!(
             cf.has_contract(),
             "and the function now has a contract to check"
+        );
+    }
+
+    /// `ensures:` is written two ways in real documents, and both have to
+    /// work. The closure form spells the dereference out (`|result|
+    /// *result == 7`); the bare form names the value directly (`result <=
+    /// 7`), which is how this repository's own document writes it.
+    ///
+    /// Neither had ever been compiled before the merge landed -- the
+    /// document's clauses were only ever displayed -- so the first run that
+    /// tried refused every bare one by name. Found by CI, on Ply's own
+    /// fixtures.
+    #[test]
+    fn a_postcondition_written_without_a_closure_still_means_the_returned_value() {
+        for clause in ["result <= 7", "result.len() >= 2", "result.is_none()"] {
+            let mut cf = contract_fn_named("f");
+            merge_declared_contract(&mut cf, &[], &[clause.to_string()])
+                .unwrap_or_else(|e| panic!("`{clause}` is how documents write this: {e:?}"));
+            let (closure, _) = cf.ensures.as_ref().unwrap();
+            let rendered = quote::ToTokens::to_token_stream(closure).to_string();
+            assert!(
+                rendered.contains("* result"),
+                "`result` is bound to a reference in the generated harness, so the bare \
+                 form has to be dereferenced or it will not compile: {rendered}"
+            );
+        }
+    }
+
+    /// The dereference goes on the returned value, not on anything that
+    /// merely shares its name.
+    #[test]
+    fn only_the_returned_value_is_dereferenced() {
+        let mut cf = contract_fn_named("f");
+        merge_declared_contract(&mut cf, &[], &["result.result() > 0".into()]).unwrap();
+        let (closure, _) = cf.ensures.as_ref().unwrap();
+        let rendered = quote::ToTokens::to_token_stream(closure).to_string();
+        assert_eq!(
+            rendered.matches('*').count(),
+            1,
+            "a method that happens to be called `result` is not the returned value: {rendered}"
         );
     }
 
