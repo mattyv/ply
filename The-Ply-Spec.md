@@ -293,6 +293,9 @@ components:
     strict: false                # optional: item-level violations become errors (D4)
     uses: [time]                 # optional; caps: net fs db time rand proc unsafe
     owns: [pricing::Book]        # optional; only this component may mutate these types
+    state:                       # optional; the structure this component's state lives in
+      of: Book                   #   required inside `state:` — resolved under the anchor
+      show: [quotes, curve]      #   optional; the fields worth drawing. Omitted = none
     profile: hot_path            # optional; must name a declared profile
     checks: [bounded(2)]         # optional default checks for all fns in scope
     components:                  # optional nested components, same shape
@@ -690,6 +693,86 @@ Item-tier rules (each `W`-severity by default, `A`-severity error under `strict`
 4. `owns T`: an item outside the owning component mutates `T` → `A0406`.
 5. Profile bans (syntactic checks over the component's items — these are reliable and
    always errors) → `A0407`.
+
+**`state:` — the structure a component's state lives in** (2026-09-03). `owns` answers
+"who may change this type"; `state` answers the question a reader asks first, which is
+"what does this component *hold*". It names one type and, optionally, the fields of it
+worth drawing:
+
+```yaml
+components:
+  book:
+    anchor: ingest::book
+    state:
+      of: OrderBook          # resolved under this component's anchor
+      show: [bids, ticks]    # the fields a reader should see; omitted draws none
+```
+
+**The document names, the code says what.** `show:` lists field *names* only — never
+their types, never their shapes. Ply reads `OrderBook` from source and draws each named
+field as whatever it actually is. Writing the shapes in the document would be a second,
+hand-maintained copy of a fact the compiler already owns, and it would drift the first
+time somebody changed a field: the exact rot this project has spent its documentation
+budget removing. A field's *name* is a stable thing an author chooses; its type is not
+theirs to restate.
+
+**Not every field.** A real state struct has twenty fields and two that matter. `show:`
+is the author saying which two. This is the one place in the grammar where Ply draws
+less than it knows, on purpose.
+
+**Where the fields appear.** The box draws `state T — N of M shown` and then one row per
+field: its shape glyph, its name, and its type as the source spells it. `N` is what was
+drawn and `M` is what the type really has, both counted from code — so a deliberate
+selection of two fields from twenty never reads as a small type, and neither number
+restates the document. The count is drawn *only* when it was measured: a document
+rendered with no code under it draws `state T` alone rather than a number Ply invented.
+
+The type column is one column per box, set by its longest field name. A ragged column is
+read a row at a time; an aligned one is read as a column, which is the reason to draw
+rows rather than a comma list at all.
+
+**What rows cost, measured.** A row is height, and height moves arrows. Before edge
+routing had lanes, adding the header line alone to `vetting/003` took the crossing
+ratchet from 4 overlapping lines to 6. With lanes (§7.1's routing paragraph), four of
+that document's five candidate components take a full `state:` at zero overlaps, and the
+fifth still costs two — bisected one component at a time, and left out with the reason
+recorded in the document itself. Height is a real budget, and the honest way to spend it
+is per component with a measurement beside each, not by a rule declared once.
+
+Three things are checked. The first two are cheap resolution facts rather than
+behaviour; the third is the admission that the first two could not run:
+
+1. `of:` names a type Ply can find under the component's anchor → else `A0414`.
+2. every name in `show:` is a field of that type → else `A0415`, naming the field and
+   the fields that do exist.
+3. Ply could not find a crate to resolve against at all → `W0413`, a warning that says
+   the claim went unchecked. A document Ply cannot check its `state` lines against must
+   say so out loud; the alternative is a silent exit 0 that reads as verification.
+
+**Which crate a state type is resolved in.** The one the component's anchor names. A
+single-crate document resolves everything against the crate the document sits in; a
+workspace document whose components are anchored at `ply_core`, `ply_cli` and so on
+resolves each against the crate that actually holds it. So the workspace-root document
+— which has no library of its own, and was briefly the case `W0413` existed for — is
+checked like any other. Crates are found by walking three directories below the document
+for a `Cargo.toml` with a library beside it, keyed by that manifest's package name with
+dashes underscored. A crate that renames its library with an explicit `[lib] name`
+different from its package name would be keyed wrongly; the cost is one `W0413` rather
+than a false clean, which is the right way round for it to fail.
+
+Three things are **not** checked, and the tier table in SCHEMA.md says so: that the
+component actually holds a value of that type, that no other component holds one, and
+that the fields named are the important ones. `state` is a declaration in the sense
+`owns` is — its value is that it is written down, drawn, and kept honest about
+existence.
+
+**What it earns beyond the picture.** A component whose declared state cannot be built
+is the reason its functions come back `unsupported`, and today that connection is only
+visible by reading a diagnostic. Drawn, it is the first thing a reader sees. This is
+also the grammar's natural home for a future type invariant (§5.4c's "type invariants
+are assumed, never asserted"): the fields are already named, and the receiver machinery
+already builds constructor-plus-mutator sequences that such an invariant would be
+checked across. That is recorded as the next step, not claimed here.
 
 The per-item escape `#[ply::allow(name, reason = "...")]` accepts a ban name or an
 item-tier diagnostic code (`A0402`–`A0404`, `A0406`, `A0408`) and suppresses that finding
@@ -1979,6 +2062,9 @@ grammar.**
 | `~>` data flow | dashed arrow labeled with the type |
 | deny | barred red arrow between the matched patterns; a `*` pattern draws its own per-rule "any" marker — wildcards have no shared identity, so unrelated rules never appear connected |
 | `owns` | header line under the anchor, `owns T, U` — the types this component is sole mutator of |
+| `state:` | a header line under the anchor, `state T — N of M shown`, then one row per field named in `show:`: its shape glyph, its field name, and its type as the source spells it. Both numbers are counted from code, never from the document, and the count is omitted entirely when there was no code to count. The type column is one column for the whole box, set by its longest field name — a ragged column is read a row at a time, an aligned one is read as a column. Rows sit below the capability badges and above the fn chips — state is what the component *is*, chips are what it *does* |
+| a state field's shape | one glyph per row, drawn in ink only — **no new colour channel**, since every hue is already spoken for (green earned, red violation, violet authorship, the grey ceiling ramp). Seven forms, each a distinct silhouette at 12px: **scalar** a filled cell; **text** a cell with a written line across it; **list** three stacked equal bars (order carried); **map** a narrow key cell beside a wide value cell, twice; **set** three loose discs, unaligned (each once, no order); **might be missing** a dashed cell (`Option`); **a shape of your own** two overlapping outlined cells (a struct or enum — there is more inside). Proposal sheet: `docs/state-shapes.svg` |
+| a state field Ply cannot build | the same diagonal hatching unclaimed code already carries, on the glyph itself — no eighth form, so a hatched field still shows *which* shape cannot be built. Two details are load-bearing and both were found by measuring rather than by review. The hatch is drawn at a **finer pitch than the ceiling hatch** (4 units against 8): the ceiling pattern inside a 12-unit glyph is about one stripe and does not read as hatching at all. And on the two outline-only forms it becomes the glyph's **fill** rather than replacing its ink, because those two — a structure of your own, and a shape Ply has no vocabulary for — are the commonest unbuildable fields there are, so a hatch that could not reach them could not say the thing it exists to say. "Cannot build" is the sampling engine's own answer, not "the parser gave up": `BTreeMap<u64, Level>` parses perfectly well as a map and still cannot be built |
 | capabilities / `pure` | badge row on the box; `pure` = a sealed border, no badges |
 | profile | tag on the box |
 | checks list | a readable second row on the fn chip, in declaration order: `test`, `fuzz: n cases`, `bounded: loop≤k`, `prove`, `mutate`. The tooltip and transcript expand each check and state what its number measures. |
@@ -2100,8 +2186,11 @@ sends the eye back and forth and costs accuracy, the penalty fading as the angle
 So crossings are not forbidden — forbidding them would over-constrain the layout for no
 measured gain — but shallow ones are, and CI holds it. Two lines drawn *along* each other
 are worse than any crossing and are a defect in their own right: the reader sees one line
-where the document declared two, so a rule goes invisible. Four such overlaps exist today
-among the forbidden-call routes and are pinned as a ratchet, not tolerated silently.
+where the document declared two, so a rule goes invisible. Four such overlaps were found
+among the forbidden-call routes when this invariant was first written; fixed by giving
+every routed forbidden-call and external/`entry:` line its own nested lane — each further
+one from the same obstruction pushed one step further out than the last, in the same
+order that already keeps them from crossing — and the ratchet now holds at zero.
 
 **One alternative palette, never a theming hook (added 2026-08-29).** These diagrams are
 read where dark is a common default, and the render paints its own near-white background,

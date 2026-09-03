@@ -3,8 +3,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use ply_render::model::parse_document;
-use ply_render::svg::{RenderOptions, render_svg_with_options};
-use ply_render::transcript::render_transcript;
+use ply_render::svg::{RenderOptions, render_svg_with_state};
 
 /// `--depth` is 1-indexed (top-level boxes are level 1, per §7.1), so 0
 /// names no real level and a non-numeric value isn't a level at all. Both
@@ -110,7 +109,15 @@ fn main() -> ExitCode {
     }
 
     if cli.text {
-        let text = render_transcript(&doc);
+        // Same read the drawing does -- the text form states everything the
+        // drawing shows, shapes included.
+        let text = ply_render::transcript::render_transcript_with_state(
+            &doc,
+            Some(&ply_render::harness::resolve_state_fields(
+                cli.input.parent().unwrap_or(std::path::Path::new(".")),
+                &doc,
+            )),
+        );
         return match cli.out {
             Some(path) => match std::fs::write(&path, text) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -131,7 +138,13 @@ fn main() -> ExitCode {
         focus: cli.focus,
         collapse: cli.collapse,
     };
-    let svg = match render_svg_with_options(&doc, &options) {
+    // §7.1's rule for `state:` -- the document names the fields, the code
+    // says what they are -- so read them from the crate each component's
+    // anchor points at before drawing. A document with no code under it
+    // resolves nothing and draws the type name alone.
+    let source_root = cli.input.parent().unwrap_or(std::path::Path::new("."));
+    let state_fields = ply_render::harness::resolve_state_fields(source_root, &doc);
+    let svg = match render_svg_with_state(&doc, &options, &state_fields) {
         Ok(svg) => svg,
         Err(e) => {
             eprintln!("error: {} could not be rendered: {e}", cli.input.display());
@@ -147,7 +160,7 @@ fn main() -> ExitCode {
     // check is the honest one: render the default too, and compare. It
     // costs one extra layout pass and cannot disagree with what was drawn.
     if options.depth.is_some() || options.focus.is_some() || !options.collapse.is_empty() {
-        let plain = render_svg_with_options(&doc, &RenderOptions::default());
+        let plain = render_svg_with_state(&doc, &RenderOptions::default(), &state_fields);
         if plain.as_deref().ok() == Some(svg.as_str()) {
             eprintln!(
                 "note: this drawing is identical to the one with no --depth/--focus/--collapse \

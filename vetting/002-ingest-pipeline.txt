@@ -19,6 +19,8 @@ components:
   component ring — maps to Rust module disruptor::spsc
     capabilities: unsafe — this component may use only the capabilities it declares. That limit is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so use of a capability this component never declared can still go unnoticed (§5.3)
     owns disruptor::spsc::Spsc — only this component may mutate them
+    state Spsc — the structure this component holds, where `owns` says who may change one
+      this document asks to show slots, head, tail — there is no code here to read them from, so none is described below: what each field is comes from the source, never from the document
     profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, Spsc::try_push — nothing here counts as checked more strongly than the weakest thing inside it
@@ -43,6 +45,8 @@ components:
 
   component book — maps to Rust module ingest::book
     owns ingest::book::OrderBook — only this component may mutate them
+    state OrderBook — the structure this component holds, where `owns` says who may change one
+      this document asks to show bids, last — there is no code here to read them from, so none is described below: what each field is comes from the source, never from the document
     profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
     strict — this component asks that architecture findings inside it fail the build rather than warn. Nothing acts on that yet: no check this build runs reads the flag
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result

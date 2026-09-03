@@ -8,19 +8,29 @@
 //! **How an emitting site is found.** A diagnostic code only ever reaches a
 //! user by one of two syntactic routes in this codebase (verified by
 //! reading every call site while building the table): as the first string
-//! argument to the `diag(...)`/`violation(...)` helper functions
-//! (`ply-core/src/check.rs`, `ply-core/src/schema.rs`), or as the value of
-//! a struct field literally named `code` (`Diagnostic { code: "...", .. }`,
-//! `ArchFinding { code: "...", .. }`). The scanner below looks for exactly
-//! those two shapes and nothing else.
+//! argument to a helper whose name ends in `diag`/`violation` -- the bare
+//! `diag(...)`/`violation(...)` of `ply-core/src/check.rs` and
+//! `ply-core/src/schema.rs`, and named variants such as
+//! `state_diag_warning(...)` that take the code as a parameter -- or as the
+//! value of a struct field literally named `code` (`Diagnostic { code:
+//! "...", .. }`, `ArchFinding { code: "...", .. }`). The scanner below
+//! looks for exactly those two shapes and nothing else.
+//!
+//! The helper-name half of that was widened on 2026-09-03, by this test
+//! going red rather than by review: `state:`'s three codes are emitted
+//! through helpers that take the code as an argument (so the literal sits
+//! at the call site, not in a `code:` field), and the previous regex
+//! required `diag(` to start a word. Test 2 caught all three as falsely
+//! enforced. The prediction two bullets down -- that a third route should
+//! extend the regexes here -- is what actually happened.
 //!
 //! **What could fool it, honestly stated:**
-//! - A *new* emitting shape (a third helper name, a field renamed away from
-//!   `code`) would not be found by this scanner, so a genuinely new
-//!   diagnostic introduced that way would silently escape test 1 rather
-//!   than fail it. The two shapes above are the only ones in the tree
-//!   today; a reviewer adding a third route should extend the regexes
-//!   here, not treat their silent passing as license to skip it.
+//! - A *new* emitting shape (a helper named nothing like `diag`, a field
+//!   renamed away from `code`) would not be found by this scanner, so a
+//!   genuinely new diagnostic introduced that way would silently escape
+//!   test 1 rather than fail it. The two shapes above are the only ones in
+//!   the tree today; a reviewer adding a third route should extend the
+//!   regexes here, not treat their silent passing as license to skip it.
 //! - Code inside a `#[cfg(test)]` module is stripped by brace-counting
 //!   before the scan runs, so a code used only as a test fixture's
 //!   placeholder value (this tree has two real examples: `"E0000"` and
@@ -145,7 +155,10 @@ fn strip_line_comments(src: &str) -> String {
 /// what could fool this.
 fn emitted_codes() -> BTreeSet<String> {
     let field_re = Regex::new(r#"\bcode:\s*"([A-Z][0-9]{4})""#).unwrap();
-    let call_re = Regex::new(r#"\b(?:diag|violation)\(\s*"([A-Z][0-9]{4})""#).unwrap();
+    // No leading `\b`: the helper may be a named variant (`state_diag`,
+    // `state_diag_warning`) whose code arrives as an argument rather than
+    // in a `code:` field, and `_diag(` has no word boundary before `diag`.
+    let call_re = Regex::new(r#"(?:diag|violation)\w*\(\s*"([A-Z][0-9]{4})""#).unwrap();
 
     let root = workspace_root();
     let mut out = BTreeSet::new();

@@ -78,6 +78,21 @@ fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
 }
 
 pub fn render_transcript(doc: &Document) -> String {
+    render_transcript_with_state(doc, None)
+}
+
+/// The transcript, plus what each component's declared state type really
+/// holds.
+///
+/// The text form's whole contract is that it states everything the drawing
+/// shows -- "all the text that is otherwise visible only by hovering". Once
+/// the drawing paints a shape per field, a transcript that could not say
+/// what those shapes were would silently stop honouring that, and a reader
+/// who cannot see the picture would be the one who lost by it.
+pub fn render_transcript_with_state(
+    doc: &Document,
+    state_fields: Option<&crate::harness::StateFieldIndex>,
+) -> String {
     let mut out = String::new();
 
     // The header earns its three lines: what this is, that editing it does
@@ -139,7 +154,16 @@ pub fn render_transcript(doc: &Document) -> String {
     out.push_str("components:\n");
     for (name, comp) in &doc.components {
         out.push('\n');
-        write_component(&mut out, name, comp, None, 1, &doc.profiles);
+        write_component(
+            &mut out,
+            name,
+            name,
+            comp,
+            None,
+            1,
+            &doc.profiles,
+            state_fields,
+        );
     }
 
     out.push('\n');
@@ -288,13 +312,16 @@ pub fn render_transcript(doc: &Document) -> String {
 
 /// Components, functions, and functions promising nothing — the summary
 /// strip's three numbers, counted the same way it counts them.
+#[allow(clippy::too_many_arguments)]
 fn write_component(
     out: &mut String,
     name: &str,
+    qualified: &str,
     comp: &Component,
     inherited: Option<InheritedChecks>,
     level: usize,
     profiles: &IndexMap<String, Vec<String>>,
+    state_fields: Option<&crate::harness::StateFieldIndex>,
 ) {
     let p = pad(level);
     let q = pad(level + 1);
@@ -332,6 +359,68 @@ fn write_component(
             "{q}owns {} — only this component may mutate them\n",
             comp.owns.join(", ")
         ));
+    }
+    if let Some(st) = &comp.state {
+        // The rows the drawing paints, resolved the same way it resolves
+        // them, so the two forms cannot drift apart.
+        let rows: Vec<&crate::harness::StateField> = state_fields
+            .and_then(|idx| idx.get(qualified))
+            .map(|fields| {
+                st.show
+                    .iter()
+                    .filter_map(|w| fields.iter().find(|f| &f.name == w))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let total = state_fields
+            .and_then(|idx| idx.get(qualified))
+            .map(|f| f.len());
+        match total {
+            Some(total) if !rows.is_empty() => out.push_str(&format!(
+                "{q}state {of} — the structure this component holds, where `owns` says who \
+                 may change one. {shown} of {total} of its fields shown\n",
+                q = q,
+                of = st.of,
+                shown = rows.len(),
+            )),
+            _ => out.push_str(&format!(
+                "{q}state {of} — the structure this component holds, where `owns` says who \
+                 may change one\n",
+                q = q,
+                of = st.of,
+            )),
+        }
+        if rows.is_empty() {
+            if st.show.is_empty() {
+                out.push_str(&format!(
+                    "{q}  no fields chosen to show — a real state type has many, and naming \
+                     the ones that matter is the author's job\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{q}  this document asks to show {} — there is no code here to read them \
+                     from, so none is described below: what each field is comes from the \
+                     source, never from the document\n",
+                    st.show.join(", ")
+                ));
+            }
+        } else {
+            for row in rows {
+                let shape = super::state_shapes::classify(&row.ty, &row.rendered);
+                out.push_str(&format!(
+                    "{q}  {name} is {noun}, written `{written}`{hatch}\n",
+                    name = row.name,
+                    noun = shape.noun(),
+                    written = row.rendered,
+                    hatch = if super::state_shapes::cannot_build(&row.ty) {
+                        " — Ply has no way to make one of these, which is usually \
+                         why the functions around it come back unchecked"
+                    } else {
+                        ""
+                    },
+                ));
+            }
+        }
     }
     if let Some(profile) = &comp.profile {
         match profiles.get(profile) {
@@ -412,7 +501,16 @@ fn write_component(
         write_fn(out, fname, fc, default, level + 1);
     }
     for (cname, child) in &comp.components {
-        write_component(out, cname, child, default, level + 1, profiles);
+        write_component(
+            out,
+            cname,
+            &format!("{qualified}.{cname}"),
+            child,
+            default,
+            level + 1,
+            profiles,
+            state_fields,
+        );
     }
 }
 

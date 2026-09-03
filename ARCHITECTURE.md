@@ -16,7 +16,7 @@ file.
 Rendered from [`ply.yaml`](ply.yaml) at the repository root.
 
 <p align="center">
-  <img src="docs/ply-self.svg" alt="A frame labelled ply.yaml, with a line reading 13 components, 0 functions, 0 promise nothing. Inside are six top-level boxes: e2e, attrs, core, cli, render and check. Every box is filled with diagonal hatching, meaning nothing inside promises anything yet, and every box that holds nothing else inside it is also dashed. core is a large box containing five smaller ones — kernel, engines, harness, visual and record — and cli contains two, verify and report. Three arrows run into core: one from cli, one from render, one from check. e2e and attrs stand alone with no arrows." width="760">
+  <img src="docs/ply-self.svg" alt="A frame labelled ply.yaml, with a line reading 13 components, 0 functions, 0 promise nothing. Inside are six top-level boxes: e2e, attrs, core, cli, render and check. Every box is filled with diagonal hatching, meaning nothing inside promises anything yet, and every box that holds nothing else inside it is also dashed. core carries a line reading state Envelope, 4 of 8 shown, and four rows under it — command, root, diagnostics and coverage — each with a small shape beside it and its type to the right; below those it contains five smaller boxes, kernel, engines, harness, visual and record. cli contains two, verify and report. Three arrows run into core: one from cli, one from render, one from check. e2e and attrs stand alone with no arrows." width="760">
 </p>
 
 The six outer boxes are the crates. The smaller boxes inside `core` and `cli` are modules
@@ -64,7 +64,7 @@ stops testing what ships.
 Rendered from [`crates/ply-core/ply.yaml`](crates/ply-core/ply.yaml).
 
 <p align="center">
-  <img src="docs/ply-core-self.svg" alt="A frame labelled ply.yaml, with a line reading 1 component, 6 functions, 0 promise nothing. Inside is a single solid box named core, filled mid-grey rather than hatched. It holds six small chips, one per function, each reading fuzz: 256 cases — kernel::StatusSet::len, kernel::StatusSet::union, harness::last_two_segments, harness::rust_type_from_source, visual::stable_element_id and record::fingerprint. There are no arrows." width="440">
+  <img src="docs/ply-core-self.svg" alt="A frame labelled ply.yaml, with a line reading 1 component, 6 functions, 0 promise nothing. Inside is a single solid box named core, filled mid-grey rather than hatched. Under its name a line reads state Envelope, 4 of 8 shown, followed by four rows: command, root, diagnostics and coverage, each with a small shape beside it and its type to the right. Below those are six small chips, one per function, each reading fuzz: 256 cases — kernel::StatusSet::len, kernel::StatusSet::union, harness::last_two_segments, harness::rust_type_from_source, visual::stable_element_id and record::fingerprint. There are no arrows." width="440">
 </p>
 
 This is the first drawing of Ply's own code that is not hatched. Each chip is a function
@@ -72,6 +72,15 @@ that now states something that must be true of what it returns, and how that sta
 to be tested — 256 generated inputs each. The box is filled mid-grey because grey depth is
 how strongly a thing promises to be checked, and a box is never shown as stronger than the
 weakest function inside it.
+
+**The four rows under the name are what this crate holds.** The shape beside each one
+says what kind of thing it is — a filled block for a single value, stacked bars for a
+list, a dashed outline for something that might not be there — and the text beside it is
+the type as the code spells it. None of that is written in the document: the document
+names the type and four of its fields, and Ply reads the rest out of the source. Name a
+field the code does not have and the build fails, listing the ones it does have. Three of
+these four are drawn with fine diagonal hatching, which means Ply has no way to make one
+of them; that is usually the reason functions taking such a value come back unchecked.
 
 **Grey is not green.** Nothing on either page is green, and that is deliberate: green is
 kept for evidence a run has actually earned. These drawings are made from the documents

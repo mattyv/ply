@@ -7,6 +7,7 @@
 //! input always produces byte-identical output.
 
 use super::layout;
+use super::state_shapes;
 use crate::check::{Diagnostic, Target as FindingTarget, run_checks};
 use crate::kernel::{Evidence, NodeKind, VerdictNode, aggregate};
 use crate::model::{
@@ -26,6 +27,16 @@ const SUB_CHAR_W: f64 = 6.2;
 const CHIP_CHAR_W: f64 = 7.4;
 const CHECK_CHAR_W: f64 = 5.5;
 const LINE_H: f64 = 16.0;
+/// One state-field row's height. Taller than a header line by the two
+/// units the tallest glyph (the set's third disc) needs below its
+/// baseline, so a row's ink never touches the row under it.
+const STATE_ROW_H: f64 = 18.0;
+/// Where a row's field name starts, measured from the box's text margin:
+/// the glyph cell plus a clear gap. Fixed rather than per-row so every
+/// name in a box starts at the same x and the column reads as a column.
+const STATE_NAME_X: f64 = state_shapes::GLYPH_W + 8.0;
+/// Space between a row's field name and the type beside it.
+const STATE_TYPE_GAP: f64 = 10.0;
 const HEADER_H: f64 = LINE_H * 2.0 + 6.0;
 const BADGE_H: f64 = 20.0;
 const BADGE_CHAR_W: f64 = 6.5;
@@ -253,6 +264,31 @@ pub const FINDING_STYLE: &str = "\
 /// promise or a forbidden call, and a violation is exactly the first of
 /// those (`only_forbidden_or_wrong_things_are_drawn_in_red` names it an
 /// allowed red family alongside `deny`/`finding`).
+/// The state-field rules, appended only to a drawing that actually paints
+/// a row.
+///
+/// Conditional for the same reason `FINDING_STYLE` is: a clean document's
+/// stylesheet must not grow rules for classes it never emits. Every
+/// committed drawing and snapshot here is pinned byte for byte, and most
+/// of them declare no state at all -- appending these unconditionally
+/// rewrote all of them to carry seven rules nothing in them used.
+pub const STATE_STYLE: &str = "\
+.state-glyph-ink{fill:#1f2430}\
+.state-glyph-out{fill:none;stroke:#1f2430;stroke-width:1.4}\
+.state-glyph-front{fill:#fbfbfd}\
+.state-glyph-dashed{stroke-dasharray:3 2.4}\
+.state-glyph-hatched{fill:url(#state-hatch);stroke:#1f2430;stroke-width:1}\
+.state-field-name{fill:#1f2430;font-size:11px}\
+.state-field-type{fill:#6b7280;font-size:10px}\
+@media (prefers-color-scheme: dark){\
+.state-glyph-ink{fill:#c8cede}\
+.state-glyph-out{fill:none;stroke:#c8cede}\
+.state-glyph-front{fill:#15171c}\
+.state-glyph-hatched{fill:url(#state-hatch-dark);stroke:#c8cede;stroke-width:1}\
+.state-field-name{fill:#e6e9ef}\
+.state-field-type{fill:#8b93a1}\
+}";
+
 pub const EVIDENCE_STYLE: &str = "\
 .fn-chip-box-earned{fill:#e0f2e6;stroke:#3f8a5c}\
 .fn-chip-box-violated{fill:#fdecec;stroke:#c9534f;stroke-width:2.5}\
@@ -1654,6 +1690,9 @@ fn component_tip_lines(
     comp: &Component,
     profiles: &IndexMap<String, Vec<String>>,
     findings: &[&Diagnostic],
+    // The field names this box actually drew rows for. Empty when nothing
+    // resolved -- which is a different sentence, not a shorter one.
+    drawn_state_fields: &[String],
 ) -> Vec<String> {
     let mut tip = finding_tooltip_lines(findings);
     tip.push(format!(
@@ -1685,6 +1724,43 @@ fn component_tip_lines(
             "owns {} — only this component may mutate them",
             comp.owns.join(", ")
         ));
+    }
+    if let Some(st) = &comp.state {
+        // Two genuinely different sentences, because two different things
+        // are true. When rows were drawn, they *are* the field list and the
+        // tooltip explains the claim rather than repeating them. When
+        // nothing resolved, all Ply has is what the document asked for, and
+        // saying so is the honest answer.
+        //
+        // The old wording listed `show:` verbatim in both cases, which meant
+        // a document naming a field nobody declared put that field on the
+        // drawing -- inside a sentence promising such a name is "refused
+        // rather than drawn". Caught by a test written to check exactly
+        // that, not by review.
+        tip.push(if drawn_state_fields.is_empty() {
+            match st.show.as_slice() {
+                [] => format!(
+                    "state {} — the structure this component holds, where `owns` says who \
+                     may change one. No fields chosen to show",
+                    st.of
+                ),
+                show => format!(
+                    "state {} — the structure this component holds, where `owns` says who \
+                     may change one. This document asks to show {}, and there is no code \
+                     here to read them from, so none is drawn: the shapes come from the \
+                     source, never from the document",
+                    st.of,
+                    show.join(", ")
+                ),
+            }
+        } else {
+            format!(
+                "state {} — the structure this component holds, where `owns` says who may \
+                 change one. The rows below are its fields: each name was found in the \
+                 code, and each shape read off what that field really is",
+                st.of
+            )
+        });
     }
     if let Some(p) = &comp.profile {
         tip.push(match profiles.get(p) {
@@ -1738,13 +1814,74 @@ struct ComponentBox {
 /// the optional evidence view (`None` on every path but
 /// `render_svg_with_evidence`, which is what keeps `render_svg` and
 /// `render_svg_with_options` byte-for-byte unchanged).
+/// One drawn state-field row: its silhouette, its name, the type as the
+/// source spells it, and whether Ply has any way to build one.
+struct StateRow {
+    shape: state_shapes::FieldShape,
+    name: String,
+    ty: String,
+    cannot_build: bool,
+}
+
+/// The rows to draw for one component's `state:`.
+///
+/// Empty in three cases, all of which draw the type name alone: the
+/// component declares no state, the document chose no fields to show, or
+/// nothing resolved this component's type against real source. That last
+/// case is the ordinary one for a document rendered before its code exists
+/// -- §7.1's rule is that the document names and the *code* says what, so
+/// with no code to ask there is nothing honest to draw.
+///
+/// A name in `show:` that the type has no field for is skipped rather than
+/// drawn as a guess. `cargo ply check` fails the build for exactly that
+/// (`A0415`), so the drawing does not need to invent a way to show it, and
+/// a renderer that painted a row for a field nobody declared would be
+/// making up the very fact this feature exists to check.
+fn state_rows(comp: &Component, qualified: &str, index: Option<&StateFieldIndex>) -> Vec<StateRow> {
+    let Some(state) = &comp.state else {
+        return Vec::new();
+    };
+    let Some(fields) = index.and_then(|idx| idx.get(qualified)) else {
+        return Vec::new();
+    };
+    state
+        .show
+        .iter()
+        .filter_map(|wanted| {
+            let field = fields.iter().find(|f| &f.name == wanted)?;
+            Some(StateRow {
+                shape: state_shapes::classify(&field.ty, &field.rendered),
+                name: field.name.clone(),
+                ty: field.rendered.clone(),
+                cannot_build: state_shapes::cannot_build(&field.ty),
+            })
+        })
+        .collect()
+}
+
 struct WalkCtx<'a> {
     profiles: &'a IndexMap<String, Vec<String>>,
     findings: &'a FindingCtx<'a>,
     collapse: &'a CollapseCtx<'a>,
     edges: &'a [String],
     evidence: Option<&'a EvidenceView<'a>>,
+    /// What each component's declared state type really holds, read from
+    /// source by whoever called this renderer. `None` throughout every
+    /// render path that has no code to read -- which is not a degraded
+    /// mode but the ordinary one for a document being drawn before its
+    /// code exists, and is what keeps those paths byte-for-byte unchanged.
+    state: Option<&'a StateFieldIndex>,
 }
+
+/// Every declared state type's real fields, keyed by the component's
+/// qualified path (`pricing.curves`), in declaration order.
+///
+/// Built outside this module by [`crate::harness::resolve_state_fields`],
+/// which is the half that opens files. The renderer stays a function of
+/// what it is given: it never reads source, so a drawing is reproducible
+/// from its inputs and a test can hand it any state it likes without a
+/// fixture crate on disk.
+pub use crate::harness::StateFieldIndex;
 
 /// Picks between the two component renderers for one box: collapsed
 /// (§7.1's "one solid-bordered box ... folded") if `collapse` says so and
@@ -1928,7 +2065,10 @@ fn render_collapsed_component(
         }
     }
 
-    let mut tip = component_tip_lines(name, comp, profiles, &findings);
+    // A collapsed box draws no rows -- everything inside it is folded --
+    // so its tooltip gets the same sentence a box with nothing resolved
+    // does, which is the true one for it.
+    let mut tip = component_tip_lines(name, comp, profiles, &findings, &[]);
     tip.push(format!(
         "collapsed — {n_components} component{} and {n_fns} function{} folded inside; render \
          with --depth or --focus <name> to expand",
@@ -2080,8 +2220,64 @@ fn render_component<'a>(
     // §7.1: `owns` is a third header line, `owns T, U` — the types this
     // component is the sole mutator of.
     let owns_line = (!comp.owns.is_empty()).then(|| format!("owns {}", comp.owns.join(", ")));
+    // §7.1's `state:` -- what this component *holds*, where `owns` says who
+    // may change it. The static renderer reads the document and nothing
+    // else, so what it can honestly draw is the declaration: the type, and
+    // which of its fields the author chose. The fields' own shapes are facts
+    // about code and belong to the path that reads code.
+    // The rows this component's state draws, one per field the document
+    // chose to show. Empty whenever nothing resolved them -- see
+    // `state_rows`.
+    let state_rows = state_rows(comp, qualified, walk.state);
+    // The count is drawn only when it was *measured*. "3 of 13 shown" read
+    // off a real type tells a reader that ten fields were deliberately left
+    // out; the same phrase guessed from the document alone would be a
+    // number Ply invented, which is the one thing this feature exists not
+    // to do.
+    let state_line =
+        comp.state
+            .as_ref()
+            .map(|st| match walk.state.and_then(|idx| idx.get(qualified)) {
+                Some(all) if !st.show.is_empty() => {
+                    format!(
+                        "state {} — {} of {} shown",
+                        st.of,
+                        state_rows.len(),
+                        all.len()
+                    )
+                }
+                _ => format!("state {}", st.of),
+            });
     let owns_w = owns_line.as_deref().map_or(0.0, |s| text_w(s, SUB_CHAR_W));
-    let header_h = HEADER_H + if owns_line.is_some() { LINE_H } else { 0.0 };
+    // Reserved at the widest a character can be, not the average: the
+    // canvas invariant (`tools/render`'s `everything_renders_inside_the_
+    // canvas`) measures a text's right edge pessimistically, and a header
+    // line reserved optimistically is a box its own contents can escape.
+    let state_w = state_line
+        .as_deref()
+        .map_or(0.0, |s| text_w(s, NAME_CHAR_W));
+    let header_h = HEADER_H
+        + if owns_line.is_some() { LINE_H } else { 0.0 }
+        + if state_line.is_some() { LINE_H } else { 0.0 };
+    // Reserved at the worst-case character width for the same reason the
+    // state header line is: the canvas invariant measures right edges
+    // pessimistically, and a row reserved optimistically is a box its own
+    // contents can escape.
+    // One type column for the whole box, set by the longest field name in
+    // it, rather than each row starting its type wherever its own name
+    // happened to end. A ragged column is read one row at a time; an
+    // aligned one is read as a column, which is the entire reason to draw
+    // rows instead of a comma list.
+    let state_type_x = state_rows
+        .iter()
+        .map(|r| text_w(&r.name, NAME_CHAR_W))
+        .fold(0.0_f64, f64::max)
+        + STATE_NAME_X
+        + STATE_TYPE_GAP;
+    let state_rows_w = state_rows
+        .iter()
+        .map(|r| state_type_x + text_w(&r.ty, NAME_CHAR_W))
+        .fold(0.0_f64, f64::max);
 
     // §7.1: `pure` is a sealed border with no capability badges.
     let badges: &[String] = if comp.pure { &[] } else { &comp.uses };
@@ -2161,6 +2357,8 @@ fn render_component<'a>(
         name_w,
         anchor_w,
         owns_w,
+        state_w,
+        state_rows_w,
         badges_row_w + profile_w,
         MIN_BOX_W - PAD * 2.0,
     ]
@@ -2214,6 +2412,40 @@ fn render_component<'a>(
             ));
         }
         y += badge_row_h;
+    }
+
+    // §7.1: state rows sit below the capability badges and above the fn
+    // chips -- state is what the component *is*, chips are what it *does*.
+    if !state_rows.is_empty() {
+        for row in &state_rows {
+            let glyph = state_shapes::glyph_svg(row.shape, PAD, y + 2.0, row.cannot_build);
+            let hatch_note = if row.cannot_build {
+                " The hatching means Ply has no way to make one of these, which is \
+                 usually why the functions around it come back unchecked."
+            } else {
+                ""
+            };
+            body.push_str(&format!(
+                "<g class=\"state-field\" data-field=\"{field}\">{tip}{glyph}                 <text class=\"state-field-name\" x=\"{nx:.1}\" y=\"{ty:.1}\">{name}</text>                 <text class=\"state-field-type\" x=\"{tx:.1}\" y=\"{ty:.1}\">{sty}</text></g>",
+                field = esc(&row.name),
+                nx = PAD + STATE_NAME_X,
+                tx = PAD + state_type_x,
+                ty = y + 12.0,
+                name = esc(&row.name),
+                sty = esc(&row.ty),
+                tip = title(&format!(
+                    "{name} — one of the things this component holds; \
+                     {prose}. Written in the code as `{written}`. The name came from \
+                     the document; the shape and the type came from the code, so this \
+                     row cannot say something the source does not.{hatch_note}",
+                    name = row.name,
+                    prose = row.shape.prose(),
+                    written = row.ty,
+                ))
+            ));
+            y += STATE_ROW_H;
+        }
+        y += GAP;
     }
 
     match &child_layout {
@@ -2316,7 +2548,8 @@ fn render_component<'a>(
 
     let box_h = y + PAD;
 
-    let mut tip = component_tip_lines(name, comp, profiles, &findings);
+    let drawn_field_names: Vec<String> = state_rows.iter().map(|r| r.name.clone()).collect();
+    let mut tip = component_tip_lines(name, comp, profiles, &findings, &drawn_field_names);
     tip.push(ceiling_tooltip_line(ceiling));
     if let Some(reason) = colour_reason_line(comp, inherited, name) {
         tip.push(reason);
@@ -2383,10 +2616,19 @@ fn render_component<'a>(
         PAD + LINE_H * 2.0 - 4.0,
         esc(&comp.anchor)
     ));
+    let mut extra_line = 0.0;
     if let Some(line) = &owns_line {
         svg.push_str(&format!(
             "<text class=\"component-owns\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
             PAD + LINE_H * 3.0 - 6.0,
+            esc(line)
+        ));
+        extra_line = LINE_H;
+    }
+    if let Some(line) = &state_line {
+        svg.push_str(&format!(
+            "<text class=\"component-owns\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
+            PAD + LINE_H * 3.0 - 6.0 + extra_line,
             esc(line)
         ));
     }
@@ -2530,13 +2772,16 @@ fn entry_edge_tooltip(fn_name: &str, ext_name: &str, requires: &[String]) -> Vec
 /// functions replaces (vetting 003's coordinator review, third round:
 /// `RawFrame`'s label was struck by the separately-routed `entry` edge's
 /// line, not by its own — a per-edge, draw-as-you-go placement can never
-/// see a sibling that hasn't been drawn yet).
+/// see a sibling that hasn't been drawn yet). `rank` is threaded straight
+/// through to `route_around_to_external`'s own `rank` — see its doc
+/// comment.
 fn compute_external_edge_route(
     workspace_rect: Rect,
     workspace_ancestor_rect: Rect,
     external_rect: Rect,
     lane: (f64, f64),
     obstacle_positions: &IndexMap<String, Rect>,
+    rank: usize,
 ) -> Vec<(f64, f64)> {
     // Parallel lanes for two or more edges sharing the same (workspace
     // component, external) pair (vetting 002 finding 4's rule, extended
@@ -2553,7 +2798,7 @@ fn compute_external_edge_route(
         lane,
     );
     let exclude = [workspace_rect, workspace_ancestor_rect];
-    route_around_to_external(from, to, &exclude, obstacle_positions)
+    route_around_to_external(from, to, &exclude, obstacle_positions, rank)
 }
 
 /// Draws one already-routed external/`entry:` edge, placing its label
@@ -3219,7 +3464,7 @@ pub fn render_svg_with_evidence_and_options(
         elements,
         diagnostics,
     };
-    render_svg_impl(doc, options, Some(&evidence))
+    render_svg_impl(doc, options, Some(&evidence), None)
 }
 
 /// `render_svg`, plus The-Ply-Spec.md §7.1's `--depth`/`--focus`/`--collapse`
@@ -3230,7 +3475,39 @@ pub fn render_svg_with_options(
     doc: &Document,
     options: &RenderOptions,
 ) -> Result<String, RenderError> {
-    render_svg_impl(doc, options, None)
+    render_svg_impl(doc, options, None, None)
+}
+
+/// `render_svg_with_options`, plus what each component's declared state
+/// type really holds.
+///
+/// Separate from [`render_svg_with_options`] rather than an extra argument
+/// on it for the reason the evidence entry points are separate: every
+/// committed drawing and snapshot in this repository is pinned byte for
+/// byte against the plain path, and a caller that has no source to read
+/// must keep getting exactly the drawing it got before this existed.
+pub fn render_svg_with_state(
+    doc: &Document,
+    options: &RenderOptions,
+    state_fields: &StateFieldIndex,
+) -> Result<String, RenderError> {
+    render_svg_impl(doc, options, None, Some(state_fields))
+}
+
+/// Every input at once: folding, a run's evidence, and the real state
+/// fields. What `cargo ply verify --render` draws.
+pub fn render_svg_with_evidence_state_and_options(
+    doc: &Document,
+    elements: &BTreeMap<String, super::VisualElement>,
+    diagnostics: &[super::VisualDiagnostic],
+    options: &RenderOptions,
+    state_fields: Option<&StateFieldIndex>,
+) -> Result<String, RenderError> {
+    let evidence = EvidenceView {
+        elements,
+        diagnostics,
+    };
+    render_svg_impl(doc, options, Some(&evidence), state_fields)
 }
 
 /// The real render walk, shared by every public entry point above. `evidence`
@@ -3247,6 +3524,7 @@ fn render_svg_impl(
     doc: &Document,
     options: &RenderOptions,
     evidence: Option<&EvidenceView>,
+    state_fields: Option<&StateFieldIndex>,
 ) -> Result<String, RenderError> {
     // §7.1 "finding (tool-computed, not declared)": run `ply-check`'s
     // document-local rules up front, then thread `ctx` through every render
@@ -3300,6 +3578,7 @@ fn render_svg_impl(
                         collapse: &collapse,
                         edges: &doc.edges,
                         evidence,
+                        state: state_fields,
                     },
                     1,
                     None,
@@ -3878,10 +4157,11 @@ fn render_svg_impl(
         keyed.sort_by(|a, b| a.1.total_cmp(&b.1));
         keyed.into_iter().map(|(i, _)| i).collect()
     };
-    for i in deny_order {
+    for (rank, i) in deny_order.into_iter().enumerate() {
         let (orig_index, d) = &parsed_denies[i];
         render_deny(
             i,
+            rank,
             *orig_index,
             d,
             &deny_layout,
@@ -4014,7 +4294,25 @@ fn render_svg_impl(
     // hold it — found by `everything_renders_inside_the_canvas` when the
     // strip first ran off a 350px canvas by 122px.
     let strip_min_w = strip_x + text_w(&strip_text, NAME_CHAR_W) + FRAME_PAD;
-    let frame_content_w = frame_w.max(title_min_w).max(strip_min_w);
+    // A nested deny rail (`RAIL_NEST_STEP`) can push a routed line's
+    // corridor or rail a little further out than any box the plain layout
+    // ever placed — the whole point of nesting rank > 0 is that it sits
+    // outside rank 0's rail, which itself already sat outside every real
+    // box. `lines_drawn_so_far` is every regular edge and every deny line
+    // drawn up to this point, so its own furthest extent is the true
+    // measure of how far this render actually reaches, not just how far
+    // the box layout does — grown into here rather than letting a nested
+    // rail silently run past the frame.
+    let (drawn_lines_max_x, drawn_lines_max_y) = lines_drawn_so_far
+        .iter()
+        .flatten()
+        .fold((0.0_f64, 0.0_f64), |(mx, my), &(x, y)| {
+            (mx.max(x), my.max(y))
+        });
+    let frame_content_w = frame_w
+        .max(title_min_w)
+        .max(strip_min_w)
+        .max(drawn_lines_max_x + FRAME_PAD);
     // A tall stack of wildcard any-nodes (several `*` rules anchoring in
     // one margin column, `place_clear` pushing each below the last) can
     // run past the box layout's bottom edge; the canvas and frame grow so
@@ -4026,7 +4324,7 @@ fn render_svg_impl(
         .fold(f64::MIN, |a, &y| a.max(y))
         + ANY_R
         + FRAME_PAD;
-    let frame_content_h = frame_h.max(deny_bottom);
+    let frame_content_h = frame_h.max(deny_bottom).max(drawn_lines_max_y + FRAME_PAD);
 
     // ---- externals: band outside the frame, and their edges -------------
     // docs/plans/external-elements.md: externals stack left to right, in
@@ -4143,6 +4441,25 @@ fn render_svg_impl(
     }
     let mut pair_seen: IndexMap<(String, String), usize> = IndexMap::new();
     let mut external_edges_svg = String::new();
+    // Same channel discipline `deny_order` gives the wildcard-node fan
+    // (§7.1, and `RAIL_NEST_STEP`'s own doc comment): ranked by the
+    // workspace endpoint's own y so the rank increases monotonically with
+    // it, then threaded into `compute_external_edge_route` below so two
+    // routes that would otherwise detour around a near-identical
+    // obstruction set nest apart instead of drawing on top of each other.
+    let ext_rank: IndexMap<usize, usize> = {
+        let mut keyed: Vec<(usize, f64)> = specs
+            .iter()
+            .enumerate()
+            .map(|(i, (spec, _))| (i, spec.workspace_rect.cy()))
+            .collect();
+        keyed.sort_by(|a, b| a.1.total_cmp(&b.1));
+        keyed
+            .into_iter()
+            .enumerate()
+            .map(|(rank, (i, _))| (i, rank))
+            .collect()
+    };
     // Pass 1: every external/`entry:` edge's route, computed before any of
     // their labels are placed — a label needs to see every *sibling*
     // external edge's line too, not just boxes and what regular edges/deny
@@ -4151,7 +4468,7 @@ fn render_svg_impl(
     // own doc comment explains why the old draw-as-you-go order missed
     // this — vetting 003's coordinator review, third round).
     let mut routes: Vec<Vec<(f64, f64)>> = Vec::with_capacity(specs.len());
-    for (spec, _) in &specs {
+    for (i, (spec, _)) in specs.iter().enumerate() {
         let key = (spec.ancestor_name.clone(), spec.ext_name.clone());
         let total = pair_total[&key];
         let idx_slot = pair_seen.entry(key).or_insert(0);
@@ -4174,6 +4491,7 @@ fn render_svg_impl(
             ext_rect,
             lane,
             &positions,
+            ext_rank[&i],
         ));
     }
     // Pass 2: draw every edge and place every label, each checked against
@@ -4205,9 +4523,21 @@ fn render_svg_impl(
     let (width, height) = if external_boxes.is_empty() {
         (frame_content_w, frame_content_h)
     } else {
+        // A nested external route (`RAIL_NEST_STEP`, `route_around_to_
+        // external`'s own `rank`) can reach a little further right than
+        // any box or band this render otherwise places — grown into here
+        // rather than letting a nested rail run past the canvas edge.
+        let (routes_max_x, routes_max_y) = routes
+            .iter()
+            .flatten()
+            .fold((0.0_f64, 0.0_f64), |(mx, my), &(x, y)| {
+                (mx.max(x), my.max(y))
+            });
         (
-            frame_content_w.max(external_band_x + external_band_w + FRAME_PAD),
-            external_band_y + EXTERNAL_BOX_H + FRAME_PAD,
+            frame_content_w
+                .max(external_band_x + external_band_w + FRAME_PAD)
+                .max(routes_max_x + FRAME_PAD),
+            (external_band_y + EXTERNAL_BOX_H + FRAME_PAD).max(routes_max_y + FRAME_PAD),
         )
     };
 
@@ -4226,12 +4556,49 @@ fn render_svg_impl(
     // A clean document (no findings, no drawn evidence state) gets exactly
     // `STYLE`, unchanged — see `FINDING_STYLE`'s doc comment for why this is
     // conditional rather than always-appended.
-    let style: std::borrow::Cow<str> = match (findings.is_empty(), evidence_style_used) {
-        (true, false) => std::borrow::Cow::Borrowed(STYLE),
-        (true, true) => std::borrow::Cow::Owned(format!("{STYLE}{EVIDENCE_STYLE}")),
-        (false, true) => std::borrow::Cow::Owned(format!("{STYLE}{FINDING_STYLE}{EVIDENCE_STYLE}")),
-        (false, false) => std::borrow::Cow::Owned(format!("{STYLE}{FINDING_STYLE}")),
-    };
+    // A drawing paints a state row only when the document declared fields to
+    // show *and* something resolved them against real source, so the rules
+    // for them are appended on exactly that condition -- same discipline as
+    // the two above.
+    let state_style_used = state_fields.is_some_and(|idx| {
+        fn any_row(
+            components: &IndexMap<String, Component>,
+            prefix: &str,
+            idx: &StateFieldIndex,
+        ) -> bool {
+            components.iter().any(|(name, comp)| {
+                let qualified = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}.{name}")
+                };
+                let here = comp.state.as_ref().is_some_and(|st| {
+                    idx.get(&qualified).is_some_and(|fields| {
+                        st.show.iter().any(|w| fields.iter().any(|f| &f.name == w))
+                    })
+                });
+                here || any_row(&comp.components, &qualified, idx)
+            })
+        }
+        any_row(&doc.components, "", idx)
+    });
+    let style: std::borrow::Cow<str> =
+        match (findings.is_empty(), evidence_style_used, state_style_used) {
+            (true, false, false) => std::borrow::Cow::Borrowed(STYLE),
+            _ => {
+                let mut out = String::from(STYLE);
+                if !findings.is_empty() {
+                    out.push_str(FINDING_STYLE);
+                }
+                if evidence_style_used {
+                    out.push_str(EVIDENCE_STYLE);
+                }
+                if state_style_used {
+                    out.push_str(STATE_STYLE);
+                }
+                std::borrow::Cow::Owned(out)
+            }
+        };
 
     // §7.1 / newbie bar: the frame is the first thing anyone sees, so its
     // tooltip explains the whole picture rather than assuming the reader
@@ -4260,6 +4627,25 @@ fn render_svg_impl(
     // Author-written strings reach this output; `tame` is applied once at
     // the end rather than at each of the dozen insertion sites, so no future
     // one can forget it.
+    // A state glyph is 12 units across, and the ceiling hatch repeats every
+    // 8 with a 2-unit line -- roughly one stripe inside a whole glyph,
+    // which does not read as hatching at all. Measured by rasterising it:
+    // three fields drawn as unbuildable were indistinguishable from five
+    // drawn as buildable. This is the same hatch at glyph scale, the
+    // spacing the reviewed proposal sheet used. Emitted only when a row is
+    // actually drawn, so no existing drawing gains an unused pattern.
+    let glyph_hatch = if state_style_used {
+        "<pattern id=\"state-hatch\" patternUnits=\"userSpaceOnUse\" width=\"4\" height=\"4\" \
+         patternTransform=\"rotate(-45)\">\
+         <rect width=\"4\" height=\"4\" fill=\"#fff\" />\
+         <rect width=\"1.4\" height=\"4\" fill=\"#c8ccd4\" /></pattern>\
+         <pattern id=\"state-hatch-dark\" patternUnits=\"userSpaceOnUse\" \
+         width=\"4\" height=\"4\" patternTransform=\"rotate(-45)\">\
+         <rect width=\"4\" height=\"4\" fill=\"#15171c\" />\
+         <rect width=\"1.4\" height=\"4\" fill=\"#4a5262\" /></pattern>"
+    } else {
+        ""
+    };
     Ok(tame(&format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.1}\" height=\"{height:.1}\" \
          viewBox=\"0 0 {width:.1} {height:.1}\" font-family=\"monospace\" font-size=\"12\">\
@@ -4271,7 +4657,7 @@ fn render_svg_impl(
          <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#c8ccd4\" stroke-width=\"2\" /></pattern>\
          <pattern id=\"unclaimed-hatch-dark\" patternUnits=\"userSpaceOnUse\" width=\"8\" height=\"8\" patternTransform=\"rotate(45)\">\
          <rect width=\"8\" height=\"8\" fill=\"#15171c\" />\
-         <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#4a5262\" stroke-width=\"2\" /></pattern></defs>\
+         <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#4a5262\" stroke-width=\"2\" /></pattern>{glyph_hatch}</defs>\
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\"{workspace_id_attr}>{workspace_tip}</rect>\
          <g><title>ply.yaml — the document this picture is drawn from. Everything you \
 see here was declared in it; nothing was inferred from code. What each box has actually \
@@ -4281,6 +4667,7 @@ been checked for is what `cargo ply verify` reports, not this drawing.\n{version
          {title_extra}\
          {deny_svg}{registry_svg}{body}{edges_svg}{external_edges_svg}{external_svg}\
          </svg>",
+        glyph_hatch = glyph_hatch,
         frame_inner_w = frame_content_w - 2.0,
         frame_inner_h = frame_content_h - 2.0,
         strip_x = strip_x,
@@ -4374,6 +4761,22 @@ struct DenyLayout<'a> {
 /// Wide enough that the nodes (radius `ANY_R`) plus a real gap never touch.
 const DENY_LANE_GAP: f64 = ANY_R * 2.0 + ANY_GAP;
 
+/// How far a rail-routed line's corridor/rail nests beyond the previous
+/// rank's, so two routed lines that would otherwise compute an *identical*
+/// obstruction-hugging corridor and rail — same obstruction span, same
+/// nearer-rail choice — land on visibly separate lines instead of drawing
+/// on top of each other. Vetting 003: a wildcard deny's detour around
+/// `risk` and two external routes' detours around the same obstruction set
+/// all converged on one shared vertical corridor and one shared horizontal
+/// rail, so three lines read as one. `route_deny_line` and
+/// `route_around_to_external` each nest by a caller-assigned rank that
+/// increases monotonically with the route's own target/endpoint y — the
+/// same ordering discipline `deny_order` already gives the wildcard-node
+/// fan (see its own doc comment) — so widening outward by rank can only
+/// separate lines that were already drawn without crossing, never
+/// introduce a new crossing between them.
+const RAIL_NEST_STEP: f64 = 10.0;
+
 /// The y positions already claimed by wildcard any-nodes, one list per
 /// margin column (left = deny `from`, right = deny `to`), threaded through
 /// every `render_deny` call so `place_clear` can stack a new node clear of
@@ -4413,13 +4816,37 @@ fn place_clear(natural: f64, occupied: &mut Vec<f64>, min_gap: f64) -> f64 {
 /// straight run before and after the detour, since nothing else occupies
 /// that space (every box in the original line's path is already folded
 /// into the one detour).
+///
+/// `rank` is this line's position in the caller's own monotone-by-target-y
+/// order (`deny_order`, not the raw declaration index) — see
+/// `RAIL_NEST_STEP`'s doc comment. It widens the clearance the corridor and
+/// rail sit at, so two deny rules that dodge the exact same obstruction set
+/// (same span, same nearer-rail choice) still land on their own line: rank
+/// 0 hugs the obstruction exactly the way every deny line always has
+/// (`clearance` at rank 0 is the original fixed `CLEARANCE`, so this
+/// function's output is unchanged there), rank 1 sits one step further out,
+/// and so on. Deliberately not clamped against `from`/`to`'s own x: a
+/// target nested *inside* the box this route detours around (vetting 003:
+/// `ingest.book`, inside `ingest` itself) already sends `enter_x`/`exit_x`
+/// past that target's own x at rank 0 — that is this function's existing,
+/// tested behavior, not a defect nesting should paper over, and clamping
+/// against it once cut a rank-0 route short of where it has always gone.
+/// Known limitation this leaves open, same *kind* as the one named in
+/// `route_around_to_external`'s own doc comment: at a high enough rank the
+/// nest amount could in principle push a corridor into a box further out
+/// than the ones its own obstruction search saw. Not observed on any
+/// fixture in this repo (`RAIL_NEST_STEP` stays well inside the margin
+/// every case here leaves) — recorded honestly rather than clamped away
+/// with a bound that breaks a case that already needed the room.
 fn route_deny_line(
     from: (f64, f64),
     to: (f64, f64),
     exclude: &[Rect],
     top_level_positions: &IndexMap<String, Rect>,
+    rank: usize,
 ) -> Vec<(f64, f64)> {
     const CLEARANCE: f64 = 12.0;
+    let clearance = CLEARANCE + rank as f64 * RAIL_NEST_STEP;
     let (x0, x1) = (from.0.min(to.0), from.0.max(to.0));
     let (y0, y1) = (from.1.min(to.1), from.1.max(to.1));
     let mut obstructions: Vec<Rect> = top_level_positions
@@ -4441,22 +4868,22 @@ fn route_deny_line(
         .iter()
         .map(|r| r.x)
         .fold(f64::INFINITY, f64::min)
-        - CLEARANCE;
+        - clearance;
     let span_x1 = obstructions
         .iter()
         .map(|r| r.x + r.w)
         .fold(f64::NEG_INFINITY, f64::max)
-        + CLEARANCE;
+        + clearance;
     let top = obstructions
         .iter()
         .map(|r| r.y)
         .fold(f64::INFINITY, f64::min)
-        - CLEARANCE;
+        - clearance;
     let bottom = obstructions
         .iter()
         .map(|r| r.y + r.h)
         .fold(f64::NEG_INFINITY, f64::max)
-        + CLEARANCE;
+        + clearance;
     let mid_y = (from.1 + to.1) / 2.0;
     let rail_y = if (mid_y - top).abs() <= (bottom - mid_y).abs() {
         top
@@ -4537,13 +4964,31 @@ fn route_deny_line(
 /// component per fixture, is clean) — recorded honestly rather than
 /// papered over with an unbounded fixed-point solver this project doesn't
 /// need yet.
+///
+/// `rank` nests this route's detour and rail outward one `RAIL_NEST_STEP`
+/// per step, same discipline and same doc comment as `route_deny_line`'s
+/// own `rank` — needed because two *different* external/`entry:` edges can
+/// independently detour around a near-identical obstruction set (vetting
+/// 003: `venue ~> ingest.feed`'s flow and `venue`'s `entry:` edge both
+/// bottom out on the same rail) and, unnested, would draw the same
+/// corridor and rail as each other. Two floors keep nesting from
+/// overshooting anything it must not: `rail_y` never sinks below a few
+/// pixels clear of `to`'s own y (the rail must stay strictly above the
+/// point it finally descends to, or the last leg runs backward before
+/// reaching `to`), and `from_x` never sinks below the canvas's left edge.
+/// Unlike `route_deny_line`, this is not clamped between `from` and `to`'s
+/// own x — an external route's two ends routinely sit on opposite sides of
+/// the whole frame, so that clamp would undo the detour itself rather than
+/// just bound its nesting.
 fn route_around_to_external(
     from: (f64, f64),
     to: (f64, f64),
     exclude: &[Rect],
     obstacle_positions: &IndexMap<String, Rect>,
+    rank: usize,
 ) -> Vec<(f64, f64)> {
     const CLEARANCE: f64 = 12.0;
+    let clearance = CLEARANCE + rank as f64 * RAIL_NEST_STEP;
     let (y0, y1) = (from.1.min(to.1), from.1.max(to.1));
     // Filtered by Y-overlap against the *full* vertical travel range only —
     // deliberately not also by X-overlap against `from`/`to`'s own narrow
@@ -4568,21 +5013,33 @@ fn route_around_to_external(
         .iter()
         .map(|r| r.x)
         .fold(f64::INFINITY, f64::min)
-        - CLEARANCE;
+        - clearance;
     let span_x1 = obstructions
         .iter()
         .map(|r| r.x + r.w)
         .fold(f64::NEG_INFINITY, f64::max)
-        + CLEARANCE;
-    let rail_y = obstructions
+        + clearance;
+    // Nested further down per rank, same as the corridor above — but never
+    // past `to`'s own y: the rail must stay strictly above the point it
+    // finally descends to, or the last leg turns into a line that runs
+    // backward before reaching `to`.
+    let rail_y = (obstructions
         .iter()
         .map(|r| r.y + r.h)
         .fold(f64::NEG_INFINITY, f64::max)
-        + CLEARANCE;
+        + clearance)
+        .min(to.1 - 4.0);
 
     // Prefer a straight vertical run at `from`'s own X; only detour to
     // whichever combined-span edge is nearer when that straight run would
-    // actually cross an obstacle (wrong assumption 2 above).
+    // actually cross an obstacle (wrong assumption 2 above). Floored at a
+    // couple of pixels in from the left edge — a large rank must never push
+    // the corridor clean off the canvas — the same way `route_deny_line`'s
+    // own nesting is bounded, just against the canvas edge rather than an
+    // endpoint (an external route's `from`/`to` routinely sit on opposite
+    // sides of the whole frame, so clamping between them the way
+    // `route_deny_line` does would undo the detour itself, not just bound
+    // its nesting).
     let from_x = if vertical_run_is_clear(from.0, from.1, rail_y, &obstructions) {
         from.0
     } else if (from.0 - span_x0).abs() <= (from.0 - span_x1).abs() {
@@ -4590,6 +5047,7 @@ fn route_around_to_external(
     } else {
         span_x1
     };
+    let from_x = from_x.max(2.0);
 
     let mut route = vec![from];
     if (from_x - from.0).abs() > 0.01 {
@@ -4642,9 +5100,16 @@ fn longest_segment(points: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
 /// rule that names it draws its own pseudo-node, anchored near whichever
 /// side did resolve to a real component (or staggered by rule index, as a
 /// last resort, if neither side resolved).
+///
+/// `rank` is this rule's position in `deny_order` (the fan's own
+/// monotone-by-target-y order, not `index`, which stays the raw
+/// declaration position `fallback_y` has always used) — threaded through
+/// to `route_deny_line` so its rail nests outward one step per rank; see
+/// `RAIL_NEST_STEP`'s doc comment.
 #[allow(clippy::too_many_arguments)]
 fn render_deny(
     index: usize,
+    rank: usize,
     orig_index: usize,
     deny: &Deny,
     layout: &DenyLayout,
@@ -4720,7 +5185,7 @@ fn render_deny(
         .map(|(k, v)| (k.clone(), *v))
         .collect();
     let route = if deny.from == "*" || deny.to == "*" {
-        route_deny_line((fx, fy), (tx, ty), &exclude, &top_level_positions)
+        route_deny_line((fx, fy), (tx, ty), &exclude, &top_level_positions, rank)
     } else {
         vec![(fx, fy), (tx, ty)]
     };

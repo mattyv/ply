@@ -9,3 +9,9 @@ pub mod svg;
 /// The text form of the same facts the drawing shows -- see
 /// `ply_core::visual::transcript` for why it exists.
 pub use ply_core::visual::transcript;
+
+/// Reading a component's declared state type out of real source -- the
+/// half of `state:` the renderer deliberately does not do itself. Same
+/// re-export reasoning as `model`: it lives in the product, and this
+/// renderer consumes it rather than keeping a second copy.
+pub use ply_core::harness;

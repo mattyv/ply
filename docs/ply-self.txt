@@ -19,6 +19,11 @@ components:
 
   component core — maps to Rust module ply_core
     note: Everything Ply knows how to do, with no terminal attached. It must never reach up into the command-line layer: that constraint is what makes the engine adapters testable at all, because the moment a diagnostic's wording lives here, the wording and the engine can only be tested together.
+    state Envelope — the structure this component holds, where `owns` says who may change one. 4 of 8 of its fields shown
+      command is text, written `String`
+      root is a structure of your own, written `Node` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      diagnostics is a list, written `Vec<Diagnostic>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      coverage is something that might not be there, written `Option<Coverage>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
     promises nothing as a whole — something inside declares no checks, and one unchecked thing sets the level of everything around it (unclaimed)
     that level comes from its weakest part, which here is the absence of any: nothing inside this component declares a check at all — not its own functions, and not anything in the components within it
     component kernel — maps to Rust module ply_core::kernel

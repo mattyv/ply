@@ -5,6 +5,7 @@
 //! clients never read or interpret `ply.yaml` or `ply.lock` themselves.
 
 pub mod layout;
+pub mod state_shapes;
 pub mod svg;
 pub mod transcript;
 

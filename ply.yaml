@@ -59,6 +59,15 @@ components:
       exists to annotate.
   core:
     anchor: ply_core
+    # What this crate holds. The type and every field named here are resolved
+    # against `crates/ply-core`'s real source -- this document sits at the
+    # workspace root and has no library of its own, so each component's state
+    # is read from the crate its anchor points at. A field nobody declared is
+    # refused by name (A0415); the shape drawn beside each one is read from
+    # the code rather than written here.
+    state:
+      of: Envelope
+      show: [command, root, diagnostics, coverage]
     # Added 2026-09-02, and this is the first detail below crate level this
     # document has ever carried. Each of these is a real module, named so
     # that a reader can go one level in rather than being told "core does

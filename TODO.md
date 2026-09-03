@@ -77,6 +77,96 @@ the real `cargo ply check` output, not from memory.
       modules appear as nested components in that file. They do not, and cannot: a function
       claimed inside a module-anchored box stops resolving. The comment now says that.
 
+## Landed: `state:` — the structure a component holds, and Ply checks it exists — 2026-09-03
+
+The maintainer's question was the whole point of building it rather than just drawing it:
+*"Can ply verify these items exist in the code. Heaven forbid the llm decides otherwise"*.
+It can. Naming a type that is not there, or a field that type does not have, fails the
+build and names what is really there.
+
+- [x] **The document names, the code says what.** `state: { of: OrderBook, show: [bids,
+      ticks] }`. `show:` takes field *names* only. Listing the field types in the document
+      would be a second hand-maintained copy of a fact the compiler owns, and would drift
+      the first time a field changed.
+- [x] **A made-up field is caught and the real ones are listed.** Proven end to end against
+      Ply's own document: `show: [invented_field]` on the envelope type exits 1 with the
+      eight fields that actually exist printed beside it; the honest version exits 0. The
+      source scan reads private fields too — a state struct's fields usually are private,
+      and a checker that only saw the public ones would pass exactly the claims worth
+      catching.
+- [x] **"I could not check this" is its own message, never silence.** When there is no
+      library source to resolve against, Ply warns that the line went unchecked rather
+      than exiting 0. Found by testing it: an invented type in the workspace-root document
+      passed silently. The two messages come from two separate call sites on purpose, so
+      "this is false" and "I could not check" can never be confused for one another.
+- [x] **All three documents that can carry it, carry it**, and every drawing and text form
+      was regenerated: Ply's own library, and vetting scenarios 001 and 002.
+- [x] **The drawable gate was run, not asserted.** A first draft of the glyph sheet was
+      thrown away after rasterising it: two glyphs were indistinguishable at 12px, and one
+      shape in the set was a return shape rather than a state one.
+
+**Field rows landed the same day, on the maintainer's question — "should I see the data
+types in above diagram?" The answer was no, and it should have been yes.** The box now
+draws `state T — N of M shown` and a row per field: shape glyph, name, and the type as
+the source spells it. Both numbers are counted from code; a document rendered with no
+code under it draws the type name alone rather than a number Ply invented.
+
+- [x] **Seven glyphs, ink only, no new colour.** Geometry taken from the reviewed
+      proposal sheet rather than reinvented, so what shipped is what was looked at. Two
+      of them earned their design by *failing* first: hatching a solid glyph erased its
+      silhouette (a hatched list next to an unhatched one was a ghost), so a hatched
+      glyph keeps an outline; and the hatch could not reach the two outline-only forms
+      at all, which are the commonest unbuildable fields there are, so on those it
+      became the fill.
+- [x] **The hatch leans the other way to the ceiling hatch.** Found by rasterising Ply's
+      own workspace drawing, where every box is unclaimed and therefore already hatched:
+      a glyph hatched the same way vanished into its background — one channel carrying
+      two meanings at two scales, which §7.1 forbids. Crossing them costs no colour.
+      It also runs at half the pitch, because the ceiling pattern inside a 12-unit glyph
+      is about one stripe and does not read as hatching at all.
+- [x] **"Cannot build" is the sampling engine's own answer**, not "the parser gave up".
+      A `BTreeMap<u64, Level>` parses perfectly well as a map and still cannot be built.
+      The narrow predicate missed all three unbuildable fields in a fixture written to
+      have three.
+- [x] **The text form says the same things**, shapes included. Its whole contract is that
+      it states everything the drawing shows, and a reader who cannot see the picture
+      would have been the one to lose by it.
+- [x] **The tooltip stopped repeating the document.** It listed `show:` verbatim, so a
+      field nobody declared appeared on the drawing inside a sentence promising such a
+      name is refused. Caught by a test written to check exactly that.
+- [x] **The render suite could not see any of this until now.** Every fixture it walks is
+      a document with no code under it, so no row was ever painted in it — a deliberately
+      misspelled glyph class still passed the "every painted element resolves a style
+      rule" invariant. There is now a fixture crate written to disk at test time, and the
+      style and tooltip rules run over a drawing that actually has rows.
+
+**Cross-crate state resolution landed too, closing the other gap.** A component's state
+is read from the crate its anchor names, so the workspace-root document — which has no
+library of its own and was the reason the "could not check" warning existed — is checked
+like any other. Proven both ways: an invented field in the root document exits 1 naming
+the eight real ones; the honest version exits 0.
+
+**KNOWN GAP — the vetting scenarios still show no shapes, and correctly so.** Scenarios
+001 to 003 are grammar-first documents describing systems that have no code, so there is
+nothing to read their fields from. They draw the type name and say in the tooltip that
+the document asked for those names and there was nothing to check them against. Only
+004 has real crates behind it.
+
+**KNOWN GAP — one component in vetting 003 still cannot carry `state:`.** With deny
+lanes in (`7f5ae36`), four of its five candidate components take one at zero overlapping
+lines. The fifth, `risk`, still takes the ratchet from 0 to 2 on its own: one more line
+of height there pushes two routed lines onto the same path. Bisected one component at a
+time rather than assumed, and the reason is written into the scenario document itself so
+a later reader does not add it back blind. It goes in the day edge routing reroutes when
+a box grows. Height is a real budget: the lesson recorded here is that it gets spent per
+component with a measurement beside each, not by a rule declared once.
+
+NEXT, and the reason this was worth building: `state` is where a **type invariant**
+belongs. §5.4c admits type invariants are "assumed, never asserted", so a proof can rest
+on an invariant the code itself breaks. The fields are now named and verified, and the
+receiver machinery that already builds constructor-plus-mutator sequences is exactly what
+would check one across them.
+
 ## Landed: the false green is marked — 2026-09-02
 
 **Was the highest-priority open item.** A method on a type whose only way in is a
@@ -108,12 +198,35 @@ needed, nothing generated, and it holds for a type that can be neither printed n
       a fixture that could not vary — itself part of why this went unnoticed — and now
       carry a constructor argument so they test what they claim to.
 
-STILL OPEN, unchanged by this: the third bullet of the original finding. **What would make
-this evidence real is not a route.** The receiver mechanism would vary the set if it could
-call `insert`, and it refuses because it cannot build an ordinary unit enum for the
-operation pool — while refusal messages elsewhere imply unit-only enums are buildable. That
-inconsistency is the unlock, and it is a defect rather than a missing feature. Marking the
-gap is honest; closing it is what makes the evidence worth having.
+NOW CLOSED (2026-09-03), and the evidence is real rather than labelled. The third bullet
+turned out sharper than recorded: the defect was never about enums. An operation's own
+arguments were never put through the type resolution the checked call's arguments get, so
+at the moment the sequence pool was chosen every argument type still read as unbuildable —
+whether or not the crate declared a perfectly good type by that name. That judgment was
+being made inside a purely syntactic scan which has no crate-wide type index and cannot
+make it.
+
+- [x] **The decision moved to where the answer is knowable**, beside the constructor
+      candidates that had already been moved out of that same scan for the same reason. An
+      operation is now resolved first and judged second.
+- [x] **The sequence loop can build an argument, not only draw one.** Each step's arguments
+      go through the same plan the checked call's arguments do, under that step's own name
+      prefix, and the binding runs inside the arm before the call. Without that half an
+      operation would join the pool with an unbound argument and the generated harness
+      would not compile, so the test asserts both halves.
+- [x] **Measured, not asserted.** On a fresh probe the same deliberate break that reported
+      a clean `fuzzed(64)` reports `violation` now, and `narrower than it looks` is gone
+      from the verdict because the mutator really is called.
+- [x] **The negative case is pinned too.** An operation whose argument genuinely cannot be
+      built — a filesystem path — is still left out and still named with its reason.
+      Admitting everything would trade a silent gap for a harness that does not compile.
+
+HONEST LIMIT, and it is why Ply's own status-set probe still reads `one value over and
+over`: that type has no `&mut self` method at all. `union` takes `&self` and returns a new
+value, so no sequence of its own operations can move the receiver off what the constructor
+made. `W0529` is right to fire there, and now fires for the real reason rather than because
+an argument went unresolved.
+
 
 ## Decided: `ply-core` does NOT take a dependency on `ply-attrs` — 2026-09-02
 
@@ -2333,12 +2446,20 @@ adversarial review, none by the suite.
       much as travellers' own journey times, so readers trust geometry whether or not it
       was meant to carry meaning.
 
-- [ ] **KNOWN GAP, newly measured: four forbidden-call lines are drawn along each other.**
-      Found by writing the crossing invariant, not known before. Three share one vertical
-      corridor in vetting 003 and two share a horizontal run, so they render as a single
-      line and a declared rule goes invisible. Worse than a crossing: a crossing slows a
-      reader, an overlap hides a rule. Pinned at 4 as a ratchet. The fix is giving deny
-      routes their own lanes, the way regular edges already have them.
+- [x] **Four forbidden-call lines drawn along each other, fixed** (2026-09-03,
+      `7f5ae36`). Found by writing the crossing invariant: three shared one
+      vertical corridor in vetting 003 and two shared a horizontal run, rendering as a
+      single line and hiding a declared rule from the reader. Worse than a crossing: a
+      crossing slows a reader, an overlap hides a rule. Fixed by giving every routed
+      forbidden-call line and every routed external/`entry:` line a rank (the same
+      monotone-by-target-y order that already keeps the wildcard-node fan crossing-free)
+      and nesting each further-ranked route's corridor and rail one step further from the
+      obstruction it dodges than the last, so two routes that would otherwise compute an
+      identical detour land on visibly separate lines. The ratchet (`KNOWN_OVERLAPPING_
+      LINES` in `tools/render/tests/render.rs`) is now 0, and the canvas grows to hold a
+      nested rail rather than letting one run past the edge. Verified by eye, not just by
+      test: rasterized `vetting/003-trading-system.svg` before and after — three lines
+      that used to read as one now run on their own separate tracks.
       **Correction worth recording:** an earlier measurement in-session reported "zero
       crossings in every diagram". That was true of X-shaped crossings and completely
       missed these overlaps, because the detector used treated collinear segments as

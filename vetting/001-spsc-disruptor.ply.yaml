@@ -4,6 +4,12 @@ components:
     anchor: disruptor::spsc
     uses: [unsafe]
     owns: [disruptor::spsc::Spsc]
+    # What the ring holds. The two cursors are the whole design: a
+    # single-producer, single-consumer queue is exactly the claim that only
+    # one side moves each of them.
+    state:
+      of: Spsc
+      show: [slots, head, tail]
     profile: hot_path
     fns:
       slot:
