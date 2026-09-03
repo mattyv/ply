@@ -2334,7 +2334,7 @@ adversarial review, none by the suite.
       was meant to carry meaning.
 
 - [x] **Four forbidden-call lines drawn along each other, fixed** (2026-09-03,
-      PENDING-COMMIT-HASH). Found by writing the crossing invariant: three shared one
+      `7f5ae36`). Found by writing the crossing invariant: three shared one
       vertical corridor in vetting 003 and two shared a horizontal run, rendering as a
       single line and hiding a declared rule from the reader. Worse than a crossing: a
       crossing slows a reader, an overlap hides a rule. Fixed by giving every routed
