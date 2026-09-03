@@ -179,6 +179,78 @@ entirely — it runs the callee's real code, contract or not, so it never needs 
 And whether a stored result can be reused instead of running any of this again is a
 separate diagram, [`verdict-lifecycle`](.archi/ply.json), rendered alongside this one.
 
+### What step 5 gives you
+
+A failed executable claim comes back as three things, and every one of them is a file
+you can open. The example below is real output from
+[`tests/fixtures/clamp`](tests/fixtures/clamp), a function whose promise is wrong for
+every input above 100:
+
+```rust
+#[ply::ensures(|result| *result == x)]
+pub fn clamp(x: u32) -> u32 {
+    x.min(100)
+}
+```
+
+**1. The failing input, in the run's own output.** `cargo ply verify` names the function,
+quotes the promise it broke, and gives the input that breaks it:
+
+```
+[K0502] clamp::clamp — `clamp` breaks its own postcondition `|result|*result == x` for at least one input
+    failing input: x = 4294967295
+    Ply wrote a test that reproduces this to src/ply_generated_cex.rs -- run `cargo test` from this crate's root directory and it fails the same way this run just did.
+```
+
+**2. A plain `#[test]` in your own crate**, at `src/ply_generated_cex.rs`. It calls the
+real function with that input and asserts the promise itself, so it fails under bare
+`cargo test` with no engine installed. This is the artifact an agent repairs against
+(panic messages abridged here; the file carries them in full):
+
+```rust
+#[test]
+fn ply_cex_clamp_01() {
+    let x: u32 = 4294967295u32;
+
+    let result = &clamp(x);
+
+    // Contract under test: #[ply::ensures(|result|*result == x)]
+    // Arithmetic is evaluated in i128 so the test can report the broken
+    // promise instead of overflowing while checking it.
+    let __ply_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ((* result as i128)) == ((x as i128))));
+    match __ply_ok {
+        Ok(true) => {}
+        Ok(false) => panic!("Broken promise in `clamp`: ... the left side of the contract evaluated to \
+         {}, and the right side evaluated to {} ... fix the body or fix the `#[ply::ensures]` \
+         line, and this test will pass. (K0502)", (* result as i128), (x as i128)),
+        Err(_) => panic!("the contract's own check crashed at this input ... (K0502)"),
+    }
+}
+```
+
+```
+test ply_generated_cex::ply_cex_clamp_01 ... FAILED
+Broken promise in `clamp`: ... For this input, the left side of the contract evaluated to 100,
+and the right side evaluated to 4294967295, which does not satisfy the contract's comparison.
+```
+
+Fix the body or fix the promise and the same test goes green, and it stays in the crate
+as a regression test. The engine's own replay facility cannot do this: it re-runs the
+function body and never re-evaluates the promise, so a broken postcondition replays
+green there. That is why Ply renders its own test, and why the assertion is widened to
+`i128` — a test that overflowed while checking the promise would be failing for the wrong
+reason.
+
+**3. The raw witness, kept.** The exact bytes the engine found are stored under
+`target/ply/witness/<fn>.json` (here `[[255,255,255,255]]`), so a later run that no
+longer fails can still re-render the test from the input that once did.
+
+One honest limit. When the failure depends on a stand-in callee's invented return value
+rather than on the function's own body, no plain-Rust test can reproduce it faithfully —
+the rendered test would call the real callee, which never returns that value. Ply reports
+that case by name (`W0541`) with the value and a proposed tightening of the promise,
+instead of writing a test that passes for the wrong reason.
+
 ## A declarative grammar, and the line where it stops
 
 Ply gives you a **declarative grammar** for describing a system: components and how they
