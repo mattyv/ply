@@ -448,16 +448,18 @@ fn decode_scalar_entry(
 /// -- the §9 oracle's other half. Never asserts the replay *fails*: D7's
 /// caveat 3 established that an `ensures`-violation witness replays green
 /// (contract closures are never re-evaluated during playback).
+///
+/// The wall-clock budget is enforced in-process by
+/// `engines::run_with_timeout`, never by shelling out to a `timeout`/
+/// `gtimeout` binary -- macOS ships neither, so wrapping the real command in
+/// one made this fail to spawn at all rather than ever run playback.
 pub fn run_playback(
     crate_dir: &Path,
     exact_test_name: &str,
     timeout: Duration,
-) -> Result<std::process::Output> {
-    let secs = timeout.as_secs().max(1);
-    let child = Command::new("timeout")
-        .arg(format!("{secs}s"))
-        .arg("cargo")
-        .arg("kani")
+) -> Result<super::TimedOutput> {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("kani")
         .arg("playback")
         .args([
             "-Z",
@@ -471,10 +473,9 @@ pub fn run_playback(
         .current_dir(crate_dir)
         .arg("--")
         .arg("--exact")
-        .arg(exact_test_name)
-        .output()
-        .with_context(|| format!("spawning `cargo kani playback` in {}", crate_dir.display()))?;
-    Ok(child)
+        .arg(exact_test_name);
+    super::run_with_timeout(&mut cmd, timeout)
+        .with_context(|| format!("running `cargo kani playback` in {}", crate_dir.display()))
 }
 
 #[cfg(test)]

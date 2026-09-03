@@ -5,14 +5,16 @@
 //! The real mechanism is package targeting:
 //!
 //! ```text
-//! timeout <wall-clock>s \
 //! cargo mutants -p <mutated-crate> --test-package <harness-crate> \
 //!     --re <fn> --copy-target true --no-times -t <secs> -- <test-name-filter>
 //! ```
 //!
 //! (That is the command as it is actually spawned -- `mutants_argv` builds
 //! it. `--gitignore false`, which earlier drafts of this doc showed here as
-//! "the real mechanism", is falsified below and must never be passed.)
+//! "the real mechanism", is falsified below and must never be passed. The
+//! whole-invocation wall-clock cap mentioned below it is enforced separately,
+//! in-process, by `engines::run_with_timeout` -- it is not part of this
+//! argv at all.)
 //!
 //! §5.4c (pre-M4) said only `--gitignore false` was needed to make the
 //! harness crate's `target/ply/fuzz/` placement copy-safe. **That claim is
@@ -67,6 +69,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -91,11 +94,12 @@ pub struct MutantsRunConfig {
     pub test_filter: String,
     /// cargo-mutants' own `-t`: the cap on *each mutant's* test phase.
     pub timeout_secs: u32,
-    /// The cap on the whole invocation, enforced by Ply with the `timeout`
-    /// command exactly as `engines::fuzz` and `engines::kani::run_playback`
-    /// do. `-t` alone leaves the tree copy and the unmutated baseline build
-    /// uncapped, so a hang there hung `verify` with no report at all --
-    /// §5.4c forbids exactly that ("never a silent hang").
+    /// The cap on the whole invocation, enforced in-process by
+    /// `engines::run_with_timeout` -- the same helper `engines::fuzz` and
+    /// `engines::kani::run_playback` use, never an external `timeout`
+    /// command. `-t` alone leaves the tree copy and the unmutated baseline
+    /// build uncapped, so a hang there hung `verify` with no report at all
+    /// -- §5.4c forbids exactly that ("never a silent hang").
     pub wall_clock_secs: u32,
 }
 
@@ -139,15 +143,14 @@ pub enum MutantsRunOutcome {
 /// The exact argv one `mutate` run is spawned with, program name first.
 /// Split out from `run` so the invocation itself is testable without a real
 /// cargo-mutants run.
+///
+/// Never includes a `timeout` wrapper: the whole-invocation wall-clock cap
+/// (2026-08-24 M4 review, D5 -- `-t` below is only cargo-mutants' own
+/// per-mutant budget and leaves the tree copy and the unmutated baseline
+/// build uncapped) is enforced separately and in-process, by
+/// [`wall_clock_budget`] passed to `engines::run_with_timeout`.
 pub fn mutants_argv(cfg: &MutantsRunConfig) -> Vec<String> {
     vec![
-        // The whole invocation is capped, not just each mutant's test phase
-        // (2026-08-24 M4 review, D5): `-t` below is cargo-mutants' own
-        // per-mutant budget and leaves the tree copy and the unmutated
-        // baseline build uncapped. Same `timeout` wrapper the fuzz and Kani
-        // adapters use, so exit code 124 means "killed by the cap".
-        "timeout".to_string(),
-        format!("{}s", cfg.wall_clock_secs),
         "cargo".to_string(),
         "mutants".to_string(),
         "-p".to_string(),
@@ -166,6 +169,14 @@ pub fn mutants_argv(cfg: &MutantsRunConfig) -> Vec<String> {
     ]
 }
 
+/// The whole-invocation wall-clock budget `run` enforces via
+/// `engines::run_with_timeout` -- distinct from `-t` in [`mutants_argv`],
+/// which is cargo-mutants' own per-mutant budget. Split out, like
+/// `mutants_argv`, so the cap is testable without a real cargo-mutants run.
+pub fn wall_clock_budget(cfg: &MutantsRunConfig) -> Duration {
+    Duration::from_secs(cfg.wall_clock_secs as u64)
+}
+
 /// Runs cargo-mutants and classifies the result by reading its own
 /// structured `mutants.out/*.txt` files (one mutant description per line) --
 /// far more robust than scraping the human-readable summary line, and
@@ -176,16 +187,18 @@ pub fn run(cfg: &MutantsRunConfig) -> Result<MutantsRunOutcome> {
     let _ = std::fs::remove_dir_all(&mutants_out); // stale run from a prior verify, if any
 
     let argv = mutants_argv(cfg);
-    let output = Command::new(&argv[0])
-        .current_dir(&cfg.workspace_root)
-        .args(&argv[1..])
-        .output()
-        .with_context(|| {
-            format!(
-                "spawning `cargo mutants` in {}",
-                cfg.workspace_root.display()
-            )
-        })?;
+    let mut cmd = Command::new(&argv[0]);
+    cmd.current_dir(&cfg.workspace_root).args(&argv[1..]);
+    // The whole-invocation wall-clock cap is enforced in-process here, never
+    // by shelling out to a `timeout` binary -- macOS ships neither `timeout`
+    // nor `gtimeout`, so wrapping the real command in one made `mutate`
+    // fail to spawn at all rather than ever run a single mutant.
+    let output = super::run_with_timeout(&mut cmd, wall_clock_budget(cfg)).with_context(|| {
+        format!(
+            "running `cargo mutants` in {}",
+            cfg.workspace_root.display()
+        )
+    })?;
 
     let combined = super::strip_ansi(&format!(
         "{}\n{}",
@@ -193,7 +206,7 @@ pub fn run(cfg: &MutantsRunConfig) -> Result<MutantsRunOutcome> {
         String::from_utf8_lossy(&output.stderr)
     ));
 
-    Ok(classify_run(output.status.code(), combined, &mutants_out))
+    Ok(classify_run(output.timed_out, combined, &mutants_out))
 }
 
 /// Turns one finished invocation into an engine-honest outcome: a run the
@@ -201,13 +214,12 @@ pub fn run(cfg: &MutantsRunConfig) -> Result<MutantsRunOutcome> {
 /// files cannot be read is a `ToolError`, and only a run that produced real
 /// per-mutant result files is `Completed`. Pure, so the classification is
 /// testable without a real cargo-mutants run.
-pub fn classify_run(
-    exit_code: Option<i32>,
-    combined: String,
-    mutants_out: &Path,
-) -> MutantsRunOutcome {
-    // GNU `timeout` exits 124 when it had to kill the child.
-    if exit_code == Some(124) {
+///
+/// `timed_out` comes straight from `engines::TimedOutput` -- it is never
+/// inferred from an exit code (GNU `timeout`'s old 124 convention has no
+/// counterpart here, because nothing spawns that program any more).
+pub fn classify_run(timed_out: bool, combined: String, mutants_out: &Path) -> MutantsRunOutcome {
+    if timed_out {
         return MutantsRunOutcome::Timeout {
             raw_output: combined,
         };
@@ -311,33 +323,45 @@ mod tests {
     /// test phase inside cargo-mutants; it does not cap the invocation, so a
     /// hung tree copy or baseline build hung `verify` with no cap at all
     /// (2026-08-24 M4 review, D5). The sibling adapters (`engines::fuzz`,
-    /// `engines::kani::run_playback`) already wrap their spawn in `timeout`.
+    /// `engines::kani::run_playback`) enforce the same whole-invocation cap
+    /// the same way: in-process, via `engines::run_with_timeout`, never by
+    /// wrapping the spawn in an external `timeout` binary (macOS ships
+    /// neither `timeout` nor `gtimeout`, so that used to fail every run
+    /// outright rather than ever cap one).
     #[test]
     fn the_whole_invocation_carries_a_wall_clock_cap_not_just_a_per_mutant_one() {
         let argv = mutants_argv(&cfg());
         assert_eq!(
-            argv[0], "timeout",
-            "the run itself must be capped, not only each mutant: {argv:?}"
+            argv[0], "cargo",
+            "the real program is spawned directly, never wrapped: {argv:?}"
         );
-        assert_eq!(
-            argv[1], "600s",
-            "the cap is the config's whole-run budget: {argv:?}"
+        assert!(
+            !argv.iter().any(|a| a == "timeout"),
+            "the invocation must never shell out through an external `timeout` wrapper: {argv:?}"
         );
-        assert_eq!(argv[2], "cargo");
         assert!(
             argv.contains(&"-t".to_string()) && argv.contains(&"60".to_string()),
             "{argv:?}"
         );
+        assert_eq!(
+            wall_clock_budget(&cfg()),
+            Duration::from_secs(600),
+            "the whole run is still capped by the config's wall-clock budget, just enforced \
+             in-process rather than baked into argv"
+        );
     }
 
-    /// GNU `timeout` exits 124 when it had to kill the child. Before the fix
-    /// this was indistinguishable from any other failed run and fell through
-    /// to `ToolError` -- `MutantsRunOutcome::Timeout` (and with it `M0601`)
-    /// was declared, matched on, and never constructed by anything.
+    /// Before the fix, whether a run had been killed for exceeding its
+    /// budget was inferred from GNU `timeout`'s exit code 124 -- indistinguishable
+    /// from any other failed run whenever that inference broke, and it fell
+    /// through to `ToolError`. `MutantsRunOutcome::Timeout` (and with it
+    /// `M0601`) was declared, matched on, and never constructed by anything.
+    /// Now the flag comes straight from `engines::TimedOutput`, with no exit
+    /// code involved at all.
     #[test]
     fn a_killed_run_is_a_timeout_not_a_tool_error() {
         let dir = tempfile::tempdir().unwrap();
-        let outcome = classify_run(Some(124), String::new(), dir.path());
+        let outcome = classify_run(true, String::new(), dir.path());
         assert!(
             matches!(outcome, MutantsRunOutcome::Timeout { .. }),
             "a run the wall-clock cap killed must be reported as `timeout`, never conflated with a \

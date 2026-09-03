@@ -153,6 +153,24 @@ impl SourceLocation {
     }
 }
 
+/// The four states a client's evidence filter can hide items by. Published
+/// explicitly so a client (the Ply Visual viewer's Earned/Gap/Violation
+/// checkboxes) never has to re-derive it by pattern-matching the real
+/// verdict strings (`bounded(2)`, `fuzzed(64)`, `unclaimed`, `tool_error`,
+/// ...) itself -- Ply already computes this exact classification for its
+/// own SVG styling (`svg::classify_evidence`), and a second implementation
+/// of the same rule in a client is precisely the kind of drift this field
+/// exists to prevent.
+pub const EVIDENCE_STATES: [&str; 4] = ["declared", "earned", "gap", "violation"];
+
+/// The default for an envelope published before this field existed:
+/// "declared" is the one state none of the viewer's three checkboxes ever
+/// hides, so an element whose real state no old run recorded stays visible
+/// rather than being silently hidden by a guessed classification.
+fn default_evidence_state() -> String {
+    "declared".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ElementEvidence {
@@ -165,6 +183,11 @@ pub struct ElementEvidence {
     pub seed: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cases: Option<u32>,
+    /// One of [`EVIDENCE_STATES`]: exactly what the viewer's Earned/Gap/
+    /// Violation checkboxes filter on. See `svg::classify_evidence` for the
+    /// one place this is computed.
+    #[serde(default = "default_evidence_state")]
+    pub state: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -286,6 +309,12 @@ impl VisualEnvelope {
             require_non_empty("element kind", &element.kind)?;
             require_non_empty("element label", &element.label)?;
             require_non_empty("element evidence verdict", &element.evidence.verdict)?;
+            if !EVIDENCE_STATES.contains(&element.evidence.state.as_str()) {
+                return Err(VisualEnvelopeError::Invalid(format!(
+                    "element {:?} has evidence state {:?}, which is none of {EVIDENCE_STATES:?}",
+                    element.id, element.evidence.state
+                )));
+            }
             for status in &element.evidence.statuses {
                 require_non_empty("element evidence status", status)?;
             }
@@ -605,6 +634,31 @@ fn nesting_levels(document: &Document) -> usize {
     document.components.values().map(deepest).max().unwrap_or(0)
 }
 
+/// Maps the renderer's own classification to the four strings a client is
+/// promised. Reuses `svg::classify_evidence` rather than re-reading
+/// `verdict`/`statuses` here, so there is exactly one place in Ply that
+/// decides what a verdict *means* display-wise.
+///
+/// `Stale` maps to `"gap"`: a stale result is answered by nothing current
+/// (the code moved on since the check ran), so calling it `"earned"` would
+/// overclaim, and it was never merely undeclared or a broken rule, so
+/// neither `"declared"` nor `"violation"` fits either -- `"gap"` is Ply's
+/// existing word for "answered by nothing current" (§ absence verdicts:
+/// timeout, engine-missing, inconclusive, tool_error, unsupported*). In
+/// practice this arm is unreached: `registry.rs` records that `stale` is
+/// not a status any pipeline code emits today, and the only reader of it is
+/// this same dead renderer styling -- but the classifier still has the
+/// arm, so the mapping has to cover it honestly rather than pretend it
+/// cannot occur.
+fn evidence_state(evidence: &ElementEvidence) -> &'static str {
+    match svg::classify_evidence(evidence) {
+        svg::DisplayState::Violated => "violation",
+        svg::DisplayState::Declared => "declared",
+        svg::DisplayState::Unanswered | svg::DisplayState::Stale => "gap",
+        svg::DisplayState::Earned { .. } => "earned",
+    }
+}
+
 fn collect_elements(
     node: &Node,
     parent_id: Option<&str>,
@@ -653,7 +707,7 @@ fn collect_elements(
             .collect::<Vec<_>>()
             .join("\n")
     });
-    let evidence = ElementEvidence {
+    let mut evidence = ElementEvidence {
         verdict: node.verdict.clone(),
         statuses: node.statuses.clone(),
         reused: node.reused,
@@ -666,7 +720,12 @@ fn collect_elements(
             .as_ref()
             .and_then(|evidence| evidence.seed.clone()),
         cases: node.evidence.as_ref().and_then(|evidence| evidence.cases),
+        // Placeholder: `evidence_state` below reuses `svg::classify_evidence`,
+        // which reads verdict/statuses off this same struct, so the struct
+        // has to exist before the state it publishes can be computed.
+        state: String::new(),
     };
+    evidence.state = evidence_state(&evidence).to_string();
     if semantic_ids
         .insert(semantic_key.clone(), id.clone())
         .is_some()

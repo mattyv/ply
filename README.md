@@ -265,6 +265,37 @@ run there is none to show. Grey depth is how strongly something promises to be c
 That distinction is the point. The picture shows where the checked code ends and the
 unchecked code begins, so an unverified boundary is visible rather than implied.
 
+### The same idea, after a run
+
+Every other drawing in this repository is a *before* picture. This one is not.
+[`demos/verified-green/`](demos/verified-green/) is three small functions taken all the way
+through `cargo ply verify --publish-view`, and the drawing it produced:
+
+<p align="center">
+  <img src="demos/verified-green/verified.svg" alt="A header line reads: 1 component, 3 functions, 0 promise nothing, 3 earned. A single box named greendemo holds three function chips, each outlined and filled green with a tick beside its name: clamp, checked bounded to loop depth 2 and fuzzed over 64 cases; digit_count, fuzzed over 64 cases; and total, fuzzed over 64 cases." width="430">
+</p>
+
+The header now ends **3 earned**, and each chip is green with a tick. Green is never drawn
+from the declaration — it appears only where a run actually earned it. `clamp` carries a
+real proof from Kani, checked over every value rather than sampled; the other two were run
+against 64 generated inputs each. `digit_count` takes a `&str`, which Ply refused outright
+until 2026-09-01.
+
+The run also says two honest things about itself, both visible on hover and neither a
+defect:
+
+- **`clamp` threw most of its inputs away.** Its precondition requires `lo <= hi`, and 69
+  of 133 draws did not satisfy it. Ply kept drawing until 64 were accepted, so the count is
+  honest — but every accepted case comes from the corner of the input space the
+  precondition allows, which is weaker evidence than "64 cases" sounds.
+- **`digit_count` was never given control characters.** Ply excludes raw bytes like a null
+  or an escape code by default, on the grounds that they are likelier to trip something
+  unrelated than to find a real bug. Accented and CJK text *is* generated. If the function
+  needs to handle control characters, this run says nothing about it.
+
+Both are printed by the run itself rather than written by hand here. A tool that reported
+"3 earned" and stopped would be hiding the more useful half.
+
 Four more rendered scenarios live in [`vetting/`](vetting/), each a design written in the
 grammar before the tool could check it.
 
