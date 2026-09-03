@@ -31,7 +31,7 @@
 //! evidence of its own — not a judgement about the code.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use ply_core::arch::{self, ArchFinding, ArchTally};
@@ -236,6 +236,94 @@ fn arch_unavailable_diag(reason: &str) -> Diagnostic {
 /// wrong, Ply just could not look. Kept a separate function so the two can
 /// never be confused at a call site -- "this is false" and "I could not
 /// check this" are different sentences and must not share one.
+/// Checks one component's `state:` against real source, wherever that
+/// source lives.
+///
+/// Shared by the two walks below -- the one that has a library under the
+/// document and the one that does not -- because they were never really
+/// two different checks. A workspace-root document has no library of its
+/// own, but its components are anchored at crates that do, and reading
+/// those is the same read. What is genuinely different is the case where
+/// no crate can be found at all, and that is the one warning here.
+fn verify_state(
+    qualified: &str,
+    comp: &Component,
+    crates: &std::collections::BTreeMap<String, PathBuf>,
+    local: Option<&Path>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(state) = &comp.state else {
+        return;
+    };
+    // The crate the anchor names, when the document spans a workspace;
+    // otherwise the crate the document sits in.
+    let head = comp.anchor.split("::").next().unwrap_or(&comp.anchor);
+    let dir = local
+        .map(Path::to_path_buf)
+        .or_else(|| crates.get(head).cloned());
+    // A claim Ply could not look at must not read like a claim it looked at
+    // and was satisfied by (§1). Measured before this existed: a completely
+    // invented type in a workspace-root document passed with exit 0, which
+    // is the false clean this whole grammar was added to prevent.
+    let Some(dir) = dir else {
+        diagnostics.push(state_diag_warning(
+            "W0413",
+            qualified,
+            format!(
+                "`{qualified}` says its state lives in `{of}`, and Ply could not check that. \
+                 Resolving a state claim means reading the crate this component is anchored \
+                 at, and Ply found no crate named `{head}` with a library under this \
+                 document. The claim is not wrong; it is unverified, and this line says so \
+                 rather than letting it pass in silence. (W0413)",
+                of = state.of,
+            ),
+        ));
+        return;
+    };
+    let Some(fields) = ply_core::harness::scan_type_fields(&dir, &state.of) else {
+        diagnostics.push(state_diag(
+            "A0414",
+            qualified,
+            format!(
+                "`{qualified}` says its state lives in `{of}`, but the crate it is anchored \
+                 at declares no type called that. Ply looked through every `.rs` file under \
+                 that crate's `src/`. Check the spelling, or point `state:` at a type that \
+                 crate really has -- a component's state is resolved under its own anchor, \
+                 never guessed at. (A0414)",
+                of = state.of,
+            ),
+        ));
+        return;
+    };
+    let declared: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    for wanted in &state.show {
+        if declared.iter().any(|d| d == wanted) {
+            continue;
+        }
+        diagnostics.push(state_diag(
+            "A0415",
+            qualified,
+            format!(
+                "`{qualified}` asks to show `{of}`'s `{wanted}` field, but `{of}` has no \
+                 field called that. The fields it does have are: {have}. Field names come \
+                 from the code, so this line cannot be drawn as written. (A0415)",
+                of = state.of,
+                have = if declared.is_empty() {
+                    "none it can name -- it is a tuple struct, whose fields have no names \
+                     to show"
+                        .to_string()
+                } else {
+                    declared
+                        .iter()
+                        .map(|d| format!("`{d}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                },
+            ),
+        ));
+    }
+}
+
 fn state_diag_warning(code: &str, node_id: &str, title: String) -> Diagnostic {
     Diagnostic {
         severity: "warning".into(),
@@ -378,28 +466,17 @@ fn check_anchors(
             qualified: &str,
             comp: &Component,
             lib_path: &Path,
+            crates: &std::collections::BTreeMap<String, PathBuf>,
             diagnostics: &mut Vec<Diagnostic>,
             tally: &mut AnchorTally,
         ) {
-            // A `state:` claim here is exactly as unresolvable as a fn claim,
-            // and for the same reason -- there is no library to read. Said
-            // out loud for the same reason too: measured before this rule
-            // existed, an invented state type in a workspace-root document
-            // passed with exit 0.
-            if let Some(state) = &comp.state {
-                diagnostics.push(state_diag_warning(
-                    "W0413",
-                    qualified,
-                    format!(
-                        "`{qualified}` says its state lives in `{of}`, and Ply could not \
-                         check that: there is no library at {path} to resolve it against. \
-                         The claim is not wrong; it is unverified, and this line says so \
-                         rather than letting it pass in silence. (W0413)",
-                        of = state.of,
-                        path = lib_path.display(),
-                    ),
-                ));
-            }
+            // A fn claim here really is unresolvable -- there is no library
+            // to read. A `state:` claim is not: this document's components
+            // are anchored at crates that have libraries of their own, and
+            // reading one of those is the same read `walk_anchors` does. So
+            // the workspace-root document, which used to get a warning
+            // saying nothing could be checked, is now checked.
+            verify_state(qualified, comp, crates, None, diagnostics);
             for fn_name in comp.fns.keys() {
                 tally.unresolved += 1;
                 diagnostics.push(no_library_diag(
@@ -413,19 +490,29 @@ fn check_anchors(
                     &format!("{qualified}::{child}"),
                     sub,
                     lib_path,
+                    crates,
                     diagnostics,
                     tally,
                 );
             }
         }
+        // The crates this document's components are anchored at. Found from
+        // the directory the document sits in, which for a workspace-root
+        // document is the workspace.
+        let crates = ply_core::harness::workspace_library_crates(crate_dir);
         for (name, comp) in &doc.components {
-            walk_no_library(name, comp, &lib_path, diagnostics, &mut tally);
+            walk_no_library(name, comp, &lib_path, &crates, diagnostics, &mut tally);
         }
         debug_assert_eq!(tally.unresolved, count_fn_claims(doc));
         tally.no_library = true;
         return tally;
     };
     let local_anchors = local_anchor_names(crate_dir);
+    // Where each component's state type may live. A single-crate document
+    // resolves everything locally and never consults this; a document that
+    // names components in other crates resolves each against the crate its
+    // anchor points at.
+    let state_crates = ply_core::harness::workspace_library_crates(crate_dir);
     let known_fns = harness::crate_fn_paths(&lib_path).unwrap_or_default();
     let mut resolver = Resolver::new(&lib_src, crate_dir, BTreeMap::new()).ok();
 
@@ -434,6 +521,7 @@ fn check_anchors(
             name,
             comp,
             &lib_path,
+            &state_crates,
             &local_anchors,
             &known_fns,
             resolver.as_mut(),
@@ -450,6 +538,7 @@ fn walk_anchors(
     qualified: &str,
     comp: &Component,
     lib_path: &Path,
+    state_crates: &std::collections::BTreeMap<String, PathBuf>,
     local_anchors: &[String],
     known_fns: &[String],
     mut resolver: Option<&mut Resolver>,
@@ -466,81 +555,15 @@ fn walk_anchors(
     // of its fields; nothing stops whoever wrote it -- a person in a hurry,
     // or a model that guessed -- from naming a field nobody declared. Drawn
     // unchecked, that is a confident picture of code that does not exist.
-    if let Some(state) = &comp.state {
-        let crate_dir = lib_path
-            .parent()
-            .and_then(|src| src.parent())
-            .filter(|_| is_local(local_anchors, &comp.anchor) && lib_path.exists());
-        // A claim Ply could not look at must not read like a claim it looked
-        // at and was satisfied by (§1). Measured before this existed: a
-        // completely invented type in a workspace-root document -- where
-        // there is no `src/lib.rs` to resolve against -- passed with exit 0,
-        // which is the false clean this whole grammar was added to prevent.
-        if crate_dir.is_none() {
-            diagnostics.push(state_diag_warning(
-                "W0413",
-                qualified,
-                format!(
-                    "`{q}` says its state lives in `{of}`, and Ply could not check that. \
-                     Resolving a state claim means reading the crate this component is \
-                     anchored at, and `{anchor}` is not a crate whose source is here -- a \
-                     workspace-root document, or a component anchored at another crate. The \
-                     claim is not wrong; it is unverified, and this line says so rather than \
-                     letting it pass in silence. (W0413)",
-                    q = qualified,
-                    of = state.of,
-                    anchor = comp.anchor,
-                ),
-            ));
-        }
-        if let Some(crate_dir) = crate_dir {
-            match ply_core::harness::scan_type_fields(crate_dir, &state.of) {
-                None => diagnostics.push(state_diag(
-                    "A0414",
-                    qualified,
-                    format!(
-                        "`{q}` says its state lives in `{of}`, but this crate declares no type \
-                         called that. Ply looked through every `.rs` file under `src/`. Check \
-                         the spelling, or drop `state:` if the type moved to another crate -- \
-                         a component's state is resolved under its own anchor, never guessed \
-                         at. (A0414)",
-                        q = qualified,
-                        of = state.of,
-                    ),
-                )),
-                Some(fields) => {
-                    let declared: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
-                    for wanted in &state.show {
-                        if !declared.iter().any(|d| d == wanted) {
-                            diagnostics.push(state_diag(
-                                "A0415",
-                                qualified,
-                                format!(
-                                    "`{q}` asks to show `{of}`'s `{wanted}` field, but `{of}` \
-                                     has no field called that. The fields it does have are: \
-                                     {have}. Field names come from the code, so this line \
-                                     cannot be drawn as written. (A0415)",
-                                    q = qualified,
-                                    of = state.of,
-                                    have = if declared.is_empty() {
-                                        "none it can name -- it is a tuple struct, whose \
-                                         fields have no names to show"
-                                            .to_string()
-                                    } else {
-                                        declared
-                                            .iter()
-                                            .map(|d| format!("`{d}`"))
-                                            .collect::<Vec<_>>()
-                                            .join(", ")
-                                    },
-                                ),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // A component anchored inside this crate resolves against this crate;
+    // one anchored at another crate resolves against that one. Both are the
+    // same read, so both go through `verify_state`, which returns at once
+    // for a component that declares no state at all.
+    let local = lib_path
+        .parent()
+        .and_then(|src| src.parent())
+        .filter(|_| is_local(local_anchors, &comp.anchor) && lib_path.exists());
+    verify_state(qualified, comp, state_crates, local, diagnostics);
     if is_local(local_anchors, &comp.anchor) {
         for (fn_name, claim) in &comp.fns {
             let node_id = format!("{qualified}::{fn_name}");
@@ -653,6 +676,7 @@ fn walk_anchors(
             &format!("{qualified}.{child}"),
             nested,
             lib_path,
+            state_crates,
             local_anchors,
             known_fns,
             resolver.as_deref_mut(),
@@ -1202,6 +1226,68 @@ pub struct OrderBook {
         assert!(
             found.title.contains("Invented"),
             "it must name the claim it could not check: {}",
+            found.title
+        );
+    }
+
+    /// The case the warning above used to be the *only* answer to. A
+    /// workspace-root document has no library of its own, but its
+    /// components are anchored at crates that do -- so their state is
+    /// checked against those, and a lie in the root document fails the
+    /// build exactly as it would in a single-crate one.
+    ///
+    /// Measured before this existed: an entirely invented type in Ply's own
+    /// root document passed with exit 0, and then, once the warning
+    /// existed, passed with a warning. Neither is checking it.
+    #[test]
+    fn a_state_type_in_another_crate_is_resolved_and_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        // A workspace root: no `src/lib.rs` here, one library crate below.
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/ledger\"]\n",
+        )
+        .unwrap();
+        let ledger = dir.path().join("crates/ledger");
+        std::fs::create_dir_all(ledger.join("src")).unwrap();
+        std::fs::write(
+            ledger.join("Cargo.toml"),
+            "[package]\nname = \"ledger-core\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ledger.join("src/lib.rs"),
+            "pub struct Book { pub bids: u64, pub ticks: u64 }",
+        )
+        .unwrap();
+
+        // The anchor names the crate by its library path, dashes
+        // underscored, exactly as Rust code would reach it.
+        let honest = "ply: 1\ncomponents:\n  book:\n    anchor: ledger_core\n    state:\n      of: Book\n      show: [bids]\n";
+        std::fs::write(dir.path().join("ply.yaml"), honest).unwrap();
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(honest).unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| ["W0413", "A0414", "A0415"].contains(&d.code.as_str())),
+            "an honest claim about a type in another crate must be checked and pass, not \
+             warned about: {:?}",
+            diagnostics.iter().map(|d| &d.title).collect::<Vec<_>>()
+        );
+
+        let lying = "ply: 1\ncomponents:\n  book:\n    anchor: ledger_core\n    state:\n      of: Book\n      show: [invented]\n";
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(lying).unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+        let found = diagnostics
+            .iter()
+            .find(|d| d.code == "A0415")
+            .expect("a field nobody declared must fail here too, not merely be warned about");
+        assert!(
+            found.title.contains("`bids`") && found.title.contains("`ticks`"),
+            "and it must list the fields the other crate's type really has: {}",
             found.title
         );
     }

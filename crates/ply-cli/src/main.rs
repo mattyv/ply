@@ -16,8 +16,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 // defect that put this rule here.
 use ply_core::diag::is_absence;
 use ply_core::model::parse_document;
-use ply_core::visual::svg::{RenderOptions, render_svg_with_options};
-use ply_core::visual::transcript::render_transcript;
+use ply_core::visual::svg::{RenderOptions, render_svg_with_state};
 use ply_core::visual::{
     DEFAULT_RETAINED_RUNS, RunOutcome, VisualPublisher, build_declared_visual_envelope,
     build_visual_envelope_with_sources, completed_run_metadata, outcome_of,
@@ -427,7 +426,15 @@ fn render_command_with_format(
         };
     }
     if text {
-        let transcript = render_transcript(&document);
+        // Same read the drawing does, for the same reason: the text form's
+        // contract is that it states everything the drawing shows.
+        let transcript = ply_core::visual::transcript::render_transcript_with_state(
+            &document,
+            Some(&ply_core::harness::resolve_state_fields(
+                input.parent().unwrap_or(Path::new(".")),
+                &document,
+            )),
+        );
         return match output {
             Some(path) => std::fs::write(path, transcript)
                 .map_err(|error| anyhow::anyhow!("could not write {}: {error}", path.display())),
@@ -437,7 +444,15 @@ fn render_command_with_format(
         };
     }
 
-    let svg = render_svg_with_options(&document, options)
+    // §7.1's rule for `state:`: the document names the type and the fields,
+    // the *code* says what those fields are. So before drawing, read them --
+    // from the crate each component's anchor names, which is what lets a
+    // workspace document whose components live in six different crates draw
+    // all six. Nothing resolvable (no code yet, or a document somewhere with
+    // no crate under it) simply draws the type name alone.
+    let source_root = input.parent().unwrap_or(Path::new("."));
+    let state_fields = ply_core::harness::resolve_state_fields(source_root, &document);
+    let svg = render_svg_with_state(&document, options, &state_fields)
         .map_err(|error| anyhow::anyhow!("could not render {}: {error}", input.display()))?;
 
     // A selection that selects nothing is worth saying out loud. On a flat
@@ -449,7 +464,7 @@ fn render_command_with_format(
     // layout pass and cannot disagree with what was actually drawn. The
     // note goes to stderr, so it can never contaminate an SVG on stdout.
     if options.depth.is_some() || options.focus.is_some() || !options.collapse.is_empty() {
-        let plain = render_svg_with_options(&document, &RenderOptions::default());
+        let plain = render_svg_with_state(&document, &RenderOptions::default(), &state_fields);
         if plain.as_deref().ok() == Some(svg.as_str()) {
             eprintln!(
                 "note: this drawing is identical to the one with no --depth/--focus/--collapse \
@@ -941,7 +956,14 @@ mod tests {
         .unwrap();
 
         let document = parse_document(yaml).unwrap();
-        let canonical = render_svg_with_options(&document, &RenderOptions::default()).unwrap();
+        // Deliberately the *plain* renderer, not the state-aware one the
+        // command now calls: with no `state:` to resolve and no crate under
+        // the temp directory, the two must agree byte for byte. Every
+        // committed drawing predating state rows depends on that being
+        // exactly true.
+        let canonical =
+            ply_core::visual::svg::render_svg_with_options(&document, &RenderOptions::default())
+                .unwrap();
         assert_eq!(String::from_utf8(stdout).unwrap(), canonical);
         assert!(canonical.starts_with("<svg"));
     }
@@ -1017,7 +1039,10 @@ mod tests {
             "--text asked for the text form and got a drawing: {written:?}"
         );
         let document = parse_document(yaml).unwrap();
-        assert_eq!(written, render_transcript(&document));
+        assert_eq!(
+            written,
+            ply_core::visual::transcript::render_transcript(&document)
+        );
     }
 
     #[test]

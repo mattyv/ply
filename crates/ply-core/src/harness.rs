@@ -2571,6 +2571,58 @@ enum ImplMatch {
 /// sentence a newbie-bar message should quote. Falls back to the
 /// token-stream rendering for any shape other than a plain path (should
 /// not occur here: every caller already matched `Type::Path` first).
+/// A field's type as the source spells it, for the reader of a drawing.
+///
+/// Deliberately not [`render_type_path`], which drops generic arguments
+/// because its callers compare *identity* -- `Vec<A>` and `Vec<B>` are the
+/// same path and a different type. A drawn row is the opposite question:
+/// what is in the list is usually the only part of that line worth reading,
+/// so this keeps every argument and only tidies the spacing `syn`'s token
+/// stream puts around punctuation.
+fn render_type_display(ty: &Type) -> String {
+    let raw = ty.to_token_stream().to_string();
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // A space before punctuation is always the token stream's, never
+            // the author's.
+            ' ' if matches!(chars.peek(), Some(',' | ';' | '>' | ']' | ')')) => {}
+            // `< >` and `( )` never want a space just inside them; `Vec <`
+            // never wants one just before.
+            '<' | '(' | '[' => {
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                out.push(c);
+                while chars.peek() == Some(&' ') {
+                    chars.next();
+                }
+            }
+            // `:: ` and ` ::` are both the token stream's doing.
+            ':' if chars.peek() == Some(&':') => {
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                out.push(':');
+                out.push(':');
+                chars.next();
+                while chars.peek() == Some(&' ') {
+                    chars.next();
+                }
+            }
+            '&' => {
+                out.push('&');
+                while chars.peek() == Some(&' ') {
+                    chars.next();
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn render_type_path(ty: &Type) -> String {
     if let Type::Path(tp) = ty {
         tp.path
@@ -3499,7 +3551,7 @@ pub fn scan_type_fields(crate_dir: &Path, type_name: &str) -> Option<Vec<StateFi
                         Some(StateField {
                             name,
                             ty: rust_type_from_syn_at(&f.ty, &aliases, 0),
-                            rendered: render_type_path(&f.ty),
+                            rendered: render_type_display(&f.ty),
                         })
                     })
                     .collect(),
@@ -5554,6 +5606,169 @@ fn write_generated_file(
     Ok(out_path)
 }
 
+/// Every declared state type's real fields, keyed by the component's
+/// qualified path (`pricing.curves`), in declaration order.
+pub type StateFieldIndex = std::collections::BTreeMap<String, Vec<StateField>>;
+
+/// Every crate under `root` that has a library target, keyed by the module
+/// path its code is reached by -- `ply_core` for `crates/ply-core`.
+///
+/// **How the key is decided, and where that is an approximation.** The name
+/// comes from `name = "..."` in the crate's `Cargo.toml`, with dashes
+/// turned into underscores the way Cargo itself does. A crate that renames
+/// its library with an explicit `[lib] name = "..."` different from its
+/// package name is read as its package name and would be keyed wrongly;
+/// nothing in this workspace does that, and the cost of getting it wrong is
+/// one unresolved state line reported as unchecked rather than a false
+/// claim of correctness.
+///
+/// Directories are walked to a depth of three below `root`, which covers
+/// the layouts Cargo workspaces actually use (`crates/*`, `tools/*`,
+/// `tests/*`) without reading a `[workspace] members` list this crate has
+/// no TOML parser for. `target/` and hidden directories are skipped: a
+/// build directory contains vendored sources whose crates are not this
+/// workspace's, and walking one is slow enough to be noticeable.
+pub fn workspace_library_crates(root: &Path) -> std::collections::BTreeMap<String, PathBuf> {
+    fn package_name(crate_dir: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(crate_dir.join("Cargo.toml")).ok()?;
+        let mut in_package = false;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                in_package = line == "[package]";
+                continue;
+            }
+            if !in_package {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("name") {
+                let rest = rest.trim_start().strip_prefix('=')?.trim();
+                let name = rest.trim_matches(|c| c == '"' || c == '\'');
+                if !name.is_empty() {
+                    return Some(name.replace('-', "_"));
+                }
+            }
+        }
+        None
+    }
+
+    fn walk(dir: &Path, depth: usize, out: &mut std::collections::BTreeMap<String, PathBuf>) {
+        if dir.join("src/lib.rs").exists()
+            && let Some(name) = package_name(dir)
+        {
+            out.entry(name).or_insert_with(|| dir.to_path_buf());
+        }
+        if depth == 0 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let skip = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_none_or(|n| n == "target" || n.starts_with('.'));
+            if skip {
+                continue;
+            }
+            walk(&path, depth - 1, out);
+        }
+    }
+
+    let mut out = std::collections::BTreeMap::new();
+    walk(root, 3, &mut out);
+    out
+}
+
+/// Reads every component's declared `state:` type out of real source.
+///
+/// `root` is the directory the document sits in. A component's type is
+/// looked for in the crate its anchor names -- so a workspace-root document
+/// whose components are anchored at `ply_core`, `ply_cli` and so on
+/// resolves each one against the crate that actually holds it, rather than
+/// against a library the workspace root does not have.
+///
+/// A component whose type cannot be resolved is simply absent from the
+/// result. That is the honest answer for the renderer, which then draws the
+/// type name alone; `cargo ply check` is the half that turns the same
+/// absence into a message (`A0414`, or `W0413` when there was nothing to
+/// read at all).
+pub fn resolve_state_fields(root: &Path, doc: &crate::model::Document) -> StateFieldIndex {
+    // A document with no `state:` anywhere gets no directory walk at all.
+    // Finding the crates means reading every `Cargo.toml` under the root,
+    // which is real work to do on every render of a document that has
+    // nothing to resolve -- and most documents have nothing to resolve.
+    if !any_state(&doc.components) {
+        return StateFieldIndex::new();
+    }
+    // An empty path is what `Path::parent` gives for a bare filename, and
+    // it names nothing -- every lookup under it fails silently, so a
+    // document rendered as `ply.yaml` rather than `./ply.yaml` would draw
+    // no shapes and give no reason. Measured, not guessed: that is exactly
+    // what happened the first time this ran.
+    let root = if root.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        root
+    };
+    let crates = workspace_library_crates(root);
+    let mut out = StateFieldIndex::new();
+    walk_state(&doc.components, "", root, &crates, &mut out);
+    out
+}
+
+/// Whether any component anywhere in the tree declares a `state:`.
+fn any_state(components: &indexmap::IndexMap<String, crate::model::Component>) -> bool {
+    components
+        .values()
+        .any(|c| c.state.is_some() || any_state(&c.components))
+}
+
+fn walk_state(
+    components: &indexmap::IndexMap<String, crate::model::Component>,
+    prefix: &str,
+    root: &Path,
+    crates: &std::collections::BTreeMap<String, PathBuf>,
+    out: &mut StateFieldIndex,
+) {
+    for (name, comp) in components {
+        let qualified = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        if let Some(state) = &comp.state
+            && let Some(dir) = crate_for_anchor(&comp.anchor, root, crates)
+            && let Some(fields) = scan_type_fields(&dir, &state.of)
+        {
+            out.insert(qualified.clone(), fields);
+        }
+        walk_state(&comp.components, &qualified, root, crates, out);
+    }
+}
+
+/// The crate directory a component's code lives in. The anchor's first
+/// segment is a crate name when the document spans a workspace
+/// (`ply_core::visual`); in a single-crate document it is a module of the
+/// crate the document sits in (`ingest::book`), so `root` is the answer
+/// whenever it has a library of its own.
+fn crate_for_anchor(
+    anchor: &str,
+    root: &Path,
+    crates: &std::collections::BTreeMap<String, PathBuf>,
+) -> Option<PathBuf> {
+    let head = anchor.split("::").next().unwrap_or(anchor);
+    if root.join("src/lib.rs").exists() {
+        return Some(root.to_path_buf());
+    }
+    crates.get(head).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     /// `state:` names a type and the fields worth drawing, and the whole
@@ -5600,6 +5815,46 @@ pub struct OrderBook {
         assert!(
             !fields[2].ty.is_fuzz_supported(),
             "a clock is not a shape Ply builds values of, and that is the fact worth drawing"
+        );
+    }
+
+    /// The drawn row says what the field is, so the text beside the glyph
+    /// has to be what the source actually says. `Vec` where the code says
+    /// `Vec<Diagnostic>` is not a shorter true answer -- it drops the only
+    /// part of that line a reader was looking for, which is what is *in*
+    /// the list.
+    #[test]
+    fn a_fields_type_reads_the_way_the_source_spells_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            r#"
+use std::collections::BTreeMap;
+pub struct Envelope {
+    pub diagnostics: Vec<Diagnostic>,
+    pub index: BTreeMap<String, Node>,
+    pub next: Option<Box<Envelope>>,
+    pub depth: u32,
+    pub raw: [u8; 4],
+}
+"#,
+        )
+        .unwrap();
+
+        let fields = scan_type_fields(dir.path(), "Envelope").expect("`Envelope` is declared");
+        let written: Vec<&str> = fields.iter().map(|f| f.rendered.as_str()).collect();
+        assert_eq!(
+            written,
+            vec![
+                "Vec<Diagnostic>",
+                "BTreeMap<String, Node>",
+                "Option<Box<Envelope>>",
+                "u32",
+                "[u8; 4]",
+            ],
+            "each row must carry the type as it is written in the code"
         );
     }
 

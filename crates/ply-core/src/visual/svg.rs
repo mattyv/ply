@@ -7,6 +7,7 @@
 //! input always produces byte-identical output.
 
 use super::layout;
+use super::state_shapes;
 use crate::check::{Diagnostic, Target as FindingTarget, run_checks};
 use crate::kernel::{Evidence, NodeKind, VerdictNode, aggregate};
 use crate::model::{
@@ -26,6 +27,16 @@ const SUB_CHAR_W: f64 = 6.2;
 const CHIP_CHAR_W: f64 = 7.4;
 const CHECK_CHAR_W: f64 = 5.5;
 const LINE_H: f64 = 16.0;
+/// One state-field row's height. Taller than a header line by the two
+/// units the tallest glyph (the set's third disc) needs below its
+/// baseline, so a row's ink never touches the row under it.
+const STATE_ROW_H: f64 = 18.0;
+/// Where a row's field name starts, measured from the box's text margin:
+/// the glyph cell plus a clear gap. Fixed rather than per-row so every
+/// name in a box starts at the same x and the column reads as a column.
+const STATE_NAME_X: f64 = state_shapes::GLYPH_W + 8.0;
+/// Space between a row's field name and the type beside it.
+const STATE_TYPE_GAP: f64 = 10.0;
 const HEADER_H: f64 = LINE_H * 2.0 + 6.0;
 const BADGE_H: f64 = 20.0;
 const BADGE_CHAR_W: f64 = 6.5;
@@ -253,6 +264,31 @@ pub const FINDING_STYLE: &str = "\
 /// promise or a forbidden call, and a violation is exactly the first of
 /// those (`only_forbidden_or_wrong_things_are_drawn_in_red` names it an
 /// allowed red family alongside `deny`/`finding`).
+/// The state-field rules, appended only to a drawing that actually paints
+/// a row.
+///
+/// Conditional for the same reason `FINDING_STYLE` is: a clean document's
+/// stylesheet must not grow rules for classes it never emits. Every
+/// committed drawing and snapshot here is pinned byte for byte, and most
+/// of them declare no state at all -- appending these unconditionally
+/// rewrote all of them to carry seven rules nothing in them used.
+pub const STATE_STYLE: &str = "\
+.state-glyph-ink{fill:#1f2430}\
+.state-glyph-out{fill:none;stroke:#1f2430;stroke-width:1.4}\
+.state-glyph-front{fill:#fbfbfd}\
+.state-glyph-dashed{stroke-dasharray:3 2.4}\
+.state-glyph-hatched{fill:url(#state-hatch);stroke:#1f2430;stroke-width:1}\
+.state-field-name{fill:#1f2430;font-size:11px}\
+.state-field-type{fill:#6b7280;font-size:10px}\
+@media (prefers-color-scheme: dark){\
+.state-glyph-ink{fill:#c8cede}\
+.state-glyph-out{fill:none;stroke:#c8cede}\
+.state-glyph-front{fill:#15171c}\
+.state-glyph-hatched{fill:url(#state-hatch-dark);stroke:#c8cede;stroke-width:1}\
+.state-field-name{fill:#e6e9ef}\
+.state-field-type{fill:#8b93a1}\
+}";
+
 pub const EVIDENCE_STYLE: &str = "\
 .fn-chip-box-earned{fill:#e0f2e6;stroke:#3f8a5c}\
 .fn-chip-box-violated{fill:#fdecec;stroke:#c9534f;stroke-width:2.5}\
@@ -1654,6 +1690,9 @@ fn component_tip_lines(
     comp: &Component,
     profiles: &IndexMap<String, Vec<String>>,
     findings: &[&Diagnostic],
+    // The field names this box actually drew rows for. Empty when nothing
+    // resolved -- which is a different sentence, not a shorter one.
+    drawn_state_fields: &[String],
 ) -> Vec<String> {
     let mut tip = finding_tooltip_lines(findings);
     tip.push(format!(
@@ -1687,23 +1726,40 @@ fn component_tip_lines(
         ));
     }
     if let Some(st) = &comp.state {
-        // The header line names the type; the chosen fields live here. Same
-        // reasoning §7.1 already applies to contract clauses: the overview
-        // answers "where does attention go", and a comma list of field names
-        // across every box buries that question.
-        tip.push(match st.show.as_slice() {
-            [] => format!(
+        // Two genuinely different sentences, because two different things
+        // are true. When rows were drawn, they *are* the field list and the
+        // tooltip explains the claim rather than repeating them. When
+        // nothing resolved, all Ply has is what the document asked for, and
+        // saying so is the honest answer.
+        //
+        // The old wording listed `show:` verbatim in both cases, which meant
+        // a document naming a field nobody declared put that field on the
+        // drawing -- inside a sentence promising such a name is "refused
+        // rather than drawn". Caught by a test written to check exactly
+        // that, not by review.
+        tip.push(if drawn_state_fields.is_empty() {
+            match st.show.as_slice() {
+                [] => format!(
+                    "state {} — the structure this component holds, where `owns` says who \
+                     may change one. No fields chosen to show",
+                    st.of
+                ),
+                show => format!(
+                    "state {} — the structure this component holds, where `owns` says who \
+                     may change one. This document asks to show {}, and there is no code \
+                     here to read them from, so none is drawn: the shapes come from the \
+                     source, never from the document",
+                    st.of,
+                    show.join(", ")
+                ),
+            }
+        } else {
+            format!(
                 "state {} — the structure this component holds, where `owns` says who may \
-                 change one. No fields chosen to show",
+                 change one. The rows below are its fields: each name was found in the \
+                 code, and each shape read off what that field really is",
                 st.of
-            ),
-            show => format!(
-                "state {} — the structure this component holds, where `owns` says who may \
-                 change one. Showing {}: field names come from the code, so a name nobody \
-                 declared is refused rather than drawn",
-                st.of,
-                show.join(", ")
-            ),
+            )
         });
     }
     if let Some(p) = &comp.profile {
@@ -1758,13 +1814,74 @@ struct ComponentBox {
 /// the optional evidence view (`None` on every path but
 /// `render_svg_with_evidence`, which is what keeps `render_svg` and
 /// `render_svg_with_options` byte-for-byte unchanged).
+/// One drawn state-field row: its silhouette, its name, the type as the
+/// source spells it, and whether Ply has any way to build one.
+struct StateRow {
+    shape: state_shapes::FieldShape,
+    name: String,
+    ty: String,
+    cannot_build: bool,
+}
+
+/// The rows to draw for one component's `state:`.
+///
+/// Empty in three cases, all of which draw the type name alone: the
+/// component declares no state, the document chose no fields to show, or
+/// nothing resolved this component's type against real source. That last
+/// case is the ordinary one for a document rendered before its code exists
+/// -- §7.1's rule is that the document names and the *code* says what, so
+/// with no code to ask there is nothing honest to draw.
+///
+/// A name in `show:` that the type has no field for is skipped rather than
+/// drawn as a guess. `cargo ply check` fails the build for exactly that
+/// (`A0415`), so the drawing does not need to invent a way to show it, and
+/// a renderer that painted a row for a field nobody declared would be
+/// making up the very fact this feature exists to check.
+fn state_rows(comp: &Component, qualified: &str, index: Option<&StateFieldIndex>) -> Vec<StateRow> {
+    let Some(state) = &comp.state else {
+        return Vec::new();
+    };
+    let Some(fields) = index.and_then(|idx| idx.get(qualified)) else {
+        return Vec::new();
+    };
+    state
+        .show
+        .iter()
+        .filter_map(|wanted| {
+            let field = fields.iter().find(|f| &f.name == wanted)?;
+            Some(StateRow {
+                shape: state_shapes::classify(&field.ty, &field.rendered),
+                name: field.name.clone(),
+                ty: field.rendered.clone(),
+                cannot_build: state_shapes::cannot_build(&field.ty),
+            })
+        })
+        .collect()
+}
+
 struct WalkCtx<'a> {
     profiles: &'a IndexMap<String, Vec<String>>,
     findings: &'a FindingCtx<'a>,
     collapse: &'a CollapseCtx<'a>,
     edges: &'a [String],
     evidence: Option<&'a EvidenceView<'a>>,
+    /// What each component's declared state type really holds, read from
+    /// source by whoever called this renderer. `None` throughout every
+    /// render path that has no code to read -- which is not a degraded
+    /// mode but the ordinary one for a document being drawn before its
+    /// code exists, and is what keeps those paths byte-for-byte unchanged.
+    state: Option<&'a StateFieldIndex>,
 }
+
+/// Every declared state type's real fields, keyed by the component's
+/// qualified path (`pricing.curves`), in declaration order.
+///
+/// Built outside this module by [`crate::harness::resolve_state_fields`],
+/// which is the half that opens files. The renderer stays a function of
+/// what it is given: it never reads source, so a drawing is reproducible
+/// from its inputs and a test can hand it any state it likes without a
+/// fixture crate on disk.
+pub use crate::harness::StateFieldIndex;
 
 /// Picks between the two component renderers for one box: collapsed
 /// (§7.1's "one solid-bordered box ... folded") if `collapse` says so and
@@ -1948,7 +2065,10 @@ fn render_collapsed_component(
         }
     }
 
-    let mut tip = component_tip_lines(name, comp, profiles, &findings);
+    // A collapsed box draws no rows -- everything inside it is folded --
+    // so its tooltip gets the same sentence a box with nothing resolved
+    // does, which is the true one for it.
+    let mut tip = component_tip_lines(name, comp, profiles, &findings, &[]);
     tip.push(format!(
         "collapsed — {n_components} component{} and {n_fns} function{} folded inside; render \
          with --depth or --focus <name> to expand",
@@ -2105,7 +2225,29 @@ fn render_component<'a>(
     // else, so what it can honestly draw is the declaration: the type, and
     // which of its fields the author chose. The fields' own shapes are facts
     // about code and belong to the path that reads code.
-    let state_line = comp.state.as_ref().map(|st| format!("state {}", st.of));
+    // The rows this component's state draws, one per field the document
+    // chose to show. Empty whenever nothing resolved them -- see
+    // `state_rows`.
+    let state_rows = state_rows(comp, qualified, walk.state);
+    // The count is drawn only when it was *measured*. "3 of 13 shown" read
+    // off a real type tells a reader that ten fields were deliberately left
+    // out; the same phrase guessed from the document alone would be a
+    // number Ply invented, which is the one thing this feature exists not
+    // to do.
+    let state_line =
+        comp.state
+            .as_ref()
+            .map(|st| match walk.state.and_then(|idx| idx.get(qualified)) {
+                Some(all) if !st.show.is_empty() => {
+                    format!(
+                        "state {} — {} of {} shown",
+                        st.of,
+                        state_rows.len(),
+                        all.len()
+                    )
+                }
+                _ => format!("state {}", st.of),
+            });
     let owns_w = owns_line.as_deref().map_or(0.0, |s| text_w(s, SUB_CHAR_W));
     // Reserved at the widest a character can be, not the average: the
     // canvas invariant (`tools/render`'s `everything_renders_inside_the_
@@ -2117,6 +2259,25 @@ fn render_component<'a>(
     let header_h = HEADER_H
         + if owns_line.is_some() { LINE_H } else { 0.0 }
         + if state_line.is_some() { LINE_H } else { 0.0 };
+    // Reserved at the worst-case character width for the same reason the
+    // state header line is: the canvas invariant measures right edges
+    // pessimistically, and a row reserved optimistically is a box its own
+    // contents can escape.
+    // One type column for the whole box, set by the longest field name in
+    // it, rather than each row starting its type wherever its own name
+    // happened to end. A ragged column is read one row at a time; an
+    // aligned one is read as a column, which is the entire reason to draw
+    // rows instead of a comma list.
+    let state_type_x = state_rows
+        .iter()
+        .map(|r| text_w(&r.name, NAME_CHAR_W))
+        .fold(0.0_f64, f64::max)
+        + STATE_NAME_X
+        + STATE_TYPE_GAP;
+    let state_rows_w = state_rows
+        .iter()
+        .map(|r| state_type_x + text_w(&r.ty, NAME_CHAR_W))
+        .fold(0.0_f64, f64::max);
 
     // §7.1: `pure` is a sealed border with no capability badges.
     let badges: &[String] = if comp.pure { &[] } else { &comp.uses };
@@ -2197,6 +2358,7 @@ fn render_component<'a>(
         anchor_w,
         owns_w,
         state_w,
+        state_rows_w,
         badges_row_w + profile_w,
         MIN_BOX_W - PAD * 2.0,
     ]
@@ -2250,6 +2412,40 @@ fn render_component<'a>(
             ));
         }
         y += badge_row_h;
+    }
+
+    // §7.1: state rows sit below the capability badges and above the fn
+    // chips -- state is what the component *is*, chips are what it *does*.
+    if !state_rows.is_empty() {
+        for row in &state_rows {
+            let glyph = state_shapes::glyph_svg(row.shape, PAD, y + 2.0, row.cannot_build);
+            let hatch_note = if row.cannot_build {
+                " The hatching means Ply has no way to make one of these, which is \
+                 usually why the functions around it come back unchecked."
+            } else {
+                ""
+            };
+            body.push_str(&format!(
+                "<g class=\"state-field\" data-field=\"{field}\">{tip}{glyph}                 <text class=\"state-field-name\" x=\"{nx:.1}\" y=\"{ty:.1}\">{name}</text>                 <text class=\"state-field-type\" x=\"{tx:.1}\" y=\"{ty:.1}\">{sty}</text></g>",
+                field = esc(&row.name),
+                nx = PAD + STATE_NAME_X,
+                tx = PAD + state_type_x,
+                ty = y + 12.0,
+                name = esc(&row.name),
+                sty = esc(&row.ty),
+                tip = title(&format!(
+                    "{name} — one of the things this component holds; \
+                     {prose}. Written in the code as `{written}`. The name came from \
+                     the document; the shape and the type came from the code, so this \
+                     row cannot say something the source does not.{hatch_note}",
+                    name = row.name,
+                    prose = row.shape.prose(),
+                    written = row.ty,
+                ))
+            ));
+            y += STATE_ROW_H;
+        }
+        y += GAP;
     }
 
     match &child_layout {
@@ -2352,7 +2548,8 @@ fn render_component<'a>(
 
     let box_h = y + PAD;
 
-    let mut tip = component_tip_lines(name, comp, profiles, &findings);
+    let drawn_field_names: Vec<String> = state_rows.iter().map(|r| r.name.clone()).collect();
+    let mut tip = component_tip_lines(name, comp, profiles, &findings, &drawn_field_names);
     tip.push(ceiling_tooltip_line(ceiling));
     if let Some(reason) = colour_reason_line(comp, inherited, name) {
         tip.push(reason);
@@ -3264,7 +3461,7 @@ pub fn render_svg_with_evidence_and_options(
         elements,
         diagnostics,
     };
-    render_svg_impl(doc, options, Some(&evidence))
+    render_svg_impl(doc, options, Some(&evidence), None)
 }
 
 /// `render_svg`, plus The-Ply-Spec.md §7.1's `--depth`/`--focus`/`--collapse`
@@ -3275,7 +3472,39 @@ pub fn render_svg_with_options(
     doc: &Document,
     options: &RenderOptions,
 ) -> Result<String, RenderError> {
-    render_svg_impl(doc, options, None)
+    render_svg_impl(doc, options, None, None)
+}
+
+/// `render_svg_with_options`, plus what each component's declared state
+/// type really holds.
+///
+/// Separate from [`render_svg_with_options`] rather than an extra argument
+/// on it for the reason the evidence entry points are separate: every
+/// committed drawing and snapshot in this repository is pinned byte for
+/// byte against the plain path, and a caller that has no source to read
+/// must keep getting exactly the drawing it got before this existed.
+pub fn render_svg_with_state(
+    doc: &Document,
+    options: &RenderOptions,
+    state_fields: &StateFieldIndex,
+) -> Result<String, RenderError> {
+    render_svg_impl(doc, options, None, Some(state_fields))
+}
+
+/// Every input at once: folding, a run's evidence, and the real state
+/// fields. What `cargo ply verify --render` draws.
+pub fn render_svg_with_evidence_state_and_options(
+    doc: &Document,
+    elements: &BTreeMap<String, super::VisualElement>,
+    diagnostics: &[super::VisualDiagnostic],
+    options: &RenderOptions,
+    state_fields: Option<&StateFieldIndex>,
+) -> Result<String, RenderError> {
+    let evidence = EvidenceView {
+        elements,
+        diagnostics,
+    };
+    render_svg_impl(doc, options, Some(&evidence), state_fields)
 }
 
 /// The real render walk, shared by every public entry point above. `evidence`
@@ -3292,6 +3521,7 @@ fn render_svg_impl(
     doc: &Document,
     options: &RenderOptions,
     evidence: Option<&EvidenceView>,
+    state_fields: Option<&StateFieldIndex>,
 ) -> Result<String, RenderError> {
     // §7.1 "finding (tool-computed, not declared)": run `ply-check`'s
     // document-local rules up front, then thread `ctx` through every render
@@ -3345,6 +3575,7 @@ fn render_svg_impl(
                         collapse: &collapse,
                         edges: &doc.edges,
                         evidence,
+                        state: state_fields,
                     },
                     1,
                     None,
@@ -4271,12 +4502,49 @@ fn render_svg_impl(
     // A clean document (no findings, no drawn evidence state) gets exactly
     // `STYLE`, unchanged — see `FINDING_STYLE`'s doc comment for why this is
     // conditional rather than always-appended.
-    let style: std::borrow::Cow<str> = match (findings.is_empty(), evidence_style_used) {
-        (true, false) => std::borrow::Cow::Borrowed(STYLE),
-        (true, true) => std::borrow::Cow::Owned(format!("{STYLE}{EVIDENCE_STYLE}")),
-        (false, true) => std::borrow::Cow::Owned(format!("{STYLE}{FINDING_STYLE}{EVIDENCE_STYLE}")),
-        (false, false) => std::borrow::Cow::Owned(format!("{STYLE}{FINDING_STYLE}")),
-    };
+    // A drawing paints a state row only when the document declared fields to
+    // show *and* something resolved them against real source, so the rules
+    // for them are appended on exactly that condition -- same discipline as
+    // the two above.
+    let state_style_used = state_fields.is_some_and(|idx| {
+        fn any_row(
+            components: &IndexMap<String, Component>,
+            prefix: &str,
+            idx: &StateFieldIndex,
+        ) -> bool {
+            components.iter().any(|(name, comp)| {
+                let qualified = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}.{name}")
+                };
+                let here = comp.state.as_ref().is_some_and(|st| {
+                    idx.get(&qualified).is_some_and(|fields| {
+                        st.show.iter().any(|w| fields.iter().any(|f| &f.name == w))
+                    })
+                });
+                here || any_row(&comp.components, &qualified, idx)
+            })
+        }
+        any_row(&doc.components, "", idx)
+    });
+    let style: std::borrow::Cow<str> =
+        match (findings.is_empty(), evidence_style_used, state_style_used) {
+            (true, false, false) => std::borrow::Cow::Borrowed(STYLE),
+            _ => {
+                let mut out = String::from(STYLE);
+                if !findings.is_empty() {
+                    out.push_str(FINDING_STYLE);
+                }
+                if evidence_style_used {
+                    out.push_str(EVIDENCE_STYLE);
+                }
+                if state_style_used {
+                    out.push_str(STATE_STYLE);
+                }
+                std::borrow::Cow::Owned(out)
+            }
+        };
 
     // §7.1 / newbie bar: the frame is the first thing anyone sees, so its
     // tooltip explains the whole picture rather than assuming the reader
@@ -4305,6 +4573,25 @@ fn render_svg_impl(
     // Author-written strings reach this output; `tame` is applied once at
     // the end rather than at each of the dozen insertion sites, so no future
     // one can forget it.
+    // A state glyph is 12 units across, and the ceiling hatch repeats every
+    // 8 with a 2-unit line -- roughly one stripe inside a whole glyph,
+    // which does not read as hatching at all. Measured by rasterising it:
+    // three fields drawn as unbuildable were indistinguishable from five
+    // drawn as buildable. This is the same hatch at glyph scale, the
+    // spacing the reviewed proposal sheet used. Emitted only when a row is
+    // actually drawn, so no existing drawing gains an unused pattern.
+    let glyph_hatch = if state_style_used {
+        "<pattern id=\"state-hatch\" patternUnits=\"userSpaceOnUse\" width=\"4\" height=\"4\" \
+         patternTransform=\"rotate(-45)\">\
+         <rect width=\"4\" height=\"4\" fill=\"#fff\" />\
+         <rect width=\"1.4\" height=\"4\" fill=\"#c8ccd4\" /></pattern>\
+         <pattern id=\"state-hatch-dark\" patternUnits=\"userSpaceOnUse\" \
+         width=\"4\" height=\"4\" patternTransform=\"rotate(-45)\">\
+         <rect width=\"4\" height=\"4\" fill=\"#15171c\" />\
+         <rect width=\"1.4\" height=\"4\" fill=\"#4a5262\" /></pattern>"
+    } else {
+        ""
+    };
     Ok(tame(&format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.1}\" height=\"{height:.1}\" \
          viewBox=\"0 0 {width:.1} {height:.1}\" font-family=\"monospace\" font-size=\"12\">\
@@ -4316,7 +4603,7 @@ fn render_svg_impl(
          <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#c8ccd4\" stroke-width=\"2\" /></pattern>\
          <pattern id=\"unclaimed-hatch-dark\" patternUnits=\"userSpaceOnUse\" width=\"8\" height=\"8\" patternTransform=\"rotate(45)\">\
          <rect width=\"8\" height=\"8\" fill=\"#15171c\" />\
-         <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#4a5262\" stroke-width=\"2\" /></pattern></defs>\
+         <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#4a5262\" stroke-width=\"2\" /></pattern>{glyph_hatch}</defs>\
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\"{workspace_id_attr}>{workspace_tip}</rect>\
          <g><title>ply.yaml — the document this picture is drawn from. Everything you \
 see here was declared in it; nothing was inferred from code. What each box has actually \
@@ -4326,6 +4613,7 @@ been checked for is what `cargo ply verify` reports, not this drawing.\n{version
          {title_extra}\
          {deny_svg}{registry_svg}{body}{edges_svg}{external_edges_svg}{external_svg}\
          </svg>",
+        glyph_hatch = glyph_hatch,
         frame_inner_w = frame_content_w - 2.0,
         frame_inner_h = frame_content_h - 2.0,
         strip_x = strip_x,

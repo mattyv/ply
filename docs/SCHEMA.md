@@ -1298,25 +1298,39 @@ wrong the first time somebody changed a field.
 **Name the ones that matter, not all of them.** A real state struct has twenty fields
 and two worth looking at. Leave `show:` out and the type is named on its own.
 
-**Where they show up.** The box on the drawing says `state OrderBook` and stops there.
-The field names are in the box's tooltip and in the text form (`--text`), not painted
-as rows on the box. Field rows were designed with a glyph per shape — see
-[`state-shapes.svg`](state-shapes.svg) — and are **not built**. Even the one header line
-costs height: adding it to one of the vetting drawings pushed two arrows onto the same
-path, hiding a rule that drawing exists to show, so that document carries no `state:` at
-all. A row per field is taller still. The drawing keeps the type; the detail moved to
-where detail belongs.
+**What you get.** The box says `state OrderBook — 2 of 20 shown`, and then one row per
+field you named: a small shape, the field's name, and its type as your code spells it.
+
+Each shape is one glyph, in ink — a filled cell for a number, a written line for text,
+stacked bars for a list, key-beside-value for a lookup table, loose discs for a set, a
+dashed cell for something that might not be there, overlapping cells for a struct or
+enum of your own. See [`state-shapes.svg`](state-shapes.svg).
+
+A field Ply cannot build a value of is hatched, and that is often the most useful thing
+on the box: it is usually the reason that component's functions come back unchecked.
+The hatch follows what can actually be *built*, not what Ply could parse — a
+`BTreeMap<Price, Level>` reads as a lookup table and is hatched too, because nothing
+here can make a `Level`.
+
+**Both numbers come from your code.** `2 of 20` means two drawn out of twenty the type
+really has, so a deliberate selection never reads as a small type. Render a document
+with no code under it and the count is left off entirely rather than guessed — the
+drawing says `state OrderBook` and the tooltip says there was nothing to read the fields
+from.
 
 Three things are checked:
 
 - the type exists under the anchor (`A0414` if not),
 - every field you name is really a field of it (`A0415` if not, and it lists the fields
   that do exist),
-- and if Ply could not find the source to check against at all, it says so rather than
-  passing you (`W0413`). That happens today in a workspace-root document, where the
-  types live in other crates and Ply cannot yet follow them there. A `state:` line in
-  one of those is a claim nobody checked, and Ply will tell you that instead of exiting
-  quietly.
+- and if Ply could not find a crate to check against at all, it says so rather than
+  passing you (`W0413`). A `state:` line nobody could check is a claim nobody checked,
+  and Ply tells you that instead of exiting quietly.
+
+**Where Ply looks.** In the crate your component's `anchor:` names. If your document
+sits in one crate, that is that crate. If it sits at a workspace root and names
+components across several crates, each one is checked against the crate that actually
+holds it — so a top-level document gets the same checking a single-crate one does.
 
 Three things are **not** checked, and the tier table below says so — that the component
 actually holds one, that no one else does, and that you picked the right fields.

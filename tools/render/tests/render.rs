@@ -617,11 +617,20 @@ fn disruptor_fixture_golden_snapshot() {
 /// nothing, and some shapes are styled through an ancestor's descendant
 /// selector (`.cap-badge rect`), so a shape passes if any class on its own
 /// element or its ancestors resolves a rule.
-/// §7.1's `state:` row. The static renderer reads the document and nothing
-/// else -- no code, no Cargo -- so what it can honestly draw here is the
-/// *declaration*: the type this component says its state lives in, and which
-/// of its fields the author chose to show. The field shapes are facts about
-/// code, and belong to the path that reads code.
+/// §7.1's `state:` header, drawn with **no code to read**.
+///
+/// The renderer is a function of what it is handed, and handed no resolved
+/// fields it can honestly draw only the declaration: the type this
+/// component says its state lives in. Not the fields, and above all not the
+/// count -- "2 of 20 shown" is a fact about a type, and inventing it from a
+/// document that merely asked for two would be Ply making up the very thing
+/// this feature exists to check.
+///
+/// The tooltip in this case says the document asked for those names and
+/// there was nothing to read them from. It used to list them under
+/// "Showing ...", which put a field name on the drawing whether or not any
+/// type had it -- inside a sentence promising that such a name is refused.
+/// The companion tests further down cover the case where code *is* there.
 ///
 /// Pinned exact-string like every other user-facing sentence, and drawn as
 /// its own header line beside `owns` rather than folded into the anchor,
@@ -633,13 +642,25 @@ fn state_draws_as_its_own_header_line() {
     let doc = parse_document(yaml).expect("fixture should parse");
     let svg = render_svg(&doc).expect("fixture should render");
     assert!(
-        svg.contains("state OrderBook"),
+        svg.contains(">state OrderBook<"),
         "the box must say what this component holds:\n{svg}"
     );
     assert!(
-        svg.contains("Showing bids, ticks"),
-        "and the chosen fields must be reachable, in the tooltip -- a comma list of field \
-         names across every box buries the question the overview answers:\n{svg}"
+        !svg.contains("shown"),
+        "with no code to count, there is no count to draw -- a number here would be one \
+         Ply made up about a type it never read:\n{svg}"
+    );
+    assert!(
+        svg.contains(
+            "This document asks to show bids, ticks, and there is no code here to \
+                      read them from"
+        ),
+        "the tooltip has to say why no rows were drawn, rather than listing the names as \
+         though they had been checked:\n{svg}"
+    );
+    assert!(
+        !svg.contains("class=\"state-field\""),
+        "no field resolved, so no row may be painted:\n{svg}"
     );
 
     let bare =
@@ -647,7 +668,7 @@ fn state_draws_as_its_own_header_line() {
     let doc = parse_document(bare).expect("fixture should parse");
     let svg = render_svg(&doc).expect("fixture should render");
     assert!(
-        svg.contains("state OrderBook") && !svg.contains("Showing"),
+        svg.contains(">state OrderBook<") && svg.contains("No fields chosen to show"),
         "naming the type without choosing fields draws the header line alone:\n{svg}"
     );
 }
@@ -5766,5 +5787,261 @@ fn no_chip_puts_its_finding_badge_on_top_of_its_own_check_text() {
         collisions.is_empty(),
         "a finding badge is drawn over the check text it sits beside:\n  {}",
         collisions.join("\n  ")
+    );
+}
+
+/// A crate whose one state type holds every shape §7.1 defines, plus a
+/// document naming it. Written to disk because resolving a state type
+/// *means* reading source: a fixture that only existed in memory would
+/// test the drawing and skip the half this feature is actually about.
+///
+/// Returned as a live `TempDir` -- dropping it deletes the crate, so the
+/// caller has to hold it for as long as it renders.
+fn state_fixture() -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().expect("a temp directory");
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"ply-state-fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        r#"
+use std::collections::{BTreeMap, BTreeSet};
+pub struct Level;
+pub struct Book {
+    pub depth: u64,
+    pub venue: String,
+    pub ticks: Vec<u64>,
+    pub levels: BTreeMap<u64, Level>,
+    pub seen: BTreeSet<u64>,
+    pub last: Option<u64>,
+    pub top: Level,
+    pub clock: std::time::SystemTime,
+}
+"#,
+    )
+    .unwrap();
+    let yaml = "ply: 1\ncomponents:\n  book:\n    anchor: book\n    state:\n      of: Book\n      \
+                show: [depth, venue, ticks, levels, seen, last, top, clock]\n";
+    std::fs::write(dir.path().join("ply.yaml"), yaml).unwrap();
+    let doc = parse_document(yaml).expect("the state fixture parses");
+    let fields = ply_render::harness::resolve_state_fields(dir.path(), &doc);
+    assert!(
+        !fields.is_empty(),
+        "the fixture crate must resolve, or every assertion below tests nothing"
+    );
+    let svg = ply_render::svg::render_svg_with_state(
+        &doc,
+        &ply_render::svg::RenderOptions::default(),
+        &fields,
+    )
+    .expect("the state fixture renders");
+    (dir, svg)
+}
+
+/// The point of drawing a shape per field is that a reader can tell the
+/// shapes apart. Seven meanings drawn as six glyphs is worse than no
+/// glyphs at all -- it says something definite and false.
+///
+/// Written after the style invariant above was measured and found blind to
+/// state rows: every fixture it walks is a document with no code under it,
+/// so no row was ever painted in the whole render suite and a deliberately
+/// misspelled glyph class still passed.
+#[test]
+fn every_state_shape_is_drawn_and_no_two_are_alike() {
+    let (_dir, svg) = state_fixture();
+    let doc = roxmltree::Document::parse(&svg).unwrap();
+
+    // Each row's painted geometry, keyed by the field it belongs to.
+    let mut drawn: Vec<(String, String)> = Vec::new();
+    for row in doc
+        .descendants()
+        .filter(|n| n.is_element() && n.attribute("class") == Some("state-field"))
+    {
+        let field = row.attribute("data-field").expect("a row names its field");
+        let mut shape = String::new();
+        for node in row.descendants().filter(|n| n.is_element()) {
+            if !matches!(node.tag_name().name(), "rect" | "circle") {
+                continue;
+            }
+            let Some(class) = node.attribute("class") else {
+                continue;
+            };
+            if !class.starts_with("state-glyph") {
+                continue;
+            }
+            shape.push_str(class);
+            for attr in ["x", "y", "width", "height", "rx"] {
+                shape.push_str(node.attribute(attr).unwrap_or("-"));
+                shape.push(',');
+            }
+            shape.push('|');
+        }
+        assert!(
+            !shape.is_empty(),
+            "`{field}` drew a row with no glyph in it -- the row says a name and a type and \
+             leaves the meaning blank"
+        );
+        drawn.push((field.to_string(), shape));
+    }
+
+    assert_eq!(
+        drawn.len(),
+        8,
+        "the fixture declares eight fields covering all seven shapes; only these drew rows: {:?}",
+        drawn.iter().map(|(f, _)| f).collect::<Vec<_>>()
+    );
+
+    // Seven distinct silhouettes across eight fields: `top` and `clock` are
+    // both structures of your own, and the second is additionally hatched,
+    // so the two differ only by the hatch -- which is the design.
+    let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+    for (field, shape) in &drawn {
+        if let Some(other) = seen.get(shape.as_str()) {
+            assert!(
+                ["top", "clock"].contains(other) && ["top", "clock"].contains(&field.as_str()),
+                "`{field}` and `{other}` are drawn identically, so a reader cannot tell what \
+                 either one is"
+            );
+        }
+        seen.insert(shape.as_str(), field.as_str());
+    }
+    assert!(
+        seen.len() >= 7,
+        "eight fields covering seven meanings drew only {} distinct glyphs",
+        seen.len()
+    );
+
+    // The hatch is the eighth case and must land on the one field nothing
+    // can build a value of, and nowhere else.
+    let hatched: Vec<&String> = drawn
+        .iter()
+        .filter(|(_, shape)| shape.contains("state-glyph-hatched"))
+        .map(|(f, _)| f)
+        .collect();
+    assert_eq!(
+        hatched,
+        vec!["levels", "top", "clock"],
+        "the hatching means Ply cannot build a value of this field's type. Three fields \
+         here are like that -- a lookup table whose values are a bare struct, that struct \
+         itself, and a clock -- and the map is the one worth naming: it parses perfectly \
+         well as a map and still cannot be built"
+    );
+}
+
+/// A drawing that paints a state row must style it and explain it, exactly
+/// as every other painted thing must. The suite's other two invariants
+/// walk documents with no code under them, so neither one can ever see a
+/// row -- this runs the same two rules over a drawing that has them.
+#[test]
+fn every_state_row_resolves_a_style_rule_and_a_tooltip() {
+    let (_dir, svg) = state_fixture();
+    let style = format!("{}{}", ply_render::svg::STYLE, ply_render::svg::STATE_STYLE);
+    let doc = roxmltree::Document::parse(&svg).unwrap();
+
+    let mut unstyled: Vec<String> = Vec::new();
+    let mut unexplained: Vec<String> = Vec::new();
+    for row in doc
+        .descendants()
+        .filter(|n| n.is_element() && n.attribute("class") == Some("state-field"))
+    {
+        let field = row.attribute("data-field").unwrap_or("?");
+        let explained = row
+            .children()
+            .any(|c| c.has_tag_name("title") && c.text().is_some_and(|t| t.len() > 40));
+        if !explained {
+            unexplained.push(field.to_string());
+        }
+        for node in row.descendants().filter(|n| n.is_element()) {
+            let tag = node.tag_name().name();
+            if !matches!(tag, "rect" | "circle" | "text" | "line" | "path") {
+                continue;
+            }
+            let resolved = node
+                .attribute("class")
+                .into_iter()
+                .flat_map(|c| c.split_whitespace())
+                .any(|c| style.contains(&format!(".{c}{{")) || style.contains(&format!(".{c},")));
+            if !resolved {
+                unstyled.push(format!(
+                    "{field}: <{tag}> class={:?}",
+                    node.attribute("class")
+                ));
+            }
+        }
+    }
+    assert!(
+        unstyled.is_empty(),
+        "painted parts of a state row with no style rule, so they draw in whatever the \
+         browser defaults to: {unstyled:?}"
+    );
+    assert!(
+        unexplained.is_empty(),
+        "these rows draw an unusual glyph and say nothing about what it means on hover, \
+         which is the newbie bar this project holds every user-facing sentence to: \
+         {unexplained:?}"
+    );
+}
+
+/// The count beside the type is a measured fact, not a restatement of the
+/// document. Drawing "8 of 8" when the code has thirteen fields would be
+/// Ply inventing a number about code -- the one thing this whole feature
+/// exists not to do.
+#[test]
+fn the_shown_count_is_read_from_the_code() {
+    let (_dir, svg) = state_fixture();
+    assert!(
+        svg.contains(">state Book — 8 of 8 shown<"),
+        "the fixture type has exactly eight fields and the document shows all eight, so the \
+         header must say so: {}",
+        svg.split("state Book")
+            .nth(1)
+            .unwrap_or("")
+            .split('<')
+            .next()
+            .unwrap_or("")
+    );
+}
+
+/// A field the document names and the type does not have is not drawn as a
+/// guess. `cargo ply check` already fails the build for it by name; a
+/// renderer that painted a row anyway would be making up the very fact
+/// that check exists to catch.
+#[test]
+fn a_field_the_type_does_not_have_is_not_drawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"ply-invented-fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("lib.rs"), "pub struct Book { pub real: u64 }").unwrap();
+    let yaml = "ply: 1\ncomponents:\n  book:\n    anchor: book\n    state:\n      of: Book\n      \
+                show: [real, invented]\n";
+    let doc = parse_document(yaml).unwrap();
+    let fields = ply_render::harness::resolve_state_fields(dir.path(), &doc);
+    let svg = ply_render::svg::render_svg_with_state(
+        &doc,
+        &ply_render::svg::RenderOptions::default(),
+        &fields,
+    )
+    .unwrap();
+    assert!(
+        svg.contains("data-field=\"real\""),
+        "the field that exists must still be drawn"
+    );
+    assert!(
+        !svg.contains("invented"),
+        "a field nobody declared must not appear anywhere in the drawing, not even as text"
+    );
+    assert!(
+        svg.contains(">state Book — 1 of 1 shown<"),
+        "the count reports what was drawn against what the type really has, so a document \
+         asking for two fields of a one-field type reads as 1 of 1, never 2 of 1"
     );
 }

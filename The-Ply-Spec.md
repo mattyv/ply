@@ -740,12 +740,20 @@ behaviour; the third is the admission that the first two could not run:
 1. `of:` names a type Ply can find under the component's anchor → else `A0414`.
 2. every name in `show:` is a field of that type → else `A0415`, naming the field and
    the fields that do exist.
-3. Ply could not resolve the type at all — no library target under the anchor, so
-   neither check above could run → `W0413`, a warning that says the claim went
-   unchecked. A document that Ply cannot check its `state` lines against must say so
-   out loud; the alternative is a silent exit 0 that reads as verification. The
-   workspace-root document is exactly this case today: cross-crate resolution is not
-   implemented, so `state:` there is refused rather than half-checked.
+3. Ply could not find a crate to resolve against at all → `W0413`, a warning that says
+   the claim went unchecked. A document Ply cannot check its `state` lines against must
+   say so out loud; the alternative is a silent exit 0 that reads as verification.
+
+**Which crate a state type is resolved in.** The one the component's anchor names. A
+single-crate document resolves everything against the crate the document sits in; a
+workspace document whose components are anchored at `ply_core`, `ply_cli` and so on
+resolves each against the crate that actually holds it. So the workspace-root document
+— which has no library of its own, and was briefly the case `W0413` existed for — is
+checked like any other. Crates are found by walking three directories below the document
+for a `Cargo.toml` with a library beside it, keyed by that manifest's package name with
+dashes underscored. A crate that renames its library with an explicit `[lib] name`
+different from its package name would be keyed wrongly; the cost is one `W0413` rather
+than a false clean, which is the right way round for it to fail.
 
 Three things are **not** checked, and the tier table in SCHEMA.md says so: that the
 component actually holds a value of that type, that no other component holds one, and
@@ -2049,9 +2057,9 @@ grammar.**
 | `~>` data flow | dashed arrow labeled with the type |
 | deny | barred red arrow between the matched patterns; a `*` pattern draws its own per-rule "any" marker — wildcards have no shared identity, so unrelated rules never appear connected |
 | `owns` | header line under the anchor, `owns T, U` — the types this component is sole mutator of |
-| `state:` | one header line under the anchor, `state T` — the structure this component holds. The chosen fields are **not** drawn on the box: they are in the box's tooltip and in the text form. Same reasoning §7.1 already applies to contract clauses — the overview answers "where does attention go", and a comma list of field names across every box buries that question |
-| a state field's shape | **not implemented.** The glyph vocabulary below was designed and drawn (`docs/state-shapes.svg`) but no field rows are painted today, so no glyph is either. Kept as the settled design for the row form if it lands: ink only, **no new colour channel**, since every hue is already spoken for (green earned, red violation, violet authorship, the grey ceiling ramp). Seven forms, each a distinct silhouette at 12px: **scalar** a filled cell; **text** a cell with a written line across it; **list** three stacked equal bars (order carried); **map** a narrow key cell beside a wide value cell, twice; **set** three loose discs, unaligned (each once, no order); **might be missing** a dashed cell (`Option`); **a shape of your own** two overlapping outlined cells (a struct or enum — there is more inside) |
-| a state field Ply cannot build | **not implemented**, and blocked behind the row form above. Design: the same diagonal hatching unclaimed code already carries, on the glyph itself — no eighth form |
+| `state:` | a header line under the anchor, `state T — N of M shown`, then one row per field named in `show:`: its shape glyph, its field name, and its type as the source spells it. Both numbers are counted from code, never from the document, and the count is omitted entirely when there was no code to count. The type column is one column for the whole box, set by its longest field name — a ragged column is read a row at a time, an aligned one is read as a column. Rows sit below the capability badges and above the fn chips — state is what the component *is*, chips are what it *does* |
+| a state field's shape | one glyph per row, drawn in ink only — **no new colour channel**, since every hue is already spoken for (green earned, red violation, violet authorship, the grey ceiling ramp). Seven forms, each a distinct silhouette at 12px: **scalar** a filled cell; **text** a cell with a written line across it; **list** three stacked equal bars (order carried); **map** a narrow key cell beside a wide value cell, twice; **set** three loose discs, unaligned (each once, no order); **might be missing** a dashed cell (`Option`); **a shape of your own** two overlapping outlined cells (a struct or enum — there is more inside). Proposal sheet: `docs/state-shapes.svg` |
+| a state field Ply cannot build | the same diagonal hatching unclaimed code already carries, on the glyph itself — no eighth form, so a hatched field still shows *which* shape cannot be built. Two details are load-bearing and both were found by measuring rather than by review. The hatch is drawn at a **finer pitch than the ceiling hatch** (4 units against 8): the ceiling pattern inside a 12-unit glyph is about one stripe and does not read as hatching at all. And on the two outline-only forms it becomes the glyph's **fill** rather than replacing its ink, because those two — a structure of your own, and a shape Ply has no vocabulary for — are the commonest unbuildable fields there are, so a hatch that could not reach them could not say the thing it exists to say. "Cannot build" is the sampling engine's own answer, not "the parser gave up": `BTreeMap<u64, Level>` parses perfectly well as a map and still cannot be built |
 | capabilities / `pure` | badge row on the box; `pure` = a sealed border, no badges |
 | profile | tag on the box |
 | checks list | a readable second row on the fn chip, in declaration order: `test`, `fuzz: n cases`, `bounded: loop≤k`, `prove`, `mutate`. The tooltip and transcript expand each check and state what its number measures. |

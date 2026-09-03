@@ -105,20 +105,52 @@ build and names what is really there.
       thrown away after rasterising it: two glyphs were indistinguishable at 12px, and one
       shape in the set was a return shape rather than a state one.
 
-**KNOWN GAP — field rows are designed and not built.** The box draws the type name only;
-the chosen fields are in the tooltip and the text form. The measurement that settled it:
-the *single* header line, added to vetting 003, made its boxes tall enough to push two
-arrows onto the same path — the crossing ratchet went from 4 overlapping lines to 6,
-hiding a rule that drawing exists to show. So `state:` is absent from vetting 003
-entirely, and a row per field, being taller than the line that already broke it, is not
-attempted. `docs/state-shapes.svg` stays a proposal sheet excluded from the drift test.
-Closing this needs edge routing that reroutes when boxes grow, not a taller box budget.
-Spec and SCHEMA both say "not implemented" now, rather than describing the rows as though
-they were drawn.
+**Field rows landed the same day, on the maintainer's question — "should I see the data
+types in above diagram?" The answer was no, and it should have been yes.** The box now
+draws `state T — N of M shown` and a row per field: shape glyph, name, and the type as
+the source spells it. Both numbers are counted from code; a document rendered with no
+code under it draws the type name alone rather than a number Ply invented.
 
-**KNOWN GAP — a state type in another crate cannot be resolved.** The workspace-root
-document names components across six crates, and the scan reads one crate's source. That
-is why the root document carries no `state:` and why the unchecked warning exists.
+- [x] **Seven glyphs, ink only, no new colour.** Geometry taken from the reviewed
+      proposal sheet rather than reinvented, so what shipped is what was looked at. Two
+      of them earned their design by *failing* first: hatching a solid glyph erased its
+      silhouette (a hatched list next to an unhatched one was a ghost), so a hatched
+      glyph keeps an outline; and the hatch could not reach the two outline-only forms
+      at all, which are the commonest unbuildable fields there are, so on those it
+      became the fill.
+- [x] **The hatch leans the other way to the ceiling hatch.** Found by rasterising Ply's
+      own workspace drawing, where every box is unclaimed and therefore already hatched:
+      a glyph hatched the same way vanished into its background — one channel carrying
+      two meanings at two scales, which §7.1 forbids. Crossing them costs no colour.
+      It also runs at half the pitch, because the ceiling pattern inside a 12-unit glyph
+      is about one stripe and does not read as hatching at all.
+- [x] **"Cannot build" is the sampling engine's own answer**, not "the parser gave up".
+      A `BTreeMap<u64, Level>` parses perfectly well as a map and still cannot be built.
+      The narrow predicate missed all three unbuildable fields in a fixture written to
+      have three.
+- [x] **The text form says the same things**, shapes included. Its whole contract is that
+      it states everything the drawing shows, and a reader who cannot see the picture
+      would have been the one to lose by it.
+- [x] **The tooltip stopped repeating the document.** It listed `show:` verbatim, so a
+      field nobody declared appeared on the drawing inside a sentence promising such a
+      name is refused. Caught by a test written to check exactly that.
+- [x] **The render suite could not see any of this until now.** Every fixture it walks is
+      a document with no code under it, so no row was ever painted in it — a deliberately
+      misspelled glyph class still passed the "every painted element resolves a style
+      rule" invariant. There is now a fixture crate written to disk at test time, and the
+      style and tooltip rules run over a drawing that actually has rows.
+
+**Cross-crate state resolution landed too, closing the other gap.** A component's state
+is read from the crate its anchor names, so the workspace-root document — which has no
+library of its own and was the reason the "could not check" warning existed — is checked
+like any other. Proven both ways: an invented field in the root document exits 1 naming
+the eight real ones; the honest version exits 0.
+
+**KNOWN GAP — the vetting scenarios still show no shapes, and correctly so.** Scenarios
+001 to 003 are grammar-first documents describing systems that have no code, so there is
+nothing to read their fields from. They draw the type name and say in the tooltip that
+the document asked for those names and there was nothing to check them against. Only
+004 has real crates behind it.
 
 NEXT, and the reason this was worth building: `state` is where a **type invariant**
 belongs. §5.4c admits type invariants are "assumed, never asserted", so a proof can rest
