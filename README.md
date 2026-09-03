@@ -108,6 +108,77 @@ metadata`, so before there is a Cargo project to read there is nothing for it to
 against, and it says so rather than reporting a clean run. Anchors behave the same way:
 point it at a crate whose promised functions are not written yet and it names each one.
 
+### What step 4 actually decides
+
+Ply keeps a diagram of its own architecture under [`.archi/`](.archi/), and this is one of
+them — the path `cargo ply verify` walks for a single function that declares a `bounded`
+check. It is the tool's most consequential piece of reasoning, because every branch here is
+a decision about whether evidence may be claimed:
+
+```mermaid
+flowchart TD
+  scheduled["Claim scheduled"]
+  hascontract{"Does the callee have<br>a declared contract?"}
+  refuse["Refuse to descend"]
+  proofpassed{"Did the callee's own<br>proof already pass?"}
+  stubclean["Stand in for the callee,<br>verdict clean"]
+  assume["Verify against an<br>assumed promise"]
+  enginecheck{"Is the required<br>tool installed?"}
+  enginemissing["Report engine missing"]
+  runengine["Run the engine"]
+  parseresult["Read what it reported"]
+  verdict["Produce verdict and<br>any counterexample"]
+  scheduled -->|"checking a bounded claim"| hascontract
+  hascontract -->|"no contract declared anywhere"| refuse
+  hascontract -->|"yes, callee is contracted"| proofpassed
+  proofpassed -->|"yes, clean all the way down"| stubclean
+  proofpassed -->|"no"| assume
+  stubclean -->|"run the proof"| enginecheck
+  assume -->|"run the proof"| enginecheck
+  refuse -->|"no evidence earned"| verdict
+  enginecheck -->|"not installed"| enginemissing
+  enginecheck -->|"installed"| runengine
+  enginemissing -->|"no evidence earned"| verdict
+  runengine --> parseresult
+  parseresult --> verdict
+```
+
+**Callees are checked before their callers**, always, and ties between unrelated functions
+are broken by name so the same code always produces the same order. A function caught in a
+dependency cycle never gets a clean turn, and falls through to the assumed-promise branch
+below.
+
+**Three decisions, and each one is a refusal to overclaim:**
+
+*Does the callee have a promise at all?* If not, Ply will not read through it to find out
+what it does, and will not pretend the check ran. Nothing is earned, and the warning names
+the exact callee and where it is called from, so it is something a person can go and fix.
+It offers two ways out: write a promise for the callee, or switch to a `fuzz` check, which
+crosses the same boundary by simply running the real code. This branch was added after a
+two-year-old unannotated function used to just time out with no explanation.
+
+*Did that callee's own proof already pass, cleanly?* If yes, Ply swaps the callee's body
+for a stand-in built from its promise, and nothing is assumed — but the result is only as
+deep as the shallower of the two: a function declaring depth 5 that stands on a callee
+proved to depth 2 gets a depth-2 result, never the deeper number. If no — the callee was
+only fuzzed, or lives in another crate, or sits in a cycle — the stand-in is built from a
+promise nobody has checked yet, and the verdict is marked as resting on it, with that
+assumption tracked as debt until something runs the real callee against the same promise.
+
+*Is the tool even installed?* A missing engine is reported by name with what to install.
+Never a silent skip, and never reported as though the check quietly passed.
+
+Reading the engine's answer is its own step for a reason: terminal colour codes are
+stripped first, because a coloured `error:` line once slipped past every text match Ply had
+and got reported as an unattributable failure instead of the plain compiler error it was. A
+broken promise, a timeout, a crash and a refusal to run are four different facts and must
+never arrive as the same one.
+
+Two things this leaves out on purpose. A `fuzz` or `test` check skips the first decision
+entirely — it runs the callee's real code, contract or not, so it never needs a stand-in.
+And whether a stored result can be reused instead of running any of this again is a
+separate diagram, [`verdict-lifecycle`](.archi/ply.json), rendered alongside this one.
+
 ## A declarative grammar, and the line where it stops
 
 Ply gives you a **declarative grammar** for describing a system: components and how they
