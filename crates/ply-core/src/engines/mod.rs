@@ -277,7 +277,10 @@ mod run_with_timeout_tests {
         let mut cmd = Command::new("/bin/echo");
         cmd.arg("hello ply");
         let out = run_with_timeout(&mut cmd, Duration::from_secs(5)).unwrap();
-        assert!(!out.timed_out, "a fast command must not be reported as timed out");
+        assert!(
+            !out.timed_out,
+            "a fast command must not be reported as timed out"
+        );
         assert!(out.status.success());
         assert_eq!(out.stdout_string().trim(), "hello ply");
     }
@@ -302,7 +305,10 @@ mod run_with_timeout_tests {
         cmd.arg("30");
         let start = Instant::now();
         let out = run_with_timeout(&mut cmd, Duration::from_millis(150)).unwrap();
-        assert!(out.timed_out, "a run that outlived its budget must be reported as timed out");
+        assert!(
+            out.timed_out,
+            "a run that outlived its budget must be reported as timed out"
+        );
         assert!(
             start.elapsed() < Duration::from_secs(10),
             "the helper must kill the child rather than waiting out its full sleep, took {:?}",
@@ -332,7 +338,10 @@ mod run_with_timeout_tests {
             None => unsafe { std::env::remove_var("PATH") },
         }
         let out = result.unwrap();
-        assert!(out.timed_out, "the budget must still be enforced with no `timeout` binary on PATH");
+        assert!(
+            out.timed_out,
+            "the budget must still be enforced with no `timeout` binary on PATH"
+        );
         assert!(start.elapsed() < Duration::from_secs(10));
     }
 }
