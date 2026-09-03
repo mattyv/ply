@@ -65,6 +65,9 @@ components:
       hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
   component cli — maps to Rust module ply_cli
+    state Cli — the structure this component holds. 2 of 2 of its fields shown
+      command is a structure of your own, written `Commands` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      json is a single value, written `bool`
     promises nothing as a whole — something inside declares no checks, and one unchecked thing sets the level of everything around it (unclaimed)
     that level comes from its weakest part, which here is the absence of any: nothing inside this component declares a check at all — not its own functions, and not anything in the components within it
     component verify — maps to Rust module ply_cli::verify
@@ -83,6 +86,10 @@ components:
 
   component render — maps to Rust module ply_render
     note: Draws a document before any code exists, and writes the same facts as prose. It is the surface a reader judges the whole tool by, which is why its wording is tested by exact string rather than by shape.
+    state Cli — the structure this component holds. 3 of 6 of its fields shown
+      collapse is a list, written `Vec<String>`
+      focus is something that might not be there, written `Option<String>`
+      text is a single value, written `bool`
     hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
   component check — maps to Rust module ply_check
