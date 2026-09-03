@@ -1082,6 +1082,25 @@ count (open item, TODO.md). Every value built through a route, top-level or nest
 carries a `route-built` status mark — the `seeded` mark's own precedent — naming that the
 evidence came through a declared door rather than the type's whole range.
 
+**A constructor taking no arguments has nothing to vary, and this is said rather than
+counted** (`W0529`, 2026-09-02). The route guard above exists because an author's function
+*might* ignore its inputs; a constructor with no inputs has none to ignore, so one value
+follows from the signature and needs no run to discover. That makes it both stronger and
+cheaper than the route guard: it holds for a type that derives neither `Debug` nor
+anything else, and it costs nothing at runtime. It applies to a top-level parameter and to
+the receiver a method is called on alike, and it is suppressed for a receiver exactly when
+the type has an operation taking `&mut self` that this run could call — which really does
+move the value off what the constructor made. The verdict carries `one-value`, drawn as
+`one value over and over`, the same mark a collapsed route earns, because it is the same
+fact about the evidence. Ply already refused to build values through `T::default()` on
+precisely this reasoning ("it produces a single value, and reporting that as many sampled
+cases would overstate what was checked"); the rule had been written against the trait and
+never generalised, so an inherent `new()` of the identical shape was accepted in silence —
+a deliberately broken method on such a type reported `fuzzed(256)` with no qualifier at
+all. The completeness sentence in the receiver disclosure (`W0520`) degrades with it: "every
+value reachable within N steps" is a broad-sounding phrase for a set with one member, so
+where the set is one value the disclosure says its size instead.
+
 Generic functions are checkable only through a concrete instantiation: `check_with:
 { T: u64 }` names one concrete type per type parameter, and every harness for that fn
 instantiates with it. A generic fn without `check_with` is `unsupported` (V0505). One

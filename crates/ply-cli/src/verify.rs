@@ -3015,6 +3015,51 @@ fn run_fn_checks(
                             statuses.push("partial-history".into());
                         }
                     }
+                    // The false green (TODO.md, 2026-09-02): the receiver
+                    // and every top-level parameter Ply built for itself,
+                    // checked for the one shape that provably cannot vary --
+                    // a constructor taking no arguments, with nothing in
+                    // reach that changes what it made. Said for each such
+                    // value separately, because the checked function's own
+                    // receiver and its arguments are different things to a
+                    // reader, and the run that started this carried a
+                    // disclosure for the first and nothing at all for the
+                    // second.
+                    // The count a reader is owed is the one the engine
+                    // reached, not the one the document asked for: §8 keeps
+                    // those apart on purpose, and a run cut short by its
+                    // time budget or stopped at a failing case reached
+                    // fewer. Falls back to the declared number only when the
+                    // engine did not report one at all.
+                    let ran = run.fuzz_cases_reached.unwrap_or(n);
+                    let mut fixed = Vec::new();
+                    if let Some(plan) = &cf.receiver
+                        && let Some(d) = fixed_value_diag(node_id, fn_name, plan, None, ran)
+                    {
+                        fixed.push(d);
+                    }
+                    for param in &cf.params {
+                        if let harness::RustType::UserTypeCtor(plan) = &param.ty
+                            && let Some(d) =
+                                fixed_value_diag(node_id, fn_name, plan, Some(&param.name), ran)
+                        {
+                            fixed.push(d);
+                        }
+                    }
+                    if !fixed.is_empty() {
+                        diagnostics.extend(fixed);
+                        // The verdict itself has to carry this. `fuzzed(n)`
+                        // means n cases against n drawn inputs, and a
+                        // reader scanning the tree sees the number long
+                        // before any diagnostic beneath it -- which is
+                        // exactly how a deliberately broken function came
+                        // to report a clean count. Same mark the declared
+                        // route's own collapse already earns, because it is
+                        // the same fact about the evidence.
+                        if !statuses.iter().any(|s| s == "one-value") {
+                            statuses.push("one-value".into());
+                        }
+                    }
                 }
             }
         }
@@ -3819,6 +3864,86 @@ fn string_sampling_diag(node_id: &str, fn_name: &str, check_label: &str) -> Diag
 /// point twice. Cutting those took this to 49 words with nothing narrowed
 /// and under 85 with every kind of gap present at once -- still a complete
 /// sentence, no code or § reference doing the work prose should.
+/// The one value a no-argument constructor can make, said out loud.
+///
+/// Ply already refuses to build values through `T::default()`, and its own
+/// reason is the whole of this: "it produces a single value, and reporting
+/// that as many sampled cases would overstate what was checked". An inherent
+/// `T::new()` taking no arguments is the identical shape and was accepted in
+/// silence -- so a method on a type whose only way in is one of those was
+/// checked against one value 256 times and reported `fuzzed(256)`, a number
+/// that means 256 real cases. Deliberately breaking such a function did not
+/// make the run fail, because no case that ran could reach the break.
+///
+/// Nothing here needs a run to discover. A constructor with no arguments has
+/// nothing to vary, so "one value" follows from the signature -- which is why
+/// this says it outright, where the declared-route guard (`W0527`) has to
+/// count at runtime and can only count types that derive `Debug`. This one
+/// works for a type that can be neither printed nor compared.
+///
+/// `None` -- stay silent -- in the two cases where the values really do
+/// differ: a constructor Ply feeds arguments to, and a type with an
+/// operation taking `&mut self`, which can move the value off the one the
+/// constructor made. Both are the ordinary case and neither is a gap.
+fn fixed_value_diag(
+    node_id: &str,
+    fn_name: &str,
+    plan: &harness::ReceiverPlan,
+    // The parameter this plan builds, or `None` when it builds the receiver
+    // the checked method is called on. The two need different sentences: one
+    // is an argument the reader passes, the other is the thing the method
+    // belongs to.
+    param: Option<&str>,
+    cases: u32,
+) -> Option<Diagnostic> {
+    if !plan.ctor_params.is_empty() {
+        return None;
+    }
+    let mutable = plan.operations.iter().any(|op| op.takes_mut_self);
+    if mutable {
+        return None;
+    }
+    let type_name = &plan.type_name;
+    let constructor = &plan.constructor;
+    let title = match param {
+        Some(param) => format!(
+            "`{fn_name}`'s `{param}` argument was the same `{type_name}` in all {cases} \
+             runs. `{constructor}` takes no arguments, so there is only one value it can \
+             make. The count says how many times the check ran, not how many different \
+             values it saw. (W0529, §5.4c)"
+        ),
+        None => format!(
+            "`{fn_name}` was checked {cases} times, but every one of those runs used the \
+             same `{type_name}`. `{constructor}` takes no arguments, so there is only one \
+             value it can make, and nothing this run could call changes it afterwards. The \
+             count says how many times the check ran, not how many different values it \
+             saw. (W0529, §5.4c)"
+        ),
+    };
+    Some(Diagnostic {
+        code: "W0529".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "proptest".into(),
+        check: "fuzz".into(),
+        node_id: node_id.into(),
+        title,
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![Fix {
+            title: format!(
+                "give `{type_name}` a way in that can differ -- a constructor taking an \
+                 argument, an operation taking `&mut self`, or a `routes:` entry naming a \
+                 function that builds one -- so these runs check more than a single value"
+            ),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: Some("fixed_value".to_string()),
+    })
+}
+
 fn receiver_sequence_diag(
     node_id: &str,
     fn_name: &str,
@@ -3844,6 +3969,13 @@ fn receiver_sequence_diag(
     };
     let narrowed = !plan.excluded_operations.is_empty() || !plan.other_constructors.is_empty();
     let severity = if narrowed { "warning" } else { "info" };
+    // The completeness claim below is a true sentence that reads as
+    // reassurance, and next to a value that never varied it is the sentence
+    // that made this a false clean: "every value reachable within 3 steps"
+    // is a broad-sounding phrase for a set with one member. Where the
+    // construction provably cannot vary (`fixed_value_diag`, W0529), say the
+    // size of that set instead of describing how it was explored.
+    let fixed = plan.ctor_params.is_empty() && !plan.operations.iter().any(|op| op.takes_mut_self);
 
     let base = format!(
         "`{fn_name}` needs a `{type_name}`, so Ply built one itself: `{constructor}`, then up \
@@ -3855,14 +3987,12 @@ fn receiver_sequence_diag(
         pool_sentence = pool_sentence,
     );
 
-    let tail = if !narrowed {
-        format!(
-            "That covers every value `{type_name}`'s own code can reach within {max} steps of a \
-             fresh one -- nothing else was assumed.",
-            type_name = plan.type_name,
-            max = plan.max_sequence_len,
-        )
-    } else {
+    // Ordered so the most specific thing a reader can act on comes first. A
+    // named exclusion beats "one value": a plan can be fixed *because* the
+    // mutator that would have varied it could not be called, and the reader
+    // needs the name of that mutator, not just the count. W0529 carries the
+    // one-value fact in either case.
+    let tail = if narrowed {
         let mut gaps = Vec::new();
         if !plan.excluded_operations.is_empty() {
             let excluded_list = plan
@@ -3893,6 +4023,20 @@ fn receiver_sequence_diag(
             type_name = plan.type_name,
             gaps = gaps.join(", and "),
             fn_name = fn_name,
+        )
+    } else if fixed {
+        format!(
+            "That is every value `{type_name}` can reach from outside its own crate, and it is \
+             one value: the constructor takes no arguments and nothing above changes what it \
+             made.",
+            type_name = plan.type_name,
+        )
+    } else {
+        format!(
+            "That covers every value `{type_name}`'s own code can reach within {max} steps of a \
+             fresh one -- nothing else was assumed.",
+            type_name = plan.type_name,
+            max = plan.max_sequence_len,
         )
     };
 
@@ -7360,7 +7504,16 @@ mod tests {
     /// completeness claim that bound earns when nothing was excluded.
     #[test]
     fn receiver_sequence_diag_wording_is_pinned_when_nothing_was_narrowed() {
-        let plan = bare_receiver_plan("Till", "Till::new");
+        let mut plan = bare_receiver_plan("Till", "Till::new");
+        // Given a constructor argument on purpose. Without one this fixture
+        // describes a type that cannot vary at all, which is the branch
+        // below -- and standing in for it silently is part of how a run
+        // against a single value came to read as a broad one.
+        plan.ctor_params = vec![harness::Param {
+            name: "float".into(),
+            ty: harness::RustType::U32,
+            by_ref: false,
+        }];
         let diag = receiver_sequence_diag("till::Till::total", "total", &plan);
         assert_eq!(diag.code, "W0520");
         assert_eq!(diag.severity, "info");
@@ -7370,6 +7523,113 @@ mod tests {
              `total`, in random order, before the checked call. That covers every value `Till`'s \
              own code can reach within 3 steps of a fresh one -- nothing else was assumed. \
              (W0520, §5.4c)"
+        );
+    }
+
+    /// The false green this exists to end (TODO.md, 2026-09-02): a method
+    /// on a type whose only way in is a constructor taking no arguments was
+    /// checked against **one value, 256 times**, and reported a clean count.
+    /// Ply already refuses to build through `T::default()` for exactly this
+    /// reason, in its own words -- "it produces a single value, and
+    /// reporting that as many sampled cases would overstate what was
+    /// checked" -- and an inherent zero-argument `new()` is the identical
+    /// shape. The rule was written against the trait and never generalised.
+    ///
+    /// Nothing here needs a run to discover: a constructor with no
+    /// arguments has nothing to vary, so one value is provable from the
+    /// signature. That is why this says it outright rather than counting at
+    /// runtime the way the declared-route guard has to.
+    #[test]
+    fn a_receiver_built_by_a_no_argument_constructor_is_named_as_one_value() {
+        let mut plan = bare_receiver_plan("StatusSet", "StatusSet::new");
+        plan.ctor_params = vec![];
+        let diag = fixed_value_diag("s::StatusSet::len", "len", &plan, None, 256)
+            .expect("a no-argument constructor with no mutating operation cannot vary");
+        assert_eq!(diag.code, "W0529");
+        assert_eq!(
+            diag.severity, "warning",
+            "256 cases against one value is one case run 256 times, which is a real gap"
+        );
+        assert_eq!(
+            diag.title,
+            "`len` was checked 256 times, but every one of those runs used the same \
+             `StatusSet`. `StatusSet::new` takes no arguments, so there is only one value it \
+             can make, and nothing this run could call changes it afterwards. The count says \
+             how many times the check ran, not how many different values it saw. (W0529, §5.4c)"
+        );
+    }
+
+    /// The half of the same defect that carried no disclosure at all: the
+    /// checked function's *other* argument was built by the very same
+    /// no-argument constructor, and nothing counted or mentioned it.
+    #[test]
+    fn a_parameter_built_by_a_no_argument_constructor_is_named_as_one_value() {
+        let mut plan = bare_receiver_plan("StatusSet", "StatusSet::new");
+        plan.ctor_params = vec![];
+        let diag = fixed_value_diag("s::StatusSet::union", "union", &plan, Some("other"), 256)
+            .expect("a no-argument constructor cannot vary");
+        assert_eq!(diag.code, "W0529");
+        assert_eq!(
+            diag.title,
+            "`union`'s `other` argument was the same `StatusSet` in all 256 runs. \
+             `StatusSet::new` takes no arguments, so there is only one value it can make. The \
+             count says how many times the check ran, not how many different values it saw. \
+             (W0529, §5.4c)"
+        );
+    }
+
+    /// A constructor that takes an argument is the ordinary case and must
+    /// stay silent: Ply varies that argument, so the values really do
+    /// differ and there is nothing to disclose.
+    #[test]
+    fn a_constructor_that_takes_an_argument_is_not_flagged() {
+        let mut plan = bare_receiver_plan("Till", "Till::new");
+        plan.ctor_params = vec![harness::Param {
+            name: "float".into(),
+            ty: harness::RustType::U32,
+            by_ref: false,
+        }];
+        assert!(
+            fixed_value_diag("till::Till::total", "total", &plan, None, 256).is_none(),
+            "a constructor Ply feeds different arguments to reaches different values"
+        );
+    }
+
+    /// A no-argument constructor whose type has an operation that can change
+    /// it is not fixed: the sequence really does reach more than one value,
+    /// which is the whole point of building a history before the checked
+    /// call.
+    #[test]
+    fn a_no_argument_constructor_with_a_mutating_operation_is_not_flagged() {
+        let mut plan = bare_receiver_plan("Buf", "Buf::new");
+        plan.ctor_params = vec![];
+        plan.operations.push(harness::Operation {
+            call_path: "Buf::push".into(),
+            params: vec![],
+            takes_mut_self: true,
+        });
+        assert!(
+            fixed_value_diag("buf::Buf::len", "len", &plan, None, 256).is_none(),
+            "an operation taking `&mut self` can move the value off the one the constructor made"
+        );
+    }
+
+    /// The completeness claim is a true sentence that reads as reassurance,
+    /// and beside a value that never varied it is the sentence that made
+    /// this a false clean: "every value reachable within 3 steps" is a
+    /// broad-sounding phrase for a set with one member. Pinned exact-string
+    /// like its siblings.
+    #[test]
+    fn receiver_sequence_diag_says_the_set_is_one_value_when_it_cannot_vary() {
+        let plan = bare_receiver_plan("StatusSet", "StatusSet::new");
+        let diag = receiver_sequence_diag("s::StatusSet::len", "len", &plan);
+        assert_eq!(
+            diag.title,
+            "`len` needs a `StatusSet`, so Ply built one itself: `StatusSet::new`, then up to 3 \
+             calls to `len`, in random order, before the checked call. That is every value \
+             `StatusSet` can reach from outside its own crate, and it is one value: the \
+             constructor takes no arguments and nothing above changes what it made. (W0520, \
+             §5.4c)"
         );
     }
 
