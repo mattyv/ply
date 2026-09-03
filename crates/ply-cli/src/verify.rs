@@ -2766,15 +2766,13 @@ fn run_fn_checks(
             // This diagnostic used to also name, inline, whether ply.yaml
             // *also* declares a `requires:`/`ensures:` contract for this
             // same fn (2026-08-30, "a documented way of writing contracts
-            // is accepted, then silently ignored"). That note is gone: the
-            // fix for a later regression (2026-08-31, "a promise nobody
-            // checks is now reported green in total silence") made
-            // `declared_contract_not_anded_diag` (`W0510`) fire unconditionally
-            // whenever ply.yaml declares a contract here, which is the same
-            // condition this note used to check -- so the two diagnostics
-            // said the same thing about the ply.yaml contract whenever both
-            // fired, and repeating it here would just be noise now that
-            // `W0510` always carries it.
+            // is accepted, then silently ignored"), and later deferred that
+            // to a warning whose whole job was saying so. Both are gone for
+            // the same reason: since 2026-09-03 a ply.yaml contract is
+            // merged into the fn's own (§5.4's "ANDed in"), so a fn that
+            // declares one *has* a contract and never reaches here. What
+            // this says -- there is nothing to check the result against --
+            // is now only ever true when there really is nothing.
             diagnostics.push(Diagnostic {
                 code: "V0505".into(),
                 severity: "warning".into(),

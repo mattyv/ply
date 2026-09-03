@@ -2953,7 +2953,9 @@ costs: `docs/post-004-fixes.md`. Four commits, one per item plus item 1's spec-a
       against the real legacy body is not built either.
 - [ ] **KNOWN GAP — `ply.yaml` `requires`/`ensures` are still not ANDed into the fn's own
       check** (§5.4 says they are). They are read, and used for §5.5's boundary
-      assumption; `W0510` now says out loud which of the two a user is getting.
+      assumption; a warning said out loud which of the two a user was getting. Retired
+      2026-09-03, when the contract began being merged into the fn's own checks and the
+      "declared here, not folded in" condition stopped existing.
 - [ ] **KNOWN GAP — no witness decoder for the newly admitted shapes.** `char`,
       `Option`, `Result` and `[T; N]` reach the engines, but `WitnessValue` cannot spell
       them, so a Kani violation on one is reported `X0901`/`tool_error` naming the
