@@ -1,5 +1,39 @@
 # TODO
 
+## Landed: a promise written in the document is now actually checked — 2026-09-03
+
+The audit below named this as the most valuable thing open, and it was already next on
+the maintainer's own list. §5.4 has said since the beginning that a `requires:`/`ensures:`
+written in `ply.yaml` is "ANDed in" to the function's own contract. It was not. The
+clauses were read, drawn, written into the transcript, and offered to callers as a
+boundary assumption -- and never checked against the function they were written for, with
+a warning saying so on every run.
+
+Disclosed is not checked. This is the project's own central failure mode, a promise that
+reads as checked and is not, in the file whose entire purpose is that its claims are
+checked.
+
+- [x] **Measured both ways, on the two fixtures that already existed for it.** A document
+      promising `*result == 99` of a function returning 7, with a passing example beside
+      it, used to report a clean `tested`; it now reports `violation`. A document
+      promising `*result == 7` of the same function is now genuinely checked and holds.
+      Both pinned by tests that assert the verdict, not the diagnostics.
+- [x] **Both sources hold, and nothing half-merges.** A document clause is ANDed with an
+      inline attribute rather than replacing it, several clauses in a list are a
+      conjunction, and every clause is parsed before any is applied -- a partially applied
+      contract would be checked against something nobody wrote. Clauses are parenthesised
+      when conjoined, because `a || b` joined to `c` without them silently becomes
+      `a || (b && c)`, a different promise from the one written.
+- [x] **A clause Ply cannot read is refused by name** (`E0505`) and the function's checks
+      do not run. Dropping one clause while running the rest would be the same failure in
+      smaller clothes.
+- [x] **Two `ensures:` clauses that name the returned value differently are reconciled,
+      not refused.** `|result|` is the convention and everything here uses it, but
+      refusing `|r|` would be a new way for a valid document to stop working.
+- [x] **`W0510` is retired**, not reworded: its whole condition -- "declared here, not
+      folded in" -- can no longer occur. Spec §5.4 and SCHEMA.md both said this was
+      unimplemented and now describe what it does.
+
 ## Landed: this file audited, and nineteen entries that were no longer true removed — 2026-09-03
 
 Asked for by the maintainer ("anything stale just remove"). Every one of the 128 open
@@ -19,12 +53,9 @@ them:
 The count went 128 open to 107. What remains is roughly 55 deliberate known gaps and
 about 40 items of genuine open work.
 
-**The most valuable thing still open**, and it was already named as next before this
-audit: a promise written for legacy code in `ply.yaml` is read, displayed and reported
-on, but never folded into the function's own check — `verify.rs` raises a warning saying
-exactly that, every time. It is the project's own central failure mode, a promise that
-reads as checked and is not, sitting in the one file whose entire purpose is that its
-claims are checked.
+**The most valuable thing the audit found still open** was that a promise written in
+`ply.yaml` was never folded into the function's own check. That is the section above:
+built the same day, so this list does not outlive its own conclusion.
 
 ## Landed: TODO.md was contradicting itself in a committed merge conflict — 2026-09-03
 

@@ -825,6 +825,35 @@ for teams that prefer external specs. Because the attributes annotate the real f
 rustc type-checks contract expressions whenever the crate builds under `cfg(kani)`; under
 plain cargo they are inert.
 
+**"ANDed in" became true on 2026-09-03**, and the gap before that is worth recording
+because of what kind of gap it was. The document's clauses were read, drawn, written into
+the transcript and offered to callers as a boundary assumption — and never checked against
+the function they were written for. A warning said so on every run, which made it
+disclosed rather than hidden, but disclosure is not checking: a passing example beside a
+false `ensures:` came back clean. That is this specification's own central failure mode, a
+promise that reads as checked and is not, sitting in the file whose entire purpose is that
+its claims are checked.
+
+Three properties of the merge, each chosen against a way it could have gone wrong:
+
+- **Both sources hold.** A document clause is ANDed with an inline attribute, never
+  substituted for it; several clauses in one list are a conjunction. A clause that
+  quietly replaced an inline one would be a different silent drop from the one being
+  fixed.
+- **Nothing half-merges.** Every clause is parsed before any is applied, so a function
+  whose second clause is malformed keeps the contract it had rather than a partial one.
+  A partially-applied contract is checked against something nobody wrote.
+- **A clause Ply cannot read is refused by name** (`E0505`), and the function's checks do
+  not run. Dropping it silently is the behaviour this change exists to end, and running
+  the *rest* of the contract while dropping one clause would be the same failure wearing
+  a smaller hat.
+
+Clauses are conjoined with parentheses at every step, because they are the author's own
+text: `a || b` and `c` joined without them would silently become `a || (b && c)`, a
+different promise from the one written. Where two `ensures:` clauses name the returned
+value differently (`|result|` against `|r|`), the later one is renamed to match the first
+rather than refused — refusing would be a new way for a valid document to stop working.
+
 #### 5.4a Spec expression subset (contracts only)
 
 This subset applies to `requires`/`ensures` — the expressions sent to proof engines.
