@@ -652,7 +652,7 @@ fn state_draws_as_its_own_header_line() {
     );
     assert!(
         svg.contains(
-            "This document asks to show bids, ticks, and there is no code here to \
+            "this document asks to show bids, ticks, and there is no code here to \
                       read them from"
         ),
         "the tooltip has to say why no rows were drawn, rather than listing the names as \
@@ -1516,7 +1516,7 @@ mod hollow_and_gutter {
                     .and_then(|t| t.text())
                     .unwrap_or_default()
                     .to_string();
-                let explained = tooltip.contains("hollow — declares nothing inside yet");
+                let explained = tooltip.contains("hollow — promises nothing yet");
                 assert_eq!(
                     dashed, is_hollow,
                     "{fixture}: component {name:?} hollow={is_hollow} but dashed={dashed}"
@@ -4788,8 +4788,14 @@ fn a_function_is_never_told_it_wrote_a_list_it_did_not_write() {
 fn every_component_says_how_strongly_it_is_checked_and_why() {
     // The complete set. A component block matches exactly one of these, and
     // a new one added later shows up as an unexplained block below.
-    const HOLLOW: &str = "hollow — declares nothing inside yet: no functions, no nested \
-                          components. A sketch waiting for claims.";
+    // Reworded 2026-09-03: "nothing inside" stopped being true the day a box
+    // could draw what its component holds, so a dashed box can be full of
+    // state rows. What the dashed border has always meant is narrower and
+    // still exactly right -- nothing here promises anything -- and the
+    // sentence now says that instead.
+    const HOLLOW: &str = "hollow — promises nothing yet: no functions, no nested \
+                          components. Saying what it holds is not a promise about how it \
+                          behaves. A sketch waiting for claims.";
     const UNCLAIMED: &str = "promises nothing as a whole — something inside declares no checks, \
                              and one unchecked thing sets the level of everything around it \
                              (unclaimed)";
@@ -5817,8 +5823,13 @@ fn state_fixture() -> (tempfile::TempDir, String) {
         "[package]\nname = \"ply-state-fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
     )
     .unwrap();
+    // The type lives in a module named `book`, matching the anchor the
+    // document below uses. A component's state is resolved under its own
+    // anchor, so a type at the crate root would not be this component's --
+    // and this fixture, written before that rule existed, put it there.
+    std::fs::write(src.join("lib.rs"), "pub mod book;\n").unwrap();
     std::fs::write(
-        src.join("lib.rs"),
+        src.join("book.rs"),
         r#"
 use std::collections::{BTreeMap, BTreeSet};
 pub struct Level;
@@ -6031,7 +6042,8 @@ fn a_field_the_type_does_not_have_is_not_drawn() {
         "[package]\nname = \"ply-invented-fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
     )
     .unwrap();
-    std::fs::write(src.join("lib.rs"), "pub struct Book { pub real: u64 }").unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod book;\n").unwrap();
+    std::fs::write(src.join("book.rs"), "pub struct Book { pub real: u64 }").unwrap();
     let yaml = "ply: 1\ncomponents:\n  book:\n    anchor: book\n    state:\n      of: Book\n      \
                 show: [real, invented]\n";
     let doc = parse_document(yaml).unwrap();

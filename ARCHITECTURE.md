@@ -16,7 +16,7 @@ file.
 Rendered from [`ply.yaml`](ply.yaml) at the repository root.
 
 <p align="center">
-  <img src="docs/ply-self.svg" alt="A frame labelled ply.yaml, with a line reading 13 components, 0 functions, 0 promise nothing. Inside are six top-level boxes: e2e, attrs, core, cli, render and check. Every box is filled with diagonal hatching, meaning nothing inside promises anything yet, and every box that holds nothing else inside it is also dashed. core carries a line reading state Envelope, 4 of 8 shown, and four rows under it — command, root, diagnostics and coverage — each with a small shape beside it and its type to the right; below those it contains five smaller boxes, kernel, engines, harness, visual and record. cli contains two, verify and report. Three arrows run into core: one from cli, one from render, one from check. e2e and attrs stand alone with no arrows." width="760">
+  <img src="docs/ply-self.svg" alt="A frame labelled ply.yaml, with a line reading 13 components, 0 functions, 0 promise nothing. Inside are six top-level boxes: e2e, attrs, core, cli, render and check. Every box is filled with diagonal hatching, meaning nothing inside promises anything yet, and every box that holds nothing else inside it is also dashed. Most boxes carry a line saying what that part holds, followed by a row per field with a small shape beside it and its type to the right: core holds an Envelope, kernel a VerdictNode, engines a TimedOutput, harness a ContractFn, visual a VisualEnvelope, record a RecordEntry, and inside cli, verify holds a VerificationResult and report an AuditReport. core contains five smaller boxes, kernel, engines, harness, visual and record; cli contains two, verify and report. e2e, attrs, render and check carry no such line. Three arrows run into core: one from cli, one from render, one from check. e2e and attrs stand alone with no arrows." width="760">
 </p>
 
 The six outer boxes are the crates. The smaller boxes inside `core` and `cli` are modules
@@ -75,12 +75,18 @@ weakest function inside it.
 
 **The four rows under the name are what this crate holds.** The shape beside each one
 says what kind of thing it is — a filled block for a single value, stacked bars for a
-list, a dashed outline for something that might not be there — and the text beside it is
-the type as the code spells it. None of that is written in the document: the document
-names the type and four of its fields, and Ply reads the rest out of the source. Name a
-field the code does not have and the build fails, listing the ones it does have. Three of
-these four are drawn with fine diagonal hatching, which means Ply has no way to make one
-of them; that is usually the reason functions taking such a value come back unchecked.
+list, key-beside-value for a lookup table, a dashed outline for something that might not
+be there — and the text beside it is the type as the code spells it. None of that is
+written in the document: the document names the type and four of its fields, and Ply
+reads the rest out of the source. Name a field the code does not have and the build
+fails, listing the ones it does have; name a type that lives in a different module and it
+fails too, because a component's state is resolved under its own anchor. Three of these
+four are drawn with fine diagonal hatching, which means Ply has no way to make one of
+them; that is usually the reason functions taking such a value come back unchecked.
+
+Four boxes on the workspace diagram carry no such line, and that is not an omission: the
+attribute macros and the end-to-end tests hold no state worth naming, the renderer's
+types are the library's, and the checker is a binary with none of its own.
 
 **Grey is not green.** Nothing on either page is green, and that is deliberate: green is
 kept for evidence a run has actually earned. These drawings are made from the documents

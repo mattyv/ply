@@ -146,6 +146,44 @@ library of its own and was the reason the "could not check" warning existed — 
 like any other. Proven both ways: an invented field in the root document exits 1 naming
 the eight real ones; the honest version exits 0.
 
+**Every component that has a main type now names it — and a misfiled one is caught.**
+Asked for on 2026-09-03 ("update other specs to include the data types no??"), and the
+first thing it turned up was that the checking was weaker than this file and the spec
+both claimed.
+
+- [x] **Resolution is scoped to the anchor, and was not before.** A component's state was
+      found by scanning the whole crate for a type of that name, while the spec and
+      `A0414`'s own message to the user both said "resolved under its own anchor, never
+      guessed at". So a component that misfiled a type passed: the type really exists,
+      nothing looks wrong, and only the attribution is false — one level subtler than the
+      failure `state:` was built for. Measured before the fix: this repository's kernel
+      component claiming a type from its diagnostics module exited 0. Now it fails by
+      name, and the message says which module was searched. A type in a module *below*
+      the anchor still counts, since that is still the component's own code.
+- [x] **A binary-only crate can say what it holds.** Crate discovery required
+      `src/lib.rs`, so the command-line crate could never carry state — for no better
+      reason than that its root is `main.rs`. Its modules are code like any other.
+- [x] **Seven more components carry one**, each verified by breaking it and watching the
+      build fail: the verdict kernel, the engine adapters, the harness builder, the
+      drawing layer, the result record, and both halves of the command line. The
+      workspace drawing now says what every part of Ply holds.
+- [x] **Two fixtures were wrong and had been passing.** Both anchored a component at a
+      module name while declaring the type at the crate root — exactly the misfiling the
+      new rule catches. They now put the code where the anchor says it is, which is what
+      a real document looks like.
+
+**KNOWN GAP — four components legitimately carry no state**, and this is a description
+rather than a shortfall: the attribute macros and the end-to-end tests hold nothing worth
+naming, the renderer's types belong to the library it re-exports, and the checker is a
+binary with none of its own.
+
+**KNOWN GAP — two crate shapes cannot be followed, both failing toward the warning
+rather than a false clean.** A crate that renames its library with an explicit
+`[lib] name` different from its package name is keyed by the package name (vetting 004's
+own two crates do this). And a crate reached as a *dependency* rather than as a sibling
+under the document is not walked at all, which is why vetting 004's legacy component
+carries no `state:` — measured, and it reports the warning correctly.
+
 **KNOWN GAP — the vetting scenarios still show no shapes, and correctly so.** Scenarios
 001 to 003 are grammar-first documents describing systems that have no code, so there is
 nothing to read their fields from. They draw the type name and say in the tooltip that

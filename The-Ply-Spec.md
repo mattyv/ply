@@ -749,16 +749,31 @@ behaviour; the third is the admission that the first two could not run:
    the claim went unchecked. A document Ply cannot check its `state` lines against must
    say so out loud; the alternative is a silent exit 0 that reads as verification.
 
-**Which crate a state type is resolved in.** The one the component's anchor names. A
-single-crate document resolves everything against the crate the document sits in; a
-workspace document whose components are anchored at `ply_core`, `ply_cli` and so on
-resolves each against the crate that actually holds it. So the workspace-root document
-— which has no library of its own, and was briefly the case `W0413` existed for — is
-checked like any other. Crates are found by walking three directories below the document
-for a `Cargo.toml` with a library beside it, keyed by that manifest's package name with
-dashes underscored. A crate that renames its library with an explicit `[lib] name`
-different from its package name would be keyed wrongly; the cost is one `W0413` rather
-than a false clean, which is the right way round for it to fail.
+**Where a state type is resolved.** Under the component's anchor, and nowhere else. The
+anchor's first segment names the crate when the document spans a workspace
+(`ply_core::visual`); the rest is a module path inside it, and the type must be declared
+at or under that module. A type in a module *below* the anchor counts — a component
+anchored at `visual` may name a type declared in `visual::svg`, which is still its own
+code.
+
+That restriction is the point rather than a detail, and it was added after being
+measured missing (2026-09-03). A crate-wide scan finds a type of the right name wherever
+it sits, so a component that misfiles one passes: the type really exists, nothing looks
+wrong, and only the *attribution* is false. That is the failure one level subtler than
+the one `state:` was built for — and this section already promised it could not happen,
+which made the promise the untrue part. `ply_core::kernel` claiming a type declared in
+`ply_core::diag` exited 0 before the rule, and fails by name after it.
+
+Crates are found by walking three directories below the document for a `Cargo.toml` with
+source beside it, keyed by that manifest's package name with dashes underscored. **A
+binary-only crate counts**: its modules are real code a component can anchor at, and
+refusing to look at them would mean a command-line crate could never say what it holds,
+for no better reason than that its root is `main.rs`. Two approximations remain, both
+failing the safe way — toward `W0413` rather than a false clean. A crate that renames its
+library with an explicit `[lib] name` different from its package name is keyed by the
+package name (`vetting/004`'s own two crates do exactly this). And a crate reached as a
+*dependency* rather than as a sibling under the document is not walked at all, which is
+why `vetting/004`'s legacy component carries no `state:`.
 
 Three things are **not** checked, and the tier table in SCHEMA.md says so: that the
 component actually holds a value of that type, that no other component holds one, and
