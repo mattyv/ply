@@ -4003,18 +4003,22 @@ fn no_two_drawn_lines_cross_at_a_shallow_angle() {
         shallow.join("\n  ")
     );
 
-    // Found by writing this test, not known before: three forbidden-call lines
-    // share one vertical corridor in 003 and two share a horizontal run, so
-    // they are drawn along each other and read as one line. Worse than a
-    // crossing — a crossing slows you down, an overlap hides a rule. Fixing it
-    // means giving deny routes their own lanes the way regular edges already
-    // have them, which is its own piece of work.
+    // Was 4: three forbidden-call lines shared one vertical corridor in 003
+    // and two shared a horizontal run, so they were drawn along each other
+    // and read as one line. Worse than a crossing — a crossing slows you
+    // down, an overlap hides a rule. Fixed by giving both `route_deny_line`
+    // and `route_around_to_external` a caller-assigned rank (the same
+    // monotone-by-target-y order `deny_order` already gives the wildcard
+    // fan) that nests each further-ranked route's corridor and rail one
+    // step further from the obstruction than the last — see
+    // `RAIL_NEST_STEP`'s own doc comment for the mechanism and why nesting
+    // by that order can't introduce a new crossing.
     //
     // PINNED, not merely printed, for the reason the label/line ratchet gives:
     // a green test that knows about N defects and says nothing is the "gate
     // debt: none" over-claim this project has retracted once already. Lower
     // this when you fix one; if it rises, this change added one.
-    const KNOWN_OVERLAPPING_LINES: usize = 4;
+    const KNOWN_OVERLAPPING_LINES: usize = 0;
     assert!(
         overlapping.len() <= KNOWN_OVERLAPPING_LINES,
         "overlapping drawn lines grew from {KNOWN_OVERLAPPING_LINES} to {} — this change \

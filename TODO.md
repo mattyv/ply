@@ -2333,12 +2333,20 @@ adversarial review, none by the suite.
       much as travellers' own journey times, so readers trust geometry whether or not it
       was meant to carry meaning.
 
-- [ ] **KNOWN GAP, newly measured: four forbidden-call lines are drawn along each other.**
-      Found by writing the crossing invariant, not known before. Three share one vertical
-      corridor in vetting 003 and two share a horizontal run, so they render as a single
-      line and a declared rule goes invisible. Worse than a crossing: a crossing slows a
-      reader, an overlap hides a rule. Pinned at 4 as a ratchet. The fix is giving deny
-      routes their own lanes, the way regular edges already have them.
+- [x] **Four forbidden-call lines drawn along each other, fixed** (2026-09-03,
+      PENDING-COMMIT-HASH). Found by writing the crossing invariant: three shared one
+      vertical corridor in vetting 003 and two shared a horizontal run, rendering as a
+      single line and hiding a declared rule from the reader. Worse than a crossing: a
+      crossing slows a reader, an overlap hides a rule. Fixed by giving every routed
+      forbidden-call line and every routed external/`entry:` line a rank (the same
+      monotone-by-target-y order that already keeps the wildcard-node fan crossing-free)
+      and nesting each further-ranked route's corridor and rail one step further from the
+      obstruction it dodges than the last, so two routes that would otherwise compute an
+      identical detour land on visibly separate lines. The ratchet (`KNOWN_OVERLAPPING_
+      LINES` in `tools/render/tests/render.rs`) is now 0, and the canvas grows to hold a
+      nested rail rather than letting one run past the edge. Verified by eye, not just by
+      test: rasterized `vetting/003-trading-system.svg` before and after — three lines
+      that used to read as one now run on their own separate tracks.
       **Correction worth recording:** an earlier measurement in-session reported "zero
       crossings in every diagram". That was true of X-shaped crossings and completely
       missed these overlaps, because the detector used treated collinear segments as

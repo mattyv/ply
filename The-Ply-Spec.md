@@ -2100,8 +2100,11 @@ sends the eye back and forth and costs accuracy, the penalty fading as the angle
 So crossings are not forbidden — forbidding them would over-constrain the layout for no
 measured gain — but shallow ones are, and CI holds it. Two lines drawn *along* each other
 are worse than any crossing and are a defect in their own right: the reader sees one line
-where the document declared two, so a rule goes invisible. Four such overlaps exist today
-among the forbidden-call routes and are pinned as a ratchet, not tolerated silently.
+where the document declared two, so a rule goes invisible. Four such overlaps were found
+among the forbidden-call routes when this invariant was first written; fixed by giving
+every routed forbidden-call and external/`entry:` line its own nested lane — each further
+one from the same obstruction pushed one step further out than the last, in the same
+order that already keeps them from crossing — and the ratchet now holds at zero.
 
 **One alternative palette, never a theming hook (added 2026-08-29).** These diagrams are
 read where dark is a common default, and the render paints its own near-white background,

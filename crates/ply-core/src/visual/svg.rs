@@ -2530,13 +2530,16 @@ fn entry_edge_tooltip(fn_name: &str, ext_name: &str, requires: &[String]) -> Vec
 /// functions replaces (vetting 003's coordinator review, third round:
 /// `RawFrame`'s label was struck by the separately-routed `entry` edge's
 /// line, not by its own — a per-edge, draw-as-you-go placement can never
-/// see a sibling that hasn't been drawn yet).
+/// see a sibling that hasn't been drawn yet). `rank` is threaded straight
+/// through to `route_around_to_external`'s own `rank` — see its doc
+/// comment.
 fn compute_external_edge_route(
     workspace_rect: Rect,
     workspace_ancestor_rect: Rect,
     external_rect: Rect,
     lane: (f64, f64),
     obstacle_positions: &IndexMap<String, Rect>,
+    rank: usize,
 ) -> Vec<(f64, f64)> {
     // Parallel lanes for two or more edges sharing the same (workspace
     // component, external) pair (vetting 002 finding 4's rule, extended
@@ -2553,7 +2556,7 @@ fn compute_external_edge_route(
         lane,
     );
     let exclude = [workspace_rect, workspace_ancestor_rect];
-    route_around_to_external(from, to, &exclude, obstacle_positions)
+    route_around_to_external(from, to, &exclude, obstacle_positions, rank)
 }
 
 /// Draws one already-routed external/`entry:` edge, placing its label
@@ -3878,10 +3881,11 @@ fn render_svg_impl(
         keyed.sort_by(|a, b| a.1.total_cmp(&b.1));
         keyed.into_iter().map(|(i, _)| i).collect()
     };
-    for i in deny_order {
+    for (rank, i) in deny_order.into_iter().enumerate() {
         let (orig_index, d) = &parsed_denies[i];
         render_deny(
             i,
+            rank,
             *orig_index,
             d,
             &deny_layout,
@@ -4014,7 +4018,25 @@ fn render_svg_impl(
     // hold it — found by `everything_renders_inside_the_canvas` when the
     // strip first ran off a 350px canvas by 122px.
     let strip_min_w = strip_x + text_w(&strip_text, NAME_CHAR_W) + FRAME_PAD;
-    let frame_content_w = frame_w.max(title_min_w).max(strip_min_w);
+    // A nested deny rail (`RAIL_NEST_STEP`) can push a routed line's
+    // corridor or rail a little further out than any box the plain layout
+    // ever placed — the whole point of nesting rank > 0 is that it sits
+    // outside rank 0's rail, which itself already sat outside every real
+    // box. `lines_drawn_so_far` is every regular edge and every deny line
+    // drawn up to this point, so its own furthest extent is the true
+    // measure of how far this render actually reaches, not just how far
+    // the box layout does — grown into here rather than letting a nested
+    // rail silently run past the frame.
+    let (drawn_lines_max_x, drawn_lines_max_y) = lines_drawn_so_far
+        .iter()
+        .flatten()
+        .fold((0.0_f64, 0.0_f64), |(mx, my), &(x, y)| {
+            (mx.max(x), my.max(y))
+        });
+    let frame_content_w = frame_w
+        .max(title_min_w)
+        .max(strip_min_w)
+        .max(drawn_lines_max_x + FRAME_PAD);
     // A tall stack of wildcard any-nodes (several `*` rules anchoring in
     // one margin column, `place_clear` pushing each below the last) can
     // run past the box layout's bottom edge; the canvas and frame grow so
@@ -4026,7 +4048,9 @@ fn render_svg_impl(
         .fold(f64::MIN, |a, &y| a.max(y))
         + ANY_R
         + FRAME_PAD;
-    let frame_content_h = frame_h.max(deny_bottom);
+    let frame_content_h = frame_h
+        .max(deny_bottom)
+        .max(drawn_lines_max_y + FRAME_PAD);
 
     // ---- externals: band outside the frame, and their edges -------------
     // docs/plans/external-elements.md: externals stack left to right, in
@@ -4143,6 +4167,25 @@ fn render_svg_impl(
     }
     let mut pair_seen: IndexMap<(String, String), usize> = IndexMap::new();
     let mut external_edges_svg = String::new();
+    // Same channel discipline `deny_order` gives the wildcard-node fan
+    // (§7.1, and `RAIL_NEST_STEP`'s own doc comment): ranked by the
+    // workspace endpoint's own y so the rank increases monotonically with
+    // it, then threaded into `compute_external_edge_route` below so two
+    // routes that would otherwise detour around a near-identical
+    // obstruction set nest apart instead of drawing on top of each other.
+    let ext_rank: IndexMap<usize, usize> = {
+        let mut keyed: Vec<(usize, f64)> = specs
+            .iter()
+            .enumerate()
+            .map(|(i, (spec, _))| (i, spec.workspace_rect.cy()))
+            .collect();
+        keyed.sort_by(|a, b| a.1.total_cmp(&b.1));
+        keyed
+            .into_iter()
+            .enumerate()
+            .map(|(rank, (i, _))| (i, rank))
+            .collect()
+    };
     // Pass 1: every external/`entry:` edge's route, computed before any of
     // their labels are placed — a label needs to see every *sibling*
     // external edge's line too, not just boxes and what regular edges/deny
@@ -4151,7 +4194,7 @@ fn render_svg_impl(
     // own doc comment explains why the old draw-as-you-go order missed
     // this — vetting 003's coordinator review, third round).
     let mut routes: Vec<Vec<(f64, f64)>> = Vec::with_capacity(specs.len());
-    for (spec, _) in &specs {
+    for (i, (spec, _)) in specs.iter().enumerate() {
         let key = (spec.ancestor_name.clone(), spec.ext_name.clone());
         let total = pair_total[&key];
         let idx_slot = pair_seen.entry(key).or_insert(0);
@@ -4174,6 +4217,7 @@ fn render_svg_impl(
             ext_rect,
             lane,
             &positions,
+            ext_rank[&i],
         ));
     }
     // Pass 2: draw every edge and place every label, each checked against
@@ -4205,9 +4249,21 @@ fn render_svg_impl(
     let (width, height) = if external_boxes.is_empty() {
         (frame_content_w, frame_content_h)
     } else {
+        // A nested external route (`RAIL_NEST_STEP`, `route_around_to_
+        // external`'s own `rank`) can reach a little further right than
+        // any box or band this render otherwise places — grown into here
+        // rather than letting a nested rail run past the canvas edge.
+        let (routes_max_x, routes_max_y) = routes
+            .iter()
+            .flatten()
+            .fold((0.0_f64, 0.0_f64), |(mx, my), &(x, y)| {
+                (mx.max(x), my.max(y))
+            });
         (
-            frame_content_w.max(external_band_x + external_band_w + FRAME_PAD),
-            external_band_y + EXTERNAL_BOX_H + FRAME_PAD,
+            frame_content_w
+                .max(external_band_x + external_band_w + FRAME_PAD)
+                .max(routes_max_x + FRAME_PAD),
+            (external_band_y + EXTERNAL_BOX_H + FRAME_PAD).max(routes_max_y + FRAME_PAD),
         )
     };
 
@@ -4374,6 +4430,22 @@ struct DenyLayout<'a> {
 /// Wide enough that the nodes (radius `ANY_R`) plus a real gap never touch.
 const DENY_LANE_GAP: f64 = ANY_R * 2.0 + ANY_GAP;
 
+/// How far a rail-routed line's corridor/rail nests beyond the previous
+/// rank's, so two routed lines that would otherwise compute an *identical*
+/// obstruction-hugging corridor and rail — same obstruction span, same
+/// nearer-rail choice — land on visibly separate lines instead of drawing
+/// on top of each other. Vetting 003: a wildcard deny's detour around
+/// `risk` and two external routes' detours around the same obstruction set
+/// all converged on one shared vertical corridor and one shared horizontal
+/// rail, so three lines read as one. `route_deny_line` and
+/// `route_around_to_external` each nest by a caller-assigned rank that
+/// increases monotonically with the route's own target/endpoint y — the
+/// same ordering discipline `deny_order` already gives the wildcard-node
+/// fan (see its own doc comment) — so widening outward by rank can only
+/// separate lines that were already drawn without crossing, never
+/// introduce a new crossing between them.
+const RAIL_NEST_STEP: f64 = 10.0;
+
 /// The y positions already claimed by wildcard any-nodes, one list per
 /// margin column (left = deny `from`, right = deny `to`), threaded through
 /// every `render_deny` call so `place_clear` can stack a new node clear of
@@ -4413,13 +4485,37 @@ fn place_clear(natural: f64, occupied: &mut Vec<f64>, min_gap: f64) -> f64 {
 /// straight run before and after the detour, since nothing else occupies
 /// that space (every box in the original line's path is already folded
 /// into the one detour).
+///
+/// `rank` is this line's position in the caller's own monotone-by-target-y
+/// order (`deny_order`, not the raw declaration index) — see
+/// `RAIL_NEST_STEP`'s doc comment. It widens the clearance the corridor and
+/// rail sit at, so two deny rules that dodge the exact same obstruction set
+/// (same span, same nearer-rail choice) still land on their own line: rank
+/// 0 hugs the obstruction exactly the way every deny line always has
+/// (`clearance` at rank 0 is the original fixed `CLEARANCE`, so this
+/// function's output is unchanged there), rank 1 sits one step further out,
+/// and so on. Deliberately not clamped against `from`/`to`'s own x: a
+/// target nested *inside* the box this route detours around (vetting 003:
+/// `ingest.book`, inside `ingest` itself) already sends `enter_x`/`exit_x`
+/// past that target's own x at rank 0 — that is this function's existing,
+/// tested behavior, not a defect nesting should paper over, and clamping
+/// against it once cut a rank-0 route short of where it has always gone.
+/// Known limitation this leaves open, same *kind* as the one named in
+/// `route_around_to_external`'s own doc comment: at a high enough rank the
+/// nest amount could in principle push a corridor into a box further out
+/// than the ones its own obstruction search saw. Not observed on any
+/// fixture in this repo (`RAIL_NEST_STEP` stays well inside the margin
+/// every case here leaves) — recorded honestly rather than clamped away
+/// with a bound that breaks a case that already needed the room.
 fn route_deny_line(
     from: (f64, f64),
     to: (f64, f64),
     exclude: &[Rect],
     top_level_positions: &IndexMap<String, Rect>,
+    rank: usize,
 ) -> Vec<(f64, f64)> {
     const CLEARANCE: f64 = 12.0;
+    let clearance = CLEARANCE + rank as f64 * RAIL_NEST_STEP;
     let (x0, x1) = (from.0.min(to.0), from.0.max(to.0));
     let (y0, y1) = (from.1.min(to.1), from.1.max(to.1));
     let mut obstructions: Vec<Rect> = top_level_positions
@@ -4441,22 +4537,22 @@ fn route_deny_line(
         .iter()
         .map(|r| r.x)
         .fold(f64::INFINITY, f64::min)
-        - CLEARANCE;
+        - clearance;
     let span_x1 = obstructions
         .iter()
         .map(|r| r.x + r.w)
         .fold(f64::NEG_INFINITY, f64::max)
-        + CLEARANCE;
+        + clearance;
     let top = obstructions
         .iter()
         .map(|r| r.y)
         .fold(f64::INFINITY, f64::min)
-        - CLEARANCE;
+        - clearance;
     let bottom = obstructions
         .iter()
         .map(|r| r.y + r.h)
         .fold(f64::NEG_INFINITY, f64::max)
-        + CLEARANCE;
+        + clearance;
     let mid_y = (from.1 + to.1) / 2.0;
     let rail_y = if (mid_y - top).abs() <= (bottom - mid_y).abs() {
         top
@@ -4537,13 +4633,31 @@ fn route_deny_line(
 /// component per fixture, is clean) — recorded honestly rather than
 /// papered over with an unbounded fixed-point solver this project doesn't
 /// need yet.
+///
+/// `rank` nests this route's detour and rail outward one `RAIL_NEST_STEP`
+/// per step, same discipline and same doc comment as `route_deny_line`'s
+/// own `rank` — needed because two *different* external/`entry:` edges can
+/// independently detour around a near-identical obstruction set (vetting
+/// 003: `venue ~> ingest.feed`'s flow and `venue`'s `entry:` edge both
+/// bottom out on the same rail) and, unnested, would draw the same
+/// corridor and rail as each other. Two floors keep nesting from
+/// overshooting anything it must not: `rail_y` never sinks below a few
+/// pixels clear of `to`'s own y (the rail must stay strictly above the
+/// point it finally descends to, or the last leg runs backward before
+/// reaching `to`), and `from_x` never sinks below the canvas's left edge.
+/// Unlike `route_deny_line`, this is not clamped between `from` and `to`'s
+/// own x — an external route's two ends routinely sit on opposite sides of
+/// the whole frame, so that clamp would undo the detour itself rather than
+/// just bound its nesting.
 fn route_around_to_external(
     from: (f64, f64),
     to: (f64, f64),
     exclude: &[Rect],
     obstacle_positions: &IndexMap<String, Rect>,
+    rank: usize,
 ) -> Vec<(f64, f64)> {
     const CLEARANCE: f64 = 12.0;
+    let clearance = CLEARANCE + rank as f64 * RAIL_NEST_STEP;
     let (y0, y1) = (from.1.min(to.1), from.1.max(to.1));
     // Filtered by Y-overlap against the *full* vertical travel range only —
     // deliberately not also by X-overlap against `from`/`to`'s own narrow
@@ -4568,21 +4682,33 @@ fn route_around_to_external(
         .iter()
         .map(|r| r.x)
         .fold(f64::INFINITY, f64::min)
-        - CLEARANCE;
+        - clearance;
     let span_x1 = obstructions
         .iter()
         .map(|r| r.x + r.w)
         .fold(f64::NEG_INFINITY, f64::max)
-        + CLEARANCE;
-    let rail_y = obstructions
+        + clearance;
+    // Nested further down per rank, same as the corridor above — but never
+    // past `to`'s own y: the rail must stay strictly above the point it
+    // finally descends to, or the last leg turns into a line that runs
+    // backward before reaching `to`.
+    let rail_y = (obstructions
         .iter()
         .map(|r| r.y + r.h)
         .fold(f64::NEG_INFINITY, f64::max)
-        + CLEARANCE;
+        + clearance)
+        .min(to.1 - 4.0);
 
     // Prefer a straight vertical run at `from`'s own X; only detour to
     // whichever combined-span edge is nearer when that straight run would
-    // actually cross an obstacle (wrong assumption 2 above).
+    // actually cross an obstacle (wrong assumption 2 above). Floored at a
+    // couple of pixels in from the left edge — a large rank must never push
+    // the corridor clean off the canvas — the same way `route_deny_line`'s
+    // own nesting is bounded, just against the canvas edge rather than an
+    // endpoint (an external route's `from`/`to` routinely sit on opposite
+    // sides of the whole frame, so clamping between them the way
+    // `route_deny_line` does would undo the detour itself, not just bound
+    // its nesting).
     let from_x = if vertical_run_is_clear(from.0, from.1, rail_y, &obstructions) {
         from.0
     } else if (from.0 - span_x0).abs() <= (from.0 - span_x1).abs() {
@@ -4590,6 +4716,7 @@ fn route_around_to_external(
     } else {
         span_x1
     };
+    let from_x = from_x.max(2.0);
 
     let mut route = vec![from];
     if (from_x - from.0).abs() > 0.01 {
@@ -4642,9 +4769,16 @@ fn longest_segment(points: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
 /// rule that names it draws its own pseudo-node, anchored near whichever
 /// side did resolve to a real component (or staggered by rule index, as a
 /// last resort, if neither side resolved).
+///
+/// `rank` is this rule's position in `deny_order` (the fan's own
+/// monotone-by-target-y order, not `index`, which stays the raw
+/// declaration position `fallback_y` has always used) — threaded through
+/// to `route_deny_line` so its rail nests outward one step per rank; see
+/// `RAIL_NEST_STEP`'s doc comment.
 #[allow(clippy::too_many_arguments)]
 fn render_deny(
     index: usize,
+    rank: usize,
     orig_index: usize,
     deny: &Deny,
     layout: &DenyLayout,
@@ -4720,7 +4854,7 @@ fn render_deny(
         .map(|(k, v)| (k.clone(), *v))
         .collect();
     let route = if deny.from == "*" || deny.to == "*" {
-        route_deny_line((fx, fy), (tx, ty), &exclude, &top_level_positions)
+        route_deny_line((fx, fy), (tx, ty), &exclude, &top_level_positions, rank)
     } else {
         vec![(fx, fy), (tx, ty)]
     };
