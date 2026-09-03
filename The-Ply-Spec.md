@@ -720,19 +720,24 @@ theirs to restate.
 is the author saying which two. This is the one place in the grammar where Ply draws
 less than it knows, on purpose.
 
-**Where the fields appear** (amended 2026-09-03, and this narrows what the morning's
-first draft of this section claimed). The box draws `state T` and nothing else: the
-chosen field names are in the box's tooltip and in the text form, not painted as rows.
-Two reasons, one of principle and one measured. The principle is §7.1's existing rule
-for contract clauses — an overview answers "where does attention go", and a comma list
-of field names repeated across every box is exactly the kind of detail that buries that
-question. The measurement is what one extra header line already costs: adding `state T`
-alone to `vetting/003` made its boxes tall enough to push two arrows onto the same path,
-and the crossing ratchet in `tools/render` went from 4 overlapping lines to 6 — a
-declared rule made invisible. `state:` is therefore absent from that document entirely.
-A row per field is strictly taller than the line that already broke it, so field rows
-and their shape glyphs stay designed (`docs/state-shapes.svg`) and unbuilt until edge
-routing reroutes when boxes grow.
+**Where the fields appear.** The box draws `state T — N of M shown` and then one row per
+field: its shape glyph, its name, and its type as the source spells it. `N` is what was
+drawn and `M` is what the type really has, both counted from code — so a deliberate
+selection of two fields from twenty never reads as a small type, and neither number
+restates the document. The count is drawn *only* when it was measured: a document
+rendered with no code under it draws `state T` alone rather than a number Ply invented.
+
+The type column is one column per box, set by its longest field name. A ragged column is
+read a row at a time; an aligned one is read as a column, which is the reason to draw
+rows rather than a comma list at all.
+
+**What rows cost, measured.** A row is height, and height moves arrows. Before edge
+routing had lanes, adding the header line alone to `vetting/003` took the crossing
+ratchet from 4 overlapping lines to 6. With lanes (§7.1's routing paragraph), four of
+that document's five candidate components take a full `state:` at zero overlaps, and the
+fifth still costs two — bisected one component at a time, and left out with the reason
+recorded in the document itself. Height is a real budget, and the honest way to spend it
+is per component with a measurement beside each, not by a rule declared once.
 
 Three things are checked. The first two are cheap resolution facts rather than
 behaviour; the third is the admission that the first two could not run:
@@ -2181,8 +2186,11 @@ sends the eye back and forth and costs accuracy, the penalty fading as the angle
 So crossings are not forbidden — forbidding them would over-constrain the layout for no
 measured gain — but shallow ones are, and CI holds it. Two lines drawn *along* each other
 are worse than any crossing and are a defect in their own right: the reader sees one line
-where the document declared two, so a rule goes invisible. Four such overlaps exist today
-among the forbidden-call routes and are pinned as a ratchet, not tolerated silently.
+where the document declared two, so a rule goes invisible. Four such overlaps were found
+among the forbidden-call routes when this invariant was first written; fixed by giving
+every routed forbidden-call and external/`entry:` line its own nested lane — each further
+one from the same obstruction pushed one step further out than the last, in the same
+order that already keeps them from crossing — and the ratchet now holds at zero.
 
 **One alternative palette, never a theming hook (added 2026-08-29).** These diagrams are
 read where dark is a common default, and the render paints its own near-white background,

@@ -16,6 +16,9 @@ components:
         anchor: disruptor::spsc
         uses: [unsafe]
         owns: [disruptor::spsc::Spsc]
+        state:
+          of: Spsc
+          show: [slots, head, tail]
         profile: hot_path
         fns:
           Spsc::try_push:
@@ -37,6 +40,9 @@ components:
         anchor: ingest::book
         strict: true
         owns: [ingest::book::OrderBook]
+        state:
+          of: OrderBook
+          show: [bids, asks, last]
         profile: hot_path
         fns:
           OrderBook::apply:
@@ -61,6 +67,13 @@ components:
     anchor: risk
     strict: true
     owns: [risk::Limits]
+    # No `state:` here, and this is a measurement rather than an oversight.
+    # Every other component in this scenario carries one; adding a sixth
+    # makes this box one line taller, and that pushes two routed lines onto
+    # the same path -- the crossing ratchet in tools/render goes from 0 to 2,
+    # which hides a declared rule. Bisected one component at a time: this is
+    # the only one that does it. It goes in the day edge routing reroutes
+    # when a box grows, not before.
     fns:
       check_order:
         checks: [bounded(3), fuzz(4096), mutate]
@@ -71,6 +84,9 @@ components:
   oms:
     anchor: oms
     owns: [oms::OrderStore]
+    state:
+      of: OrderStore
+      show: [open, by_client_id]
     fns:
       Oms::submit:
         checks: [bounded(2), fuzz(256)]
@@ -91,6 +107,9 @@ components:
   pnl:
     anchor: pnl
     owns: [pnl::Positions]
+    state:
+      of: Positions
+      show: [by_symbol, realised]
     fns:
       Positions::apply_fill:
         checks: [bounded(2), fuzz(512)]
