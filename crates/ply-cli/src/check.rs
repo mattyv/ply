@@ -255,6 +255,31 @@ fn verify_state(
     let Some(state) = &comp.state else {
         return;
     };
+    // The promises first, and without needing any source at all: whether a
+    // `holds:` line can be read as an expression is a fact about the line,
+    // not about the code. `check` reported "No problems found" on a
+    // document `verify` then refused outright, which is the two-commands-
+    // two-answers failure this file exists to prevent -- and worse here
+    // than for a fn key, because the schema table tells a reader `check`'s
+    // closing output is the authority.
+    for clause in &state.holds {
+        if let Err(bad) = ply_core::harness::parse_holds_clause(clause) {
+            diagnostics.push(state_diag(
+                "E0506",
+                qualified,
+                format!(
+                    "one of the things `{qualified}` promises about `{of}` could not be read, so \
+                     none of them will be checked: {reason}. The line as written is `{clause}`. \
+                     Every promise about this structure is held back together rather than \
+                     checking the ones that do parse: a partly-checked promise reported as a \
+                     checked one is the failure this refuses. (E0506)",
+                    of = state.of,
+                    reason = bad.reason.trim_end_matches('.'),
+                    clause = bad.clause,
+                ),
+            ));
+        }
+    }
     // The crate the anchor names, when the document spans a workspace;
     // otherwise the crate the document sits in. Either way the rest of the
     // anchor is a module path *inside* that crate, and the type has to be
@@ -587,9 +612,16 @@ fn walk_anchors(
         .and_then(|src| src.parent())
         .filter(|_| is_local(local_anchors, &comp.anchor) && lib_path.exists());
     verify_state(qualified, comp, state_crates, local, diagnostics);
-    if is_local(local_anchors, &comp.anchor) {
+    if let Some(module_path) = crate::shared::local_module_path(local_anchors, &comp.anchor) {
         for (fn_name, claim) in &comp.fns {
             let node_id = format!("{qualified}::{fn_name}");
+            // §5.2, the same resolution `verify` does: a key is written
+            // relative to the component's own anchor, and both the resolver
+            // and the generated harness spell a function from the crate
+            // root. The two commands must agree about which claims point at
+            // real code, so this is the one place either of them adjusts it.
+            let fn_path = crate::shared::crate_root_fn_key(&module_path, fn_name);
+            let fn_path = fn_path.as_str();
             if !claim.requires.is_empty() || !claim.ensures.is_empty() {
                 // §5.5: a claim with no `checks:` of its own is a boundary
                 // contract declaration, not a request to be verified --
@@ -626,7 +658,7 @@ fn walk_anchors(
             // "describes nothing" code, and the two commands' headline
             // counts disagreed (adversarial review, 2026-08-27).
             if let Some(r) = resolver.as_deref_mut() {
-                match r.lookup_fn(fn_name) {
+                match r.lookup_fn(fn_path) {
                     ply_core::callgraph::Resolution::Refused(reason) => {
                         tally.resolved += 1;
                         // The resolver refuses every method that takes a
@@ -646,7 +678,7 @@ fn walk_anchors(
                         let buildable = lib_path.parent().and_then(|src| src.parent()).is_some_and(
                             |crate_dir| {
                                 ply_core::harness::discover_method_with_receiver(
-                                    crate_dir, fn_name, routes,
+                                    crate_dir, fn_path, routes,
                                 )
                                 .is_ok()
                             },
@@ -674,7 +706,7 @@ fn walk_anchors(
             // Ply can no longer name a callee as unvouched-for and then
             // refuse the claim that would vouch for it.
             let outcome = match resolver.as_deref_mut() {
-                Some(r) => harness::resolve_anchor(r, fn_name, lib_path).err(),
+                Some(r) => harness::resolve_anchor(r, fn_path, lib_path).err(),
                 None => Some(harness::AnchorError::Unreadable(format!(
                     "Ply could not parse {} at all, so no claim in this document could be \
                      resolved against it",

@@ -297,12 +297,14 @@ Both commands read the whole tree. A claim written inside a nested component is
 validated by `check`, run by `verify`, and named the same way by both —
 `ingest.feed::Feed::pump`, the component's dotted name and the function key.
 
-One limit sits with nesting, and it is about `anchor:` rather than about depth. A
-function key is read as a path from the **crate root**, so `verify` can only run claims
-under a component anchored at the crate itself. A component anchored at a module —
-`anchor: ingest::book`, while you are checking the crate `ingest` — has its claims
-reported and not run (`W0303`), and the message names the spelling that would run: move
-the claim under the crate-anchored component and key it `book::OrderBook::apply`.
+A function key is read **relative to the component it is written in**. Under
+`anchor: ingest::book`, the key `OrderBook::apply` names `book::OrderBook::apply` and
+runs; under a component anchored at the crate itself, the key is already the path from
+the crate root and nothing is added. So a module can be a component and still promise
+things about its own functions, which is what nesting is for.
+
+`W0303` is left saying one thing: this claim's component is anchored at another crate, so
+its contract is read for callers here and its `checks:` have to run where that crate is.
 
 ### What a component buys you today
 
@@ -1161,6 +1163,7 @@ would make deleting the note the cheapest fix.
 | `uses:` (capabilities) | Declared only | none |
 | `owns:` (ownership) | Declared only | none |
 | `state:` (the structure a component holds) | The type and every named field must resolve, or Ply says it could not check; that the component holds one is **declared only** | `A0414`, `A0415`, `W0413` |
+| `holds:` (what must always be true of that structure) | `check` reads each line and refuses one it cannot parse (`E0506`); `verify` **checks it against the real type**, by building a value through the type's own constructor and putting it through a generated sequence of the type's own operations, asserting every clause after each one (`V0511`, `W0414`–`W0418`) | `E0506` here; the rest under `verify` |
 | `pure:` | Declared only | none |
 | `strict:` | Declared only — read by the renderers, nothing else | none |
 
@@ -1342,6 +1345,62 @@ mistake, and one that reads exactly like a correct document if nobody checks for
 
 A binary-only crate works too: its modules are code like any other, and a crate whose
 root is `main.rs` can still say what it holds.
+
+### `holds:` — what must always be true of that structure
+
+`show:` names fields so a reader can see them. `holds:` says something about them that a
+run can be wrong about:
+
+```yaml
+components:
+  book:
+    anchor: ledger::book
+    state:
+      of: OrderBook
+      show: [bids, cap]
+      holds:
+        - "state.bids.len() <= state.cap"
+        - "|b| b.best_bid() <= b.best_ask()"
+```
+
+Write each line as a Rust expression about the value. A bare expression calls it `state`;
+a closure lets you name it yourself. Those are the same two forms `ensures:` takes.
+
+**What Ply does with it.** It makes an `OrderBook` the only way it honestly can — by
+calling the type's own constructor, respecting whatever that constructor requires, and
+rejecting rather than unwrapping one that can fail. Then it calls the type's own public
+methods on it, in a generated sequence, and checks every line you wrote after the
+constructor and again after **every single method call**. That last part is the point: a
+structure that is fine when you make it and wrong four calls later is exactly the bug
+nobody catches by hand, and the report tells you how many calls in it went wrong.
+
+**What "checked" means here, precisely.** Checked across the states this run could reach,
+and the report tells you where that stops. A method whose argument Ply cannot build is
+named rather than quietly skipped, and a second constructor Ply never started from is
+named too — so you see which states were never visited instead of assuming there were
+none. The verdict counts the values actually built, not the number asked for.
+
+**When it cannot check, it says so and never passes you.** The structure lives in another
+crate (`W0414`); no type of that name is declared under your anchor, or more than one is
+(`W0415`); Ply has no way to build one (`W0416`); the run finished and never managed to
+build a single value, because the constructor turned every one away (`W0417`) — that is
+reported as no evidence at all, never as a pass. If fewer values were built than asked
+for, or the run could not call every operation, the report says so and names them
+(`W0418`). If one line will not parse, **none** of that type's lines are checked
+(`E0506`) — checking the readable half and reporting it as checked is the failure this
+refuses. A promise the code really breaks is `V0511`, and it quotes the line and the step.
+
+**Not stored, and not reused.** A `holds:` result is earned fresh every run: it is never
+written to `ply.lock` and never carried forward, so a crate whose every function claim was
+reused still compiles a harness for its structure promises. That is a gap, not a design —
+recorded rather than left for you to notice from a build time.
+
+**A broken promise is only ever reported when the check really ran.** A line can read as
+perfectly good Rust and still not compile against the real type — a field you renamed, a
+method that takes an argument. The first version of this feature called that a violation,
+which is a false accusation about your code that reads exactly like a true one. Now the
+check has to be seen to run before its failure means anything; otherwise you get the
+compiler's own error and no verdict at all.
 
 Two cases Ply cannot follow, both of which warn rather than pass you: a crate that
 renames its library with `[lib] name` different from its package name, and a crate you

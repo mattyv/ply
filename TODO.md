@@ -19,6 +19,131 @@
       **First step:** one fixture with a hand test that kills a mutant the generated
       examples miss, red before the feature and green after.
 
+## Landed: the structure-promise review, and what it found — 2026-09-04
+
+A review of the `holds:` feature (the commit below) found the feature's own green paint,
+plus five smaller holes. All fixed in `crates/ply-cli/src/verify.rs`,
+`crates/ply-core/src/fuzz_gen.rs` and the visual layer; every fix carries a test that
+goes red when the fix is removed.
+
+- [x] **THE BIG ONE: a structure nothing could be built of reported `fuzzed(256)`.** A
+      constructor returning `Err` for every input, or with a precondition nothing
+      satisfies, left the run finishing cleanly with no value ever made -- and the verdict
+      read 256 cases of evidence, exit 0, no diagnostic. The generated run now counts the
+      histories a value was actually built for, the verdict is read off that count, and
+      zero is `unclaimed` with `W0417` saying why. A run narrower than it asked for says
+      so (`W0418`).
+- [x] **Coverage disclosures were dropped.** The receiver machinery already names the
+      operations it could not call and the constructors it never started from; the
+      invariant path threw them away, so Ply's own kernel reported a clean number beside
+      two fn claims on the same type that both warned `StatusSet::extend` was never
+      called. Now surfaced (`W0418`) and marked `partial-history` on the node.
+- [x] **The severity was hardcoded.** Every one of these diagnostics went out as a
+      warning, including `E0506`, which the registry calls an error -- so `--fail-on
+      error` exited 0 on a document whose promise could not be read. Severity now comes
+      from the registry, so the table and the emitter cannot disagree.
+- [x] **`check` said "no problems" about a document `verify` refused.** It now reads each
+      `holds:` line and reports one it cannot parse, which is the same two-commands-two-
+      answers failure this repo already names for fn keys.
+- [x] **`check` and `verify` disagreed about whose type it is.** `verify` used a
+      crate-wide lookup and happily checked a same-named type declared somewhere else,
+      while `check` refused it by name. `verify` now scopes to the component's own anchor.
+      An ambiguous name gets its own sentence instead of "no type by that name", which
+      was false.
+- [x] **Two components promising things about one type collided**: same generated module
+      name, neither compiled, and each was told every other claim had run. The module name
+      now carries the component. The name is also derived once and passed to both the
+      generator and the test filter -- deriving it twice is what let them drift.
+- [x] **The drawing counted a structure promise as a function.** A document with one
+      structure promise and no functions read "0 functions · 1 broken". The node has its
+      own kind now. A component whose only claim is a structure promise is also no longer
+      called "hollow -- promises nothing yet", printed one line under the promise, and its
+      declared ceiling counts the promise.
+
+**Test adequacy, measured rather than assumed.** The reviewer found four one-line
+breakages of the production code that every test survived: dropping the operation-argument
+imports, deleting the assertion that runs straight after the constructor, checking only
+the clauses that parse, and never refusing a timed-out run. Three now have a test that
+dies on them (the fourth, the timeout, still has none -- **KNOWN GAP**). Each new test was
+confirmed by making the breakage, watching it go red with a message naming the real
+defect, and reverting.
+
+**KNOWN GAP: a `holds:` result is never recorded or reused.** Any structure promise forces
+a harness compile even when every fn claim in the crate was reused. Written down in the
+spec and SCHEMA rather than left to be discovered from a build time.
+
+## Landed: a structure can promise something about itself, and Ply checks it — 2026-09-04
+
+Asked for by the maintainer, the second half of "push the ply.yaml file and rendering down
+to function and collection level". §5.4c has always admitted that a type's own invariants
+are **assumed, never asserted**, so a proof could rest on "the bids are sorted" while the
+code quietly breaks it. That assumption can now be written down and checked.
+
+- [x] **`holds:` under `state:`.** Each line is a Rust expression about the value -- a
+      bare one names it `state`, a closure names it whatever you like, the same two forms
+      `ensures:` takes.
+- [x] **Checked by building one and using it.** Ply calls the type's own constructor,
+      respecting its precondition and rejecting rather than unwrapping a fallible one,
+      then calls the type's own public operations in a generated sequence, asserting every
+      clause after the constructor and after **every single operation**. A structure that
+      is fine when made and wrong four calls later is the bug nobody catches by hand, and
+      the report says how many calls in.
+- [x] **Every non-answer is a non-answer, never a pass**: structure in another crate,
+      no type of that name, no way to build one. A clause that will not parse holds back
+      *every* clause on that type rather than checking the readable half.
+- [x] **Ply's own kernel carries one**: a status set can never hold more than the seven
+      kinds of status that exist. It earns `fuzzed(256)` and shows in the drawing.
+- [x] **Drawn and written out**: the box says the structure promises something about
+      itself, the tooltip quotes each promise, and the text form lists them above the
+      fields -- what is binding should not be found by reading past twenty field lines.
+
+**THE FAILURE THIS NEARLY SHIPPED WITH, kept as a test.** The first version reported a
+clause that could not *compile* against the real type as a **violation** -- a false
+accusation about the author's code, worded identically to a true one. It passed its own
+"catches a real break" test for the wrong reason: the harness failed to build and that
+read as a broken promise. The companion test (a type that keeps its promise must come
+back clean) is what caught it. A violation now requires that the check was observed to
+run; otherwise the verdict is a tool error quoting the compiler.
+
+**Not linked to proofs yet, and the spec says so.** A `bounded` check still does not
+consult these clauses -- the invariant it assumes and the invariant now carrying evidence
+are two facts side by side, not one. Linking them is the next step, not a claim made here.
+
+## Landed: a module can be a component and still promise things — 2026-09-04
+
+Asked for by the maintainer ("can we push the ply.yaml file and rendering down to
+function and collection level?"). A function claimed inside a box anchored at a module
+used to be drawn, counted, and never checked: the key was read from the crate root
+whatever the box said, so it resolved to nothing and was declined by name. Ply's own
+library document was written around that limit and said so in its own header.
+
+- [x] **A function key is read relative to the box it is written in.** `StatusSet::len`
+      inside the box for `ply_core::kernel` names `kernel::StatusSet::len` and runs. A box
+      anchored at the crate root leaves the key untouched, so every claim written before
+      this resolves exactly as it did.
+- [x] **All four readers agree**, because there is now one place that resolves a key:
+      `verify`, `check`, `audit` and the assumed-contract scan all go through it. Two
+      commands disagreeing about which claims point at real code is the failure this
+      project has already had once.
+- [x] **A promise written inside a nested box is now assumable at a boundary.** The map
+      callers consult read only the top level of the document, so a promise one level down
+      was drawn, listed by `audit`, and silently missing from it.
+- [x] **The retired advice is gone**, not left to be followed: the warning that told a
+      reader to move the claim up and respell the key would now be advice to undo a
+      feature. It says one thing, about another crate.
+- [x] **Ply's own library is written the new way and re-rendered.** Four module boxes,
+      each with the structure it holds and the functions that promise things about it.
+
+**A second defect fell out of it, and it is the bigger one.** The generated harness wrote
+every struct or enum name bare, assuming types live at the crate root. A receiver built by
+calling a constructor and then a sequence of the type's own methods passes arguments to
+those methods, and a type reached only that way never got its `use` line -- so the harness
+crate failed to compile, and because one harness is shared by every claim in a crate,
+**every** claim came back a tool error, including claims with nothing but scalars in them.
+Ply's own six promises had been in exactly that state, reporting a broken harness rather
+than a verdict, for as long as they have existed. Five of the six now earn `fuzzed(256)`;
+the sixth is refused by name for a reason that has nothing to do with this.
+
 ## Landed: a documentation change no longer runs the full suite — 2026-09-03
 
 Asked for by the maintainer. The end-to-end shards install Kani and take a quarter of an

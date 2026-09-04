@@ -214,6 +214,13 @@
                 "type": "string"
               },
               "description": "Field names worth drawing. Omitted draws the header line alone."
+            },
+            "holds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "What must be true of this value at all times, as Rust expressions over it. Each is a closure naming the value (`|book| book.bids.len() <= book.cap`) or a bare expression calling it `state`. Ply builds a value through the type's own constructor, calls the type's own operations on it, and asserts every clause after each one."
             }
           },
           "required": [

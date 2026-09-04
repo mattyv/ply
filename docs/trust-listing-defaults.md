@@ -231,7 +231,8 @@ Done:
 
 Still open, and untouched here:
 
-- [ ] A claim under a module anchor still cannot run (`W0303`).
+- [x] A claim under a module anchor runs (2026-09-04): its key is read relative to the
+      component's own anchor. `W0303` is now only about another crate.
 - [ ] `docs/SCHEMA.md` §14's two stale limits — "only top-level functions in `src/lib.rs`
       can be verified" and the vacuous-boundary-promise line — belong to the work that
       fixed them.
