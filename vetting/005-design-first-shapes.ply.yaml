@@ -1,0 +1,77 @@
+# Vetting 005 -- design-first state shapes.
+#
+# ACCEPTED INTO THE GRAMMAR (2026-09-04). This document was written as a
+# proposal, before `show:`'s mapping form existed -- vetting scenarios are
+# authored in the grammar before the tool speaks it, argued with, and either
+# accepted into the spec or refused. This one was accepted: see
+# The-Ply-Spec.md's `state:` section ("A document may declare a field's
+# shape") and 005-design-first-shapes.md for the review that closed it.
+# It validates against schema/ply.schema.json and renders unchanged from
+# what is written below.
+#
+# The scenario: a settlement service being designed. No code exists yet.
+# That is not a limitation of the example, it IS the example -- this is
+# the case the feature exists for: a design legible before its
+# implementation.
+
+ply: 1
+
+components:
+
+  # Today's form, unchanged and still the default: names only, shapes read
+  # from source. With no crate under this document, Ply draws `state
+  # Instruction` and no rows at all -- the case this scenario is about.
+  intake:
+    anchor: settlement::intake
+    state:
+      of: Instruction
+      show: [id, amount_cents, received_at]
+
+  # PROPOSED form: `show:` as a mapping from field name to declared shape.
+  # The author is saying what KIND of thing each field is -- never its type.
+  # `queued` is a sequence; whether it ends up a `Vec`, a `VecDeque` or an
+  # arena index is the compiler's business and not restated here.
+  ledger:
+    anchor: settlement::ledger
+    owns: [Ledger]
+    state:
+      of: Ledger
+      show:
+        by_account: map        # a lookup table, keyed
+        queued: list           # ordered, many
+        last_settled: optional # may not be there
+        total_cents: scalar    # one value
+    fns:
+      Ledger::post:
+        checks: [bounded(2)]
+
+  # A shape a design genuinely wants to state early: this is the component
+  # whose whole risk is "a set, not a list" -- duplicates must not settle
+  # twice. Declaring `set` here is a design claim worth being held to.
+  dedupe:
+    anchor: settlement::dedupe
+    pure: true
+    state:
+      of: SeenIds
+      show:
+        seen: set              # each once, no order
+    fns:
+      SeenIds::admit:
+        checks: [bounded(3), fuzz(64)]
+
+  # Mixed: two fields whose shape the author is sure of, one they are not.
+  # An omitted field is not a declaration -- it draws as it does today,
+  # which with no code under the document means no row.
+  reporting:
+    anchor: settlement::reporting
+    state:
+      of: Report
+      show:
+        rows: list
+        summary: composite     # a shape of its own, more inside
+        cursor:                # deliberately undeclared
+
+edges:
+  - intake -> ledger
+  - ledger -> dedupe
+  - ledger -> reporting

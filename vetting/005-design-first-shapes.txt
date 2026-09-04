@@ -1,0 +1,61 @@
+This is a Ply transcript: everything the diagram of this document shows — every box, arrow, and rule, and all the text that is otherwise visible only by hovering — written out in full.
+It is generated from that document, like a compiler's output, and nothing in it is written by hand. Editing this text changes nothing; edit the ply.yaml document and generate it again.
+No result reaches this page. Every line below is a declaration or a promise, never a result — whatever `cargo ply verify` has found, it is reported there and never here.
+
+ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
+
+4 components · 2 functions · 0 promise nothing
+("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
+
+components:
+
+  component intake — maps to Rust module settlement::intake
+    state Instruction — the structure this component holds
+      this document asks to show id, amount_cents, received_at and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+    hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
+
+  component ledger — maps to Rust module settlement::ledger
+    owns Ledger — only this component may mutate them
+    state Ledger — the structure this component holds, where `owns` says who may change one
+      by_account is a lookup table, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
+      queued is a list, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
+      last_settled is something that might not be there, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
+      total_cents is a single value, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
+    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+    that level comes from its weakest part, Ledger::post — nothing here counts as checked more strongly than the weakest thing inside it
+    fn Ledger::post
+      bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
+
+  component dedupe — maps to Rust module settlement::dedupe
+    pure — a sealed promise: this component declares no capabilities and may not use any. That is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so capability use inside this sealed component can still go unnoticed (§5.3)
+    state SeenIds — the structure this component holds
+      seen is a set, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
+    declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+    that level comes from its weakest part, SeenIds::admit — nothing here counts as checked more strongly than the weakest thing inside it
+    fn SeenIds::admit
+      bounded(3) — Kani symbolically checks supported inputs that satisfy requires against ensures; 3 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 3
+      fuzz(64) — tries 64 generated inputs that satisfy requires, then checks ensures
+
+  component reporting — maps to Rust module settlement::reporting
+    state Report — the structure this component holds
+      rows is a list, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
+      summary is a structure of your own, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
+      the document also asks to show cursor, which declares no shape of its own, so nothing more is said about it: a bare name carries no shape, and there is no code here to read one from
+    hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
+
+externals — systems and people outside this codebase: none declared
+
+edges — who may call whom, and what data flows where:
+  ("a -> b" means a may call b; that an undeclared cross-component call is forbidden is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so a call that crosses this line can still go unnoticed (§5.3))
+  ("a ~> b : T" means T data flows from a to b — declared so the flow is visible; nothing checks flows in v1)
+  intake -> ledger
+  ledger -> dedupe
+  ledger -> reporting
+
+forbidden calls: none declared
+
+profiles — named bundles of extra rules a component can adopt: none declared
+
+unresolved decisions held by the workspace as a whole: none declared
+
+routes — a public function this document names as the way to build a value of a type Ply has no other way in for: none declared

@@ -202,18 +202,28 @@
         },
         "state": {
           "type": "object",
-          "description": "The structure this component holds. `of` names the type; `show` names the fields worth drawing. Field names only -- the shapes come from the real source.",
+          "description": "The structure this component holds. `of` names the type; `show` names the fields worth drawing, and may also declare each one's shape. Never a type -- where code exists the source wins the drawing outright and a declared shape is only checked against it (A0416 on disagreement); with no code, the declared shape is what gets drawn.",
           "properties": {
             "of": {
               "type": "string",
               "description": "The type this component's state lives in, resolved under the component's anchor."
             },
             "show": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Field names worth drawing. Omitted draws the header line alone."
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": {
+                    "enum": ["scalar", "text", "list", "map", "set", "optional", "composite", null]
+                  }
+                }
+              ],
+              "description": "Field names worth drawing, either a bare list or a mapping from each name to one of seven shapes (scalar, text, list, map, set, optional, composite; a null value declares nothing). Never a type -- a Rust type such as `Vec<Order>` has nowhere to land here. Omitted draws the header line alone."
             },
             "holds": {
               "type": "array",

@@ -373,20 +373,13 @@ fn write_component(
         ));
     }
     if let Some(st) = &comp.state {
-        // The rows the drawing paints, resolved the same way it resolves
-        // them, so the two forms cannot drift apart.
-        let rows: Vec<&crate::harness::StateField> = state_fields
+        // The rows the drawing paints, resolved the exact same way
+        // (`state_shapes::rows_for`) so the two views cannot drift apart.
+        let resolved = state_fields
             .and_then(|idx| idx.get(qualified))
-            .map(|fields| {
-                st.show
-                    .iter()
-                    .filter_map(|w| fields.iter().find(|f| &f.name == w))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let total = state_fields
-            .and_then(|idx| idx.get(qualified))
-            .map(|f| f.len());
+            .map(|v| v.as_slice());
+        let rows = super::state_shapes::rows_for(st, resolved);
+        let total = resolved.map(|f| f.len());
         match total {
             Some(total) if !rows.is_empty() => out.push_str(&format!(
                 "{q}state {of} — the structure this component holds{contrast}. {shown} of \
@@ -420,34 +413,86 @@ fn write_component(
             ));
         }
         if rows.is_empty() {
-            if st.show.is_empty() {
+            if st.is_empty() {
                 out.push_str(&format!(
                     "{q}  no fields chosen to show — a real state type has many, and naming \
                      the ones that matter is the author's job\n"
                 ));
+            } else if resolved.is_some() {
+                // Code resolved and still no rows: every name in `show:`
+                // missed the real type's fields. Saying "there is no code
+                // here" would be false -- the code is exactly what refused
+                // these names, and `cargo ply check` reports each one.
+                out.push_str(&format!(
+                    "{q}  this document asks to show {}, but none of them is a field the \
+                     code's {of} really has, so none is described below — `cargo ply check` \
+                     refuses each one by name (A0415)\n",
+                    st.names().collect::<Vec<_>>().join(", "),
+                    of = st.of,
+                ));
             } else {
                 out.push_str(&format!(
-                    "{q}  this document asks to show {} — there is no code here to read them \
-                     from, so none is described below: what each field is comes from the \
-                     source, never from the document\n",
-                    st.show.join(", ")
+                    "{q}  this document asks to show {} and none of them declare a shape of \
+                     their own, so none is described below: a bare name carries no shape, and \
+                     there is no code here to read one from either\n",
+                    st.names().collect::<Vec<_>>().join(", ")
                 ));
             }
         } else {
             for row in rows {
-                let shape = super::state_shapes::classify(&row.ty, &row.rendered);
-                out.push_str(&format!(
-                    "{q}  {name} is {noun}, written `{written}`{hatch}\n",
-                    name = row.name,
-                    noun = shape.noun(),
-                    written = row.rendered,
-                    hatch = if super::state_shapes::cannot_build(&row.ty) {
-                        " — Ply has no way to make one of these, which is usually \
-                         why the functions around it come back unchecked"
-                    } else {
-                        ""
-                    },
-                ));
+                match row.origin {
+                    super::state_shapes::RowOrigin::Read { ty, cannot_build } => {
+                        out.push_str(&format!(
+                            "{q}  {name} is {noun}, written `{written}`{hatch}\n",
+                            name = row.name,
+                            noun = row.shape.noun(),
+                            written = ty,
+                            hatch = if cannot_build {
+                                " — Ply has no way to make one of these, which is usually \
+                                 why the functions around it come back unchecked"
+                            } else {
+                                ""
+                            },
+                        ));
+                    }
+                    super::state_shapes::RowOrigin::Declared => {
+                        out.push_str(&format!(
+                            "{q}  {name} is {noun}, declared by the document — there is no \
+                             code here yet to check it against; once the code exists, the \
+                             source decides what is described here and this declaration is \
+                             only checked against it\n",
+                            name = row.name,
+                            noun = row.shape.noun(),
+                        ));
+                    }
+                }
+            }
+            // A mapping may mix declared and bare entries. With no code, a
+            // bare entry draws no row -- but it is still something the
+            // document says, and this page promises to leave nothing out,
+            // so the names are restated with the reason nothing more can
+            // be said about them.
+            if resolved.is_none() {
+                let bare: Vec<&str> = st
+                    .show
+                    .iter()
+                    .filter(|f| f.declared.is_none())
+                    .map(|f| f.name.as_str())
+                    .collect();
+                match bare.as_slice() {
+                    [] => {}
+                    [one] => out.push_str(&format!(
+                        "{q}  the document also asks to show {one}, which declares no shape \
+                         of its own, so nothing more is said about it: a bare name carries \
+                         no shape, and there is no code here to read one from\n",
+                    )),
+                    many => out.push_str(&format!(
+                        "{q}  the document also asks to show {names}, which declare no shape \
+                         of their own, so nothing more is said about them: a bare name \
+                         carries no shape, and there is no code here to read one from\n",
+                        names = many.join(", "),
+                    )),
+                }
             }
         }
     }

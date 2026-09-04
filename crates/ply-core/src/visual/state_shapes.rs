@@ -20,7 +20,8 @@
 //! most useful thing a reader can be shown about a component, because it is
 //! the reason its functions come back unsupported.
 
-use crate::harness::RustType;
+use crate::harness::{RustType, StateField};
+use crate::model::{DeclaredShape, StateClaim};
 
 /// One of §7.1's seven state-field silhouettes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +85,101 @@ impl FieldShape {
                  inside it than this row shows"
             }
         }
+    }
+}
+
+impl DeclaredShape {
+    /// The [`FieldShape`] a document's declared token draws as, or is
+    /// compared against once code exists. `optional` maps onto the same
+    /// [`FieldShape::Maybe`] a real `Option<T>` classifies as -- deliberately,
+    /// since [`classify`] lets a presence wrapper win over what it wraps
+    /// (`Option<Vec<Order>>` is `Maybe`, not `List`), and a declaration has
+    /// to agree with the same rule or every `optional` declaration over a
+    /// wrapped collection would report a false `A0416`. `composite` maps onto
+    /// [`FieldShape::Own`], the same "there is more inside than this row
+    /// shows" silhouette a struct or enum of the author's own gets.
+    pub fn to_field_shape(self) -> FieldShape {
+        match self {
+            DeclaredShape::Scalar => FieldShape::Scalar,
+            DeclaredShape::Text => FieldShape::Text,
+            DeclaredShape::List => FieldShape::List,
+            DeclaredShape::Map => FieldShape::Map,
+            DeclaredShape::Set => FieldShape::Set,
+            DeclaredShape::Optional => FieldShape::Maybe,
+            DeclaredShape::Composite => FieldShape::Own,
+        }
+    }
+}
+
+/// Where one drawn row's shape came from -- real code, read and classified,
+/// or a document's own declaration with no code yet to check it against.
+/// [`rows_for`]'s whole job is choosing between these two, once, so the
+/// renderer and the transcript never have to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RowOrigin {
+    /// Read off real source. `ty` is the type exactly as the source spells
+    /// it, for the row's own type column; `cannot_build` is whether Ply has
+    /// any way to make a value of it (the hatch).
+    Read { ty: String, cannot_build: bool },
+    /// No code was there to read; the shape drawn is the one the document
+    /// declared. Never hatched -- "cannot build" is the sampling engine's
+    /// own answer about real code, and there is no code here for it to
+    /// answer about.
+    Declared,
+}
+
+/// One row [`rows_for`] decided belongs on the drawing: its shape, its
+/// field name, and where that shape came from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowSpec {
+    pub name: String,
+    pub shape: FieldShape,
+    pub origin: RowOrigin,
+}
+
+/// The one decision of which rows a `state:` claim draws, shared by the SVG
+/// renderer, the transcript, and (per the spec's own rule) any future
+/// caller that resolves state some other way -- so all of them draw the
+/// same picture from the same two facts: what the document asked for, and
+/// what (if anything) was resolved against real source.
+///
+/// **`resolved.is_some()` is the only gate, full stop.** Code exists ->
+/// rows come only from it, and a declaration in `show:` contributes nothing
+/// to the drawing (§7.1: "the code wins the drawing outright"). No code ->
+/// each `show:` entry that declared a shape becomes a row of that shape; an
+/// entry that declared nothing (the list form, or an explicit `null`) draws
+/// no row, exactly as before this feature existed. A declared row is never
+/// counted -- counting happens one level up, from `resolved`'s own length,
+/// which is `None` on exactly this branch.
+pub fn rows_for(state: &StateClaim, resolved: Option<&[StateField]>) -> Vec<RowSpec> {
+    match resolved {
+        Some(fields) => state
+            .show
+            .iter()
+            .filter_map(|wanted| {
+                let field = fields.iter().find(|f| f.name == wanted.name)?;
+                Some(RowSpec {
+                    name: field.name.clone(),
+                    shape: classify(&field.ty, &field.rendered),
+                    origin: RowOrigin::Read {
+                        ty: field.rendered.clone(),
+                        cannot_build: cannot_build(&field.ty),
+                    },
+                })
+            })
+            .collect(),
+        None => state
+            .show
+            .iter()
+            .filter_map(|wanted| {
+                let shape = wanted.declared?.to_field_shape();
+                Some(RowSpec {
+                    name: wanted.name.clone(),
+                    shape,
+                    origin: RowOrigin::Declared,
+                })
+            })
+            .collect(),
     }
 }
 
@@ -463,5 +559,91 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every declared token maps onto a shape, and `optional` and
+    /// `composite` map onto the same silhouette a real `Option<T>` and a
+    /// real struct/enum classify as -- otherwise a declaration that agrees
+    /// with the code by every reasonable reading could still draw or
+    /// compare as something else.
+    #[test]
+    fn every_declared_token_maps_to_the_shape_it_names() {
+        let cases: &[(DeclaredShape, FieldShape)] = &[
+            (DeclaredShape::Scalar, FieldShape::Scalar),
+            (DeclaredShape::Text, FieldShape::Text),
+            (DeclaredShape::List, FieldShape::List),
+            (DeclaredShape::Map, FieldShape::Map),
+            (DeclaredShape::Set, FieldShape::Set),
+            (DeclaredShape::Optional, FieldShape::Maybe),
+            (DeclaredShape::Composite, FieldShape::Own),
+        ];
+        for (token, want) in cases {
+            assert_eq!(
+                token.to_field_shape(),
+                *want,
+                "{token:?} should draw as {}",
+                want.noun()
+            );
+        }
+    }
+
+    /// [`rows_for`]'s central promise, stated as a unit test one level
+    /// below the drawing: with real fields resolved, a declaration
+    /// contributes nothing -- rows come only from the code, in the shape
+    /// the code has, never the shape the document asked for.
+    #[test]
+    fn resolved_fields_win_over_a_disagreeing_declaration() {
+        let state = StateClaim {
+            of: "Ledger".into(),
+            show: vec![crate::model::ShowField {
+                name: "queued".into(),
+                declared: Some(DeclaredShape::Map),
+            }],
+            holds: Vec::new(),
+        };
+        let fields = [StateField {
+            name: "queued".into(),
+            ty: RustType::Vec(Box::new(RustType::U64)),
+            rendered: "Vec<u64>".into(),
+        }];
+        let rows = rows_for(&state, Some(&fields));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].shape,
+            FieldShape::List,
+            "the code says `queued` is a list; the document's declared `map` must lose \
+             the drawing entirely, not merely disagree with it"
+        );
+        assert!(matches!(rows[0].origin, RowOrigin::Read { .. }));
+    }
+
+    /// The other half of the same promise: with nothing resolved, a
+    /// declared shape is what gets drawn, and a name with no declared
+    /// shape draws nothing at all -- unchanged from before this feature.
+    #[test]
+    fn with_nothing_resolved_only_declared_names_draw_rows() {
+        let state = StateClaim {
+            of: "Ledger".into(),
+            show: vec![
+                crate::model::ShowField {
+                    name: "queued".into(),
+                    declared: Some(DeclaredShape::List),
+                },
+                crate::model::ShowField {
+                    name: "cursor".into(),
+                    declared: None,
+                },
+            ],
+            holds: Vec::new(),
+        };
+        let rows = rows_for(&state, None);
+        assert_eq!(
+            rows.len(),
+            1,
+            "only `queued` declared a shape; `cursor` must draw no row"
+        );
+        assert_eq!(rows[0].name, "queued");
+        assert_eq!(rows[0].shape, FieldShape::List);
+        assert_eq!(rows[0].origin, RowOrigin::Declared);
     }
 }

@@ -70,7 +70,7 @@ codes!(
     E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0208, E0209, E0504, W0409, W0410,
     // --- Tier::Anchor: resolving a claim to real code (§5.2). ---
     E0301, E0304, E0306, // --- Tier::Crate: architecture, exact and sound (§5.3). ---
-    A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, W0413,
+    A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, A0416, W0413,
     // --- Tier::Item: architecture, approximate (§5.3) -- none of these
     // are built yet; see each row's status. ---
     A0402, A0403, A0404, A0406, A0407, A0408, W0411, W0412,
@@ -324,6 +324,14 @@ impl Code {
                 severity: Error,
                 spec_anchor: "§5.1",
                 gloss: "A component asks to show a field its state type does not declare. The finding names the fields that do exist, so a typo takes one guess to fix rather than three.",
+            },
+            A0416 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Error,
+                spec_anchor: "§5.1",
+                gloss: "A `show:` entry declares a field's shape, and once that field resolves against real code the shape disagrees with what the code really is. Only reachable where the field resolved at all -- with no code there is nothing to disagree with -- and naming both the declared shape and the real one, so the fix is always one edit: change the declaration, or treat the mismatch as the regression it is.",
             },
             A0410 => RuleEntry {
                 code: self,
