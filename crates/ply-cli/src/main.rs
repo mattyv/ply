@@ -403,6 +403,17 @@ fn render_command_with_format(
             document.ply
         );
     }
+    // §7.1's rule for `state:`: the document names the type and the fields,
+    // the *code* says what those fields are. So before drawing, read them --
+    // from the crate each component's anchor names, which is what lets a
+    // workspace document whose components live in six different crates draw
+    // all six. Nothing resolvable (no code yet, or a document somewhere with
+    // no crate under it) simply draws the type name alone. Resolved once,
+    // ahead of every drawn form below (JSON envelope, transcript, plain SVG)
+    // so none of them can disagree about what a component's state holds.
+    let source_root = input.parent().unwrap_or(Path::new("."));
+    let state_fields = ply_core::harness::resolve_state_fields(source_root, &document);
+
     if json {
         let visual = build_declared_visual_envelope(
             &document,
@@ -415,6 +426,7 @@ fn render_command_with_format(
                 RunOutcome::MissingEvidence,
             ),
             options,
+            Some(&state_fields),
         )?;
         let json = visual.to_json_pretty();
         return match output {
@@ -430,10 +442,7 @@ fn render_command_with_format(
         // contract is that it states everything the drawing shows.
         let transcript = ply_core::visual::transcript::render_transcript_with_state(
             &document,
-            Some(&ply_core::harness::resolve_state_fields(
-                input.parent().unwrap_or(Path::new(".")),
-                &document,
-            )),
+            Some(&state_fields),
         );
         return match output {
             Some(path) => std::fs::write(path, transcript)
@@ -444,14 +453,6 @@ fn render_command_with_format(
         };
     }
 
-    // §7.1's rule for `state:`: the document names the type and the fields,
-    // the *code* says what those fields are. So before drawing, read them --
-    // from the crate each component's anchor names, which is what lets a
-    // workspace document whose components live in six different crates draw
-    // all six. Nothing resolvable (no code yet, or a document somewhere with
-    // no crate under it) simply draws the type name alone.
-    let source_root = input.parent().unwrap_or(Path::new("."));
-    let state_fields = ply_core::harness::resolve_state_fields(source_root, &document);
     let svg = render_svg_with_state(&document, options, &state_fields)
         .map_err(|error| anyhow::anyhow!("could not render {}: {error}", input.display()))?;
 
