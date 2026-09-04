@@ -135,10 +135,12 @@ plain fact that `crates/ply-core/ply.yaml`'s own top-level anchor sits under `co
 file says what the parts are named and how they may depend on each other; this one says
 what they promise; and the first points at the second rather than repeating it.
 
-One caveat that belongs here rather than in a footnote: a promise written in this file is
-**not yet folded into the function's own checks**. It is drawn, it is counted, and the
-plumbing that would make a failing promise fail the run is a recorded gap in
-[TODO.md](TODO.md), not a claim being made on this page.
+A caveat that used to sit here — that a promise written in this file was drawn and
+counted but not yet checked against the function it was written for — was retired on
+2026-09-03: a `requires:`/`ensures:` clause in the document is now folded into the
+function's own checks, so a promise that fails now fails the run. `cargo ply check`
+says so itself: "Those contracts are used both ways: `verify` checks each function
+against its own … and callers may assume them at a boundary."
 
 ## What happened when Ply was pointed at itself
 
