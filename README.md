@@ -268,6 +268,63 @@ engine reported it; what you do not get is step 2, the runnable test. Ply says s
 (`W0541`) rather than writing a test with a guessed value in it, because a test built on a
 guess can pass while the promise is still broken.
 
+## What a contract is: `requires` and `ensures`
+
+Two halves of one statement — **what must be true going in, and what must be true coming
+out.**
+
+```rust
+#[ply::requires(amount <= 1_000)]              // callers must satisfy this
+#[ply::ensures(|result| *result >= amount)]    // the function guarantees this
+pub fn total(amount: u32, tier: u8) -> u32 {
+    amount + legacy_rate(tier)
+}
+```
+
+Read together: *given an amount of at most 1000, you get back at least what you put in.*
+`requires` is the function's price; `ensures` is what you buy. Under a plain `cargo build`
+both vanish — the macro re-emits your function unchanged, so there is no runtime cost and
+nothing about Ply in what you ship.
+
+### What they do, which depends on who is asking
+
+| | `requires` | `ensures` |
+|---|---|---|
+| **Generated cases** (`test`, `fuzz`) | A filter: inputs failing it are discarded, not counted, and never blamed on the function | The assertion each surviving case must pass |
+| **Proof** (`bounded`) | Narrows the space the prover searches | The thing it must prove for every point in that space |
+| **A caller** | Something the caller has to satisfy | Something the caller may assume without re-checking |
+
+That last row is the one people miss, and it is the reason contracts scale. When Ply proves
+a function that calls yours, it can stand on your `ensures` instead of walking into your
+body — which is what makes proving tractable in a real codebase rather than only in a toy
+one. The cost is that the result now rests on your promise, so Ply marks it as conditional
+rather than passing it silently, and tracks the debt until something checks that promise
+against your real code.
+
+### Watch what `requires` throws away
+
+Because `requires` filters, a precondition that is too narrow quietly makes a green result
+mean less: a promise checked on the 3 inputs that survived out of 256 generated is far
+thinner than `fuzzed(256)` sounds. Ply warns when the rejection rate is high, and the
+number it reports is the honest one — but the fix is yours, and it is usually to widen the
+precondition or give Ply a better way to build valid inputs.
+
+### Writing one
+
+Boolean Rust over the parameters and `result`: comparisons, `&&` / `||` / `!`, arithmetic,
+field access, `.len()`, `.is_ok()`, `matches!()`, literals. An `ensures` clause is a closure
+naming the returned value — `|result|`, and `*result` because it arrives by reference.
+
+`old(expr)` gives you the value an expression had **on entry**, which is how you say "the
+count went up by one" rather than only "the count is positive".
+
+You can also write both in `ply.yaml` instead of on the function. A clause written there is
+ANDed with any attribute on the function itself — both hold, neither replaces the other —
+which is how you give a promise to code you cannot or should not annotate.
+
+The full expression subset, the caveats, and the boundary rules are in
+[`docs/SCHEMA.md` §6](docs/SCHEMA.md).
+
 ## Which check to ask for, and what each one is worth
 
 `checks:` on a function names the evidence you want. They are not interchangeable, and
