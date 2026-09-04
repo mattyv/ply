@@ -8,57 +8,103 @@ ply: 1
 # rather than reporting zero problems ("this is not a count of zero problems,
 # it is a count of zero searches"). So the function-level picture lives here.
 #
-# The one component is anchored at the crate, because that is what makes its
-# function claims resolvable: a component anchored at a module inside the
-# crate is treated as belonging to somewhere else, and its functions are read
-# but never looked for. That is also why the modules are not nested components
-# here the way they are in the workspace file -- a function claimed inside a
-# module-anchored box would stop resolving. The module is carried in the
-# function's own name instead, so `kernel::` and `visual::` still group the
-# list for a reader.
+# The modules are nested components, and each carries its own functions. That
+# became possible on 2026-09-04: a function key is now read relative to its
+# component's own anchor, so `StatusSet::len` written inside the box anchored
+# at `ply_core::kernel` resolves to `kernel::StatusSet::len` and runs. Until
+# then a key was read from the crate root, so a claim written inside a
+# module-anchored box was drawn, counted, and never checked -- which is why
+# this file used to hold one crate-wide box with the module carried in each
+# function's name, and said so in this comment.
 #
-# Every promise below can be checked against the code by eye. They are
-# declarations, not results: `cargo ply verify` turns them into evidence, and
-# a promise written in this file is not yet folded into a function's own
-# checks -- a recorded gap, not a claim being made here.
+# Every promise below can be checked against the code by eye, and every one of
+# them is now folded into the function's own check (§5.4's "ANDed in").
 
 components:
   core:
     anchor: ply_core
     note: >-
       Everything Ply knows how to do, with no terminal attached.
-    # What this component holds. The type and every field named here are
-    # resolved against the real source when `cargo ply check` runs -- a field
-    # nobody declared is refused by name (A0415), never drawn, and the shape
-    # drawn beside each one is read from the code rather than written here.
-    # Four fields of eight: what was asked for, the tree of verdicts it
-    # produced, the diagnostics beside that, and the coverage that may or may
-    # not be there.
+    # What this component holds. The type and every named field are resolved
+    # against the real source when `cargo ply check` runs -- a field nobody
+    # declared is refused by name, never drawn, and the shape drawn beside
+    # each one is read from the code rather than written here. Four fields of
+    # eight: what was asked for, the tree of verdicts it produced, the
+    # diagnostics beside that, and the coverage that may or may not be there.
     state:
       of: Envelope
       show: [command, root, diagnostics, coverage]
-    fns:
-      kernel::StatusSet::len:
-        ensures:
-          - "result <= 7"
-        checks: [fuzz(256)]
-      kernel::StatusSet::union:
-        ensures:
-          - "result.len() >= self.len()"
-        checks: [fuzz(256)]
-      harness::last_two_segments:
-        ensures:
-          - "!result.is_empty() || path.is_empty()"
-        checks: [fuzz(256)]
-      harness::rust_type_from_source:
-        ensures:
-          - "result.is_none() || !src.is_empty()"
-        checks: [fuzz(256)]
-      visual::stable_element_id:
-        ensures:
-          - "result.starts_with(\"ply-\")"
-        checks: [fuzz(256)]
-      record::fingerprint:
-        ensures:
-          - "result.len() == 64"
-        checks: [fuzz(256)]
+    components:
+      kernel:
+        anchor: ply_core::kernel
+        # What the status set must always be true of itself, whatever has
+        # been inserted into it. There are seven kinds of status, so a set of
+        # them can never hold more than seven -- and the whole point of
+        # writing it here is that the claim is now checked rather than
+        # assumed: Ply builds a set through its own constructor, inserts and
+        # merges through its own operations, and looks again after each one.
+        state:
+          of: StatusSet
+          holds:
+            - "state.len() <= 7"
+        note: >-
+          Decides what a pile of results adds up to: the order that ranks one
+          kind of evidence above another, the rule that a parent is never
+          reported as stronger than its weakest part, and the flags that
+          travel upward beside a verdict without being confused for one.
+        fns:
+          StatusSet::len:
+            ensures:
+              - "result <= 7"
+            checks: [fuzz(256)]
+          StatusSet::union:
+            ensures:
+              - "result.len() >= self.len()"
+            checks: [fuzz(256)]
+      harness:
+        anchor: ply_core::harness
+        state:
+          of: ContractFn
+          show: [name, params, requires, ensures]
+        note: >-
+          Works out what a function's inputs are and whether Ply can make one
+          of each. This is the part that decides whether a function can be
+          checked at all, and it is where a refusal gets its reason.
+        fns:
+          last_two_segments:
+            ensures:
+              - "!result.is_empty() || path.is_empty()"
+            checks: [fuzz(256)]
+          rust_type_from_source:
+            ensures:
+              - "result.is_none() || !src.is_empty()"
+            checks: [fuzz(256)]
+      visual:
+        anchor: ply_core::visual
+        state:
+          of: VisualEnvelope
+          show: [svg, elements, diagnostics]
+        note: >-
+          The drawing, the prose form of the same facts, and the portable
+          package an editor reads. Nothing here decides anything; it only
+          shows what was decided.
+        fns:
+          stable_element_id:
+            ensures:
+              - "result.starts_with(\"ply-\")"
+            checks: [fuzz(256)]
+      record:
+        anchor: ply_core::record
+        state:
+          of: RecordEntry
+          show: [verdict, statuses, inputs]
+        note: >-
+          What was checked, and everything a result depended on. A stored
+          result is only reused when every one of those inputs still hashes
+          the same, which is what stops a stale green outliving the code that
+          earned it.
+        fns:
+          fingerprint:
+            ensures:
+              - "result.len() == 64"
+            checks: [fuzz(256)]

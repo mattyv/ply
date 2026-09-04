@@ -385,6 +385,19 @@ fn reject_unknown_version(value: &serde_json::Value) -> Result<(), VisualEnvelop
 }
 
 /// A stable semantic ID, independent of traversal order and run identity.
+/// Whether a component declares nothing that could ever earn evidence.
+///
+/// Not simply "no functions and no children": a component that says what
+/// must always be true of the structure it holds has made a claim a run can
+/// be wrong about, so calling it "a sketch waiting for claims" is false --
+/// and it was, printed directly beneath the promise itself, until `holds:`
+/// arrived and this predicate stopped being three copies of one expression.
+pub fn is_hollow(comp: &crate::model::Component) -> bool {
+    comp.fns.is_empty()
+        && comp.components.is_empty()
+        && comp.state.as_ref().is_none_or(|st| st.holds.is_empty())
+}
+
 pub fn stable_element_id(kind: &str, semantic_key: &str) -> String {
     let mut hash = blake3::Hasher::new();
     hash.update(b"ply-visual-element-v1\0");
@@ -669,7 +682,11 @@ fn collect_elements(
     out: &mut BTreeMap<String, VisualElement>,
     semantic_ids: &mut BTreeMap<String, String>,
 ) -> Result<(), VisualEnvelopeError> {
-    let semantic_key = if node.kind == "fn" {
+    // A leaf's key is qualified by its parent; a container's is its own id.
+    // `state` joined `fn` here when it arrived (2026-09-04): two components
+    // may each promise something about the same type, and an unqualified
+    // key gives both the same element id.
+    let semantic_key = if node.kind == "fn" || node.kind == "state" {
         parent_semantic_key
             .map(|parent| format!("{parent}::{}", node.id))
             .unwrap_or_else(|| node.id.clone())

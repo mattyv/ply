@@ -216,12 +216,9 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
     walk_fn_claims(&doc, |c| {
         claims += 1;
         let node_id = c.node_id();
-        let local = shared::is_local(&local_anchors, c.anchor);
-        let cf = if local {
-            harness::discover_fn(&lib_path, c.fn_name).ok()
-        } else {
-            None
-        };
+        let cf = c
+            .crate_root_key(&local_anchors)
+            .and_then(|p| harness::discover_fn(&lib_path, &p).ok());
 
         // §5.1: an `entry:` fn's own preconditions are assumptions about the
         // world outside. Deduplicated across the two places a contract can

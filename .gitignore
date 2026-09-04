@@ -10,3 +10,14 @@ __pycache__/
 # the accepted-survivors list, not this directory).
 mutants.out/
 mutants.out.old/
+
+# `verify` writes into the crate under test (a known gap in TODO.md), so a
+# run inside demos/ leaves these behind. Neither belongs in the repository:
+# `ply.lock` is a record of a run, and committing one invites a later run to
+# reuse a recorded verdict instead of earning it -- the whole point of this
+# demo is a run that earned something. The generated harness module is
+# rewritten on every verify. Dropped once already in 881e872; ignored here so
+# it stops being an easy mistake. Real projects DO commit ply.lock (D14) --
+# this is scoped to the demo on purpose.
+demos/verified-green/ply.lock
+demos/verified-green/src/ply_generated.rs

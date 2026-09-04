@@ -51,46 +51,92 @@ pub(crate) fn local_anchor_names(crate_dir: &Path) -> Vec<String> {
     }
 }
 
-/// Whether a component's `anchor:` names the crate Ply is standing in
-/// (§5.5): a component anchored elsewhere is a **boundary component**, whose
-/// contracts Ply reads rather than whose code it checks.
+/// Whether a component's `anchor:` names code inside the crate Ply is
+/// standing in (§5.5): a component anchored at another crate is a
+/// **boundary component**, whose contracts Ply reads rather than whose code
+/// it checks. A component anchored at a *module* of this crate is not that
+/// -- its code is right here -- so it is local, and its claims resolve
+/// through [`local_module_path`].
 pub(crate) fn is_local(local_anchors: &[String], anchor: &str) -> bool {
-    local_anchors.is_empty() || local_anchors.contains(&anchor.replace('-', "_"))
+    local_module_path(local_anchors, anchor).is_some()
+}
+
+/// The path from the crate root down to a component's code, when the
+/// component's `anchor:` names the crate being checked or a module inside
+/// it. `None` when the anchor names another crate.
+///
+/// An empty string is a real answer and means the crate root, so callers
+/// must distinguish it from `None` rather than testing for emptiness.
+///
+/// Before 2026-09-04 only the crate root counted as local, which made every
+/// function claimed inside a module-anchored component unrunnable: the key
+/// was read from the crate root, so a key written relative to the module
+/// resolved to nothing and the claim was declined by name. Ply's own
+/// workspace document is written that way throughout.
+pub(crate) fn local_module_path(local_anchors: &[String], anchor: &str) -> Option<String> {
+    // No readable manifest: every component is treated as local and every
+    // key read from the crate root, which is what happened before this
+    // function existed. A missing manifest degrades rather than mis-reports.
+    if local_anchors.is_empty() {
+        return Some(String::new());
+    }
+    let (root, module) = match anchor.split_once("::") {
+        Some((root, rest)) => (root, rest),
+        None => (anchor, ""),
+    };
+    local_anchors
+        .contains(&root.replace('-', "_"))
+        .then(|| module.to_string())
+}
+
+/// A fn key as the document writes it, resolved to the path from the crate
+/// root that names the same function -- which is the only spelling the
+/// resolver and the generated harness can use.
+pub(crate) fn crate_root_fn_key(module: &str, fn_key: &str) -> String {
+    if module.is_empty() {
+        fn_key.to_string()
+    } else {
+        format!("{module}::{fn_key}")
+    }
 }
 
 /// §5.4's external-spec route: every contract a `ply.yaml` declares for a
 /// function, keyed by the path a caller writes.
 ///
-/// A contract on a local component is keyed by the fn's own path; one on a
-/// boundary component is keyed by `<anchor>::<fn>`, which is how the call
-/// reads at the caller's site. This is the map §5.5's second branch
-/// consults to decide whether an unclaimed callee has a promise a caller
-/// may assume.
+/// A contract on a local component is keyed by the path from the crate root
+/// to the function -- the component's own module path plus the key, so a
+/// claim inside a module-anchored component keys the same way a call site
+/// inside this crate spells it. One on a boundary component is keyed by
+/// `<anchor>::<fn>`, which is how the call reads at the caller's site. This
+/// is the map §5.5's second branch consults to decide whether an unclaimed
+/// callee has a promise a caller may assume.
+///
+/// The walk is the shared one, so a contract written inside a **nested**
+/// component is found. It read only the top level until 2026-09-04, which
+/// meant a promise declared one level down was drawn, listed by `audit`,
+/// and silently absent from the map every caller consults.
 pub(crate) fn declared_contracts(
     doc: &Document,
     local_anchors: &[String],
 ) -> BTreeMap<String, DeclaredContract> {
     let mut declared = BTreeMap::new();
-    for (_, comp) in sorted_by_key(&doc.components) {
-        for (fn_key, claim) in sorted_by_key(&comp.fns) {
-            if claim.requires.is_empty() && claim.ensures.is_empty() {
-                continue;
-            }
-            let path = if is_local(local_anchors, &comp.anchor) {
-                fn_key.clone()
-            } else {
-                format!("{}::{}", comp.anchor, fn_key)
-            };
-            declared.insert(
-                path.clone(),
-                DeclaredContract {
-                    path,
-                    requires: claim.requires.clone(),
-                    ensures: claim.ensures.clone(),
-                },
-            );
+    walk_fn_claims(doc, |c| {
+        if c.claim.requires.is_empty() && c.claim.ensures.is_empty() {
+            return;
         }
-    }
+        let path = match local_module_path(local_anchors, c.anchor) {
+            Some(module) => crate_root_fn_key(&module, c.fn_name),
+            None => format!("{}::{}", c.anchor, c.fn_name),
+        };
+        declared.insert(
+            path.clone(),
+            DeclaredContract {
+                path,
+                requires: c.claim.requires.clone(),
+                ensures: c.claim.ensures.clone(),
+            },
+        );
+    });
     declared
 }
 
@@ -278,6 +324,21 @@ pub(crate) struct FnClaimRef<'a> {
     inherited: Option<InheritedChecks<'a>>,
 }
 
+impl FnClaimRef<'_> {
+    /// The path from the crate root that names this claim's function --
+    /// what the resolver and the generated harness both need -- or `None`
+    /// when the component anchors at another crate and there is nothing
+    /// here to resolve.
+    ///
+    /// A key is written relative to its component's anchor, so every reader
+    /// that hands one to the resolver goes through here rather than
+    /// resolving it a second way.
+    pub fn crate_root_key(&self, local_anchors: &[String]) -> Option<String> {
+        local_module_path(local_anchors, self.anchor)
+            .map(|module| crate_root_fn_key(&module, self.fn_name))
+    }
+}
+
 /// The checks list that actually governs one fn, and where it was written.
 pub(crate) struct Governing<'a> {
     /// The governing list. **Empty is an answer**: `checks: []` says "check
@@ -373,7 +434,10 @@ pub(crate) fn assumed_contracts(
         if !is_local(local_anchors, c.anchor) {
             return;
         }
-        let Ok(cf) = ply_core::harness::discover_fn(&lib_path, c.fn_name) else {
+        let Some(fn_path) = c.crate_root_key(local_anchors) else {
+            return;
+        };
+        let Ok(cf) = ply_core::harness::discover_fn(&lib_path, &fn_path) else {
             return;
         };
         // §5.1, through the one shared resolution: a fn that wrote no

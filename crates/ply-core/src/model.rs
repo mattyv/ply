@@ -125,6 +125,23 @@ pub struct StateClaim {
     /// matter, and choosing is the author's job, not Ply's.
     #[serde(default)]
     pub show: Vec<String>,
+    /// What must be true of this value at all times, written as Rust
+    /// expressions over it (2026-09-04).
+    ///
+    /// `show:` names fields so a reader can see them; this says something
+    /// about them that a run can be wrong about. §5.4c admits that a type's
+    /// own invariants are **assumed, never asserted**, so a proof can rest
+    /// on "the bids are sorted" while the code quietly breaks it. A clause
+    /// here is that assumption written down and checked: Ply builds a value
+    /// through the type's own constructor, calls the type's own operations
+    /// on it, and asserts every clause after each one.
+    ///
+    /// Each clause is either a closure naming the value (`|book|
+    /// book.bids.len() <= book.cap`) or a bare expression that calls it
+    /// `state` (`state.len() <= 7`) -- the same two forms `ensures:` accepts,
+    /// with the same reason: a reader who has written one has written both.
+    #[serde(default)]
+    pub holds: Vec<String>,
 }
 
 /// docs/plans/external-elements.md §3: a named outside party — a system or
