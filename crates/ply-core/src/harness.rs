@@ -681,7 +681,28 @@ impl RustType {
             // `String` need their own arm: the fallback would otherwise
             // inherit `false` from `is_bounded_supported`, which is
             // backwards here too.
-            RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => true,
+            // Recursive, and it has to be: this arm used to answer `true`
+            // for any struct or enum without looking inside it, so a field
+            // or constructor argument Ply cannot build passed the gate,
+            // reached codegen, and hit a panic that codegen writes *because*
+            // it trusts this gate. That took the whole run down -- exit 101,
+            // no JSON, every claim in the crate lost, not one honest
+            // refusal (2026-09-04, found by a `Vec<UserStruct>` field, which
+            // Ply's own `FingerprintInputs` has two of).
+            RustType::UserTypeCtor(plan) => plan
+                .ctor_params
+                .iter()
+                .all(|p| p.ty.is_fuzz_supported() && p.ty.is_fuzz_nestable()),
+            RustType::UserTypeFields(plan) => match &plan.shape {
+                UserTypeShape::Struct(fields) => fields
+                    .iter()
+                    .all(|p| p.ty.is_fuzz_supported() && p.ty.is_fuzz_nestable()),
+                UserTypeShape::Enum(variants) => variants.iter().all(|(_name, fields)| {
+                    fields
+                        .iter()
+                        .all(|p| p.ty.is_fuzz_supported() && p.ty.is_fuzz_nestable())
+                }),
+            },
             other => other.is_bounded_supported(),
         }
     }
@@ -6175,6 +6196,79 @@ fn crate_and_module_for_anchor(
 
 #[cfg(test)]
 mod tests {
+
+    /// Ply crashed on this shape: exit 101, no JSON, and every claim in the
+    /// crate lost -- not one refusal, the whole run. The gate said any user
+    /// struct is buildable without looking at its fields, so a field Ply
+    /// cannot build reached codegen, which panics by design because it
+    /// trusted the gate. Found 2026-09-04 by a struct with a
+    /// `Vec<UserStruct>` field, which is what Ply's own `FingerprintInputs`
+    /// has two of.
+    #[test]
+    fn a_struct_whose_field_ply_cannot_build_is_refused_not_accepted() {
+        let plan = UserTypeFieldsPlan {
+            type_name: "Outer".into(),
+            import_path: "Outer".into(),
+            shape: UserTypeShape::Struct(vec![Param {
+                name: "items".into(),
+                ty: RustType::Vec(Box::new(RustType::Unsupported("Inner".into()))),
+                by_ref: false,
+            }]),
+            skipped_constructor: None,
+        };
+        assert!(
+            !RustType::UserTypeFields(Box::new(plan)).is_fuzz_supported(),
+            "a field Ply cannot build makes the whole struct unbuildable -- \
+             saying otherwise sends an unbuildable type into codegen, which \
+             takes the entire run down"
+        );
+    }
+
+    /// The same hole one door along: a constructor argument Ply cannot
+    /// build. `Vec<Inner>` as a constructor parameter crashed identically.
+    #[test]
+    fn a_constructor_argument_ply_cannot_build_is_refused_not_accepted() {
+        let plan = ReceiverPlan {
+            type_name: "Outer".into(),
+            import_path: "Outer".into(),
+            constructor: "Outer::new".into(),
+            ctor_params: vec![Param {
+                name: "items".into(),
+                ty: RustType::Vec(Box::new(RustType::Unsupported("Inner".into()))),
+                by_ref: false,
+            }],
+            ctor_requires: None,
+            ctor_return: CtorReturn::Bare,
+            operations: vec![],
+            excluded_operations: vec![],
+            other_constructors: vec![],
+            max_sequence_len: 0,
+            route: None,
+        };
+        assert!(
+            !RustType::UserTypeCtor(Box::new(plan)).is_fuzz_supported(),
+            "a constructor argument Ply cannot build makes the type unbuildable"
+        );
+    }
+
+    /// The other half: this must not start refusing types that work today.
+    #[test]
+    fn a_struct_whose_fields_ply_can_build_is_still_accepted() {
+        let plan = UserTypeFieldsPlan {
+            type_name: "Ok".into(),
+            import_path: "Ok".into(),
+            shape: UserTypeShape::Struct(vec![
+                Param { name: "n".into(), ty: RustType::U32, by_ref: false },
+                Param {
+                    name: "names".into(),
+                    ty: RustType::Vec(Box::new(RustType::String)),
+                    by_ref: false,
+                },
+            ]),
+            skipped_constructor: None,
+        };
+        assert!(RustType::UserTypeFields(Box::new(plan)).is_fuzz_supported());
+    }
     /// `state:` names a type and the fields worth drawing, and the whole
     /// point of the grammar is that a document cannot lie about them: the
     /// fields come from the real source, and a name nobody declared is a

@@ -135,6 +135,72 @@ eight of them claimed in the section above). Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that
 cannot fail would turn all 54 green and mean nothing.
 
+## Landed: Ply crashed on a list-of-struct field — 2026-09-04
+
+Found by planning the wide-struct question, not by looking for it. **Exit 101, no JSON, and
+every claim in the crate lost -- not one honest refusal, the whole run.** Reproduced in a
+four-line crate before anything was changed:
+
+```rust
+pub struct Inner { pub name: String, pub n: u32 }
+pub struct Outer { pub items: Vec<Inner> }      // Ply panicked here
+```
+
+`is_fuzz_supported` answered `true` for any struct or enum without looking inside it, so a
+field Ply cannot build passed the gate, reached codegen, and hit a panic codegen writes
+*because* it trusts that gate ("safe: every caller gated on `is_fuzz_supported`").
+
+- [x] **The gate looks inside now** -- a struct's fields, an enum's variant fields, and a
+      constructor's arguments, each recursively. That crate reports `unsupported` with the
+      parameter named, which is the honest answer. Three tests: two red before the fix, one
+      guarding against newly refusing types that work today.
+
+      This is Ply failing to take its own advice at the sharpest possible point: the project
+      rule is to refuse with a named status rather than crash, and the crash was in the code
+      that decides whether to refuse.
+
+- [ ] **KNOWN GAP, deliberately not closed here.** This makes the shape refuse honestly; it
+      does not make it *work*. The plan's step 0 also wants the four sites that resolve a
+      field/variant/constructor/route type to walk containers the way a top-level parameter
+      already does, and the codegen panic turned into a reported tool error so a future
+      gate/codegen disagreement cannot take a run down at all. Both still open.
+
+## Open: the twelve-field ceiling is a tool artifact, and the plan to lift it — 2026-09-04
+
+A plan came back on why `record::fingerprint` cannot be checked. **The hypothesis in the
+brief was half right, and the wrong half mattered.**
+
+Right: the ceiling is an artifact of folding every leaf into one flat tuple, and the
+sampling library's tuple trait stops at 12. Confirmed by running it rather than reading the
+docs -- a flat 13-tuple does not compile; a nested `((12),(8))` compiles, runs 256 cases,
+and finds a bug planted on leaf 19 with shrinking intact.
+
+Wrong: `default()`-then-assign buys nothing. Ply already assembles the struct with an
+ordinary struct literal, so *construction* never had a ceiling -- only *generation* did.
+Assignment would additionally require `Default` and public fields, a strict subset of what
+the literal already does. Nested tuples chunked at 12 is the fix.
+
+Also found, and neither of us knew it: **the guard counts fields, the tuple counts leaves.**
+A 2-field struct holding two 7-field structs is 14 leaves, sails past the guard, and dies as
+raw compiler output.
+
+- [ ] Nest the tuple past 12 (one helper, applied only past 12 so every existing harness
+      stays byte-identical), delete `MAX_DIRECT_CONSTRUCTION_FIELDS` and its refusal arm,
+      flip the `fiveshapes` e2e test that currently asserts the refusal by name -- and give
+      its type a bug on a late field, so the test proves the 13th leaf is varied rather than
+      merely compiled.
+- [ ] Then `record::fingerprint` should earn `fuzzed(256)` with the existing public-fields
+      disclosure. Update the four places TODO.md and the skill say "all except fingerprint".
+- [ ] Rewrite `skills/ply-checkable-code` rule 4: wide structs are fine, and the real
+      constraints are public, named, and not `#[non_exhaustive]`.
+
+**An agent-written producer was considered and rejected for this type**, under the
+maintainer's steer that LLM help is acceptable. It is strictly weaker here and for a
+non-obvious reason: a producer's own arguments hit the same 12-limit, so it would have to
+fabricate 20 fields from at most 12 inputs -- a narrowing Ply cannot see and has no code to
+report, and a field added later but not to the producer would silently never be varied.
+Routes stay the right answer for types with real invariants and private fields.
+
 ## Landed: what the last refusal taught the writing skill — 2026-09-04
 
 `record::fingerprint` is the one claim in Ply's own library that earns nothing, and the
