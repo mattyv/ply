@@ -1784,6 +1784,25 @@ fn component_tip_lines(
                     of = st.of,
                     contrast = owns_contrast(comp),
                 ),
+                // A declared shape is drawn whenever there is no code to
+                // outrank it, so "none of them declare a shape" is only
+                // ever true here for bare names. Rows can also be missing
+                // *despite* a declaration -- this box is collapsed, or the
+                // named fields are not ones the resolved code has -- and
+                // that case must not claim nothing was declared.
+                show if show.iter().any(|f| f.declared.is_some()) => format!(
+                    "state {of}{contrast} — this document asks to show {names}, but this \
+                     box draws no row for them: either the box is collapsed, folding its \
+                     rows away, or a named field is not one the code really has — `cargo \
+                     ply check` names any field the code lacks",
+                    of = st.of,
+                    contrast = owns_contrast(comp),
+                    names = show
+                        .iter()
+                        .map(|f| f.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
                 show => format!(
                     "state {of}{contrast} — this document asks to show {names}, and none of \
                      them declare a shape of their own, so none is drawn: a bare name carries \
@@ -1798,11 +1817,35 @@ fn component_tip_lines(
                 ),
             }
         } else if state_rows_declared {
+            // A mapping may mix declared and bare entries; a bare entry
+            // draws no row with no code to read it from, but it is still
+            // something the document says, so the names are restated here
+            // rather than silently missing from the rows below.
+            let bare: Vec<&str> = st
+                .show
+                .iter()
+                .filter(|f| f.declared.is_none())
+                .map(|f| f.name.as_str())
+                .collect();
+            let also = match bare.as_slice() {
+                [] => String::new(),
+                [one] => format!(
+                    ". It also asks to show {one}, which declares no shape of its own, so \
+                     no row is drawn for it: a bare name carries no shape, and there is no \
+                     code here to read one from"
+                ),
+                many => format!(
+                    ". It also asks to show {}, which declare no shape of their own, so no \
+                     row is drawn for them: a bare name carries no shape, and there is no \
+                     code here to read one from",
+                    many.join(", ")
+                ),
+            };
             format!(
                 "state {of} — the structure this component holds{contrast}. The rows below \
                  are its fields, as the document declares them: there is no code here yet to \
                  check those declarations against. Once the code exists, it decides what gets \
-                 drawn and each declaration is only checked against it",
+                 drawn and each declaration is only checked against it{also}",
                 of = st.of,
                 contrast = owns_contrast(comp),
             )

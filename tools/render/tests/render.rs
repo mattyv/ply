@@ -161,6 +161,11 @@ mod layout_invariants {
             "tests/fixtures/hollow.ply.yaml",
             "tests/fixtures/qualified_refs.ply.yaml",
             "tests/fixtures/deny_stress.ply.yaml",
+            // §7.1 (2026-09-04): declared state rows drawn with no crate on
+            // disk -- vetting/005-design-first-shapes.md cites this run as
+            // the measurement that the declared rows pay ordinary row
+            // height without overflowing box or canvas.
+            "../../vetting/005-design-first-shapes.ply.yaml",
         ];
         let variants: Vec<(String, String)> = fixtures
             .iter()
@@ -3363,6 +3368,13 @@ fn every_drawn_label_lies_inside_the_canvas() {
             "vetting 003",
             include_str!("../../../vetting/003-trading-system.ply.yaml"),
         ),
+        // §7.1 (2026-09-04): the declared-shapes scenario --
+        // vetting/005-design-first-shapes.md cites this run as part of the
+        // measurement that its declared rows fit the ordinary layout.
+        (
+            "vetting 005",
+            include_str!("../../../vetting/005-design-first-shapes.ply.yaml"),
+        ),
     ];
     for (name, yaml) in docs {
         let doc = ply_render::model::parse_document(yaml)
@@ -4638,6 +4650,11 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
         "tests/fixtures/checks_inheritance.ply.yaml",
         "tests/fixtures/inherited_empty.ply.yaml",
         "tests/fixtures/externals.ply.yaml",
+        // §7.1 (2026-09-04): a mapping-form `show:` with declared shapes
+        // and one bare entry (`cursor:`) -- the bare name draws no row and
+        // must still be restated by the text, or the transcript has quietly
+        // dropped a line of the document.
+        "tests/fixtures/declared_shapes.ply.yaml",
     ] {
         let yaml = std::fs::read_to_string(fixture).unwrap();
         let doc = parse_document(&yaml).unwrap();
@@ -6186,6 +6203,22 @@ fn a_declared_only_box_never_draws_a_count() {
         !svg.contains("shown"),
         "seven fields drew rows here, and it would be easy to mistake that for something \
          to count -- but nothing was measured from code, so there is no number to draw:\n{svg}"
+    );
+
+    // The same promise over the committed scenario document --
+    // vetting/005-design-first-shapes.md cites this test for its `ledger`,
+    // `dedupe` and `reporting` boxes, so those boxes are what it must
+    // actually render.
+    let svg = render_fixture("../../vetting/005-design-first-shapes.ply.yaml");
+    for header in [">state Ledger<", ">state SeenIds<", ">state Report<"] {
+        assert!(
+            svg.contains(header),
+            "vetting 005's declared boxes must keep their bare type headers ({header}):\n{svg}"
+        );
+    }
+    assert!(
+        !svg.contains("shown"),
+        "vetting 005 has no code behind it, so no box may draw a count:\n{svg}"
     );
 }
 

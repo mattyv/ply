@@ -1643,6 +1643,61 @@ pub struct OrderBook {
         );
     }
 
+    /// The case anyone forking the comparison away from `classify()` would
+    /// get wrong: a presence wrapper wins over what it wraps, so
+    /// `Option<Vec<u64>>` *is* "might not be there" -- to the drawing and
+    /// to this comparison alike. A declared `optional` over it agrees (and
+    /// is counted); a declared `list` there is a genuine `A0416`, because
+    /// the wrapper is the fact that matters first. A reimplementation that
+    /// matched on `RustType` and let the inner `Vec` win would fail both
+    /// halves of this test at once.
+    #[test]
+    fn a_presence_wrapper_wins_the_comparison_exactly_as_it_wins_the_drawing() {
+        const WRAPPED: &str = r#"
+pub struct OrderBook {
+    pub pending: Option<Vec<u64>>,
+}
+"#;
+        let agree = state_probe(
+            WRAPPED,
+            "ply: 1\ncomponents:\n  book:\n    anchor: probe\n    state:\n      of: OrderBook\n      show:\n        pending: optional\n",
+        );
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(agree.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        let tally = check_anchors(agree.path(), &doc, &mut diagnostics);
+        assert!(
+            !diagnostics.iter().any(|d| d.code == "A0416"),
+            "declared `optional` agrees with `Option<Vec<u64>>` -- the wrapper wins, the \
+             same rule the drawing uses: {:?}",
+            diagnostics.iter().map(|d| &d.title).collect::<Vec<_>>()
+        );
+        assert_eq!(tally.declared_shapes_checked, 1);
+
+        let disagree = state_probe(
+            WRAPPED,
+            "ply: 1\ncomponents:\n  book:\n    anchor: probe\n    state:\n      of: OrderBook\n      show:\n        pending: list\n",
+        );
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(disagree.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        check_anchors(disagree.path(), &doc, &mut diagnostics);
+        let found = diagnostics
+            .iter()
+            .find(|d| d.code == "A0416")
+            .expect("declared `list` over `Option<Vec<u64>>` is a real disagreement");
+        assert!(
+            found.title.contains("something that might not be there")
+                && found.title.contains("Option<Vec<u64>>"),
+            "the finding must say the code's shape the way the drawing would: {}",
+            found.title
+        );
+    }
+
     use super::*;
 
     /// A crate directory with a `src/lib.rs` and a `ply.yaml`, and nothing

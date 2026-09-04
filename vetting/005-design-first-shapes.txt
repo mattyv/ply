@@ -40,6 +40,7 @@ components:
     state Report — the structure this component holds
       rows is a list, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
       summary is a structure of your own, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
+      the document also asks to show cursor, which declares no shape of its own, so nothing more is said about it: a bare name carries no shape, and there is no code here to read one from
     hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
 externals — systems and people outside this codebase: none declared

@@ -796,8 +796,9 @@ fifth still costs two — bisected one component at a time, and left out with th
 recorded in the document itself. Height is a real budget, and the honest way to spend it
 is per component with a measurement beside each, not by a rule declared once.
 
-Three things are checked. The first two are cheap resolution facts rather than
-behaviour; the third is the admission that the first two could not run:
+Four things are checked. The first two are cheap resolution facts rather than
+behaviour; the third is the admission that the first two could not run; the fourth
+is the one real comparison — a declared shape held to the source:
 
 1. `of:` names a type Ply can find under the component's anchor → else `A0414`.
 2. every name in `show:` is a field of that type → else `A0415`, naming the field and

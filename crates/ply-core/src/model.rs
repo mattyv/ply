@@ -197,8 +197,11 @@ pub enum DeclaredShape {
 impl DeclaredShape {
     /// The exact token an author writes in the document, and the exact
     /// word the bad-token error lists back to them -- kept as the one
-    /// place that spelling is written down.
-    const TOKENS: [(&'static str, DeclaredShape); 7] = [
+    /// place that spelling is written down. Public so the schema-agreement
+    /// test (`crates/ply-core/tests/schema.rs`) can hold the schema's
+    /// `enum` to exactly this list -- in both directions: a token added
+    /// here and forgotten there is a drift, not just the reverse.
+    pub const TOKENS: [(&'static str, DeclaredShape); 7] = [
         ("scalar", DeclaredShape::Scalar),
         ("text", DeclaredShape::Text),
         ("list", DeclaredShape::List),

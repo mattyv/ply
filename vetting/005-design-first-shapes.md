@@ -166,9 +166,11 @@ The code wins, always. Three outcomes, all implemented:
    the other six.** The presence wrapper still wins in the classifier —
    `Option<Vec<T>>` draws the dashed "might be missing" cell alone — so a declared
    `optional` over a wrapped collection *agrees* with the code rather than firing a false
-   `A0416`; that equivalence is pinned by
-   `resolved_fields_win_over_a_disagreeing_declaration` and the `optional` case in
-   `every_declared_token_maps_to_the_shape_it_names`
+   `A0416`; that equivalence is pinned end to end by
+   `a_presence_wrapper_wins_the_comparison_exactly_as_it_wins_the_drawing`
+   (`crates/ply-cli/src/check.rs`) — declared `optional` over `Option<Vec<u64>>` is
+   confirmed, declared `list` there is a real `A0416` — with the token→shape mapping
+   itself pinned by `every_declared_token_maps_to_the_shape_it_names`
    (`crates/ply-core/src/visual/state_shapes.rs`). The asymmetry named here stands as
    documented behaviour, not a defect: a read `optional` row still spells the real type
    (`Option<Vec<Order>>`) beside its glyph, while a declared one reads `declared`, because
@@ -180,6 +182,17 @@ The code wins, always. Three outcomes, all implemented:
    declaration to pass in silence the way a wrong one used to be the only thing that spoke.
    See `AnchorTally::declared_shapes_checked` and `anchor_detail` in
    `crates/ply-cli/src/check.rs`.
+
+3. **Does this earn its height? Closed: yes, measured rather than assumed.** This
+   document's `ledger` (4 rows), `dedupe` (1 row) and `reporting` (2 rows, `cursor`
+   contributing none) each pay exactly the same per-row height a read state box does — the
+   renderer draws a declared row through the identical `state_rows`/layout path, just with
+   `declared` in place of a real type. `tools/render/tests/render.rs`'s canvas invariants
+   (`everything_renders_inside_the_canvas`, `every_drawn_label_lies_inside_the_canvas`) run
+   over this document unchanged and pass, so no row overflows its box or the canvas at this
+   height. `005-design-first-shapes.svg`, rendered and committed alongside this file
+   exactly as `001`–`004` are, is the raster to eyeball: three boxes gain their state rows,
+   nothing else in the layout moves, and no arrow crosses a row it used not to.
 
 4. **When does a confirmed declaration retire? Closed: whenever the author wants, and both
    the confirmation and the `A0416` message say so.** There is no lint that forces or even
@@ -193,14 +206,3 @@ The code wins, always. Three outcomes, all implemented:
    burden §5 removed does not come back with an alarm attached: the alarm only ever fires
    on a genuine disagreement, never on a correct refactor that nobody bothered to also
    update the declaration for, because leaving it there was already always fine.
-
-3. **Does this earn its height? Closed: yes, measured rather than assumed.** This
-   document's `ledger` (4 rows), `dedupe` (1 row) and `reporting` (2 rows, `cursor`
-   contributing none) each pay exactly the same per-row height a read state box does — the
-   renderer draws a declared row through the identical `state_rows`/layout path, just with
-   `declared` in place of a real type. `tools/render/tests/render.rs`'s canvas invariants
-   (`everything_renders_inside_the_canvas`, `every_drawn_label_lies_inside_the_canvas`) run
-   over this document unchanged and pass, so no row overflows its box or the canvas at this
-   height. `005-design-first-shapes.svg`, rendered and committed alongside this file
-   exactly as `001`–`004` are, is the raster to eyeball: three boxes gain their state rows,
-   nothing else in the layout moves, and no arrow crosses a row it used not to.

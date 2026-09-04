@@ -179,6 +179,20 @@ fn the_schema_declared_shape_enum_and_the_parser_accept_exactly_the_same_tokens(
         "the enum must be the seven string tokens plus exactly one null: {enum_value:?}"
     );
 
+    // Exact equality with the parser's own token table, not merely "each
+    // schema token parses": that one-way check would stay green if a token
+    // were added to the parser and forgotten in the schema, which is the
+    // other half of the drift this test exists to refuse.
+    let parser_tokens: Vec<&str> = ply_core::model::DeclaredShape::TOKENS
+        .iter()
+        .map(|(t, _)| *t)
+        .collect();
+    assert_eq!(
+        string_tokens, parser_tokens,
+        "the schema's enum and the parser's token table must be the same list -- one \
+         vocabulary written down twice may not drift in either direction"
+    );
+
     for token in &string_tokens {
         let doc = ply_core::model::parse_document(&format!(
             "ply: 1\ncomponents:\n  book:\n    anchor: app::book\n    state:\n      of: \

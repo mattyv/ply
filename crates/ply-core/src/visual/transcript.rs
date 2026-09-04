@@ -418,6 +418,18 @@ fn write_component(
                     "{q}  no fields chosen to show — a real state type has many, and naming \
                      the ones that matter is the author's job\n"
                 ));
+            } else if resolved.is_some() {
+                // Code resolved and still no rows: every name in `show:`
+                // missed the real type's fields. Saying "there is no code
+                // here" would be false -- the code is exactly what refused
+                // these names, and `cargo ply check` reports each one.
+                out.push_str(&format!(
+                    "{q}  this document asks to show {}, but none of them is a field the \
+                     code's {of} really has, so none is described below — `cargo ply check` \
+                     refuses each one by name (A0415)\n",
+                    st.names().collect::<Vec<_>>().join(", "),
+                    of = st.of,
+                ));
             } else {
                 out.push_str(&format!(
                     "{q}  this document asks to show {} and none of them declare a shape of \
@@ -453,6 +465,33 @@ fn write_component(
                             noun = row.shape.noun(),
                         ));
                     }
+                }
+            }
+            // A mapping may mix declared and bare entries. With no code, a
+            // bare entry draws no row -- but it is still something the
+            // document says, and this page promises to leave nothing out,
+            // so the names are restated with the reason nothing more can
+            // be said about them.
+            if resolved.is_none() {
+                let bare: Vec<&str> = st
+                    .show
+                    .iter()
+                    .filter(|f| f.declared.is_none())
+                    .map(|f| f.name.as_str())
+                    .collect();
+                match bare.as_slice() {
+                    [] => {}
+                    [one] => out.push_str(&format!(
+                        "{q}  the document also asks to show {one}, which declares no shape \
+                         of its own, so nothing more is said about it: a bare name carries \
+                         no shape, and there is no code here to read one from\n",
+                    )),
+                    many => out.push_str(&format!(
+                        "{q}  the document also asks to show {names}, which declare no shape \
+                         of their own, so nothing more is said about them: a bare name \
+                         carries no shape, and there is no code here to read one from\n",
+                        names = many.join(", "),
+                    )),
                 }
             }
         }
