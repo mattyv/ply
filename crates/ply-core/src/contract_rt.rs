@@ -456,6 +456,34 @@ fn is_provably_numeric(expr: &Expr, cf: &ContractFn) -> bool {
     }
 }
 
+/// Every `use`-imported path a contract's own text names, as raw segments.
+///
+/// A promise may name something the function's file imported rather than
+/// defined (`Ordering`, from a `use std::cmp::Ordering;` at the top of the
+/// module). Both places that splice contract text -- the sampling harness
+/// and the counterexample replay test -- need those names in scope, and a
+/// second copy of this rule is how the two came to disagree once already
+/// (2026-09-04). `self::`/`super::` are skipped: they resolve against the
+/// generated module rather than the function's, so importing them would
+/// bring in the wrong thing rather than nothing.
+pub fn contract_use_paths(cf: &ContractFn) -> Vec<Vec<String>> {
+    let mut idents = std::collections::BTreeSet::new();
+    if let Some((expr, _)) = &cf.requires {
+        crate::fuzz_gen::collect_leading_idents(expr, &mut idents);
+    }
+    if let Some((closure, _)) = &cf.ensures {
+        crate::fuzz_gen::collect_leading_idents(&closure.body, &mut idents);
+    }
+    idents
+        .into_iter()
+        .filter_map(|ident| cf.use_aliases.get(&ident))
+        .filter(|segments| {
+            !matches!(segments.first().map(String::as_str), Some("self") | Some("super"))
+        })
+        .cloned()
+        .collect()
+}
+
 fn scalar_literal(v: &WitnessValue, ty: &RustType) -> Result<String> {
     let ty_name = ty.scalar_rust_name().unwrap_or("i128");
     Ok(match v {
@@ -603,10 +631,39 @@ pub fn render_cex_test(
     // into the user's crate would not compile, and `cargo test` would break
     // for a reason they did not cause (2026-09-04, found on a claim whose
     // promise calls its own function).
-    let module_import = match cf.path.rsplit_once("::") {
-        Some((module, _)) => format!("    use crate::{module}::*;\n"),
-        None => String::new(),
+    // `import_path()` already knows how many segments to drop -- one for a
+    // free function, two for `Type::method`, because the second-to-last
+    // segment there is a type and `use crate::Bucket::*` does not compile.
+    // Reusing it is what keeps this from being a second, disagreeing copy
+    // of the same split (2026-09-04 review, which caught exactly that).
+    let module_import = match cf.import_path().rsplit_once("::") {
+        Some((module, _)) if cf.is_method => format!(
+            "    #[allow(unused_imports)]\n    use crate::{module}::*;\n"
+        ),
+        _ if cf.is_method => String::new(),
+        // The allow is not optional: most promises name no sibling at all,
+        // so without it every nested replay carries an unused-import
+        // warning -- and a warning in a file the user never wrote is a
+        // broken build in any crate that denies them.
+        _ => match cf.path.rsplit_once("::") {
+            Some((module, _)) => format!(
+                "    #[allow(unused_imports)]\n    use crate::{module}::*;\n"
+            ),
+            None => String::new(),
+        },
     };
+
+    // The same names the sampling harness brings in, spelled for a file
+    // that lives inside the crate rather than beside it.
+    let contract_imports: String = contract_use_paths(cf)
+        .into_iter()
+        .map(|segments| {
+            format!(
+                "    #[allow(unused_imports)]\n    use {};\n",
+                segments.join("::")
+            )
+        })
+        .collect();
 
     let source = format!(
         "// Reproduces the counterexample for `{fname}` found by check\n\
@@ -614,8 +671,10 @@ pub fn render_cex_test(
          // function body or its contract change, and passes once they agree.\n\
          #[cfg(test)]\n\
          #[test]\n\
+         #[allow(non_snake_case)]\n\
          fn {test_name}() {{\n\
          {module_import}\
+         {contract_imports}\
          {lets}\n\
          \x20\x20\x20\x20{entry_lets}let result = &{fname}({args});\n\n\
          \x20\x20\x20\x20// Contract under test: #[ply::ensures({contract_text})]\n\
@@ -633,6 +692,7 @@ pub fn render_cex_test(
         code = diagnostic_code,
         test_name = test_name,
         module_import = module_import,
+        contract_imports = contract_imports,
         lets = lets,
         entry_lets = entry_lets,
         args = call_args.join(", "),
@@ -855,54 +915,123 @@ pub fn head(s: &str) -> String { s.chars().take(1).collect() }
 
     /// The worst failure this file can produce: a test written into the
     /// user's own crate that does not compile, so `cargo test` breaks for a
-    /// reason they did not cause. A promise may call a helper beside the
-    /// function it is written on (`derive_seed`'s calls itself). In the fuzz
-    /// harness that resolves, because the harness imports the function's own
-    /// module; the replay test sits at the crate root with `use super::*`,
-    /// where a name from a nested module is not in scope. Found 2026-09-04
-    /// by a claim on `fuzz_gen::derive_seed`, whose generated test failed to
-    /// build with "cannot find function `derive_seed` in this scope".
+    /// reason they did not cause.
+    ///
+    /// This one builds a real crate and runs it, because every cheaper
+    /// version of it was wrong. Two string-contains tests stood here first
+    /// and passed while the renderer emitted `use crate::Bucket::*;` for an
+    /// associated function -- a hard compile error -- and an unused import
+    /// for every promise that names no sibling, which is an error under
+    /// `-D warnings`. Asserting on the text is how both got through; the
+    /// only assertion that distinguishes them is whether rustc accepts it.
     #[test]
-    fn a_cex_test_for_a_nested_module_brings_that_module_into_scope() {
-        let cf = discover(
-            r#"
-#[ply::ensures(|result| *result == twice(x))]
-pub fn double(x: u32) -> u32 { x * 2 }
-pub fn twice(x: u32) -> u32 { x + x }
-"#,
-            "double",
-        );
-        // `discover` reads a bare file, so give the claim the module path a
-        // real nested claim would carry.
-        let mut cf = cf;
-        cf.path = "helpers::double".to_string();
-        let rendered =
-            render_cex_test(&cf, &[WitnessValue::UInt(3)], "fuzz(256)", "P0502", 1).unwrap();
-        assert!(
-            rendered.source.contains("use crate::helpers::*;"),
-            "a promise that names a helper beside its own function only resolves \
-             if that module is in scope:\n{}",
-            rendered.source
-        );
-    }
+    fn every_rendered_shape_compiles_and_fails_on_its_promise_not_its_syntax() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
 
-    /// The other half: a claim on a crate-root function must not gain a
-    /// `use crate::*`, which is both pointless and a new way to collide.
-    #[test]
-    fn a_cex_test_for_a_crate_root_fn_imports_nothing_extra() {
-        let cf = discover(
-            r#"
+        // Three shapes, each rendered from source that really declares the
+        // promise -- a free function at the crate root, one in a nested
+        // module whose promise calls a sibling, and a receiverless
+        // associated function (`Type::method`, where the module split has
+        // one more segment to drop).
+        let src = r#"
 #[ply::ensures(|result| *result == x)]
-pub fn clamp(x: u32) -> u32 { x.min(100) }
-"#,
-            "clamp",
+pub fn clamp(x: u32) -> u32 { x.min(100) + 1 }
+
+pub mod helpers {
+    #[ply::ensures(|result| *result == twice(x))]
+    pub fn double(x: u32) -> u32 { x * 3 }
+    pub fn twice(x: u32) -> u32 { x + x }
+
+    // A nested claim whose promise names no sibling -- the common case,
+    // and the one that showed the import has to carry its own `allow`.
+    #[ply::ensures(|result| *result > x)]
+    pub fn shrink(x: u32) -> u32 { x }
+
+    // A promise naming something the module imported rather than defined.
+    // The sampling harness resolves this from the file's own `use` items;
+    // the replay test has to as well, or the two disagree about what a
+    // promise is even allowed to say.
+    use std::cmp::Ordering;
+    #[ply::ensures(|result| *result == Ordering::Less)]
+    pub fn compare(x: u32) -> Ordering { x.cmp(&3) }
+}
+
+pub struct Bucket { pub n: u32 }
+impl Bucket {
+    #[ply::ensures(|result| result.n == 0)]
+    pub fn new(n: u32) -> Bucket { Bucket { n } }
+}
+"#;
+        let lib = root.join("src/lib.rs");
+        std::fs::write(&lib, src).unwrap();
+
+        let mut tests = Vec::new();
+        for (i, name) in ["clamp", "helpers::double", "helpers::shrink", "helpers::compare", "Bucket::new"]
+            .iter()
+            .enumerate()
+        {
+            let cf = discover_fn(&lib, name).unwrap();
+            tests.push(
+                render_cex_test(
+                    &cf,
+                    &[WitnessValue::UInt(3)],
+                    "fuzz(8)",
+                    "P0502",
+                    i as u32 + 1,
+                )
+                .unwrap(),
+            );
+        }
+
+        // The crate that gets built is the same source with the attributes
+        // stripped, so this needs no proc-macro dependency -- the shapes
+        // and paths are what is under test, not the attribute.
+        let plain: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("#[ply::"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(
+            &lib,
+            format!("{plain}\n\n// Ply-generated\nmod ply_generated_cex;\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/ply_generated_cex.rs"),
+            wrap_test_module(&tests),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"plycex\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        )
+        .unwrap();
+
+        let out = std::process::Command::new(env!("CARGO"))
+            .args(["test", "--lib"])
+            // A warning in a file the user never wrote is a broken build in
+            // any crate that denies them, so it is a failure here too.
+            .env("RUSTFLAGS", "-D warnings")
+            .current_dir(root)
+            .output()
+            .expect("cargo test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
         );
-        let rendered =
-            render_cex_test(&cf, &[WitnessValue::UInt(3)], "fuzz(256)", "P0502", 1).unwrap();
+
         assert!(
-            !rendered.source.contains("use crate::"),
-            "nothing to import for a function already at the root:\n{}",
-            rendered.source
+            !combined.contains("could not compile"),
+            "the tests Ply writes into a user's crate must build:\n{combined}"
+        );
+        assert_eq!(
+            combined.matches("Broken promise").count(),
+            5,
+            "each rendered test must run and fail on its own promise, not be \
+             skipped or fail to build:\n{combined}"
         );
     }
 

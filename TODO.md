@@ -125,18 +125,43 @@ cannot fail would turn all 54 green and mean nothing.
       `("ab","c")` against `("a","bc")` -- and the separator was restored. That is the
       answer to "would this promise notice if the code broke", asked rather than assumed.
 
-- [x] **Ply was writing a test into the user's crate that did not compile.** When a promise
-      calls a helper beside the function it is written on, the contract text is spliced into
-      the replay test verbatim -- but that test sits at the crate root under `use super::*`,
-      where a name from a nested module is not in scope. So `cargo test` broke for a reason
-      the user did not cause, which is the failure this project treats as worst. The fuzz
-      harness compiled the same contract fine because it imports the function's own module,
-      so the two paths disagreed about the scope a contract is evaluated in.
+- [x] **Ply was writing a test into the user's crate that did not compile**, and the first
+      fix for it was wrong in two new ways. A promise may name something the function's own
+      module defines or imports; that text is spliced into the counterexample replay test
+      verbatim, but the test sits at the crate root under `use super::*`, where such a name
+      is not in scope. So `cargo test` broke for a reason the user did not cause, which is
+      the failure this project treats as worst.
 
-      The replay test now imports the function's own module. Verified end to end: a real
-      broken promise on `fuzz_gen::derive_seed` produced a test that compiled and failed
-      with the right message. **A review of this fix is in flight** -- the entry stays open
-      until that comes back.
+      The review of the first fix (2026-09-04) found it made things worse for two shapes,
+      both confirmed by running rather than by reading:
+
+      - a claim on a receiverless associated function (`Bucket::new`) emitted
+        `use crate::Bucket::*;` -- a hard compile error where the old output built. The
+        repo's own `nonnumericcompare` fixture has exactly that shape with a deliberately
+        false promise, so this was reachable in production, not hypothetical.
+      - every nested replay whose promise names no sibling -- nearly all of them -- carried
+        an unused-import warning, which is an error under `-D warnings`.
+
+      Both came from writing a second copy of a split `ContractFn::import_path` already
+      does correctly. It is reused now, with the two `allow`s the harness has carried since
+      August. The generated test name also gained `#[allow(non_snake_case)]`:
+      `ply_cex_Bucket_new_01` warned, same failure one step along.
+
+      **The claim that this made the two paths agree was wrong**, and is retracted. The
+      sampling harness imports the function *by name* plus a crate-root glob; the replay
+      test imports the function's *module*. Neither is a superset. The gap that showed it:
+      a promise naming a type the module imported (`Ordering`, via `use std::cmp::Ordering`)
+      resolved in the harness and not in the replay. Fixed by asking the question in one
+      place -- `contract_rt::contract_use_paths` -- and letting each renderer spell the
+      answer for its own scope, since a second copy of this rule is what caused the bug in
+      the first place.
+
+      The test that guards this builds a real crate under `-D warnings` and asserts every
+      rendered shape fails on its promise rather than on its syntax. The two string-contains
+      tests it replaces both passed while the renderer emitted a compile error. Four
+      deliberate breakages of the renderer were run against it; the first version of the
+      new test survived one of them, because its fixture had no nested promise that names
+      no sibling. That shape was added and all four now die.
 
 - [x] **`E0301` now tells you when a claim is under the wrong module.** The suggestion
       fixed earlier today only covered a misspelling; a claim whose *name* is right but

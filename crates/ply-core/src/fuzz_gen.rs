@@ -3058,7 +3058,7 @@ fn extra_type_imports(cf: &ContractFn, target_crate_ident: &str) -> Vec<String> 
 /// to be a key in the file's own `use` aliases, and a parameter or `result`
 /// never is one. Mirrors `find_moved_param_read`'s own `Visit`-based walk
 /// two functions above it in this file.
-fn collect_leading_idents(expr: &Expr, out: &mut BTreeSet<String>) {
+pub(crate) fn collect_leading_idents(expr: &Expr, out: &mut BTreeSet<String>) {
     struct Finder<'a> {
         out: &'a mut BTreeSet<String>,
     }
@@ -3110,29 +3110,24 @@ fn collect_leading_idents(expr: &Expr, out: &mut BTreeSet<String>) {
 /// `extra_type_imports`'s own doc already states for a bare struct/enum
 /// name.
 fn contract_referenced_use_imports(cf: &ContractFn, target_crate_ident: &str) -> Vec<String> {
-    let mut idents = BTreeSet::new();
-    if let Some((expr, _)) = &cf.requires {
-        collect_leading_idents(expr, &mut idents);
-    }
-    if let Some((closure, _)) = &cf.ensures {
-        collect_leading_idents(&closure.body, &mut idents);
-    }
-    let mut out = Vec::new();
-    for ident in idents {
-        let Some(segments) = cf.use_aliases.get(&ident) else {
-            continue;
-        };
-        match segments.first().map(String::as_str) {
-            Some("self") | Some("super") => continue,
+    // The *question* -- which names does this contract need brought into
+    // scope -- is asked in one place (`contract_rt::contract_use_paths`),
+    // because the counterexample replay test has to answer it identically
+    // or the two disagree about what a promise is allowed to say. Only the
+    // spelling differs: the harness is a separate crate, so `crate::` has
+    // to become the target crate's own name; the replay test lives inside
+    // the crate and keeps `crate::` as written.
+    crate::contract_rt::contract_use_paths(cf)
+        .into_iter()
+        .map(|segments| match segments.first().map(String::as_str) {
             Some("crate") => {
                 let mut rewritten = vec![target_crate_ident.to_string()];
                 rewritten.extend(segments[1..].iter().cloned());
-                out.push(rewritten.join("::"));
+                rewritten.join("::")
             }
-            _ => out.push(segments.join("::")),
-        }
-    }
-    out
+            _ => segments.join("::"),
+        })
+        .collect()
 }
 
 /// The generated check for a `state:`'s `holds:` clauses -- §5.4c's "type
