@@ -826,7 +826,36 @@ work nobody assigned to it.
       skipped — see the DONE section above for why); and a declared route in `ply.yaml`'s
       new `routes:` map. Variety comes from Ply sampling the route's own inputs, never
       from an author listing values, and the degenerate-route guard ships with it.
-- [ ] **3. A syntactic "this body reaches file-writing calls" check, and only then paths.**
+- [~] **3. A syntactic "this body reaches file-writing calls" check, and only then paths.**
+      **The check is built (`crates/ply-core/src/effects.rs`); paths are NOT unlocked, and
+      the measurement says they should not be yet.**
+
+      The scan answers three ways -- writes, none, unknown -- and fails closed: anything it
+      cannot follow is `unknown`, and `unknown` never reads as safe. It follows calls into
+      first-party source transitively, resolves a sibling call relative to the caller's own
+      module, and reports the chain so a refusal can name the route rather than only the
+      verdict. Seven tests; the two that matter (unknown-is-not-safe, and following calls
+      at all) were each confirmed by breaking the rule and watching them go red.
+
+      **It finds real writes.** Run against `ply-core`'s own 35 path-taking public
+      functions it names 6, each with a correct route -- `record::save` through
+      `std::fs::write`, `harness_crate::write_harness_lib_rs` through
+      `std::fs::create_dir_all`, and so on. Two of those six were only found once sibling
+      calls resolved, so that was a correctness fix rather than a coverage one.
+
+      **And it clears almost nothing: 1 of 35.** The other 28 are `unknown`, each blocked by
+      a *different* call not on any list -- `Command::new`, `SourceSurface::default`,
+      `i64::from`. Three rounds of widening the benign list moved the cleared count from 0
+      to 1. This is the same shape as the type wall itself: **enumerating what is safe is a
+      list that grows forever and never finishes.**
+
+      **The fork, and it is a soundness posture, so it is the maintainer's.** Either keep
+      enumerating safety (sound, and unlocks nothing), or invert to enumerating danger --
+      filesystem write, process spawn, network -- and treat everything else as benign. The
+      second is how capability systems usually work, generalises instead of growing, and is
+      a *bet*: a third-party crate writing files through something not on the danger list
+      would be cleared. Not flipped unilaterally, because the whole reason paths were
+      deferred is that being wrong here means Ply writes files at paths it invented.
 
 **What notices when a declared route goes stale, since that is the question the design must
 answer:** the route names a function, and the generated harness is a separate downstream
