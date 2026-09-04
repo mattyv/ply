@@ -111,7 +111,14 @@ fn every_key_the_schema_declares_is_a_key_the_model_reads() {
         .as_ref()
         .expect("the exhaustive document declares a state");
     assert_eq!(state.of, "Book");
-    assert_eq!(state.show, ["ticks"]);
+    assert_eq!(
+        state
+            .show
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>(),
+        ["ticks"]
+    );
     assert_eq!(doc.externals["venue"].note, "the exchange");
     assert_eq!(doc.edges.len(), 2);
     assert_eq!(doc.deny.len(), 1);
@@ -138,6 +145,65 @@ fn every_key_the_schema_declares_is_a_key_the_model_reads() {
             );
         }
     }
+}
+
+/// §7.1 (2026-09-04): `show:`'s mapping form declares one of seven shape
+/// tokens, and the schema's own `enum` is the one place that vocabulary is
+/// written down. This reads it out by JSON pointer and checks it against
+/// exactly what the deserialiser accepts -- null included -- the same
+/// discipline `the_schema_regex_and_the_parser_accept_exactly_the_same_check_strings`
+/// already holds the check-string micro-syntax to, so the two lists cannot
+/// quietly drift apart by hand.
+#[test]
+fn the_schema_declared_shape_enum_and_the_parser_accept_exactly_the_same_tokens() {
+    let pointer =
+        "/$defs/component/properties/state/properties/show/oneOf/1/additionalProperties/enum";
+    let enum_value = schema::schema()
+        .pointer(pointer)
+        .unwrap_or_else(|| panic!("schema has no enum at {pointer}"))
+        .as_array()
+        .expect("the enum is a JSON array")
+        .clone();
+
+    // `null` is how a mapping entry with no value (`cursor:`) is accepted;
+    // every other member is a plain string token.
+    assert!(
+        enum_value.iter().any(|v| v.is_null()),
+        "the schema's enum must accept `null` -- an empty mapping value declares nothing: \
+         {enum_value:?}"
+    );
+    let string_tokens: Vec<&str> = enum_value.iter().filter_map(|v| v.as_str()).collect();
+    assert_eq!(
+        string_tokens.len() + 1,
+        enum_value.len(),
+        "the enum must be the seven string tokens plus exactly one null: {enum_value:?}"
+    );
+
+    for token in &string_tokens {
+        let doc = ply_core::model::parse_document(&format!(
+            "ply: 1\ncomponents:\n  book:\n    anchor: app::book\n    state:\n      of: \
+             Ledger\n      show:\n        f: {token}\n"
+        ))
+        .unwrap_or_else(|e| {
+            panic!("the schema's enum accepts `{token}` but the parser refused it: {e}")
+        });
+        assert!(
+            doc.components["book"].state.as_ref().unwrap().show[0]
+                .declared
+                .is_some(),
+            "`{token}` is in the schema's enum, so the parser must read it as a real \
+             declared shape, not silently drop it"
+        );
+    }
+
+    assert!(
+        ply_core::model::parse_document(
+            "ply: 1\ncomponents:\n  book:\n    anchor: app::book\n    state:\n      of: \
+             Ledger\n      show:\n        f: nonsense\n"
+        )
+        .is_err(),
+        "a token the schema's enum does not list must be refused by the parser too"
+    );
 }
 
 /// §5, item 1: the check micro-syntax is "schema-validated by regex, parsed

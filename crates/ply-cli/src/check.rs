@@ -251,6 +251,7 @@ fn verify_state(
     crates: &std::collections::BTreeMap<String, PathBuf>,
     local: Option<&Path>,
     diagnostics: &mut Vec<Diagnostic>,
+    tally: &mut AnchorTally,
 ) {
     let Some(state) = &comp.state else {
         return;
@@ -345,30 +346,69 @@ fn verify_state(
     };
     let declared: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
     for wanted in &state.show {
-        if declared.iter().any(|d| d == wanted) {
+        let Some(field) = fields.iter().find(|f| f.name == wanted.name) else {
+            diagnostics.push(state_diag(
+                "A0415",
+                qualified,
+                format!(
+                    "`{qualified}` asks to show `{of}`'s `{name}` field, but `{of}` has no \
+                     field called that. The fields it does have are: {have}. Field names come \
+                     from the code, so this line cannot be drawn as written. (A0415)",
+                    of = state.of,
+                    name = wanted.name,
+                    have = if declared.is_empty() {
+                        "none it can name -- it is a tuple struct, whose fields have no names \
+                         to show"
+                            .to_string()
+                    } else {
+                        declared
+                            .iter()
+                            .map(|d| format!("`{d}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    },
+                ),
+            ));
+            // A field the type does not have is `A0415`'s failure alone --
+            // there is nothing here to compare a declared shape against, so
+            // this entry does not also get a second report under `A0416`.
             continue;
+        };
+        // §7.1 (2026-09-04): the field resolved, so a declared shape --
+        // written as one of the seven tokens, never a type -- is now
+        // something to check rather than to draw. `classify` is the same
+        // call the renderer makes on this exact field, never a second
+        // reading of `RustType` here: the two must agree about
+        // `Option<Vec<T>>`, a type alias, or `Arc<RwLock<..>>`, or the
+        // drawing and this diagnostic would disagree about the same field.
+        let Some(declared_shape) = wanted.declared else {
+            continue;
+        };
+        let real_shape = ply_core::visual::state_shapes::classify(&field.ty, &field.rendered);
+        if real_shape == declared_shape.to_field_shape() {
+            tally.declared_shapes_checked += 1;
+        } else {
+            diagnostics.push(state_diag(
+                "A0416",
+                qualified,
+                format!(
+                    "`{qualified}` declares `{of}`'s `{name}` field as {declared_noun}, but the \
+                     code says it is {real_noun} (written `{written}`). A declared shape is \
+                     checked against the code the moment there is code to check it against, so \
+                     a declaration and the source may not disagree. Two ways to close this: \
+                     change the declaration to match what the code really is, or -- if the \
+                     document is right and the code drifted -- treat this as the regression it \
+                     is and fix the code. A declaration is also never required once code \
+                     exists; dropping back to the plain name (`{name}` with no shape) is always \
+                     a legitimate way to retire it. (A0416)",
+                    of = state.of,
+                    name = wanted.name,
+                    declared_noun = declared_shape.to_field_shape().noun(),
+                    real_noun = real_shape.noun(),
+                    written = field.rendered,
+                ),
+            ));
         }
-        diagnostics.push(state_diag(
-            "A0415",
-            qualified,
-            format!(
-                "`{qualified}` asks to show `{of}`'s `{wanted}` field, but `{of}` has no \
-                 field called that. The fields it does have are: {have}. Field names come \
-                 from the code, so this line cannot be drawn as written. (A0415)",
-                of = state.of,
-                have = if declared.is_empty() {
-                    "none it can name -- it is a tuple struct, whose fields have no names \
-                     to show"
-                        .to_string()
-                } else {
-                    declared
-                        .iter()
-                        .map(|d| format!("`{d}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                },
-            ),
-        ));
     }
 }
 
@@ -479,6 +519,13 @@ pub struct AnchorTally {
     /// The one such fn's own name, kept only when there is exactly one
     /// (`yaml_contract_boundary_fns == 1`).
     pub yaml_contract_boundary_fn_name: Option<String>,
+    /// How many `show:` entries declared a shape that the real field agrees
+    /// with (2026-09-04) -- a kept promise, reported as confirmed rather
+    /// than passing in silence, because this project counts evidence out
+    /// loud. Only ever incremented where a field actually resolved: with no
+    /// code there is nothing to agree or disagree with, which is `A0416`'s
+    /// own gate too.
+    pub declared_shapes_checked: usize,
 }
 
 fn check_anchors(
@@ -495,6 +542,7 @@ fn check_anchors(
         yaml_contract_checked_fn_name: None,
         yaml_contract_boundary_fns: 0,
         yaml_contract_boundary_fn_name: None,
+        declared_shapes_checked: 0,
     };
     let lib_path = crate_dir.join("src/lib.rs");
     let Ok(lib_src) = std::fs::read_to_string(&lib_path) else {
@@ -524,7 +572,7 @@ fn check_anchors(
             // reading one of those is the same read `walk_anchors` does. So
             // the workspace-root document, which used to get a warning
             // saying nothing could be checked, is now checked.
-            verify_state(qualified, comp, crates, None, diagnostics);
+            verify_state(qualified, comp, crates, None, diagnostics, tally);
             for fn_name in comp.fns.keys() {
                 tally.unresolved += 1;
                 diagnostics.push(no_library_diag(
@@ -611,7 +659,7 @@ fn walk_anchors(
         .parent()
         .and_then(|src| src.parent())
         .filter(|_| is_local(local_anchors, &comp.anchor) && lib_path.exists());
-    verify_state(qualified, comp, state_crates, local, diagnostics);
+    verify_state(qualified, comp, state_crates, local, diagnostics, tally);
     if let Some(module_path) = crate::shared::local_module_path(local_anchors, &comp.anchor) {
         for (fn_name, claim) in &comp.fns {
             let node_id = format!("{qualified}::{fn_name}");
@@ -1034,6 +1082,25 @@ fn anchor_detail(t: &AnchorTally) -> String {
             t.yaml_contract_boundary_fns
         ));
     }
+    // §7.1 (2026-09-04): a `show:` entry may declare its field's shape, and
+    // once code exists that declaration is checked rather than drawn. A
+    // disagreement is its own error (`A0416`, reported below); an agreement
+    // is not silence -- it is a kept promise, and this project counts
+    // evidence out loud rather than only naming its absence.
+    if t.declared_shapes_checked == 1 {
+        s.push_str(
+            " 1 declared field shape was checked against the source and it is what the code \
+             says. A confirmed declaration may be kept as documentation or dropped back to \
+             the plain field name -- both are fine once the code agrees with it.",
+        );
+    } else if t.declared_shapes_checked > 1 {
+        s.push_str(&format!(
+            " {n} declared field shapes were checked against the source and all {n} are what \
+             the code says. A confirmed declaration may be kept as documentation or dropped \
+             back to the plain field name -- both are fine once the code agrees with it.",
+            n = t.declared_shapes_checked
+        ));
+    }
     s
 }
 
@@ -1414,6 +1481,165 @@ pub struct OrderBook {
         assert!(
             state_findings.is_empty(),
             "a claim that matches the code is not a finding: {state_findings:?}"
+        );
+    }
+
+    /// §7.1 (2026-09-04): once a field resolves against real code, a
+    /// declared shape is checked against it, never drawn instead of it. A
+    /// mismatch is `A0416`, naming the field, what was declared, and what
+    /// the code really is -- `bids` is a `BTreeMap`, a lookup table, and the
+    /// document here declares it a list.
+    #[test]
+    fn a_declared_shape_disagreeing_with_the_code_is_refused_by_name() {
+        let dir = state_probe(
+            BOOK,
+            "ply: 1\ncomponents:\n  book:\n    anchor: probe\n    state:\n      of: OrderBook\n      show:\n        bids: list\n",
+        );
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+
+        let found = diagnostics
+            .iter()
+            .find(|d| d.code == "A0416")
+            .expect("a declaration the code disagrees with must be reported, never drawn");
+        assert!(
+            found.title.contains("`bids`"),
+            "the finding must name the field: {}",
+            found.title
+        );
+        assert!(
+            found.title.contains("a list") && found.title.contains("a lookup table"),
+            "it must say what was declared and what the code really is, in words rather \
+             than a type name: {}",
+            found.title
+        );
+        assert!(
+            found.title.contains("BTreeMap<u64, u32>"),
+            "and it must name the real type as the source spells it: {}",
+            found.title
+        );
+    }
+
+    /// The other half: a declaration the code agrees with is not silence.
+    /// It is reported as a confirmed, counted fact -- and it must not also
+    /// raise `A0416`, which is reserved for a disagreement.
+    #[test]
+    fn a_declared_shape_agreeing_with_the_code_is_confirmed_and_counted() {
+        let dir = state_probe(
+            BOOK,
+            "ply: 1\ncomponents:\n  book:\n    anchor: probe\n    state:\n      of: OrderBook\n      show:\n        bids: map\n",
+        );
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        let tally = check_anchors(dir.path(), &doc, &mut diagnostics);
+
+        assert!(
+            !diagnostics.iter().any(|d| d.code == "A0416"),
+            "a declaration that agrees with the code must not be reported as a disagreement: \
+             {:?}",
+            diagnostics.iter().map(|d| &d.title).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            tally.declared_shapes_checked, 1,
+            "a kept promise is counted, not passed in silence"
+        );
+    }
+
+    /// A declared shape on a field the type does not have is `A0415`'s
+    /// failure alone -- there is nothing to compare a shape against when
+    /// the field itself does not exist, so this must not also fire `A0416`.
+    #[test]
+    fn a_declared_shape_on_a_missing_field_fires_a0415_only() {
+        let dir = state_probe(
+            BOOK,
+            "ply: 1\ncomponents:\n  book:\n    anchor: probe\n    state:\n      of: OrderBook\n      show:\n        invented: map\n",
+        );
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "A0415" && d.title.contains("invented")),
+            "the missing field must still be refused by name: {:?}",
+            diagnostics.iter().map(|d| &d.title).collect::<Vec<_>>()
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.code == "A0416"),
+            "a field that does not exist must not also be reported as a shape mismatch: {:?}",
+            diagnostics.iter().map(|d| &d.title).collect::<Vec<_>>()
+        );
+    }
+
+    /// A mapping entry with no value (YAML's `ticks:`) declares a name and
+    /// nothing about its shape -- the same as the plain list form. It must
+    /// raise neither finding and must not be counted as a checked
+    /// declaration, because nothing was actually declared.
+    #[test]
+    fn a_null_declared_shape_raises_no_finding() {
+        let dir = state_probe(
+            BOOK,
+            "ply: 1\ncomponents:\n  book:\n    anchor: probe\n    state:\n      of: OrderBook\n      show:\n        ticks:\n",
+        );
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        let tally = check_anchors(dir.path(), &doc, &mut diagnostics);
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == "A0415" || d.code == "A0416"),
+            "a name with no declared shape must raise no state finding: {:?}",
+            diagnostics.iter().map(|d| &d.title).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            tally.declared_shapes_checked, 0,
+            "nothing was declared, so nothing was checked"
+        );
+    }
+
+    /// `A0416` is only reachable once a field actually resolved against
+    /// real source (the same gate `A0415` uses) -- with no crate to check
+    /// against at all, the claim is unverified (`W0413`), never wrongly
+    /// promoted to a shape disagreement nobody could have detected.
+    #[test]
+    fn an_unresolvable_state_claim_never_reports_a0416() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ply.yaml"),
+            "ply: 1\ncomponents:\n  book:\n    anchor: some_other_crate\n    state:\n      of: Invented\n      show:\n        nonsense: list\n",
+        )
+        .unwrap();
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+
+        assert!(
+            diagnostics.iter().any(|d| d.code == "W0413"),
+            "an unresolvable claim must still say so: {:?}",
+            diagnostics.iter().map(|d| &d.title).collect::<Vec<_>>()
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.code == "A0416"),
+            "there is nothing here to disagree with, so this must never fire: {:?}",
+            diagnostics.iter().map(|d| &d.title).collect::<Vec<_>>()
         );
     }
 

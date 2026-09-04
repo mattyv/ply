@@ -1,15 +1,18 @@
 # Vetting 005 -- design-first state shapes.
 #
-# PROPOSED GRAMMAR. This document does not validate against
-# schema/ply.schema.json as of 2026-09-03: `show:` is fixed as a list of
-# field names, and the mapping form below does not exist. It is written
-# here first on purpose -- vetting scenarios are authored in the grammar
-# before the tool speaks it, and this one exists to be read, argued with,
-# and either accepted into the spec or refused.
+# ACCEPTED INTO THE GRAMMAR (2026-09-04). This document was written as a
+# proposal, before `show:`'s mapping form existed -- vetting scenarios are
+# authored in the grammar before the tool speaks it, argued with, and either
+# accepted into the spec or refused. This one was accepted: see
+# The-Ply-Spec.md's `state:` section ("A document may declare a field's
+# shape") and 005-design-first-shapes.md for the review that closed it.
+# It validates against schema/ply.schema.json and renders unchanged from
+# what is written below.
 #
 # The scenario: a settlement service being designed. No code exists yet.
 # That is not a limitation of the example, it IS the example -- this is
-# where the grammar is currently unable to say what a component holds.
+# the case the feature exists for: a design legible before its
+# implementation.
 
 ply: 1
 

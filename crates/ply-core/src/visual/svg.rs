@@ -1721,6 +1721,11 @@ fn component_tip_lines(
     // The field names this box actually drew rows for. Empty when nothing
     // resolved -- which is a different sentence, not a shorter one.
     drawn_state_fields: &[String],
+    // Whether the rows named above (when there are any) were drawn from a
+    // declaration rather than read from code -- `rows_for` never mixes the
+    // two within one component, so one flag for the whole box is enough.
+    // Meaningless (and unused) when `drawn_state_fields` is empty.
+    state_rows_declared: bool,
 ) -> Vec<String> {
     let mut tip = finding_tooltip_lines(findings);
     tip.push(format!(
@@ -1765,6 +1770,12 @@ fn component_tip_lines(
         // drawing -- inside a sentence promising such a name is "refused
         // rather than drawn". Caught by a test written to check exactly
         // that, not by review.
+        //
+        // A third case joined the other two (2026-09-04): a name may now
+        // declare its own shape, and with no code to read that declaration
+        // is what gets drawn. "each name was found in the code" would be
+        // false for those rows, so a declared-only box gets its own honest
+        // sentence rather than borrowing the read-from-code one.
         tip.push(if drawn_state_fields.is_empty() {
             match st.show.as_slice() {
                 [] => format!(
@@ -1774,14 +1785,27 @@ fn component_tip_lines(
                     contrast = owns_contrast(comp),
                 ),
                 show => format!(
-                    "state {of}{contrast} — this document asks to show {names}, and there \
-                     is no code here to read them from, so none is drawn: the shapes come \
-                     from the source, never from the document",
+                    "state {of}{contrast} — this document asks to show {names}, and none of \
+                     them declare a shape of their own, so none is drawn: a bare name carries \
+                     no shape, and there is no code here to read one from either",
                     of = st.of,
                     contrast = owns_contrast(comp),
-                    names = show.join(", ")
+                    names = show
+                        .iter()
+                        .map(|f| f.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             }
+        } else if state_rows_declared {
+            format!(
+                "state {of} — the structure this component holds{contrast}. The rows below \
+                 are its fields, as the document declares them: there is no code here yet to \
+                 check those declarations against. Once the code exists, it decides what gets \
+                 drawn and each declaration is only checked against it",
+                of = st.of,
+                contrast = owns_contrast(comp),
+            )
         } else {
             format!(
                 "state {of} — the structure this component holds{contrast}. The rows below \
@@ -1863,47 +1887,53 @@ struct ComponentBox {
 /// the optional evidence view (`None` on every path but
 /// `render_svg_with_evidence`, which is what keeps `render_svg` and
 /// `render_svg_with_options` byte-for-byte unchanged).
-/// One drawn state-field row: its silhouette, its name, the type as the
-/// source spells it, and whether Ply has any way to build one.
+/// One drawn state-field row: its silhouette, its name, the type column
+/// text, and whether Ply has any way to build one. `ty` reads as the real
+/// type when `declared` is false, and reads exactly the word `declared`
+/// (never a type) when it is true -- §7.1: a declared row has no type to
+/// spell, so the type column carries that word instead.
 struct StateRow {
     shape: state_shapes::FieldShape,
     name: String,
     ty: String,
     cannot_build: bool,
+    declared: bool,
 }
 
-/// The rows to draw for one component's `state:`.
+/// The rows to draw for one component's `state:`, built on
+/// [`state_shapes::rows_for`] -- the one decision of which rows exist,
+/// shared with the transcript so the two views cannot disagree about it.
 ///
 /// Empty in three cases, all of which draw the type name alone: the
-/// component declares no state, the document chose no fields to show, or
-/// nothing resolved this component's type against real source. That last
-/// case is the ordinary one for a document rendered before its code exists
-/// -- §7.1's rule is that the document names and the *code* says what, so
-/// with no code to ask there is nothing honest to draw.
-///
-/// A name in `show:` that the type has no field for is skipped rather than
-/// drawn as a guess. `cargo ply check` fails the build for exactly that
-/// (`A0415`), so the drawing does not need to invent a way to show it, and
-/// a renderer that painted a row for a field nobody declared would be
-/// making up the very fact this feature exists to check.
+/// component declares no state, the document chose no fields to show (or
+/// chose names with no declared shape and nothing resolved them), or a name
+/// nothing resolved has no declared shape either. A name in `show:` that
+/// the type has no field for is skipped rather than drawn as a guess --
+/// `cargo ply check` fails the build for exactly that (`A0415`).
 fn state_rows(comp: &Component, qualified: &str, index: Option<&StateFieldIndex>) -> Vec<StateRow> {
     let Some(state) = &comp.state else {
         return Vec::new();
     };
-    let Some(fields) = index.and_then(|idx| idx.get(qualified)) else {
-        return Vec::new();
-    };
-    state
-        .show
-        .iter()
-        .filter_map(|wanted| {
-            let field = fields.iter().find(|f| &f.name == wanted)?;
-            Some(StateRow {
-                shape: state_shapes::classify(&field.ty, &field.rendered),
-                name: field.name.clone(),
-                ty: field.rendered.clone(),
-                cannot_build: state_shapes::cannot_build(&field.ty),
-            })
+    let resolved = index
+        .and_then(|idx| idx.get(qualified))
+        .map(|v| v.as_slice());
+    state_shapes::rows_for(state, resolved)
+        .into_iter()
+        .map(|row| match row.origin {
+            state_shapes::RowOrigin::Read { ty, cannot_build } => StateRow {
+                shape: row.shape,
+                name: row.name,
+                ty,
+                cannot_build,
+                declared: false,
+            },
+            state_shapes::RowOrigin::Declared => StateRow {
+                shape: row.shape,
+                name: row.name,
+                ty: "declared".to_string(),
+                cannot_build: false,
+                declared: true,
+            },
         })
         .collect()
 }
@@ -2117,7 +2147,7 @@ fn render_collapsed_component(
     // A collapsed box draws no rows -- everything inside it is folded --
     // so its tooltip gets the same sentence a box with nothing resolved
     // does, which is the true one for it.
-    let mut tip = component_tip_lines(name, comp, profiles, &findings, &[]);
+    let mut tip = component_tip_lines(name, comp, profiles, &findings, &[], false);
     tip.push(format!(
         "collapsed — {n_components} component{} and {n_fns} function{} folded inside; render \
          with --depth or --focus <name> to expand",
@@ -2488,6 +2518,30 @@ fn render_component<'a>(
             } else {
                 ""
             };
+            // §7.1: a declared row draws the shape's ordinary, unmodified
+            // glyph -- there is no spare channel left to mark it with, so
+            // the difference is read as text (the type column says
+            // `declared`, never a real type) rather than as a silhouette.
+            let tip_text = if row.declared {
+                format!(
+                    "{name} — one of the things this component holds; {prose}. This shape \
+                     was declared by the document: there is no code here yet to check it \
+                     against. Once the code exists, the source decides what gets drawn here \
+                     and this declaration is only checked against it, never drawn over it.",
+                    name = row.name,
+                    prose = row.shape.prose(),
+                )
+            } else {
+                format!(
+                    "{name} — one of the things this component holds; \
+                     {prose}. Written in the code as `{written}`. The name came from \
+                     the document; the shape and the type came from the code, so this \
+                     row cannot say something the source does not.{hatch_note}",
+                    name = row.name,
+                    prose = row.shape.prose(),
+                    written = row.ty,
+                )
+            };
             body.push_str(&format!(
                 "<g class=\"state-field\" data-field=\"{field}\">{tip}{glyph}                 <text class=\"state-field-name\" x=\"{nx:.1}\" y=\"{ty:.1}\">{name}</text>                 <text class=\"state-field-type\" x=\"{tx:.1}\" y=\"{ty:.1}\">{sty}</text></g>",
                 field = esc(&row.name),
@@ -2496,15 +2550,7 @@ fn render_component<'a>(
                 ty = y + 12.0,
                 name = esc(&row.name),
                 sty = esc(&row.ty),
-                tip = title(&format!(
-                    "{name} — one of the things this component holds; \
-                     {prose}. Written in the code as `{written}`. The name came from \
-                     the document; the shape and the type came from the code, so this \
-                     row cannot say something the source does not.{hatch_note}",
-                    name = row.name,
-                    prose = row.shape.prose(),
-                    written = row.ty,
-                ))
+                tip = title(&tip_text)
             ));
             y += STATE_ROW_H;
         }
@@ -2612,7 +2658,15 @@ fn render_component<'a>(
     let box_h = y + PAD;
 
     let drawn_field_names: Vec<String> = state_rows.iter().map(|r| r.name.clone()).collect();
-    let mut tip = component_tip_lines(name, comp, profiles, &findings, &drawn_field_names);
+    let state_rows_declared = state_rows.first().is_some_and(|r| r.declared);
+    let mut tip = component_tip_lines(
+        name,
+        comp,
+        profiles,
+        &findings,
+        &drawn_field_names,
+        state_rows_declared,
+    );
     tip.push(ceiling_tooltip_line(ceiling));
     if let Some(reason) = colour_reason_line(comp, inherited, name) {
         tip.push(reason);
@@ -4624,15 +4678,18 @@ fn render_svg_impl(
     // A clean document (no findings, no drawn evidence state) gets exactly
     // `STYLE`, unchanged — see `FINDING_STYLE`'s doc comment for why this is
     // conditional rather than always-appended.
-    // A drawing paints a state row only when the document declared fields to
-    // show *and* something resolved them against real source, so the rules
-    // for them are appended on exactly that condition -- same discipline as
-    // the two above.
-    let state_style_used = state_fields.is_some_and(|idx| {
+    // A drawing paints a state row when the document declared fields to
+    // show and something resolved them against real source, *or* (2026-09-04)
+    // when a name declared its own shape and there was no code to resolve at
+    // all -- `rows_for` is the one decision of which case applies, so this
+    // asks it directly rather than re-deriving the condition. Not gated on
+    // `state_fields.is_some()` any more: a declared-only document paints
+    // rows with `state_fields` entirely absent.
+    let state_style_used = {
         fn any_row(
             components: &IndexMap<String, Component>,
             prefix: &str,
-            idx: &StateFieldIndex,
+            idx: Option<&StateFieldIndex>,
         ) -> bool {
             components.iter().any(|(name, comp)| {
                 let qualified = if prefix.is_empty() {
@@ -4641,15 +4698,16 @@ fn render_svg_impl(
                     format!("{prefix}.{name}")
                 };
                 let here = comp.state.as_ref().is_some_and(|st| {
-                    idx.get(&qualified).is_some_and(|fields| {
-                        st.show.iter().any(|w| fields.iter().any(|f| &f.name == w))
-                    })
+                    let resolved = idx
+                        .and_then(|idx| idx.get(&qualified))
+                        .map(|v| v.as_slice());
+                    !state_shapes::rows_for(st, resolved).is_empty()
                 });
                 here || any_row(&comp.components, &qualified, idx)
             })
         }
-        any_row(&doc.components, "", idx)
-    });
+        any_row(&doc.components, "", state_fields)
+    };
     let style: std::borrow::Cow<str> =
         match (findings.is_empty(), evidence_style_used, state_style_used) {
             (true, false, false) => std::borrow::Cow::Borrowed(STYLE),

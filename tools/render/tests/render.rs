@@ -652,8 +652,8 @@ fn state_draws_as_its_own_header_line() {
     );
     assert!(
         svg.contains(
-            "this document asks to show bids, ticks, and there is no code here to \
-                      read them from"
+            "this document asks to show bids, ticks, and none of them declare a shape \
+                      of their own, so none is drawn"
         ),
         "the tooltip has to say why no rows were drawn, rather than listing the names as \
          though they had been checked:\n{svg}"
@@ -679,10 +679,15 @@ fn every_painted_element_resolves_a_style_rule() {
     // only appended to a document's actual `<style>` when it has a
     // finding — see its doc comment), so checking selector resolution
     // needs both, regardless of which a given fixture below happens to use.
+    // `STATE_STYLE` joins them for the same reason (2026-09-04): a declared
+    // shape now paints a state row with no crate on disk at all, which
+    // `declared_shapes.ply.yaml` below is the first fixture in this sweep
+    // to do.
     let style = format!(
-        "{}{}",
+        "{}{}{}",
         ply_render::svg::STYLE,
-        ply_render::svg::FINDING_STYLE
+        ply_render::svg::FINDING_STYLE,
+        ply_render::svg::STATE_STYLE
     );
     let matches_selector = |class: &str, tag: &str| {
         style.contains(&format!(".{class}{{"))
@@ -708,6 +713,10 @@ fn every_painted_element_resolves_a_style_rule() {
         "../check/tests/fixtures/duplicate_unresolved_id.ply.yaml",
         "../../demos/fault3.ply.yaml",
         "tests/fixtures/strict_with_finding.ply.yaml",
+        // §7.1 (2026-09-04): a declared shape paints a state row with no
+        // crate on disk at all -- the first state rows this sweep can see
+        // without a fixture crate.
+        "tests/fixtures/declared_shapes.ply.yaml",
     ] {
         let svg = render_fixture(fixture);
         assert!(svg.contains("<style>"), "{fixture}: no stylesheet emitted");
@@ -917,6 +926,9 @@ fn every_drawn_item_resolves_a_tooltip() {
         "tests/fixtures/deny_stress.ply.yaml",
         "tests/fixtures/hollow.ply.yaml",
         "tests/fixtures/strict_with_finding.ply.yaml",
+        // §7.1 (2026-09-04): the first fixture in this sweep whose state
+        // rows are declared rather than read from code.
+        "tests/fixtures/declared_shapes.ply.yaml",
     ] {
         let svg = render_fixture(fixture);
         let doc = roxmltree::Document::parse(&svg).unwrap();
@@ -4388,6 +4400,7 @@ fn the_transcript_and_the_drawing_state_the_same_facts() {
         "../../vetting/002-ingest-pipeline.ply.yaml",
         "../../vetting/003-trading-system.ply.yaml",
         "../../ply.yaml",
+        "tests/fixtures/declared_shapes.ply.yaml",
     ] {
         let yaml = std::fs::read_to_string(fixture).unwrap();
         let doc = parse_document(&yaml).unwrap();
@@ -4512,7 +4525,7 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
             if let Some(st) = state {
                 want.push((format!("{path}'s state type `{}`", st.of), st.of.clone()));
                 for f in &st.show {
-                    want.push((format!("{path}'s shown field `{f}`"), f.clone()));
+                    want.push((format!("{path}'s shown field `{}`", f.name), f.name.clone()));
                 }
             }
             if let Some(p) = profile {
@@ -6066,5 +6079,205 @@ fn a_field_the_type_does_not_have_is_not_drawn() {
         svg.contains(">state Book — 1 of 1 shown<"),
         "the count reports what was drawn against what the type really has, so a document \
          asking for two fields of a one-field type reads as 1 of 1, never 2 of 1"
+    );
+}
+
+/// §7.1 (2026-09-04): a name in `show:` may declare its own shape, and with
+/// no code to read, that declared shape is what gets drawn -- the design a
+/// document can be legible with before its implementation exists. This is
+/// the declared-only sibling of `every_state_shape_is_drawn_and_no_two_are_alike`:
+/// all seven tokens, in one document with no crate under it at all, must
+/// still draw seven distinct silhouettes -- and, unlike a row read from
+/// code, every one of them reads `declared` in its type column and none is
+/// ever hatched (the hatch is the sampling engine's own answer about real
+/// code, and there is no code here for it to answer about).
+#[test]
+fn every_declared_shape_is_drawn_and_no_two_are_alike() {
+    let svg = render_fixture("tests/fixtures/declared_shapes.ply.yaml");
+    let doc = roxmltree::Document::parse(&svg).unwrap();
+
+    let mut drawn: Vec<(String, String)> = Vec::new();
+    for row in doc
+        .descendants()
+        .filter(|n| n.is_element() && n.attribute("class") == Some("state-field"))
+    {
+        let field = row.attribute("data-field").expect("a row names its field");
+        let mut shape = String::new();
+        for node in row.descendants().filter(|n| n.is_element()) {
+            if !matches!(node.tag_name().name(), "rect" | "circle") {
+                continue;
+            }
+            let Some(class) = node.attribute("class") else {
+                continue;
+            };
+            if !class.starts_with("state-glyph") {
+                continue;
+            }
+            shape.push_str(class);
+            for attr in ["x", "y", "width", "height", "rx"] {
+                shape.push_str(node.attribute(attr).unwrap_or("-"));
+                shape.push(',');
+            }
+            shape.push('|');
+        }
+        assert!(
+            !shape.is_empty(),
+            "`{field}` drew a row with no glyph in it"
+        );
+        drawn.push((field.to_string(), shape));
+    }
+
+    assert_eq!(
+        drawn.len(),
+        7,
+        "the fixture declares seven fields with a shape (an eighth, `cursor`, declares \
+         none and must draw no row); only these drew rows: {:?}",
+        drawn.iter().map(|(f, _)| f).collect::<Vec<_>>()
+    );
+
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for (field, shape) in &drawn {
+        assert!(
+            seen.insert(shape.as_str()),
+            "`{field}` draws the same glyph as another declared field -- unlike the \
+             read-from-code fixture, nothing here is hatched, so no two should ever collide"
+        );
+    }
+
+    assert!(
+        !doc.descendants().any(|n| {
+            n.is_element()
+                && n.attribute("class")
+                    .is_some_and(|c| c.split_whitespace().any(|t| t == "state-glyph-hatched"))
+        }),
+        "a declared row is never hatched -- the hatch is the sampling engine's own answer \
+         about real code, and there is no code here for it to answer about (the substring \
+         appears in the stylesheet's own CSS rule regardless, so this checks painted \
+         elements, not the raw SVG text)"
+    );
+
+    for (field, _) in &drawn {
+        assert!(
+            svg.contains(&format!("data-field=\"{field}\"")),
+            "sanity: `{field}` must be a real drawn row"
+        );
+    }
+    assert_eq!(
+        svg.matches(">declared<").count(),
+        7,
+        "every declared row's type column must read exactly the word `declared`, never a \
+         type -- there is no type to spell for a row nothing resolved:\n{svg}"
+    );
+}
+
+/// §7.1's other new rule, stated as its own test because it is the one most
+/// likely to be got wrong by accident: a declared shape is never counted.
+/// `N of M shown` is a measured fact about code, and a declared-only box
+/// has no code behind it at all -- so its header must stay the bare type
+/// name, exactly as a component with no code ever resolved always has.
+#[test]
+fn a_declared_only_box_never_draws_a_count() {
+    let svg = render_fixture("tests/fixtures/declared_shapes.ply.yaml");
+    assert!(
+        svg.contains(">state Ledger<"),
+        "the header must still name the type:\n{svg}"
+    );
+    assert!(
+        !svg.contains("shown"),
+        "seven fields drew rows here, and it would be easy to mistake that for something \
+         to count -- but nothing was measured from code, so there is no number to draw:\n{svg}"
+    );
+}
+
+/// §7.1's central promise, checked at the drawing itself rather than only
+/// in a unit test one level down: once a field resolves against real code,
+/// the source wins the drawing outright, and a disagreeing declaration
+/// leaves no trace in the picture at all -- not as a second glyph, not as a
+/// warning mark, not as the word `declared` anywhere near the row. A stale
+/// declaration can make `cargo ply check` fail (`A0416`); it can never make
+/// this picture wrong.
+#[test]
+fn a_declaration_the_code_disagrees_with_loses_the_drawing_to_the_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"ply-codewins-fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod book;\n").unwrap();
+    // `queued` is really a lookup table -- the document below declares it a
+    // list, which is a straightforward, plausible mistake to make.
+    std::fs::write(
+        src.join("book.rs"),
+        "use std::collections::BTreeMap;\npub struct Book { pub queued: BTreeMap<u64, u32> }\n",
+    )
+    .unwrap();
+    let yaml = "ply: 1\ncomponents:\n  book:\n    anchor: book\n    state:\n      of: Book\n      \
+                show:\n        queued: list\n";
+    std::fs::write(dir.path().join("ply.yaml"), yaml).unwrap();
+    let doc = parse_document(yaml).expect("the fixture document parses");
+    let fields = ply_render::harness::resolve_state_fields(dir.path(), &doc);
+    assert!(
+        !fields.is_empty(),
+        "the fixture crate must resolve, or this test checks nothing"
+    );
+    let svg = ply_render::svg::render_svg_with_state(
+        &doc,
+        &ply_render::svg::RenderOptions::default(),
+        &fields,
+    )
+    .expect("the fixture renders");
+
+    assert!(
+        svg.contains("data-field=\"queued\""),
+        "the resolved field must still be drawn:\n{svg}"
+    );
+    assert!(
+        svg.contains(">BTreeMap<u64, u32><") || svg.contains(">BTreeMap&lt;u64, u32&gt;<"),
+        "the type column must spell the real type the source has, not the one the \
+         document declared:\n{svg}"
+    );
+
+    // Isolate this one row's own `<g>` element -- the promise is about what
+    // that row draws, not about the rest of the document.
+    let start = svg
+        .find("data-field=\"queued\"")
+        .expect("the row exists")
+        .max(1)
+        - 1;
+    let row_start = svg[..start].rfind("<g ").unwrap_or(0);
+    let row_end = svg[row_start..].find("</g>").expect("the row closes") + row_start;
+    let row = &svg[row_start..row_end];
+
+    assert!(
+        !row.contains("declared"),
+        "the word `declared` must appear nowhere in a row the source resolved -- the \
+         document's disagreeing declaration must leave no trace in the drawing at all:\n{row}"
+    );
+
+    let doc_svg = roxmltree::Document::parse(&svg).unwrap();
+    let glyph_classes: Vec<&str> = doc_svg
+        .descendants()
+        .find(|n| n.is_element() && n.attribute("data-field") == Some("queued"))
+        .expect("the row element")
+        .descendants()
+        .filter(|n| matches!(n.tag_name().name(), "rect" | "circle"))
+        .filter_map(|n| n.attribute("class"))
+        .collect();
+    assert!(
+        glyph_classes.iter().any(|c| c.contains("state-glyph")),
+        "the row must still draw a glyph:\n{row}"
+    );
+    // A map draws as a key cell beside a value cell, twice -- four `rect`s.
+    // A list (what the document wrongly declared) draws as three equal
+    // stacked bars -- three `rect`s. The count alone tells the two apart
+    // without duplicating the geometry `state_shapes::glyph_svg` owns.
+    assert_eq!(
+        glyph_classes.len(),
+        4,
+        "the code says `queued` is a lookup table (four glyph rects), not the three-bar \
+         list the document declared -- got classes {glyph_classes:?} in row:\n{row}"
     );
 }

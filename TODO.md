@@ -1,5 +1,27 @@
 # TODO
 
+## Agreed 2026-09-04, not started: `--json render`'s envelope must resolve declared state too
+
+- [ ] **`build_declared_visual_envelope`'s state rows must go through
+      `ply_core::visual::state_shapes::rows_for`, the same as the plain SVG/text renderers
+      do, so a declared-only document (no crate on disk, `show:` written as a mapping)
+      shows its declared rows to a visual client reading `--json`, not only to a terminal
+      user asking for the SVG file.** Declared state shapes (The-Ply-Spec.md's `state:`
+      section, "A document may declare a field's shape") landed on
+      `claude/declared-state-shapes` in `crates/ply-core/src/model.rs` (the `ShowField`/
+      `DeclaredShape` parse), `crates/ply-core/src/visual/state_shapes.rs` (`rows_for`,
+      the one shared rows decision), `crates/ply-core/src/visual/svg.rs` and
+      `transcript.rs` (both consume `rows_for`), and `crates/ply-cli/src/check.rs`
+      (`A0416`, the declared/real shape comparison). None of that touched
+      `crates/ply-core/src/visual/mod.rs`'s `build_declared_visual_envelope` or
+      `crates/ply-cli/src/main.rs`'s `--json` arm on purpose — a second, concurrent branch
+      owns exactly that path (teaching it to resolve state fields at all, tracked in its
+      own `render_json_outcome.rs` tests). Whichever of the two lands second owns this one
+      integration task: thread `rows_for` into the JSON envelope's row-building the same
+      way `svg.rs`'s `state_rows` and `transcript.rs`'s `write_component` already do, so
+      the three views (SVG file, transcript, JSON envelope) cannot quietly disagree about
+      which rows a declared-only document draws.
+
 ## Agreed 2026-09-03, not started: hand-written tests as evidence on a claim
 
 - [ ] **A claim may name existing `#[test]`s as its `test` evidence.** Today the `test`
@@ -431,11 +453,14 @@ own two crates do this). And a crate reached as a *dependency* rather than as a 
 under the document is not walked at all, which is why vetting 004's legacy component
 carries no `state:` — measured, and it reports the warning correctly.
 
-**KNOWN GAP — the vetting scenarios still show no shapes, and correctly so.** Scenarios
-001 to 003 are grammar-first documents describing systems that have no code, so there is
-nothing to read their fields from. They draw the type name and say in the tooltip that
-the document asked for those names and there was nothing to check them against. Only
-004 has real crates behind it.
+**KNOWN GAP — vetting scenarios 001 to 003 still show no shapes, and correctly so, for a
+narrower reason than before (2026-09-04).** A document may now declare a field's shape in
+`show:`'s mapping form and have it drawn with no code at all (The-Ply-Spec.md's `state:`
+section, "A document may declare a field's shape"; `vetting/005` is the scenario that
+argued for it and the accepted example). 001–003 draw nothing because they use the plain
+list form, which still declares names only — not because the grammar has no way to say a
+shape. Only 004 has real crates behind it, so its rows (where it has any) are read from
+code rather than declared.
 
 **KNOWN GAP — one component in vetting 003 still cannot carry `state:`.** With deny
 lanes in (`7f5ae36`), four of its five candidate components take one at zero overlapping

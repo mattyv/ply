@@ -1,0 +1,15 @@
+ply: 1
+components:
+  ledger:
+    anchor: app::ledger
+    state:
+      of: Ledger
+      show:
+        balance: scalar
+        memo: text
+        entries: list
+        by_account: map
+        tags: set
+        pending: optional
+        detail: composite
+        cursor:
