@@ -1,0 +1,15 @@
+ply: 1
+
+# A container of a user-defined struct or enum, nested one level below a
+# parameter's own top level (TODO.md, "finish the container fix",
+# 2026-09-04) -- each of these three shapes was refused outright before
+# that fix. Proving they now compose is only half the story; each promise
+# below is genuinely false, so a real run must catch it, not turn a former
+# refusal into a comfortable green.
+components:
+  fieldcontainer:
+    anchor: ply_fixture_fieldcontainer
+    fns:
+      bag_total: { checks: [fuzz(256)] }
+      basket_total: { checks: [fuzz(256)] }
+      holder_total: { checks: [fuzz(256)] }

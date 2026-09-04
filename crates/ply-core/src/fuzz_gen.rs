@@ -496,9 +496,31 @@ fn raw_user_type_strategy_expr(ty: &RustType) -> Result<String> {
 /// carries its own `#[ply::requires]` filter or a fallible (`Result<Self,
 /// E>`) return: [`RustType::is_fuzz_nestable`] refuses those *when nested*
 /// before this is ever called, because there is no proptest case-rejection
-/// available down here (see that method's own doc for why) -- this
-/// function only ever needs to render the two shapes nesting actually
-/// admits: an infallible constructor call, and a field/variant literal.
+/// available down here (see that method's own doc for why).
+///
+/// **A field or constructor argument that is itself a container of a user
+/// type (`Vec<Item>`, `Option<Item>`, ...) is the third shape this needs to
+/// render (TODO.md, "finish the container fix", 2026-09-04)** -- reached
+/// when a struct/enum nested *inside a container* (an element of `Vec<Outer>`,
+/// say) has, in turn, a field of exactly this container-of-a-user-type
+/// shape. `raw_user_type_strategy_expr` draws such a field's own raw leaf
+/// tuple the same way it draws any other field -- by calling `strategy_expr
+/// (&f.ty)`, whose `Vec`/`Option`/... arms recurse into `strategy_expr` for
+/// the inner type -- so a field typed `Vec<Item>` draws `Vec<(leaf, ...)>`,
+/// not `Vec<Item>`. The fallback arm below used to return `var` unchanged
+/// for every shape but a bare nested user type, which is exactly wrong
+/// here. `build_user_value_stmt`'s own matching fallback (below in this
+/// file) has the identical shape of bug for the more common case -- a
+/// container-of-a-user-type field on a *top-level* struct/enum parameter --
+/// and *that* one was confirmed directly: `error[E0308]: mismatched types`,
+/// against a real generated harness, before its own fix. This arm is fixed
+/// the same way on the strength of that confirmation, since the shapes are
+/// identical one level of nesting apart; it has no independent compiled
+/// repro of its own. [`unwrap_composed_expr`] already contains exactly this
+/// conversion -- built for a *top-level* parameter's own preamble -- so it
+/// is reused here rather than duplicated; its own `!contains_user_type`
+/// short-circuit makes this a no-op (`var` unchanged) for every shape that
+/// does not contain a user type, which is this arm's old behaviour exactly.
 fn construct_from_raw_expr(ty: &RustType, var: &str) -> String {
     match ty {
         RustType::UserTypeCtor(plan) => {
@@ -558,11 +580,12 @@ fn construct_from_raw_expr(ty: &RustType, var: &str) -> String {
                 )
             }
         },
-        // Everything else: no wrapping was ever applied (`raw_user_type_
-        // strategy_expr`'s recursion bottoms out at an ordinary leaf's own
-        // `strategy_expr`, which already produces the real value directly),
-        // so the raw binding *is* the real one.
-        _ => var.to_string(),
+        // Everything else, container shapes included: `unwrap_composed_
+        // expr` is a no-op (returns `var` unchanged) unless `ty` contains a
+        // user type somewhere inside it, so this is exactly the old
+        // behaviour for a plain leaf and the fix described above for a
+        // `Vec<Item>`/`Option<Item>`/... field.
+        other => unwrap_composed_expr(other, var),
     }
 }
 
@@ -736,22 +759,28 @@ fn marker_display_expr(ty: &RustType, var: &str) -> String {
 /// from `cf.params` alone (2026-08-27, receiver construction) so the same
 /// logic renders a constructor's own parameter list, or a pooled operation's,
 /// without a second copy of the 0/1/N cases.
-fn value_pattern_for(params: &[Param]) -> String {
-    // Routed through `plan_for_param` (2026-08-27, struct/enum parameters)
-    // so a struct/enum Ply itself builds contributes its own nested tuple
-    // of synthetic leaf names here instead of its own (unbound) bare name
-    // -- byte-identical to the old bare-name-per-param logic for every
-    // ordinary type, since `plan_for_param`'s default arm reproduces it
-    // exactly. `.expect` is safe: this fn returns no error path of its own
-    // (unlike `combined_strategy_expr_for`, which can fail on an
-    // `Unsupported` type), and every real caller already gated on
-    // `is_fuzz_supported` before reaching here.
+/// Routed through `plan_for_param` (2026-08-27, struct/enum parameters) so a
+/// struct/enum Ply itself builds contributes its own nested tuple of
+/// synthetic leaf names here instead of its own (unbound) bare name --
+/// byte-identical to the old bare-name-per-param logic for every ordinary
+/// type, since `plan_for_param`'s default arm reproduces it exactly.
+///
+/// Returns `Result` rather than panicking on a param `plan_for_param`
+/// cannot build a strategy for (TODO.md, "finish the container fix",
+/// 2026-09-04): every real caller already gates on `is_fuzz_supported`
+/// before reaching here, so this should never fire in practice, but bug 4
+/// (2026-09-04) is the standing lesson that the gate and the generator can
+/// disagree -- that crash lived in the gate itself (`is_fuzz_supported`
+/// said "yes" for any struct without looking inside it); this is the
+/// matching hole one door along, in the generator, and it must not be able
+/// to take a whole run down either. All three callers already return
+/// `Result` of their own.
+fn value_pattern_for(params: &[Param]) -> Result<String> {
     let names: Vec<String> = params
         .iter()
         .map(|p| plan_for_param(p).map(|plan| plan.pattern))
-        .collect::<Result<_>>()
-        .unwrap_or_else(|e| panic!("value_pattern_for: {e}"));
-    match names.len() {
+        .collect::<Result<_>>()?;
+    Ok(match names.len() {
         // A zero-parameter fn (a receiverless constructor like
         // `FakeClock::new()`) has nothing for proptest to generate --
         // `combined_strategy_expr_for` pairs this with `Just(())`, so the
@@ -762,7 +791,7 @@ fn value_pattern_for(params: &[Param]) -> String {
         0 => "_".to_string(),
         1 => names[0].clone(),
         _ => format!("({})", names.join(", ")),
-    }
+    })
 }
 
 /// A unique, collision-free variable-name prefix for pooled operation `i`
@@ -791,7 +820,7 @@ fn call_args_for_prefixed(params: &[Param], i: usize) -> Vec<String> {
         .collect()
 }
 
-fn value_pattern(cf: &ContractFn) -> String {
+fn value_pattern(cf: &ContractFn) -> Result<String> {
     value_pattern_for(&cf.params)
 }
 
@@ -938,6 +967,25 @@ fn build_user_value_stmt(
                 Ok(())
             }
         },
+        // A leaf, in the ordinary sense (a scalar, a `String`, a plain
+        // `Vec`/`Option`/...  of one) -- but also, confirmed rather than
+        // assumed (TODO.md, "finish the container fix", 2026-09-04), a
+        // field or constructor argument that is itself a *container* of a
+        // user type (`Vec<Item>`, `Option<Item>`, ...): neither
+        // `UserTypeCtor` nor `UserTypeFields`, so it falls here, not into
+        // either arm above. `strategy_expr(ty)` draws the *raw* shape for
+        // such a container the same way `raw_user_type_strategy_expr` does
+        // for a nested element (its own `Vec`/`Option`/... arms recurse
+        // into `strategy_expr`, whose `UserTypeCtor`/`UserTypeFields` arm
+        // bottoms out at a raw leaf tuple, never the real value) -- so
+        // binding `binding_name` straight to the drawn leaf, unconverted,
+        // produced e.g. a `Vec` of raw leaf tuples where the field literal
+        // wants a `Vec<Item>`: `error[E0308]: mismatched types` (measured
+        // directly, against a struct field of this shape, before this fix
+        // landed). `unwrap_composed_expr` already contains exactly this
+        // conversion; its own `!contains_user_type` short-circuit makes it
+        // a no-op for every ordinary leaf, so this is byte-identical to the
+        // old binding for every shape this arm already handled correctly.
         _ => {
             let leaf_name = format!("__ply_leaf_{path_prefix}{binding_name}");
             leaves.push(LeafSlot {
@@ -945,7 +993,8 @@ fn build_user_value_stmt(
                 ty: ty.clone(),
                 strategy: strategy_expr(ty)?,
             });
-            preamble.push_str(&format!("            let {binding_name} = {leaf_name};\n"));
+            let value_expr = unwrap_composed_expr(ty, &leaf_name);
+            preamble.push_str(&format!("            let {binding_name} = {value_expr};\n"));
             Ok(())
         }
     }
@@ -1404,7 +1453,7 @@ fn receiver_pattern_and_strategy(
     target_strategy: &str,
     seed_plan: Option<&ReceiverSeedPlan>,
 ) -> Result<(String, String)> {
-    let ctor_pattern = value_pattern_for(&plan.ctor_params);
+    let ctor_pattern = value_pattern_for(&plan.ctor_params)?;
     // Seeded generation (docs/reach-measurement-2.md): when this
     // constructor's text parameter is gated (a `requires`, or a fallible
     // return) and a `ReceiverSeedPlan` was built for it, that one param's
@@ -2318,7 +2367,7 @@ pub fn generate_fuzz_test_with_examples(
     // expr` calls this always used.
     let target_pattern = match &param_seed_plan {
         Some(plan) => value_pattern_for_with_param_seed(&cf.params, plan)?,
-        None => value_pattern(cf),
+        None => value_pattern(cf)?,
     };
     let target_strategy = match &param_seed_plan {
         Some(plan) => combined_strategy_expr_for_param_seed(&cf.params, plan)?,
@@ -3186,7 +3235,7 @@ pub fn generate_invariant_test(
     let label = type_path;
     let ctor_call = harness::last_two_segments(&plan.constructor);
     let ctor_args = call_args_for(&plan.ctor_params).join(", ");
-    let ctor_pattern = value_pattern_for(&plan.ctor_params);
+    let ctor_pattern = value_pattern_for(&plan.ctor_params)?;
     let ctor_strategy = combined_strategy_expr_for(&plan.ctor_params)?;
 
     // One assertion block, emitted after construction and after every
@@ -3518,6 +3567,37 @@ pub fn many(a: Vec<Doc>) -> i64 { a.len() as i64 }
             body.contains("let a = ") && body.contains("Doc::new"),
             "the real Vec<Doc> must be built from the raw draw via an ordinary preamble \
              statement that calls the real constructor on each drawn leaf:\n{body}"
+        );
+    }
+
+    /// TODO.md, "finish the container fix" (2026-09-04): the codegen panic
+    /// that bug 4 fixed lived in the *gate* (`is_fuzz_supported` said `true`
+    /// for any struct without looking inside it); `value_pattern_for` is
+    /// the matching hole one door along, in the *generator*. It called
+    /// `plan_for_param` -- which can fail, e.g. on a type the parser could
+    /// not build a strategy for -- through `.unwrap_or_else(|e| panic!(...))`
+    /// rather than propagating the error, trusting a gate this project's
+    /// own rule says never to trust blindly (`docs/handoff-2026-09-04.md`:
+    /// "a future disagreement between the gate and the generator can never
+    /// take a whole run down again"). This does not depend on finding a
+    /// real input that fools today's gate -- it pins the generator's own
+    /// contract directly: given a parameter the generator itself cannot
+    /// build a strategy for, it must report that as an ordinary error, not
+    /// unwind the whole process.
+    #[test]
+    fn a_parameter_the_generator_cannot_build_a_strategy_for_is_reported_not_panicked() {
+        let params = vec![Param {
+            name: "x".to_string(),
+            ty: RustType::Unsupported("Whatever".to_string()),
+            by_ref: false,
+        }];
+        let err = value_pattern_for(&params).expect_err(
+            "a parameter the generator cannot build a strategy for must be an error, never a \
+             panic that takes the whole run down",
+        );
+        assert!(
+            err.to_string().contains("Whatever"),
+            "the error must still name the offending type: {err}"
         );
     }
 

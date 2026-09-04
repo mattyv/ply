@@ -1,0 +1,21 @@
+[workspace]
+# Empty table: this fixture is its own workspace root, per tests/spike's
+# convention -- it must never be swept into the product workspace (each
+# fixture is its own cargo project, per The-Ply-Spec.md §4) or into tools/.
+
+[package]
+name = "ply-fixture-fieldcontainer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "A container of a user-defined struct or enum, nested one level below a parameter's own top level (a struct field, a variant field, a constructor argument), must resolve and be checked for real -- not left refused, and not silently mis-generated into code that fails to compile."
+
+[lib]
+name = "ply_fixture_fieldcontainer"
+path = "src/lib.rs"
+
+[dependencies]
+ply = { package = "ply-attrs", path = "../../../crates/ply-attrs" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

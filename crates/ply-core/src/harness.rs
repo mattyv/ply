@@ -4200,8 +4200,28 @@ fn private_ancestor_module(crate_dir: &Path, file_path: &Path) -> Option<String>
 /// unchanged; if it is `Unsupported` and its source text is a bare
 /// identifier, tries to resolve it as a user-defined struct/enum
 /// ([`resolve_user_type`]); anything else (a compound type expression Ply's
-/// parser did not recognise -- `Vec<Foo>`, `&mut Bar`, a generic parameter)
-/// is `NotFound` rather than guessed at.
+/// parser did not recognise -- `&mut Bar`, a generic parameter) is
+/// `NotFound` rather than guessed at.
+///
+/// Recurses into every composition shape (`Option`/`Result`/`Array`/`Vec`/
+/// `BTreeSet`/`Slice`/`Tuple`/`BTreeMap`/`Box`) the same way
+/// [`enrich_rust_type`] already does for a *top-level* parameter -- added
+/// 2026-09-04 (TODO.md, "finish the container fix"). Before this, a field, a
+/// variant field, a constructor argument, or a route argument (the four
+/// callers of this function) never walked into a container at all: `ty`
+/// itself was never `Unsupported` for `Vec<Item>` (the parser already
+/// preserves that structure), so the old one-arm match fell straight to
+/// `Ok(ty.clone())` and returned `Vec<Unsupported("Item"))` unchanged, even
+/// when `Item` alone resolves fine. This is `record::fingerprint`'s own
+/// shape: `FingerprintInputs` has two fields exactly like this
+/// (`assumed: Vec<AssumedPromise>`, `engines: Vec<EngineId>`).
+///
+/// `depth` is passed through unchanged across a container hop -- it counts
+/// how many *user-defined types* deep a chain of constructor arguments or
+/// fields goes (`MAX_USER_TYPE_DEPTH`), and unwrapping `Vec<_>`/`Option<_>`/
+/// etc. to reach the type inside is not itself another such step; the
+/// callers of this function already pass `depth + 1` once, when a field or
+/// argument is itself resolved.
 fn resolve_param_type(
     crate_dir: &Path,
     locations: &TypeLocations,
@@ -4209,13 +4229,37 @@ fn resolve_param_type(
     ty: &RustType,
     depth: usize,
 ) -> std::result::Result<RustType, UserTypeError> {
-    let RustType::Unsupported(src) = ty else {
-        return Ok(ty.clone());
-    };
-    if !is_bare_ident(src) {
-        return Err(UserTypeError::NotFound);
+    let resolve_inner =
+        |inner: &RustType| resolve_param_type(crate_dir, locations, routes, inner, depth);
+    match ty {
+        RustType::Unsupported(src) => {
+            if !is_bare_ident(src) {
+                return Err(UserTypeError::NotFound);
+            }
+            resolve_user_type(crate_dir, locations, routes, src, depth)
+        }
+        RustType::Option(inner) => Ok(RustType::Option(Box::new(resolve_inner(inner)?))),
+        RustType::Array(inner, n) => Ok(RustType::Array(Box::new(resolve_inner(inner)?), *n)),
+        RustType::Vec(inner) => Ok(RustType::Vec(Box::new(resolve_inner(inner)?))),
+        RustType::BTreeSet(inner) => Ok(RustType::BTreeSet(Box::new(resolve_inner(inner)?))),
+        RustType::Slice(inner) => Ok(RustType::Slice(Box::new(resolve_inner(inner)?))),
+        RustType::BoxT(inner) => Ok(RustType::BoxT(Box::new(resolve_inner(inner)?))),
+        RustType::Result(ok, err) => Ok(RustType::Result(
+            Box::new(resolve_inner(ok)?),
+            Box::new(resolve_inner(err)?),
+        )),
+        RustType::Tuple(items) => Ok(RustType::Tuple(
+            items
+                .iter()
+                .map(resolve_inner)
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        )),
+        RustType::BTreeMap(key, value) => Ok(RustType::BTreeMap(
+            Box::new(resolve_inner(key)?),
+            Box::new(resolve_inner(value)?),
+        )),
+        other => Ok(other.clone()),
     }
-    resolve_user_type(crate_dir, locations, routes, src, depth)
 }
 
 /// The resolver at the centre of this section: try to build `RustType`
@@ -8895,5 +8939,178 @@ pub fn optional(a: Option<Doc>) -> i64 { a.map(|d| d.n).unwrap_or(0) as i64 }
         );
         assert!(cf.is_fuzz_supported(), "{:?}", cf.params[0].ty);
         assert!(!cf.is_bounded_supported());
+    }
+
+    // -- container resolution below the top level (TODO.md, "finish the
+    // container fix", 2026-09-04): the four tests above already prove a
+    // *top-level* parameter's own container (`Vec<Doc>` as the whole
+    // parameter) resolves recursively, through `enrich_rust_type`. A
+    // struct's own field, an enum variant's own field, a constructor's own
+    // argument, and a route's own argument all go through a *different*
+    // resolver (`resolve_param_type`), which never walked into a container
+    // at all -- so `Vec<Item>` one level below the top (a field of another
+    // struct, say) came out as `Vec<Unsupported("Item"))`, not
+    // `Vec<UserTypeFields(..)>`, even though `Item` alone resolves fine.
+    // This is `record::fingerprint`'s own shape: `FingerprintInputs` has
+    // two fields of exactly this kind (`assumed: Vec<AssumedPromise>`,
+    // `engines: Vec<EngineId>`).
+
+    #[test]
+    fn a_struct_field_that_is_a_container_of_a_user_type_resolves_recursively() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Item { pub n: u32 }
+pub struct Outer { pub items: Vec<Item> }
+#[ply::ensures(|result| *result >= 0)]
+pub fn total(o: Outer) -> u32 { o.items.iter().map(|i| i.n).sum() }
+"#,
+            )],
+            "total",
+        );
+        let RustType::UserTypeFields(plan) = &cf.params[0].ty else {
+            panic!(
+                "expected UserTypeFields for Outer, got {:?}",
+                cf.params[0].ty
+            );
+        };
+        let UserTypeShape::Struct(fields) = &plan.shape else {
+            panic!("expected a struct shape, got {:?}", plan.shape);
+        };
+        assert_eq!(fields.len(), 1);
+        assert!(
+            matches!(&fields[0].ty, RustType::Vec(inner) if matches!(inner.as_ref(), RustType::UserTypeFields(_))),
+            "a struct field that is a container of a user type must resolve recursively, not \
+             stay `Vec<Unsupported>`: {:?}",
+            fields[0].ty
+        );
+        assert!(
+            cf.is_fuzz_supported(),
+            "every element is buildable alone -- the field around it must not refuse the \
+             whole struct: {:?}",
+            cf.params[0].ty
+        );
+    }
+
+    #[test]
+    fn a_constructor_argument_that_is_a_container_of_a_user_type_resolves_recursively() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Item { pub n: u32 }
+pub struct Basket { items: Vec<Item> }
+impl Basket {
+    pub fn new(items: Vec<Item>) -> Self { Basket { items } }
+}
+#[ply::ensures(|result| *result >= 0)]
+pub fn total(b: Basket) -> u32 { b.items.iter().map(|i| i.n).sum() }
+"#,
+            )],
+            "total",
+        );
+        let RustType::UserTypeCtor(plan) = &cf.params[0].ty else {
+            panic!(
+                "expected UserTypeCtor for Basket, got {:?}",
+                cf.params[0].ty
+            );
+        };
+        assert_eq!(plan.ctor_params.len(), 1);
+        assert!(
+            matches!(&plan.ctor_params[0].ty, RustType::Vec(inner) if matches!(inner.as_ref(), RustType::UserTypeFields(_))),
+            "a constructor argument that is a container of a user type must resolve \
+             recursively, not stay `Vec<Unsupported>`: {:?}",
+            plan.ctor_params[0].ty
+        );
+        assert!(cf.is_fuzz_supported(), "{:?}", cf.params[0].ty);
+    }
+
+    #[test]
+    fn an_enum_variant_field_that_is_a_container_of_a_user_type_resolves_recursively() {
+        let dir = tempfile::tempdir().unwrap();
+        let cf = discover_fn_in(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Item { pub n: u32 }
+pub enum Holder {
+    Full { items: Vec<Item> },
+    Empty,
+}
+#[ply::ensures(|result| *result >= 0)]
+pub fn total(h: Holder) -> u32 {
+    match h {
+        Holder::Full { items } => items.iter().map(|i| i.n).sum(),
+        Holder::Empty => 0,
+    }
+}
+"#,
+            )],
+            "total",
+        );
+        let RustType::UserTypeFields(plan) = &cf.params[0].ty else {
+            panic!(
+                "expected UserTypeFields for Holder, got {:?}",
+                cf.params[0].ty
+            );
+        };
+        let UserTypeShape::Enum(variants) = &plan.shape else {
+            panic!("expected an enum shape, got {:?}", plan.shape);
+        };
+        let (_, fields) = variants
+            .iter()
+            .find(|(name, _)| name == "Full")
+            .expect("variant `Full` must be present");
+        assert!(
+            matches!(&fields[0].ty, RustType::Vec(inner) if matches!(inner.as_ref(), RustType::UserTypeFields(_))),
+            "an enum variant field that is a container of a user type must resolve \
+             recursively, not stay `Vec<Unsupported>`: {:?}",
+            fields[0].ty
+        );
+        assert!(cf.is_fuzz_supported(), "{:?}", cf.params[0].ty);
+    }
+
+    #[test]
+    fn a_route_arguments_container_of_a_user_type_resolves_recursively() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut routes = RouteTable::new();
+        routes.insert("Widget".to_string(), "build_widget".to_string());
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+pub struct Item { pub n: u32 }
+pub struct Widget { total: u32 }
+pub fn build_widget(items: Vec<Item>) -> Widget {
+    Widget { total: items.iter().map(|i| i.n).sum() }
+}
+#[ply::ensures(|result| *result >= 0)]
+pub fn use_widget(w: Widget) -> i64 { w.total as i64 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "use_widget").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &routes);
+        assert!(refused.is_empty(), "{refused:?}");
+        let RustType::UserTypeCtor(plan) = &cf.params[0].ty else {
+            panic!(
+                "expected UserTypeCtor for Widget, got {:?}",
+                cf.params[0].ty
+            );
+        };
+        assert_eq!(plan.ctor_params.len(), 1);
+        assert!(
+            matches!(&plan.ctor_params[0].ty, RustType::Vec(inner) if matches!(inner.as_ref(), RustType::UserTypeFields(_))),
+            "a route's own argument that is a container of a user type must resolve \
+             recursively, not stay `Vec<Unsupported>`: {:?}",
+            plan.ctor_params[0].ty
+        );
     }
 }
