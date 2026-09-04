@@ -1,5 +1,6 @@
 mod audit;
 mod check;
+mod explain;
 mod shared;
 mod verify;
 mod worklist;
@@ -133,6 +134,13 @@ enum Commands {
         #[arg(long, default_value_t = DEFAULT_RETAINED_RUNS)]
         retain_views: usize,
     },
+    /// Explain a diagnostic code -- what it means, who reports it, and
+    /// whether a run carrying it passed. With no code, lists every one this
+    /// build can produce.
+    Explain {
+        /// A code as Ply prints it, like `K0502`. Case does not matter.
+        code: Option<String>,
+    },
     /// Remove older published visual runs without deleting the current run.
     CleanViews {
         /// Path to the crate directory containing `ply.yaml`.
@@ -263,6 +271,10 @@ fn main() -> anyhow::Result<()> {
                 print_human(&envelope);
             }
             std::process::exit(exit_code_for(&envelope, fail_on));
+        }
+        Commands::Explain { code } => {
+            let mut stdout = std::io::stdout().lock();
+            explain::explain_command(code.as_deref(), &mut stdout)?;
         }
         Commands::CleanViews { path, keep } => {
             let cleanup = VisualPublisher::new(path).cleanup(keep)?;

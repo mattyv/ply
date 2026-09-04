@@ -1658,6 +1658,52 @@ on something stable. These are the ones this build emits.
 
 ---
 
+## Reading a diagnostic code
+
+Every message Ply prints ends in a short code — `K0502`, `W0413`, `E0301`. The code is the
+message's stable name: it survives rewording, so you can search for it, cite it in a
+review, or track one across releases without quoting a sentence that may change.
+
+**Look one up with `cargo ply explain`:**
+
+```
+$ cargo ply explain K0502
+K0502  (an error — a run reporting this did not pass)
+
+The exhaustive check searched every possible value and found one that breaks this
+function's contract, with a concrete counterexample.
+
+Who reports it: the exhaustive prover (Kani).
+When: running a check against a function or a structure, and reading what came back.
+
+The reasoning behind this rule is in The-Ply-Spec.md §8.
+```
+
+Run it with no code to list every code this build can produce. A code that does not exist
+says so and suggests the nearest real one, since a mistyped digit is the usual cause.
+
+**The first letter says who is reporting it:**
+
+| Letter | Who found it |
+|---|---|
+| `E` | Ply reading your document, or looking for the code a claim names |
+| `A` | Ply checking the architecture rules your document declares |
+| `W` | Any part of Ply, as a warning rather than a stop |
+| `V` | Ply itself, refusing or qualifying a check before an engine ran |
+| `K` | The exhaustive prover (Kani) |
+| `P` | The random sampler (proptest) |
+| `R` | A plain test run |
+| `M` | The mutation tester |
+| `X` | Ply's own tooling, when it broke rather than found something |
+
+The four digits are identity, not meaning — the first two loosely track the spec section a
+rule lives in, and that is not worth reading into.
+
+**Some codes are described but not built.** `cargo ply explain` says so outright for those,
+because reading about a rule and assuming a run would enforce it is exactly the gap worth
+closing. That status is computed from whether a real emitting site exists in the source, so
+it cannot be claimed by a document that has drifted.
+
 ## 14. What this build does not do
 
 Collected in one place, so nothing here has to be discovered at minute eleven.
