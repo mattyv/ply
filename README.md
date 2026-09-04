@@ -78,7 +78,7 @@ $ cargo install --locked kani-verifier && cargo kani setup   # for bounded(k)
 $ cargo install --locked cargo-mutants                       # for mutate
 ```
 
-**What Ply leaves behind.** Generated harnesses live under `target/ply/`, which is
+**What artefacts are created by Ply.** Generated harnesses live under `target/ply/`, which is
 already ignored by every Rust `.gitignore`. Nothing else in your project is modified: on
 a crate that declares its own workspace Ply borrows your `Cargo.toml` for the length of
 the run and writes it back byte-for-byte when the run ends.
