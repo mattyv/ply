@@ -64,7 +64,7 @@ stops testing what ships.
 Rendered from [`crates/ply-core/ply.yaml`](crates/ply-core/ply.yaml).
 
 <p align="center">
-  <img src="docs/ply-core-self.svg" alt="A frame labelled ply.yaml, with a line reading 5 components, 6 functions, 0 promise nothing. Inside is a solid box named core, filled mid-grey rather than hatched. Under its name a line reads state Envelope, 4 of 8 shown, followed by four rows: command, root, diagnostics and coverage, each with a small shape beside it and its type to the right. Nested inside core are four smaller boxes, one per module — kernel, harness, visual and record — each with its own state line and field rows, and each holding the chips for its own functions: StatusSet::len and StatusSet::union under kernel, last_two_segments and rust_type_from_source under harness, stable_element_id under visual, fingerprint under record. Every chip reads fuzz: 256 cases. There are no arrows." width="440">
+  <img src="docs/ply-core-self.svg" alt="A frame labelled ply.yaml, with a line reading 5 components, 6 functions, 0 promise nothing. Inside is a solid box named core, filled mid-grey rather than hatched. Under its name a line reads state Envelope, 4 of 8 shown, followed by four rows: command, root, diagnostics and coverage, each with a small shape beside it and its type to the right. Nested inside core are four smaller boxes, one per module — kernel, harness, visual and record — each with its own state line and field rows, and each holding the chips for its own functions: StatusSet::len and StatusSet::union under kernel, last_two_segments and rust_type_from_source under harness, stable_element_id under visual, fingerprint under record. Every chip reads fuzz: 256 cases. The kernel box has no field rows; its state line reads state StatusSet, promises 1 thing about itself. There are no arrows." width="440">
 </p>
 
 This is the first drawing of Ply's own code that is not hatched. Each chip is a function
@@ -72,6 +72,11 @@ that states something that must be true of what it returns, and how that stateme
 be tested — 256 generated inputs each. A box is filled mid-grey because grey depth is how
 strongly a thing promises to be checked, and a box is never shown as stronger than the
 weakest function inside it.
+
+The kernel's box says its structure promises something about itself: a set of statuses can
+never hold more than the seven kinds of status that exist. That is not a comment — Ply
+builds a set through its own constructor, inserts and merges through its own operations,
+and checks the claim again after every one of them, 256 histories deep.
 
 Each module is its own box, holding the structure it keeps and the functions that promise
 things about it. That became possible on 2026-09-04: a function key is now read relative
