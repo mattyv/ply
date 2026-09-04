@@ -179,10 +179,21 @@ entirely — it runs the callee's real code, contract or not, so it never needs 
 And whether a stored result can be reused instead of running any of this again is a
 separate diagram, [`verdict-lifecycle`](.archi/ply.json), rendered alongside this one.
 
-### What step 5 gives you
+### What you get when a check fails (step 5)
 
-A failed executable claim comes back as three things, and every one of them is a file
-you can open. The example below is real output from
+**Ply does not write your tests.** It writes exactly one, only when a promise actually
+breaks, and it puts the input that broke it inside. A clean run leaves your source tree
+untouched.
+
+Two different things get generated and only one of them is yours to keep:
+
+| | Where it lives | When | Yours? |
+|---|---|---|---|
+| The harness that runs the checks | `target/ply/fuzz/…` | every run | No — scratch, rewritten each time, never committed |
+| **The failing test** | `src/ply_generated_cex.rs` | only when a promise breaks | Yes — an ordinary file in your crate |
+
+The second one is the point of this section. A broken promise comes back as three things,
+and every one of them is a file you can open. The example below is real output from
 [`tests/fixtures/clamp`](tests/fixtures/clamp), a function whose promise is wrong for
 every input above 100:
 
@@ -204,8 +215,9 @@ quotes the promise it broke, and gives the input that breaks it:
 
 **2. A plain `#[test]` in your own crate**, at `src/ply_generated_cex.rs`. It calls the
 real function with that input and asserts the promise itself, so it fails under bare
-`cargo test` with no engine installed. This is the artifact an agent repairs against
-(panic messages abridged here; the file carries them in full):
+`cargo test` on a machine with no Ply and no proof engine installed at all — which is
+what makes it something you, or an agent, can iterate against. Fix it and it stays as a
+regression test (panic messages abridged here; the file carries them in full):
 
 ```rust
 #[test]
