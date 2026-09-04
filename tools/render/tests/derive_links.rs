@@ -106,7 +106,7 @@ fn a_linked_hollow_component_draws_collapsed_not_hollow() {
         "a linked box must never draw hollow (dashed):\n{svg}"
     );
     assert!(
-        svg.contains("collapsed-stack"),
+        svg.contains("class=\"collapsed-stack"),
         "a linked box must draw the collapsed stack cue:\n{svg}"
     );
     let lines = drawn_link_lines(&svg);
@@ -186,4 +186,46 @@ fn every_cross_document_links_drawn_counts_match_its_target_document() {
             "drawn counts for {path:?} do not match a fresh recount of the file itself"
         );
     }
+}
+
+/// A link only ever stands in for an interior nobody declared locally. A
+/// component that already writes its own real fn or nested component
+/// keeps drawing exactly that, even when its anchor also resolves to
+/// another document that would otherwise link.
+#[test]
+fn a_component_with_real_local_content_ignores_a_resolvable_link() {
+    let dir = tempfile::tempdir().unwrap();
+    write_crate(
+        dir.path(),
+        "inner_lib",
+        "ply: 1\ncomponents:\n  inner:\n    anchor: inner_lib\n    fns:\n      go:\n        checks: [bounded(2)]\n",
+    );
+    let outer_text =
+        "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    fns:\n      own_fn:\n        checks: [bounded(2)]\n";
+    std::fs::write(dir.path().join("ply.yaml"), outer_text).unwrap();
+    let doc = parse_document(outer_text).unwrap();
+
+    // The link still *resolves* -- deriving it is unconditional -- but the
+    // renderer must not act on it here.
+    let link_set = derive_links(&doc, dir.path());
+    assert!(link_set.links.contains_key("core"));
+
+    let state_fields = ply_core::harness::resolve_state_fields(dir.path(), &doc);
+    let svg =
+        render_svg_with_state_and_links(&doc, &RenderOptions::default(), &state_fields, &link_set.links)
+            .unwrap();
+
+    assert!(
+        svg.contains("own_fn"),
+        "the component's own declared fn must still be drawn:\n{svg}"
+    );
+    assert!(
+        // As in the ordering-trap test: check the class is actually
+        // *applied* to an element, not merely defined in the stylesheet
+        // every render carries regardless.
+        !svg.contains("class=\"collapsed-stack"),
+        "a component with real local content must not switch to the linked/collapsed \
+         rendering:\n{svg}"
+    );
+    assert!(drawn_link_lines(&svg).is_empty(), "{svg}");
 }

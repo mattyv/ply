@@ -139,6 +139,15 @@ pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
     // declared components and `edges:`/`deny:`.
     let arch_outcome = run_architecture_tier(crate_dir, &doc, &mut diagnostics);
 
+    // §7.1's derive-links brief: a component links to another document
+    // when that document's own top-level anchor sits under this one's,
+    // discovered from real crate directories rather than a declared key.
+    // No engine and no `cargo metadata` call, so this runs whether or not
+    // the architecture tier above could.
+    for f in &ply_core::config::derive_links(&doc, crate_dir).findings {
+        diagnostics.push(link_diag(f));
+    }
+
     let root = workspace_node(&doc);
     Ok(CheckReport {
         envelope: envelope(root, diagnostics, coverage(Some(anchors), arch_outcome)),
@@ -473,6 +482,31 @@ fn arch_diag(f: &ArchFinding) -> Diagnostic {
         engine: "ply".into(),
         check: "architecture".into(),
         node_id: f.node_id.clone(),
+        title: f.message.clone(),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
+/// A derived cross-document link's finding (§7.1's derive-links brief:
+/// `A0417` target missing/unparseable, `W0532` anchor drift, `W0533`
+/// duplicate claim, `W0534` a chain that leads back into itself),
+/// attached to the *including* component -- `ply_core::config::LinkFinding`
+/// already carries its own severity, since three of the four are advisory
+/// (the link simply does not form) and one is a real defect in the target
+/// document.
+fn link_diag(f: &ply_core::config::LinkFinding) -> Diagnostic {
+    Diagnostic {
+        code: f.code.into(),
+        severity: f.severity.into(),
+        phase: "check".into(),
+        engine: "ply".into(),
+        check: "architecture".into(),
+        node_id: f.component_path.clone(),
         title: f.message.clone(),
         primary_span: None,
         pointer: None,

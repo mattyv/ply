@@ -2049,15 +2049,21 @@ pub use crate::harness::StateFieldIndex;
 /// folded" are mutually exclusive states, and hollow wins when the subtree
 /// really is empty.
 ///
-/// A derived link (`walk.links`) overrides both of those defaults, and
-/// **must be checked first**: a component with an empty declared interior
-/// of its own but a resolved link is not hollow (its interior lives in
-/// another file, not nowhere), and it draws collapsed unconditionally,
-/// never subject to `--depth`/`--focus`/`--collapse` -- there is nothing
-/// local for those flags to expand into. Getting this ordering backwards
-/// draws the link dashed, meaning "nothing to zoom into yet" — the exact
-/// opposite of the truth (see `a_linked_hollow_component_draws_collapsed_
-/// not_hollow` below).
+/// A derived link (`walk.links`) overrides both of those defaults for a
+/// component with an **empty declared interior of its own**, and the
+/// override **must be checked first**: such a component is not hollow when
+/// a link resolves (its interior lives in another file, not nowhere), and
+/// it draws collapsed unconditionally, never subject to
+/// `--depth`/`--focus`/`--collapse` -- there is nothing local for those
+/// flags to expand into. Getting this ordering backwards draws the link
+/// dashed, meaning "nothing to zoom into yet" — the exact opposite of the
+/// truth (see `a_linked_hollow_component_draws_collapsed_not_hollow` in
+/// `tools/render/tests/derive_links.rs`).
+///
+/// A component that already declares real fns or nested components of its
+/// own never consults a link at all, even one that would otherwise
+/// resolve: a link stands in for an interior nobody wrote here, and a
+/// document that *did* write one gets to keep showing it.
 fn render_component_dispatch<'a>(
     name: &'a str,
     qualified: &str,
@@ -2073,8 +2079,9 @@ fn render_component_dispatch<'a>(
     // rather than staying fixed for the whole walk the way `WalkCtx` does.
     parent_element_id: Option<&str>,
 ) -> ComponentBox {
-    let link = walk.links.and_then(|links| links.get(qualified));
-    let is_hollow = link.is_none() && super::is_hollow(comp);
+    let declared_hollow = super::is_hollow(comp);
+    let link = declared_hollow.then(|| walk.links.and_then(|links| links.get(qualified))).flatten();
+    let is_hollow = declared_hollow && link.is_none();
     if link.is_some() || (!is_hollow && walk.collapse.should_collapse(qualified, level)) {
         render_collapsed_component(
             name,

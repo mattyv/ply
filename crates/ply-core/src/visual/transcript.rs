@@ -177,7 +177,12 @@ pub fn render_transcript_with_state_and_links(
             1,
             &doc.profiles,
             state_fields,
-            links.and_then(|links| links.get(name)),
+            // Same gate the drawing applies: a link only ever stands in
+            // for an interior nobody declared here (`super::is_hollow`),
+            // never overrides one the document actually wrote.
+            super::is_hollow(comp)
+                .then(|| links.and_then(|links| links.get(name)))
+                .flatten(),
         );
     }
 
