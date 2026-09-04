@@ -108,6 +108,149 @@ metadata`, so before there is a Cargo project to read there is nothing for it to
 against, and it says so rather than reporting a clean run. Anchors behave the same way:
 point it at a crate whose promised functions are not written yet and it names each one.
 
+### What step 4 actually decides
+
+Ply keeps a diagram of its own architecture under [`.archi/`](.archi/), and this is one of
+them — the path `cargo ply verify` walks for a single function that declares a `bounded`
+check. It is the tool's most consequential piece of reasoning, because every branch here is
+a decision about whether evidence may be claimed:
+
+```mermaid
+flowchart TD
+  scheduled["Claim scheduled"]
+  hascontract{"Does the callee have<br>a declared contract?"}
+  refuse["Refuse to descend"]
+  proofpassed{"Did the callee's own<br>proof already pass?"}
+  stubclean["Stand in for the callee,<br>verdict clean"]
+  assume["Verify against an<br>assumed promise"]
+  enginecheck{"Is the required<br>tool installed?"}
+  enginemissing["Report engine missing"]
+  runengine["Run the engine"]
+  parseresult["Read what it reported"]
+  verdict["Produce verdict and<br>any counterexample"]
+  scheduled -->|"checking a bounded claim"| hascontract
+  hascontract -->|"no contract declared anywhere"| refuse
+  hascontract -->|"yes, callee is contracted"| proofpassed
+  proofpassed -->|"yes, clean all the way down"| stubclean
+  proofpassed -->|"no"| assume
+  stubclean -->|"run the proof"| enginecheck
+  assume -->|"run the proof"| enginecheck
+  refuse -->|"no evidence earned"| verdict
+  enginecheck -->|"not installed"| enginemissing
+  enginecheck -->|"installed"| runengine
+  enginemissing -->|"no evidence earned"| verdict
+  runengine --> parseresult
+  parseresult --> verdict
+```
+
+**Callees are checked before their callers**, always, and ties between unrelated functions
+are broken by name so the same code always produces the same order. A function caught in a
+dependency cycle never gets a clean turn, and falls through to the assumed-promise branch
+below.
+
+**Three decisions, and each one is a refusal to overclaim:**
+
+*Does the callee have a promise at all?* If not, Ply will not read through it to find out
+what it does, and will not pretend the check ran. Nothing is earned, and the warning names
+the exact callee and where it is called from, so it is something a person can go and fix.
+It offers two ways out: write a promise for the callee, or switch to a `fuzz` check, which
+crosses the same boundary by simply running the real code. This branch was added after a
+two-year-old unannotated function used to just time out with no explanation.
+
+*Did that callee's own proof already pass, cleanly?* If yes, Ply swaps the callee's body
+for a stand-in built from its promise, and nothing is assumed — but the result is only as
+deep as the shallower of the two: a function declaring depth 5 that stands on a callee
+proved to depth 2 gets a depth-2 result, never the deeper number. If no — the callee was
+only fuzzed, or lives in another crate, or sits in a cycle — the stand-in is built from a
+promise nobody has checked yet, and the verdict is marked as resting on it, with that
+assumption tracked as debt until something runs the real callee against the same promise.
+
+*Is the tool even installed?* A missing engine is reported by name with what to install.
+Never a silent skip, and never reported as though the check quietly passed.
+
+Reading the engine's answer is its own step for a reason: terminal colour codes are
+stripped first, because a coloured `error:` line once slipped past every text match Ply had
+and got reported as an unattributable failure instead of the plain compiler error it was. A
+broken promise, a timeout, a crash and a refusal to run are four different facts and must
+never arrive as the same one.
+
+Two things this leaves out on purpose. A `fuzz` or `test` check skips the first decision
+entirely — it runs the callee's real code, contract or not, so it never needs a stand-in.
+And whether a stored result can be reused instead of running any of this again is a
+separate diagram, [`verdict-lifecycle`](.archi/ply.json), rendered alongside this one.
+
+### What step 5 gives you
+
+A failed executable claim comes back as three things, and every one of them is a file
+you can open. The example below is real output from
+[`tests/fixtures/clamp`](tests/fixtures/clamp), a function whose promise is wrong for
+every input above 100:
+
+```rust
+#[ply::ensures(|result| *result == x)]
+pub fn clamp(x: u32) -> u32 {
+    x.min(100)
+}
+```
+
+**1. The failing input, in the run's own output.** `cargo ply verify` names the function,
+quotes the promise it broke, and gives the input that breaks it:
+
+```
+[K0502] clamp::clamp — `clamp` breaks its own postcondition `|result|*result == x` for at least one input
+    failing input: x = 4294967295
+    Ply wrote a test that reproduces this to src/ply_generated_cex.rs -- run `cargo test` from this crate's root directory and it fails the same way this run just did.
+```
+
+**2. A plain `#[test]` in your own crate**, at `src/ply_generated_cex.rs`. It calls the
+real function with that input and asserts the promise itself, so it fails under bare
+`cargo test` with no engine installed. This is the artifact an agent repairs against
+(panic messages abridged here; the file carries them in full):
+
+```rust
+#[test]
+fn ply_cex_clamp_01() {
+    let x: u32 = 4294967295u32;
+
+    let result = &clamp(x);
+
+    // Contract under test: #[ply::ensures(|result|*result == x)]
+    // Arithmetic is evaluated in i128 so the test can report the broken
+    // promise instead of overflowing while checking it.
+    let __ply_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ((* result as i128)) == ((x as i128))));
+    match __ply_ok {
+        Ok(true) => {}
+        Ok(false) => panic!("Broken promise in `clamp`: ... the left side of the contract evaluated to \
+         {}, and the right side evaluated to {} ... fix the body or fix the `#[ply::ensures]` \
+         line, and this test will pass. (K0502)", (* result as i128), (x as i128)),
+        Err(_) => panic!("the contract's own check crashed at this input ... (K0502)"),
+    }
+}
+```
+
+```
+test ply_generated_cex::ply_cex_clamp_01 ... FAILED
+Broken promise in `clamp`: ... For this input, the left side of the contract evaluated to 100,
+and the right side evaluated to 4294967295, which does not satisfy the contract's comparison.
+```
+
+Fix the body or fix the promise and the same test goes green, and it stays in the crate
+as a regression test. The engine's own replay facility cannot do this: it re-runs the
+function body and never re-evaluates the promise, so a broken postcondition replays
+green there. That is why Ply renders its own test, and why the assertion is widened to
+`i128` — a test that overflowed while checking the promise would be failing for the wrong
+reason.
+
+**3. The raw witness, kept.** The exact bytes the engine found are stored under
+`target/ply/witness/<fn>.json` (here `[[255,255,255,255]]`), so a later run that no
+longer fails can still re-render the test from the input that once did.
+
+One honest limit. When the failure depends on a stand-in callee's invented return value
+rather than on the function's own body, no plain-Rust test can reproduce it faithfully —
+the rendered test would call the real callee, which never returns that value. Ply reports
+that case by name (`W0541`) with the value and a proposed tightening of the promise,
+instead of writing a test that passes for the wrong reason.
+
 ## A declarative grammar, and the line where it stops
 
 Ply gives you a **declarative grammar** for describing a system: components and how they
