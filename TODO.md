@@ -4,6 +4,70 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: a component links to another document instead of copying its interior by hand — 2026-09-04 (`cf2fc2e`, branch `claude/derive-document-links`)
+
+`ply.yaml` at the repository root used to hand-declare `core`'s five modules and a
+`state:` block as a copy of what `crates/ply-core/ply.yaml` says about itself, and the
+two had already drifted (five modules here, twenty-one there) before either file noticed.
+No `include:` key was added — a component now links to another document when that
+document's own top-level anchor equals, or sits under, the linking component's anchor,
+derived from real crate directories the same way anchor resolution already works
+(`ply_core::config::derive_links`, `crates/ply-core/src/config.rs`). The linked box draws
+with the existing collapsed-component stack (no new glyph), with the target file's path
+riding in the text tier after the usual `N components · M fns` count.
+
+- [x] **Four named ways a candidate fails to link, each tested**: the target exists but
+      cannot be read or does not parse (`A0417`, error); its top-level anchor no longer
+      sits under the linking anchor (`W0532`, "drifted", warning); a chain of documents
+      would lead back into itself (`W0534`, warning — real in this repo only as the
+      two-file fixture the unit tests build directly, since discovery is a real crate
+      directory per hop and today's two documents are one hop apart); another component
+      in the same document already claimed the same target (`W0533`, warning). A crate
+      with no `ply.yaml` of its own produces neither a link nor a finding — the ordinary
+      case for four of `core`'s five siblings. All four codes registered in
+      `crates/ply-core/src/registry.rs`. `cargo ply check` reports all four; both real
+      `check` runs (`.` and `crates/ply-core`) stay clean, since the one real link
+      resolves cleanly and the self-reference `crates/ply-core/ply.yaml`'s own top
+      component would otherwise "link to itself" (a document naming its own crate, not a
+      link to "another" document) is refused silently rather than as a finding.
+- [x] **The ordering trap held**: a derived-link box with no declared interior of its own
+      ranks above the hollow rule (checked first in `render_component_dispatch`), so it
+      draws the collapsed stack rather than a dashed hollow box — verified by temporarily
+      swapping the check order and watching the regression tests fail for the right
+      reason, then restoring it. Gated the other way too: a component that already
+      declares a real fn or nested component never consults a link at all, even a
+      resolvable one — a link stands in for an interior nobody wrote, never overrides one
+      the document did write.
+- [x] **The invariant the design pass asked for**: every cross-document link's drawn
+      counts match the target document, checked as a sweep over the real rendered SVG
+      markup against an independent from-scratch recount of the target file
+      (`tools/render/tests/derive_links.rs`), not a spot-check on one pair.
+- [x] **A real bug caught along the way, not by the docs regeneration itself but by
+      updating `self_architecture.rs`'s comparison to resolve links the same way**:
+      `target_path` was stripping a literal `"./"` prefix rather than the actual root path
+      handed to `derive_links`, so a caller that resolved an absolute root first (as a
+      test comparing against a fixed checkout must) would have leaked that host's own
+      filesystem layout into a committed drawing. Fixed by stripping `root` as a real path
+      prefix; pinned by a regression test asserting the exact relative string with an
+      absolute tempdir root.
+- [x] Deleted `core`'s hand-declared interior from the root `ply.yaml`, with a comment
+      explaining why so nobody restores it. Regenerated `docs/ply-self.svg`/`.txt` (now
+      roughly a quarter of the former height — five drawn boxes became one stacked card);
+      `docs/ply-core-self.*` unchanged. Updated `ARCHITECTURE.md`'s alt text, component
+      table, and "why a second file" paragraph.
+
+**KNOWN GAP, left open on purpose.** Link derivation only ever considers a document's
+**top-level** components, and only ever resolves **one hop**: a linked box's drawn counts
+come from the target's own file taken at face value, never further expanded through any
+link *that* document might itself declare. Both restrictions are deliberate (a nested
+component's anchor almost always shares its crate with the document it already lives in,
+which would make every module "discover" its own document; and nothing in this
+repository's two real documents needs more than one hop), not something a future chain of
+three or more real documents is guaranteed to want. The cycle guard (`would_cycle` in
+`config.rs`) is already written generically over an arbitrary chain, so extending
+resolution past one hop would not need a new safety mechanism, only a decision about what
+"the target's counts" should mean once the target itself links onward.
+
 ## Landed: a timed-out engine run now kills the whole process tree, not just cargo — 2026-09-04 (`9037b83`)
 
 `run_with_timeout` (`crates/ply-core/src/engines/mod.rs`) only ever killed the one process
