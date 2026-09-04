@@ -20,11 +20,11 @@ components:
     that level comes from its weakest part, kernel.StatusSet::len — nothing here counts as checked more strongly than the weakest thing inside it
     component kernel — maps to Rust module ply_core::kernel
       note: Decides what a pile of results adds up to: the order that ranks one kind of evidence above another, the rule that a parent is never reported as stronger than its weakest part, and the flags that travel upward beside a verdict without being confused for one.
-      state VerdictNode — the structure this component holds. 4 of 4 of its fields shown
-        kind is a structure of your own, written `NodeKind` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-        statuses is a structure of your own, written `StatusSet` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-        conditional is something that might not be there, written `Option<Vec<String>>`
-        children is a list, written `Vec<VerdictNode>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      state StatusSet — the structure this component holds
+        what must always be true of it, whatever has been done to it:
+          state.len() <= 7
+        Ply checks each of those by making one of these the only way it can — through the type's own constructor — then calling the type's own operations on it and looking again after every one
+        no fields chosen to show — a real state type has many, and naming the ones that matter is the author's job
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, StatusSet::len — nothing here counts as checked more strongly than the weakest thing inside it
       fn StatusSet::len

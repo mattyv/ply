@@ -403,6 +403,22 @@ fn write_component(
                 contrast = owns_contrast(comp),
             )),
         }
+        // What the structure promises about itself, before the fields it is
+        // made of: a reader scanning for what is *binding* here should not
+        // have to read past twenty field descriptions to find it.
+        if !st.holds.is_empty() {
+            out.push_str(&format!(
+                "{q}  what must always be true of it, whatever has been done to it:\n"
+            ));
+            for clause in &st.holds {
+                out.push_str(&format!("{q}    {clause}\n"));
+            }
+            out.push_str(&format!(
+                "{q}  Ply checks each of those by making one of these the only way it can — \
+                 through the type's own constructor — then calling the type's own operations \
+                 on it and looking again after every one\n"
+            ));
+        }
         if rows.is_empty() {
             if st.show.is_empty() {
                 out.push_str(&format!(

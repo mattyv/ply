@@ -13,6 +13,10 @@ use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprClosure, FnArg, ItemFn, Pat, Type};
 
+/// Re-exported so a caller can hold a parsed clause without depending on
+/// `syn` itself -- `parse_holds_clause` hands one of these back.
+pub use syn::ExprClosure as ParsedClause;
+
 /// `ply.yaml`'s `routes:` map, bare type name -> declared function path,
 /// exactly [`crate::model::Document::routes`]'s own shape -- passed down
 /// from `verify` into every place a struct/enum parameter gets resolved, so
@@ -1906,6 +1910,42 @@ pub fn resolve_anchor(
     }
 }
 
+/// The receiver machinery pointed at a **type** rather than a method
+/// (2026-09-04): everything needed to build one of these and put it through
+/// its own operations, with no checked method anywhere in it.
+///
+/// This is what a `state:`'s `holds:` clauses are checked against. §5.4c
+/// admits that a type's own invariants are assumed rather than asserted, so
+/// a proof can rest on one the code itself breaks; the plan this returns is
+/// how that assumption stops being free. Every rule the method path already
+/// follows applies unchanged -- the constructor's own precondition is
+/// honoured, a fallible constructor rejects rather than unwraps, an
+/// operation whose argument cannot be built is named in
+/// `excluded_operations` instead of silently dropped, and a second
+/// constructor this run never starts from is named in `other_constructors`.
+///
+/// `type_path` is spelled from the crate root (`book::OrderBook`), the same
+/// way a fn claim's key is once its component's anchor has been applied.
+pub fn scan_type_operations(
+    crate_dir: &Path,
+    type_path: &str,
+    routes: &RouteTable,
+) -> std::result::Result<ReceiverPlan, ReceiverError> {
+    let segs: Vec<&str> = type_path.split("::").collect();
+    let type_name = segs[segs.len() - 1];
+    let module_segs = &segs[..segs.len() - 1];
+
+    let file_path = receiver_module_file(crate_dir, module_segs)?;
+    let src = std::fs::read_to_string(&file_path).map_err(|_| ReceiverError::Unreadable)?;
+    let file: syn::File = syn::parse_file(&src).map_err(|_| ReceiverError::Unreadable)?;
+    let aliases = alias_map(&file);
+
+    let (_, plan) = scan_impls_for_receiver(
+        &file, &aliases, type_name, None, crate_dir, &file_path, routes,
+    )?;
+    Ok(plan)
+}
+
 /// [`discover_fn_with`] for a caller with no resolver of its own.
 pub fn discover_fn(src_path: &Path, fn_path: &str) -> Result<ContractFn> {
     let mut resolver = resolver_for(src_path)?;
@@ -2874,7 +2914,7 @@ fn scan_file_for_receiver(
     file: &syn::File,
     aliases: &AliasMap,
     type_name: &str,
-    method_name: &str,
+    method_name: Option<&str>,
     file_mod: &[String],
     target_absolute: Option<&[String]>,
 ) -> std::result::Result<FileReceiverScan, ReceiverError> {
@@ -2954,7 +2994,7 @@ fn scan_file_for_receiver(
                 continue;
             };
             let is_receiverless = !matches!(m.sig.inputs.first(), Some(FnArg::Receiver(_)));
-            if m.sig.ident == method_name && !is_receiverless {
+            if method_name.is_some_and(|n| m.sig.ident == n) && !is_receiverless {
                 out.target = Some(m.clone());
                 continue;
             }
@@ -3069,11 +3109,11 @@ fn scan_impls_for_receiver(
     file: &syn::File,
     aliases: &AliasMap,
     type_name: &str,
-    method_name: &str,
+    method_name: Option<&str>,
     crate_dir: &Path,
     declaring_file: &Path,
     routes: &RouteTable,
-) -> std::result::Result<(syn::ImplItemFn, ReceiverPlan), ReceiverError> {
+) -> std::result::Result<(Option<syn::ImplItemFn>, ReceiverPlan), ReceiverError> {
     let mut target: Option<syn::ImplItemFn> = None;
     let mut ctor_candidates: Vec<CtorCandidate> = Vec::new();
     let mut other_ops: Vec<Operation> = Vec::new();
@@ -3140,14 +3180,25 @@ fn scan_impls_for_receiver(
         )?);
     }
 
-    let Some(target) = target else {
-        return Err(ReceiverError::MethodNotFound);
+    // `method_name: None` is the invariant scan (2026-09-04): there is no
+    // checked method at all, only the type itself, so every one of its own
+    // operations is pooled and nothing plays the part of operation zero.
+    let target = match (target, method_name) {
+        (Some(t), Some(_)) => Some(t),
+        (None, Some(_)) => return Err(ReceiverError::MethodNotFound),
+        (_, None) => None,
     };
-    match target.sig.inputs.first() {
-        Some(FnArg::Receiver(r)) if r.reference.is_some() && r.mutability.is_none() => {}
-        _ => return Err(ReceiverError::MutableOrOwnedReceiver),
+    if let Some(target) = &target {
+        match target.sig.inputs.first() {
+            Some(FnArg::Receiver(r)) if r.reference.is_some() && r.mutability.is_none() => {}
+            _ => return Err(ReceiverError::MutableOrOwnedReceiver),
+        }
     }
-    let target_params = params_from_inputs(target.sig.inputs.iter().skip(1), aliases)
+    let target_params = target
+        .as_ref()
+        .map_or(Some(Vec::new()), |t| {
+            params_from_inputs(t.sig.inputs.iter().skip(1), aliases)
+        })
         .ok_or(ReceiverError::UnsupportedParamPattern)?;
 
     // Struct/enum parameters (2026-08-27): a constructor argument classified
@@ -3255,11 +3306,14 @@ fn scan_impls_for_receiver(
     // against the target is required any more (2026-08-27, N3: that
     // requirement is exactly what emptied the pool for an ordinary
     // `&mut self`-mutating type).
-    let mut operations = vec![Operation {
-        call_path: format!("{type_name}::{method_name}"),
-        params: target_params.clone(),
-        takes_mut_self: false,
-    }];
+    let mut operations = match method_name {
+        Some(method_name) => vec![Operation {
+            call_path: format!("{type_name}::{method_name}"),
+            params: target_params.clone(),
+            takes_mut_self: false,
+        }],
+        None => Vec::new(),
+    };
     operations.extend(other_ops);
 
     // Finding 3 (2026-08-28, docs/review-silent-narrowing.md, "the type has
@@ -3339,12 +3393,15 @@ pub fn discover_method_with_receiver(
         &file,
         &aliases,
         type_name,
-        method_name,
+        Some(method_name),
         crate_dir,
         &file_path,
         routes,
     )?;
 
+    // `Some(method_name)` above, so the scan either found the target or
+    // refused with `MethodNotFound`; only the invariant scan passes `None`.
+    let target = target.expect("a named method scan returns its target or errors");
     let item_fn = strip_receiver_to_item_fn(&target);
     let mut cf = build_contract_fn(&item_fn, &aliases, fn_path, true)
         .map_err(|_| ReceiverError::UnsupportedParamPattern)?;
@@ -5759,6 +5816,29 @@ fn parse_ensures_clause(clause: &str) -> Result<ExprClosure, DeclaredContractErr
     Ok(syn::parse_quote!(|result| #expr))
 }
 
+/// One `holds:` clause, read as a closure over the value it is about.
+///
+/// The same two forms `ensures:` takes, for the same reason -- a reader who
+/// has written one has written both. A closure names the value itself
+/// (`|book| book.bids.len() <= book.cap`); a bare expression calls it
+/// `state` (`state.len() <= 7`). Either way the result is a closure the
+/// generated harness calls with a reference to the value, so no binder is
+/// ever renamed and the user's own name survives into the code.
+pub fn parse_holds_clause(clause: &str) -> Result<ExprClosure, DeclaredContractError> {
+    if let Ok(closure) = syn::parse_str::<ExprClosure>(clause) {
+        return Ok(closure);
+    }
+    let expr = syn::parse_str::<Expr>(clause).map_err(|e| DeclaredContractError {
+        clause: clause.to_string(),
+        reason: format!(
+            "this `holds:` line is not something Ply can read as a statement about the value \
+             ({e}). Write what must be true of it at all times, naming it `state` -- for \
+             example `state.len() <= 7`, or `|book| book.bids.len() <= book.cap` if you \
+             prefer to name it yourself"
+        ),
+    })?;
+    Ok(syn::parse_quote!(|state| #expr))
+}
 /// Rewrites the returned value's own name to a dereference of it, and
 /// nothing else with that name.
 ///
@@ -5863,6 +5943,23 @@ fn rename_ident(expr: &mut Expr, from: &str, to: &str) {
         }
     }
     Rename { from, to }.visit_expr_mut(expr);
+}
+
+/// One `holds:` clause as an expression about a named binding, rather than
+/// as a closure to be called.
+///
+/// The generated harness cannot call the closure: its parameter has no type
+/// the compiler can infer at the call site, and annotating it would mean
+/// spelling the state type into every clause. Substituting the binder for
+/// the binding the harness already holds sidesteps that entirely -- `|state|
+/// state.len() <= state.cap()` becomes `__ply_receiver.len() <=
+/// __ply_receiver.cap()`, which needs no inference at all.
+pub fn holds_clause_over(clause: &ExprClosure, binding: &str) -> Expr {
+    let mut body = (*clause.body).clone();
+    if let Some(name) = closure_binder_ident(clause) {
+        rename_ident(&mut body, &name, binding);
+    }
+    body
 }
 
 /// Every declared state type's real fields, keyed by the component's

@@ -1777,6 +1777,25 @@ fn component_tip_lines(
                 contrast = owns_contrast(comp),
             )
         });
+        // The promises themselves, quoted the way the author wrote them --
+        // the same thing a fn chip's tooltip does with `requires`/`ensures`,
+        // for the same reason: a mark saying "something binding is stated
+        // here" is only useful beside the thing it is about.
+        if !st.holds.is_empty() {
+            tip.push(format!(
+                "what must always be true of a {of}, whatever has been done to it: \
+                 {clauses}. Ply checks this by making one of these the only way it can — \
+                 through the type's own constructor — then calling the type's own \
+                 operations on it and looking again after every one",
+                of = st.of,
+                clauses = st
+                    .holds
+                    .iter()
+                    .map(|c| format!("`{c}`"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ));
+        }
     }
     if let Some(p) = &comp.profile {
         tip.push(match profiles.get(p) {
@@ -2250,20 +2269,34 @@ fn render_component<'a>(
     // out; the same phrase guessed from the document alone would be a
     // number Ply invented, which is the one thing this feature exists not
     // to do.
-    let state_line =
-        comp.state
-            .as_ref()
-            .map(|st| match walk.state.and_then(|idx| idx.get(qualified)) {
-                Some(all) if !st.show.is_empty() => {
-                    format!(
-                        "state {} — {} of {} shown",
-                        st.of,
-                        state_rows.len(),
-                        all.len()
-                    )
-                }
-                _ => format!("state {}", st.of),
-            });
+    let state_line = comp
+        .state
+        .as_ref()
+        .map(|st| match walk.state.and_then(|idx| idx.get(qualified)) {
+            Some(all) if !st.show.is_empty() => {
+                format!(
+                    "state {} — {} of {} shown",
+                    st.of,
+                    state_rows.len(),
+                    all.len()
+                )
+            }
+            _ => format!("state {}", st.of),
+        })
+        .map(|line| {
+            // §7.1's contract mark, in words rather than a second glyph:
+            // the fn chip's ink bar says "something binding is stated on
+            // this row", and the same fact about a *structure* needs the
+            // same visibility. A bar drawn here would sit against a
+            // header line rather than a chip edge and read as a divider,
+            // so the header says it instead -- and the tooltip lists the
+            // promises verbatim, exactly as a fn chip's does.
+            match comp.state.as_ref().map_or(0, |st| st.holds.len()) {
+                0 => line,
+                1 => format!("{line} · promises 1 thing about itself"),
+                n => format!("{line} · promises {n} things about itself"),
+            }
+        });
     let owns_w = owns_line.as_deref().map_or(0.0, |s| text_w(s, SUB_CHAR_W));
     // Reserved at the widest a character can be, not the average: the
     // canvas invariant (`tools/render`'s `everything_renders_inside_the_

@@ -1163,6 +1163,7 @@ would make deleting the note the cheapest fix.
 | `uses:` (capabilities) | Declared only | none |
 | `owns:` (ownership) | Declared only | none |
 | `state:` (the structure a component holds) | The type and every named field must resolve, or Ply says it could not check; that the component holds one is **declared only** | `A0414`, `A0415`, `W0413` |
+| `holds:` (what must always be true of that structure) | **Checked**: a value is built through the type's own constructor and put through a generated sequence of the type's own operations, with every clause asserted after each one | `V0511`, `E0506`, `W0414`, `W0415`, `W0416` |
 | `pure:` | Declared only | none |
 | `strict:` | Declared only — read by the renderers, nothing else | none |
 
@@ -1344,6 +1345,52 @@ mistake, and one that reads exactly like a correct document if nobody checks for
 
 A binary-only crate works too: its modules are code like any other, and a crate whose
 root is `main.rs` can still say what it holds.
+
+### `holds:` — what must always be true of that structure
+
+`show:` names fields so a reader can see them. `holds:` says something about them that a
+run can be wrong about:
+
+```yaml
+components:
+  book:
+    anchor: ledger::book
+    state:
+      of: OrderBook
+      show: [bids, cap]
+      holds:
+        - "state.bids.len() <= state.cap"
+        - "|b| b.best_bid() <= b.best_ask()"
+```
+
+Write each line as a Rust expression about the value. A bare expression calls it `state`;
+a closure lets you name it yourself. Those are the same two forms `ensures:` takes.
+
+**What Ply does with it.** It makes an `OrderBook` the only way it honestly can — by
+calling the type's own constructor, respecting whatever that constructor requires, and
+rejecting rather than unwrapping one that can fail. Then it calls the type's own public
+methods on it, in a generated sequence, and checks every line you wrote after the
+constructor and again after **every single method call**. That last part is the point: a
+structure that is fine when you make it and wrong four calls later is exactly the bug
+nobody catches by hand, and the report tells you how many calls in it went wrong.
+
+**What "checked" means here, precisely.** Checked across the states this run could reach.
+A method whose argument Ply cannot build is named in the report rather than quietly
+skipped, and a second constructor Ply never started from is named too — so you can see
+which states were never visited instead of assuming there were none.
+
+**When it cannot check, it says so and never passes you.** The structure lives in another
+crate (`W0414`); no type of that name is declared here (`W0415`); Ply has no way to build
+one (`W0416`). If one line will not parse, **none** of that type's lines are checked
+(`E0506`) — checking the readable half and reporting it as checked is the failure this
+refuses. A promise the code really breaks is `V0511`, and it quotes the line and the step.
+
+**A broken promise is only ever reported when the check really ran.** A line can read as
+perfectly good Rust and still not compile against the real type — a field you renamed, a
+method that takes an argument. The first version of this feature called that a violation,
+which is a false accusation about your code that reads exactly like a true one. Now the
+check has to be seen to run before its failure means anything; otherwise you get the
+compiler's own error and no verdict at all.
 
 Two cases Ply cannot follow, both of which warn rather than pass you: a crate that
 renames its library with `[lib] name` different from its package name, and a crate you

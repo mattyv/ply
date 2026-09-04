@@ -37,9 +37,16 @@ components:
     components:
       kernel:
         anchor: ply_core::kernel
+        # What the status set must always be true of itself, whatever has
+        # been inserted into it. There are seven kinds of status, so a set of
+        # them can never hold more than seven -- and the whole point of
+        # writing it here is that the claim is now checked rather than
+        # assumed: Ply builds a set through its own constructor, inserts and
+        # merges through its own operations, and looks again after each one.
         state:
-          of: VerdictNode
-          show: [kind, statuses, conditional, children]
+          of: StatusSet
+          holds:
+            - "state.len() <= 7"
         note: >-
           Decides what a pile of results adds up to: the order that ranks one
           kind of evidence above another, the rule that a parent is never

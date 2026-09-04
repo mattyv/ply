@@ -19,6 +19,43 @@
       **First step:** one fixture with a hand test that kills a mutant the generated
       examples miss, red before the feature and green after.
 
+## Landed: a structure can promise something about itself, and Ply checks it — 2026-09-04
+
+Asked for by the maintainer, the second half of "push the ply.yaml file and rendering down
+to function and collection level". §5.4c has always admitted that a type's own invariants
+are **assumed, never asserted**, so a proof could rest on "the bids are sorted" while the
+code quietly breaks it. That assumption can now be written down and checked.
+
+- [x] **`holds:` under `state:`.** Each line is a Rust expression about the value -- a
+      bare one names it `state`, a closure names it whatever you like, the same two forms
+      `ensures:` takes.
+- [x] **Checked by building one and using it.** Ply calls the type's own constructor,
+      respecting its precondition and rejecting rather than unwrapping a fallible one,
+      then calls the type's own public operations in a generated sequence, asserting every
+      clause after the constructor and after **every single operation**. A structure that
+      is fine when made and wrong four calls later is the bug nobody catches by hand, and
+      the report says how many calls in.
+- [x] **Every non-answer is a non-answer, never a pass**: structure in another crate,
+      no type of that name, no way to build one. A clause that will not parse holds back
+      *every* clause on that type rather than checking the readable half.
+- [x] **Ply's own kernel carries one**: a status set can never hold more than the seven
+      kinds of status that exist. It earns `fuzzed(256)` and shows in the drawing.
+- [x] **Drawn and written out**: the box says the structure promises something about
+      itself, the tooltip quotes each promise, and the text form lists them above the
+      fields -- what is binding should not be found by reading past twenty field lines.
+
+**THE FAILURE THIS NEARLY SHIPPED WITH, kept as a test.** The first version reported a
+clause that could not *compile* against the real type as a **violation** -- a false
+accusation about the author's code, worded identically to a true one. It passed its own
+"catches a real break" test for the wrong reason: the harness failed to build and that
+read as a broken promise. The companion test (a type that keeps its promise must come
+back clean) is what caught it. A violation now requires that the check was observed to
+run; otherwise the verdict is a tool error quoting the compiler.
+
+**Not linked to proofs yet, and the spec says so.** A `bounded` check still does not
+consult these clauses -- the invariant it assumes and the invariant now carrying evidence
+are two facts side by side, not one. Linking them is the next step, not a claim made here.
+
 ## Landed: a module can be a component and still promise things — 2026-09-04
 
 Asked for by the maintainer ("can we push the ply.yaml file and rendering down to

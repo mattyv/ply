@@ -953,12 +953,20 @@ fn verify_loaded_crate(
     // A reused claim runs no engine, so it needs no harness. A crate whose
     // every fuzz claim is reused therefore writes no harness crate and
     // compiles nothing at all.
-    let needs_harness = plans.iter().zip(&reused).any(|(p, r)| {
-        r.is_none()
-            && p.checks
-                .iter()
-                .any(|c| matches!(c, Check::Fuzz(_) | Check::Test | Check::Mutate))
-    });
+    // §5.1's `holds:` (2026-09-04): every promise this document makes about
+    // the *structure* a component keeps, resolved against the real type
+    // before any harness is written. A component that declares none
+    // contributes nothing, which is every component written before this.
+    let invariants = collect_state_invariants(&file, crate_dir, &local_anchors, &mut diagnostics);
+    let mut invariant_nodes: BTreeMap<String, Vec<Node>> = BTreeMap::new();
+
+    let needs_harness = !invariants.is_empty()
+        || plans.iter().zip(&reused).any(|(p, r)| {
+            r.is_none()
+                && p.checks
+                    .iter()
+                    .any(|c| matches!(c, Check::Fuzz(_) | Check::Test | Check::Mutate))
+        });
     let mut harness_info: Option<HarnessInfo> = None;
     // Lives until `verify_crate` returns, so the harness stays a member for
     // every engine invocation below and the user's `Cargo.toml` goes back to
@@ -1060,6 +1068,30 @@ fn verify_loaded_crate(
                 });
             }
         }
+        // One more module per component that promises something about the
+        // structure it holds. It shares the crate with every fn module, so
+        // it is subject to the same build attribution below -- a `holds:`
+        // clause that will not compile is dropped with its own name on it
+        // rather than taking every claim in the crate down with it.
+        for inv in &invariants {
+            if let Ok(body) = ply_core::fuzz_gen::generate_invariant_test(
+                &inv.type_path,
+                &inv.plan,
+                &inv.clauses,
+                INVARIANT_CASES,
+                &inv.seed,
+            ) {
+                modules.push(harness_crate::HarnessModule {
+                    fn_ident: inv.ident.clone(),
+                    source: ply_core::fuzz_gen::wrap_invariant_harness_module(
+                        &inv.type_path,
+                        &inv.plan,
+                        &target_names.lib_ident,
+                        &body,
+                    ),
+                });
+            }
+        }
 
         // The misattribution fix. Before this, one broken function's
         // generated module took the *entire* harness crate's compile down
@@ -1127,6 +1159,67 @@ fn verify_loaded_crate(
                 );
                 break;
             }
+        }
+
+        // Every promise about a structure, run and turned into a verdict --
+        // here rather than beside the fn claims below, because it answers a
+        // different question: not "does this function keep its word" but
+        // "is this structure ever in a state it says it is never in".
+        for inv in &invariants {
+            let node_id = format!("{}::state {}", inv.component_path, inv.type_name);
+            if let Some(cause) = broken.get(&inv.ident) {
+                diagnostics.push(holds_harness_broken_diag(&node_id, &inv.type_name, cause));
+                invariant_nodes
+                    .entry(inv.component_path.clone())
+                    .or_default()
+                    .push(state_node(&inv.type_name, "tool_error"));
+                continue;
+            }
+            let filter = format!("{}_holds_harness::", inv.ident);
+            let run = fuzz_engine::run_harness_tests(
+                &harness_workspace_root,
+                &harness_pkg,
+                &filter,
+                timeout,
+            )?;
+            // A violation requires that the check actually ran. Without
+            // this the feature accuses the user's code whenever its own
+            // generated code fails to compile -- which is exactly what it
+            // did when first written, and is a worse failure than saying
+            // nothing: a false accusation reads identically to a true one.
+            // The build attribution above cannot be relied on here, because
+            // a standalone harness reports its errors under a relative path
+            // that never matches the span index.
+            let executed = fuzz_engine::count_tests_executed(&run.combined_output, &filter);
+            let fuzzed = format!("fuzzed({INVARIANT_CASES})");
+            let verdict = if run.timed_out {
+                diagnostics.push(holds_timeout_diag(&node_id, &inv.type_name, timeout));
+                "tool_error"
+            } else if executed == 0 {
+                let cause = fuzz_engine::first_build_error(&run.combined_output)
+                    .unwrap_or_else(|| "the compiler gave no specific error line".to_string());
+                diagnostics.push(holds_harness_broken_diag(&node_id, &inv.type_name, &cause));
+                "tool_error"
+            } else if run.success {
+                // The same evidence word the fn tier uses for the same
+                // work: many generated cases against a stated promise. It
+                // was `tested` first, which understated it -- and worse,
+                // dragged a component's own verdict *down* when an author
+                // added a check, since the box is folded worst-of.
+                &fuzzed
+            } else {
+                diagnostics.push(holds_violation_diag(
+                    &node_id,
+                    &inv.type_name,
+                    inv,
+                    &run.combined_output,
+                ));
+                "violation"
+            };
+            invariant_nodes
+                .entry(inv.component_path.clone())
+                .or_default()
+                .push(state_node(&inv.type_name, verdict));
         }
 
         harness_info = Some(HarnessInfo {
@@ -1280,6 +1373,9 @@ fn verify_loaded_crate(
     }
 
     let mut component_nodes: BTreeMap<String, Vec<Node>> = early_nodes_by_component;
+    for (comp, nodes) in invariant_nodes {
+        component_nodes.entry(comp).or_default().extend(nodes);
+    }
     for (idx, (plan, reused)) in plans.iter().zip(&reused).enumerate() {
         // Carried forward, and said so on the node: everything the recorded
         // run reported about this claim, re-emitted as it was, because a
@@ -2259,6 +2355,215 @@ fn examples_not_run_diag(node_id: &str, fn_name: &str, n: usize) -> Diagnostic {
         assumptions: vec![],
         open_item: Some("examples_not_run".into()),
     }
+}
+
+/// How many generated histories each `holds:` clause is checked over.
+///
+/// Fixed rather than declared: a `holds:` clause is not a `checks:` list and
+/// has no tier of its own to pick, so a number the author never chose has to
+/// be one this tool can defend. 256 is the same count `fuzz(256)` spends on
+/// a single call, and each case here is a whole sequence of operations, so
+/// it buys strictly more exercise per case than the fn tier's own default.
+const INVARIANT_CASES: u32 = 256;
+
+/// One component's `holds:` clauses, resolved far enough to generate a
+/// harness for.
+struct StateInvariant {
+    /// The component's qualified name, so the verdict lands in the right box.
+    component_path: String,
+    /// The state type, spelled from the crate root.
+    type_path: String,
+    /// The bare type name, for the node's own label.
+    type_name: String,
+    /// Each clause as a closure over the value, beside the text the author
+    /// wrote -- the text is what a diagnostic quotes back, never the
+    /// re-rendered form, so a reader sees their own line.
+    clauses: Vec<(ply_core::harness::ParsedClause, String)>,
+    plan: ply_core::harness::ReceiverPlan,
+    ident: String,
+    seed: [u8; 32],
+}
+
+/// Every `holds:` clause in this document that names a type in this crate,
+/// resolved against the real source.
+///
+/// Three things can go wrong and each gets its own sentence, because each
+/// needs a different thing done about it: a clause that is not readable Rust
+/// at all, a type this crate does not declare, and a type Ply has no way to
+/// build a value of. None of them is ever a silent skip -- a promise about a
+/// structure that quietly went unchecked is the exact shape of green paint
+/// this feature exists to remove.
+fn collect_state_invariants(
+    doc: &Document,
+    crate_dir: &Path,
+    local_anchors: &[String],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<StateInvariant> {
+    let mut out = Vec::new();
+    let locations = ply_core::harness::scan_crate_type_locations(crate_dir);
+    for (comp_path, comp, _) in flatten_components(doc) {
+        let Some(state) = &comp.state else { continue };
+        if state.holds.is_empty() {
+            continue;
+        }
+        if shared::local_module_path(local_anchors, &comp.anchor).is_none() {
+            // A boundary component's structure lives in another crate, and
+            // `verify` checks one crate at a time. Said plainly rather than
+            // reported as a type that does not exist.
+            diagnostics.push(holds_elsewhere_diag(&comp_path, &state.of, &comp.anchor));
+            continue;
+        }
+        let node_id = format!("{comp_path}::state {}", state.of);
+        let Some(Some(decl)) = locations.get(&state.of) else {
+            diagnostics.push(holds_type_missing_diag(&node_id, &state.of, &comp.anchor));
+            continue;
+        };
+        let mut segs = decl.module_segments(crate_dir);
+        segs.push(state.of.clone());
+        let type_path = segs.join("::");
+
+        let mut clauses = Vec::new();
+        let mut bad = false;
+        for clause in &state.holds {
+            match ply_core::harness::parse_holds_clause(clause) {
+                Ok(closure) => clauses.push((closure, clause.clone())),
+                Err(e) => {
+                    diagnostics.push(unreadable_holds_diag(&node_id, &state.of, &e));
+                    bad = true;
+                }
+            }
+        }
+        if bad || clauses.is_empty() {
+            continue;
+        }
+
+        let plan = match ply_core::harness::scan_type_operations(crate_dir, &type_path, &doc.routes)
+        {
+            Ok(plan) => plan,
+            Err(e) => {
+                diagnostics.push(holds_unbuildable_diag(&node_id, &state.of, &e.to_string()));
+                continue;
+            }
+        };
+        let contract_text = state.holds.join(" && ");
+        let seed = ply_core::fuzz_gen::derive_seed(&type_path, &contract_text);
+        out.push(StateInvariant {
+            component_path: comp_path.clone(),
+            ident: type_path.replace("::", "_"),
+            type_path,
+            type_name: state.of.clone(),
+            clauses,
+            plan,
+            seed,
+        });
+    }
+    out
+}
+
+/// The code comes first because the registry's own scanner finds an
+/// emitting site by reading the first string argument to a helper whose name
+/// ends in `diag` -- a code passed anywhere else is invisible to it, and an
+/// unregistered code is exactly what that test exists to catch.
+fn holds_diag(code: &str, node_id: &str, title: String, fixes: Vec<Fix>) -> Diagnostic {
+    Diagnostic {
+        code: code.into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "".into(),
+        node_id: node_id.into(),
+        title,
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes,
+        assumptions: vec![],
+        open_item: Some("promise_not_checked".into()),
+    }
+}
+
+fn holds_elsewhere_diag(comp_path: &str, type_name: &str, anchor: &str) -> Diagnostic {
+    holds_diag(
+        "W0414",
+        &format!("{comp_path}::state {type_name}"),
+        format!(
+            "`{comp_path}` promises something about `{type_name}`, the structure it holds, but it \
+             is anchored at `{anchor}` -- another crate -- and `cargo ply verify` checks one crate \
+             at a time. Nothing here built a `{type_name}` or tried the promise against one, so \
+             this run says nothing about whether it holds. Run `cargo ply verify` in that crate \
+             to have it checked there. (W0414, §5.1)"
+        ),
+        vec![Fix {
+            title: format!(
+                "run `cargo ply verify` against `{anchor}` itself, where `{type_name}` is declared"
+            ),
+            edits: vec![],
+        }],
+    )
+}
+
+fn holds_type_missing_diag(node_id: &str, type_name: &str, anchor: &str) -> Diagnostic {
+    holds_diag(
+        "W0415",
+        node_id,
+        format!(
+            "this document promises something about `{type_name}`, but no struct or enum by that \
+             name is declared anywhere under `{anchor}`'s crate, so there was nothing to build and \
+             nothing to check the promise against. Either the type was renamed and this line was \
+             not, or it lives in a crate this run is not standing in. (W0415, §5.1)"
+        ),
+        vec![Fix {
+            title: format!("check how `{type_name}` is spelled where it is declared"),
+            edits: vec![],
+        }],
+    )
+}
+
+fn unreadable_holds_diag(
+    node_id: &str,
+    type_name: &str,
+    bad: &ply_core::harness::DeclaredContractError,
+) -> Diagnostic {
+    holds_diag(
+        "E0506",
+        node_id,
+        format!(
+            "one of the things this document promises about `{type_name}` could not be read, so \
+             none of them were checked: {reason} The line as written is `{clause}`. Every promise \
+             about this structure is held back together rather than checking the ones that do \
+             parse: a partly-checked promise reported as a checked one is the failure this refuses. \
+             (E0506, §5.1)",
+            reason = bad.reason,
+            clause = bad.clause
+        ),
+        vec![Fix {
+            title: "write what must be true of the value, naming it `state` -- for example \
+                    `state.len() <= state.cap()`"
+                .to_string(),
+            edits: vec![],
+        }],
+    )
+}
+
+fn holds_unbuildable_diag(node_id: &str, type_name: &str, reason: &str) -> Diagnostic {
+    holds_diag(
+        "W0416",
+        node_id,
+        format!(
+            "this document promises something about `{type_name}`, and Ply has no way to make one \
+             of these, so the promise was never tried: {reason}. A promise about a structure is \
+             checked by building one through the type's own constructor and then calling the \
+             type's own operations on it, and that is exactly what could not start here. Nothing \
+             about this promise is reported as checked. (W0416, §5.1)"
+        ),
+        vec![Fix {
+            title: format!(
+                "give `{type_name}` a public constructor Ply can call, or declare a `routes:` \
+                 entry naming a public function that returns one"
+            ),
+            edits: vec![],
+        }],
+    )
 }
 
 /// `verify` resolves every claim against one crate's `src/lib.rs`. A claim
@@ -6591,6 +6896,144 @@ fn attach_claim_text(node: &mut Node, cf: &ContractFn, claim: &FnClaim) {
         .collect();
 }
 
+/// The verdict node for one component's `holds:` clauses.
+///
+/// Drawn and reported as `state <Type>`, beside the fn chips rather than
+/// among them, because it answers a different question: not "does this
+/// function keep its word" but "is this structure ever in a state it says it
+/// is never in". Its kind is `fn` so the kernel folds it worst-of with
+/// everything else in the box -- a structure whose promise is broken must
+/// not leave its component looking checked.
+fn state_node(type_name: &str, verdict: &str) -> Node {
+    Node {
+        id: format!("state {type_name}"),
+        kind: "fn".into(),
+        verdict: verdict.to_string(),
+        statuses: vec![],
+        reused: false,
+        evidence: None,
+        children: vec![],
+        ..Default::default()
+    }
+}
+
+fn holds_harness_broken_diag(node_id: &str, type_name: &str, cause: &str) -> Diagnostic {
+    holds_diag(
+        "X0901",
+        node_id,
+        format!(
+            "the check for what `{type_name}` promises about itself never ran: the code Ply \
+             generated for it did not compile, so no value was ever built and no promise was ever \
+             tried. This is reported against `{type_name}` alone -- every other claim in this crate \
+             still ran. The compiler's own first error was: {cause}. (X0901)"
+        ),
+        vec![Fix {
+            title: format!(
+                "check that each `holds:` line for `{type_name}` is an expression that compiles \
+                 against the real type -- a field it does not have, or a method that takes \
+                 arguments, will read fine here and fail there"
+            ),
+            edits: vec![],
+        }],
+    )
+}
+
+fn holds_timeout_diag(node_id: &str, type_name: &str, secs: u32) -> Diagnostic {
+    holds_diag(
+        "X0903",
+        node_id,
+        format!(
+            "the check for what `{type_name}` promises about itself ran out of time after {secs} \
+             seconds, so this run does not know whether the promise holds. It is not reported as \
+             holding: a check that did not finish is not a check that passed. (X0903)"
+        ),
+        vec![],
+    )
+}
+
+/// The one diagnostic here that reports a real finding rather than a
+/// non-answer, so it is an error rather than a warning -- and it names the
+/// clause that broke and how many operations in, because "the invariant
+/// broke" alone sends a reader to read the whole type.
+fn holds_violation_diag(
+    node_id: &str,
+    type_name: &str,
+    inv: &StateInvariant,
+    output: &str,
+) -> Diagnostic {
+    let cex = output
+        .lines()
+        .find(|l| l.starts_with("PLY_HOLDS_CEX|"))
+        .map(str::to_string);
+    let (which, after) = match &cex {
+        Some(line) => {
+            let fields: Vec<&str> = line.split('|').collect();
+            let idx = fields
+                .iter()
+                .find_map(|f| f.strip_prefix("clause="))
+                .and_then(|n| n.parse::<usize>().ok());
+            let step = fields
+                .iter()
+                .find_map(|f| f.strip_prefix("after="))
+                .map(str::to_string);
+            (idx, step)
+        }
+        None => (None, None),
+    };
+    let clause_text = which
+        .and_then(|i| inv.clauses.get(i))
+        .map(|(_, text)| text.clone())
+        .unwrap_or_else(|| {
+            inv.clauses
+                .iter()
+                .map(|(_, t)| t.clone())
+                .collect::<Vec<_>>()
+                .join(" and ")
+        });
+    let where_text = match after.as_deref() {
+        Some("0") => {
+            " straight out of its own constructor, before any operation ran at all".to_string()
+        }
+        Some(n) => format!(" after {n} of the type's own operations had run on it"),
+        None => String::new(),
+    };
+    Diagnostic {
+        code: "V0511".into(),
+        severity: "error".into(),
+        phase: "verify".into(),
+        engine: "proptest".into(),
+        check: format!("holds({INVARIANT_CASES})"),
+        node_id: node_id.into(),
+        title: format!(
+            "`{type_name}` does not always hold what this document says it holds. The promise \
+             `{clause_text}` was false for a value Ply built{where_text}. Ply made the value the \
+             only way it could -- through `{type_name}`'s own constructor -- and then called only \
+             `{type_name}`'s own public operations on it, so this is a state the real code can \
+             reach, not one invented by the check. Anything that assumed this promise was \
+             assuming something untrue. (V0511, §5.1)"
+        ),
+        pointer: None,
+        primary_span: None,
+        counterexample: None,
+        fixes: vec![
+            Fix {
+                title: format!(
+                    "fix `{type_name}` so the promise holds after every one of its operations"
+                ),
+                edits: vec![],
+            },
+            Fix {
+                title: "or weaken the `holds:` line to what is actually true, so nothing rests on \
+                        a promise the code does not keep"
+                    .to_string(),
+                edits: vec![],
+            },
+        ],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
 fn leaf_node(fn_name: &str, verdict: &str) -> Node {
     Node {
         id: fn_name.to_string(),
@@ -6673,6 +7116,158 @@ mod tests {
         );
     }
 
+    /// A `holds:` clause is a promise about the structure a component keeps,
+    /// and this is the one that catches a real break. The type looks fine
+    /// when it is made and stays fine for a while: the cap is only exceeded
+    /// once enough operations have run, so nothing but a *sequence* of the
+    /// type's own operations finds it. One call would report a clean pass.
+    ///
+    /// §5.4c admits that a type's own invariants are assumed rather than
+    /// asserted, so a proof can rest on one the code itself breaks. This is
+    /// that assumption being checked.
+    #[test]
+    fn a_promise_about_the_structure_is_broken_by_a_sequence_of_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"holds-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub mod book;\n").unwrap();
+        std::fs::write(
+            dir.path().join("src/book.rs"),
+            "pub struct Ledger {\n    entries: Vec<u32>,\n    cap: usize,\n}\n\nimpl Ledger {\n    pub fn new(cap: u8) -> Self {\n        Ledger { entries: Vec::new(), cap: cap as usize }\n    }\n\n    pub fn push(&mut self, v: u32) {\n        self.entries.push(v);\n    }\n\n    pub fn len(&self) -> usize {\n        self.entries.len()\n    }\n\n    pub fn cap(&self) -> usize {\n        self.cap\n    }\n}\n",
+        )
+        .unwrap();
+        let yaml_path = dir.path().join("ply.yaml");
+        std::fs::write(&yaml_path, "ply: 1\ncomponents:\n  book:\n    anchor: holds_demo::book\n    state:\n      of: Ledger\n      show: [entries, cap]\n      holds: [\"state.len() <= state.cap()\"]\n").unwrap();
+        let loaded = config::load(&yaml_path).unwrap();
+
+        let result = verify_loaded_crate(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: Some(120),
+                seed: None,
+            },
+            loaded,
+        )
+        .unwrap();
+
+        fn verdict_of<'a>(node: &'a Node, id: &str) -> Option<&'a str> {
+            if node.id == id {
+                return Some(node.verdict.as_str());
+            }
+            node.children.iter().find_map(|c| verdict_of(c, id))
+        }
+        assert_eq!(
+            verdict_of(&result.envelope.root, "state Ledger"),
+            Some("violation"),
+            "`push` lets the list grow past the cap it promises to respect, and only a run \
+             of several operations reaches that: {:#?}",
+            result.envelope.diagnostics
+        );
+    }
+    /// The other half, and the one that makes the first mean anything: a
+    /// type that really does keep its promise must come back clean. A check
+    /// that fails on everything catches every bug and is worth nothing.
+    ///
+    /// Same promise, same sequence machinery, one line different in the
+    /// code -- `push` respects the cap here.
+    #[test]
+    fn a_promise_the_structure_keeps_comes_back_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"kept-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub mod book;\n").unwrap();
+        std::fs::write(dir.path().join("src/book.rs"), "pub struct Ledger {\n    entries: Vec<u32>,\n    cap: usize,\n}\n\nimpl Ledger {\n    pub fn new(cap: u8) -> Self {\n        Ledger { entries: Vec::new(), cap: cap as usize }\n    }\n\n    pub fn push(&mut self, v: u32) {\n        if self.entries.len() < self.cap {\n            self.entries.push(v);\n        }\n    }\n\n    pub fn len(&self) -> usize {\n        self.entries.len()\n    }\n\n    pub fn cap(&self) -> usize {\n        self.cap\n    }\n}\n").unwrap();
+        let yaml_path = dir.path().join("ply.yaml");
+        std::fs::write(&yaml_path, "ply: 1\ncomponents:\n  book:\n    anchor: kept_demo::book\n    state:\n      of: Ledger\n      show: [entries, cap]\n      holds: [\"state.len() <= state.cap()\"]\n").unwrap();
+        let loaded = config::load(&yaml_path).unwrap();
+
+        let result = verify_loaded_crate(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: Some(120),
+                seed: None,
+            },
+            loaded,
+        )
+        .unwrap();
+
+        fn verdict_of<'a>(node: &'a Node, id: &str) -> Option<&'a str> {
+            if node.id == id {
+                return Some(node.verdict.as_str());
+            }
+            node.children.iter().find_map(|c| verdict_of(c, id))
+        }
+        assert_eq!(
+            verdict_of(&result.envelope.root, "state Ledger"),
+            Some("fuzzed(256)"),
+            "this `push` respects the cap, so no sequence of operations can break the \
+             promise: {:#?}",
+            result.envelope.diagnostics
+        );
+    }
+    /// The failure this feature nearly shipped with, kept as a test.
+    ///
+    /// A `holds:` line reads as fine Rust and still cannot compile against
+    /// the real type -- a method that does not exist, a field that was
+    /// renamed. The first version of this check reported that as a
+    /// **violation**: a false accusation about the user's code, worded
+    /// identically to a true one, which is worse than saying nothing at
+    /// all. A violation now requires that the check actually ran.
+    #[test]
+    fn a_promise_that_does_not_compile_is_never_reported_as_a_broken_promise() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"nocompile-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub mod book;\n").unwrap();
+        std::fs::write(dir.path().join("src/book.rs"), "pub struct Ledger {\n    entries: Vec<u32>,\n    cap: usize,\n}\n\nimpl Ledger {\n    pub fn new(cap: u8) -> Self {\n        Ledger { entries: Vec::new(), cap: cap as usize }\n    }\n\n    pub fn push(&mut self, v: u32) {\n        if self.entries.len() < self.cap {\n            self.entries.push(v);\n        }\n    }\n\n    pub fn len(&self) -> usize {\n        self.entries.len()\n    }\n\n    pub fn cap(&self) -> usize {\n        self.cap\n    }\n}\n").unwrap();
+        let yaml_path = dir.path().join("ply.yaml");
+        std::fs::write(&yaml_path, "ply: 1\ncomponents:\n  book:\n    anchor: nocompile_demo::book\n    state:\n      of: Ledger\n      show: [entries]\n      holds: [\"state.no_such_method() > 0\"]\n").unwrap();
+        let loaded = config::load(&yaml_path).unwrap();
+
+        let result = verify_loaded_crate(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: Some(120),
+                seed: None,
+            },
+            loaded,
+        )
+        .unwrap();
+
+        fn verdict_of<'a>(node: &'a Node, id: &str) -> Option<&'a str> {
+            if node.id == id {
+                return Some(node.verdict.as_str());
+            }
+            node.children.iter().find_map(|c| verdict_of(c, id))
+        }
+        assert_eq!(
+            verdict_of(&result.envelope.root, "state Ledger"),
+            Some("tool_error"),
+            "nothing ran, so nothing may be reported about whether the promise holds: {:#?}",
+            result.envelope.diagnostics
+        );
+        assert!(
+            !result
+                .envelope
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "V0511"),
+            "and above all it may not accuse the code of breaking a promise: {:#?}",
+            result.envelope.diagnostics
+        );
+    }
     /// A user type declared in a module, not at the crate root, was
     /// unbuildable by the generated harness until 2026-09-04: every
     /// struct/enum name it imported was written bare, on the assumption

@@ -79,7 +79,7 @@ codes!(
     E0501, E0502, E0503, E0505, W0502, W0503, W0511, W0512, W0513, W0514, W0515, W0516, W0517,
     V0505, V0506, V0507, V0508, V0509, V0510, W0518, W0519, W0520, W0521, W0522, W0523, W0524,
     W0525, W0526, W0527, W0528, W0529, W0541, W0110, W0111, W0303, W0531, K0502, K0601, M0601,
-    P0502, P0601, R0502, R0601, X0901, X0902,
+    P0502, P0601, R0502, R0601, X0901, X0902, X0903, W0414, W0415, W0416, E0506, V0511,
 );
 
 /// The stage of Ply's own pipeline a code belongs to. See the module doc
@@ -788,6 +788,54 @@ impl Code {
                 severity: Error,
                 spec_anchor: "§5.4c",
                 gloss: "The generated check code for this function failed to compile, or otherwise could not even start running -- most often because a hand-written example entry doesn't type-check -- reported with the compiler's own first error attached, and never counted as a pass or a violation, because no evidence exists either way.",
+            },
+            W0414 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.1",
+                gloss: "A component says what must always be true of the structure it holds, but that structure lives in another crate and checks run one crate at a time -- so nothing here built one or tried the promise against it, and this run says nothing about whether it holds.",
+            },
+            W0415 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.1",
+                gloss: "A component says what must always be true of the structure it holds, and no struct or enum by that name is declared anywhere in this crate -- so there was nothing to build and nothing to check the promise against.",
+            },
+            W0416 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.1",
+                gloss: "A component says what must always be true of the structure it holds, and Ply has no way to make one of those values -- a promise about a structure is checked by building one through the type's own constructor and calling the type's own operations on it, and that could not start.",
+            },
+            E0506 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Error,
+                spec_anchor: "§5.1",
+                gloss: "One of the things a component says must always be true of the structure it holds could not be read as an expression about that value, so none of them were checked -- checking only the readable ones and reporting that as checked is the failure this refuses.",
+            },
+            V0511 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Error,
+                spec_anchor: "§5.1",
+                gloss: "A structure does not always hold what the document says it holds: Ply built a value through the type's own constructor, called only the type's own public operations on it, and reached a state the promise says is impossible -- so anything resting on that promise was resting on something untrue.",
+            },
+            X0903 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.1",
+                gloss: "The check for what a structure promises about itself ran out of time, so this run does not know whether the promise holds -- never reported as holding, because a check that did not finish is not a check that passed.",
             },
             X0902 => RuleEntry {
                 code: self,

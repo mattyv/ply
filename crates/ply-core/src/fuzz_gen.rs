@@ -2928,69 +2928,75 @@ fn resolved_import(plan: &harness::ReceiverPlan, target_crate_ident: &str) -> St
     }
 }
 
-fn extra_type_imports(cf: &ContractFn, target_crate_ident: &str) -> Vec<String> {
-    fn walk(
-        ty: &RustType,
-        target_crate_ident: &str,
-        seen: &mut std::collections::HashSet<String>,
-        out: &mut Vec<String>,
-    ) {
-        match ty {
-            RustType::UserTypeCtor(plan) => {
-                let full = resolved_import(plan, target_crate_ident);
-                if seen.insert(full.clone()) {
-                    out.push(full);
-                }
-                for p in &plan.ctor_params {
-                    walk(&p.ty, target_crate_ident, seen, out);
-                }
+/// Every `use` line a value of `ty` needs in the generated harness, walking
+/// into nested user types. Shared by the function path and the state
+/// invariant path so the two can never disagree about how a type is named.
+pub(crate) fn collect_type_imports(
+    ty: &RustType,
+    target_crate_ident: &str,
+    seen: &mut std::collections::HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    match ty {
+        RustType::UserTypeCtor(plan) => {
+            let full = resolved_import(plan, target_crate_ident);
+            if seen.insert(full.clone()) {
+                out.push(full);
             }
-            RustType::UserTypeFields(plan) => {
-                // A field/variant plan (rule 2, direct construction) is
-                // never route-built -- `resolve_declared_route` only ever
-                // produces `UserTypeCtor` -- so this is always an ordinary,
-                // in-crate bare name.
-                let full = format!("{target_crate_ident}::{}", plan.import_path);
-                if seen.insert(full.clone()) {
-                    out.push(full);
-                }
-                match &plan.shape {
-                    harness::UserTypeShape::Struct(fields) => {
-                        for f in fields {
-                            walk(&f.ty, target_crate_ident, seen, out);
-                        }
-                    }
-                    harness::UserTypeShape::Enum(variants) => {
-                        for (_, fields) in variants {
-                            for f in fields {
-                                walk(&f.ty, target_crate_ident, seen, out);
-                            }
-                        }
-                    }
-                }
+            for p in &plan.ctor_params {
+                collect_type_imports(&p.ty, target_crate_ident, seen, out);
             }
-            RustType::Option(inner)
-            | RustType::Array(inner, _)
-            | RustType::Vec(inner)
-            | RustType::BTreeSet(inner)
-            | RustType::Slice(inner)
-            | RustType::BoxT(inner) => walk(inner, target_crate_ident, seen, out),
-            RustType::Result(ok, err) => {
-                walk(ok, target_crate_ident, seen, out);
-                walk(err, target_crate_ident, seen, out);
-            }
-            RustType::Tuple(items) => {
-                for item in items {
-                    walk(item, target_crate_ident, seen, out);
-                }
-            }
-            RustType::BTreeMap(key, value) => {
-                walk(key, target_crate_ident, seen, out);
-                walk(value, target_crate_ident, seen, out);
-            }
-            _ => {}
         }
+        RustType::UserTypeFields(plan) => {
+            // A field/variant plan (rule 2, direct construction) is
+            // never route-built -- `resolve_declared_route` only ever
+            // produces `UserTypeCtor` -- so this is always an ordinary,
+            // in-crate bare name.
+            let full = format!("{target_crate_ident}::{}", plan.import_path);
+            if seen.insert(full.clone()) {
+                out.push(full);
+            }
+            match &plan.shape {
+                harness::UserTypeShape::Struct(fields) => {
+                    for f in fields {
+                        collect_type_imports(&f.ty, target_crate_ident, seen, out);
+                    }
+                }
+                harness::UserTypeShape::Enum(variants) => {
+                    for (_, fields) in variants {
+                        for f in fields {
+                            collect_type_imports(&f.ty, target_crate_ident, seen, out);
+                        }
+                    }
+                }
+            }
+        }
+        RustType::Option(inner)
+        | RustType::Array(inner, _)
+        | RustType::Vec(inner)
+        | RustType::BTreeSet(inner)
+        | RustType::Slice(inner)
+        | RustType::BoxT(inner) => collect_type_imports(inner, target_crate_ident, seen, out),
+        RustType::Result(ok, err) => {
+            collect_type_imports(ok, target_crate_ident, seen, out);
+            collect_type_imports(err, target_crate_ident, seen, out);
+        }
+        RustType::Tuple(items) => {
+            for item in items {
+                collect_type_imports(item, target_crate_ident, seen, out);
+            }
+        }
+        RustType::BTreeMap(key, value) => {
+            collect_type_imports(key, target_crate_ident, seen, out);
+            collect_type_imports(value, target_crate_ident, seen, out);
+        }
+        _ => {}
     }
+}
+
+fn extra_type_imports(cf: &ContractFn, target_crate_ident: &str) -> Vec<String> {
+    let walk = collect_type_imports;
+
     let mut seen = std::collections::HashSet::new();
     seen.insert(format!("{target_crate_ident}::{}", cf.import_path()));
     let mut out = Vec::new();
@@ -3105,6 +3111,232 @@ fn contract_referenced_use_imports(cf: &ContractFn, target_crate_ident: &str) ->
         }
     }
     out
+}
+
+/// The generated check for a `state:`'s `holds:` clauses -- §5.4c's "type
+/// invariants are assumed, never asserted", stopped being free.
+///
+/// Ply builds a value the only honest way it knows: through the type's own
+/// constructor, honouring that constructor's own precondition and rejecting
+/// rather than unwrapping a fallible one. Then it calls the type's own
+/// operations on it, in a generated sequence, exactly as it already does to
+/// reach a method deep in a type's state. Every clause is asserted twice
+/// over: once on the value the constructor returned, and again after every
+/// single operation. A clause that holds when a value is made and breaks
+/// three operations later is the whole reason this is a sequence rather
+/// than one call.
+///
+/// The counterexample marker names the clause and the step it broke at, so
+/// a reader is told *which* promise about the structure failed and how many
+/// operations in -- "the invariant broke" alone would send them to read the
+/// whole type.
+pub fn generate_invariant_test(
+    type_path: &str,
+    plan: &harness::ReceiverPlan,
+    clauses: &[(syn::ExprClosure, String)],
+    cases: u32,
+    seed: &[u8; 32],
+) -> Result<String> {
+    if clauses.is_empty() {
+        bail!("no `holds:` clause to check for `{type_path}`");
+    }
+    let ident = safe_ident(type_path);
+    let label = type_path;
+    let ctor_call = harness::last_two_segments(&plan.constructor);
+    let ctor_args = call_args_for(&plan.ctor_params).join(", ");
+    let ctor_pattern = value_pattern_for(&plan.ctor_params);
+    let ctor_strategy = combined_strategy_expr_for(&plan.ctor_params)?;
+
+    // One assertion block, emitted after construction and after every
+    // operation. `step` is a literal the generated code prints, so a
+    // failing case says how far into the sequence the structure went wrong.
+    let assert_block = |step: &str, indent: &str| -> String {
+        let mut out = String::new();
+        for (i, (closure, text)) in clauses.iter().enumerate() {
+            let call = harness::holds_clause_over(closure, "__ply_receiver")
+                .to_token_stream()
+                .to_string();
+            let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+            out.push_str(&format!(
+                "{indent}if !({call}) {{ \
+                 eprintln!(\"PLY_HOLDS_CEX|{label}|clause={i}|after={{}}|{escaped}\", {step}); \
+                 return Err(proptest::test_runner::TestCaseError::fail(\"a `holds:` clause is \
+                 false for this value\")); }}\n"
+            ));
+        }
+        out
+    };
+
+    let needs_mut = plan.operations.iter().any(|op| op.takes_mut_self);
+    let mut_kw = if needs_mut { "mut " } else { "" };
+    let ctor_expr = match plan.ctor_return {
+        harness::CtorReturn::Bare => format!("{ctor_call}({ctor_args})"),
+        harness::CtorReturn::ResultSelf => format!(
+            "match {ctor_call}({ctor_args}) {{ Ok(__ply_ctor_ok) => __ply_ctor_ok, Err(_) => {{ \
+             __ply_rejected.set(__ply_rejected.get() + 1); return \
+             Err(proptest::test_runner::TestCaseError::reject(\"constructor returned Err\")); }} }}"
+        ),
+    };
+
+    let mut body = String::new();
+    body.push_str(&params_preamble(&plan.ctor_params)?);
+    if let Some(ctor_requires) = &plan.ctor_requires {
+        let cond = ctor_requires.to_token_stream().to_string();
+        body.push_str(&format!(
+            "if !({cond}) {{ __ply_rejected.set(__ply_rejected.get() + 1); return \
+             Err(proptest::test_runner::TestCaseError::reject(\"constructor requires filter\")); \
+             }}\n            "
+        ));
+    }
+    body.push_str(&format!("let {mut_kw}__ply_receiver = {ctor_expr};\n"));
+    body.push_str(&assert_block("0usize", "            "));
+
+    // The sequence. Every operation is a pooled one here -- there is no
+    // checked method playing the part of operation zero, because there is
+    // no checked method at all.
+    let (seq_pattern, seq_strategy) = if plan.operations.is_empty() {
+        (String::new(), String::new())
+    } else {
+        let mut patterns = Vec::new();
+        let mut strategies = Vec::new();
+        for (i, op) in plan.operations.iter().enumerate() {
+            let (pattern, strategy, _) = op_pattern_strategy_preamble(&op.params, i)?;
+            patterns.push(pattern);
+            strategies.push(strategy);
+        }
+        (patterns.join(", "), strategies.join(", "))
+    };
+    if !plan.operations.is_empty() {
+        body.push_str(&format!(
+            "            let mut __ply_step = 0usize;\n            for (__ply_op_choice, \
+             {seq_pattern}) in __ply_seq {{\n                __ply_step += 1;\n                \
+             match __ply_op_choice {{\n"
+        ));
+        for (i, op) in plan.operations.iter().enumerate() {
+            let call = harness::last_two_segments(&op.call_path);
+            let op_args = call_args_for_prefixed(&op.params, i).join(", ");
+            let recv_ref = if op.takes_mut_self {
+                "&mut __ply_receiver"
+            } else {
+                "&__ply_receiver"
+            };
+            let full_args = if op_args.is_empty() {
+                recv_ref.to_string()
+            } else {
+                format!("{recv_ref}, {op_args}")
+            };
+            let bind = op_pattern_strategy_preamble(&op.params, i)?.2;
+            body.push_str(&format!(
+                "                    {i} => {{ {bind}let _ = {call}({full_args}); }}\n"
+            ));
+        }
+        body.push_str(
+            "                    _ => unreachable!(\"__ply_op_choice is generated in \
+             0..num_ops\"),\n                }\n",
+        );
+        body.push_str(&assert_block("__ply_step", "                "));
+        body.push_str("            }\n");
+    }
+
+    let num_ops = plan.operations.len();
+    let (outer_pattern, outer_strategy) = if plan.operations.is_empty() {
+        (ctor_pattern, ctor_strategy)
+    } else {
+        (
+            format!("({ctor_pattern}, __ply_seq)"),
+            format!(
+                "({ctor_strategy}, proptest::collection::vec((0u8..{num_ops}u8, {seq_strategy}), \
+                 0..={max}usize))",
+                max = plan.max_sequence_len
+            ),
+        )
+    };
+    let seed_literal = format!(
+        "[{}]",
+        seed.iter()
+            .map(|b| format!("{b}u8"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let seed_hex = seed_hex(seed);
+
+    Ok(format!(
+        "    #[test]\n\
+         \x20\x20\x20\x20fn ply_holds_{ident}() {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_SEED|{label}|{seed_hex}\");\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let mut __ply_runner = proptest::test_runner::TestRunner::new_with_rng(\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::Config {{ cases: {cases}, failure_persistence: None, ..proptest::test_runner::Config::default() }},\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::TestRng::from_seed(\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::RngAlgorithm::ChaCha, &{seed_literal}),\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rejected = std::cell::Cell::new(0u32);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let __ply_total = std::cell::Cell::new(0u32);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {outer_strategy};\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{outer_pattern}| {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{body}\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}});\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rej = __ply_rejected.get();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let __ply_tot = __ply_total.get();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20match __ply_outcome {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(()) => {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if __ply_tot > 0 && (__ply_rej as f64) / (__ply_tot as f64) > 0.5 {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_HIGH_REJECT|{label}|{{}}/{{}}\", __ply_rej, __ply_tot);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Err(proptest::test_runner::TestError::Abort(reason)) => {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_ABORT|{label}|{{}}|accepted={{}}|rejected={{}}\", reason, __ply_tot - __ply_rej, __ply_rej);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Err(e) => panic!(\"a `holds:` clause of `{label}` is false: {{}}\", e),\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20}}\n",
+    ))
+}
+
+/// The module wrapper for [`generate_invariant_test`] -- the same job
+/// [`wrap_fn_harness_module`] does for a function, minus everything only a
+/// checked function needs. What it must still bring into scope is every
+/// type the construction touches: the state type itself, its constructor's
+/// own arguments, and the arguments of every operation the sequence calls.
+pub fn wrap_invariant_harness_module(
+    type_path: &str,
+    plan: &harness::ReceiverPlan,
+    target_crate_ident: &str,
+    body: &str,
+) -> String {
+    let module_ident = safe_ident(type_path);
+    let mut out = format!(
+        "#[cfg(test)]\nmod {module_ident}_holds_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{type_path};\n\
+         \x20\x20\x20\x20#[allow(unused_imports)]\n    use {target_crate_ident}::*;\n"
+    );
+    let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    emitted.insert(format!("{target_crate_ident}::{type_path}"));
+    let mut seen = std::collections::HashSet::new();
+    let mut types = Vec::new();
+    for p in &plan.ctor_params {
+        collect_type_imports(&p.ty, target_crate_ident, &mut seen, &mut types);
+    }
+    for op in &plan.operations {
+        for p in &op.params {
+            collect_type_imports(&p.ty, target_crate_ident, &mut seen, &mut types);
+        }
+    }
+    for full in types {
+        if emitted.insert(full.clone()) {
+            out.push_str(&format!("    #[allow(unused_imports)]\n    use {full};\n"));
+        }
+    }
+    out.push('\n');
+    out.push_str(body);
+    out.push_str("}\n");
+    out
+}
+
+/// A `::`-qualified path turned into a legal Rust identifier, so a generated
+/// module and test can be named after it.
+fn safe_ident(path: &str) -> String {
+    path.replace("::", "_")
 }
 
 pub fn wrap_fn_harness_module(

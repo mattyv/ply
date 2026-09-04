@@ -296,6 +296,9 @@ components:
     state:                       # optional; the structure this component's state lives in
       of: Book                   #   required inside `state:` — resolved under the anchor
       show: [quotes, curve]      #   optional; the fields worth drawing. Omitted = none
+      holds:                     #   optional; what must always be true of the value —
+        - "state.n <= state.cap" #     a bare expression names it `state`, a closure
+        - "|b| b.bid <= b.ask"   #     names it yourself. Checked, not assumed
     profile: hot_path            # optional; must name a declared profile
     checks: [bounded(2)]         # optional default checks for all fns in scope
     components:                  # optional nested components, same shape
@@ -791,11 +794,37 @@ existence.
 
 **What it earns beyond the picture.** A component whose declared state cannot be built
 is the reason its functions come back `unsupported`, and today that connection is only
-visible by reading a diagnostic. Drawn, it is the first thing a reader sees. This is
-also the grammar's natural home for a future type invariant (§5.4c's "type invariants
-are assumed, never asserted"): the fields are already named, and the receiver machinery
-already builds constructor-plus-mutator sequences that such an invariant would be
-checked across. That is recorded as the next step, not claimed here.
+visible by reading a diagnostic. Drawn, it is the first thing a reader sees.
+
+**`holds:` — the type invariant, checked (2026-09-04).** §5.4c admits that a type's own
+invariants are **assumed, never asserted**, so a proof can rest on "the bids are sorted"
+while the code quietly breaks it. `holds:` is that assumption written down and checked.
+Each clause is a Rust expression about the value — a bare one names it `state`, a closure
+names it whatever the author likes, the same two forms `ensures:` takes. Ply builds a
+value the only way it honestly can, through the type's own constructor, honouring that
+constructor's own precondition and rejecting rather than unwrapping a fallible one; then
+it calls the type's own public operations on it in a generated sequence, and asserts every
+clause after the constructor and again after **every single operation**. A clause that
+holds when a value is made and breaks three operations later is the whole reason this is
+a sequence rather than one call, and the diagnostic says how many operations in.
+
+Every honesty condition the receiver path already carries applies unchanged: an operation
+whose argument cannot be built is named rather than silently dropped, and a second
+constructor this run never starts from is named too — so "checked" here means checked
+across the states this run could actually reach, and the disclosure says which those were.
+
+Three non-answers are reported as non-answers, never as a pass: the structure lives in
+another crate (`W0414`), no type of that name is declared here (`W0415`), or Ply has no
+way to build one (`W0416`). A clause that is not readable Rust holds back *every* clause
+on that type (`E0506`) rather than checking the ones that parse — a partly-checked promise
+reported as a checked one is the failure this refuses. A broken promise is `V0511`.
+
+**A violation requires that the check actually ran.** This is stated as a rule because the
+first implementation broke it: a clause that reads as fine Rust but cannot compile against
+the real type (a renamed field, a method that takes arguments) was reported as a
+**violation** — a false accusation about the author's code, worded identically to a true
+one. The generated check must be observed to execute before its failure means anything;
+otherwise the verdict is `tool_error` and the compiler's own message is quoted.
 
 The per-item escape `#[ply::allow(name, reason = "...")]` accepts a ban name or an
 item-tier diagnostic code (`A0402`–`A0404`, `A0406`, `A0408`) and suppresses that finding
@@ -1097,7 +1126,11 @@ Two documented limits narrow what *every* `bounded` verdict means, however clean
 generated arguments **never alias each other**, so a bug that needs two parameters to
 point at the same thing is invisible; and type invariants are **assumed, never asserted**,
 so a proof may rest on an invariant the code itself breaks. Both belong in the verdict's
-own explanation, not only here.
+own explanation, not only here. The second is no longer unavoidable: a `state:`'s `holds:`
+clauses (§5.1) are checked against the real type, so an invariant a proof rests on can be
+made to carry evidence of its own rather than none. It stays a limit of `bounded` itself —
+a proof does not consult those clauses, and nothing yet links the two — but the evidence
+now exists to link.
 
 Measured exclusions, each named rather than left for a user to discover by timing out:
 

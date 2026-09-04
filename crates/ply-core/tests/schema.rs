@@ -228,6 +228,7 @@ components:
     state:
       of: Book
       show: [ticks]
+      holds: ["state.ticks > 0"]
     profile: hot_path
     checks: [bounded(2)]
     components:
