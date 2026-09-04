@@ -13,75 +13,126 @@ each one from a refusal after the code is written.
 **Every rule below has a real incident behind it, in Ply's own source.** They are not
 style preferences.
 
+Two words used throughout. A *document* is the `ply.yaml` that names what is checked. A
+claim Ply will not attempt comes back **unclaimed** — a verdict meaning "no evidence was
+gathered", which is not the same as "this code is wrong".
+
 ## 1. Separate deciding from writing
 
-The single highest-value rule. Ply runs the body, so a function that writes files cannot
-be checked with generated inputs — it would create files at paths Ply invented. That is
-not a limitation to work around; it is a signal that the deciding and the writing are in
-one place.
+The single highest-value rule, and the one Ply helps with least — so read this part
+carefully.
+
+**Ply does not detect side effects.** It refuses a function whose signature takes a
+filesystem path *type* (`&Path`, `PathBuf`) because it cannot build one, and it runs
+everything else for real. So this is checkable, and Ply will happily execute it 256 times
+with names it invented, leaving 256 files behind:
 
 ```rust
-// Before: the logic cannot be checked, because the write is in the way.
+pub fn save(name: String, body: String) -> std::io::Result<()> {
+    std::fs::write(format!("out/{name}"), body)      // Ply will run this
+}
+```
+
+Nothing stops that but you. Separating the deciding from the writing is the author's job,
+not a refusal to wait for:
+
+```rust
+// Before: the logic cannot be checked on its own, because the write is in the way.
 pub fn write_report(dir: &Path, rows: &[Row]) -> Result<PathBuf> {
     let body = /* real logic: formatting, arithmetic, ordering */;
-    fs::write(&path, body)?;
-    Ok(path)
+    fs::write(dir.join("report.txt"), body)?;
+    Ok(dir.join("report.txt"))
 }
 
 // After: the logic takes data and returns data. Claim this one.
 pub fn report_body(rows: &[Row]) -> String { /* the logic */ }
 
 pub fn write_report(dir: &Path, rows: &[Row]) -> Result<PathBuf> {
+    let path = dir.join("report.txt");
     fs::write(&path, report_body(rows))?;   // three lines nobody needs to check
     Ok(path)
 }
 ```
 
 **The shell is meant to stay unclaimed.** Not everything should be checked, and a function
-that only opens a file and hands off is one to leave alone deliberately. What matters is
-that the logic is not trapped inside it.
+that only opens a file and hands off is one to leave alone deliberately. Splitting it
+further into wrappers that do nothing is worse than leaving it. What matters is that the
+logic is not trapped inside it.
 
-## 2. Do not take an index into a separate argument
+## 2. A lookup keyed by another argument must be total
 
 ```rust
-pub fn order(domain: &BTreeSet<usize>, node_ids: &[String]) -> Placement  // don't
+pub fn order(
+    domain: &BTreeSet<usize>,      // indices into node_ids
+    node_ids: &[String],
+    edges: &BTreeMap<usize, BTreeSet<usize>>,
+) -> Placement
 ```
 
-`domain` holds indices into `node_ids`, and nothing makes them agree. Real callers built
-both from the same list, so they always did — until Ply generated `domain = {15}` with an
-empty `node_ids` and the function panicked on an index nobody had thought about.
+Nothing makes `domain` and `node_ids` agree. Real callers built both from the same list,
+so they always did — until Ply generated `domain = {15}` with an empty `node_ids` and the
+function panicked on an index nobody had thought about. The same bug turned up again a
+week later in the layout code, keyed by a *name* rather than an index: an edge naming a
+node the caller never declared, looked up in a map built only from the declared ones.
 
-Two fixes, in preference order: let the two travel as one value, or make the lookup total
-(`node_ids.get(i)`) so an unexpected index is handled rather than fatal. **Declaring the
-agreement as a precondition instead is a trap — see rule 5.**
+**The fix that shipped both times was to make the lookup total** — `node_ids.get(i)` with
+a defined answer for the miss, and a filter that drops an edge naming an unknown node.
+Ply's own `order` still takes all three arguments and earns full evidence over every input.
+Restructuring the signature so the two travel as one value is the other option, and it is
+the right one when the agreement is load-bearing rather than incidental.
 
 ## 3. Return values; do not write through `&mut` parameters
 
-A `&mut` parameter is a shape neither engine builds an input for, so the function is
-refused outright. A function that computes something should return it.
+```rust
+pub fn bump_in_place(counter: &mut u32)   // refused
+pub fn bumped(counter: u32) -> u32        // checkable
+```
+
+A `&mut` parameter is a shape neither the sampling engine nor the proof engine can build
+an input for, so `fuzz` and `bounded` are both refused. A `test` check with worked
+examples still runs, because an example's source is spliced in as written — but that is
+the concrete cases you wrote and nothing more. A function that computes something should
+return it.
 
 ## 4. Keep a public struct under about a dozen fields
 
-A struct Ply builds field by field generates one strategy per field, and the trait that
-composes them stops being implemented past twelve. Ply's own `FingerprintInputs` has
-twenty public fields and is refused for exactly this reason — the one claim in its library
-that still earns nothing.
+A struct Ply builds field by field generates one input recipe per field, and the library
+trait that composes them into a whole value stops being implemented past twelve. Ply's own
+`FingerprintInputs` has twenty public fields and is refused for exactly this reason — the
+one claim in its library that still earns nothing.
 
 If a type is genuinely that wide, give it a public constructor that takes fewer arguments,
-or declare a `routes:` entry naming a public function that returns one.
+or declare a route naming a public function that returns one:
+
+```yaml
+routes: { FingerprintInputs: fingerprint_inputs_for }
+```
 
 ## 5. Watch what a precondition throws away
 
-`requires` is a filter on generated inputs. A precondition that is *true* can still be so
-narrow that almost nothing survives it, and then the check earns nothing at all.
+A `requires` clause is a filter on generated inputs. A precondition that is *true* can
+still be so narrow that almost nothing survives it, and then the check earns nothing at
+all.
 
 Measured on Ply's own scheduler: a correct precondition threw away 1025 of 1195 generated
-inputs, the sampler gave up, and the verdict went from a real result to `unclaimed`. The
-precondition was right; the code was the thing to change.
+inputs, the sampler gave up, and the verdict went from a real result to **unclaimed** — no
+evidence, not a failure. The precondition was right; the code was the thing to change.
 
 So when a promise needs a narrow precondition to hold, ask whether the function should
-instead be **total** — handling the case rather than excluding it. That usually makes the
-code better and the evidence real at the same time.
+instead be **total** — handling the case rather than excluding it.
+
+**But do not make it total by inventing an answer.** The test is whether the handled case
+has a meaning a caller would accept. Ply's scheduler passed it: the missing name is
+consulted only to break a tie, so falling back to the empty string provably changes no
+valid input's behaviour. Returning a plausible-looking value for an input that is a caller
+bug fails it, and swallowing an error to raise the accepted-input count is the same
+mistake wearing a different hat.
+
+Related, and the reason this rule is not just about counts: **a panic is a finding, an
+`Err` is a handled case.** If a generated input makes the function panic, Ply reports a
+broken promise with the input that did it. If the same input comes back as `Err`, the
+function handled it and the promise still has to hold. Choosing between them is a design
+decision, not an implementation detail.
 
 ## 6. Write a promise that can fail
 
@@ -91,25 +142,64 @@ A promise true of every possible body earns a green verdict and tells a reader n
 | --- | --- | --- |
 | `result.len() == 64` | `result.len() >= 0` | The second holds for every body |
 | `\|r\| r.bid <= r.ask` | `\|r\| r.bid >= 0` | State the relationship, not the type |
-| `result.0.len() + result.1.len() == domain.len()` | `!result.0.is_empty()` | Conservation is the property; non-emptiness is a symptom |
 
 Prefer a promise relating **inputs to output** over one about the output alone. "Returns a
-number" is a type. "Returns at least what it was given" is a promise.
+number" is a type. "Returns at least what it was given" is a promise. So
+`result.0.len() + result.1.len() == domain.len()` — everything given back, nothing
+invented — beats `!result.0.is_empty()`, which is not vacuous but is a symptom rather than
+the property.
+
+Two mechanical points that decide whether a promise is worth anything:
+
+- **A `fuzz` check needs a promise to check.** Without one there is nothing to assert and
+  the claim is refused.
+- **Watch which half of an `||` does the work.** Ply reports the split. On its own document,
+  `result.is_err() || !s.is_empty()` was decided by the first half in 256 of 256 cases —
+  random text is never valid input, so the interesting half never ran. Rewriting it to
+  "a rejection always quotes the text it rejected" moved all 256 onto the half that says
+  something. Where the interesting case is rare rather than reachable, declare `test`
+  alongside `fuzz` and write the cases out.
 
 When unsure whether a promise has teeth, declare `mutate` beside it: that breaks the
 function on purpose and reports whether anything noticed.
 
 ## 7. Prefer types the engines can build
 
-Numbers, booleans, strings, and containers of them compose freely. Your own structs and
-enums work when Ply can reach a public constructor, or when every field is public.
+Numbers, booleans, strings, `Vec`, `BTreeSet`, `BTreeMap`, `Option` and `Box` of them
+compose freely. Your own structs and enums work when Ply can reach a public constructor,
+or when every field is public **and named**.
 
-Refused, and worth knowing before you write the signature: `&mut` parameters, trait
-objects, and generic parameters with no concrete type named in the document. Floats and
-strings are sampled but never proved, so a `bounded` check on them is refused by name.
+Refused, and worth knowing before you write the signature:
 
-When a type genuinely cannot be built, a `routes:` entry naming a public function that
-returns one is the escape — Ply then samples *that function's* inputs.
+| Shape | What happens |
+| --- | --- |
+| `&mut` parameters | Refused for `fuzz` and `bounded` (rule 3) |
+| `HashMap`, `HashSet` | Not recognised — use the `BTree` versions where you can |
+| Tuple structs, tuple enum variants | Refused by name |
+| Trait objects, `impl Trait`, closures | Refused |
+| Generic parameters | Refused. Naming a concrete type in the document is described in the spec but **not built** — do not plan around it |
+| Filesystem paths (`&Path`, `PathBuf`) | Refused (rule 1) |
+| Floats and strings under `bounded` | Sampled, never proved — a proof check on them is refused by name |
+
+When a type genuinely cannot be built, a route naming a public function that returns one is
+the escape — Ply then samples *that function's* inputs:
+
+```yaml
+routes: { Handle: open_handle }
+```
+
+## 8. Methods, and how a type's own state gets checked
+
+A method taking `&self` is checkable like any function. `&mut self` and methods that
+consume `self` are not, and a constructor that returns `Result<Self, _>` is not recognised
+as a way to build one.
+
+The way to check a type that changes is not to claim its mutating methods one by one. It is
+to state what must always be true of the value, under the component's `state:`; Ply then
+builds one through the type's own constructor, calls its public operations in generated
+sequences, and checks every clause after each one. Read the report: it names the operations
+it could not call, and a promise checked without the one mutator that would break it is
+worth much less than the number beside it suggests.
 
 ## What to do when Ply refuses
 
@@ -128,13 +218,15 @@ quoted, so the refusal can be judged rather than taken on trust.
 | target | authority |
 | --- | --- |
 | new_code | may-write |
-| refactor_to_separate_io | may-do |
+| refactor_new_code_to_separate_io | may-do |
+| refactor_existing_io | ask-first |
 | existing_contract | ask-first |
 | existing_check | ask-first |
 | weakening_a_promise_to_make_a_check_pass | never |
 
-Reshaping code you are writing is the point of this skill. Reshaping code that already
-works, to make a check pass, is a change to something a reader relies on and belongs to
-the developer. And a promise is never weakened to turn a failing check green: that
-converts a real finding into a result nobody can trust, which is the one outcome this
-whole tool exists to prevent.
+Reshaping code you are writing is the point of this skill. Splitting a function that
+already works — even to make a check possible — is a change to something a reader relies
+on, and belongs to the developer: propose it, name the function, and wait.
+
+And a promise is never weakened to turn a failing check green: that converts a real finding
+into a result nobody can trust, which is the one outcome this whole tool exists to prevent.

@@ -12,6 +12,12 @@ def skill_text(name: str) -> str:
     return (ROOT / "skills" / name / "SKILL.md").read_text()
 
 
+def flat(text: str) -> str:
+    """One line, single-spaced -- so a prose assertion is about the words
+    and not about where the author happened to wrap them."""
+    return " ".join(text.split())
+
+
 def table(text: str, heading: str) -> dict[str, list[str]]:
     match = re.search(
         rf"^## {re.escape(heading)}\s*$\n(?P<body>.*?)(?=^## |\Z)",
@@ -164,22 +170,103 @@ class PlyAuditSkillTests(unittest.TestCase):
 class PlyCheckableCodeSkillTests(unittest.TestCase):
     """The generative counterpart to the diagnostic scan: this skill exists
     so an agent writes a shape Ply can check, rather than discovering each
-    refusal after the code is written."""
+    refusal after the code is written.
 
-    def test_every_rule_is_backed_by_something_that_happened(self):
+    These tests are deliberately not substring checks on headings. An
+    earlier version of this class was four of those, and a review gutted
+    every rule body, inverted two rules, and negated both sentinel
+    sentences without turning a single test red. Each test below now asserts
+    something a wrong version of the file would get wrong.
+    """
+
+    def rules(self):
+        """Every numbered rule, as (heading, body)."""
+        text = skill_text("ply-checkable-code")
+        parts = re.split(r"^## (\d+\. [^\n]+)$", text, flags=re.MULTILINE)
+        found = list(zip(parts[1::2], parts[2::2]))
+        self.assertGreaterEqual(len(found), 7, "the numbered rules went missing")
+        return found
+
+    def test_every_rule_carries_its_own_evidence(self):
         """A style guide nobody can argue with is a style guide nobody
-        follows. Each rule here came from a real refusal in Ply's own
-        source, and saying so is what makes it a finding rather than a
-        preference."""
-        text = skill_text("ply-checkable-code")
-        self.assertIn("Every rule below has a real incident behind it", text)
+        follows. Each rule came from a real refusal in Ply's own source, and
+        a rule reduced to its heading has lost the part that makes it a
+        finding rather than a preference."""
+        for heading, body in self.rules():
+            with self.subTest(rule=heading):
+                self.assertGreater(
+                    len(body.split()),
+                    60,
+                    f"{heading!r} has no body left to justify it",
+                )
+                concrete = (
+                    "```" in body
+                    or "|" in body
+                    or len(re.findall(r"`[^`\n]+`", body)) >= 3
+                )
+                self.assertTrue(
+                    concrete,
+                    f"{heading!r} argues in adjectives: no example, no table, and "
+                    f"nothing named from the code it is about",
+                )
 
-    def test_it_leads_with_separating_decisions_from_side_effects(self):
-        """The highest-value rule, and the one that turns a refusal into a
-        design improvement rather than a workaround."""
+    def test_it_does_not_claim_ply_detects_side_effects(self):
+        """It does not. `effects.rs` has no callers: a function that builds a
+        path out of a String and writes to it is fully buildable and will be
+        executed against generated inputs. An agent told otherwise would
+        leave the separation undone and expect a refusal that never comes."""
+        text = flat(skill_text("ply-checkable-code"))
+        self.assertIn("Ply does not detect side effects", text, "missing")
+        self.assertIn("the author's job", text, "missing")
+
+    def test_the_lookup_rule_puts_making_it_total_first(self):
+        """Both times this bug appeared in Ply's own source, the fix that
+        shipped kept the signature and made the lookup total. A rule whose
+        headline is 'restructure the signature' tells an agent to redo work
+        the maintainers judged fine to keep."""
+        heading, body = self.rules()[1]
+        self.assertIn("total", heading)
+        self.assertLess(
+            body.index("make the lookup total"),
+            body.index("travel as one value"),
+            "the fix that shipped has to come before the one that did not",
+        )
+
+    def test_making_a_function_total_carries_its_own_brake(self):
+        """Without one, 'handle the case rather than exclude it' reads as
+        permission to swallow errors until the accepted-input count goes
+        up, which is the failing check made green by other means."""
+        text = flat(skill_text("ply-checkable-code"))
+        self.assertIn(
+            "do not make it total by inventing an answer", text.lower(), "missing"
+        )
+        self.assertIn("a panic is a finding, an `Err` is a handled case", text, "missing")
+
+    def test_it_does_not_offer_a_remedy_that_is_not_built(self):
+        """Naming a concrete type for a generic parameter is in the spec and
+        drawn by the renderer, but nothing at verify time reads it. Offering
+        it as an escape sends an agent to write a line that changes
+        nothing."""
+        text = flat(skill_text("ply-checkable-code"))
+        self.assertIn("**not built**", text, "missing")
+
+    def test_the_refused_shapes_are_the_ones_the_type_parser_refuses(self):
+        """Everyday Rust that an agent will reach for and Ply will refuse.
+        Each of these is a real arm in `harness.rs`, and an agent that
+        learns them at writing time never sees the refusal."""
         text = skill_text("ply-checkable-code")
-        first = text.index("## 1.")
-        self.assertIn("Separate deciding from writing", text[first : first + 120])
+        for shape in ("HashMap", "Tuple structs", "impl Trait", "PathBuf"):
+            with self.subTest(shape=shape):
+                self.assertIn(shape, text, "missing")
+
+    def test_it_covers_methods_and_not_just_free_functions(self):
+        """`&self` is checkable, `&mut self` is not, and the only way to
+        check a type that changes is a structure promise. An agent given
+        only the free-function rules will claim mutating methods one by one
+        and get nothing back."""
+        text = flat(skill_text("ply-checkable-code"))
+        self.assertIn("`&mut self`", text, "missing")
+        self.assertIn("under the component's `state:`", text, "missing")
 
     def test_weakening_a_promise_to_pass_is_forbidden_outright(self):
         """Not ask-first. There is no version of this that is correct: it
@@ -190,12 +277,29 @@ class PlyCheckableCodeSkillTests(unittest.TestCase):
             authority["weakening_a_promise_to_make_a_check_pass"][0], "never"
         )
 
+    def test_no_permission_is_granted_over_code_that_already_works(self):
+        """The prose says reshaping working code belongs to the developer.
+        The table is the machine-readable half, so a `may-` row naming an
+        existing thing is the one an agent will act on, and the prose loses
+        silently."""
+        authority = table(skill_text("ply-checkable-code"), "Change authority")
+        for target, cells in authority.items():
+            if "existing" in target:
+                with self.subTest(target=target):
+                    self.assertNotIn(
+                        "may",
+                        cells[0],
+                        f"{target!r} grants permission the prose withholds",
+                    )
+
     def test_it_says_some_functions_should_stay_unclaimed(self):
         """A skill that pushed for total coverage would push an agent to
         claim shells, which is how a document fills with promises that mean
-        nothing."""
-        text = skill_text("ply-checkable-code")
-        self.assertIn("meant to stay unclaimed", text)
+        nothing -- and, the other way, to split a three-line shell into
+        wrappers that do nothing."""
+        text = flat(skill_text("ply-checkable-code"))
+        self.assertIn("The shell is meant to stay unclaimed", text, "missing")
+        self.assertIn("wrappers that do nothing is worse", text, "missing")
 
 
 class TextFormTests(unittest.TestCase):

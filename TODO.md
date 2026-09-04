@@ -104,9 +104,68 @@ of the warning being written.
 name for a documented Ply limitation (20 public fields, past what the sampling engine's
 tuple strategy reaches).
 
-**The other 54 checkable-today functions are the remaining worklist.** Each needs a promise
+**The remaining checkable-today functions are the worklist** (54 at the time of writing;
+eight of them claimed in the section above). Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that
 cannot fail would turn all 54 green and mean nothing.
+
+## Landed: eight more claims, a crash Ply found in the renderer, and a bug in Ply itself — 2026-09-04
+
+- [x] **Eight new claims in `crates/ply-core/ply.yaml`**, taking the library from 15 to 23:
+      `model::parse_check`, `model::parse_edge`, `registry::lookup`,
+      `record::verdict_is_earnable`, `schema::dotted`, `surface::contract_helpers`,
+      `harness_crate::remove_workspace_member`, `visual::layout::assign_ranks`.
+      All 23 earn evidence except `record::fingerprint`, still refused for the documented
+      20-field limit.
+
+- [x] **The layout code crashed on an edge naming a node nobody declared.** Ply's first run
+      of the new `assign_ranks` claim panicked on `edges = [("","0")], names = [""]`: an
+      edge target was looked up in a map built only from the declared names. Fixed by
+      dropping an edge whose either end is undeclared, which also repairs the quieter half
+      -- an edge *from* an unknown node used to freeze the rank of the node it pointed at.
+      Two tests in `visual/layout.rs`, red before the fix.
+
+      This is the same shape as the scheduler bug a week earlier, keyed by a name rather
+      than an index, and both fixes were "make the lookup total". `skills/ply-checkable-code`
+      now says so.
+
+- [x] **A real defect in Ply: an `examples:` entry containing `{}` broke the harness.**
+      `generate_example_test` echoes the entry into the assert's failure message, which is
+      a `format!` template, so `format!("{:?}", ..)` inside an example was read as a
+      placeholder and the whole crate failed to build with "1 positional argument in
+      format string". Braces are now doubled, alongside the existing quote escaping. Found
+      by writing one for Ply's own document.
+
+- [x] **Six promises rewritten because one side of the `||` was doing all the work.**
+      Ply's own disclosure caught them: `parse_check`'s `result.is_err() || !s.is_empty()`
+      was decided by the first half in 256 of 256 cases, because random text is never a
+      valid check string. Rewritten to "a rejection always quotes the text it rejected",
+      which moved all 256 onto the half that says something. Where the interesting case
+      is genuinely rare (`registry::lookup`, `record::verdict_is_earnable`,
+      `surface::same_expression`), `test` was declared alongside `fuzz` with worked cases,
+      so the branch random text never reaches is exercised by hand.
+
+      KNOWN GAP, left open on purpose: those three still report a lopsided fuzz half, and
+      that report is true -- the fuzz run really does say little about them. The concrete
+      cases are what carries the other side. Hiding the disclosure by rewriting the
+      promise as a single non-`||` clause would have been worse.
+
+- [x] **`skills/ply-checkable-code` rewritten after an adversarial review, and its tests
+      given teeth.** The review found three behavioural claims that were wrong or stale:
+      the skill said Ply catches a function that writes files (it does not -- `effects.rs`
+      has no callers, and a function that builds a path from a `String` will be run for
+      real against generated inputs); rule 2's headline told an agent to restructure a
+      signature Ply's own maintainers kept; and it offered naming a concrete type for a
+      generic parameter as an escape, which is in the spec and drawn but not wired at
+      verify time. It also granted `may-do` over reshaping existing I/O while the prose
+      said that belongs to the developer. All fixed, plus the gaps it named: `HashMap`/
+      `HashSet` and tuple structs are refused, `&mut` blocks `fuzz`/`bounded` but not a
+      `test` with examples, `fuzz` needs a promise at all, and methods (`&self` yes,
+      `&mut self` no) now have their own rule.
+
+      The old four tests passed with every rule body deleted. The eleven that replace them
+      go red under each of: gutting the bodies, flipping the authority table, and restoring
+      the old rule-2 headline -- checked, not assumed.
 
 ## Landed: the side-effect scan is a design signal, not a gate — 2026-09-04
 

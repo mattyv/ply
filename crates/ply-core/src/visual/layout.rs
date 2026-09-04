@@ -33,9 +33,13 @@ fn acyclic_edges(names: &[String], edges: &[(String, String)]) -> Vec<(String, S
     for n in names {
         adj.entry(n.as_str()).or_default();
     }
+    let declared: HashSet<&str> = names.iter().map(|n| n.as_str()).collect();
     for (a, b) in edges {
         if a == b {
             continue; // self-loops carry no ranking information
+        }
+        if !declared.contains(a.as_str()) || !declared.contains(b.as_str()) {
+            continue; // an edge to a node nobody declared has nothing to rank
         }
         adj.entry(a.as_str()).or_default().push(b.as_str());
     }
@@ -213,6 +217,30 @@ mod tests {
         es.iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn an_edge_naming_an_undeclared_node_is_ignored_rather_than_fatal() {
+        // Ply's own fuzz run found this: an edge pointing at a name the
+        // caller never declared used to index a map built only from the
+        // declared names, and the layout crashed instead of drawing.
+        let ranks = assign_ranks(&names(&["a"]), &edges(&[("a", "ghost")]));
+        assert_eq!(ranks.len(), 1);
+        assert_eq!(ranks["a"], 0);
+    }
+
+    #[test]
+    fn an_edge_from_an_undeclared_node_does_not_freeze_the_one_it_points_at() {
+        // The reverse direction, which the traversal already dropped
+        // because it only ever starts from a declared name. Guarded here so
+        // the two halves of the rule stay together.
+        let ranks = assign_ranks(
+            &names(&["a", "b", "c"]),
+            &edges(&[("ghost", "b"), ("a", "b"), ("b", "c")]),
+        );
+        assert_eq!(ranks["a"], 0);
+        assert_eq!(ranks["b"], 1);
+        assert_eq!(ranks["c"], 2);
     }
 
     #[test]

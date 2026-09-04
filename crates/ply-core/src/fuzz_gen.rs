@@ -2662,7 +2662,16 @@ pub fn generate_example_test(cf: &ContractFn, index: u32, example_src: &str) -> 
     // crate fails to build with a *syntax* error inside Ply's own generated
     // file -- burying the user's real mistake (2026-08-24 M4 review, D1's
     // own probe).
-    let escaped_src = example_src.replace('\\', "\\\\").replace('"', "\\\"");
+    // The message is a `format!` template as well as a string literal, so a
+    // brace the user wrote for Rust (`format!("{:?}", ..)` inside an entry)
+    // has to be doubled or it is read as a placeholder and the harness dies
+    // with "1 positional argument in format string" (2026-09-04, found by
+    // Ply's own document).
+    let escaped_src = example_src
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('{', "{{")
+        .replace('}', "}}");
     let ident = cf.ident();
     Ok(format!(
         "    #[test]\n\
@@ -4186,6 +4195,37 @@ pub fn greet(x: u32) -> u32 { x }
             "the example text is echoed into a Rust string literal, so its quotes must be escaped -- \
              unescaped, the literal closes early and the harness fails to build with a syntax error \
              in Ply's own generated file:\n{body}"
+        );
+    }
+
+    /// The same failure one step along: the echoed text also lands inside a
+    /// `format!` template, so a `{}` or `{:?}` in the example is read as a
+    /// placeholder and the harness dies with "1 positional argument in
+    /// format string, but no arguments were given" -- a compiler error in a
+    /// file the user never wrote, about a brace they wrote for Rust and not
+    /// for a format string. Found 2026-09-04 by an `examples:` entry in
+    /// Ply's own document that compared a debug-formatted value.
+    #[test]
+    fn an_example_containing_braces_is_not_read_as_a_format_placeholder() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == 0)]
+pub fn greet(x: u32) -> u32 { x }
+"#,
+            "greet",
+        );
+        let body =
+            generate_example_test(&cf, 1, r#"format!("{:?}", greet(0)) == "0""#).unwrap();
+        let message = body
+            .split("does not hold")
+            .next()
+            .and_then(|s| s.rsplit("assert!(").next())
+            .unwrap_or_default();
+        let echoed = message.rsplit(", \"example failed:").next().unwrap_or_default();
+        assert!(
+            echoed.contains("{{:?}}"),
+            "the braces in the echoed example text must be doubled, or `format!` reads \
+             them as a placeholder and the harness fails to build:\n{body}"
         );
     }
 

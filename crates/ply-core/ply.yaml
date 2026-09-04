@@ -101,13 +101,98 @@ components:
       surface:
         anchor: ply_core::surface
         fns:
+          contract_helpers:
+            # Everything it reports has to be visible in the text it read.
+            # A name it invented would put a function on the trust surface
+            # that the promise never actually calls.
+            ensures:
+              - "|result| result.iter().all(|n| expr_src.contains(n.rsplit(\"::\").next().unwrap_or(n.as_str())))"
+            checks: [fuzz(256), test]
+            examples:
+              - "contract_helpers(\"tiered_fee(x) <= cap(x)\").len() == 2"
           same_expression:
             ensures:
               - "|result| *result || a != b"
+            checks: [fuzz(256), test]
+            examples:
+              - "same_expression(\"x + 1\", \"x+1\")"
+              - "!same_expression(\"x + 1\", \"x + 2\")"
+      model:
+        anchor: ply_core::model
+        note: >-
+          The document as data: what a ply.yaml means once it has been read.
+        fns:
+          parse_check:
+            # Every rejection has to quote back the text it read, or the
+            # person who mistyped a line in their document is told only
+            # that something is wrong and never which thing.
+            ensures:
+              - "|result| result.is_ok() || result.as_ref().unwrap_err().contains(&format!(\"{:?}\", s.trim()))"
+            checks: [fuzz(256), test]
+            examples:
+              - "parse_check(\"fuzz(256)\").is_ok()"
+              - "parse_check(\"bounded(3)\").is_ok()"
+              - "parse_check(\"mutate\").is_ok()"
+          parse_edge:
+            ensures:
+              - "|result| result.is_ok() || result.as_ref().unwrap_err().contains(&format!(\"{:?}\", s.trim()))"
+            checks: [fuzz(256), test]
+            examples:
+              - "parse_edge(\"a -> b\").is_ok()"
+              - "parse_edge(\"a ~> b : Order\").is_ok()"
+      registry:
+        anchor: ply_core::registry
+        note: >-
+          Every message Ply can produce, listed once as data rather than as a
+          document two people have to keep in step by hand.
+        fns:
+          lookup:
+            # Not just "found something" -- found the right thing. A lookup
+            # that returned a neighbouring row would mislabel every message
+            # Ply prints.
+            ensures:
+              - "|result| result.is_none() || format!(\"{:?}\", result.as_ref().unwrap().code) == code.trim().to_ascii_uppercase()"
+            # `fuzz` alone says almost nothing here: random text is never a
+            # real code, so it only ever shows the miss. The concrete cases
+            # are what exercise the hit.
+            checks: [fuzz(256), test]
+            examples:
+              - "lookup(\"E0203\").map(|e| e.code) == Some(ply_core::registry::Code::E0203)"
+              - "lookup(\" w0526 \").map(|e| e.code) == Some(ply_core::registry::Code::W0526)"
+              - "lookup(\"E9999\").is_none()"
+      record:
+        anchor: ply_core::record
+        state:
+          of: RecordEntry
+          show: [verdict, statuses, inputs]
+        note: >-
+          What was checked, and everything a result depended on. A stored
+          result is only reused when every one of those inputs still hashes
+          the same, which is what stops a stale green outliving the code that
+          earned it.
+        fns:
+          fingerprint:
+            ensures:
+              - "result.len() == 64"
             checks: [fuzz(256)]
+          verdict_is_earnable:
+            # The guard against a hand-edited record. A verdict decorated as
+            # spec-strong can only have been earned by a run that declared
+            # `mutate`, so accepting one without it would let an edited file
+            # claim evidence no run could have produced.
+            ensures:
+              - "|result| !*result || !verdict.ends_with(\"\u00b7spec-strong\") || checks.iter().any(|c| c == \"mutate\")"
+            checks: [fuzz(256), test]
+            examples:
+              - "verdict_is_earnable(\"fuzzed(256)\", &[\"fuzz(256)\".to_string()], &[])"
+              - "!verdict_is_earnable(\"bounded(3)\u00b7spec-strong\", &[\"bounded(3)\".to_string()], &[])"
       schema:
         anchor: ply_core::schema
         fns:
+          dotted:
+            ensures:
+              - "|result| !result.starts_with('/')"
+            checks: [fuzz(256)]
           is_identifier:
             ensures:
               - "|result| !*result || !s.is_empty()"
@@ -157,6 +242,21 @@ components:
             ensures:
               - "|result| result.starts_with(\"target/ply/fuzz/\")"
             checks: [fuzz(256)]
+          remove_workspace_member:
+            ensures:
+              - "|result| result.len() <= text.len()"
+            checks: [fuzz(256)]
+      layout:
+        anchor: ply_core::visual::layout
+        note: >-
+          Where each box goes. The promise below is that it never invents
+          one: a rank for a name the document never declared would draw
+          something nobody wrote.
+        fns:
+          assign_ranks:
+            ensures:
+              - "|result| result.len() <= names.len()"
+            checks: [fuzz(256)]
       visual:
         anchor: ply_core::visual
         state:
@@ -170,19 +270,4 @@ components:
           stable_element_id:
             ensures:
               - "result.starts_with(\"ply-\")"
-            checks: [fuzz(256)]
-      record:
-        anchor: ply_core::record
-        state:
-          of: RecordEntry
-          show: [verdict, statuses, inputs]
-        note: >-
-          What was checked, and everything a result depended on. A stored
-          result is only reused when every one of those inputs still hashes
-          the same, which is what stops a stale green outliving the code that
-          earned it.
-        fns:
-          fingerprint:
-            ensures:
-              - "result.len() == 64"
             checks: [fuzz(256)]
