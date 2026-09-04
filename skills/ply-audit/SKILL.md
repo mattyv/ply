@@ -26,6 +26,19 @@ cargo ply worklist path/to/crate --json
 Read both. They overlap by design and neither is a superset: `audit` lists standing trust,
 `worklist` lists outstanding work.
 
+## Read the document first, if you have not
+
+Both commands report against what the document declares, so a thin document produces a
+short trust surface for reasons that have nothing to do with the code being trustworthy.
+When you do not already know what is declared:
+
+```bash
+cargo ply render path/to/crate --text
+```
+
+That is the whole document written out, each construct with its meaning inline. Do not
+read the SVG for this — about 95% of a drawing is in hover text a model cannot reach.
+
 ## What lands on the trust surface, and why each matters
 
 These are the exact kinds `audit` reports — not a general list of things that could go

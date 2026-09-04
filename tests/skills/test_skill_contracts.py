@@ -161,6 +161,33 @@ class PlyAuditSkillTests(unittest.TestCase):
         self.assertIn("Never present an empty list as a clean bill of health", text)
 
 
+class TextFormTests(unittest.TestCase):
+    """A model cannot hover, and roughly 95% of a Ply drawing is hover text.
+
+    So a skill that might otherwise reach for the picture has to name the
+    text form instead. This is not a style preference: an agent that reads
+    the SVG reads about a twentieth of the document and has no way to know
+    it, which is the quietest wrong answer available here.
+    """
+
+    def test_skills_that_might_read_a_drawing_point_at_the_text_form(self):
+        for name in ("ply-review", "ply-audit", "ply-author"):
+            text = skill_text(name)
+            self.assertIn(
+                "--text",
+                text,
+                f"{name} must name the text form rather than leave an agent to "
+                f"read a picture it cannot hover over",
+            )
+
+    def test_the_text_form_is_never_offered_as_evidence(self):
+        """The render never sees a verdict. A skill that sends an agent to it
+        has to say so, or a document full of promises gets reported as a
+        codebase full of results."""
+        text = skill_text("ply-review")
+        self.assertIn("declared intent and not evidence", text)
+
+
 class PlyReviewSkillTests(unittest.TestCase):
     def test_public_artifact_fixture_preserves_run_evidence_gaps_and_exact_source(self):
         index = fixture("view.json")

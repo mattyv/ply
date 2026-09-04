@@ -19,6 +19,23 @@
       **First step:** one fixture with a hand test that kills a mutant the generated
       examples miss, red before the feature and green after.
 
+## Landed: contracts explained, and the text form pointed at — 2026-09-04
+
+- [x] **What `requires` and `ensures` mean.** The reference had every mechanic and none of
+      the meaning: nothing anywhere defined the two words. Now stated, with what each one
+      *does* on each tier (a filter on the sampling tier, a narrowing of the search on the
+      proving tier), the caller-side reading that makes proving tractable at all, and the
+      trap that had no home -- a precondition too narrow makes a green result mean less,
+      because a promise checked on the three inputs that survived out of 256 is thinner
+      than `fuzzed(256)` sounds.
+- [x] **No rendering skill, and the reason written down.** A skill earns its place when
+      there is a decision to get wrong and an authority to overstep; rendering has neither.
+      What was real was the neighbouring risk: only one of four skills mentioned the text
+      form, so an agent asked to explain a document would reach for the picture and read
+      about a twentieth of it. `ply-review` and `ply-audit` now point at `--text`, with
+      `ply-review` required to say it is describing declared intent and not evidence. Two
+      tests cover it, confirmed red by removing the pointer.
+
 ## Landed: the parts of the tool nothing explained — 2026-09-04
 
 All raised by the maintainer reading the README and the `skills/` folder as a newcomer
