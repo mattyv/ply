@@ -10,9 +10,14 @@ components:
     anchor: disruptor::spsc
     uses: [unsafe]
     owns: [disruptor::spsc::Spsc]
+    # Declared, not read: no crate backs this anchor. `slots` is the ordered,
+    # many-slot buffer; each cursor is the one value it is.
     state:
       of: Spsc
-      show: [slots, head, tail]
+      show:
+        slots: list
+        head: scalar
+        tail: scalar
     profile: hot_path
     fns:
       Spsc::try_push:
@@ -37,9 +42,13 @@ components:
     # The same type this component owns, now also named as what it holds:
     # `owns` is who may change it, `state` is what is in it. Two fields of
     # the several a real book carries -- the ones a reader asks about first.
+    # `bids` is a lookup keyed by price level; `last` is the one value the
+    # last trade set.
     state:
       of: OrderBook
-      show: [bids, last]
+      show:
+        bids: map
+        last: scalar
     profile: hot_path
     fns:
       OrderBook::apply:
