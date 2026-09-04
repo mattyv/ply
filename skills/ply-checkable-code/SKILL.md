@@ -102,11 +102,17 @@ trait that composes them into a whole value stops being implemented past twelve.
 one claim in its library that still earns nothing.
 
 If a type is genuinely that wide, give it a public constructor that takes fewer arguments,
-or declare a route naming a public function that returns one:
+or declare a route naming a public function that returns one — **a route needs a public
+producer that already exists**; it names one, it does not create one.
 
 ```yaml
-routes: { FingerprintInputs: fingerprint_inputs_for }
+routes: { Handle: open_handle }        # open_handle must be a real public fn
 ```
+
+When no such function exists, adding one whose only caller is Ply is adding public API for
+the tool's benefit, and that is the developer's call, not yours. Ply's own twenty-field
+`FingerprintInputs` is in exactly this position and is left refused on purpose. Rule 9 is
+what to do instead.
 
 ## 5. Watch what a precondition throws away
 
@@ -181,14 +187,40 @@ Refused, and worth knowing before you write the signature:
 | Filesystem paths (`&Path`, `PathBuf`) | Refused (rule 1) |
 | Floats and strings under `bounded` | Sampled, never proved — a proof check on them is refused by name |
 
-When a type genuinely cannot be built, a route naming a public function that returns one is
-the escape — Ply then samples *that function's* inputs:
+When a type genuinely cannot be built, a route naming an **existing** public function that
+returns one is the escape — Ply then samples *that function's* inputs (see rule 4 for what
+to do when there is no such function).
 
-```yaml
-routes: { Handle: open_handle }
-```
+## 8. Some functions should be checked by an ordinary test instead
 
-## 8. Methods, and how a type's own state gets checked
+A refusal is sometimes telling you the function you picked is not where the property lives.
+
+Ply's own `fingerprint` is one line: it hashes a canonical byte encoding of a twenty-field
+struct. The encoding is the part worth checking — it length-prefixes every value so that a
+contract containing a newline cannot be arranged to hash the same as two different fields.
+That encoding is a **private** helper. So the claim sits on the wrapper, where the only
+statement you can make is "returns 64 characters", which is a fact about the type rather
+than about the code.
+
+The honest answer is not to widen the API until the checker can reach it. It is a plain
+Rust test. Ply's has one: it mutates each of the twenty inputs in turn and asserts the hash
+moves, naming which input stopped counting when it fails. That is better coverage than any
+promise about the wrapper, and it needs nothing from Ply at all.
+
+So, before contorting a signature to make a claim possible, ask which of these is true:
+
+| The property lives... | Do this |
+| --- | --- |
+| in the function being claimed | Claim it |
+| in a private helper it calls | Write an ordinary test; leave the wrapper unclaimed |
+| in a public helper it calls | Claim the helper instead |
+
+**A claim whose only honest promise is a type-level fact should not be declared at all** —
+it takes up a row in the document, earns a verdict, and tells the reader nothing. That is
+rule 6 applied one level up: the fix for a promise that cannot fail is sometimes to delete
+the claim rather than to reword it.
+
+## 9. Methods, and how a type's own state gets checked
 
 A method taking `&self` is checkable like any function. `&mut self` and methods that
 consume `self` are not, and a constructor that returns `Result<Self, _>` is not recognised
@@ -208,7 +240,10 @@ parameter and the reason. In order:
 
 1. Can the logic be lifted out of a shell? (rule 1)
 2. Is the signature admitting states no caller produces? (rule 2)
-3. Is a type too wide, or unbuildable, and would a route fix it? (rules 4, 7)
+3. Is a type too wide, or unbuildable, and is there an existing public function a route
+   could name? (rules 4, 7)
+4. Is the property somewhere you cannot claim it, so an ordinary test is the answer?
+   (rule 8)
 
 Only after those, treat it as a Ply limitation and say so — with the parameter and reason
 quoted, so the refusal can be judged rather than taken on trust.

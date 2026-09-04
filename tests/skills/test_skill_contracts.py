@@ -259,6 +259,35 @@ class PlyCheckableCodeSkillTests(unittest.TestCase):
             with self.subTest(shape=shape):
                 self.assertIn(shape, text, "missing")
 
+    def test_a_route_is_not_offered_as_if_it_creates_a_producer(self):
+        """A route names an existing public function; it does not make one.
+        The first version of this skill showed
+        `routes: { FingerprintInputs: fingerprint_inputs_for }` -- for the
+        one type in Ply's own library that has no producer at all, naming a
+        function that does not exist. That is the same defect as offering a
+        remedy that is not built: an agent writes the line and nothing
+        changes."""
+        text = flat(skill_text("ply-checkable-code"))
+        self.assertIn("a route needs a public producer that already exists", text.lower())
+        self.assertNotIn("fingerprint_inputs_for", text, "names a function that does not exist")
+
+    def test_an_ordinary_test_is_offered_when_the_property_is_out_of_reach(self):
+        """Without this an agent widens the API until the checker can reach a
+        private helper, which is adding public surface for the tool's
+        benefit. Ply's own `fingerprint` is the worked example: one line over
+        a private encoder, covered by a plain Rust test that mutates each
+        input and asserts the hash moves."""
+        text = flat(skill_text("ply-checkable-code"))
+        self.assertIn("ordinary test", text)
+        self.assertIn("leave the wrapper unclaimed", text)
+
+    def test_it_says_a_type_level_promise_means_delete_the_claim(self):
+        """Rule 6 says a promise that cannot fail is worse than none. The
+        conclusion an agent needs and would otherwise miss is that the fix
+        is sometimes to remove the claim, not to reword the promise."""
+        text = flat(skill_text("ply-checkable-code"))
+        self.assertIn("should not be declared at all", text)
+
     def test_it_covers_methods_and_not_just_free_functions(self):
         """`&self` is checkable, `&mut self` is not, and the only way to
         check a type that changes is a structure promise. An agent given

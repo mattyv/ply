@@ -109,6 +109,47 @@ eight of them claimed in the section above). Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that
 cannot fail would turn all 54 green and mean nothing.
 
+## Landed: what the last refusal taught the writing skill — 2026-09-04
+
+`record::fingerprint` is the one claim in Ply's own library that earns nothing, and the
+question "can the route mechanism fix it" turned out to be a question about the skill.
+
+**It cannot, and the skill said it could.** A route names an existing public function that
+returns the type; it does not create one. Nothing anywhere returns a `FingerprintInputs`
+except a private test helper, so there is nothing to name. Worse, the skill's own worked
+example was `routes: { FingerprintInputs: fingerprint_inputs_for }` -- a function that does
+not exist, invented for the one type in this codebase that has no producer. That is the
+same defect the 2026-09-04 review found in the generics rule, introduced while fixing it.
+
+- [x] **The route rule now states its precondition** and says what to do when no producer
+      exists: adding a public function whose only caller is Ply is adding API for the
+      tool's benefit, and belongs to the developer.
+
+- [x] **New rule 8: some functions should be checked by an ordinary test instead.**
+      `fingerprint` is one line over a private encoder. The property worth checking is that
+      encoder's length-prefixing -- without it, a contract containing a newline could be
+      arranged to hash the same as two different fields -- and it is not reachable from any
+      public function. So the only promise the wrapper can carry is "returns 64 characters",
+      which is a fact about the type.
+
+      **That property is already checked, thoroughly, by an ordinary Rust test**: 22
+      mutations, one per input the spec lists, each asserting the hash moves and naming
+      which input stopped counting when it does not. Better coverage than any promise about
+      the wrapper, and it needs nothing from Ply. The skill now says so, with a table for
+      deciding: property in the function → claim it; in a private helper → ordinary test,
+      leave the wrapper unclaimed; in a public helper → claim the helper.
+
+      It also closes rule 6's loop, which stopped one step short: the fix for a promise that
+      cannot fail is sometimes to delete the claim, not reword the promise.
+
+      OPEN, for the maintainer: by that rule `record::fingerprint`'s own claim should
+      probably go. Its promise (`result.len() == 64`) is a type-level fact, and deleting a
+      declaration is the developer's call, so it is left in place and raised here.
+
+- [x] Three tests for the new material, each confirmed red under a deliberate breakage:
+      restoring the invented function name, deleting rule 8, and softening the
+      delete-the-claim sentence.
+
 ## Landed: ten more claims, and the second half of the typo suggestion — 2026-09-04
 
 44 promises now, in 22 components. Every one earns evidence except `record::fingerprint`.
