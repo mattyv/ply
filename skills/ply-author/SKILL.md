@@ -33,7 +33,9 @@ Use `cargo ply check` after every addition. It runs no engines and takes about a
    rule you have not written yet, not a component that is finished.
 
 4. **Add contracts one at a time**, checking after each. A claim that does not resolve is
-   reported by name with the spelling that would work; do not guess at the fix, read it.
+   reported by name — but only by name: Ply does not suggest the spelling that would have
+   worked, so a one-character typo reads the same as a function that genuinely is not
+   there. Check the name against the source before assuming the claim is wrong.
 
 5. **Only then run the engines**, and hand off to `$ply-verify` for that.
 

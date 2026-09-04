@@ -109,6 +109,33 @@ eight of them claimed in the section above). Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that
 cannot fail would turn all 54 green and mean nothing.
 
+## Open: three gaps found by deliberately breaking things — 2026-09-04
+
+Every failure path was exercised on purpose against `crates/ply-core`: a false promise, a
+false structure promise, a claim naming a function that does not exist, and a harness that
+does not compile. All four reported correctly, at the right severity, and propagated to the
+root. Three gaps in *how well* they report:
+
+- [ ] **A counterexample on a string parameter is never replayable.**
+      `contract_rt::render_cex_test` has arms for `Vec<u8>`, `Duration`, `NonZero` and
+      scalars, and nothing for `String`/`&str` -- so `W0541` fires with reason
+      `inputs_unrenderable` and the reader gets a witness they cannot run. Measured: 17 of
+      ply-core's 23 claims take text, so this is the common case here, not an edge one.
+      A string literal is the easiest thing in Rust to write back out; this looks like an
+      omission rather than a hard problem.
+
+- [ ] **An empty-string witness prints as nothing at all.** Breaking `schema::dotted` gave
+      `failing input: pointer = ` with nothing after the `=`. That is the empty string,
+      and it is also exactly what a rendering failure would look like. Quote it, or say
+      "the empty string" -- a reader cannot currently tell which they are looking at.
+
+- [ ] **`E0301` names the function it could not find and stops there.** A one-character
+      typo (`dottted` for `dotted`) reads identically to a function that genuinely is not
+      in the crate. `schema::nearest_key` -- a near-miss finder -- already exists in this
+      same codebase and is already claimed; wiring it into `E0301` is small.
+      `skills/ply-author` claimed Ply already did this; that sentence was retracted in the
+      same commit rather than left to be discovered.
+
 ## Landed: eight more claims, a crash Ply found in the renderer, and a bug in Ply itself — 2026-09-04
 
 - [x] **Eight new claims in `crates/ply-core/ply.yaml`**, taking the library from 15 to 23:

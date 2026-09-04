@@ -21,3 +21,10 @@ mutants.out.old/
 # this is scoped to the demo on purpose.
 demos/verified-green/ply.lock
 demos/verified-green/src/ply_generated.rs
+
+# Same reasoning, and the one that bites hardest: `crates/ply-core/ply.yaml` is
+# Ply's document about Ply's own library, so a lock committed from a developer's
+# machine is exactly the stale green this project exists to prevent. CI earns
+# its verdicts. (D14 still holds for real downstream projects -- they should
+# commit theirs.)
+crates/ply-core/ply.lock
