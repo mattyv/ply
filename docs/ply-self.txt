@@ -86,10 +86,6 @@ components:
 
   component render — maps to Rust module ply_render
     note: Draws a document before any code exists, and writes the same facts as prose. It is the surface a reader judges the whole tool by, which is why its wording is tested by exact string rather than by shape.
-    state Cli — the structure this component holds. 3 of 6 of its fields shown
-      collapse is a list, written `Vec<String>`
-      focus is something that might not be there, written `Option<String>`
-      text is a single value, written `bool`
     hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
   component check — maps to Rust module ply_check
