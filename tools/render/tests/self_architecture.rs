@@ -150,6 +150,10 @@ fn the_committed_drawings_still_match_what_the_documents_render_to() {
             "vetting/004-legacy-extension/feature/ply.yaml",
             "vetting/004-legacy-extension.svg",
         ),
+        (
+            "vetting/005-design-first-shapes.ply.yaml",
+            "vetting/005-design-first-shapes.svg",
+        ),
         ("demos/fault3.ply.yaml", "demos/fault3-flagged.svg"),
     ] {
         let yaml = std::fs::read_to_string(root.join(yaml_path))
@@ -196,6 +200,17 @@ fn the_committed_text_forms_still_match_what_the_documents_render_to() {
             "vetting/003-trading-system.ply.yaml",
             "vetting/003-trading-system-full.txt",
         ),
+        // The plain (non-`-full`) text form beside the collapsed-view SVG's
+        // name. It happened to be byte-identical to `-full.txt` for as long
+        // as nobody edited 003 without regenerating both -- true by luck,
+        // not by anything this suite checked, until editing the document
+        // for the state-shapes feature and regenerating only the `-full`
+        // file made the two disagree silently. Pinned separately so the
+        // same drift can't happen again unnoticed (2026-09-04).
+        (
+            "vetting/003-trading-system.ply.yaml",
+            "vetting/003-trading-system.txt",
+        ),
         ("ply.yaml", "docs/ply-self.txt"),
         ("crates/ply-core/ply.yaml", "docs/ply-core-self.txt"),
         // The unchecked-legacy scenario, which had a committed drawing and no
@@ -207,6 +222,10 @@ fn the_committed_text_forms_still_match_what_the_documents_render_to() {
         (
             "vetting/004-legacy-extension/feature/ply.yaml",
             "vetting/004-legacy-extension.txt",
+        ),
+        (
+            "vetting/005-design-first-shapes.ply.yaml",
+            "vetting/005-design-first-shapes.txt",
         ),
     ] {
         let yaml = std::fs::read_to_string(root.join(yaml_path))

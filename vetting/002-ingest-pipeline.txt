@@ -20,7 +20,9 @@ components:
     capabilities: unsafe — this component may use only the capabilities it declares. That limit is declared here, and not checked by this build: Ply currently compares crate-level dependencies and does not yet look inside functions, so use of a capability this component never declared can still go unnoticed (§5.3)
     owns disruptor::spsc::Spsc — only this component may mutate them
     state Spsc — the structure this component holds, where `owns` says who may change one
-      this document asks to show slots, head, tail and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      slots is a list, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
+      head is a single value, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
+      tail is a single value, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
     profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, Spsc::try_push — nothing here counts as checked more strongly than the weakest thing inside it
@@ -46,7 +48,8 @@ components:
   component book — maps to Rust module ingest::book
     owns ingest::book::OrderBook — only this component may mutate them
     state OrderBook — the structure this component holds, where `owns` says who may change one
-      this document asks to show bids, last and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      bids is a lookup table, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
+      last is a single value, declared by the document — there is no code here yet to check it against; once the code exists, the source decides what is described here and this declaration is only checked against it
     profile hot_path — a named bundle of extra rules this component must follow: no_panics (functions here must never panic (crash on purpose)), exhaustive_match (every match must handle all cases explicitly)
     strict — this component asks that architecture findings inside it fail the build rather than warn. Nothing acts on that yet: no check this build runs reads the flag
     declares checks up to bounded — proved for every input up to a loop bound — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result

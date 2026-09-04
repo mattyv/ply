@@ -16,9 +16,14 @@ components:
         anchor: disruptor::spsc
         uses: [unsafe]
         owns: [disruptor::spsc::Spsc]
+        # Declared, not read: no crate backs this anchor. `slots` is the
+        # ordered, many-slot buffer; each cursor is the one value it is.
         state:
           of: Spsc
-          show: [slots, head, tail]
+          show:
+            slots: list
+            head: scalar
+            tail: scalar
         profile: hot_path
         fns:
           Spsc::try_push:
@@ -40,9 +45,15 @@ components:
         anchor: ingest::book
         strict: true
         owns: [ingest::book::OrderBook]
+        # Declared, not read: no crate backs this anchor. `bids` and `asks`
+        # are lookups keyed by price level; `last` is the one value the
+        # last trade set.
         state:
           of: OrderBook
-          show: [bids, asks, last]
+          show:
+            bids: map
+            asks: map
+            last: scalar
         profile: hot_path
         fns:
           OrderBook::apply:
@@ -84,9 +95,15 @@ components:
   oms:
     anchor: oms
     owns: [oms::OrderStore]
+    # Declared, not read: no crate backs this anchor. `open` is the
+    # currently-outstanding orders, each present at most once with no
+    # ordering that matters; `by_client_id` is a lookup keyed by the
+    # client's own id.
     state:
       of: OrderStore
-      show: [open, by_client_id]
+      show:
+        open: set
+        by_client_id: map
     fns:
       Oms::submit:
         checks: [bounded(2), fuzz(256)]
@@ -107,9 +124,13 @@ components:
   pnl:
     anchor: pnl
     owns: [pnl::Positions]
+    # Declared, not read: no crate backs this anchor. `by_symbol` is a
+    # lookup keyed by symbol; `realised` is the one running total.
     state:
       of: Positions
-      show: [by_symbol, realised]
+      show:
+        by_symbol: map
+        realised: scalar
     fns:
       Positions::apply_fill:
         checks: [bounded(2), fuzz(512)]
