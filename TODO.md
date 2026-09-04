@@ -42,12 +42,18 @@ proptest gave up, and the verdict is `unclaimed` -- not a thin green. That is ex
 trap the README's new contracts section warns about, hit on Ply's own code within an hour
 of the warning being written.
 
-- [ ] **The finding, and it is a design one.** `order(domain, node_ids, edges)` admits
-      inputs no real caller produces: the indices and the names are separate arguments that
-      must agree, and the type does not enforce it. Either the two travel together as one
-      value, or the function ignores an out-of-range index rather than panicking. Both are
-      behaviour changes to scheduling code and are the maintainer's call; the claim stays in
-      the document meanwhile, saying plainly that it earned nothing.
+- [x] **FIXED same day.** `node_ids` is consulted for exactly one thing -- a deterministic
+      tie-break key so two independent nodes always place in the same order -- so the index
+      never needed to be fatal. It is now a checked lookup with an empty-string fallback,
+      which leaves every existing input's behaviour byte-for-byte and makes the function
+      total. The precondition came back out of the document: it was true and it cost the
+      function all of its evidence, while every node being accounted for is the property
+      that actually matters. `order` earns `fuzzed(256)` over every input now, and the
+      exhaustive scheduler enumeration is still green.
+
+**All fifteen claims now earn evidence** except `record::fingerprint`, which is refused by
+name for a documented Ply limitation (20 public fields, past what the sampling engine's
+tuple strategy reaches).
 
 **The other 54 checkable-today functions are the remaining worklist.** Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that

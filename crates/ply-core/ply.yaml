@@ -88,12 +88,13 @@ components:
           ever checked, and nothing else would say so.
         fns:
           order:
-            # Written down because Ply found it: `order` indexes `node_ids`
-            # by the values in `domain`, and panicked on `domain = {15}` with
-            # `node_ids = []`. Real callers build both from the same list so
-            # they always agree, and nothing said so until now.
-            requires:
-              - "domain.iter().all(|i| *i < node_ids.len())"
+            # No precondition, and that is the fix rather than an omission.
+            # Ply panicked this with `domain = {15}` against an empty
+            # `node_ids`, which is an index used as a tie-break key without a
+            # range check. Declaring the agreement as a precondition was
+            # tried: true, and it threw away 1025 of 1195 generated inputs,
+            # so the function earned nothing. The lookup is total now, and
+            # the promise below stands over every input.
             ensures:
               - "|result| result.0.len() + result.1.len() == domain.len()"
             checks: [fuzz(256)]

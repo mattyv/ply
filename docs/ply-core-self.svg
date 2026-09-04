@@ -34,7 +34,6 @@ declares checks up to fuzzed — checked against many random inputs — the stro
 this box is this shade because `order` is the weakest thing in it: it declares fuzzed — checked against many random inputs — nothing here is drawn stronger than its weakest part</title><rect class="component-box ceiling-fuzzed" x="0" y="0" width="150.0" height="94.0" rx="6" /><text class="component-name" x="10.0" y="24.0">schedule</text><text class="component-anchor" x="10.0" y="38.0">ply_core::schedule</text><g transform="translate(10.0,48.0)"><g class="fn-chip" data-fn="order"><title>order
 fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
 input and post contract:
-Input (requires): domain.iter().all(|i| *i &lt; node_ids.len())
 Postcondition (ensures): |result| result.0.len() + result.1.len() == domain.len()
 the checks above are what will test the function against exactly this promise when `cargo ply verify` runs</title><rect class="fn-chip-box" x="0" y="0" width="105.5" height="24.0" rx="4" /><rect class="contract-mark" x="0" y="0" width="3.0" height="24.0" /><text class="fn-name" x="10.0" y="10.5">order</text><text class="fn-checks" x="13.0" y="21.0">fuzz: 256 cases</text></g></g></g></g><g transform="translate(10.0,654.0)"><g class="component" data-name="surface"><title>component surface — maps to Rust module ply_core::surface
 declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result

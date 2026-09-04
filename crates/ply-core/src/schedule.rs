@@ -92,10 +92,23 @@ pub fn order(
             }
         }
     }
+    // `node_ids` is consulted for one thing only: a deterministic tie-break
+    // key, so two independent nodes always place in the same order (see the
+    // module doc). An index with no name still needs placing -- it is in the
+    // domain, and a node this dropped would be a claim nobody ever verified.
+    //
+    // It used to index directly and panic. Ply found that by fuzzing this
+    // function (`domain = {15}` against an empty `node_ids`, 2026-09-04).
+    // Real callers build both lists from the same source so they always
+    // agree, which is why nothing caught it. Declaring the agreement as a
+    // precondition was tried and rejected: it is true, and it threw away
+    // 1025 of 1195 generated inputs, so the function earned no evidence at
+    // all. Every node being accounted for is the property worth keeping.
+    let key = |i: usize| node_ids.get(i).cloned().unwrap_or_default();
     let mut ready: BTreeSet<(String, usize)> = domain
         .iter()
         .filter(|&&i| indegree[&i] == 0)
-        .map(|&i| (node_ids[i].clone(), i))
+        .map(|&i| (key(i), i))
         .collect();
     let mut order = Vec::new();
     let mut placed: BTreeSet<usize> = BTreeSet::new();
@@ -109,7 +122,7 @@ pub fn order(
                 if let Some(d) = indegree.get_mut(&j) {
                     *d -= 1;
                     if *d == 0 {
-                        ready.insert((node_ids[j].clone(), j));
+                        ready.insert((key(j), j));
                     }
                 }
             }
@@ -136,6 +149,43 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect()
+    }
+
+    /// Ply found this by fuzzing its own scheduler: `domain = {15}` against
+    /// an empty `node_ids` panicked, because the index was used to look up a
+    /// tie-break key without checking it was in range.
+    ///
+    /// Real callers build both from the same list, so they always agree --
+    /// which is exactly why nothing caught it and why it stayed unwritten.
+    /// It is fixed rather than declared as a precondition because the two
+    /// answers are not equal: a precondition here would be true and would
+    /// make the function unfuzzable (measured: 1025 of 1195 generated inputs
+    /// thrown away, proptest gave up, no evidence at all), while every node
+    /// still being accounted for is the property that actually matters. A
+    /// node this dropped would be a claim nobody ever verified, and nothing
+    /// else in the system would say so.
+    #[test]
+    fn an_index_with_no_name_is_still_placed_rather_than_panicking() {
+        let domain: BTreeSet<usize> = [15].into_iter().collect();
+        let (placed, tainted) = order(&domain, &[], &BTreeMap::new());
+        assert_eq!(
+            placed.len() + tainted.len(),
+            domain.len(),
+            "every node in the domain is either ordered or tainted, and 15 is in the domain \
+             whether or not anything named it"
+        );
+        assert_eq!(placed, vec![15]);
+    }
+
+    /// And the tie-break stays deterministic when a name is missing: the
+    /// same inputs must give the same order every run, or a verdict could
+    /// change without the code changing.
+    #[test]
+    fn a_missing_name_still_breaks_ties_the_same_way_every_run() {
+        let domain: BTreeSet<usize> = [0, 7].into_iter().collect();
+        let first = order(&domain, &ids(1), &BTreeMap::new());
+        let again = order(&domain, &ids(1), &BTreeMap::new());
+        assert_eq!(first, again);
     }
 
     #[test]

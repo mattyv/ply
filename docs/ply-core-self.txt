@@ -63,7 +63,6 @@ components:
       fn order
         fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
         what this function promises — the last thing the document states before the code itself takes over:
-          requires: domain.iter().all(|i| *i < node_ids.len()) (what the caller must guarantee going in)
           ensures: |result| result.0.len() + result.1.len() == domain.len() (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component surface — maps to Rust module ply_core::surface
