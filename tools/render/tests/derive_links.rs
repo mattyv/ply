@@ -114,6 +114,24 @@ fn a_linked_hollow_component_draws_collapsed_not_hollow() {
     assert_eq!(lines[0].0, 1, "1 nested component"); // `nested`
     assert_eq!(lines[0].1, 1, "1 fn (`go`, inside `nested`)");
     assert!(lines[0].2.ends_with("inner_lib/ply.yaml"), "{}", lines[0].2);
+
+    // The text form's whole contract is that it states everything the
+    // drawing shows (transcript.rs's own module doc) -- so the same link
+    // must show up there too, in the same words the drawing's tooltip uses.
+    let transcript = ply_render::transcript::render_transcript_with_state_and_links(
+        &doc,
+        Some(&state_fields),
+        Some(&link_set.links),
+    );
+    assert!(
+        transcript.contains("linked — 1 component and 1 function live in a different file"),
+        "{transcript}"
+    );
+    assert!(transcript.contains("inner_lib/ply.yaml"), "{transcript}");
+    assert!(
+        !transcript.contains("hollow — promises nothing yet"),
+        "{transcript}"
+    );
 }
 
 /// The invariant the design pass asked for: every cross-document link's
