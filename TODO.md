@@ -1,5 +1,33 @@
 # TODO
 
+## Landed: a documentation change no longer runs the full suite — 2026-09-03
+
+Asked for by the maintainer. The end-to-end shards install Kani and take a quarter of an
+hour each; the kernel mutation run is comparable; and nothing either of them runs reads
+a document -- measured, not assumed: one grep hit across the whole end-to-end suite, and
+it was a comment mentioning "a README". So a change touching only prose, the docs tree,
+the diagram bundle, or the generated drawings and text forms beside the scenarios now
+runs only the fast job.
+
+- [x] **The fast job never skips.** It is where documentation *is* checked -- the
+      spec-consistency test and the drawing drift check live there -- so a docs change
+      still gets every check that can see it.
+- [x] **Anything unrecognised is code.** "Documentation" is a closed list in
+      `.github/scripts/changed-kind.sh`, and a file not on it runs everything, so a new
+      kind of source file can never be waved through as prose. `ply.yaml` files and the
+      demo crate are deliberately off the list.
+- [x] **The classifier is a script, so the code CI runs was run by hand first**: a
+      docs-heavy pull request came back `docs`, a code one `code`, a TODO-only commit
+      `docs`, and an empty range `code` -- an empty diff is nothing to classify, and the
+      safe answer to that is the full suite.
+- [x] **It rides on the fixed-name gate** the shard-count item further down had been
+      asking for, which is the honest condition: skipping a shard is only safe when the
+      required check is something that always reports.
+
+**NOT VERIFIED YET, and cannot be from here:** that the forge treats a skipped shard as
+satisfying the *old* per-shard required checks while those are still what `main`
+requires. The first documentation-only pull request after this lands is the measurement.
+
 ## Landed: a promise written in the document is now actually checked — 2026-09-03
 
 The audit below named this as the most valuable thing open, and it was already next on
@@ -1531,7 +1559,13 @@ Branch protection is on, so `main` now requires named checks to pass. That makes
 The shard count is written twice — once as the list, once as the literal `4` in the
 display name — and the name is what branch protection matches on.
 
-- [ ] **Change the shard count and every pull request blocks forever.** Going to six
+- [x] **Change the shard count and every pull request blocks forever.** Built 2026-09-03
+      as the `ci-gate` job, when the maintainer asked for documentation changes to skip
+      the full run -- the same fixed-name gate is what makes *that* safe, since a skipped
+      shard is only harmless if the required check is something that always reports.
+      The rule on `main` still has to be switched to require `ci-gate`, which only a
+      repository admin can do; until then the old per-shard names are what is required.
+      Going to six
       shards produces jobs called `product-e2e (0/6)`…`(5/6)`, so a rule requiring
       `product-e2e (0/4)` waits on a check that will never report again. The pull
       request cannot merge and nothing explains why — the failure is a *missing*
