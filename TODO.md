@@ -1,5 +1,9 @@
 # TODO
 
+**Picking this up fresh?** `docs/handoff-2026-09-04.md` is the narrative and the traps; this
+file is the state. Read that one first, then this.
+
+
 ## Landed: a timed-out engine run now kills the whole process tree, not just cargo — 2026-09-04 (`9037b83`)
 
 `run_with_timeout` (`crates/ply-core/src/engines/mod.rs`) only ever killed the one process
