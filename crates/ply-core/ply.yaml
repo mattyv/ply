@@ -79,6 +79,15 @@ components:
             ensures:
               - "result.is_none() || !src.is_empty()"
             checks: [fuzz(256)]
+          tidy_contract_text:
+            # This is the text a diagnostic quotes back as "the line you
+            # wrote", so it only ever closes up spacing. Growing means it
+            # has started rewriting rather than tidying.
+            ensures:
+              - "|result| result.len() <= s.len()"
+            checks: [fuzz(256), test]
+            examples:
+              - "tidy_contract_text(\"| result | * result == x\") == \"|result|*result == x\""
       schedule:
         anchor: ply_core::schedule
         note: >-
@@ -203,6 +212,45 @@ components:
             checks: [fuzz(256)]
       engines:
         anchor: ply_core::engines
+        components:
+          fuzz_engine:
+            anchor: ply_core::engines::fuzz
+            note: >-
+              Reads what the sampling engine actually printed. Everything
+              here is a parser over another tool's output, so the promises
+              are all the same shape: never report something the output did
+              not contain.
+            fns:
+              count_tests_executed:
+                # The count that decides whether a check ran at all, so a
+                # number larger than the output could hold would let a run
+                # that compiled nothing report cases it never ran.
+                ensures:
+                  - "|result| (*result as usize) <= combined.lines().count()"
+                checks: [fuzz(256), test]
+                examples:
+                  - "count_tests_executed(\"test m::a ... ok\\ntest m::b ... FAILED\\n\", \"m::\") == 2"
+                  - "count_tests_executed(\"test other::a ... ok\\n\", \"m::\") == 0"
+              first_build_error:
+                # Never invents a compiler error. A fabricated one would be
+                # blamed on the user's code.
+                ensures:
+                  - "|result| result.iter().all(|e| combined.contains(e.as_str()))"
+                checks: [fuzz(256), test]
+                examples:
+                  - "first_build_error(\"error[E0425]: cannot find value\\n\").is_some()"
+                  - "first_build_error(\"all good\\n\").is_none()"
+          kani_engine:
+            anchor: ply_core::engines::kani
+            fns:
+              unstable_flags:
+                # The flags go onto a command line in pairs, `-Z` then its
+                # value. An odd-length list would build a malformed command
+                # and the proof engine would fail for a reason that has
+                # nothing to do with the code being checked.
+                ensures:
+                  - "|result| result.len() % 2 == 0"
+                checks: [fuzz(256)]
         state:
           of: TimedOutput
           show: [stdout, stderr, status]
@@ -215,6 +263,81 @@ components:
             ensures:
               - "|result| result.len() <= text.len()"
             checks: [fuzz(256)]
+      check:
+        anchor: ply_core::check
+        note: >-
+          The fast pass: everything Ply can say about a document without
+          running anything.
+        fns:
+          is_valid_path_form:
+            # Accepting a name that is not a Rust path would send the
+            # resolver hunting for something that cannot exist.
+            ensures:
+              - "|result| !*result || s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')"
+            checks: [fuzz(256), test]
+            examples:
+              - "is_valid_path_form(\"schema::dotted\")"
+              - "!is_valid_path_form(\"\")"
+              - "!is_valid_path_form(\"1bad\")"
+              - "!is_valid_path_form(\"a::\")"
+          mutate_kill_signal_message:
+            # The newbie bar, as a promise: a message that does not say
+            # where the problem is sends the reader looking through the
+            # whole document for it.
+            ensures:
+              - "|result| result.contains(&location[..])"
+            checks: [fuzz(256)]
+      diag:
+        anchor: ply_core::diag
+        fns:
+          is_absence:
+            # A fixed vocabulary, so the worked cases are the check: every
+            # name that means "nothing was gathered", and one that does not.
+            checks: [test]
+            examples:
+              - "is_absence(\"timeout\")"
+              - "is_absence(\"unclaimed\")"
+              - "is_absence(\"engine-missing\")"
+              - "is_absence(\"inconclusive\")"
+              - "is_absence(\"unsupported: no strategy\")"
+              - "is_absence(\"tool_error: harness\")"
+              - "!is_absence(\"proved\")"
+              - "!is_absence(\"fuzzed(256)\")"
+      callgraph:
+        anchor: ply_core::callgraph
+        fns:
+          path_dependency:
+            # An empty path would be joined onto the crate directory and
+            # resolve to the crate itself, which is a silently wrong answer
+            # rather than a missing one.
+            ensures:
+              - "|result| result.iter().all(|p| !p.is_empty())"
+            checks: [fuzz(256), test]
+            examples:
+              - "path_dependency(\"[dependencies]\\nfoo = { path = \\\"../foo\\\" }\\n\", \"foo\") == Some(\"../foo\".to_string())"
+              - "path_dependency(\"[dependencies]\\nfoo = \\\"1.0\\\"\\n\", \"foo\").is_none()"
+      reach:
+        anchor: ply_core::reach
+        fns:
+          path_dependencies:
+            # Never reports a dependency the manifest does not name.
+            ensures:
+              - "|result| result.iter().all(|(name, _)| manifest.contains(name.as_str()))"
+            checks: [fuzz(256), test]
+            examples:
+              - "reach::path_dependencies(\"[dependencies]\\nfoo = { path = \\\"../foo\\\" }\\n\").len() == 1"
+      config:
+        anchor: ply_core::config
+        fns:
+          parse_check_string:
+            # The code is what a reader types into `cargo ply explain`, so a
+            # rejection that omits it leaves them with nowhere to go.
+            ensures:
+              - "|result| result.is_ok() || result.as_ref().unwrap_err().to_string().contains(\"E0203\")"
+            checks: [fuzz(256), test]
+            examples:
+              - "parse_check_string(\"fuzz(256)\").is_ok()"
+              - "parse_check_string(\"nonsense\").is_err()"
       fuzz_gen:
         anchor: ply_core::fuzz_gen
         fns:
@@ -242,6 +365,16 @@ components:
             ensures:
               - "|result| result.starts_with(\"target/ply/fuzz/\")"
             checks: [fuzz(256)]
+          crate_has_workspace_table:
+            # `[workspace.dependencies]` is not `[workspace]`, and reading it
+            # as one would make Ply edit a manifest that owns no members.
+            ensures:
+              - "|result| !*result || cargo_toml_text.contains(\"[workspace]\")"
+            checks: [fuzz(256), test]
+            examples:
+              - "crate_has_workspace_table(\"[workspace]\\n\")"
+              - "crate_has_workspace_table(\"  [workspace]  \\n\")"
+              - "!crate_has_workspace_table(\"[workspace.dependencies]\\n\")"
           remove_workspace_member:
             ensures:
               - "|result| result.len() <= text.len()"

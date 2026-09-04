@@ -109,6 +109,40 @@ eight of them claimed in the section above). Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that
 cannot fail would turn all 54 green and mean nothing.
 
+## Landed: eleven more claims — 2026-09-04
+
+The library goes from 23 promises to 34, in seven modules that had none: the fast
+document pass, the diagnostic vocabulary, the call graph, the reachability scan, the
+config loader, and the sampling and proof engines' own output readers. Every one earns
+evidence; `record::fingerprint` is still the only refusal.
+
+Promises chosen against `skills/ply-checkable-code`'s own rule 6 rather than for an easy
+green -- most are a single clause relating input to output, with no `||` to hide behind:
+
+- never report something the tool's output did not contain (`first_build_error`,
+  `path_dependencies`)
+- never count more tests than the output has lines (`count_tests_executed`)
+- never hand back an empty dependency path, which would silently resolve to the crate
+  itself (`path_dependency`)
+- never grow the text (`tidy_contract_text`) -- it is quoted back to the reader as "the
+  line you wrote", so growing means it started rewriting
+- the flags come in pairs, `-Z` then its value (`unstable_flags`) -- an odd list builds a
+  malformed command and the proof engine fails for a reason nothing to do with the code
+- the message says where the problem is (`mutate_kill_signal_message`), which is the
+  newbie bar written as a promise
+- the rejection names the code the reader types into `cargo ply explain`
+  (`parse_check_string`)
+
+`diag::is_absence` is checked by worked cases alone and earns `tested`, one rung below the
+rest. Its input is a fixed vocabulary of eight words; sampling text against it would say
+nothing, and dressing that up as a stronger verdict would be exactly the green paint the
+rest of this file argues against.
+
+`check::crate_has_workspace_table` still reports a lopsided sampling half -- random text is
+never `[workspace]`. Its three worked cases carry the other side: the plain form, the
+indented form, and `[workspace.dependencies]`, which is a near-miss that must read as
+false or Ply would edit a manifest that owns no members.
+
 ## Landed: the three gaps found by deliberately breaking things — 2026-09-04
 
 Every failure path was exercised on purpose against `crates/ply-core`: a false promise, a

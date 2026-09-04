@@ -4,7 +4,7 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 
 ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
 
-14 components · 23 functions · 0 promise nothing
+21 components · 34 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
 components:
@@ -16,8 +16,8 @@ components:
       root is a structure of your own, written `Node` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
       diagnostics is a list, written `Vec<Diagnostic>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
       coverage is something that might not be there, written `Option<Coverage>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-    declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
-    that level comes from its weakest part, kernel.StatusSet::len — nothing here counts as checked more strongly than the weakest thing inside it
+    declares checks up to tested — checked once against the declared examples and generated inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+    that level comes from its weakest part, diag.is_absence — nothing here counts as checked more strongly than the weakest thing inside it
     component kernel — maps to Rust module ply_core::kernel
       note: Decides what a pile of results adds up to: the order that ranks one kind of evidence above another, the rule that a parent is never reported as stronger than its weakest part, and the flags that travel upward beside a verdict without being confused for one.
       state StatusSet — the structure this component holds
@@ -56,6 +56,14 @@ components:
         what this function promises — the last thing the document states before the code itself takes over:
           ensures: result.is_none() || !src.is_empty() (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn tidy_contract_text
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.len() <= s.len() (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        1 worked example — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          tidy_contract_text("| result | * result == x") == "|result|*result == x"
     component schedule — maps to Rust module ply_core::schedule
       note: Decides the order claims are verified in, so a callee is checked before a caller that stands on it. The promise below is the one that matters here: a node this dropped would be a claim nobody ever checked, and nothing else would say so.
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
@@ -175,6 +183,105 @@ components:
         what this function promises — the last thing the document states before the code itself takes over:
           ensures: |result| result.len() <= text.len() (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      component fuzz_engine — maps to Rust module ply_core::engines::fuzz
+        note: Reads what the sampling engine actually printed. Everything here is a parser over another tool's output, so the promises are all the same shape: never report something the output did not contain.
+        declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+        that level comes from its weakest part, count_tests_executed — nothing here counts as checked more strongly than the weakest thing inside it
+        fn count_tests_executed
+          fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+          test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+          what this function promises — the last thing the document states before the code itself takes over:
+            ensures: |result| (*result as usize) <= combined.lines().count() (what the function guarantees coming out)
+            the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+          2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+            count_tests_executed("test m::a ... ok\ntest m::b ... FAILED\n", "m::") == 2
+            count_tests_executed("test other::a ... ok\n", "m::") == 0
+        fn first_build_error
+          fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+          test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+          what this function promises — the last thing the document states before the code itself takes over:
+            ensures: |result| result.iter().all(|e| combined.contains(e.as_str())) (what the function guarantees coming out)
+            the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+          2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+            first_build_error("error[E0425]: cannot find value\n").is_some()
+            first_build_error("all good\n").is_none()
+      component kani_engine — maps to Rust module ply_core::engines::kani
+        declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+        that level comes from its weakest part, unstable_flags — nothing here counts as checked more strongly than the weakest thing inside it
+        fn unstable_flags
+          fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+          what this function promises — the last thing the document states before the code itself takes over:
+            ensures: |result| result.len() % 2 == 0 (what the function guarantees coming out)
+            the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+    component check — maps to Rust module ply_core::check
+      note: The fast pass: everything Ply can say about a document without running anything.
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, is_valid_path_form — nothing here counts as checked more strongly than the weakest thing inside it
+      fn is_valid_path_form
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| !*result || s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':') (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        4 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          is_valid_path_form("schema::dotted")
+          !is_valid_path_form("")
+          !is_valid_path_form("1bad")
+          !is_valid_path_form("a::")
+      fn mutate_kill_signal_message
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.contains(&location[..]) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+    component diag — maps to Rust module ply_core::diag
+      declares checks up to tested — checked once against the declared examples and generated inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, is_absence — nothing here counts as checked more strongly than the weakest thing inside it
+      fn is_absence
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        8 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          is_absence("timeout")
+          is_absence("unclaimed")
+          is_absence("engine-missing")
+          is_absence("inconclusive")
+          is_absence("unsupported: no strategy")
+          is_absence("tool_error: harness")
+          !is_absence("proved")
+          !is_absence("fuzzed(256)")
+    component callgraph — maps to Rust module ply_core::callgraph
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, path_dependency — nothing here counts as checked more strongly than the weakest thing inside it
+      fn path_dependency
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.iter().all(|p| !p.is_empty()) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          path_dependency("[dependencies]\nfoo = { path = \"../foo\" }\n", "foo") == Some("../foo".to_string())
+          path_dependency("[dependencies]\nfoo = \"1.0\"\n", "foo").is_none()
+    component reach — maps to Rust module ply_core::reach
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, path_dependencies — nothing here counts as checked more strongly than the weakest thing inside it
+      fn path_dependencies
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.iter().all(|(name, _)| manifest.contains(name.as_str())) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        1 worked example — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          reach::path_dependencies("[dependencies]\nfoo = { path = \"../foo\" }\n").len() == 1
+    component config — maps to Rust module ply_core::config
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, parse_check_string — nothing here counts as checked more strongly than the weakest thing inside it
+      fn parse_check_string
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.is_ok() || result.as_ref().unwrap_err().to_string().contains("E0203") (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          parse_check_string("fuzz(256)").is_ok()
+          parse_check_string("nonsense").is_err()
     component fuzz_gen — maps to Rust module ply_core::fuzz_gen
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, seed_hex — nothing here counts as checked more strongly than the weakest thing inside it
@@ -202,6 +309,16 @@ components:
         what this function promises — the last thing the document states before the code itself takes over:
           ensures: |result| result.starts_with("target/ply/fuzz/") (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn crate_has_workspace_table
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| !*result || cargo_toml_text.contains("[workspace]") (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        3 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          crate_has_workspace_table("[workspace]\n")
+          crate_has_workspace_table("  [workspace]  \n")
+          !crate_has_workspace_table("[workspace.dependencies]\n")
       fn remove_workspace_member
         fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
         what this function promises — the last thing the document states before the code itself takes over:
