@@ -139,7 +139,7 @@ eight of them claimed in the section above). Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that
 cannot fail would turn all 54 green and mean nothing.
 
-## Landed: six more claims on Ply's own library — 2026-09-04
+## Landed: six more claims on Ply's own library — 2026-09-04 (`8b558e1`)
 
 An agent worked the remaining ply-core functions in an isolated copy, but its copy was
 branched from a **stale point** -- 6 claims, not the 44 already landed -- so most of its 35
