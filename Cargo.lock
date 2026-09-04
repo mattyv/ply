@@ -339,6 +339,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "indexmap",
+ "libc",
  "proc-macro2",
  "quote",
  "regex",

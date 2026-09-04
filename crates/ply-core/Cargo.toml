@@ -15,6 +15,12 @@ serde_yaml_ng = "0.10"
 indexmap = { version = "2", features = ["serde"] }
 anyhow = "1"
 blake3 = "1.8.7"
+# Already present in Cargo.lock as a transitive dependency (via `tempfile`'s
+# `rustix`), so declaring it directly adds no new code to the build. Used to
+# send SIGKILL to a pid this crate did not spawn itself -- see
+# `engines::mod`'s `kill_descendants` -- which `std::process::Child::kill`
+# cannot do, since it only ever targets the one pid it wraps.
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
