@@ -32,6 +32,15 @@ pub enum WitnessValue {
     /// `RustType::NonZero`'s doc comment), and its inner integer decodes
     /// (and renders) exactly like one, via `UInt`/`Int` below.
     Duration(u64, u32),
+    /// A `String`/`&str` witness, already decoded back to its real content
+    /// (never the wire-escaped form the marker printed). Added 2026-09-04:
+    /// text was the one everyday parameter shape whose counterexample could
+    /// not be replayed, and in Ply's own library 17 of 23 claims take it, so
+    /// the "witness-only" path was the common case rather than the edge one.
+    /// `render_cex_test` writes it back out with Rust's own `{:?}` for
+    /// `str`, which is exactly a valid Rust string literal -- quotes,
+    /// backslashes and control characters all escaped.
+    Str(String),
 }
 
 /// The engine-honest outcome of one Kani run. `Timeout` and `Violation` are

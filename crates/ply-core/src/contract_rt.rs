@@ -468,6 +468,11 @@ fn scalar_literal(v: &WitnessValue, ty: &RustType) -> Result<String> {
                 "scalar_literal called on a Duration witness value -- render_cex_test has its own arm for it"
             )
         }
+        WitnessValue::Str(_) => {
+            bail!(
+                "scalar_literal called on a String witness value -- render_cex_test has its own arm for it"
+            )
+        }
     })
 }
 
@@ -535,6 +540,16 @@ pub fn render_cex_test(
                 lets.push_str(&format!(
                     "    let {name}: std::time::Duration = std::time::Duration::new({secs}u64, {nanos}u32);\n",
                     name = p.name,
+                ));
+            }
+            (RustType::String, WitnessValue::Str(text)) => {
+                // `str`'s own `Debug` *is* a Rust string literal -- quotes,
+                // backslashes and control characters all escaped -- so there
+                // is nothing here for Ply to get wrong by hand.
+                lets.push_str(&format!(
+                    "    let {name}: String = {lit:?}.to_string();\n",
+                    name = p.name,
+                    lit = text,
                 ));
             }
             (RustType::NonZero(inner), val) => {
@@ -758,6 +773,69 @@ mod tests {
         let path = dir.path().join("lib.rs");
         std::fs::write(&path, src).unwrap();
         discover_fn(&path, name).unwrap()
+    }
+
+    /// Seventeen of the twenty-three promises in Ply's own library take
+    /// text, so "we cannot write a string back out as Rust source" made the
+    /// counterexample unreplayable in the common case, not an edge one.
+    /// Found 2026-09-04 by breaking `schema::dotted` on purpose: the report
+    /// named the failing input and then said it could not turn it into a
+    /// test.
+    #[test]
+    fn a_string_counterexample_renders_as_a_runnable_test() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| result.len() > 0)]
+pub fn head(s: &str) -> String { s.chars().take(1).collect() }
+"#,
+            "head",
+        );
+        let rendered = render_cex_test(
+            &cf,
+            &[WitnessValue::Str(String::new())],
+            "fuzz(256)",
+            "P0502",
+            1,
+        )
+        .unwrap();
+        assert!(
+            rendered.source.contains("let s: String = \"\".to_string();"),
+            "the failing string has to be written back out as a Rust literal:\n{}",
+            rendered.source
+        );
+        assert!(
+            rendered.source.contains("head(&s)"),
+            "a `&str` parameter is passed by reference, so the binding is borrowed:\n{}",
+            rendered.source
+        );
+    }
+
+    /// A witness Ply cannot escape correctly is worse than one it refuses:
+    /// the replay test would fail to compile inside the user's own crate.
+    #[test]
+    fn a_string_counterexample_with_quotes_and_newlines_stays_a_valid_literal() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| result.len() > 0)]
+pub fn head(s: &str) -> String { s.chars().take(1).collect() }
+"#,
+            "head",
+        );
+        let rendered = render_cex_test(
+            &cf,
+            &[WitnessValue::Str("a\"b\\c\nd".to_string())],
+            "fuzz(256)",
+            "P0502",
+            1,
+        )
+        .unwrap();
+        assert!(
+            rendered
+                .source
+                .contains(r#"let s: String = "a\"b\\c\nd".to_string();"#),
+            "quotes, backslashes and newlines must be escaped for Rust:\n{}",
+            rendered.source
+        );
     }
 
     #[test]

@@ -6943,6 +6943,9 @@ fn format_value(v: &kani::WitnessValue) -> String {
         kani::WitnessValue::Bool(b) => b.to_string(),
         kani::WitnessValue::VecU8(bytes) => format!("{bytes:?}"),
         kani::WitnessValue::Duration(secs, nanos) => format!("{secs}.{nanos:09}s"),
+        // Quoted and escaped, so the reader can see leading spaces, a
+        // trailing newline, or an empty string for what they are.
+        kani::WitnessValue::Str(text) => format!("{text:?}"),
     }
 }
 

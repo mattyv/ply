@@ -807,7 +807,17 @@ fn counterexample_report(cex: &ply_core::diag::Counterexample) -> String {
         let pairs: Vec<String> = cex
             .inputs
             .iter()
-            .map(|(name, value)| format!("{name} = {value}"))
+            // An empty value is a fact about the input, not a rendering
+            // failure -- but printed bare they look identical, so it is
+            // named. Everything else is passed through exactly as the
+            // engine produced it (2026-09-04).
+            .map(|(name, value)| {
+                if value.is_empty() {
+                    format!("{name} = (empty)")
+                } else {
+                    format!("{name} = {value}")
+                }
+            })
             .collect();
         out.push_str(&format!("    failing input: {}\n", pairs.join(", ")));
     }
@@ -883,6 +893,28 @@ mod tests {
     /// true, weaker thing. The reader also needs to know *where* to run
     /// the command, since the path Ply names is relative to the crate root,
     /// not the reader's current directory.
+    /// An empty string as the failing input used to print as nothing at
+    /// all after the `=`, which reads exactly like a value the renderer
+    /// gave up on. Found 2026-09-04 by breaking `schema::dotted` on
+    /// purpose: the shrunk input was `""`, and the report showed
+    /// `pointer = ` with a blank line after it.
+    #[test]
+    fn an_empty_failing_value_says_so_rather_than_printing_nothing() {
+        let mut inputs = std::collections::BTreeMap::new();
+        inputs.insert("pointer".to_string(), String::new());
+        let cex = ply_core::diag::Counterexample {
+            inputs,
+            kani_witness: None,
+            cargo_test: None,
+        };
+        let report = counterexample_report(&cex);
+        assert!(
+            report.contains("pointer = (empty)"),
+            "a reader cannot tell an empty value from a missing one unless the \
+             report names it:\n{report}"
+        );
+    }
+
     #[test]
     fn counterexample_report_never_claims_cargo_test_prints_the_same_message() {
         let cex = ply_core::diag::Counterexample {

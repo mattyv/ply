@@ -833,6 +833,10 @@ pub fn decode_marker_fields(
                 let nanos = nanos_str.parse::<u32>().ok()?;
                 WitnessValue::Duration(secs, nanos)
             }
+            // `parse_fuzz_marker` has already unescaped the wire form back
+            // to the real string content, so the witness is the content
+            // itself; `render_cex_test` is what turns it into a literal.
+            RustType::String => WitnessValue::Str(raw.clone()),
             // The 2026-08-25 fragment widening: `char`, `Option`, `Result`
             // and `[T; N]` reach the engines, but `WitnessValue` has no way
             // to spell them as a literal, so a failure on one is reported
@@ -854,15 +858,7 @@ pub fn decode_marker_fields(
             // never a fabricated one.
             | RustType::F32
             | RustType::F64
-            // Same reason as the float arms just above -- `String` is not
-            // `is_witness_renderable` either (see that method's own doc),
-            // so a failure on one is reported witness-only (`W0541`),
-            // never with an invented Rust literal. The raw text is still
-            // shown to the reader (via `fields`, populated by
-            // `parse_fuzz_marker` below) -- already unescaped back to the
-            // real string content by the time it gets there, never the
-            // wire-escaped form `marker_display_expr` printed.
-            | RustType::String
+
             // Never reached: both are return-only shapes, never a
             // parameter's, so no witness ever needs to decode one.
             | RustType::SelfType

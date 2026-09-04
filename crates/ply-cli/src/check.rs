@@ -766,7 +766,13 @@ fn walk_anchors(
                 Some(err) => {
                     tally.unresolved += 1;
                     diagnostics.push(unresolved_anchor_diag(
-                        &node_id, fn_name, known_fns, &err, lib_path,
+                        &node_id,
+                        fn_name,
+                        fn_path,
+                        &module_path,
+                        known_fns,
+                        &err,
+                        lib_path,
                     ));
                 }
             }
@@ -796,6 +802,8 @@ fn walk_anchors(
 fn unresolved_anchor_diag(
     node_id: &str,
     fn_name: &str,
+    fn_path: &str,
+    module_path: &str,
     known_fns: &[String],
     err: &AnchorError,
     lib_path: &Path,
@@ -805,11 +813,25 @@ fn unresolved_anchor_diag(
     // a typo that is not there — which is the whole reason this branches.
     let title = match err {
         AnchorError::NotFound => {
-            let suggestion = match schema::nearest_key(fn_name, known_fns) {
-                Some(near) => format!(
-                    " The closest name Ply can see is `{near}` — if the function was renamed, \
-                     the claim needs renaming with it."
-                ),
+            // Matched on the *crate-root* key, because that is the shape
+            // `known_fns` holds: comparing the key as written under a module
+            // anchor (`dottted`) against `schema::dotted` puts every real
+            // name far outside edit distance, and the suggestion goes quiet
+            // exactly where module anchors are used (2026-09-04). Shown
+            // back relative to the same anchor, so it can be pasted straight
+            // over the typo.
+            let suggestion = match schema::nearest_key(fn_path, known_fns) {
+                Some(near) => {
+                    let shown = near
+                        .strip_prefix(module_path)
+                        .and_then(|rest| rest.strip_prefix("::"))
+                        .filter(|_| !module_path.is_empty())
+                        .unwrap_or(near.as_str());
+                    format!(
+                        " The closest name Ply can see is `{shown}` — if the function was \
+                         renamed, the claim needs renaming with it."
+                    )
+                }
                 None if known_fns.is_empty() => {
                     format!(" Ply found no functions at all in {}.", lib_path.display())
                 }
@@ -1970,6 +1992,34 @@ pub struct OrderBook {
     /// orphan its claims" — and §5.2 asks the diagnostic to suggest the
     /// nearest name, which is what makes the break actionable rather than
     /// merely loud.
+    /// The same suggestion, for a claim written under a module anchor.
+    /// Anchor-relative claim keys (2026-09-04) silently broke this: the
+    /// typo is matched as the user wrote it (`dottted`) against names held
+    /// as crate-root paths (`schema::dotted`), which are never within edit
+    /// distance of each other, so the suggestion went quiet exactly where
+    /// this project had just moved all of its own claims. Found by making
+    /// the typo on purpose.
+    #[test]
+    fn a_typo_under_a_module_anchor_still_names_the_nearest_name() {
+        let dir = crate_with(
+            "pub mod schema { pub fn dotted(p: &str) -> String { p.to_string() } }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    components:\n      schema:\n        anchor: demo::schema\n        fns:\n          dottted:\n            checks: [fuzz(8)]\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E0301")
+            .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
+        assert!(
+            d.title.contains("The closest name Ply can see is `dotted`"),
+            "the suggestion has to be the name as it would be written under \
+             this anchor, ready to paste over the typo:\n{}",
+            d.title
+        );
+    }
+
     #[test]
     fn a_renamed_function_is_e0301_and_names_the_nearest_name() {
         let dir = crate_with("pub fn clamped(x: u32) -> u32 { x.min(100) }\n", CLEAN_YAML);

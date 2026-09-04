@@ -109,32 +109,43 @@ eight of them claimed in the section above). Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that
 cannot fail would turn all 54 green and mean nothing.
 
-## Open: three gaps found by deliberately breaking things — 2026-09-04
+## Landed: the three gaps found by deliberately breaking things — 2026-09-04
 
 Every failure path was exercised on purpose against `crates/ply-core`: a false promise, a
 false structure promise, a claim naming a function that does not exist, and a harness that
 does not compile. All four reported correctly, at the right severity, and propagated to the
-root. Three gaps in *how well* they report:
+root; the `--json` envelope and the terminal tree agreed on all 39 nodes and every
+diagnostic code. Three gaps in *how well* they reported, all now closed.
 
-- [ ] **A counterexample on a string parameter is never replayable.**
-      `contract_rt::render_cex_test` has arms for `Vec<u8>`, `Duration`, `NonZero` and
-      scalars, and nothing for `String`/`&str` -- so `W0541` fires with reason
-      `inputs_unrenderable` and the reader gets a witness they cannot run. Measured: 17 of
-      ply-core's 23 claims take text, so this is the common case here, not an edge one.
-      A string literal is the easiest thing in Rust to write back out; this looks like an
-      omission rather than a hard problem.
+- [x] **A counterexample on a string parameter is now replayable.** `WitnessValue` gained a
+      `Str` arm, `RustType::String` is `is_witness_renderable`, and `render_cex_test`
+      writes the value back out with `str`'s own `Debug`, which is exactly a valid Rust
+      literal -- quotes, backslashes and control characters all escaped, so there is
+      nothing left for Ply to get wrong by hand. Measured: 17 of ply-core's 23 claims take
+      text, so this was the common case, not an edge one.
 
-- [ ] **An empty-string witness prints as nothing at all.** Breaking `schema::dotted` gave
-      `failing input: pointer = ` with nothing after the `=`. That is the empty string,
-      and it is also exactly what a rendering failure would look like. Quote it, or say
-      "the empty string" -- a reader cannot currently tell which they are looking at.
+      Checked end to end, not just in a unit test: breaking `schema::dotted` on purpose
+      moved the report from `W0541` (witness only) to `P0502` with a written test, and
+      `cargo test` then failed on `ply_cex_schema_dotted_01` exactly as the report said it
+      would.
 
-- [ ] **`E0301` names the function it could not find and stops there.** A one-character
-      typo (`dottted` for `dotted`) reads identically to a function that genuinely is not
-      in the crate. `schema::nearest_key` -- a near-miss finder -- already exists in this
-      same codebase and is already claimed; wiring it into `E0301` is small.
-      `skills/ply-author` claimed Ply already did this; that sentence was retracted in the
-      same commit rather than left to be discovered.
+- [x] **An empty-string witness says `(empty)` instead of printing nothing.** Everything
+      else still passes through exactly as the engine produced it; only the empty case is
+      named, because bare it is indistinguishable from a rendering failure.
+
+- [x] **`E0301` suggests the nearest name again under a module anchor.** The diagnosis in
+      the first draft of this entry was wrong: the suggestion was never missing, it was
+      *broken by this session's own anchor-relative claim keys*. The typo was matched as
+      the user wrote it (`dottted`) against names held as crate-root paths
+      (`schema::dotted`), which are never within edit distance, so the suggestion went
+      quiet exactly where this project had just moved all of its own claims. Now matched on
+      the crate-root key and shown back relative to the anchor, ready to paste over the
+      typo.
+
+      KNOWN GAP: `verify`'s own `E0301` (a separate emitter in `verify.rs`) still carries no
+      suggestion at all. `check` is the command that runs in a second and is meant to catch
+      this, so the miss there was the one that mattered; wiring the same suggestion into
+      `verify` is small and unstarted.
 
 ## Landed: eight more claims, a crash Ply found in the renderer, and a bug in Ply itself — 2026-09-04
 

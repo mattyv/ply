@@ -921,6 +921,10 @@ impl RustType {
             // already-solved question from "can this become a runnable
             // `#[test]`").
             RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => false,
+            // 2026-09-04: `str`'s own `Debug` is a valid Rust string
+            // literal, so there is nothing left to invent -- see
+            // `WitnessValue::Str`.
+            RustType::String => true,
             _ => self.scalar_byte_width().is_some(),
         }
     }
