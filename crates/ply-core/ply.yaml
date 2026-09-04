@@ -142,6 +142,13 @@ components:
               - "parse_check(\"fuzz(256)\").is_ok()"
               - "parse_check(\"bounded(3)\").is_ok()"
               - "parse_check(\"mutate\").is_ok()"
+          parse_deny:
+            ensures:
+              - "|result| result.is_ok() || result.as_ref().unwrap_err().contains(&format!(\"{:?}\", s.trim()))"
+            checks: [fuzz(256), test]
+            examples:
+              - "parse_deny(\"a -> b\").is_ok()"
+              - "parse_deny(\"a -> b except c\").is_ok()"
           parse_edge:
             ensures:
               - "|result| result.is_ok() || result.as_ref().unwrap_err().contains(&format!(\"{:?}\", s.trim()))"
@@ -202,6 +209,19 @@ components:
             ensures:
               - "|result| !result.starts_with('/')"
             checks: [fuzz(256)]
+          unknown_key_message:
+            # The reader is being told they typed a key Ply does not know.
+            # A message that does not repeat the key back leaves them
+            # searching the document for which one it meant.
+            ensures:
+              - "|result| result.contains(&name[..])"
+            checks: [fuzz(256)]
+          validate_text:
+            # Every violation has to say where it is. A blank location is
+            # a finding the reader cannot act on.
+            ensures:
+              - "|result| result.as_ref().map(|vs| vs.iter().all(|v| !v.pointer.is_empty() || !v.message.is_empty())).unwrap_or(true)"
+            checks: [fuzz(256)]
           is_identifier:
             ensures:
               - "|result| !*result || !s.is_empty()"
@@ -231,6 +251,31 @@ components:
                 examples:
                   - "count_tests_executed(\"test m::a ... ok\\ntest m::b ... FAILED\\n\", \"m::\") == 2"
                   - "count_tests_executed(\"test other::a ... ok\\n\", \"m::\") == 0"
+              parse_fuzz_marker:
+                # Never names a function the output did not name. An
+                # invented one would attach a real counterexample to the
+                # wrong claim.
+                ensures:
+                  - "|result| result.iter().all(|(fn_name, _)| combined.contains(fn_name.as_str()))"
+                checks: [fuzz(256), test]
+                examples:
+                  - "parse_fuzz_marker(\"PLY_FUZZED_CEX|clamp|x=7\\n\").is_some()"
+                  - "parse_fuzz_marker(\"nothing here\\n\").is_none()"
+              parse_proptest_minimal_input:
+                # `Some` with nothing in it would read as "a counterexample
+                # was found and it has no inputs", which is not a thing.
+                ensures:
+                  - "|result| result.iter().all(|v| !v.is_empty())"
+                checks: [fuzz(256), test]
+                examples:
+                  - "parse_proptest_minimal_input(\"minimal failing input: 7\\ntest x ... FAILED\\n\").is_some()"
+                  - "parse_proptest_minimal_input(\"clean run\\n\").is_none()"
+              build_errors_with_lines:
+                # One error per line at most: more would mean the same
+                # compiler line was reported twice at different places.
+                ensures:
+                  - "|result| result.len() <= combined.lines().count()"
+                checks: [fuzz(256)]
               first_build_error:
                 # Never invents a compiler error. A fabricated one would be
                 # blamed on the user's code.
@@ -329,6 +374,15 @@ components:
       config:
         anchor: ply_core::config
         fns:
+          validate_keys:
+            # The code is the thing a reader types into `cargo ply explain`.
+            # A rejection without one is a dead end.
+            ensures:
+              - "|result| result.is_ok() || result.as_ref().unwrap_err().to_string().contains(\"E0\")"
+            checks: [fuzz(256), test]
+            examples:
+              - "validate_keys(\"ply: 1\\ncomponents: {}\\n\").is_ok()"
+              - "validate_keys(\"ply: 1\\nnonsense_key: 1\\n\").is_err()"
           parse_check_string:
             # The code is what a reader types into `cargo ply explain`, so a
             # rejection that omits it leaves them with nowhere to go.
@@ -341,6 +395,28 @@ components:
       fuzz_gen:
         anchor: ply_core::fuzz_gen
         fns:
+          derive_seed:
+            # The two inputs are kept apart by a separator, so swapping
+            # them gives a different seed. Remove that separator and this
+            # goes red: `("ab", "c")` and `("a", "bc")` would then hash the
+            # same, and two different promises would be checked against the
+            # same generated inputs while looking independent.
+            ensures:
+              - "|result| fn_name == contract_text || *result != derive_seed(&contract_text, &fn_name)"
+            checks: [fuzz(256), test]
+            examples:
+              - "derive_seed(\"ab\", \"c\") != derive_seed(\"a\", \"bc\")"
+          seed_from_hex:
+            # A seed is 32 bytes written as 64 hex characters. Accepting
+            # anything else would silently give a run a different corpus
+            # from the one the document asked for.
+            ensures:
+              - "|result| result.is_none() || text.trim().len() == 64"
+            checks: [fuzz(256), test]
+            examples:
+              - "seed_from_hex(&\"ab\".repeat(32)).is_some()"
+              - "seed_from_hex(\"abcd\").is_none()"
+              - "seed_from_hex(&\"zz\".repeat(32)).is_none()"
           seed_hex:
             ensures:
               - "|result| result.len() == 64"
@@ -389,6 +465,18 @@ components:
           assign_ranks:
             ensures:
               - "|result| result.len() <= names.len()"
+            checks: [fuzz(256)]
+      svg:
+        anchor: ply_core::visual::svg
+        note: >-
+          Turns the document into the picture. The promises here are about
+          the sentences a reader sees, not the shapes.
+        fns:
+          examples_prose:
+            # The count is the whole point of the sentence. Dropping it
+            # leaves the reader told there are examples but not how many.
+            ensures:
+              - "|result| result.contains(&n.to_string())"
             checks: [fuzz(256)]
       visual:
         anchor: ply_core::visual

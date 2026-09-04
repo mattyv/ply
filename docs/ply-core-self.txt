@@ -4,7 +4,7 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 
 ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
 
-21 components · 34 functions · 0 promise nothing
+22 components · 44 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
 components:
@@ -107,6 +107,15 @@ components:
           parse_check("fuzz(256)").is_ok()
           parse_check("bounded(3)").is_ok()
           parse_check("mutate").is_ok()
+      fn parse_deny
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.is_ok() || result.as_ref().unwrap_err().contains(&format!("{:?}", s.trim())) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          parse_deny("a -> b").is_ok()
+          parse_deny("a -> b except c").is_ok()
       fn parse_edge
         fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
         test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
@@ -160,6 +169,16 @@ components:
         what this function promises — the last thing the document states before the code itself takes over:
           ensures: |result| !result.starts_with('/') (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn unknown_key_message
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.contains(&name[..]) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn validate_text
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.as_ref().map(|vs| vs.iter().all(|v| !v.pointer.is_empty() || !v.message.is_empty())).unwrap_or(true) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
       fn is_identifier
         fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
         what this function promises — the last thing the document states before the code itself takes over:
@@ -196,6 +215,29 @@ components:
           2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
             count_tests_executed("test m::a ... ok\ntest m::b ... FAILED\n", "m::") == 2
             count_tests_executed("test other::a ... ok\n", "m::") == 0
+        fn parse_fuzz_marker
+          fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+          test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+          what this function promises — the last thing the document states before the code itself takes over:
+            ensures: |result| result.iter().all(|(fn_name, _)| combined.contains(fn_name.as_str())) (what the function guarantees coming out)
+            the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+          2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+            parse_fuzz_marker("PLY_FUZZED_CEX|clamp|x=7\n").is_some()
+            parse_fuzz_marker("nothing here\n").is_none()
+        fn parse_proptest_minimal_input
+          fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+          test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+          what this function promises — the last thing the document states before the code itself takes over:
+            ensures: |result| result.iter().all(|v| !v.is_empty()) (what the function guarantees coming out)
+            the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+          2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+            parse_proptest_minimal_input("minimal failing input: 7\ntest x ... FAILED\n").is_some()
+            parse_proptest_minimal_input("clean run\n").is_none()
+        fn build_errors_with_lines
+          fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+          what this function promises — the last thing the document states before the code itself takes over:
+            ensures: |result| result.len() <= combined.lines().count() (what the function guarantees coming out)
+            the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
         fn first_build_error
           fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
           test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
@@ -272,7 +314,16 @@ components:
           reach::path_dependencies("[dependencies]\nfoo = { path = \"../foo\" }\n").len() == 1
     component config — maps to Rust module ply_core::config
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
-      that level comes from its weakest part, parse_check_string — nothing here counts as checked more strongly than the weakest thing inside it
+      that level comes from its weakest part, validate_keys — nothing here counts as checked more strongly than the weakest thing inside it
+      fn validate_keys
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.is_ok() || result.as_ref().unwrap_err().to_string().contains("E0") (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          validate_keys("ply: 1\ncomponents: {}\n").is_ok()
+          validate_keys("ply: 1\nnonsense_key: 1\n").is_err()
       fn parse_check_string
         fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
         test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
@@ -284,7 +335,25 @@ components:
           parse_check_string("nonsense").is_err()
     component fuzz_gen — maps to Rust module ply_core::fuzz_gen
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
-      that level comes from its weakest part, seed_hex — nothing here counts as checked more strongly than the weakest thing inside it
+      that level comes from its weakest part, derive_seed — nothing here counts as checked more strongly than the weakest thing inside it
+      fn derive_seed
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| fn_name == contract_text || *result != derive_seed(&contract_text, &fn_name) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        1 worked example — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          derive_seed("ab", "c") != derive_seed("a", "bc")
+      fn seed_from_hex
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.is_none() || text.trim().len() == 64 (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        3 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          seed_from_hex(&"ab".repeat(32)).is_some()
+          seed_from_hex("abcd").is_none()
+          seed_from_hex(&"zz".repeat(32)).is_none()
       fn seed_hex
         fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
         what this function promises — the last thing the document states before the code itself takes over:
@@ -332,6 +401,15 @@ components:
         fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
         what this function promises — the last thing the document states before the code itself takes over:
           ensures: |result| result.len() <= names.len() (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+    component svg — maps to Rust module ply_core::visual::svg
+      note: Turns the document into the picture. The promises here are about the sentences a reader sees, not the shapes.
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, examples_prose — nothing here counts as checked more strongly than the weakest thing inside it
+      fn examples_prose
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.contains(&n.to_string()) (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component visual — maps to Rust module ply_core::visual
       note: The drawing, the prose form of the same facts, and the portable package an editor reads. Nothing here decides anything; it only shows what was decided.

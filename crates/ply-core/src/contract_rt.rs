@@ -595,6 +595,19 @@ pub fn render_cex_test(
 
     let message = render_message(cf, &checked_body, contract_text, diagnostic_code)?;
 
+    // A promise may name a helper that lives beside the function it is
+    // written on, and the contract text is spliced in exactly as written.
+    // The fuzz harness resolves those because it imports the function's own
+    // module; this test sits at the crate root under `use super::*`, where a
+    // name from a nested module is not in scope -- so the test Ply writes
+    // into the user's crate would not compile, and `cargo test` would break
+    // for a reason they did not cause (2026-09-04, found on a claim whose
+    // promise calls its own function).
+    let module_import = match cf.path.rsplit_once("::") {
+        Some((module, _)) => format!("    use crate::{module}::*;\n"),
+        None => String::new(),
+    };
+
     let source = format!(
         "// Reproduces the counterexample for `{fname}` found by check\n\
          // `{check_label}` (diagnostic {code}). This test fails until the\n\
@@ -602,6 +615,7 @@ pub fn render_cex_test(
          #[cfg(test)]\n\
          #[test]\n\
          fn {test_name}() {{\n\
+         {module_import}\
          {lets}\n\
          \x20\x20\x20\x20{entry_lets}let result = &{fname}({args});\n\n\
          \x20\x20\x20\x20// Contract under test: #[ply::ensures({contract_text})]\n\
@@ -618,6 +632,7 @@ pub fn render_cex_test(
         check_label = check_label,
         code = diagnostic_code,
         test_name = test_name,
+        module_import = module_import,
         lets = lets,
         entry_lets = entry_lets,
         args = call_args.join(", "),
@@ -834,6 +849,59 @@ pub fn head(s: &str) -> String { s.chars().take(1).collect() }
                 .source
                 .contains(r#"let s: String = "a\"b\\c\nd".to_string();"#),
             "quotes, backslashes and newlines must be escaped for Rust:\n{}",
+            rendered.source
+        );
+    }
+
+    /// The worst failure this file can produce: a test written into the
+    /// user's own crate that does not compile, so `cargo test` breaks for a
+    /// reason they did not cause. A promise may call a helper beside the
+    /// function it is written on (`derive_seed`'s calls itself). In the fuzz
+    /// harness that resolves, because the harness imports the function's own
+    /// module; the replay test sits at the crate root with `use super::*`,
+    /// where a name from a nested module is not in scope. Found 2026-09-04
+    /// by a claim on `fuzz_gen::derive_seed`, whose generated test failed to
+    /// build with "cannot find function `derive_seed` in this scope".
+    #[test]
+    fn a_cex_test_for_a_nested_module_brings_that_module_into_scope() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == twice(x))]
+pub fn double(x: u32) -> u32 { x * 2 }
+pub fn twice(x: u32) -> u32 { x + x }
+"#,
+            "double",
+        );
+        // `discover` reads a bare file, so give the claim the module path a
+        // real nested claim would carry.
+        let mut cf = cf;
+        cf.path = "helpers::double".to_string();
+        let rendered =
+            render_cex_test(&cf, &[WitnessValue::UInt(3)], "fuzz(256)", "P0502", 1).unwrap();
+        assert!(
+            rendered.source.contains("use crate::helpers::*;"),
+            "a promise that names a helper beside its own function only resolves \
+             if that module is in scope:\n{}",
+            rendered.source
+        );
+    }
+
+    /// The other half: a claim on a crate-root function must not gain a
+    /// `use crate::*`, which is both pointless and a new way to collide.
+    #[test]
+    fn a_cex_test_for_a_crate_root_fn_imports_nothing_extra() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == x)]
+pub fn clamp(x: u32) -> u32 { x.min(100) }
+"#,
+            "clamp",
+        );
+        let rendered =
+            render_cex_test(&cf, &[WitnessValue::UInt(3)], "fuzz(256)", "P0502", 1).unwrap();
+        assert!(
+            !rendered.source.contains("use crate::"),
+            "nothing to import for a function already at the root:\n{}",
             rendered.source
         );
     }

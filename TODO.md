@@ -109,6 +109,48 @@ eight of them claimed in the section above). Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that
 cannot fail would turn all 54 green and mean nothing.
 
+## Landed: ten more claims, and the second half of the typo suggestion — 2026-09-04
+
+44 promises now, in 22 components. Every one earns evidence except `record::fingerprint`.
+
+- [x] **Ten more claims**: the sampling engine's remaining output readers
+      (`parse_fuzz_marker`, `parse_proptest_minimal_input`, `build_errors_with_lines`),
+      `fuzz_gen::derive_seed` and `seed_from_hex`, `model::parse_deny`,
+      `config::validate_keys`, `schema::unknown_key_message` and `validate_text`, and
+      `visual::svg::examples_prose`.
+
+- [x] **`derive_seed`'s promise was mutation-checked, not assumed.** Its two inputs are
+      kept apart by a `\x1f` separator, so swapping them must give a different seed.
+      Deleting that one line turned the claim red -- by sampling *and* by the worked case,
+      `("ab","c")` against `("a","bc")` -- and the separator was restored. That is the
+      answer to "would this promise notice if the code broke", asked rather than assumed.
+
+- [x] **Ply was writing a test into the user's crate that did not compile.** When a promise
+      calls a helper beside the function it is written on, the contract text is spliced into
+      the replay test verbatim -- but that test sits at the crate root under `use super::*`,
+      where a name from a nested module is not in scope. So `cargo test` broke for a reason
+      the user did not cause, which is the failure this project treats as worst. The fuzz
+      harness compiled the same contract fine because it imports the function's own module,
+      so the two paths disagreed about the scope a contract is evaluated in.
+
+      The replay test now imports the function's own module. Verified end to end: a real
+      broken promise on `fuzz_gen::derive_seed` produced a test that compiled and failed
+      with the right message. **A review of this fix is in flight** -- the entry stays open
+      until that comes back.
+
+- [x] **`E0301` now tells you when a claim is under the wrong module.** The suggestion
+      fixed earlier today only covered a misspelling; a claim whose *name* is right but
+      whose component is wrong got nothing, because `visual::examples_prose` is five
+      characters from `visual::svg::examples_prose` and edit distance cannot see that.
+      Matched on the final segment when the distance match finds nothing, and only when
+      the answer is unambiguous -- two functions of the same name in different modules is
+      a question, not a suggestion.
+
+      The two cases get different sentences. Telling someone their function "was renamed"
+      when it is sitting one module over sends them looking for a change nobody made.
+      Found by writing the `examples_prose` claim in the wrong place and being told the
+      function did not exist.
+
 ## Landed: eleven more claims — 2026-09-04
 
 The library goes from 23 promises to 34, in seven modules that had none: the fast

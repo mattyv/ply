@@ -820,17 +820,48 @@ fn unresolved_anchor_diag(
             // exactly where module anchors are used (2026-09-04). Shown
             // back relative to the same anchor, so it can be pasted straight
             // over the typo.
-            let suggestion = match schema::nearest_key(fn_path, known_fns) {
+            // Edit distance cannot see a claim that sits under the wrong
+            // module: `visual::examples_prose` is five characters from
+            // `visual::svg::examples_prose`, so the reader was told the
+            // function does not exist when it plainly does, just one box
+            // over. Matching on the final segment finds it, and is only
+            // consulted when the distance match found nothing.
+            let same_leaf = || {
+                let leaf = fn_path.rsplit("::").next().unwrap_or(fn_path);
+                let mut hits = known_fns
+                    .iter()
+                    .filter(|k| k.rsplit("::").next() == Some(leaf));
+                // One unambiguous answer only: two functions with the same
+                // name in different modules is a question, not a suggestion.
+                let first = hits.next()?;
+                hits.next().is_none().then(|| first.clone())
+            };
+            // Two different facts, two different sentences: a near-miss on
+            // spelling is a rename, a same-name-elsewhere is a claim under
+            // the wrong box. Telling someone their function "was renamed"
+            // when it is sitting one module over sends them looking for a
+            // change nobody made.
+            let by_distance = schema::nearest_key(fn_path, known_fns);
+            let moved = by_distance.is_none();
+            let suggestion = match by_distance.or_else(same_leaf) {
                 Some(near) => {
                     let shown = near
                         .strip_prefix(module_path)
                         .and_then(|rest| rest.strip_prefix("::"))
                         .filter(|_| !module_path.is_empty())
                         .unwrap_or(near.as_str());
-                    format!(
-                        " The closest name Ply can see is `{shown}` — if the function was \
-                         renamed, the claim needs renaming with it."
-                    )
+                    if moved {
+                        format!(
+                            " There is a function of that name at `{shown}` — the claim is \
+                             under the wrong component, or its anchor points at the wrong \
+                             module."
+                        )
+                    } else {
+                        format!(
+                            " The closest name Ply can see is `{shown}` — if the function was \
+                             renamed, the claim needs renaming with it."
+                        )
+                    }
                 }
                 None if known_fns.is_empty() => {
                     format!(" Ply found no functions at all in {}.", lib_path.display())
@@ -2016,6 +2047,39 @@ pub struct OrderBook {
             d.title.contains("The closest name Ply can see is `dotted`"),
             "the suggestion has to be the name as it would be written under \
              this anchor, ready to paste over the typo:\n{}",
+            d.title
+        );
+    }
+
+    /// The other way a module anchor goes wrong: the name is spelled
+    /// right but the claim sits under the wrong box. Edit distance cannot
+    /// see this -- `visual::examples_prose` is five characters from
+    /// `visual::svg::examples_prose`, so the suggestion stayed silent and
+    /// the reader was told the function does not exist when it plainly
+    /// does. Found 2026-09-04 while claiming it.
+    #[test]
+    fn a_claim_under_the_wrong_module_is_told_where_the_function_actually_is() {
+        let dir = crate_with(
+            "pub mod visual { pub mod svg { pub fn examples_prose(n: usize) -> String { n.to_string() } } }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    components:\n      visual:\n        anchor: demo::visual\n        fns:\n          examples_prose:\n            checks: [fuzz(8)]\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E0301")
+            .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
+        assert!(
+            d.title.contains("There is a function of that name at `svg::examples_prose`"),
+            "the reader has to be told where the function actually is, relative to \
+             the anchor they wrote -- and that nothing was renamed:\n{}",
+            d.title
+        );
+        assert!(
+            !d.title.contains("was renamed"),
+            "nothing was renamed here; saying so sends the reader looking for a \
+             change nobody made:\n{}",
             d.title
         );
     }
