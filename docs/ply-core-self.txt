@@ -4,7 +4,7 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 
 ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
 
-6 components · 7 functions · 0 promise nothing
+11 components · 15 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
 components:
@@ -56,6 +56,58 @@ components:
         what this function promises — the last thing the document states before the code itself takes over:
           ensures: result.is_none() || !src.is_empty() (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+    component schedule — maps to Rust module ply_core::schedule
+      note: Decides the order claims are verified in, so a callee is checked before a caller that stands on it. The promise below is the one that matters here: a node this dropped would be a claim nobody ever checked, and nothing else would say so.
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, order — nothing here counts as checked more strongly than the weakest thing inside it
+      fn order
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          requires: domain.iter().all(|i| *i < node_ids.len()) (what the caller must guarantee going in)
+          ensures: |result| result.0.len() + result.1.len() == domain.len() (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+    component surface — maps to Rust module ply_core::surface
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, same_expression — nothing here counts as checked more strongly than the weakest thing inside it
+      fn same_expression
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| *result || a != b (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+    component schema — maps to Rust module ply_core::schema
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, is_identifier — nothing here counts as checked more strongly than the weakest thing inside it
+      fn is_identifier
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| !*result || !s.is_empty() (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn nearest_key
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.is_none() || !known.is_empty() (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+    component engines — maps to Rust module ply_core::engines
+      note: The adapters that drive each outside checking tool as a separate program and read back what it said. Ply never re-implements a checker; everything here is translation, in both directions.
+      state TimedOutput — the structure this component holds. 3 of 4 of its fields shown
+        stdout is a list, written `Vec<u8>`
+        stderr is a list, written `Vec<u8>`
+        status is a structure of your own, written `ExitStatus` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, strip_ansi — nothing here counts as checked more strongly than the weakest thing inside it
+      fn strip_ansi
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.len() <= text.len() (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+    component fuzz_gen — maps to Rust module ply_core::fuzz_gen
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, seed_hex — nothing here counts as checked more strongly than the weakest thing inside it
+      fn seed_hex
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.len() == 64 (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component harness_crate — maps to Rust module ply_core::harness_crate
       note: Writes the generated harness crate. Almost all of it is filesystem work, and that is the honest shape of it -- but the one real piece of reasoning in here was welded to a write until 2026-09-04, and so could not be checked. Split out, it can be.
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
@@ -64,6 +116,16 @@ components:
         fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
         what this function promises — the last thing the document states before the code itself takes over:
           ensures: result.1.len() == fn_modules.len() (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn harness_package_name
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.ends_with("-ply-harness") (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn harness_rel_path
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.starts_with("target/ply/fuzz/") (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component visual — maps to Rust module ply_core::visual
       note: The drawing, the prose form of the same facts, and the portable package an editor reads. Nothing here decides anything; it only shows what was decided.

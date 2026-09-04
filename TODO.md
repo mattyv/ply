@@ -19,6 +19,40 @@
       **First step:** one fixture with a hand test that kills a mutant the generated
       examples miss, red before the feature and green after.
 
+## Landed: fifteen claims on Ply's own library, and what they found — 2026-09-04
+
+The standing programme, started. Measured first rather than guessed: of 165 public
+functions in `ply-core`, **63 are checkable today with no refactoring at all** -- they only
+lack a promise. Nine were claimed this sitting, chosen for promises worth making rather
+than promises easy to satisfy.
+
+- [x] **Eight earn `fuzzed(256)`**: the harness package name always ends in the suffix; its
+      path always starts under `target/ply/fuzz/`; a seed always renders as 64 characters;
+      stripping terminal colour never makes text longer; an empty string is never an
+      identifier; a suggestion is never made from an empty list of keys; a string is always
+      the same expression as itself; and one span per generated module.
+- [x] **`schedule::order` found a real undocumented precondition.** It indexes `node_ids` by
+      the values in `domain`, and Ply panicked it with `domain = {15}`, `node_ids = []`.
+      Real callers build both from the same list so they always agree; nothing said so.
+      Now written down.
+
+**And writing it down made the function unfuzzable, which is the honest outcome and worth
+recording as a worked example.** The precondition threw away 1025 of 1195 generated inputs,
+proptest gave up, and the verdict is `unclaimed` -- not a thin green. That is exactly the
+trap the README's new contracts section warns about, hit on Ply's own code within an hour
+of the warning being written.
+
+- [ ] **The finding, and it is a design one.** `order(domain, node_ids, edges)` admits
+      inputs no real caller produces: the indices and the names are separate arguments that
+      must agree, and the type does not enforce it. Either the two travel together as one
+      value, or the function ignores an out-of-range index rather than panicking. Both are
+      behaviour changes to scheduling code and are the maintainer's call; the claim stays in
+      the document meanwhile, saying plainly that it earned nothing.
+
+**The other 54 checkable-today functions are the remaining worklist.** Each needs a promise
+worth writing, which is the slow part and the only part that matters -- a promise that
+cannot fail would turn all 54 green and mean nothing.
+
 ## Landed: the side-effect scan is a design signal, not a gate — 2026-09-04
 
 The maintainer's correction, and it is the better frame: **not every function should be
