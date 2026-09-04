@@ -3625,6 +3625,72 @@ pub fn scan_type_fields(crate_dir: &Path, type_name: &str) -> Option<Vec<StateFi
 /// A type in a module *below* the anchor counts as under it: a component
 /// anchored at `visual` may name a type declared in `visual::svg`, which is
 /// still its own code.
+/// Every module path in `crate_dir` that declares a type called
+/// `type_name`, as dotted segments (empty string for the crate root).
+///
+/// [`TypeLocations`] already records that a name is declared twice -- it
+/// stores `None` for it -- but it does not record *where*, and the one
+/// reader of that map collapsed "declared twice" and "not declared" into
+/// the same answer. So a duplicate name was reported as a type the crate
+/// does not have, sending the reader to look for something that is sitting
+/// right there, twice (2026-09-04). Only called on the error path, so a
+/// second walk of the crate costs nothing a reader will notice.
+pub fn type_declaration_sites(crate_dir: &Path, type_name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![crate_dir.join("src")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(file) = syn::parse_file(&src) else {
+                continue;
+            };
+            let mut work: Vec<(&Vec<syn::Item>, Vec<String>)> = vec![(&file.items, Vec::new())];
+            while let Some((items, mods)) = work.pop() {
+                for item in items {
+                    if let syn::Item::Mod(m) = item
+                        && let Some((_, inner)) = &m.content
+                    {
+                        let mut deeper = mods.clone();
+                        deeper.push(m.ident.to_string());
+                        work.push((inner, deeper));
+                        continue;
+                    }
+                    let declares = match item {
+                        syn::Item::Struct(st) => st.ident == type_name,
+                        syn::Item::Enum(en) => en.ident == type_name,
+                        _ => false,
+                    };
+                    if !declares {
+                        continue;
+                    }
+                    let file_mods = file_module_segments(crate_dir, &path);
+                    let mut segments = file_mods;
+                    segments.extend(mods.iter().cloned());
+                    let dotted = segments.join("::");
+                    if !out.contains(&dotted) {
+                        out.push(dotted);
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 pub fn scan_type_fields_under(
     crate_dir: &Path,
     under: &[String],

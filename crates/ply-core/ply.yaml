@@ -90,6 +90,9 @@ components:
               - "tidy_contract_text(\"| result | * result == x\") == \"|result|*result == x\""
       schedule:
         anchor: ply_core::schedule
+        # No `state:` here: what this module produces is a plain pair of
+        # collections rather than a named struct, so there are no field
+        # names to draw beside a shape.
         note: >-
           Decides the order claims are verified in, so a callee is checked
           before a caller that stands on it. The promise below is the one
@@ -109,6 +112,9 @@ components:
             checks: [fuzz(256)]
       surface:
         anchor: ply_core::surface
+        state:
+          of: SourceSurface
+          show: [markers, escapes, derived]
         fns:
           contract_helpers:
             # Everything it reports has to be visible in the text it read.
@@ -128,6 +134,9 @@ components:
               - "!same_expression(\"x + 1\", \"x + 2\")"
       model:
         anchor: ply_core::model
+        state:
+          of: Document
+          show: [components, edges, deny, routes]
         note: >-
           The document as data: what a ply.yaml means once it has been read.
         fns:
@@ -158,6 +167,9 @@ components:
               - "parse_edge(\"a ~> b : Order\").is_ok()"
       registry:
         anchor: ply_core::registry
+        state:
+          of: RuleEntry
+          show: [code, tier, severity, gloss]
         note: >-
           Every message Ply can produce, listed once as data rather than as a
           document two people have to keep in step by hand.
@@ -204,6 +216,9 @@ components:
               - "!verdict_is_earnable(\"bounded(3)\u00b7spec-strong\", &[\"bounded(3)\".to_string()], &[])"
       schema:
         anchor: ply_core::schema
+        state:
+          of: SchemaViolation
+          show: [code, pointer, message]
         fns:
           dotted:
             ensures:
@@ -235,6 +250,9 @@ components:
         components:
           fuzz_engine:
             anchor: ply_core::engines::fuzz
+            state:
+              of: HarnessTestRun
+              show: [timed_out, success, combined_output, failed_tests]
             note: >-
               Reads what the sampling engine actually printed. Everything
               here is a parser over another tool's output, so the promises
@@ -287,6 +305,9 @@ components:
                   - "first_build_error(\"all good\\n\").is_none()"
           kani_engine:
             anchor: ply_core::engines::kani
+            state:
+              of: KaniRunConfig
+              show: [crate_dir, harness_path, engine_timeout_secs, enable_stubbing]
             fns:
               unstable_flags:
                 # The flags go onto a command line in pairs, `-Z` then its
@@ -310,6 +331,10 @@ components:
             checks: [fuzz(256)]
       check:
         anchor: ply_core::check
+        # No `state:` here, and it is not an oversight: this crate declares
+        # two types called `Diagnostic`, one here and one in `diag`. Ply
+        # refuses to guess which a component holds rather than picking one,
+        # and renaming either is a change to the code, not to this document.
         note: >-
           The fast pass: everything Ply can say about a document without
           running anything.
@@ -334,6 +359,15 @@ components:
             checks: [fuzz(256)]
       diag:
         anchor: ply_core::diag
+        # Not `Diagnostic`: this crate declares two types by that name, one
+        # here and one in `check`, and Ply refuses to guess which a component
+        # holds rather than picking one. `Counterexample` is the part of a
+        # finding that matters most to a reader anyway -- the input that
+        # broke the promise, and whether it could be written back out as a
+        # test they can run.
+        state:
+          of: Counterexample
+          show: [inputs, kani_witness, cargo_test]
         fns:
           is_absence:
             # A fixed vocabulary, so the worked cases are the check: every
@@ -350,6 +384,9 @@ components:
               - "!is_absence(\"fuzzed(256)\")"
       callgraph:
         anchor: ply_core::callgraph
+        state:
+          of: ResolvedCall
+          show: [site, status]
         fns:
           path_dependency:
             # An empty path would be joined onto the crate directory and
@@ -363,6 +400,9 @@ components:
               - "path_dependency(\"[dependencies]\\nfoo = \\\"1.0\\\"\\n\", \"foo\").is_none()"
       reach:
         anchor: ply_core::reach
+        state:
+          of: FirstParty
+          show: [units, gate]
         fns:
           path_dependencies:
             # Never reports a dependency the manifest does not name.
@@ -373,6 +413,12 @@ components:
               - "reach::path_dependencies(\"[dependencies]\\nfoo = { path = \\\"../foo\\\" }\\n\").len() == 1"
       config:
         anchor: ply_core::config
+        # No `state:` here, deliberately: this module declares no type of its
+        # own. It reads a document and hands back a `Document`, which belongs
+        # to `model` and is drawn there.
+        note: >-
+          Reading a ply.yaml and refusing one that is not valid, before any
+          engine is asked to do anything.
         fns:
           validate_keys:
             # The code is the thing a reader types into `cargo ply explain`.
@@ -394,6 +440,9 @@ components:
               - "parse_check_string(\"nonsense\").is_err()"
       fuzz_gen:
         anchor: ply_core::fuzz_gen
+        state:
+          of: ParamSeedPlan
+          show: [param_name, shape, examples_seeds]
         fns:
           derive_seed:
             # The two inputs are kept apart by a separator, so swapping
@@ -423,6 +472,9 @@ components:
             checks: [fuzz(256)]
       harness_crate:
         anchor: ply_core::harness_crate
+        state:
+          of: HarnessModule
+          show: [fn_ident, source]
         note: >-
           Writes the generated harness crate. Almost all of it is filesystem
           work, and that is the honest shape of it -- but the one real piece
@@ -457,6 +509,9 @@ components:
             checks: [fuzz(256)]
       layout:
         anchor: ply_core::visual::layout
+        state:
+          of: LayeredLayout
+          show: [positions, content_w, content_h]
         note: >-
           Where each box goes. The promise below is that it never invents
           one: a rank for a name the document never declared would draw
@@ -468,6 +523,9 @@ components:
             checks: [fuzz(256)]
       svg:
         anchor: ply_core::visual::svg
+        state:
+          of: RenderOptions
+          show: [depth, focus, collapse]
         note: >-
           Turns the document into the picture. The promises here are about
           the sentences a reader sees, not the shapes.

@@ -135,6 +135,33 @@ eight of them claimed in the section above). Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that
 cannot fail would turn all 54 green and mean nothing.
 
+## Landed: what each part holds, drawn everywhere — 2026-09-04
+
+Every component in both documents that owns a type now declares it, so the field shapes are
+drawn across the whole picture rather than on six boxes out of twenty-two. 16 components
+gained a `state:` block.
+
+- [x] **Six are still without one, and each says why in the document itself** -- an absence
+      a reader can mistake for an oversight is worth a line: a proc-macro crate defines
+      attributes rather than holding a value; the standalone validator is a binary with no
+      library; the render facade owns no struct; the scheduler's result is a plain pair of
+      collections rather than a named struct, so there are no field names to draw; and
+      `config` declares no type at all.
+
+- [x] **`check` is the sixth, and its reason found a bug.** Declaring state on it and on
+      `diag` was refused with "declares no type called that" -- for `Diagnostic`, which both
+      modules plainly declare. The scanner records a duplicate name by storing "ambiguous",
+      and the one place that reads it collapsed ambiguous and absent into the same answer.
+      So a reader was sent hunting for a type sitting right there, twice.
+
+      `A0414` now has three sentences instead of one: not declared anywhere; declared, but
+      under a different anchor, and here is which; declared more than once, and here are the
+      modules. Found by using the feature, not by looking for it.
+
+- [x] Private fields resolve fine, which was an open question -- `reach::FirstParty` and
+      `fuzz_gen::ParamSeedPlan` are drawn from fields no caller can touch. That is correct:
+      `state:` answers "what does this hold", not "what can Ply build".
+
 ## Landed: Ply crashed on a list-of-struct field — 2026-09-04
 
 Found by planning the wide-struct question, not by looking for it. **Exit 101, no JSON, and

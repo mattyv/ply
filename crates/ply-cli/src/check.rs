@@ -329,19 +329,44 @@ fn verify_state(
         return;
     };
     let Some(fields) = ply_core::harness::scan_type_fields_under(&dir, &segments, &state.of) else {
-        diagnostics.push(state_diag(
-            "A0414",
-            qualified,
-            format!(
-                "`{qualified}` says its state lives in `{of}`, but `{anchor}` declares no \
-                 type called that. A component's state is resolved under its own anchor, \
-                 never guessed at, so a type of that name declared elsewhere in the crate \
-                 is not this component's and was not accepted. Check the spelling, or move \
-                 the claim to the component the type really belongs to. (A0414)",
+        // Three different facts, three different sentences. A name declared
+        // twice used to read as a name not declared at all, which sends the
+        // reader looking for a type that is sitting right there (2026-09-04).
+        let sites = ply_core::harness::type_declaration_sites(&dir, &state.of);
+        let where_at = |m: &String| {
+            if m.is_empty() {
+                "the crate root".to_string()
+            } else {
+                format!("`{m}`")
+            }
+        };
+        let message = match sites.len() {
+            0 => format!(
+                "`{qualified}` says its state lives in `{of}`, but this crate declares no \
+                 type called that anywhere. Check the spelling. (A0414)",
+                of = state.of,
+            ),
+            1 => format!(
+                "`{qualified}` says its state lives in `{of}`, but `{anchor}` does not \
+                 declare it -- {site} does. A component's state is resolved under its own \
+                 anchor, never guessed at, so a type of that name declared elsewhere in \
+                 the crate is not this component's and was not accepted. Move the claim to \
+                 the component that type belongs to, or re-anchor this one. (A0414)",
                 of = state.of,
                 anchor = comp.anchor,
+                site = where_at(&sites[0]),
             ),
-        ));
+            _ => format!(
+                "`{qualified}` says its state lives in `{of}`, and this crate declares more \
+                 than one type by that name: {list}. Ply will not guess which one a \
+                 component holds, so the claim was not accepted -- and this is not a \
+                 missing type, it is an ambiguous one. Either rename one of them, or \
+                 anchor this component at the module that owns the one you mean. (A0414)",
+                of = state.of,
+                list = sites.iter().map(where_at).collect::<Vec<_>>().join(" and "),
+            ),
+        };
+        diagnostics.push(state_diag("A0414", qualified, message));
         return;
     };
     let declared: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
@@ -1350,6 +1375,64 @@ pub struct OrderBook {
                 .any(|d| d.code == "A0415" && d.title.contains("`bids` is")),
             "a field that really exists must not be reported"
         );
+    }
+
+    /// A type declared in two modules used to be reported as one the crate
+    /// "declares no type called" -- the scanner stores a duplicate name as
+    /// "ambiguous", and the one place that reads it collapsed ambiguous and
+    /// absent into the same answer. So a reader was sent hunting for a type
+    /// sitting right there, twice. Found 2026-09-04 declaring state on
+    /// ply-core's own `diag`, which has a `Diagnostic` and so does `check`.
+    #[test]
+    fn a_state_type_declared_in_two_modules_says_so_rather_than_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub mod probe;\npub mod other;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/probe.rs"),
+            "pub struct Thing { pub a: u32 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/other.rs"),
+            "pub struct Thing { pub b: u32 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("ply.yaml"),
+            "ply: 1\ncomponents:\n  probe:\n    anchor: probe::probe\n    state:\n      of: Thing\n",
+        )
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+
+        let found = diagnostics
+            .iter()
+            .find(|d| d.code == "A0414")
+            .expect("an ambiguous state type must still be refused");
+        assert!(
+            !found.title.contains("declares no type called that"),
+            "the type is declared -- twice. Saying it does not exist sends the \
+             reader looking for something that is right there:\n{}",
+            found.title
+        );
+        for module in ["probe", "other"] {
+            assert!(
+                found.title.contains(module),
+                "the finding has to name where the duplicates are, or there is \
+                 nothing to act on:\n{}",
+                found.title
+            );
+        }
     }
 
     /// The same rule one level up: a type the crate does not declare at all.
