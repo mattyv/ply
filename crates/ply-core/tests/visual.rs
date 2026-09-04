@@ -4,6 +4,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 
 use ply_core::diag::{Contract, Diagnostic, Envelope, Node, Span};
+use ply_core::harness::{RustType, StateField, StateFieldIndex};
 use ply_core::model::parse_document;
 use ply_core::visual::svg::RenderOptions;
 use ply_core::visual::{
@@ -145,6 +146,7 @@ fn a_declaration_only_visual_keeps_hierarchy_for_semantic_focus() {
             outcome: RunOutcome::Clean,
         },
         &RenderOptions::default(),
+        None,
     )
     .unwrap();
 
@@ -200,6 +202,7 @@ fn a_declaration_only_visual_refuses_to_call_its_own_run_clean() {
             outcome: RunOutcome::Clean,
         },
         &RenderOptions::default(),
+        None,
     )
     .unwrap();
 
@@ -853,6 +856,7 @@ fn a_drawing_carries_a_shorter_one_for_every_level_it_can_be_folded_to() {
             outcome: RunOutcome::Clean,
         },
         &RenderOptions::default(),
+        None,
     )
     .unwrap();
 
@@ -886,6 +890,101 @@ fn a_drawing_carries_a_shorter_one_for_every_level_it_can_be_folded_to() {
             .iter()
             .any(|drawing| drawing.svg == visual.svg),
         "a level that folds nothing away would repeat the full drawing for no gain"
+    );
+}
+
+#[test]
+fn a_folded_drawing_that_keeps_a_component_expanded_still_shows_its_resolved_state() {
+    // A folded drawing is the same document re-rendered at a shallower
+    // depth, from the same inputs -- it must not answer "what does this
+    // component's `state:` really hold" any differently than the full
+    // drawing already did. Four levels of nesting means depth 3 still
+    // draws `app` and its nested `service` fully expanded (only `handler`,
+    // and whatever is inside it, folds away), so both must still carry the
+    // resolved row the full drawing carries -- the same state fields that
+    // produced it must reach this re-render too.
+    let document = parse_document(
+        "ply: 1\ncomponents:\n  app:\n    anchor: app\n    state:\n      of: AppState\n      show: [timeout]\n    components:\n      service:\n        anchor: app::service\n        state:\n          of: ServiceState\n          show: [count]\n        components:\n          handler:\n            anchor: app::service::handler\n            components:\n              leaf:\n                anchor: app::service::handler::leaf\n                fns:\n                  run:\n                    ensures: [\"result.is_ok()\"]\n",
+    )
+    .unwrap();
+    let state_fields = StateFieldIndex::from([
+        (
+            "app".to_string(),
+            vec![StateField {
+                name: "timeout".into(),
+                ty: RustType::U32,
+                rendered: "u32".into(),
+            }],
+        ),
+        (
+            "app.service".to_string(),
+            vec![StateField {
+                name: "count".into(),
+                ty: RustType::U32,
+                rendered: "u32".into(),
+            }],
+        ),
+    ]);
+
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "folded-state".into(),
+            completed_at: "2026-09-01T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "render".into(),
+            },
+            outcome: RunOutcome::Clean,
+        },
+        &RenderOptions::default(),
+        Some(&state_fields),
+    )
+    .unwrap();
+
+    let resolved_sentence =
+        "each name was found in the code, and each shape read off what that field really is";
+    let unresolved_sentence = "there is no code here to read them from";
+
+    assert_eq!(
+        visual.svg.matches(resolved_sentence).count(),
+        2,
+        "the premise: the full drawing must resolve both `app`'s and `service`'s state -- \
+         this is not the claim under test, just the setup for it. Full drawing:\n{}",
+        visual.svg
+    );
+    assert_eq!(
+        visual.svg.matches(unresolved_sentence).count(),
+        0,
+        "the premise: nothing in the full drawing should say its state is unresolved"
+    );
+
+    let folded = visual
+        .folded
+        .iter()
+        .find(|drawing| drawing.depth == 3)
+        .unwrap_or_else(|| {
+            panic!(
+                "this document nests four levels, so it can be folded to three; the envelope \
+                 offered levels {:?}",
+                visual.folded.iter().map(|d| d.depth).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        folded.svg.matches(resolved_sentence).count(),
+        2,
+        "at depth 3, `app` and its nested `service` both stay expanded (only `handler` beneath \
+         `service` folds away), so both of their resolved rows must still be there -- the same \
+         state_fields that produced the full drawing's rows must reach this re-render too. \
+         Folded drawing:\n{}",
+        folded.svg
+    );
+    assert_eq!(
+        folded.svg.matches(unresolved_sentence).count(),
+        0,
+        "a folded re-render must not lose state resolution the full drawing already had"
     );
 }
 

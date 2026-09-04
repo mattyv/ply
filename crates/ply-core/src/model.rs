@@ -107,24 +107,30 @@ pub struct Component {
 
 /// §5.1's `state:`: the structure a component holds.
 ///
-/// `show:` carries field **names** only, never their types. The shapes come
-/// from the real source, which is the entire point: a document that restated
-/// them would be a second hand-maintained copy of what the compiler already
-/// owns, wrong the first time somebody changed a field. Naming a field the
-/// type does not declare is `A0415`, and naming a type the crate does not
-/// declare is `A0414` -- neither is a picture with a gap in it, both are the
-/// document claiming something about code that is not there.
+/// `show:` carries field **names**, never a *type* -- `Vec<Order>` has
+/// nowhere to land, always. Naming a field the type does not declare is
+/// `A0415`, and naming a type the crate does not declare is `A0414` --
+/// neither is a picture with a gap in it, both are the document claiming
+/// something about code that is not there.
+///
+/// A name may also declare its *shape* (2026-09-04, `vetting/005`) -- one of
+/// [`DeclaredShape`]'s seven tokens, strictly coarser than a type. Where code
+/// exists, the source wins the drawing outright and a declaration is only
+/// ever compared against it (`A0416` on disagreement); with no code to read,
+/// the declared shape is what gets drawn, so a design can be legible before
+/// its implementation exists.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct StateClaim {
     /// The type this component's state lives in, resolved under the
     /// component's own anchor.
     pub of: String,
-    /// The fields worth drawing. Empty -- the default -- draws the header
-    /// line alone: a real state struct has twenty fields and two that
-    /// matter, and choosing is the author's job, not Ply's.
-    #[serde(default)]
-    pub show: Vec<String>,
+    /// The fields worth drawing, each optionally declaring its own shape.
+    /// Empty -- the default -- draws the header line alone: a real state
+    /// struct has twenty fields and two that matter, and choosing is the
+    /// author's job, not Ply's.
+    #[serde(default, deserialize_with = "deserialize_show")]
+    pub show: Vec<ShowField>,
     /// What must be true of this value at all times, written as Rust
     /// expressions over it (2026-09-04).
     ///
@@ -142,6 +148,152 @@ pub struct StateClaim {
     /// with the same reason: a reader who has written one has written both.
     #[serde(default)]
     pub holds: Vec<String>,
+}
+
+impl StateClaim {
+    /// The names in `show:`, in document order, whatever form `show:` was
+    /// written in. Kept as a one-liner so a call site never has to know
+    /// that a name now carries an optional shape alongside it.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.show.iter().map(|f| f.name.as_str())
+    }
+
+    /// Whether `show:` named nothing at all -- the "no fields chosen"
+    /// case, drawn as the header line alone.
+    pub fn is_empty(&self) -> bool {
+        self.show.is_empty()
+    }
+}
+
+/// One entry of `show:`: a field name, and -- only when `show:` was written
+/// as a mapping -- the shape the document declares for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShowField {
+    pub name: String,
+    /// `None` for the list form (`show: [bids, ticks]`), and also for a
+    /// mapping entry whose value is YAML's empty/`null` (`cursor:`) --
+    /// both declare a name and nothing about its shape.
+    pub declared: Option<DeclaredShape>,
+}
+
+/// One of §7.1's seven state-field silhouettes, as a *document* may declare
+/// it -- deliberately not a type grammar, so `Vec<Order>` has nowhere to
+/// land. [`crate::visual::state_shapes::DeclaredShape::to_field_shape`]
+/// (defined there, since that module owns the drawn silhouette) maps each
+/// token onto the same [`crate::visual::state_shapes::FieldShape`] a real
+/// type is classified into, so a declaration and a real field can be
+/// compared as one shape rather than as two different vocabularies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclaredShape {
+    Scalar,
+    Text,
+    List,
+    Map,
+    Set,
+    Optional,
+    Composite,
+}
+
+impl DeclaredShape {
+    /// The exact token an author writes in the document, and the exact
+    /// word the bad-token error lists back to them -- kept as the one
+    /// place that spelling is written down. Public so the schema-agreement
+    /// test (`crates/ply-core/tests/schema.rs`) can hold the schema's
+    /// `enum` to exactly this list -- in both directions: a token added
+    /// here and forgotten there is a drift, not just the reverse.
+    pub const TOKENS: [(&'static str, DeclaredShape); 7] = [
+        ("scalar", DeclaredShape::Scalar),
+        ("text", DeclaredShape::Text),
+        ("list", DeclaredShape::List),
+        ("map", DeclaredShape::Map),
+        ("set", DeclaredShape::Set),
+        ("optional", DeclaredShape::Optional),
+        ("composite", DeclaredShape::Composite),
+    ];
+
+    fn parse(token: &str) -> Option<DeclaredShape> {
+        Self::TOKENS
+            .iter()
+            .find(|(t, _)| *t == token)
+            .map(|(_, shape)| *shape)
+    }
+}
+
+/// `show:`'s two forms, told apart by a hand-written [`serde::de::Visitor`]
+/// rather than `#[serde(untagged)]`. Two load-bearing reasons, not one:
+///
+/// 1. **The error message.** Untagged gives "data did not match any
+///    variant", which names neither the field nor the bad word and is
+///    useless to a newbie. This visitor owns the message a bad token gets,
+///    which is where `Vec<Order>` is refused by name.
+/// 2. **Order.** Rows draw in `show:` order, and both the drawing and the
+///    transcript rely on it. `serde_yaml_ng` visits a mapping's entries in
+///    document order, so pushing into a `Vec` as they arrive preserves it;
+///    sorting the keys (as a `BTreeMap` intermediate would) would silently
+///    reorder every mapping-form document's rows.
+fn deserialize_show<'de, D>(deserializer: D) -> Result<Vec<ShowField>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct ShowVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for ShowVisitor {
+        type Value = Vec<ShowField>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "a list of field names, or a mapping from field name to one of the seven \
+                 shapes (scalar, text, list, map, set, optional, composite)"
+            )
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut out = Vec::new();
+            while let Some(name) = seq.next_element::<String>()? {
+                out.push(ShowField {
+                    name,
+                    declared: None,
+                });
+            }
+            Ok(out)
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut out = Vec::new();
+            while let Some(name) = map.next_key::<String>()? {
+                let token = map.next_value::<Option<String>>()?;
+                let declared = match token {
+                    None => None,
+                    Some(word) => Some(DeclaredShape::parse(&word).ok_or_else(|| {
+                        use serde::de::Error;
+                        A::Error::custom(format!(
+                            "`{word}` is not one of the seven shapes Ply can hold a field to: \
+                             {tokens}. A declared shape is coarser than a type on purpose -- \
+                             so a Rust type such as `Vec<Order>` has nowhere to land here. \
+                             Name one of the seven shapes instead, or leave `{name}` with no \
+                             value to declare nothing about it.",
+                            tokens = DeclaredShape::TOKENS
+                                .iter()
+                                .map(|(t, _)| format!("`{t}`"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        ))
+                    })?),
+                };
+                out.push(ShowField { name, declared });
+            }
+            Ok(out)
+        }
+    }
+
+    deserializer.deserialize_any(ShowVisitor)
 }
 
 /// docs/plans/external-elements.md §3: a named outside party — a system or
@@ -882,6 +1034,82 @@ components:
         assert_eq!(
             effective_checks(fc, curves_default),
             Some(["fuzz(64)".to_string()].as_slice())
+        );
+    }
+
+    /// `show:`'s original form: a bare list of names, each declaring
+    /// nothing about its shape. Unchanged by this feature -- a list-form
+    /// document must parse exactly as it always did.
+    #[test]
+    fn show_as_a_list_declares_names_with_no_shape() {
+        let doc = parse_document(
+            "ply: 1\ncomponents:\n  book:\n    anchor: app::book\n    state:\n      of: Ledger\n      show: [by_account, queued]\n",
+        )
+        .unwrap();
+        let show = &doc.components["book"].state.as_ref().unwrap().show;
+        assert_eq!(show.len(), 2);
+        assert_eq!(show[0].name, "by_account");
+        assert_eq!(show[0].declared, None);
+        assert_eq!(show[1].name, "queued");
+        assert_eq!(show[1].declared, None);
+    }
+
+    /// `show:`'s second form (§7.1, 2026-09-04): a mapping from name to one
+    /// of the seven shape tokens. Order must survive -- both the drawing
+    /// and the transcript draw rows in `show:` order, and a mapping that
+    /// silently sorted its keys would reorder every declared-only document.
+    /// `cursor:` (an empty YAML value) is the null case: a name with no
+    /// declared shape, the same as if it had been written in the list form.
+    #[test]
+    fn show_as_a_mapping_declares_each_names_shape_in_document_order() {
+        let doc = parse_document(
+            "ply: 1\ncomponents:\n  book:\n    anchor: app::book\n    state:\n      of: Ledger\n      show:\n        by_account: map\n        queued: list\n        cursor:\n",
+        )
+        .unwrap();
+        let show = &doc.components["book"].state.as_ref().unwrap().show;
+        assert_eq!(
+            show.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            ["by_account", "queued", "cursor"],
+            "a mapping must not be sorted -- it must keep the order it was written in"
+        );
+        assert_eq!(show[0].declared, Some(DeclaredShape::Map));
+        assert_eq!(show[1].declared, Some(DeclaredShape::List));
+        assert_eq!(
+            show[2].declared, None,
+            "an empty value declares a name and nothing about its shape"
+        );
+    }
+
+    /// The seven tokens are the whole vocabulary, and nothing else -- most
+    /// pointedly not a Rust type. `Vec<Order>` must be refused by the
+    /// deserialiser itself, with a message that names the bad value, lists
+    /// the seven legal tokens, and says why a type has nowhere to land --
+    /// the newbie bar, since this is the first thing a document author sees
+    /// after guessing wrong.
+    #[test]
+    fn a_type_written_where_a_shape_belongs_is_refused_by_name() {
+        let err = parse_document(
+            "ply: 1\ncomponents:\n  book:\n    anchor: app::book\n    state:\n      of: Ledger\n      show:\n        queued: Vec<Order>\n",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("`Vec<Order>` is not one of the seven shapes"),
+            "the message must name the exact bad value: {msg}"
+        );
+        assert!(
+            msg.contains("`scalar`")
+                && msg.contains("`text`")
+                && msg.contains("`list`")
+                && msg.contains("`map`")
+                && msg.contains("`set`")
+                && msg.contains("`optional`")
+                && msg.contains("`composite`"),
+            "the message must list all seven legal tokens: {msg}"
+        );
+        assert!(
+            msg.contains("nowhere to land"),
+            "the message must say why a type is refused here, not just that it is: {msg}"
         );
     }
 }

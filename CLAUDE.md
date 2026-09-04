@@ -11,8 +11,23 @@ name the actual defect, the test is wrong. Only then make it pass.
 **Assert the observable outcome, not the shape of the output.** The renderer once emitted
 30 green tests' worth of correctly-classed, well-formed SVG that rasterised as a solid
 black rectangle: every test checked structure, none checked that anything was visible.
-For a rendered artifact that means opening it (`qlmanage -t -s 900 -o <dir> <file>.svg`,
-then look at the PNG). For a verdict it means the verdict a user would read.
+For a rendered artifact that means opening it. **Do not use `qlmanage` for this** — it
+forces a square viewport and silently drops whatever falls outside it, so a drawing taller
+than it is wide gets checked from the waist up and reads as fine. `docs/ply-self.svg` is
+1283x1510 and comes back as a 1100x1100 square: the bottom quarter, unseen, reported as
+looked at. That is the same failure as the black rectangle, one level up — a verification
+step that returns success without having verified. This guidance recommended it until
+2026-09-03 and several drawings were signed off on a partial view.
+
+Rasterise at the drawing's own size instead, and check the PNG came back that size:
+
+    W=$(grep -oE 'width="[0-9.]+"' f.svg | head -1 | grep -oE '[0-9.]+')
+    H=$(grep -oE 'height="[0-9.]+"' f.svg | head -1 | grep -oE '[0-9.]+')
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless --disable-gpu \
+      --screenshot=out.png --window-size=${W%.*},${H%.*} --default-background-color=ffffffff \
+      "file://$PWD/f.svg"
+
+For a verdict it means the verdict a user would read.
 
 Prefer one invariant test over a pile of spot-checks. `every_painted_element_resolves_a_style_rule`
 and `every_drawn_item_resolves_a_tooltip` in `tools/render/tests/render.rs` are the model:

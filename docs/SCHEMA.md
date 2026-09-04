@@ -1162,7 +1162,7 @@ would make deleting the note the cheapest fix.
 | `~>` data-flow declarations | Declared only, by design (never checked) | none |
 | `uses:` (capabilities) | Declared only | none |
 | `owns:` (ownership) | Declared only | none |
-| `state:` (the structure a component holds) | The type and every named field must resolve, or Ply says it could not check; that the component holds one is **declared only** | `A0414`, `A0415`, `W0413` |
+| `state:` (the structure a component holds) | The type and every named field must resolve, or Ply says it could not check; a field's *declared shape*, once it resolves, is checked against the real one; that the component holds one is **declared only** | `A0414`, `A0415`, `A0416`, `W0413` |
 | `holds:` (what must always be true of that structure) | `check` reads each line and refuses one it cannot parse (`E0506`); `verify` **checks it against the real type**, by building a value through the type's own constructor and putting it through a generated sequence of the type's own operations, asserting every clause after each one (`V0511`, `W0414`–`W0418`) | `E0506` here; the rest under `verify` |
 | `pure:` | Declared only | none |
 | `strict:` | Declared only — read by the renderers, nothing else | none |
@@ -1300,10 +1300,49 @@ components:
       show: [bids, ticks]
 ```
 
-**You name the fields; Ply reads what they are.** `show:` takes field names only. Ply
-finds `OrderBook` in your source and looks up each name in it. Writing the field types
-here instead would be a second copy of what the compiler already knows, and it would be
-wrong the first time somebody changed a field.
+**You name the fields; Ply reads what they are.** `show:` takes field names. Ply finds
+`OrderBook` in your source and looks up each name in it. Writing the field *type* here
+instead would be a second copy of what the compiler already knows, and it would be wrong
+the first time somebody changed a field.
+
+**You may also say what shape a field is, before there is any code to read (2026-09-04).**
+Write `show:` as a mapping instead of a list, and put one of seven words after each name:
+`scalar`, `text`, `list`, `map`, `set`, `optional`, `composite`.
+
+```yaml
+state:
+  of: Ledger
+  show:
+    by_account: map     # a lookup table, keyed
+    queued: list        # ordered, many
+    cursor:              # left blank on purpose -- declares nothing
+```
+
+Never a type — `Vec<Order>` has nowhere to land here, and the parser refuses it by name,
+listing the seven words back to you. A shape is coarser than a type on purpose: `Vec`,
+`VecDeque` and a hand-rolled ring all draw the same three stacked bars, because the fact
+worth writing down is *ordered, many*, not which container you'll end up reaching for.
+
+**Once there is code, the code wins the drawing, always.** A declared shape is never
+drawn instead of the real one — the moment your field resolves against real source, Ply
+draws what the source says and only *checks* the declaration against it. Agree, and
+`cargo ply check`'s summary counts it as a confirmed declaration, kept or dropped back to
+a bare name, your call either way. Disagree, and you get `A0416`, naming the field, what
+you declared, and what the code really is. So a stale declaration can never make the
+picture wrong — it can only fail your build, the same as every other promise here.
+
+With no code yet, the declared shape is what gets drawn, and the box tells you so: the
+type column reads the word `declared` instead of a real type, because there is no type
+yet to spell there. The glyph itself is the ordinary one, unmarked — there is no colour
+left to spend, and every attempt at a second mark either vanished into the fill or got
+mistaken for the dashed "might not be there" cell at reading size, so the type column
+carries the whole difference.
+
+One asymmetry worth knowing: `optional` behaves exactly like a real `Option<T>` does in
+the classifier — it wins over whatever it wraps. `Option<Vec<Order>>` draws (and a
+declared `optional` agrees with) the single dashed "might not be there" cell, not the list
+underneath it. Declare `list` for that same field and you get a real disagreement,
+`A0416`, because the wrapper is the fact that actually matters first.
 
 **Name the ones that matter, not all of them.** A real state struct has twenty fields
 and two worth looking at. Leave `show:` out and the type is named on its own.
@@ -1328,11 +1367,13 @@ with no code under it and the count is left off entirely rather than guessed —
 drawing says `state OrderBook` and the tooltip says there was nothing to read the fields
 from.
 
-Three things are checked:
+Four things are checked:
 
 - the type exists under the anchor (`A0414` if not),
 - every field you name is really a field of it (`A0415` if not, and it lists the fields
   that do exist),
+- a declared shape agrees with what the field really is, once it resolved (`A0416` if
+  not, naming the field, what you declared, and what the code says),
 - and if Ply could not find a crate to check against at all, it says so rather than
   passing you (`W0413`). A `state:` line nobody could check is a claim nobody checked,
   and Ply tells you that instead of exiting quietly.
