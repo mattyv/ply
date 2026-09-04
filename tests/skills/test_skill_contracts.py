@@ -75,6 +75,16 @@ class PlyVerifySkillTests(unittest.TestCase):
                 self.assertEqual(authority[protected][0], "ask-first")
 
     def test_only_public_cli_commands_are_prescribed(self):
+        """Every command the skill tells an agent to run is either a public
+        Ply command or plain `cargo test`.
+
+        `cargo test` earns its place because it is the repair loop: the
+        counterexample Ply writes is ordinary Rust that fails with no engine
+        installed, and iterating against it is the whole reason that file is
+        written into the crate rather than kept in scratch. What stays
+        banned is a command that reaches past the public surface, and
+        `--fail-on error`, which turns absent evidence into success.
+        """
         commands = re.findall(
             r"```(?:bash|sh)\n(.*?)```", skill_text("ply-verify"), re.DOTALL
         )
@@ -83,8 +93,72 @@ class PlyVerifySkillTests(unittest.TestCase):
             for line in block.splitlines():
                 if not line.strip():
                     continue
-                self.assertRegex(line, r"^cargo ply (check|verify) ")
+                self.assertRegex(
+                    line, r"^(cargo ply (check|verify|explain) |cargo test\b)"
+                )
                 self.assertNotIn("--fail-on error", line)
+
+
+class PlyAuthorSkillTests(unittest.TestCase):
+    def test_authoring_never_takes_authority_over_an_existing_promise(self):
+        """Adding a promise is authoring. Weakening or deleting one that
+        already exists is a decision about what the codebase may do, and it
+        is the developer's -- most of all when the reason is that a check is
+        failing, which is exactly when the temptation is highest."""
+        authority = table(skill_text("ply-author"), "Change authority")
+        for target in (
+            "existing_contract",
+            "existing_check",
+            "existing_architecture_rule",
+            "deleting_any_declaration",
+        ):
+            self.assertIn(target, authority, f"{target} must have a stated authority")
+            self.assertEqual(
+                authority[target][0],
+                "ask-first",
+                f"{target} must never be edited without the developer",
+            )
+
+    def test_authoring_prescribes_checking_before_declaring_more(self):
+        """The failure this skill exists to prevent is a document full of
+        confident lines nobody resolved, so the fast check has to be in it."""
+        text = skill_text("ply-author")
+        self.assertIn("cargo ply check", text)
+
+    def test_authoring_warns_against_a_promise_that_cannot_fail(self):
+        """A promise true of every possible body earns a green verdict and
+        says nothing, which is the most expensive mistake an author can make
+        here -- so the skill has to name it and name the check that finds
+        it."""
+        text = skill_text("ply-author")
+        self.assertIn("cannot fail", text)
+        self.assertIn("mutate", text)
+
+
+class PlyAuditSkillTests(unittest.TestCase):
+    def test_audit_reports_and_never_repairs(self):
+        """Discharging an assumption means changing code or adding a check.
+        Both belong to the developer; an auditor that quietly fixes what it
+        finds has stopped being an auditor."""
+        authority = table(skill_text("ply-audit"), "Change authority")
+        self.assertTrue(authority, "audit must state its authority")
+        for target, cells in authority.items():
+            self.assertEqual(
+                cells[0], "ask-first", f"{target} must not be edited by this skill"
+            )
+
+    def test_audit_never_reads_the_record_directly(self):
+        """The public JSON of two commands is the surface. Reconstructing a
+        trust surface from `ply.lock` would be a second implementation of
+        Ply's own semantics, free to disagree with it."""
+        boundary = table(skill_text("ply-audit"), "Data boundary")
+        self.assertEqual(boundary["ply_lock"][0], "forbidden")
+
+    def test_audit_refuses_to_read_an_empty_list_as_a_clean_result(self):
+        """Nothing found and nothing searched produce the same empty list,
+        and the difference is the whole answer."""
+        text = skill_text("ply-audit")
+        self.assertIn("Never present an empty list as a clean bill of health", text)
 
 
 class PlyReviewSkillTests(unittest.TestCase):

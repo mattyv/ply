@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ply Audit"
+  short_description: "Report what the green results rest on"
+  default_prompt: "Use $ply-audit to report what this codebase's evidence rests on and what evidence is still owed."

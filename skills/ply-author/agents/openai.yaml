@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ply Author"
+  short_description: "Write a ply.yaml that says something a run can be wrong about"
+  default_prompt: "Use $ply-author to write or extend the ply.yaml for this crate, checking each addition before adding the next."

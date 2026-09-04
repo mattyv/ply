@@ -19,6 +19,41 @@
       **First step:** one fixture with a hand test that kills a mutant the generated
       examples miss, red before the feature and green after.
 
+## Landed: the parts of the tool nothing explained — 2026-09-04
+
+All raised by the maintainer reading the README and the `skills/` folder as a newcomer
+would, which found gaps no amount of internal review had.
+
+- [x] **`cargo ply explain <CODE>`.** Every message ends in a code and there was no way to
+      find out what one meant: the table is in Ply's own source, and the meaning of the
+      leading letter -- whether the prover, the sampler, or Ply itself is speaking -- was
+      written down nowhere at all. The command reads from the same registry the two
+      invariant tests already hold the tool to, so it cannot drift from what is emitted,
+      and it says outright when a code is described but never produced.
+- [x] **What each check kind is worth**, and when each applies -- including the point about
+      `mutate` that everyone misses: it does not check your function, it checks whether
+      your checks would notice if the function broke.
+- [x] **A legend for reading a drawing**, grouped by channel, leading with the rule the
+      whole grammar rests on: green means earned evidence and nothing else.
+- [x] **The text form has its own section**, with the measurement that justifies it: on the
+      trading-system example, 95% of the render is in the hover text, and a model cannot
+      hover.
+- [x] **The failed-check section no longer reads as "Ply writes your tests."** It leads with
+      the opposite and separates the scratch harness from the one test written into the
+      crate only when a promise really breaks.
+- [x] **Two new skills, and two folded-in workflows.** `ply-author` (writing a document
+      that says something a run can be wrong about) and `ply-audit` (what the green rests
+      on) join the two that existed; the counterexample repair loop and `explain` folded
+      into `ply-verify`. Each new skill's authority table is covered by a test that goes red
+      when the rule is removed -- both breakages were made and reverted to check.
+
+**One paragraph was not confusing but false.** The README described the case where Ply
+finds a failing input and cannot render it as a test, blamed it on a stubbed callee's
+invented return value, and claimed the diagnostic proposes a tightening of the promise.
+Neither is true: the real reason is that the value cannot be spelled as a Rust literal
+(usually one built by a constructor plus a sequence of calls), and that diagnostic carries
+no proposed fix at all. Retracted and rewritten to describe the code.
+
 ## Landed: the structure-promise review, and what it found — 2026-09-04
 
 A review of the `holds:` feature (the commit below) found the feature's own green paint,

@@ -653,6 +653,24 @@ Six commands exist:
 The render, inspection, and verification commands support `--json`. Published visual envelopes
 are the stable integration surface for editor extensions and other visual clients.
 
+## Skills, for agents working with Ply
+
+[`skills/`](skills/) holds four skills — one per stage of the loop. Each is written against
+Ply's public CLI and says plainly where its authority stops, because the temptation an agent
+faces here is specific: when a check fails, editing the promise is always easier than fixing
+the code, and it turns a real finding into a green result.
+
+| Skill | For |
+| --- | --- |
+| [`ply-author`](skills/ply-author/) | Writing or extending a `ply.yaml`: components, dependency rules, contracts, structure promises — checking each addition before adding the next |
+| [`ply-verify`](skills/ply-verify/) | Running the checks on a change, reading the result honestly, and repairing against the generated counterexample |
+| [`ply-audit`](skills/ply-audit/) | Reporting what the green results rest on and what evidence is still owed |
+| [`ply-review`](skills/ply-review/) | Reviewing a published run: its structure, its evidence, and its diagnostics down to exact source |
+
+The common rule across all four: **adding a promise is work an agent may do; weakening or
+deleting one is a decision about what the codebase is allowed to do, and it belongs to the
+developer.** A test walks each skill's own authority table and fails if that slips.
+
 Ply delegates checking rather than building its own solver. Depending on the declared
 check, it uses Cargo's test runner, property testing, Kani, or `cargo-mutants`. Passing
 results distinguish tested, fuzzed, and bounded evidence; missing engines, unsupported
