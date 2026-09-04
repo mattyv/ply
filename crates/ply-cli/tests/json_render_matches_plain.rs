@@ -153,11 +153,24 @@ fn a_document_with_no_crate_under_it_still_draws_the_type_name_and_says_so_hones
     // can resolve -- the honest drawing says exactly that, in both forms,
     // rather than silently going blank or inventing a fields list the
     // document alone cannot back up.
-    let doc = repo_root().join("vetting/003-trading-system.ply.yaml");
+    // Written here rather than borrowed from `vetting/`: this test broke once
+    // already because it leaned on `vetting/003`, and that document later
+    // started declaring its field shapes, so it stopped being a names-only
+    // document and the sentence under test stopped applying to it. A fixture
+    // the test owns cannot be reworded out from under it by an unrelated
+    // change to an example.
+    let dir = std::env::temp_dir().join(format!("ply-nocode-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let doc = dir.join("ply.yaml");
+    std::fs::write(
+        &doc,
+        "ply: 1\ncomponents:\n  thing:\n    anchor: thing\n    state:\n      of: Held\n      show: [a, b]\n",
+    )
+    .expect("write the names-only document");
     let plain = render_plain(&doc);
     let json_svg = render_json_svg(&doc);
 
-    let honest_sentence = "there is no code here to read them from";
+    let honest_sentence = "a bare name carries no shape";
     assert!(
         plain.contains(honest_sentence),
         "the plain render of a document with no crate under it must still say plainly that \
