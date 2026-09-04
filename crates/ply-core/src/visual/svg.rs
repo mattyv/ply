@@ -1074,8 +1074,10 @@ fn resolve_component_ref(flag: &str, token: &str, doc: &Document) -> Result<Stri
 
 /// Recursive `(components, fns)` counts over everything *beneath* `comp`
 /// (not counting `comp` itself as a component) — §7.1's collapsed-box
-/// contents line, `N components · M fns`.
-fn count_subtree(comp: &Component) -> (usize, usize) {
+/// contents line, `N components · M fns`. `pub(super)` so the transcript
+/// can report the same counts for a linked box without a second copy of
+/// this walk (transcript.rs's own module doc names that drift risk).
+pub(super) fn count_subtree(comp: &Component) -> (usize, usize) {
     let mut components = comp.components.len();
     let mut fns = comp.fns.len();
     for child in comp.components.values() {
@@ -1084,6 +1086,32 @@ fn count_subtree(comp: &Component) -> (usize, usize) {
         fns += f;
     }
     (components, fns)
+}
+
+/// §7.1's derived-link sentence, long form — shared by the SVG tooltip and
+/// the transcript so the two views can never drift about what a link
+/// means (the exact failure mode `visual/transcript.rs`'s own module doc
+/// calls out: "one derivation where there is one fact").
+pub(super) fn linked_explanation(n_components: usize, n_fns: usize, target_path: &str) -> String {
+    format!(
+        "linked — {n_components} component{} and {n_fns} function{} live in a different file, \
+         `{target_path}`; this box only points at them, the same way a collapsed box points at \
+         its own folded contents. Open that file to see them; --depth and --focus have nothing \
+         local here to expand.",
+        if n_components == 1 { "" } else { "s" },
+        if n_fns == 1 { "" } else { "s" },
+    )
+}
+
+/// §7.1's derived-link contents line, short form: `"N components · M fns —
+/// path"`. Shared with the transcript for the same reason as
+/// [`linked_explanation`].
+pub(super) fn linked_contents_line(n_components: usize, n_fns: usize, target_path: &str) -> String {
+    format!(
+        "{n_components} component{} \u{b7} {n_fns} fn{} \u{2014} {target_path}",
+        if n_components == 1 { "" } else { "s" },
+        if n_fns == 1 { "" } else { "s" },
+    )
 }
 
 /// Union of every capability `comp`'s subtree (including `comp` itself)
@@ -2133,16 +2161,17 @@ fn render_collapsed_component(
                 (n_fns > 0).then(|| ev.fn_state_counts(&element.id).earned.min(n_fns))
             })
     };
-    let contents_line = format!(
-        "{n_components} component{} \u{b7} {n_fns} fn{}{}{}",
-        if n_components == 1 { "" } else { "s" },
-        if n_fns == 1 { "" } else { "s" },
-        earned_of_promised
-            .map(|earned| format!(" \u{b7} {earned} of {n_fns} earned"))
-            .unwrap_or_default(),
-        link.map(|link| format!(" \u{2014} {}", link.target_path))
-            .unwrap_or_default(),
-    );
+    let contents_line = match link {
+        Some(link) => linked_contents_line(n_components, n_fns, &link.target_path),
+        None => format!(
+            "{n_components} component{} \u{b7} {n_fns} fn{}{}",
+            if n_components == 1 { "" } else { "s" },
+            if n_fns == 1 { "" } else { "s" },
+            earned_of_promised
+                .map(|earned| format!(" \u{b7} {earned} of {n_fns} earned"))
+                .unwrap_or_default(),
+        ),
+    };
     let badges = union_badges_subtree(comp);
     let unresolved = collect_unresolved_subtree(comp);
 
@@ -2233,15 +2262,7 @@ fn render_collapsed_component(
     // does, which is the true one for it.
     let mut tip = component_tip_lines(name, comp, profiles, &findings, &[], false);
     match link {
-        Some(link) => tip.push(format!(
-            "linked — {n_components} component{} and {n_fns} function{} live in a different \
-             file, `{}`; this box only points at them, the same way a collapsed box points at \
-             its own folded contents. Open that file to see them; --depth and --focus have \
-             nothing local here to expand.",
-            if n_components == 1 { "" } else { "s" },
-            if n_fns == 1 { "" } else { "s" },
-            link.target_path,
-        )),
+        Some(link) => tip.push(linked_explanation(n_components, n_fns, &link.target_path)),
         None => tip.push(format!(
             "collapsed — {n_components} component{} and {n_fns} function{} folded inside; \
              render with --depth or --focus <name> to expand",
