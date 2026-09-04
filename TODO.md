@@ -1,5 +1,31 @@
 # TODO
 
+## Landed: a timed-out engine run now kills the whole process tree, not just cargo — 2026-09-04 (`9037b83`)
+
+`run_with_timeout` (`crates/ply-core/src/engines/mod.rs`) only ever killed the one process
+it spawned directly. Every command Ply budgets is `cargo ...`, and cargo always spawns the
+real prover or test binary as a child of its own — so on timeout, cargo died and the actual
+hung process (the thing the budget exists to stop) kept running forever, invisibly. A
+regression against the pre-macOS-fix code, which shelled out to GNU `timeout` and killed
+the whole process group by default.
+
+- [x] **Fixed by walking the process tree on expiry, not by changing where the child
+      runs.** Two designs were weighed: putting the child in its own process group and
+      forwarding Ctrl+C to it via a signal handler, versus leaving the child exactly where
+      it is (so Ctrl+C keeps working exactly as today, untouched) and separately killing
+      every descendant (via `ps`-based tree walking, since macOS has no `/proc`) before
+      killing the child itself. Took the second: no signal handler, no process-group
+      change, no new global state, at the cost of the tree walk being racy — a process
+      forked fast enough right up to and past each of the three re-listing sweeps could
+      still escape. Judged acceptable since this only runs on the rare timeout path
+      against non-adversarial tooling. Regression test spawns `sh` (direct child)
+      backgrounding real `/bin/sleep` (the grandchild) and asserts by pid liveness
+      (`kill(pid, 0)`, not log text) that the grandchild is dead after the budget expires
+      — red before the fix (the `sleep` survived), green after. `libc` promoted from
+      transitive to direct dependency of `ply-core` (already pinned in `Cargo.lock`, so no
+      new code enters the build) to send `SIGKILL` to a pid the crate did not spawn
+      itself.
+
 ## Agreed 2026-09-04, not started: `--json render`'s envelope must resolve declared state too
 
 - [ ] **`build_declared_visual_envelope`'s state rows must go through
