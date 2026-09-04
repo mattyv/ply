@@ -6,10 +6,16 @@ components:
     owns: [disruptor::spsc::Spsc]
     # What the ring holds. The two cursors are the whole design: a
     # single-producer, single-consumer queue is exactly the claim that only
-    # one side moves each of them.
+    # one side moves each of them. Declared, not read: no crate backs this
+    # anchor, so the shapes below are checked against nothing and drawn as
+    # written -- `slots` as an ordered, many-slot buffer, each cursor as the
+    # one value it is.
     state:
       of: Spsc
-      show: [slots, head, tail]
+      show:
+        slots: list
+        head: scalar
+        tail: scalar
     profile: hot_path
     fns:
       slot:
