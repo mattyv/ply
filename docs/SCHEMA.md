@@ -297,12 +297,14 @@ Both commands read the whole tree. A claim written inside a nested component is
 validated by `check`, run by `verify`, and named the same way by both —
 `ingest.feed::Feed::pump`, the component's dotted name and the function key.
 
-One limit sits with nesting, and it is about `anchor:` rather than about depth. A
-function key is read as a path from the **crate root**, so `verify` can only run claims
-under a component anchored at the crate itself. A component anchored at a module —
-`anchor: ingest::book`, while you are checking the crate `ingest` — has its claims
-reported and not run (`W0303`), and the message names the spelling that would run: move
-the claim under the crate-anchored component and key it `book::OrderBook::apply`.
+A function key is read **relative to the component it is written in**. Under
+`anchor: ingest::book`, the key `OrderBook::apply` names `book::OrderBook::apply` and
+runs; under a component anchored at the crate itself, the key is already the path from
+the crate root and nothing is added. So a module can be a component and still promise
+things about its own functions, which is what nesting is for.
+
+`W0303` is left saying one thing: this claim's component is anchored at another crate, so
+its contract is read for callers here and its `checks:` have to run where that crate is.
 
 ### What a component buys you today
 

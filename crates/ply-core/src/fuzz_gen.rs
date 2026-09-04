@@ -3001,6 +3001,23 @@ fn extra_type_imports(cf: &ContractFn, target_crate_ident: &str) -> Vec<String> 
         for p in &plan.ctor_params {
             walk(&p.ty, target_crate_ident, &mut seen, &mut out);
         }
+        // The operations too, not only the constructor (2026-09-04). A
+        // receiver is built by calling a constructor and then a sequence of
+        // the type's own methods, and an argument to one of *those* is a
+        // value the harness constructs exactly like any other -- so a type
+        // reached only that way needs its `use` line just as much. Without
+        // this the harness wrote a bare type name that resolved nowhere,
+        // the harness crate failed to compile, and because one harness is
+        // shared by every claim in a crate, every claim in it came back a
+        // tool error -- including claims with nothing but scalars in them.
+        // Ply's own library was in exactly that state: six promises, none
+        // of them ever reported as anything but a broken harness, because
+        // one status set is built by inserting an enum declared in a module.
+        for op in &plan.operations {
+            for p in &op.params {
+                walk(&p.ty, target_crate_ident, &mut seen, &mut out);
+            }
+        }
     }
     out
 }

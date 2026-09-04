@@ -19,6 +19,41 @@
       **First step:** one fixture with a hand test that kills a mutant the generated
       examples miss, red before the feature and green after.
 
+## Landed: a module can be a component and still promise things — 2026-09-04
+
+Asked for by the maintainer ("can we push the ply.yaml file and rendering down to
+function and collection level?"). A function claimed inside a box anchored at a module
+used to be drawn, counted, and never checked: the key was read from the crate root
+whatever the box said, so it resolved to nothing and was declined by name. Ply's own
+library document was written around that limit and said so in its own header.
+
+- [x] **A function key is read relative to the box it is written in.** `StatusSet::len`
+      inside the box for `ply_core::kernel` names `kernel::StatusSet::len` and runs. A box
+      anchored at the crate root leaves the key untouched, so every claim written before
+      this resolves exactly as it did.
+- [x] **All four readers agree**, because there is now one place that resolves a key:
+      `verify`, `check`, `audit` and the assumed-contract scan all go through it. Two
+      commands disagreeing about which claims point at real code is the failure this
+      project has already had once.
+- [x] **A promise written inside a nested box is now assumable at a boundary.** The map
+      callers consult read only the top level of the document, so a promise one level down
+      was drawn, listed by `audit`, and silently missing from it.
+- [x] **The retired advice is gone**, not left to be followed: the warning that told a
+      reader to move the claim up and respell the key would now be advice to undo a
+      feature. It says one thing, about another crate.
+- [x] **Ply's own library is written the new way and re-rendered.** Four module boxes,
+      each with the structure it holds and the functions that promise things about it.
+
+**A second defect fell out of it, and it is the bigger one.** The generated harness wrote
+every struct or enum name bare, assuming types live at the crate root. A receiver built by
+calling a constructor and then a sequence of the type's own methods passes arguments to
+those methods, and a type reached only that way never got its `use` line -- so the harness
+crate failed to compile, and because one harness is shared by every claim in a crate,
+**every** claim came back a tool error, including claims with nothing but scalars in them.
+Ply's own six promises had been in exactly that state, reporting a broken harness rather
+than a verdict, for as long as they have existed. Five of the six now earn `fuzzed(256)`;
+the sixth is refused by name for a reason that has nothing to do with this.
+
 ## Landed: a documentation change no longer runs the full suite — 2026-09-03
 
 Asked for by the maintainer. The end-to-end shards install Kani and take a quarter of an

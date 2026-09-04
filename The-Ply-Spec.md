@@ -481,12 +481,20 @@ looked correct and the claim never ran. Both commands now walk the whole tree, a
 name a claim the same way — the component's qualified name and the fn key,
 `ingest.book::OrderBook::apply`.
 
-What both commands can *resolve* stays narrower than what the grammar can express: a fn
-key is read as a path from the crate root, so a claim under a component anchored at a
-module of this crate (`anchor: ingest::book` while verifying `ingest`) cannot be resolved
-from the key as written. It is reported as not run (`W0303`) with the crate-root spelling
-that would run — `book::OrderBook::apply`, under a component anchored at `ingest` — and
-never as a missing function. Anchor-relative key resolution is not built.
+A fn key is read **relative to its component's own anchor** (2026-09-04). A claim under
+`anchor: ingest::book` keyed `OrderBook::apply` names `book::OrderBook::apply`, which is
+the path from the crate root both the resolver and the generated harness need, and it
+runs like any other. A component anchored at the crate root leaves the key untouched, so
+every claim written before this resolves exactly as it did. `W0303` therefore now means
+one thing only — a component anchored at *another crate*, whose contracts are read and
+whose checks cannot run from here.
+
+Until that date the key was read from the crate root whatever the anchor said, so a claim
+written inside a module-anchored component was drawn, counted, and never checked: it was
+reported as not run with the crate-root spelling that would have run. That advice worked,
+and the cost of following it was that the document could not name a module as a component
+and still promise anything about the functions inside it — which is the shape Ply's own
+library document had been written around.
 
 One case stays closed, and it is not a limit of the walk. Ply's generated harness is a
 module at the crate root, so a **private** item below the root is a name that harness

@@ -388,7 +388,6 @@ fn verify_loaded_crate(
     // names another crate is a **boundary component**: Ply does not verify
     // its fns from here, it reads the contracts they declare (§5.5).
     let local_anchors = local_anchor_names(crate_dir);
-    let is_local = |anchor: &str| -> bool { shared::is_local(&local_anchors, anchor) };
 
     // §5.4's external-spec route, read for the first time on the verify
     // path: a `requires:`/`ensures:` entry declares a contract for a fn,
@@ -440,17 +439,21 @@ fn verify_loaded_crate(
             // component default was resolved by `check` and silently ignored
             // here: one document, two answers about which check runs.
             let governing = effective_checks(claim, inherited);
-            if !is_local(&comp.anchor) {
+            // §5.2: the key as the document writes it is relative to the
+            // component's own anchor; the resolver and the generated
+            // harness both spell a function from the crate root. A
+            // component anchored at the crate root leaves the key alone,
+            // which is every claim written before 2026-09-04.
+            let module_path = shared::local_module_path(&local_anchors, &comp.anchor);
+            let fn_path =
+                shared::crate_root_fn_key(module_path.as_deref().unwrap_or_default(), fn_name);
+            let fn_path = fn_path.as_str();
+            if module_path.is_none() {
                 // A boundary component. Its contracts are already in
                 // `declared`; its `checks` cannot run from here, and saying
                 // so is the honest report (`verify` is single-crate).
                 if governing.is_some_and(|c| !c.is_empty()) {
-                    diagnostics.push(cross_crate_claim_diag(
-                        &node_id,
-                        fn_name,
-                        &comp.anchor,
-                        &local_anchors,
-                    ));
+                    diagnostics.push(cross_crate_claim_diag(&node_id, fn_name, &comp.anchor));
                 }
                 continue;
             }
@@ -465,7 +468,7 @@ fn verify_loaded_crate(
             // reader needs a different sentence for. `discover_fn_with`
             // still sees exactly the same three outcomes it always has
             // (found, opaque, not-found) for everything that reaches it.
-            let mut cf = match resolver.lookup_fn(fn_name) {
+            let mut cf = match resolver.lookup_fn(fn_path) {
                 Resolution::Refused(reason) => {
                     // A `&self` method is exactly this refusal's own shape
                     // (`callgraph::receiver_refusal_reason`) -- before
@@ -478,7 +481,7 @@ fn verify_loaded_crate(
                     // block, a `&mut self` target) by simply not finding
                     // what it is looking for, so falling back to `reason`
                     // below is always the right thing on its own `Err`.
-                    match harness::discover_method_with_receiver(crate_dir, fn_name, &file.routes) {
+                    match harness::discover_method_with_receiver(crate_dir, fn_path, &file.routes) {
                         Ok(cf) => cf,
                         // Two kinds of `Err` here, and they need two
                         // different sentences (2026-08-27). A `NoConstructor`/
@@ -527,7 +530,7 @@ fn verify_loaded_crate(
                     continue;
                 }
                 Resolution::Found(_) | Resolution::Opaque(_) | Resolution::NotFound => {
-                    match harness::discover_fn_with(&mut resolver, fn_name, &lib_path) {
+                    match harness::discover_fn_with(&mut resolver, fn_path, &lib_path) {
                         Ok(cf) => cf,
                         Err(e) => {
                             diagnostics.push(unresolved_anchor_diag(
@@ -2259,47 +2262,19 @@ fn examples_not_run_diag(node_id: &str, fn_name: &str, n: usize) -> Diagnostic {
 }
 
 /// `verify` resolves every claim against one crate's `src/lib.rs`. A claim
-/// whose component anchors elsewhere is not checked here, and that is said
-/// rather than reported as a missing function (which is what happened before
-/// `anchor:` was consumed -- vetting 004 s5's misleading `E0301`).
+/// whose component anchors at **another crate** is not checked here, and
+/// that is said rather than reported as a missing function (which is what
+/// happened before `anchor:` was consumed -- vetting 004 s5's misleading
+/// `E0301`).
 ///
-/// Two different things land here and they need two different sentences.
-/// An anchor naming another crate is the case this diagnostic was written
-/// for. An anchor naming a *module inside this crate* -- `ingest::book`
-/// while verifying `ingest`, the ordinary way a nested component is
-/// written -- is not another crate at all, and saying so would send a
-/// reader looking for a crate that does not exist. What is true of it is
-/// narrower and fixable: `verify` reads a fn key as a path from the crate
-/// root, so it cannot resolve a key written relative to a module.
-fn cross_crate_claim_diag(
-    node_id: &str,
-    fn_name: &str,
-    anchor: &str,
-    local_anchors: &[String],
-) -> Diagnostic {
-    let (crate_name, module_path) = match anchor.split_once("::") {
-        Some((root, rest)) => (root.replace('-', "_"), Some(rest)),
-        None => (anchor.replace('-', "_"), None),
-    };
-    let inside_this_crate =
-        module_path.is_some() && !local_anchors.is_empty() && local_anchors.contains(&crate_name);
-    let title = match module_path {
-        Some(module) if inside_this_crate => format!(
-            "`{fn_name}` is claimed under a component anchored at `{anchor}`, which is a module \
-             inside this crate rather than the crate itself. `cargo ply verify` reads a function \
-             key as a path from the crate root, so it has no way to resolve a key written relative \
-             to a module: this entry's `checks:` were not run and no verdict is reported for it. \
-             Move the claim to a component anchored at `{crate_name}` and spell the key from the \
-             crate root -- `{module}::{fn_name}` -- and it will run. (W0303, §5.2)"
-        ),
-        _ => format!(
-            "`{fn_name}` is claimed under a component anchored at `{anchor}`, which is not the crate \
-             this run is verifying, and `cargo ply verify` checks one crate at a time. Its `checks:` \
-             were not run and no verdict is reported for it. Any `requires:`/`ensures:` this entry \
-             declares is still read: that is how a callee outside this crate gets a contract Ply can \
-             assume at the boundary (§5.5). (W0303)"
-        ),
-    };
+/// A component anchored at a *module inside this crate* used to land here
+/// too, with a second sentence of its own telling the reader to move the
+/// claim up and respell the key from the crate root. It no longer reaches
+/// here at all: since 2026-09-04 a key is read relative to its component's
+/// own anchor, so a module-anchored claim resolves and runs like any other,
+/// and the advice to rewrite the document would have been advice to undo a
+/// feature.
+fn cross_crate_claim_diag(node_id: &str, fn_name: &str, anchor: &str) -> Diagnostic {
     Diagnostic {
         code: "W0303".into(),
         severity: "warning".into(),
@@ -2307,47 +2282,33 @@ fn cross_crate_claim_diag(
         engine: "ply".into(),
         check: "".into(),
         node_id: node_id.into(),
-        title,
+        title: format!(
+            "`{fn_name}` is claimed under a component anchored at `{anchor}`, which is not the crate \
+             this run is verifying, and `cargo ply verify` checks one crate at a time. Its `checks:` \
+             were not run and no verdict is reported for it. Any `requires:`/`ensures:` this entry \
+             declares is still read: that is how a callee outside this crate gets a contract Ply can \
+             assume at the boundary (§5.5). (W0303)"
+        ),
         pointer: None,
         primary_span: None,
         counterexample: None,
-        fixes: if inside_this_crate {
-            let module = module_path.unwrap_or_default();
-            vec![
-                Fix {
-                    title: format!(
-                        "move `{fn_name}` to a component anchored at `{crate_name}`, keyed \
-                         `{module}::{fn_name}`"
-                    ),
-                    edits: vec![],
-                },
-                Fix {
-                    title: format!(
-                        "or drop `checks:` from this entry and keep only `requires:`/`ensures:`, if \
-                         its purpose is to give `{fn_name}` a contract for its callers to assume"
-                    ),
-                    edits: vec![],
-                },
-            ]
-        } else {
-            vec![
-                Fix {
-                    title: format!(
-                        "run `cargo ply verify` against the crate `{anchor}` itself to check its own \
-                         claims there"
-                    ),
-                    edits: vec![],
-                },
-                Fix {
-                    title: format!(
-                        "or drop `checks:` from this entry and keep only `requires:`/`ensures:`, if \
-                         its purpose is to give `{fn_name}` a contract for callers in this crate to \
-                         assume"
-                    ),
-                    edits: vec![],
-                },
-            ]
-        },
+        fixes: vec![
+            Fix {
+                title: format!(
+                    "run `cargo ply verify` against the crate `{anchor}` itself to check its own \
+                     claims there"
+                ),
+                edits: vec![],
+            },
+            Fix {
+                title: format!(
+                    "or drop `checks:` from this entry and keep only `requires:`/`ensures:`, if \
+                     its purpose is to give `{fn_name}` a contract for callers in this crate to \
+                     assume"
+                ),
+                edits: vec![],
+            },
+        ],
         assumptions: vec![],
         open_item: Some("not_verified_here".into()),
     }
@@ -6712,6 +6673,139 @@ mod tests {
         );
     }
 
+    /// A user type declared in a module, not at the crate root, was
+    /// unbuildable by the generated harness until 2026-09-04: every
+    /// struct/enum name it imported was written bare, on the assumption
+    /// that a type sits at the crate root. The harness crate then failed to
+    /// compile on the unresolved name, and -- because one harness is shared
+    /// by every claim in a crate -- **every** claim in that crate came back
+    /// a tool error, including ones with nothing but scalars in them.
+    ///
+    /// Ply's own library is the case that made it worth finding: all six of
+    /// its promises had been reporting a broken harness rather than a
+    /// verdict, because one of them takes a status enum declared in a
+    /// module.
+    #[test]
+    fn a_user_type_declared_in_a_module_is_named_from_the_crate_root() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"modtype-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub mod paint;\n").unwrap();
+        std::fs::write(
+            dir.path().join("src/paint.rs"),
+            "pub enum Shade {\n    Light,\n    Dark,\n}\n\npub struct Palette(u32);\n\nimpl \
+             Palette {\n    pub fn new() -> Self {\n        Palette(0)\n    }\n\n    pub fn add\
+             (&mut self, s: Shade) {\n        self.0 += match s {\n            Shade::Light => \
+             1,\n            Shade::Dark => 2,\n        };\n    }\n\n    pub fn weight(&self) \
+             -> u32 {\n        self.0\n    }\n}\n",
+        )
+        .unwrap();
+        let yaml_path = dir.path().join("ply.yaml");
+        std::fs::write(
+            &yaml_path,
+            "ply: 1\ncomponents:\n  paint:\n    anchor: modtype_demo::paint\n    fns:\n      Palette::weight:\n        \
+             checks: [fuzz(64)]\n        ensures: [\"|result| *result >= 0\"]\n",
+        )
+        .unwrap();
+        let loaded = config::load(&yaml_path).unwrap();
+
+        let result = verify_loaded_crate(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: Some(120),
+                seed: None,
+            },
+            loaded,
+        )
+        .unwrap();
+
+        fn verdict_of<'a>(node: &'a Node, id: &str) -> Option<&'a str> {
+            if node.id == id {
+                return Some(node.verdict.as_str());
+            }
+            node.children.iter().find_map(|c| verdict_of(c, id))
+        }
+        assert_eq!(
+            verdict_of(&result.envelope.root, "Palette::weight"),
+            Some("fuzzed(64)"),
+            "the sequence that builds a `Palette` calls `add(Shade)`, so the harness has to be \
+             able to write `Shade` before it can build one: {:#?}",
+            result.envelope.diagnostics
+        );
+    }
+    /// A component anchored at a module of this crate is the ordinary way
+    /// a nested component is written, and until 2026-09-04 every function
+    /// claimed inside one was drawn, counted, and never run: a fn key was
+    /// read as a path from the crate root, so a key written relative to the
+    /// module resolved to nothing and the claim was declined by name
+    /// (`W0303`). Ply's own workspace document is the case that made it
+    /// worth fixing -- its modules are components, so none of their
+    /// functions could carry a check.
+    ///
+    /// The key is now read relative to the component's own anchor, which is
+    /// where a reader writing it would expect it to be read.
+    #[test]
+    fn a_function_claimed_under_a_module_anchor_is_run() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"modanchor-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub mod book;\n").unwrap();
+        std::fs::write(
+            dir.path().join("src/book.rs"),
+            "pub fn depth() -> u32 {\n    3\n}\n",
+        )
+        .unwrap();
+        let yaml_path = dir.path().join("ply.yaml");
+        std::fs::write(
+            &yaml_path,
+            "ply: 1\ncomponents:\n  book:\n    anchor: modanchor_demo::book\n    fns:\n      depth:\n        \
+             checks: [fuzz(64)]\n        ensures: [\"|result| *result == 3\"]\n",
+        )
+        .unwrap();
+        let loaded = config::load(&yaml_path).unwrap();
+
+        let result = verify_loaded_crate(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: Some(120),
+                seed: None,
+            },
+            loaded,
+        )
+        .unwrap();
+
+        assert!(
+            !result
+                .envelope
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "W0303"),
+            "the claim resolves now, so nothing may report it as not looked for: {:#?}",
+            result.envelope.diagnostics
+        );
+        fn verdict_of<'a>(node: &'a Node, id: &str) -> Option<&'a str> {
+            if node.id == id {
+                return Some(node.verdict.as_str());
+            }
+            node.children.iter().find_map(|c| verdict_of(c, id))
+        }
+        assert_eq!(
+            verdict_of(&result.envelope.root, "depth"),
+            Some("tested"),
+            "`depth` takes no input, so one call is its whole input space, and the promise \
+             holds: {:#?}",
+            result.envelope.diagnostics
+        );
+    }
+
     /// The same fixture the old "silently ignored" defect used, now
     /// asserting the opposite thing.
     ///
@@ -7095,45 +7189,11 @@ mod tests {
         }
     }
 
-    /// The ordinary way a nested component is written is an anchor naming a
-    /// module of the crate being verified. Calling that "not the crate this
-    /// run is verifying" is false, and sends a reader hunting for a crate
-    /// that does not exist -- so it gets its own sentence, and the sentence
-    /// says what to write instead.
-    #[test]
-    fn a_claim_under_a_module_anchor_is_told_it_is_a_module_not_another_crate() {
-        let d = cross_crate_claim_diag(
-            "ingest.book::OrderBook::apply",
-            "OrderBook::apply",
-            "ingest::book",
-            &["ingest".to_string()],
-        );
-        assert_eq!(
-            d.title,
-            "`OrderBook::apply` is claimed under a component anchored at `ingest::book`, which is \
-             a module inside this crate rather than the crate itself. `cargo ply verify` reads a \
-             function key as a path from the crate root, so it has no way to resolve a key written \
-             relative to a module: this entry's `checks:` were not run and no verdict is reported \
-             for it. Move the claim to a component anchored at `ingest` and spell the key from the \
-             crate root -- `book::OrderBook::apply` -- and it will run. (W0303, §5.2)"
-        );
-        assert_eq!(
-            d.fixes[0].title,
-            "move `OrderBook::apply` to a component anchored at `ingest`, keyed \
-             `book::OrderBook::apply`"
-        );
-    }
-
     /// An anchor that really does name another crate keeps the sentence
     /// written for it.
     #[test]
     fn a_claim_under_another_crates_anchor_still_says_another_crate() {
-        let d = cross_crate_claim_diag(
-            "ledger::post",
-            "post",
-            "ledger",
-            &["ingest".to_string(), "ingest".to_string()],
-        );
+        let d = cross_crate_claim_diag("ledger::post", "post", "ledger");
         assert_eq!(
             d.title,
             "`post` is claimed under a component anchored at `ledger`, which is not the crate this \
