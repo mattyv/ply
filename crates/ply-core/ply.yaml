@@ -61,6 +61,14 @@ components:
             ensures:
               - "result.len() >= self.len()"
             checks: [fuzz(256)]
+          StatusSet::is_empty:
+            # Checked against `len`'s own, independent code path rather than
+            # restating either one: "empty" and "holds nothing to count" are
+            # two different pieces of code, and this is what stops them
+            # disagreeing about the same set.
+            ensures:
+              - "result == (self.len() == 0)"
+            checks: [fuzz(256)]
       harness:
         anchor: ply_core::harness
         state:
@@ -188,6 +196,14 @@ components:
               - "lookup(\"E0203\").map(|e| e.code) == Some(ply_core::registry::Code::E0203)"
               - "lookup(\" w0526 \").map(|e| e.code) == Some(ply_core::registry::Code::W0526)"
               - "lookup(\"E9999\").is_none()"
+          all:
+            # A duplicate code would make `cargo ply explain` ambiguous
+            # about which rule a reader is looking at: two rows, one code
+            # typed at the prompt, no way to say which explanation is the
+            # right one.
+            ensures:
+              - "|result| result.iter().map(|e| e.code).collect::<std::collections::BTreeSet<_>>().len() == result.len()"
+            checks: [test]
       record:
         anchor: ply_core::record
         state:
@@ -240,6 +256,16 @@ components:
           is_identifier:
             ensures:
               - "|result| !*result || !s.is_empty()"
+            checks: [fuzz(256)]
+          known_keys:
+            # The vocabulary a document is allowed to use and the validator
+            # that rejects an unknown key are two different pieces of code;
+            # this is what stops them drifting apart -- every key this
+            # returns has to satisfy the schema's own identifier grammar,
+            # or a key nobody could ever type validly would still be
+            # advertised as known.
+            ensures:
+              - "|result| result.iter().all(|k| ply_core::schema::is_identifier(k))"
             checks: [fuzz(256)]
           nearest_key:
             ensures:
@@ -317,6 +343,35 @@ components:
                 ensures:
                   - "|result| result.len() % 2 == 0"
                 checks: [fuzz(256)]
+              classify_probe:
+                # Kani renders a timeout and a real failing check behind the
+                # same "VERIFICATION:- FAILED" line -- reading only that far
+                # would report a proof engine that simply ran out of time as
+                # a genuine counterexample. A result naming a real refutation
+                # must never coincide with the engine's own timeout marker.
+                ensures:
+                  - "|result| !matches!(result, ply_core::engines::kani::ProbeOutcome::Refuted) || !combined.contains(\"CBMC timed out\")"
+                # Random text almost never contains the literal marker
+                # Kani prints, so fuzzing alone would only ever exercise the
+                # boring half of this -- the worked cases are what exercise
+                # the timeout branch at all.
+                checks: [fuzz(256), test]
+                examples:
+                  - "matches!(classify_probe(\"VERIFICATION:- FAILED\\nCBMC timed out\\n\"), ply_core::engines::kani::ProbeOutcome::Undecided(_))"
+                  - "classify_probe(\"VERIFICATION:- SUCCESSFUL\\n\") == ply_core::engines::kani::ProbeOutcome::Holds"
+                  - "classify_probe(\"VERIFICATION:- FAILED\\n\") == ply_core::engines::kani::ProbeOutcome::Refuted"
+              parse_output:
+                # The same reading discipline as `classify_probe`, at the
+                # tier that also carries a counterexample witness: a run
+                # that timed out must never come back reported as a
+                # `Violation`, which is the one thing a reader would trust
+                # completely -- a concrete input that breaks the promise.
+                ensures:
+                  - "|result| !matches!(result, ply_core::engines::kani::KaniOutcome::Violation { .. }) || !combined.contains(\"CBMC timed out\")"
+                checks: [fuzz(256), test]
+                examples:
+                  - "matches!(parse_output(\"VERIFICATION:- FAILED\\nCBMC timed out\\n\"), ply_core::engines::kani::KaniOutcome::Timeout { .. })"
+                  - "matches!(parse_output(\"VERIFICATION:- SUCCESSFUL\\n\"), ply_core::engines::kani::KaniOutcome::Verified)"
         state:
           of: TimedOutput
           show: [stdout, stderr, status]
@@ -470,6 +525,44 @@ components:
             ensures:
               - "|result| result.len() == 64"
             checks: [fuzz(256)]
+          classify_seedable_wrap:
+            # A fixed, tiny vocabulary -- exactly the two spellings the
+            # seeding apparatus below this actually knows how to grow a
+            # corpus for. Naming a shape for source text that is not one of
+            # those two spellings would tell a later caller a parameter can
+            # be seeded when nothing here can vary it.
+            ensures:
+              - "|result| match result { None => true, Some(ply_core::fuzz_gen::SeedableWrap::OptionString) => source == \"Option<String>\", Some(ply_core::fuzz_gen::SeedableWrap::VecString) => source == \"Vec<String>\" }"
+            checks: [fuzz(256), test]
+            examples:
+              - "classify_seedable_wrap(\"Option<String>\") == Some(ply_core::fuzz_gen::SeedableWrap::OptionString)"
+              - "classify_seedable_wrap(\"Vec<String>\") == Some(ply_core::fuzz_gen::SeedableWrap::VecString)"
+              - "classify_seedable_wrap(\"Option<u32>\").is_none()"
+          extract_examples_seed_strings:
+            # Every seed this hands to the sampling engine has to be text
+            # the author actually wrote in an `examples:` entry -- an
+            # invented one would grow a corpus from a value nobody wrote
+            # down and report cases that were never really seeded.
+            ensures:
+              - "|result| result.iter().all(|s| examples.iter().any(|e| e.contains(s.as_str())))"
+            # Random text almost never parses as a call to `ctor_path` at
+            # all, so fuzzing alone only ever shows the empty miss -- the
+            # worked cases are what exercise a real extraction.
+            checks: [fuzz(256), test]
+            examples:
+              - 'extract_examples_seed_strings(&["Order::new(\"abc\")".to_string()], "Order::new") == vec!["abc".to_string()]'
+              - 'extract_examples_seed_strings(&["other_fn(\"x\")".to_string()], "Order::new").is_empty()'
+          extract_examples_seed_strings_for_param:
+            # Same promise as the constructor-call extractor, at the
+            # positional-argument shape a plain parameter uses: nothing
+            # comes back that the author did not write into an `examples:`
+            # entry.
+            ensures:
+              - "|result| result.iter().all(|s| examples.iter().any(|e| e.contains(s.as_str())))"
+            checks: [fuzz(256), test]
+            examples:
+              - 'extract_examples_seed_strings_for_param(&["handle(0, \"seed1\")".to_string()], "handle", 1) == vec!["seed1".to_string()]'
+              - 'extract_examples_seed_strings_for_param(&["handle(0, \"seed1\")".to_string()], "handle", 0).is_empty()'
       harness_crate:
         anchor: ply_core::harness_crate
         state:
@@ -506,6 +599,26 @@ components:
           remove_workspace_member:
             ensures:
               - "|result| result.len() <= text.len()"
+            checks: [fuzz(256)]
+      state_shapes:
+        anchor: ply_core::visual::state_shapes
+        state:
+          of: RowSpec
+          show: [name, shape, origin]
+        note: >-
+          Which glyph a field's row draws, and whether it was read off real
+          code or only declared. The hatch is the one visual cue saying a
+          field is a guess rather than a fact, so it has to survive every
+          shape it might be drawn on top of.
+        fns:
+          glyph_svg:
+            # The hatch replaces a glyph's own fill or ink, never its own
+            # shape -- a reader still has to see which field could not be
+            # built. A field marked `hatched` that came back without the
+            # hatch class would tell the reader that field was checked when
+            # it was only guessed at.
+            ensures:
+              - "|result| !hatched || result.contains(\"state-glyph-hatched\")"
             checks: [fuzz(256)]
       layout:
         anchor: ply_core::visual::layout

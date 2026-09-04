@@ -139,7 +139,7 @@ eight of them claimed in the section above). Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that
 cannot fail would turn all 54 green and mean nothing.
 
-## Open: claims an agent found that are not in the document yet — 2026-09-04
+## Landed: six more claims on Ply's own library — 2026-09-04
 
 An agent worked the remaining ply-core functions in an isolated copy, but its copy was
 branched from a **stale point** -- 6 claims, not the 44 already landed -- so most of its 35
@@ -149,20 +149,40 @@ entry). Its branch is not merged: rebasing 35 mostly-duplicate claims onto a doc
 has since gained state blocks everywhere would cost more than rewriting the handful that
 are genuinely new.
 
-These are the ones that are **not** in `crates/ply-core/ply.yaml` and are worth adding:
+The six genuinely new ideas it surfaced are now in `crates/ply-core/ply.yaml`, rewritten
+rather than copied -- each earns real evidence under `cargo ply verify`:
 
-- [ ] `registry::all` -- no two rows share a diagnostic code. A duplicate would make
-      `cargo ply explain` ambiguous about which rule a reader is looking at.
-- [ ] `schema::known_keys` -- every key it returns satisfies the schema's own identifier
-      grammar, so the vocabulary and the validator cannot drift apart.
-- [ ] `engines::kani::classify_probe` and `parse_output` -- never conflate a timeout with a
-      real counterexample. This is §5.4c's structural rule written as a promise.
-- [ ] `visual::state_shapes::glyph_svg` -- always draws the hatch mark when a field could
+- [x] `registry::all` -- no two rows share a diagnostic code. A duplicate would make
+      `cargo ply explain` ambiguous about which rule a reader is looking at. `tested`,
+      clean: a zero-argument function gets exactly one direct-contract case, and that one
+      case is the real 70-odd-row registry.
+- [x] `schema::known_keys` -- every key it returns satisfies the schema's own identifier
+      grammar, so the vocabulary and the validator cannot drift apart. `fuzzed(256)`
+      across all six `Level` variants, clean.
+- [x] `engines::kani::classify_probe` and `parse_output` -- never conflate a timeout with a
+      real counterexample. This is §5.4c's structural rule written as a promise, phrased as
+      "a result naming a real refutation never coincides with the engine's own timeout
+      marker" rather than "timeout text implies an Undecided/Timeout result" -- the second
+      phrasing is false on adversarial input that contains both markers at once, since each
+      function's own branch order checks one marker before the other. Both `fuzzed(256)`,
+      and both disclosed as deciding the promise on the "not a real counterexample" side
+      256/256 times under random text -- the literal marker Kani prints essentially never
+      appears by chance, so worked `examples:` (not the sampling) are what actually exercise
+      the timeout branch. Declared alongside the fuzzing rather than used to reword the
+      promise, per the skill's own guidance for a genuinely rare branch.
+- [x] `visual::state_shapes::glyph_svg` -- always draws the hatch mark when a field could
       not be built. The hatch is the only thing telling a reader that shape is a guess.
-- [ ] `kernel::StatusSet::is_empty` -- agrees with `len`, checked against the other's
-      independent code path rather than restating either.
-- [ ] `fuzz_gen::classify_seedable_wrap` and the two `extract_examples_seed_strings`
-      functions -- never invent a shape or a seed the source text did not contain.
+      `fuzzed(256)`, and the disclosure shows a healthy split (113/143) between the two
+      sides of the promise -- both are really being exercised, not just the boring half.
+- [x] `kernel::StatusSet::is_empty` -- agrees with `len`, checked against the other's
+      independent code path rather than restating either (`result == (self.len() == 0)`).
+      `fuzzed(256)` over random `insert`/`union`/`contains`/`iter` sequences built on a real
+      `StatusSet`.
+- [x] `fuzz_gen::classify_seedable_wrap` and the two `extract_examples_seed_strings`
+      functions -- never invent a shape or a seed the source text did not contain. All three
+      `fuzzed(256)` plus worked `examples:` -- random text essentially never parses as the
+      call shape these look for, so (as with the kani pair above) the examples are what
+      exercise a real extraction rather than the vacuous "found nothing" case.
 
 Refusals it confirmed by running, worth not re-attempting: `StatusSet::contains` (a
 by-value enum parameter cannot be read after the call consumes it, even when `Copy`);
