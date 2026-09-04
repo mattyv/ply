@@ -76,7 +76,7 @@ weakest function inside it.
 The kernel's box says its structure promises something about itself: a set of statuses can
 never hold more than the seven kinds of status that exist. That is not a comment — Ply
 builds a set through its own constructor, inserts and merges through its own operations,
-and checks the claim again after every one of them, 256 histories deep.
+and checks the claim again after every one of them, across 256 generated histories.
 
 Each module is its own box, holding the structure it keeps and the functions that promise
 things about it. That became possible on 2026-09-04: a function key is now read relative

@@ -255,6 +255,31 @@ fn verify_state(
     let Some(state) = &comp.state else {
         return;
     };
+    // The promises first, and without needing any source at all: whether a
+    // `holds:` line can be read as an expression is a fact about the line,
+    // not about the code. `check` reported "No problems found" on a
+    // document `verify` then refused outright, which is the two-commands-
+    // two-answers failure this file exists to prevent -- and worse here
+    // than for a fn key, because the schema table tells a reader `check`'s
+    // closing output is the authority.
+    for clause in &state.holds {
+        if let Err(bad) = ply_core::harness::parse_holds_clause(clause) {
+            diagnostics.push(state_diag(
+                "E0506",
+                qualified,
+                format!(
+                    "one of the things `{qualified}` promises about `{of}` could not be read, so \
+                     none of them will be checked: {reason}. The line as written is `{clause}`. \
+                     Every promise about this structure is held back together rather than \
+                     checking the ones that do parse: a partly-checked promise reported as a \
+                     checked one is the failure this refuses. (E0506)",
+                    of = state.of,
+                    reason = bad.reason.trim_end_matches('.'),
+                    clause = bad.clause,
+                ),
+            ));
+        }
+    }
     // The crate the anchor names, when the document spans a workspace;
     // otherwise the crate the document sits in. Either way the rest of the
     // anchor is a module path *inside* that crate, and the type has to be

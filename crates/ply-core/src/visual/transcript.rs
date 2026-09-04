@@ -493,7 +493,7 @@ fn write_component(
     }
 
     let default = component_default_checks(name, comp, inherited);
-    if comp.fns.is_empty() && comp.components.is_empty() {
+    if super::is_hollow(comp) {
         out.push_str(&format!(
             "{q}hollow — promises nothing yet: no functions, no nested components. Saying \
              what it holds is not a promise about how it behaves. A sketch waiting for \

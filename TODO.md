@@ -19,6 +19,59 @@
       **First step:** one fixture with a hand test that kills a mutant the generated
       examples miss, red before the feature and green after.
 
+## Landed: the structure-promise review, and what it found — 2026-09-04
+
+A review of the `holds:` feature (the commit below) found the feature's own green paint,
+plus five smaller holes. All fixed in `crates/ply-cli/src/verify.rs`,
+`crates/ply-core/src/fuzz_gen.rs` and the visual layer; every fix carries a test that
+goes red when the fix is removed.
+
+- [x] **THE BIG ONE: a structure nothing could be built of reported `fuzzed(256)`.** A
+      constructor returning `Err` for every input, or with a precondition nothing
+      satisfies, left the run finishing cleanly with no value ever made -- and the verdict
+      read 256 cases of evidence, exit 0, no diagnostic. The generated run now counts the
+      histories a value was actually built for, the verdict is read off that count, and
+      zero is `unclaimed` with `W0417` saying why. A run narrower than it asked for says
+      so (`W0418`).
+- [x] **Coverage disclosures were dropped.** The receiver machinery already names the
+      operations it could not call and the constructors it never started from; the
+      invariant path threw them away, so Ply's own kernel reported a clean number beside
+      two fn claims on the same type that both warned `StatusSet::extend` was never
+      called. Now surfaced (`W0418`) and marked `partial-history` on the node.
+- [x] **The severity was hardcoded.** Every one of these diagnostics went out as a
+      warning, including `E0506`, which the registry calls an error -- so `--fail-on
+      error` exited 0 on a document whose promise could not be read. Severity now comes
+      from the registry, so the table and the emitter cannot disagree.
+- [x] **`check` said "no problems" about a document `verify` refused.** It now reads each
+      `holds:` line and reports one it cannot parse, which is the same two-commands-two-
+      answers failure this repo already names for fn keys.
+- [x] **`check` and `verify` disagreed about whose type it is.** `verify` used a
+      crate-wide lookup and happily checked a same-named type declared somewhere else,
+      while `check` refused it by name. `verify` now scopes to the component's own anchor.
+      An ambiguous name gets its own sentence instead of "no type by that name", which
+      was false.
+- [x] **Two components promising things about one type collided**: same generated module
+      name, neither compiled, and each was told every other claim had run. The module name
+      now carries the component. The name is also derived once and passed to both the
+      generator and the test filter -- deriving it twice is what let them drift.
+- [x] **The drawing counted a structure promise as a function.** A document with one
+      structure promise and no functions read "0 functions · 1 broken". The node has its
+      own kind now. A component whose only claim is a structure promise is also no longer
+      called "hollow -- promises nothing yet", printed one line under the promise, and its
+      declared ceiling counts the promise.
+
+**Test adequacy, measured rather than assumed.** The reviewer found four one-line
+breakages of the production code that every test survived: dropping the operation-argument
+imports, deleting the assertion that runs straight after the constructor, checking only
+the clauses that parse, and never refusing a timed-out run. Three now have a test that
+dies on them (the fourth, the timeout, still has none -- **KNOWN GAP**). Each new test was
+confirmed by making the breakage, watching it go red with a message naming the real
+defect, and reverting.
+
+**KNOWN GAP: a `holds:` result is never recorded or reused.** Any structure promise forces
+a harness compile even when every fn claim in the crate was reused. Written down in the
+spec and SCHEMA rather than left to be discovered from a build time.
+
 ## Landed: a structure can promise something about itself, and Ply checks it — 2026-09-04
 
 Asked for by the maintainer, the second half of "push the ply.yaml file and rendering down

@@ -854,6 +854,20 @@ fn component_verdict_node<'a>(
             children: Vec::new(),
         })
         .collect();
+    // A `holds:` clause is a declared check like any other -- it names
+    // something a run will try and can fail -- so it belongs in the ceiling
+    // beside the fn claims. Left out, a component whose only claim was a
+    // promise about its structure drew as promising nothing at all, one
+    // line under the promise itself. It is checked by generated cases, so
+    // its rung is the sampling one.
+    if comp.state.as_ref().is_some_and(|st| !st.holds.is_empty()) {
+        children.push(VerdictNode {
+            kind: NodeKind::Claimable(Evidence::Fuzzed),
+            statuses: crate::kernel::StatusSet::new(),
+            conditional: None,
+            children: Vec::new(),
+        });
+    }
     children.extend(
         comp.components
             .iter()
@@ -1940,7 +1954,7 @@ fn render_component_dispatch<'a>(
     // rather than staying fixed for the whole walk the way `WalkCtx` does.
     parent_element_id: Option<&str>,
 ) -> ComponentBox {
-    let is_hollow = comp.fns.is_empty() && comp.components.is_empty();
+    let is_hollow = super::is_hollow(comp);
     if !is_hollow && walk.collapse.should_collapse(qualified, level) {
         render_collapsed_component(
             name,
@@ -2607,7 +2621,7 @@ fn render_component<'a>(
     // §7.1 "hollow component": derived from absence — nothing declared
     // inside means a dashed sketch outline, the opposite claim to a
     // collapsed box (plenty inside, folded away), which stays solid.
-    let is_hollow = comp.fns.is_empty() && comp.components.is_empty();
+    let is_hollow = super::is_hollow(comp);
     if is_hollow {
         // "Nothing inside" stopped being true the day a box could draw what
         // its component holds: a dashed box can now be full of state rows.

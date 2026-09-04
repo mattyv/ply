@@ -813,9 +813,17 @@ whose argument cannot be built is named rather than silently dropped, and a seco
 constructor this run never starts from is named too — so "checked" here means checked
 across the states this run could actually reach, and the disclosure says which those were.
 
-Three non-answers are reported as non-answers, never as a pass: the structure lives in
-another crate (`W0414`), no type of that name is declared here (`W0415`), or Ply has no
-way to build one (`W0416`). A clause that is not readable Rust holds back *every* clause
+Four non-answers are reported as non-answers, never as a pass: the structure lives in
+another crate (`W0414`), no type of that name is declared under the anchor or more than
+one is (`W0415`), Ply has no way to build one (`W0416`), or the run finished having never
+built a single value because the constructor turned every one away (`W0417`, `unclaimed`).
+The verdict counts the values actually built rather than the number requested, and a run
+narrower than it asked for, or one that could not call every operation, says so and names
+them (`W0418`).
+
+A `holds:` result is **not recorded and not reused** (§5.2a covers per-claim results only),
+so a crate whose every fn claim is reused still compiles a harness for its structure
+promises. A recorded gap, not a decision. A clause that is not readable Rust holds back *every* clause
 on that type (`E0506`) rather than checking the ones that parse — a partly-checked promise
 reported as a checked one is the failure this refuses. A broken promise is `V0511`.
 

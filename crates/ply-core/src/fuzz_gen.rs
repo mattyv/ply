@@ -3131,6 +3131,7 @@ fn contract_referenced_use_imports(cf: &ContractFn, target_crate_ident: &str) ->
 /// operations in -- "the invariant broke" alone would send them to read the
 /// whole type.
 pub fn generate_invariant_test(
+    ident: &str,
     type_path: &str,
     plan: &harness::ReceiverPlan,
     clauses: &[(syn::ExprClosure, String)],
@@ -3140,7 +3141,6 @@ pub fn generate_invariant_test(
     if clauses.is_empty() {
         bail!("no `holds:` clause to check for `{type_path}`");
     }
-    let ident = safe_ident(type_path);
     let label = type_path;
     let ctor_call = harness::last_two_segments(&plan.constructor);
     let ctor_args = call_args_for(&plan.ctor_params).join(", ");
@@ -3189,6 +3189,15 @@ pub fn generate_invariant_test(
         ));
     }
     body.push_str(&format!("let {mut_kw}__ply_receiver = {ctor_expr};\n"));
+    // Reaching this line means a value really was built: every gate above
+    // -- the constructor's own precondition, and its `Result` if it is
+    // fallible -- let this case through. Counted separately from
+    // `__ply_total` because the two answer different questions, and the
+    // difference is the whole of what a run can honestly claim. A
+    // constructor that rejects every draw leaves this at zero while
+    // `__ply_total` reads 256, and a verdict read off the wrong one of
+    // those reports 256 cases of evidence for a value that was never made.
+    body.push_str("            __ply_checked.set(__ply_checked.get() + 1);\n");
     body.push_str(&assert_block("0usize", "            "));
 
     // The sequence. Every operation is a pooled one here -- there is no
@@ -3271,6 +3280,7 @@ pub fn generate_invariant_test(
          \x20\x20\x20\x20\x20\x20\x20\x20);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rejected = std::cell::Cell::new(0u32);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_total = std::cell::Cell::new(0u32);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let __ply_checked = std::cell::Cell::new(0u32);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {outer_strategy};\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{outer_pattern}| {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
@@ -3279,6 +3289,7 @@ pub fn generate_invariant_test(
          \x20\x20\x20\x20\x20\x20\x20\x20}});\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_rej = __ply_rejected.get();\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_tot = __ply_total.get();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_HOLDS_STATS|{label}|checked={{}}|rejected={{}}|total={{}}\", __ply_checked.get(), __ply_rej, __ply_tot);\n\
          \x20\x20\x20\x20\x20\x20\x20\x20match __ply_outcome {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(()) => {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20if __ply_tot > 0 && (__ply_rej as f64) / (__ply_tot as f64) > 0.5 {{\n\
@@ -3299,13 +3310,20 @@ pub fn generate_invariant_test(
 /// checked function needs. What it must still bring into scope is every
 /// type the construction touches: the state type itself, its constructor's
 /// own arguments, and the arguments of every operation the sequence calls.
+/// `ident` is the caller's own name for this check, used for both the
+/// module and the test inside it. Passed in rather than derived here: the
+/// runner filters `cargo test` by module name, and a name derived twice
+/// from different inputs drifted apart the moment two components could
+/// promise things about the same type -- the filter then matched nothing,
+/// and a check that never ran is not a check that passed.
 pub fn wrap_invariant_harness_module(
+    ident: &str,
     type_path: &str,
     plan: &harness::ReceiverPlan,
     target_crate_ident: &str,
     body: &str,
 ) -> String {
-    let module_ident = safe_ident(type_path);
+    let module_ident = ident;
     let mut out = format!(
         "#[cfg(test)]\nmod {module_ident}_holds_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{type_path};\n\
          \x20\x20\x20\x20#[allow(unused_imports)]\n    use {target_crate_ident}::*;\n"
@@ -3331,12 +3349,6 @@ pub fn wrap_invariant_harness_module(
     out.push_str(body);
     out.push_str("}\n");
     out
-}
-
-/// A `::`-qualified path turned into a legal Rust identifier, so a generated
-/// module and test can be named after it.
-fn safe_ident(path: &str) -> String {
-    path.replace("::", "_")
 }
 
 pub fn wrap_fn_harness_module(

@@ -1163,7 +1163,7 @@ would make deleting the note the cheapest fix.
 | `uses:` (capabilities) | Declared only | none |
 | `owns:` (ownership) | Declared only | none |
 | `state:` (the structure a component holds) | The type and every named field must resolve, or Ply says it could not check; that the component holds one is **declared only** | `A0414`, `A0415`, `W0413` |
-| `holds:` (what must always be true of that structure) | **Checked**: a value is built through the type's own constructor and put through a generated sequence of the type's own operations, with every clause asserted after each one | `V0511`, `E0506`, `W0414`, `W0415`, `W0416` |
+| `holds:` (what must always be true of that structure) | `check` reads each line and refuses one it cannot parse (`E0506`); `verify` **checks it against the real type**, by building a value through the type's own constructor and putting it through a generated sequence of the type's own operations, asserting every clause after each one (`V0511`, `W0414`–`W0418`) | `E0506` here; the rest under `verify` |
 | `pure:` | Declared only | none |
 | `strict:` | Declared only — read by the renderers, nothing else | none |
 
@@ -1374,16 +1374,26 @@ constructor and again after **every single method call**. That last part is the 
 structure that is fine when you make it and wrong four calls later is exactly the bug
 nobody catches by hand, and the report tells you how many calls in it went wrong.
 
-**What "checked" means here, precisely.** Checked across the states this run could reach.
-A method whose argument Ply cannot build is named in the report rather than quietly
-skipped, and a second constructor Ply never started from is named too — so you can see
-which states were never visited instead of assuming there were none.
+**What "checked" means here, precisely.** Checked across the states this run could reach,
+and the report tells you where that stops. A method whose argument Ply cannot build is
+named rather than quietly skipped, and a second constructor Ply never started from is
+named too — so you see which states were never visited instead of assuming there were
+none. The verdict counts the values actually built, not the number asked for.
 
 **When it cannot check, it says so and never passes you.** The structure lives in another
-crate (`W0414`); no type of that name is declared here (`W0415`); Ply has no way to build
-one (`W0416`). If one line will not parse, **none** of that type's lines are checked
+crate (`W0414`); no type of that name is declared under your anchor, or more than one is
+(`W0415`); Ply has no way to build one (`W0416`); the run finished and never managed to
+build a single value, because the constructor turned every one away (`W0417`) — that is
+reported as no evidence at all, never as a pass. If fewer values were built than asked
+for, or the run could not call every operation, the report says so and names them
+(`W0418`). If one line will not parse, **none** of that type's lines are checked
 (`E0506`) — checking the readable half and reporting it as checked is the failure this
 refuses. A promise the code really breaks is `V0511`, and it quotes the line and the step.
+
+**Not stored, and not reused.** A `holds:` result is earned fresh every run: it is never
+written to `ply.lock` and never carried forward, so a crate whose every function claim was
+reused still compiles a harness for its structure promises. That is a gap, not a design —
+recorded rather than left for you to notice from a build time.
 
 **A broken promise is only ever reported when the check really ran.** A line can read as
 perfectly good Rust and still not compile against the real type — a field you renamed, a
