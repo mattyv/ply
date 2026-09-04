@@ -478,7 +478,10 @@ pub fn contract_use_paths(cf: &ContractFn) -> Vec<Vec<String>> {
         .into_iter()
         .filter_map(|ident| cf.use_aliases.get(&ident))
         .filter(|segments| {
-            !matches!(segments.first().map(String::as_str), Some("self") | Some("super"))
+            !matches!(
+                segments.first().map(String::as_str),
+                Some("self") | Some("super")
+            )
         })
         .cloned()
         .collect()
@@ -637,18 +640,18 @@ pub fn render_cex_test(
     // Reusing it is what keeps this from being a second, disagreeing copy
     // of the same split (2026-09-04 review, which caught exactly that).
     let module_import = match cf.import_path().rsplit_once("::") {
-        Some((module, _)) if cf.is_method => format!(
-            "    #[allow(unused_imports)]\n    use crate::{module}::*;\n"
-        ),
+        Some((module, _)) if cf.is_method => {
+            format!("    #[allow(unused_imports)]\n    use crate::{module}::*;\n")
+        }
         _ if cf.is_method => String::new(),
         // The allow is not optional: most promises name no sibling at all,
         // so without it every nested replay carries an unused-import
         // warning -- and a warning in a file the user never wrote is a
         // broken build in any crate that denies them.
         _ => match cf.path.rsplit_once("::") {
-            Some((module, _)) => format!(
-                "    #[allow(unused_imports)]\n    use crate::{module}::*;\n"
-            ),
+            Some((module, _)) => {
+                format!("    #[allow(unused_imports)]\n    use crate::{module}::*;\n")
+            }
             None => String::new(),
         },
     };
@@ -874,7 +877,9 @@ pub fn head(s: &str) -> String { s.chars().take(1).collect() }
         )
         .unwrap();
         assert!(
-            rendered.source.contains("let s: String = \"\".to_string();"),
+            rendered
+                .source
+                .contains("let s: String = \"\".to_string();"),
             "the failing string has to be written back out as a Rust literal:\n{}",
             rendered.source
         );
@@ -968,9 +973,15 @@ impl Bucket {
         std::fs::write(&lib, src).unwrap();
 
         let mut tests = Vec::new();
-        for (i, name) in ["clamp", "helpers::double", "helpers::shrink", "helpers::compare", "Bucket::new"]
-            .iter()
-            .enumerate()
+        for (i, name) in [
+            "clamp",
+            "helpers::double",
+            "helpers::shrink",
+            "helpers::compare",
+            "Bucket::new",
+        ]
+        .iter()
+        .enumerate()
         {
             let cf = discover_fn(&lib, name).unwrap();
             tests.push(

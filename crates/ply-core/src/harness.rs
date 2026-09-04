@@ -3524,7 +3524,6 @@ pub fn discover_method_with_receiver(
 /// alias chain.
 const MAX_USER_TYPE_DEPTH: usize = 6;
 
-
 /// Where Ply found a bare struct/enum name declared, scanning every `.rs`
 /// file under a crate's `src/` directory (recursing into subdirectories,
 /// following Ply's own file-per-module convention) -- keyed by bare name.
@@ -6305,7 +6304,11 @@ mod tests {
             type_name: "Ok".into(),
             import_path: "Ok".into(),
             shape: UserTypeShape::Struct(vec![
-                Param { name: "n".into(), ty: RustType::U32, by_ref: false },
+                Param {
+                    name: "n".into(),
+                    ty: RustType::U32,
+                    by_ref: false,
+                },
                 Param {
                     name: "names".into(),
                     ty: RustType::Vec(Box::new(RustType::String)),
