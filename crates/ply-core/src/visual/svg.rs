@@ -9,6 +9,7 @@
 use super::layout;
 use super::state_shapes;
 use crate::check::{Diagnostic, Target as FindingTarget, run_checks};
+use crate::config::{LinkIndex, ResolvedLink};
 use crate::kernel::{Evidence, NodeKind, VerdictNode, aggregate};
 use crate::model::{
     Check, Component, Deny, Document, Edge, EdgeKind, External, FnClaim, InheritedChecks, Mode,
@@ -1993,6 +1994,13 @@ struct WalkCtx<'a> {
     /// mode but the ordinary one for a document being drawn before its
     /// code exists, and is what keeps those paths byte-for-byte unchanged.
     state: Option<&'a StateFieldIndex>,
+    /// Every top-level component's derived cross-document link (§7.1's
+    /// derive-links brief), keyed by bare top-level name -- so a nested
+    /// component's qualified path (`core.kernel`) never matches an entry
+    /// here, and only a document's own top-level boxes are ever eligible.
+    /// `None` throughout every render path that never resolved one, which
+    /// keeps every pre-existing entry point byte-for-byte unchanged.
+    links: Option<&'a LinkIndex>,
 }
 
 /// Every declared state type's real fields, keyed by the component's
@@ -2012,6 +2020,16 @@ pub use crate::harness::StateFieldIndex;
 /// collapses — "hollow means nothing inside; collapsed means plenty inside,
 /// folded" are mutually exclusive states, and hollow wins when the subtree
 /// really is empty.
+///
+/// A derived link (`walk.links`) overrides both of those defaults, and
+/// **must be checked first**: a component with an empty declared interior
+/// of its own but a resolved link is not hollow (its interior lives in
+/// another file, not nowhere), and it draws collapsed unconditionally,
+/// never subject to `--depth`/`--focus`/`--collapse` -- there is nothing
+/// local for those flags to expand into. Getting this ordering backwards
+/// draws the link dashed, meaning "nothing to zoom into yet" — the exact
+/// opposite of the truth (see `a_linked_hollow_component_draws_collapsed_
+/// not_hollow` below).
 fn render_component_dispatch<'a>(
     name: &'a str,
     qualified: &str,
@@ -2027,8 +2045,9 @@ fn render_component_dispatch<'a>(
     // rather than staying fixed for the whole walk the way `WalkCtx` does.
     parent_element_id: Option<&str>,
 ) -> ComponentBox {
-    let is_hollow = super::is_hollow(comp);
-    if !is_hollow && walk.collapse.should_collapse(qualified, level) {
+    let link = walk.links.and_then(|links| links.get(qualified));
+    let is_hollow = link.is_none() && super::is_hollow(comp);
+    if link.is_some() || (!is_hollow && walk.collapse.should_collapse(qualified, level)) {
         render_collapsed_component(
             name,
             qualified,
@@ -2037,6 +2056,7 @@ fn render_component_dispatch<'a>(
             walk.findings,
             inherited,
             walk.evidence.zip(parent_element_id),
+            link,
         )
     } else {
         render_component(
@@ -2072,10 +2092,20 @@ fn render_collapsed_component(
     // `resolved_component`'s doc comment for why the pair travels as one
     // parameter rather than two.
     evidence_parent: Option<(&EvidenceView, &str)>,
+    // A derived cross-document link (§7.1's derive-links brief): when
+    // present, the counts and contents line below describe *its* target
+    // rather than `comp`'s own (possibly empty) declared interior, and the
+    // path it names rides in the text tier since no visual channel is
+    // free (`docs/state-shapes.svg`'s own glyph budget is already spoken
+    // for).
+    link: Option<&ResolvedLink>,
 ) -> ComponentBox {
     let findings = collect_findings_subtree(qualified, comp, ctx);
     let ceiling = component_ceiling(name, comp, inherited);
-    let (n_components, n_fns) = count_subtree(comp);
+    let (n_components, n_fns) = match link {
+        Some(link) => count_subtree(&link.target),
+        None => count_subtree(comp),
+    };
     // Resolved here, ahead of `contents_line`, rather than at its usual
     // place right before the tooltip is built: this box's earned-over-
     // promised split (below) needs it, and the tooltip push further down
@@ -2089,17 +2119,28 @@ fn render_collapsed_component(
     // exceed it (the invariant this exists to uphold), but a stale
     // evidence view built from a since-edited document must not be allowed
     // to claim more earned than this box's own contents hold.
-    let earned_of_promised = resolved
-        .zip(evidence_parent)
-        .and_then(|((element, _), (ev, _))| {
-            (n_fns > 0).then(|| ev.fn_state_counts(&element.id).earned.min(n_fns))
-        });
+    //
+    // A linked box never gets this split at all: this document's own
+    // verify run has no evidence about *another file's* functions, and
+    // "0 of 44 earned" would read as a real answer about work nobody
+    // checked rather than the true "not this document's to say".
+    let earned_of_promised = if link.is_some() {
+        None
+    } else {
+        resolved
+            .zip(evidence_parent)
+            .and_then(|((element, _), (ev, _))| {
+                (n_fns > 0).then(|| ev.fn_state_counts(&element.id).earned.min(n_fns))
+            })
+    };
     let contents_line = format!(
-        "{n_components} component{} \u{b7} {n_fns} fn{}{}",
+        "{n_components} component{} \u{b7} {n_fns} fn{}{}{}",
         if n_components == 1 { "" } else { "s" },
         if n_fns == 1 { "" } else { "s" },
         earned_of_promised
             .map(|earned| format!(" \u{b7} {earned} of {n_fns} earned"))
+            .unwrap_or_default(),
+        link.map(|link| format!(" \u{2014} {}", link.target_path))
             .unwrap_or_default(),
     );
     let badges = union_badges_subtree(comp);
@@ -2191,12 +2232,23 @@ fn render_collapsed_component(
     // so its tooltip gets the same sentence a box with nothing resolved
     // does, which is the true one for it.
     let mut tip = component_tip_lines(name, comp, profiles, &findings, &[], false);
-    tip.push(format!(
-        "collapsed — {n_components} component{} and {n_fns} function{} folded inside; render \
-         with --depth or --focus <name> to expand",
-        if n_components == 1 { "" } else { "s" },
-        if n_fns == 1 { "" } else { "s" },
-    ));
+    match link {
+        Some(link) => tip.push(format!(
+            "linked — {n_components} component{} and {n_fns} function{} live in a different \
+             file, `{}`; this box only points at them, the same way a collapsed box points at \
+             its own folded contents. Open that file to see them; --depth and --focus have \
+             nothing local here to expand.",
+            if n_components == 1 { "" } else { "s" },
+            if n_fns == 1 { "" } else { "s" },
+            link.target_path,
+        )),
+        None => tip.push(format!(
+            "collapsed — {n_components} component{} and {n_fns} function{} folded inside; \
+             render with --depth or --focus <name> to expand",
+            if n_components == 1 { "" } else { "s" },
+            if n_fns == 1 { "" } else { "s" },
+        )),
+    }
     tip.push(ceiling_tooltip_line(ceiling));
     if let Some(reason) = colour_reason_line(comp, inherited, name) {
         tip.push(reason);
@@ -3629,7 +3681,7 @@ pub fn render_svg_with_evidence_and_options(
         elements,
         diagnostics,
     };
-    render_svg_impl(doc, options, Some(&evidence), None)
+    render_svg_impl(doc, options, Some(&evidence), None, None)
 }
 
 /// `render_svg`, plus The-Ply-Spec.md §7.1's `--depth`/`--focus`/`--collapse`
@@ -3640,7 +3692,7 @@ pub fn render_svg_with_options(
     doc: &Document,
     options: &RenderOptions,
 ) -> Result<String, RenderError> {
-    render_svg_impl(doc, options, None, None)
+    render_svg_impl(doc, options, None, None, None)
 }
 
 /// `render_svg_with_options`, plus what each component's declared state
@@ -3656,7 +3708,21 @@ pub fn render_svg_with_state(
     options: &RenderOptions,
     state_fields: &StateFieldIndex,
 ) -> Result<String, RenderError> {
-    render_svg_impl(doc, options, None, Some(state_fields))
+    render_svg_impl(doc, options, None, Some(state_fields), None)
+}
+
+/// `render_svg_with_state`, plus every derived cross-document link
+/// (`crate::config::derive_links`). Separate for the same reason
+/// [`render_svg_with_state`] is separate from [`render_svg_with_options`]:
+/// a caller with nothing to link keeps getting byte-for-byte the same
+/// drawing it always did.
+pub fn render_svg_with_state_and_links(
+    doc: &Document,
+    options: &RenderOptions,
+    state_fields: &StateFieldIndex,
+    links: &LinkIndex,
+) -> Result<String, RenderError> {
+    render_svg_impl(doc, options, None, Some(state_fields), Some(links))
 }
 
 /// Every input at once: folding, a run's evidence, and the real state
@@ -3668,11 +3734,32 @@ pub fn render_svg_with_evidence_state_and_options(
     options: &RenderOptions,
     state_fields: Option<&StateFieldIndex>,
 ) -> Result<String, RenderError> {
+    render_svg_with_evidence_state_options_and_links(
+        doc,
+        elements,
+        diagnostics,
+        options,
+        state_fields,
+        None,
+    )
+}
+
+/// `render_svg_with_evidence_state_and_options`, plus every derived
+/// cross-document link. What `cargo ply render`/`build_declared_visual_
+/// envelope` draw once a document's own links have been resolved.
+pub fn render_svg_with_evidence_state_options_and_links(
+    doc: &Document,
+    elements: &BTreeMap<String, super::VisualElement>,
+    diagnostics: &[super::VisualDiagnostic],
+    options: &RenderOptions,
+    state_fields: Option<&StateFieldIndex>,
+    links: Option<&LinkIndex>,
+) -> Result<String, RenderError> {
     let evidence = EvidenceView {
         elements,
         diagnostics,
     };
-    render_svg_impl(doc, options, Some(&evidence), state_fields)
+    render_svg_impl(doc, options, Some(&evidence), state_fields, links)
 }
 
 /// The real render walk, shared by every public entry point above. `evidence`
@@ -3690,6 +3777,7 @@ fn render_svg_impl(
     options: &RenderOptions,
     evidence: Option<&EvidenceView>,
     state_fields: Option<&StateFieldIndex>,
+    links: Option<&LinkIndex>,
 ) -> Result<String, RenderError> {
     // §7.1 "finding (tool-computed, not declared)": run `ply-check`'s
     // document-local rules up front, then thread `ctx` through every render
@@ -3744,6 +3832,7 @@ fn render_svg_impl(
                         edges: &doc.edges,
                         evidence,
                         state: state_fields,
+                        links,
                     },
                     1,
                     None,
