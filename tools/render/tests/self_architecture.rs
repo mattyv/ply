@@ -11,8 +11,9 @@
 
 use std::path::PathBuf;
 
+use ply_core::config::derive_links;
 use ply_render::model::parse_document;
-use ply_render::svg::{RenderOptions, render_svg_with_state};
+use ply_render::svg::{RenderOptions, render_svg_with_state_and_links};
 
 /// `tools/render/tests/` -> the repository root.
 fn repo_root() -> PathBuf {
@@ -43,7 +44,8 @@ fn render_committed(
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| root.to_path_buf());
     let state = ply_render::harness::resolve_state_fields(&source_root, doc);
-    render_svg_with_state(doc, &RenderOptions::default(), &state)
+    let links = derive_links(doc, &source_root);
+    render_svg_with_state_and_links(doc, &RenderOptions::default(), &state, &links.links)
         .unwrap_or_else(|e| panic!("{yaml_path} must render: {e}"))
 }
 
@@ -59,7 +61,12 @@ fn transcript_committed(
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| root.to_path_buf());
     let state = ply_render::harness::resolve_state_fields(&source_root, doc);
-    ply_render::transcript::render_transcript_with_state(doc, Some(&state))
+    let links = derive_links(doc, &source_root);
+    ply_render::transcript::render_transcript_with_state_and_links(
+        doc,
+        Some(&state),
+        Some(&links.links),
+    )
 }
 
 /// ARCHITECTURE.md embeds two drawings, and each is checked the same way.

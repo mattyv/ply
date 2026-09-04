@@ -167,7 +167,7 @@ pub fn derive_links(doc: &Document, root: &Path) -> LinkSet {
     let mut set = LinkSet::default();
     let mut claimed: BTreeMap<PathBuf, String> = BTreeMap::new();
     for (name, comp) in &doc.components {
-        resolve_one(name, comp, &crates, &this_doc, &mut claimed, &mut set);
+        resolve_one(name, comp, &crates, root, &this_doc, &mut claimed, &mut set);
     }
     set
 }
@@ -186,15 +186,26 @@ fn anchor_under(anchor: &str, floor: &str) -> bool {
     anchor == floor || anchor.starts_with(&format!("{floor}::"))
 }
 
-fn display_path(path: &Path) -> String {
-    let s = path.to_string_lossy();
-    s.strip_prefix("./").unwrap_or(&s).to_string()
+/// `path`, relative to `root` -- so a drawing built with `root: "."` reads
+/// `crates/ply-core/ply.yaml`, and a caller that resolved `root` to an
+/// absolute path first (as a test comparing against a fixed repository
+/// checkout must) gets exactly the same portable string rather than its
+/// own host's absolute filesystem path leaking into a committed drawing.
+/// `workspace_library_crates` always builds its directories by joining
+/// onto the same `root` this function receives, so `path` reliably has
+/// `root` as a real path-component prefix, not merely a string one.
+fn display_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn resolve_one(
     component_path: &str,
     comp: &Component,
     crates: &BTreeMap<String, PathBuf>,
+    root: &Path,
     this_doc: &Path,
     claimed: &mut BTreeMap<PathBuf, String>,
     set: &mut LinkSet,
@@ -207,7 +218,9 @@ fn resolve_one(
         // with no self-description, never a finding.
         return;
     }
-    let canonical = candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
+    let canonical = candidate
+        .canonicalize()
+        .unwrap_or_else(|_| candidate.clone());
     if canonical == *this_doc {
         // This component's crate *is* the document being derived -- not a
         // link to "another" document, just this one naming its own crate.
@@ -310,7 +323,7 @@ fn resolve_one(
     set.links.insert(
         component_path.to_string(),
         ResolvedLink {
-            target_path: display_path(&candidate),
+            target_path: display_path(root, &candidate),
             target: top.clone(),
         },
     );
@@ -601,15 +614,14 @@ components:
 
             assert!(set.findings.is_empty(), "{:?}", set.findings);
             let link = set.links.get("core").expect("core should link");
-            // `dir.path()` is itself absolute (a tempdir), so the display
-            // path is too here -- production always passes a workspace-
-            // relative root, which is what makes `target_path` read
-            // `crates/ply-core/ply.yaml` rather than an absolute host path.
-            assert!(
-                link.target_path.ends_with("inner_lib/ply.yaml"),
-                "{}",
-                link.target_path
-            );
+            // `dir.path()` is itself absolute (a tempdir), and `target_path`
+            // must still read exactly `inner_lib/ply.yaml` -- relative to
+            // the root `derive_links` was given, not the absolute path on
+            // this particular machine, or a committed drawing regenerated
+            // by a test harness that resolves an absolute root first (as
+            // `tools/render/tests/self_architecture.rs` does) would leak
+            // that host's own filesystem layout into the picture.
+            assert_eq!(link.target_path, "inner_lib/ply.yaml");
             assert_eq!(link.target.anchor, "inner_lib");
             assert!(link.target.fns.contains_key("go"));
         }

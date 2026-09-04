@@ -581,7 +581,14 @@ pub fn build_declared_visual_envelope_with_links(
         state_fields,
         links,
     )?;
-    visual.folded = folded_drawings(document, &visual.elements, &[], options, state_fields, links)?;
+    visual.folded = folded_drawings(
+        document,
+        &visual.elements,
+        &[],
+        options,
+        state_fields,
+        links,
+    )?;
     visual.validate()?;
     Ok(visual)
 }

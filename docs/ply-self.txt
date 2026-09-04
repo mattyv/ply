@@ -4,7 +4,7 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 
 ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
 
-13 components · 0 functions · 0 promise nothing
+8 components · 0 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
 components:
@@ -22,50 +22,7 @@ components:
 
   component core — maps to Rust module ply_core
     note: Everything Ply knows how to do, with no terminal attached. It must never reach up into the command-line layer: that constraint is what makes the engine adapters testable at all, because the moment a diagnostic's wording lives here, the wording and the engine can only be tested together.
-    state Envelope — the structure this component holds. 4 of 8 of its fields shown
-      command is text, written `String`
-      root is a structure of your own, written `Node` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-      diagnostics is a list, written `Vec<Diagnostic>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-      coverage is something that might not be there, written `Option<Coverage>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-    promises nothing as a whole — something inside declares no checks, and one unchecked thing sets the level of everything around it (unclaimed)
-    that level comes from its weakest part, which here is the absence of any: nothing inside this component declares a check at all — not its own functions, and not anything in the components within it
-    component kernel — maps to Rust module ply_core::kernel
-      note: Decides what a pile of results adds up to: the order that ranks one kind of evidence above another, the rule that a parent is never reported as stronger than its weakest part, and the flags that travel upward beside a verdict without being confused for one. It is kept deliberately small and free of special cases, and its rules are checked by trying every shape of result tree up to a size.
-      state VerdictNode — the structure this component holds. 4 of 4 of its fields shown
-        kind is a structure of your own, written `NodeKind` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-        statuses is a structure of your own, written `StatusSet` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-        conditional is something that might not be there, written `Option<Vec<String>>`
-        children is a list, written `Vec<VerdictNode>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
-    component engines — maps to Rust module ply_core::engines
-      note: The adapters that drive each outside checking tool as a separate program and read back what it said. Ply never re-implements a checker; everything here is translation, in both directions.
-      state TimedOutput — the structure this component holds. 3 of 4 of its fields shown
-        stdout is a list, written `Vec<u8>`
-        stderr is a list, written `Vec<u8>`
-        status is a structure of your own, written `ExitStatus` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
-    component harness — maps to Rust module ply_core::harness
-      note: Works out what a function's inputs are and whether Ply can make one of each. This is the part that decides whether a function can be checked at all, and it is where a refusal gets its reason.
-      state ContractFn — the structure this component holds. 4 of 12 of its fields shown
-        name is text, written `String`
-        params is a list, written `Vec<Param>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-        requires is something that might not be there, written `Option<(Expr, String)>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-        ensures is something that might not be there, written `Option<(ExprClosure, String)>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
-    component visual — maps to Rust module ply_core::visual
-      note: The drawing, the prose form of the same facts, and the portable package an editor reads. Nothing here decides anything; it only shows what was decided.
-      state VisualEnvelope — the structure this component holds. 3 of 6 of its fields shown
-        svg is text, written `String`
-        elements is a lookup table, written `BTreeMap<String, VisualElement>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-        diagnostics is a list, written `Vec<VisualDiagnostic>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
-      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
-    component record — maps to Rust module ply_core::record
-      note: What was checked, and everything a result depended on. A stored result is only reused when every one of those inputs still hashes the same, which is what stops a stale green outliving the code that earned it.
-      state RecordEntry — the structure this component holds. 3 of 6 of its fields shown
-        verdict is text, written `String`
-        statuses is a list, written `Vec<String>`
-        inputs is a lookup table, written `BTreeMap<String, String>`
-      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
+    linked — 21 components and 44 functions live in a different file, `crates/ply-core/ply.yaml`; this box only points at them, the same way a collapsed box points at its own folded contents. Open that file to see them; --depth and --focus have nothing local here to expand.
 
   component cli — maps to Rust module ply_cli
     state Cli — the structure this component holds. 2 of 2 of its fields shown

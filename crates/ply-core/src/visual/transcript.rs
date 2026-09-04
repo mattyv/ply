@@ -47,10 +47,9 @@
 //! because a stale one would do the exact opposite of what it is for.
 
 use super::svg::{
-    ceiling_tooltip_line, check_prose, component_ceiling, contract_close_prose,
-    count_subtree, declared_not_checked, deny_rule_prose, document_counts, examples_prose,
-    format_version_line, linked_explanation, profile_rules_prose, tame, unresolved_fn_pin_prose,
-    weakest_declaration,
+    ceiling_tooltip_line, check_prose, component_ceiling, contract_close_prose, count_subtree,
+    declared_not_checked, deny_rule_prose, document_counts, examples_prose, format_version_line,
+    linked_explanation, profile_rules_prose, tame, unresolved_fn_pin_prose, weakest_declaration,
 };
 use crate::config::LinkIndex;
 use crate::model::{

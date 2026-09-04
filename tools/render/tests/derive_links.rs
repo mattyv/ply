@@ -62,10 +62,18 @@ fn drawn_link_lines(svg: &str) -> Vec<(usize, usize, String)> {
         let Some((n_part, m_part)) = left.split_once(" \u{b7} ") else {
             continue;
         };
-        let Some(n) = n_part.split_whitespace().next().and_then(|s| s.parse().ok()) else {
+        let Some(n) = n_part
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+        else {
             continue;
         };
-        let Some(m) = m_part.split_whitespace().next().and_then(|s| s.parse().ok()) else {
+        let Some(m) = m_part
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+        else {
             continue;
         };
         out.push((n, m, path.to_string()));
@@ -94,9 +102,13 @@ fn a_linked_hollow_component_draws_collapsed_not_hollow() {
     assert!(link_set.links.contains_key("core"));
 
     let state_fields = ply_core::harness::resolve_state_fields(dir.path(), &doc);
-    let svg =
-        render_svg_with_state_and_links(&doc, &RenderOptions::default(), &state_fields, &link_set.links)
-            .unwrap();
+    let svg = render_svg_with_state_and_links(
+        &doc,
+        &RenderOptions::default(),
+        &state_fields,
+        &link_set.links,
+    )
+    .unwrap();
 
     assert!(
         // Not a bare `!contains("hollow-box")`: that string also names the
@@ -159,12 +171,21 @@ fn every_cross_document_links_drawn_counts_match_its_target_document() {
 
     let link_set = derive_links(&doc, dir.path());
     assert!(link_set.findings.is_empty(), "{:?}", link_set.findings);
-    assert_eq!(link_set.links.len(), 2, "{:?}", link_set.links.keys().collect::<Vec<_>>());
+    assert_eq!(
+        link_set.links.len(),
+        2,
+        "{:?}",
+        link_set.links.keys().collect::<Vec<_>>()
+    );
 
     let state_fields = ply_core::harness::resolve_state_fields(dir.path(), &doc);
-    let svg =
-        render_svg_with_state_and_links(&doc, &RenderOptions::default(), &state_fields, &link_set.links)
-            .unwrap();
+    let svg = render_svg_with_state_and_links(
+        &doc,
+        &RenderOptions::default(),
+        &state_fields,
+        &link_set.links,
+    )
+    .unwrap();
     let drawn = drawn_link_lines(&svg);
     assert_eq!(drawn.len(), 2, "{drawn:?}");
 
@@ -200,8 +221,7 @@ fn a_component_with_real_local_content_ignores_a_resolvable_link() {
         "inner_lib",
         "ply: 1\ncomponents:\n  inner:\n    anchor: inner_lib\n    fns:\n      go:\n        checks: [bounded(2)]\n",
     );
-    let outer_text =
-        "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    fns:\n      own_fn:\n        checks: [bounded(2)]\n";
+    let outer_text = "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    fns:\n      own_fn:\n        checks: [bounded(2)]\n";
     std::fs::write(dir.path().join("ply.yaml"), outer_text).unwrap();
     let doc = parse_document(outer_text).unwrap();
 
@@ -211,9 +231,13 @@ fn a_component_with_real_local_content_ignores_a_resolvable_link() {
     assert!(link_set.links.contains_key("core"));
 
     let state_fields = ply_core::harness::resolve_state_fields(dir.path(), &doc);
-    let svg =
-        render_svg_with_state_and_links(&doc, &RenderOptions::default(), &state_fields, &link_set.links)
-            .unwrap();
+    let svg = render_svg_with_state_and_links(
+        &doc,
+        &RenderOptions::default(),
+        &state_fields,
+        &link_set.links,
+    )
+    .unwrap();
 
     assert!(
         svg.contains("own_fn"),

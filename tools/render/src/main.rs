@@ -115,7 +115,10 @@ fn main() -> ExitCode {
     let source_root = cli.input.parent().unwrap_or(std::path::Path::new("."));
     let link_set = derive_links(&doc, source_root);
     for finding in &link_set.findings {
-        eprintln!("note: {} {}: {}", finding.severity, finding.code, finding.message);
+        eprintln!(
+            "note: {} {}: {}",
+            finding.severity, finding.code, finding.message
+        );
     }
 
     if cli.text {
@@ -123,7 +126,10 @@ fn main() -> ExitCode {
         // drawing shows, shapes included.
         let text = ply_render::transcript::render_transcript_with_state_and_links(
             &doc,
-            Some(&ply_render::harness::resolve_state_fields(source_root, &doc)),
+            Some(&ply_render::harness::resolve_state_fields(
+                source_root,
+                &doc,
+            )),
             Some(&link_set.links),
         );
         return match cli.out {

@@ -2080,7 +2080,9 @@ fn render_component_dispatch<'a>(
     parent_element_id: Option<&str>,
 ) -> ComponentBox {
     let declared_hollow = super::is_hollow(comp);
-    let link = declared_hollow.then(|| walk.links.and_then(|links| links.get(qualified))).flatten();
+    let link = declared_hollow
+        .then(|| walk.links.and_then(|links| links.get(qualified)))
+        .flatten();
     let is_hollow = declared_hollow && link.is_none();
     if link.is_some() || (!is_hollow && walk.collapse.should_collapse(qualified, level)) {
         render_collapsed_component(
@@ -2115,6 +2117,7 @@ fn render_component_dispatch<'a>(
 /// unresolved-marker count, and — via `collect_findings_subtree` — the
 /// subtree's finding count. No fn chips, no nested boxes: everything below
 /// this box is folded into those counts.
+#[allow(clippy::too_many_arguments)]
 fn render_collapsed_component(
     name: &str,
     qualified: &str,

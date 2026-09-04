@@ -16,12 +16,18 @@ file.
 Rendered from [`ply.yaml`](ply.yaml) at the repository root.
 
 <p align="center">
-  <img src="docs/ply-self.svg" alt="A frame labelled ply.yaml, with a line reading 13 components, 0 functions, 0 promise nothing. Inside are six top-level boxes: e2e, attrs, core, cli, render and check. Every box is filled with diagonal hatching, meaning nothing inside promises anything yet, and every box that holds nothing else inside it is also dashed. Most boxes carry a line saying what that part holds, followed by a row per field with a small shape beside it and its type to the right: core holds an Envelope, kernel a VerdictNode, engines a TimedOutput, harness a ContractFn, visual a VisualEnvelope, record a RecordEntry, cli holds a Cli (its parsed command-line arguments), and inside cli, verify holds a VerificationResult and report an AuditReport. core contains five smaller boxes, kernel, engines, harness, visual and record; cli contains two, verify and report. e2e, attrs, check and render carry no such line. Three arrows run into core: one from cli, one from render, one from check. e2e and attrs stand alone with no arrows." width="760">
+  <img src="docs/ply-self.svg" alt="A frame labelled ply.yaml, with a line reading 8 components, 0 functions, 0 promise nothing. Inside are six top-level boxes: e2e, attrs, core, cli, render and check. Every box is filled with diagonal hatching, meaning nothing inside promises anything yet. e2e, attrs, render and check hold nothing else and are dashed. core is a solid-bordered box drawn as a stack -- one card edge offset behind it, meaning its contents are folded elsewhere -- with a line reading 21 components, 44 fns, then the path crates/ply-core/ply.yaml; it carries no state rows of its own here. cli carries a state line (Cli, its parsed command-line arguments, 2 of 2 fields shown) and contains two smaller boxes, verify and report, each with its own state line. Three arrows run into core: one from cli, one from render, one from check. e2e and attrs stand alone with no arrows." width="760">
 </p>
 
-The six outer boxes are the crates. The smaller boxes inside `core` and `cli` are modules
-within those crates: they carry no rules of their own yet, and they are there so that a
-reader can go one level in rather than being told that `core` does everything.
+The six outer boxes are the crates. `core` draws as a single folded box rather than
+spelling out its modules here a second time: point your reader at
+[`crates/ply-core/ply.yaml`](crates/ply-core/ply.yaml) for that, which is what the box
+itself does — its contents line names that file, and hovering it says so in full. This
+file used to hand-declare five of `core`'s modules as a copy of what that other file
+says, and the two had already drifted (five modules here, twenty-one there) before the
+copy was deleted in favour of this derived link. `cli`'s own two modules, `verify` and
+`report`, are unaffected: nothing describes `ply-cli` a second time anywhere, so there is
+no copy to drift.
 
 Every box is filled with **diagonal hatching**, which is how Ply draws code that carries
 no claims about its own behaviour. That is honest and it is the point of the second
@@ -34,7 +40,7 @@ only dependencies permitted between components. Anything else is a violation.
 | Component | Crate | What it is |
 |---|---|---|
 | `attrs` | `ply-attrs` | The `#[ply::requires]` / `#[ply::ensures]` attribute macros. A proc-macro crate: it is compiled for the machine doing the building, not the machine the program will run on. |
-| `core` | `ply-core` | The model, the schema, the call graph, the engine adapters (Kani, proptest, cargo-mutants), the result records, and the verdict kernel. Everything Ply knows how to do, with no terminal attached. Its five modules are drawn inside it: `kernel` decides what a pile of results adds up to, `engines` drives each outside checking tool, `harness` works out whether a function's inputs can be built at all, `visual` produces the drawing and the prose, and `record` stores what a result depended on. |
+| `core` | `ply-core` | The model, the schema, the call graph, the engine adapters (Kani, proptest, cargo-mutants), the result records, and the verdict kernel. Everything Ply knows how to do, with no terminal attached. What it holds one level in — `kernel`, `engines`, `harness`, `visual`, `record`, and sixteen more — is not repeated here; the box points at [`crates/ply-core/ply.yaml`](crates/ply-core/ply.yaml) instead, which is the one file that says so. |
 | `cli` | `ply-cli` | The `cargo ply` commands — `check`, `verify`, `audit`, `worklist` — and every sentence a user reads. `verify` is the one command that produces evidence; `report` says what this codebase's evidence rests on that Ply never checks. |
 | `e2e` | `ply-e2e` | The end-to-end suite. It builds the real binary and drives it the way a user would. |
 | `render` | `ply-render` | Draws a document before any code exists, and writes the same facts as prose. |
@@ -120,6 +126,14 @@ Why they live in a second file rather than the one above: Ply resolves a functio
 against a single crate's `src/lib.rs`, and a workspace root has none. Pointed at the root,
 it says so rather than reporting no problems — "this is not a count of zero problems, it
 is a count of zero searches."
+
+That used to mean the two files described `core`'s inside twice by hand, and by the time
+anyone noticed, they disagreed — this file said five modules, the other said twenty-one.
+The `core` box in the first diagram no longer carries a second, hand-written copy of that
+list at all: it draws itself as one folded box naming this file's path, derived from the
+plain fact that `crates/ply-core/ply.yaml`'s own top-level anchor sits under `core`'s. One
+file says what the parts are named and how they may depend on each other; this one says
+what they promise; and the first points at the second rather than repeating it.
 
 One caveat that belongs here rather than in a footnote: a promise written in this file is
 **not yet folded into the function's own checks**. It is drawn, it is counted, and the
