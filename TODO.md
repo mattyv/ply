@@ -41,6 +41,33 @@
       **First step:** one fixture with a hand test that kills a mutant the generated
       examples miss, red before the feature and green after.
 
+## Landed: a skill for writing code Ply can check at all — 2026-09-04
+
+The maintainer's observation, and it closes the loop: the side-effect scan finds a bad
+shape *after* the code exists, and nothing was stopping an agent writing that shape in the
+first place. `skills/ply-checkable-code/` is the generative counterpart.
+
+Seven rules, and **every one has a real incident behind it in this repository** rather than
+being a style preference:
+
+1. Separate deciding from writing (`write_harness_lib_rs`, split this session).
+2. Do not take an index into a separate argument (`schedule::order`, panicked on
+   `domain = {15}`).
+3. Return values rather than writing through `&mut` (a shape neither engine builds).
+4. Keep a public struct under about a dozen fields (`FingerprintInputs` has 20, and is the
+   one claim in Ply's own library still earning nothing).
+5. Watch what a precondition throws away (1025 of 1195 inputs rejected, verdict fell to
+   `unclaimed`).
+6. Write a promise that can fail.
+7. Prefer types the engines can build, and reach for `routes:` when one cannot be.
+
+Plus the ordering that matters when Ply refuses: read it as a fact about the code first and
+about Ply second, and only call it a limitation after the three questions above.
+
+Four contract tests, including the one rule that is `never` rather than `ask-first` --
+weakening a promise to make a check pass, which converts a real finding into a result
+nobody can trust. Confirmed by relaxing it to `ask-first` and watching the test go red.
+
 ## Landed: fifteen claims on Ply's own library, and what they found — 2026-09-04
 
 The standing programme, started. Measured first rather than guessed: of 165 public

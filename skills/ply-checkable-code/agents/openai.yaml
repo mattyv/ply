@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ply Checkable Code"
+  short_description: "Write Rust that Ply can actually check"
+  default_prompt: "Use $ply-checkable-code while writing this, so the result can earn evidence rather than come back unsupported."

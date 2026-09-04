@@ -712,7 +712,8 @@ are the stable integration surface for editor extensions and other visual client
 
 ## Skills, for agents working with Ply
 
-[`skills/`](skills/) holds four skills — one per stage of the loop. Each is written against
+[`skills/`](skills/) holds five skills — four for the stages of the loop, and one for
+writing code the loop can act on at all. Each is written against
 Ply's public CLI and says plainly where its authority stops, because the temptation an agent
 faces here is specific: when a check fails, editing the promise is always easier than fixing
 the code, and it turns a real finding into a green result.
@@ -723,6 +724,7 @@ the code, and it turns a real finding into a green result.
 | [`ply-verify`](skills/ply-verify/) | Running the checks on a change, reading the result honestly, and repairing against the generated counterexample |
 | [`ply-audit`](skills/ply-audit/) | Reporting what the green results rest on and what evidence is still owed |
 | [`ply-review`](skills/ply-review/) | Reviewing a published run: its structure, its evidence, and its diagnostics down to exact source |
+| [`ply-checkable-code`](skills/ply-checkable-code/) | Writing Rust that Ply can check at all — separating decisions from side effects, keeping signatures buildable, promising things that can fail |
 
 The common rule across all four: **adding a promise is work an agent may do; weakening or
 deleting one is a decision about what the codebase is allowed to do, and it belongs to the

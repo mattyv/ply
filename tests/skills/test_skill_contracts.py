@@ -161,6 +161,43 @@ class PlyAuditSkillTests(unittest.TestCase):
         self.assertIn("Never present an empty list as a clean bill of health", text)
 
 
+class PlyCheckableCodeSkillTests(unittest.TestCase):
+    """The generative counterpart to the diagnostic scan: this skill exists
+    so an agent writes a shape Ply can check, rather than discovering each
+    refusal after the code is written."""
+
+    def test_every_rule_is_backed_by_something_that_happened(self):
+        """A style guide nobody can argue with is a style guide nobody
+        follows. Each rule here came from a real refusal in Ply's own
+        source, and saying so is what makes it a finding rather than a
+        preference."""
+        text = skill_text("ply-checkable-code")
+        self.assertIn("Every rule below has a real incident behind it", text)
+
+    def test_it_leads_with_separating_decisions_from_side_effects(self):
+        """The highest-value rule, and the one that turns a refusal into a
+        design improvement rather than a workaround."""
+        text = skill_text("ply-checkable-code")
+        first = text.index("## 1.")
+        self.assertIn("Separate deciding from writing", text[first : first + 120])
+
+    def test_weakening_a_promise_to_pass_is_forbidden_outright(self):
+        """Not ask-first. There is no version of this that is correct: it
+        converts a real finding into a result nobody can trust, which is the
+        one outcome the whole tool exists to prevent."""
+        authority = table(skill_text("ply-checkable-code"), "Change authority")
+        self.assertEqual(
+            authority["weakening_a_promise_to_make_a_check_pass"][0], "never"
+        )
+
+    def test_it_says_some_functions_should_stay_unclaimed(self):
+        """A skill that pushed for total coverage would push an agent to
+        claim shells, which is how a document fills with promises that mean
+        nothing."""
+        text = skill_text("ply-checkable-code")
+        self.assertIn("meant to stay unclaimed", text)
+
+
 class TextFormTests(unittest.TestCase):
     """A model cannot hover, and roughly 95% of a Ply drawing is hover text.
 
