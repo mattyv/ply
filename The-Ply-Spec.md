@@ -719,13 +719,59 @@ components:
       show: [bids, ticks]    # the fields a reader should see; omitted draws none
 ```
 
-**The document names, the code says what.** `show:` lists field *names* only — never
-their types, never their shapes. Ply reads `OrderBook` from source and draws each named
-field as whatever it actually is. Writing the shapes in the document would be a second,
-hand-maintained copy of a fact the compiler already owns, and it would drift the first
-time somebody changed a field: the exact rot this project has spent its documentation
-budget removing. A field's *name* is a stable thing an author chooses; its type is not
-theirs to restate.
+**The document names, the code says what.** `show:` lists field *names* — never their
+types. Ply reads `OrderBook` from source and draws each named field as whatever it
+actually is. Writing the *type* in the document would be a second, hand-maintained copy
+of a fact the compiler already owns, and it would drift the first time somebody changed a
+field: the exact rot this project has spent its documentation budget removing. A field's
+*name* is a stable thing an author chooses; its type is not theirs to restate.
+
+**A document may declare a field's shape, and only its shape** (2026-09-03, from
+`vetting/005`). This is an exception to the paragraph above and not a softening of it. A
+*shape* is not a type: §7.1 draws seven forms, and `Vec<Order>`, `VecDeque<Order>` and a
+hand-rolled ring all draw the same three stacked bars, because the fact a reader needs is
+*ordered, many*. So a declared shape is strictly coarser than a type — it is design
+intent, of the kind a designer is right to commit to before the code exists, and of the
+kind worth being held to afterwards.
+
+```yaml
+state:
+  of: Ledger
+  show: [by_account, queued]     # names only -- shapes read from source
+```
+```yaml
+state:
+  of: Ledger
+  show:                          # a mapping declares each field's shape
+    by_account: map
+    queued: list
+    cursor:                      # null declares nothing; behaves as the list form
+```
+
+One key with two forms, so there is no second key to drift against the first. The values
+are the seven shapes and nothing else — `scalar`, `text`, `list`, `map`, `set`,
+`optional`, `composite` — deliberately not a type grammar, so `Vec<Order>` has nowhere to
+land.
+
+**Where code exists, the code wins the drawing outright.** A declared shape is used for
+*checking*, never for drawing, the moment there is a type to read: Ply draws what the
+source says and compares the declaration against it, reporting `A0416` when they
+disagree. So a stale declaration can never make a picture wrong — it can only make a run
+fail, which is what every other promise in this tool does. That is what answers the drift
+objection: the document is not a second source of truth, it is a claim about the one that
+exists.
+
+With no code to read, the declared shape is drawn, and the row says so: the type column
+reads `declared` where a read row would spell the real type. **The glyph is not modified**
+— that channel is full. There is no colour left (§7.1), the hatch already means "the
+sampling engine cannot build this", and a dotted outline was measured against the real
+glyphs at 12px and is indistinguishable from the dashed cell that *is* the `optional`
+silhouette. The type column is where the difference belongs, because a declared row has
+no type to spell there anyway, so the discrimination costs nothing and is read as text
+rather than as a silhouette.
+
+A declared shape is never counted. `N of M shown` stays measured-from-code and stays
+absent when there was no code, because a declaration is not a measurement.
 
 **Not every field.** A real state struct has twenty fields and two that matter. `show:`
 is the author saying which two. This is the one place in the grammar where Ply draws
@@ -759,6 +805,11 @@ behaviour; the third is the admission that the first two could not run:
 3. Ply could not find a crate to resolve against at all → `W0413`, a warning that says
    the claim went unchecked. A document Ply cannot check its `state` lines against must
    say so out loud; the alternative is a silent exit 0 that reads as verification.
+4. a declared shape disagrees with the shape the source really has → `A0416`, naming the
+   field, what was declared, and what the code says. Only reachable where there is code:
+   with none, there is nothing to disagree with. A declaration that agrees is reported as
+   confirmed rather than passing silently, because a kept promise is evidence and this
+   project counts evidence out loud.
 
 **Where a state type is resolved.** Under the component's anchor, and nowhere else. The
 anchor's first segment names the crate when the document spans a workspace
@@ -2157,6 +2208,7 @@ grammar.**
 | `owns` | header line under the anchor, `owns T, U` — the types this component is sole mutator of |
 | `state:` | a header line under the anchor, `state T — N of M shown`, then one row per field named in `show:`: its shape glyph, its field name, and its type as the source spells it. Both numbers are counted from code, never from the document, and the count is omitted entirely when there was no code to count. The type column is one column for the whole box, set by its longest field name — a ragged column is read a row at a time, an aligned one is read as a column. Rows sit below the capability badges and above the fn chips — state is what the component *is*, chips are what it *does* |
 | a state field's shape | one glyph per row, drawn in ink only — **no new colour channel**, since every hue is already spoken for (green earned, red violation, violet authorship, the grey ceiling ramp). Seven forms, each a distinct silhouette at 12px: **scalar** a filled cell; **text** a cell with a written line across it; **list** three stacked equal bars (order carried); **map** a narrow key cell beside a wide value cell, twice; **set** three loose discs, unaligned (each once, no order); **might be missing** a dashed cell (`Option`); **a shape of your own** two overlapping outlined cells (a struct or enum — there is more inside). Proposal sheet: `docs/state-shapes.svg` |
+| a state field whose shape was **declared, not read** | the ordinary glyph for that shape, unmodified, and the type column reads `declared` where a read row spells the real type. The glyph is deliberately untouched: there is no colour left, the hatch already means "the sampling engine cannot build this", and a dotted outline was rasterised against the real glyphs at 12px and cannot be told from the dashed cell that *is* the `optional` silhouette — dotted against dashed at that stroke weight reads as lighter ink, which is also how a dim screen reads. A declared row has no type to spell, so the type column is free and the difference is read as text rather than as a silhouette. Only drawn where there is no code; where there is, the source wins the drawing and the declaration is only checked (`A0416`) |
 | a state field Ply cannot build | the same diagonal hatching unclaimed code already carries, on the glyph itself — no eighth form, so a hatched field still shows *which* shape cannot be built. Two details are load-bearing and both were found by measuring rather than by review. The hatch is drawn at a **finer pitch than the ceiling hatch** (4 units against 8): the ceiling pattern inside a 12-unit glyph is about one stripe and does not read as hatching at all. And on the two outline-only forms it becomes the glyph's **fill** rather than replacing its ink, because those two — a structure of your own, and a shape Ply has no vocabulary for — are the commonest unbuildable fields there are, so a hatch that could not reach them could not say the thing it exists to say. "Cannot build" is the sampling engine's own answer, not "the parser gave up": `BTreeMap<u64, Level>` parses perfectly well as a map and still cannot be built |
 | capabilities / `pure` | badge row on the box; `pure` = a sealed border, no badges |
 | profile | tag on the box |
