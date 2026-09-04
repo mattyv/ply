@@ -4,7 +4,7 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 
 ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
 
-5 components · 6 functions · 0 promise nothing
+6 components · 7 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
 components:
@@ -55,6 +55,15 @@ components:
         fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
         what this function promises — the last thing the document states before the code itself takes over:
           ensures: result.is_none() || !src.is_empty() (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+    component harness_crate — maps to Rust module ply_core::harness_crate
+      note: Writes the generated harness crate. Almost all of it is filesystem work, and that is the honest shape of it -- but the one real piece of reasoning in here was welded to a write until 2026-09-04, and so could not be checked. Split out, it can be.
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, harness_lib_source — nothing here counts as checked more strongly than the weakest thing inside it
+      fn harness_lib_source
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: result.1.len() == fn_modules.len() (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component visual — maps to Rust module ply_core::visual
       note: The drawing, the prose form of the same facts, and the portable package an editor reads. Nothing here decides anything; it only shows what was decided.

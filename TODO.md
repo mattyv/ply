@@ -19,6 +19,42 @@
       **First step:** one fixture with a hand test that kills a mutant the generated
       examples miss, red before the feature and green after.
 
+## Landed: the side-effect scan is a design signal, not a gate — 2026-09-04
+
+The maintainer's correction, and it is the better frame: **not every function should be
+unit tested, and a refusal is often the right answer.** A path-taking function that writes
+is not Ply failing to check it -- it is a function where the deciding and the writing sit
+in the same place, so the deciding cannot be checked. The fix is to separate them, not to
+teach Ply to run I/O against invented paths.
+
+So the fork recorded above dissolves. Enumerating danger to clear more functions would
+optimise for the wrong thing. **The scan stays sound and fails closed; what changes is
+what it is for.** And 1-of-35 stops being a bad number: it is a measurement of ply-core,
+saying nearly every path-taking public function there is shell. Some of that is correct
+(`record::save` should just save a record) and some is a factoring smell.
+
+- [x] **Worked example, and it was a real one.** `harness_crate::write_harness_lib_rs`
+      computed each generated module's line span *and* wrote the file. Those spans are what
+      map a compiler error back to the one claim that caused it, so a slip there
+      misattributes a build failure to an innocent function -- the exact defect the
+      attribution mechanism exists to end. Split into `harness_lib_source(&[HarnessModule])
+      -> (String, Vec<ModuleSpan>)`, which takes no path at all, and claimed in
+      `crates/ply-core/ply.yaml` with a promise that is worth making: one span per module.
+      It earns `fuzzed(256)`.
+- [x] **Which immediately found a codegen bug, by dogfooding.** A parameter of type
+      `&[UserType]` generated a value collected with no target type, so inference took it
+      from the call site -- which wants `&[T]`, so the binding inferred to the unsized
+      `[T]` and the harness would not compile. Shipped with slice support on 2026-09-02 and
+      never noticed, because no fixture took a slice of a user type. One harness is shared
+      by every claim in a crate, so it took all of them down. Fixed by naming the
+      collection; test added, confirmed red before the fix.
+
+**NEXT, and this is the standing programme rather than one item: prove as much of Ply's own
+code as Ply's own mechanisms allow.** The scan's output is the worklist -- 6 writers and 28
+unknowns in `ply-core` alone. Each is one of three things: correctly a shell and to be left
+unclaimed on purpose, a logic-and-I/O split waiting to be made, or a Ply limitation worth
+fixing. The two found so far were one of each.
+
 ## Landed: contracts explained, and the text form pointed at — 2026-09-04
 
 - [x] **What `requires` and `ensures` mean.** The reference had every mechanic and none of

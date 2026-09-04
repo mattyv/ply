@@ -1088,8 +1088,21 @@ fn unwrap_composed_expr(ty: &RustType, var: &str) -> String {
             "{var}.map(|__ply_v| {})",
             unwrap_composed_expr(inner, "__ply_v")
         ),
-        RustType::Vec(inner) | RustType::BTreeSet(inner) | RustType::Slice(inner) => format!(
+        RustType::Vec(inner) | RustType::BTreeSet(inner) => format!(
             "{var}.into_iter().map(|__ply_v| {}).collect()",
+            unwrap_composed_expr(inner, "__ply_v")
+        ),
+        // A slice needs the collection named, where `Vec` and `BTreeSet` do
+        // not: their bindings are annotated by the parameter's own type, but
+        // a `&[T]` parameter is lent from an owned value whose type nothing
+        // else states. Left to inference, the call site decided it -- and
+        // the call site wants `&[T]`, so the binding inferred to the unsized
+        // `[T]` and the harness would not compile. Shipped that way with
+        // slice support on 2026-09-02, and found by pointing Ply at its own
+        // code: one function taking `&[HarnessModule]` took every claim in
+        // the crate down with it, because they share one harness.
+        RustType::Slice(inner) => format!(
+            "{var}.into_iter().map(|__ply_v| {}).collect::<Vec<_>>()",
             unwrap_composed_expr(inner, "__ply_v")
         ),
         RustType::Tuple(items) => {

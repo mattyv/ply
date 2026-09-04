@@ -79,6 +79,18 @@ components:
             ensures:
               - "result.is_none() || !src.is_empty()"
             checks: [fuzz(256)]
+      harness_crate:
+        anchor: ply_core::harness_crate
+        note: >-
+          Writes the generated harness crate. Almost all of it is filesystem
+          work, and that is the honest shape of it -- but the one real piece
+          of reasoning in here was welded to a write until 2026-09-04, and so
+          could not be checked. Split out, it can be.
+        fns:
+          harness_lib_source:
+            ensures:
+              - "result.1.len() == fn_modules.len()"
+            checks: [fuzz(256)]
       visual:
         anchor: ply_core::visual
         state:
