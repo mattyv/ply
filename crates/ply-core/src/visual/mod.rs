@@ -485,10 +485,18 @@ pub fn build_visual_envelope(
 /// Build the same navigable visual contract before code or evidence exists.
 /// Every declared item is present and explicitly unanswered; verification can
 /// later replace those states without changing identity or hierarchy.
+///
+/// `state_fields` is what a component's declared `state:` type really
+/// holds, read from source by the caller (`crate::harness::resolve_state_fields`)
+/// -- `None` when there is no source root to read it from. Without it every
+/// component that declares `state:` draws honestly as unresolved even when
+/// the code sits right there, which is the one thing this function cannot
+/// tell on its own: it only ever sees the document.
 pub fn build_declared_visual_envelope(
     document: &Document,
     run: RunMetadata,
     options: &svg::RenderOptions,
+    state_fields: Option<&crate::harness::StateFieldIndex>,
 ) -> Result<VisualEnvelope, VisualEnvelopeError> {
     fn component_node(path: &str, component: &crate::model::Component) -> Node {
         let mut children = component
@@ -550,9 +558,14 @@ pub fn build_declared_visual_envelope(
         ..run
     };
     let mut visual = build_visual_envelope(document, &result, run)?;
-    visual.svg =
-        svg::render_svg_with_evidence_and_options(document, &visual.elements, &[], options)?;
-    visual.folded = folded_drawings(document, &visual.elements, &[], options)?;
+    visual.svg = svg::render_svg_with_evidence_state_and_options(
+        document,
+        &visual.elements,
+        &[],
+        options,
+        state_fields,
+    )?;
+    visual.folded = folded_drawings(document, &visual.elements, &[], options, state_fields)?;
     visual.validate()?;
     Ok(visual)
 }
@@ -584,11 +597,15 @@ pub fn build_visual_envelope_with_sources(
         .map(|(index, diagnostic)| visual_diagnostic(index, diagnostic, &semantic_ids))
         .collect::<Vec<_>>();
     let svg = svg::render_svg_with_evidence(document, &elements, &diagnostics)?;
+    // No source root travels with a completed run's evidence, so there is
+    // nothing to resolve state fields against here -- `None` keeps this
+    // path exactly as it was before state resolution existed.
     let folded = folded_drawings(
         document,
         &elements,
         &diagnostics,
         &svg::RenderOptions::default(),
+        None,
     )?;
     let envelope = VisualEnvelope {
         protocol_version: VISUAL_PROTOCOL_VERSION,
@@ -607,26 +624,44 @@ pub fn build_visual_envelope_with_sources(
 /// Only levels that change something are kept. A drawing identical to the one
 /// the caller already has is pure weight in the envelope, and a client reading
 /// the list would have no way to tell a real choice from a repeat.
+///
+/// `state_fields` is threaded through unchanged to every re-render: a
+/// component that stays fully expanded at a shallower depth must show
+/// exactly the resolved state row the full drawing showed it, never fall
+/// back to "unresolved" just because this is a re-render rather than the
+/// first one.
 fn folded_drawings(
     document: &Document,
     elements: &BTreeMap<String, VisualElement>,
     diagnostics: &[VisualDiagnostic],
     base: &svg::RenderOptions,
+    state_fields: Option<&crate::harness::StateFieldIndex>,
 ) -> Result<Vec<FoldedDrawing>, VisualEnvelopeError> {
     // A reader who already narrowed the drawing by hand has made this choice
     // themselves; offering alternatives to a selection would silently undo it.
     if base.depth.is_some() || base.focus.is_some() || !base.collapse.is_empty() {
         return Ok(Vec::new());
     }
-    let full = svg::render_svg_with_evidence_and_options(document, elements, diagnostics, base)?;
+    let full = svg::render_svg_with_evidence_state_and_options(
+        document,
+        elements,
+        diagnostics,
+        base,
+        state_fields,
+    )?;
     let mut folded = Vec::new();
     for depth in 1..nesting_levels(document) {
         let options = svg::RenderOptions {
             depth: Some(depth),
             ..base.clone()
         };
-        let svg =
-            svg::render_svg_with_evidence_and_options(document, elements, diagnostics, &options)?;
+        let svg = svg::render_svg_with_evidence_state_and_options(
+            document,
+            elements,
+            diagnostics,
+            &options,
+            state_fields,
+        )?;
         if svg != full {
             folded.push(FoldedDrawing { depth, svg });
         }
