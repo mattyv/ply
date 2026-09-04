@@ -94,16 +94,31 @@ examples still runs, because an example's source is spliced in as written — bu
 the concrete cases you wrote and nothing more. A function that computes something should
 return it.
 
-## 4. Keep a public struct under about a dozen fields
+## 4. Keep a struct's fields public and named
 
-A struct Ply builds field by field generates one input recipe per field, and the library
-trait that composes them into a whole value stops being implemented past twelve. Ply's own
-`FingerprintInputs` has twenty public fields and is refused for exactly this reason — the
-one claim in its library that still earns nothing.
+Width is not a problem. **It was until 2026-09-04** — Ply folded every field into one flat
+tuple and the sampling library's tuple trait stops at twelve, so a thirteen-field struct was
+refused outright. That ceiling is gone: the leaves are composed in nested chunks now, so a
+twenty-field struct builds exactly as a five-field one does. If you have read older advice
+here telling you to design around a dozen fields, ignore it — this section said that, and it
+was a limit in the tool rather than anything about your code.
 
-If a type is genuinely that wide, give it a public constructor that takes fewer arguments,
-or declare a route naming a public function that returns one — **a route needs a public
-producer that already exists**; it names one, it does not create one.
+What Ply actually needs to build a struct:
+
+- **every field public** — it constructs the value with a struct literal, so a private field
+  it cannot name means it cannot build one at all
+- **fields named** — a tuple struct has no field names to build against
+- **not `#[non_exhaustive]`** — that attribute exists precisely to forbid the literal Ply
+  would write
+
+A container of a plain type is fine (`Vec<String>`, `Option<u32>`). A container of *your own*
+struct — `Vec<Inner>` — is the one shape still refused as of this writing; Ply reports it
+rather than guessing. Ply's own `FingerprintInputs` is the example: twenty public fields, and
+refused for that reason alone, not for its width.
+
+When a type has real invariants or private fields, give it a public constructor taking fewer
+arguments, or declare a route naming a public function that returns one — **a route needs a
+public producer that already exists**; it names one, it does not create one.
 
 ```yaml
 routes: { Handle: open_handle }        # open_handle must be a real public fn
