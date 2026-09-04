@@ -135,6 +135,40 @@ eight of them claimed in the section above). Each needs a promise
 worth writing, which is the slow part and the only part that matters -- a promise that
 cannot fail would turn all 54 green and mean nothing.
 
+## Open: claims an agent found that are not in the document yet — 2026-09-04
+
+An agent worked the remaining ply-core functions in an isolated copy, but its copy was
+branched from a **stale point** -- 6 claims, not the 44 already landed -- so most of its 35
+claims duplicate work already here, and it independently rediscovered two bugs fixed
+earlier the same day (the `assign_ranks` panic and the unescaped braces in an `examples:`
+entry). Its branch is not merged: rebasing 35 mostly-duplicate claims onto a document that
+has since gained state blocks everywhere would cost more than rewriting the handful that
+are genuinely new.
+
+These are the ones that are **not** in `crates/ply-core/ply.yaml` and are worth adding:
+
+- [ ] `registry::all` -- no two rows share a diagnostic code. A duplicate would make
+      `cargo ply explain` ambiguous about which rule a reader is looking at.
+- [ ] `schema::known_keys` -- every key it returns satisfies the schema's own identifier
+      grammar, so the vocabulary and the validator cannot drift apart.
+- [ ] `engines::kani::classify_probe` and `parse_output` -- never conflate a timeout with a
+      real counterexample. This is §5.4c's structural rule written as a promise.
+- [ ] `visual::state_shapes::glyph_svg` -- always draws the hatch mark when a field could
+      not be built. The hatch is the only thing telling a reader that shape is a guess.
+- [ ] `kernel::StatusSet::is_empty` -- agrees with `len`, checked against the other's
+      independent code path rather than restating either.
+- [ ] `fuzz_gen::classify_seedable_wrap` and the two `extract_examples_seed_strings`
+      functions -- never invent a shape or a seed the source text did not contain.
+
+Refusals it confirmed by running, worth not re-attempting: `StatusSet::contains` (a
+by-value enum parameter cannot be read after the call consumes it, even when `Copy`);
+`contract_rt::wrap_test_module` and `engines::fuzz::attribute_build_errors` (a slice of a
+plain struct breaks the shared harness build, taking every other claim in the crate with
+it -- the same nested-container gap recorded above); `promise`'s three accessors (only a
+derived `Default`, no real constructor); `visual::svg::ceiling_class` (two different types
+both named `Evidence`, and Ply will not guess -- the same ambiguity the `A0414` fix now
+reports properly for state types, still unreported for a parameter type).
+
 ## Landed: what each part holds, drawn everywhere — 2026-09-04
 
 Every component in both documents that owns a type now declares it, so the field shapes are
