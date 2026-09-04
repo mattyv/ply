@@ -957,6 +957,43 @@ fn build_user_value_stmt(
 /// leaf's value the marker also wants to show) -- built from each leaf's
 /// own already-decodable `marker_display_expr`, since every leaf is by
 /// construction an ordinary type, never another unresolved user type.
+/// Folds `parts` into one tuple expression, nesting in chunks of twelve.
+///
+/// The sampling library implements its composing trait for tuples up to
+/// twelve wide and no further, so a flat thirteen-part tuple does not
+/// compile. Ply used to refuse a struct with more than twelve fields for
+/// this reason and call it a fact about the struct; it is a fact about how
+/// Ply folds the parts. `((a..l), (m..t))` compiles, draws every part, and
+/// shrinks through the nesting -- measured against the pinned library
+/// version before this was written (2026-09-04).
+///
+/// Applied only past twelve, so every harness Ply already emits stays
+/// byte-identical.
+fn nest_tuple(parts: &[String]) -> String {
+    const CHUNK: usize = 12;
+    match parts.len() {
+        0 => "()".to_string(),
+        1 => parts[0].clone(),
+        n if n <= CHUNK => format!("({})", parts.join(", ")),
+        _ => {
+            // Chunk, then fold the chunks the same way -- so a struct wide
+            // enough to need more than twelve chunks nests again rather
+            // than hitting the same wall one level up.
+            let chunks: Vec<String> = parts
+                .chunks(CHUNK)
+                .map(|c| {
+                    if c.len() == 1 {
+                        c[0].clone()
+                    } else {
+                        format!("({})", c.join(", "))
+                    }
+                })
+                .collect();
+            nest_tuple(&chunks)
+        }
+    }
+}
+
 fn build_marker_stmt(param_name: &str, leaves: &[LeafSlot]) -> String {
     if leaves.is_empty() {
         return format!("            let __ply_marker_val_{param_name}: String = String::new();\n");
@@ -1004,26 +1041,14 @@ fn plan_for_param(p: &Param) -> Result<ParamPlan> {
             )?;
             let pattern = match leaves.len() {
                 0 => "_".to_string(),
-                1 => leaves[0].name.clone(),
-                _ => format!(
-                    "({})",
-                    leaves
-                        .iter()
-                        .map(|l| l.name.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                _ => nest_tuple(
+                    &leaves.iter().map(|l| l.name.clone()).collect::<Vec<_>>(),
                 ),
             };
             let strategy = match leaves.len() {
                 0 => "proptest::strategy::Just(())".to_string(),
-                1 => leaves[0].strategy.clone(),
-                _ => format!(
-                    "({})",
-                    leaves
-                        .iter()
-                        .map(|l| l.strategy.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                _ => nest_tuple(
+                    &leaves.iter().map(|l| l.strategy.clone()).collect::<Vec<_>>(),
                 ),
             };
             let marker_stmt = build_marker_stmt(&p.name, &leaves);
@@ -5214,5 +5239,134 @@ pub fn byte_len(s: String) -> usize { s.len() }
         // Iterates by `char`, never by byte -- a multi-byte character must
         // never be split mid-encoding.
         assert!(expr.contains(".chars()"), "{expr}");
+    }
+
+    /// A parsed view of a `nest_tuple` expression: either one leaf part, or
+    /// a parenthesised, top-level-comma-separated group of further nodes.
+    /// Parsing (rather than pattern-matching the string) is what lets the
+    /// test below assert the actual property -- arity and membership -- and
+    /// not just that the output *looks* like nested parentheses.
+    enum TupleNode {
+        Leaf(String),
+        Tuple(Vec<TupleNode>),
+    }
+
+    /// Splits `s` on commas that sit at paren-depth 0 -- so a nested
+    /// `(a, b)` inside a larger tuple is kept whole instead of being split
+    /// on its own internal comma.
+    fn split_top_level_commas(s: &str) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut depth = 0i32;
+        let mut start = 0usize;
+        for (i, c) in s.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(s[start..i].trim());
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(s[start..].trim());
+        parts
+    }
+
+    fn parse_tuple_node(s: &str) -> TupleNode {
+        let s = s.trim();
+        if s.starts_with('(') && s.ends_with(')') {
+            let inner = &s[1..s.len() - 1];
+            if inner.is_empty() {
+                return TupleNode::Tuple(Vec::new());
+            }
+            TupleNode::Tuple(
+                split_top_level_commas(inner)
+                    .into_iter()
+                    .map(parse_tuple_node)
+                    .collect(),
+            )
+        } else {
+            TupleNode::Leaf(s.to_string())
+        }
+    }
+
+    /// Every `Tuple` node anywhere in the tree, including nested ones, must
+    /// have at most twelve children -- that is the actual constraint the
+    /// sampling library imposes, and the one `nest_tuple` exists to satisfy
+    /// no matter how deep the nesting goes.
+    fn assert_max_arity(node: &TupleNode, limit: usize) {
+        if let TupleNode::Tuple(children) = node {
+            assert!(
+                children.len() <= limit,
+                "a tuple with {} elements exceeds the limit of {limit}",
+                children.len()
+            );
+            for child in children {
+                assert_max_arity(child, limit);
+            }
+        }
+    }
+
+    fn collect_leaves<'a>(node: &'a TupleNode, out: &mut Vec<&'a str>) {
+        match node {
+            TupleNode::Leaf(s) => out.push(s),
+            TupleNode::Tuple(children) => {
+                for child in children {
+                    collect_leaves(child, out);
+                }
+            }
+        }
+    }
+
+    /// The property that matters, not the shape of the string: no tuple
+    /// anywhere in a folded expression may be wider than twelve (the
+    /// sampling library's own ceiling), and every input part must still
+    /// appear exactly once -- a folding scheme that silently dropped or
+    /// duplicated a leaf would pass a shape check but draw the wrong
+    /// struct.
+    #[test]
+    fn nest_tuple_never_exceeds_arity_twelve_and_keeps_every_part_exactly_once() {
+        for n in [1usize, 12, 13, 20, 200] {
+            let parts: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+            let out = nest_tuple(&parts);
+            let tree = parse_tuple_node(&out);
+            assert_max_arity(&tree, 12);
+
+            let mut leaves = Vec::new();
+            collect_leaves(&tree, &mut leaves);
+            assert_eq!(
+                leaves.len(),
+                n,
+                "n={n}: expected every one of the {n} input parts to appear exactly once, got \
+                 {leaves:?} from: {out}"
+            );
+            for part in &parts {
+                let occurrences = leaves.iter().filter(|l| **l == part.as_str()).count();
+                assert_eq!(
+                    occurrences, 1,
+                    "n={n}: part `{part}` must appear exactly once, appeared {occurrences} \
+                     times in: {out}"
+                );
+            }
+        }
+    }
+
+    /// At twelve parts or fewer, folding must be a no-op: the output is
+    /// byte-identical to the plain flat tuple Ply emitted before nesting
+    /// existed, which is what keeps every already-generated harness
+    /// unchanged.
+    #[test]
+    fn nest_tuple_at_or_below_twelve_is_the_plain_flat_tuple() {
+        for n in [1usize, 12] {
+            let parts: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+            let out = nest_tuple(&parts);
+            let expected = if n == 1 {
+                parts[0].clone()
+            } else {
+                format!("({})", parts.join(", "))
+            };
+            assert_eq!(out, expected, "n={n}: flat-tuple form must be unchanged");
+        }
     }
 }

@@ -211,15 +211,33 @@ Also found, and neither of us knew it: **the guard counts fields, the tuple coun
 A 2-field struct holding two 7-field structs is 14 leaves, sails past the guard, and dies as
 raw compiler output.
 
-- [ ] Nest the tuple past 12 (one helper, applied only past 12 so every existing harness
-      stays byte-identical), delete `MAX_DIRECT_CONSTRUCTION_FIELDS` and its refusal arm,
-      flip the `fiveshapes` e2e test that currently asserts the refusal by name -- and give
-      its type a bug on a late field, so the test proves the 13th leaf is varied rather than
-      merely compiled.
-- [ ] Then `record::fingerprint` should earn `fuzzed(256)` with the existing public-fields
-      disclosure. Update the four places TODO.md and the skill say "all except fingerprint".
+- [x] **Done.** `nest_tuple` folds the parts in chunks of twelve, applied only past twelve
+      so every existing harness stays byte-identical; the constant and its refusal arm are
+      gone; the `fiveshapes` e2e test that asserted the refusal by name now asserts the
+      opposite.
+
+      Proved rather than assumed: a 20-field struct whose promise is false only on the
+      **19th** field is caught, with that leaf shrinking to exactly the planted boundary and
+      every other leaf to zero.
+
+      **The first version of the fixture's planted bug was the wrong instrument, and an
+      agent caught it rather than patching around it.** The threshold was large, so the
+      promise was false in only the top few percent of the range -- which the sampler
+      reaches rarely enough that the fixed seed missed it every run. The threshold is small
+      now, and that is the trick: a defaulted `u32` is 0, so a codegen that quietly left the
+      13th leaf at its default would make the promise HOLD. It fails only when the field is
+      really drawn.
+
+      Mutation-checked: keeping only the first chunk (fields past 12 never drawn) turns the
+      e2e test red.
+- [ ] **`record::fingerprint` is still refused, now for the other reason.** With the ceiling
+      gone it is no longer a field count -- it has two `Vec<UserStruct>` fields, and a
+      container of a user type below the top level is the shape whose crash was turned into
+      an honest refusal earlier today. Closing it needs the rest of that fix (walk containers
+      when resolving a field's type), not more work here.
 - [ ] Rewrite `skills/ply-checkable-code` rule 4: wide structs are fine, and the real
-      constraints are public, named, and not `#[non_exhaustive]`.
+      constraints are public, named, and not `#[non_exhaustive]`. Still open -- the skill
+      currently tells authors to design around a limit that no longer exists.
 
 **An agent-written producer was considered and rejected for this type**, under the
 maintainer's steer that LLM help is acceptable. It is strictly weaker here and for a

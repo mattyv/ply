@@ -3524,16 +3524,6 @@ pub fn discover_method_with_receiver(
 /// alias chain.
 const MAX_USER_TYPE_DEPTH: usize = 6;
 
-/// The most public fields direct field construction (rule 2) will build a
-/// struct out of -- measured, not guessed (2026-08-28, docs/review-structs-
-/// enums.md's "Also fix" list, "a struct with 13 or more fields"): the
-/// generated strategy is a tuple of one value per field, and proptest's own
-/// tuple `Strategy` impls (like the standard library's own tuple trait
-/// impls) stop being generated past 12 elements, so a 13-field struct's
-/// harness fails to compile with "the trait bound (…13 types…): Strategy is
-/// not satisfied" -- raw compiler output about Ply's own generated code,
-/// for a shape Ply had every field it needed to refuse by name instead.
-const MAX_DIRECT_CONSTRUCTION_FIELDS: usize = 12;
 
 /// Where Ply found a bare struct/enum name declared, scanning every `.rs`
 /// file under a crate's `src/` directory (recursing into subdirectories,
@@ -4967,15 +4957,6 @@ fn resolve_user_type(
                      does not read yet",
                 ));
             };
-            if fields.len() > MAX_DIRECT_CONSTRUCTION_FIELDS {
-                return Err(no_ctor(&format!(
-                    "it has {} public fields -- direct field construction's generated strategy \
-                     is a tuple of one value per field, and the trait proptest builds that on \
-                     stops being implemented past {MAX_DIRECT_CONSTRUCTION_FIELDS} \
-                     (2026-08-28, docs/review-structs-enums.md's \"Also fix\" list)",
-                    fields.len()
-                )));
-            }
             let mut resolved = Vec::with_capacity(fields.len());
             for f in fields {
                 match resolve_param_type(crate_dir, locations, routes, &f.ty, depth + 1) {
