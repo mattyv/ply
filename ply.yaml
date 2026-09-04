@@ -174,15 +174,16 @@ components:
   # corrected -- which is the check this document exists to be subject to.
   render:
     anchor: ply_render
-    # The renderer's own library is a facade over `ply_core::visual` (see
-    # `tools/render/src/lib.rs`) and owns no struct of its own -- the one
-    # real type at this anchor is the binary's own parsed arguments.
-    # `collapse` is the field worth seeing: a document can name any number
-    # of components to fold, so it is the one list in this whole file's
-    # command-line surface.
-    state:
-      of: Cli
-      show: [collapse, focus, text]
+    # No `state:` here, deliberately. This library is a facade over
+    # `ply_core::visual` (see `tools/render/src/lib.rs`) and owns no struct
+    # of its own, so the only type at this anchor is the binary's own parsed
+    # arguments -- which is not what this component *holds*, and `state:`
+    # answers exactly that question. It was declared as `Cli` until
+    # 2026-09-03 and removed for two reasons: the claim was a stretch, and
+    # the `cli` component below has its own, different `Cli`, so the drawing
+    # showed two boxes reading `state Cli` side by side and a reader could
+    # not tell they were unrelated types. A picture nobody can read is worse
+    # than one line less on it.
     note: >-
       Draws a document before any code exists, and writes the same facts as
       prose. It is the surface a reader judges the whole tool by, which is
