@@ -2154,7 +2154,8 @@ pub struct OrderBook {
             .find(|d| d.code == "E0301")
             .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
         assert!(
-            d.title.contains("There is a function of that name at `svg::examples_prose`"),
+            d.title
+                .contains("There is a function of that name at `svg::examples_prose`"),
             "the reader has to be told where the function actually is, relative to \
              the anchor they wrote -- and that nothing was renamed:\n{}",
             d.title

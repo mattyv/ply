@@ -1041,14 +1041,15 @@ fn plan_for_param(p: &Param) -> Result<ParamPlan> {
             )?;
             let pattern = match leaves.len() {
                 0 => "_".to_string(),
-                _ => nest_tuple(
-                    &leaves.iter().map(|l| l.name.clone()).collect::<Vec<_>>(),
-                ),
+                _ => nest_tuple(&leaves.iter().map(|l| l.name.clone()).collect::<Vec<_>>()),
             };
             let strategy = match leaves.len() {
                 0 => "proptest::strategy::Just(())".to_string(),
                 _ => nest_tuple(
-                    &leaves.iter().map(|l| l.strategy.clone()).collect::<Vec<_>>(),
+                    &leaves
+                        .iter()
+                        .map(|l| l.strategy.clone())
+                        .collect::<Vec<_>>(),
                 ),
             };
             let marker_stmt = build_marker_stmt(&p.name, &leaves);
@@ -4285,14 +4286,16 @@ pub fn greet(x: u32) -> u32 { x }
 "#,
             "greet",
         );
-        let body =
-            generate_example_test(&cf, 1, r#"format!("{:?}", greet(0)) == "0""#).unwrap();
+        let body = generate_example_test(&cf, 1, r#"format!("{:?}", greet(0)) == "0""#).unwrap();
         let message = body
             .split("does not hold")
             .next()
             .and_then(|s| s.rsplit("assert!(").next())
             .unwrap_or_default();
-        let echoed = message.rsplit(", \"example failed:").next().unwrap_or_default();
+        let echoed = message
+            .rsplit(", \"example failed:")
+            .next()
+            .unwrap_or_default();
         assert!(
             echoed.contains("{{:?}}"),
             "the braces in the echoed example text must be doubled, or `format!` reads \
