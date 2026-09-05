@@ -4,6 +4,45 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: the last unchecked promise in Ply's own library now earns evidence — 2026-09-05
+
+`record::fingerprint` was the one claim in `crates/ply-core/ply.yaml` that earned nothing,
+refused because its parameter has two fields that are lists of another struct
+(`assumed: Vec<AssumedPromise>`, `engines: Vec<EngineId>`). All 44 claims in the library now
+earn real evidence -- confirmed by running, not by reading: `cargo ply verify crates/ply-core`
+exits clean with zero refusals of any kind, and the same is still true of `crates/ply-cli`.
+
+Two separate, real bugs, not one -- found by tracing exactly why a shape that should have
+worked (once yesterday's crash fix made it stop being refused outright) still would not
+actually build:
+
+- [x] **A struct's own field, one container deep, was never resolved at all.** The function
+      that turns a bare type name into a real, buildable one only ever handled a field
+      whose type *is* that bare name directly -- never one sitting inside a `Vec`, `Option`,
+      a tuple, or a map. A top-level *parameter* of the same shape already worked, because
+      the code path for parameters walks containers and the code path for fields did not;
+      two implementations of the same idea, one of them incomplete. Fixed by making the
+      field path recurse through every container shape the parameter path already knows,
+      reusing the exact same per-leaf resolution either way so the two cannot drift apart
+      again.
+
+- [x] **Once resolved, the generated code still built the wrong value.** A field whose type
+      is `Vec<AnotherStruct>` fell into the generic "just bind whatever proptest drew" path,
+      so it ended up holding a list of raw tuples where the real field expects a list of
+      real struct values -- "mismatched types" in the generated file, not a refusal. The
+      exact conversion already existed for a *parameter* of this shape; applying the same
+      conversion to a field's own generated code, which previously skipped it, was the whole
+      fix.
+
+  Both proved rather than assumed. A focused test for each: one asserting the resolver
+  accepts the shape at all, a second asserting the *generated code itself* -- not just
+  whether the function was accepted -- actually constructs real values, because
+  accepted-but-uncompilable is exactly the failure that slipped through before. Both
+  confirmed red without their respective fix. And the real case, not just a synthetic one:
+  `record::fingerprint`'s own promise was broken on purpose (truncating the hash it
+  returns) and the check caught it as a genuine violation, naming both struct-typed fields
+  in the failing input it reported, before being restored.
+
 ## Landed: CI now runs Ply against its own two documents — 2026-09-05
 
 Until now, every claim built up over the last two days -- 44 promises about ply-core, 6
@@ -374,11 +413,11 @@ raw compiler output.
 
       Mutation-checked: keeping only the first chunk (fields past 12 never drawn) turns the
       e2e test red.
-- [ ] **`record::fingerprint` is still refused, now for the other reason.** With the ceiling
-      gone it is no longer a field count -- it has two `Vec<UserStruct>` fields, and a
-      container of a user type below the top level is the shape whose crash was turned into
-      an honest refusal earlier today. Closing it needs the rest of that fix (walk containers
-      when resolving a field's type), not more work here.
+- [x] **`record::fingerprint` is fixed** -- see "Landed: the last unchecked promise in
+      Ply's own library now earns evidence" (2026-09-05). The rest of the container fix
+      this note asked for is done: fields resolve through the same container-walking path
+      parameters already did, and the generated code that builds one now constructs real
+      values instead of leaving a raw tuple in a field that expects a struct.
 - [ ] Rewrite `skills/ply-checkable-code` rule 4: wide structs are fine, and the real
       constraints are public, named, and not `#[non_exhaustive]`. Still open -- the skill
       currently tells authors to design around a limit that no longer exists.
@@ -423,9 +462,13 @@ same defect the 2026-09-04 review found in the generics rule, introduced while f
       It also closes rule 6's loop, which stopped one step short: the fix for a promise that
       cannot fail is sometimes to delete the claim, not reword the promise.
 
-      OPEN, for the maintainer: by that rule `record::fingerprint`'s own claim should
-      probably go. Its promise (`result.len() == 64`) is a type-level fact, and deleting a
-      declaration is the developer's call, so it is left in place and raised here.
+      OPEN, for the maintainer, and the facts underneath it changed 2026-09-05: this was
+      written when the claim was permanently refused, so its only honest content really was
+      a type-level fact nothing could disprove. It now runs 256 real generated cases against
+      the real implementation and earns real evidence -- breaking the function on purpose
+      (truncating the hash) was caught as a genuine violation, so the promise is not vacuous
+      any more. Whether that changes the answer is still the developer's call; the question
+      is left open rather than resolved either way.
 
 - [x] Three tests for the new material, each confirmed red under a deliberate breakage:
       restoring the invented function name, deleting rule 8, and softening the
