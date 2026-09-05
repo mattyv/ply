@@ -20,6 +20,8 @@ pub mod worklist;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
+
 use clap::{Parser, Subcommand, ValueEnum};
 // The absence vocabulary (§1: "an absence is a name, not a slot") lives in
 // ply-core, because a second consumer now reads it -- the rule that decides
@@ -145,6 +147,15 @@ enum Commands {
         /// Number of completed visual runs to retain for this Ply root.
         #[arg(long, default_value_t = DEFAULT_RETAINED_RUNS)]
         retain_views: usize,
+        /// Write the real, evidence-coloured drawing from this run to this
+        /// path -- the same picture `cargo ply render` draws from the
+        /// document alone, except every box and chip is filled by what this
+        /// run actually found, not by what was declared. Independent of
+        /// `--publish-view`: that publishes a JSON envelope for an editor to
+        /// poll, this writes a plain `.svg` file, and either or both may be
+        /// requested in one run.
+        #[arg(long)]
+        svg: Option<PathBuf>,
     },
     /// Explain a diagnostic code -- what it means, who reports it, and
     /// whether a run carrying it passed. With no code, lists every one this
@@ -243,6 +254,7 @@ pub fn run() -> anyhow::Result<()> {
             seed,
             publish_view,
             retain_views,
+            svg,
         } => {
             let seed = match seed {
                 Some(text) => match ply_core::fuzz_gen::seed_from_hex(&text) {
@@ -265,7 +277,13 @@ pub fn run() -> anyhow::Result<()> {
             };
             let verification = verify::verify_crate_result(&path, &opts)?;
             let envelope = verification.envelope;
-            if publish_view {
+            // Both `--publish-view` and `--svg` need the same real,
+            // evidence-coloured drawing -- built once, used by whichever (or
+            // both) of the two was actually asked for, so a run that wants
+            // only the file on disk does not pay for a JSON publication it
+            // never reads, and the two can never draw two different pictures
+            // of the same run.
+            if publish_view || svg.is_some() {
                 let run = completed_run_metadata(&path, verify::PLY_VERSION, outcome_of(&envelope));
                 let visual = build_visual_envelope_with_sources(
                     &verification.document,
@@ -273,9 +291,16 @@ pub fn run() -> anyhow::Result<()> {
                     run,
                     &verification.source_map,
                 )?;
-                let publication = VisualPublisher::new(&path).publish(&visual, retain_views)?;
-                if let Some(warning) = publication.warning {
-                    eprintln!("warning: {warning}");
+                if publish_view {
+                    let publication = VisualPublisher::new(&path).publish(&visual, retain_views)?;
+                    if let Some(warning) = publication.warning {
+                        eprintln!("warning: {warning}");
+                    }
+                }
+                if let Some(svg_path) = &svg {
+                    std::fs::write(svg_path, &visual.svg).with_context(|| {
+                        format!("writing the verified drawing to {}", svg_path.display())
+                    })?;
                 }
             }
             if cli.json {
@@ -1324,6 +1349,45 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_svg_flag_is_independent_of_publish_view() {
+        let cli = Cli::try_parse_from(["cargo-ply", "verify", ".", "--svg", "out.svg"]).unwrap();
+        match cli.command {
+            Commands::Verify {
+                publish_view, svg, ..
+            } => {
+                assert!(
+                    !publish_view,
+                    "asking for the file must not also publish a view"
+                );
+                assert_eq!(svg, Some(PathBuf::from("out.svg")));
+            }
+            _ => panic!("verify should parse as verify"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "cargo-ply",
+            "verify",
+            ".",
+            "--svg",
+            "out.svg",
+            "--publish-view",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Verify {
+                publish_view, svg, ..
+            } => {
+                assert!(publish_view, "both flags together must both take effect");
+                assert_eq!(svg, Some(PathBuf::from("out.svg")));
+            }
+            _ => panic!("verify should parse as verify"),
+        }
+
+        let cli = Cli::try_parse_from(["cargo-ply", "verify", "."]).unwrap();
+        assert!(matches!(cli.command, Commands::Verify { svg: None, .. }));
     }
 
     fn envelope(verdicts: &[&str]) -> Envelope {

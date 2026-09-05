@@ -4,6 +4,47 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: CI now runs Ply against its own two documents — 2026-09-05
+
+Until now, every claim built up over the last two days -- 44 promises about ply-core, 6
+about ply-cli, all earning real evidence -- had only ever been checked by hand, on one
+machine, never by CI. Nothing stopped either document quietly drifting out of truth the
+next time the code under it changed; the whole "Ply proves itself" story rested on someone
+remembering to run it.
+
+- [x] **`cargo ply verify` can now write the real, evidence-coloured drawing to a file.**
+      New `--svg <path>` flag. The colouring code already existed (`render_svg_with_evidence`)
+      and was already computed on every `--publish-view` run, but only ever wrapped in a
+      JSON envelope for an editor to poll -- nobody could get a plain `.svg` file out of a
+      real run at all before this. `cargo ply render` still only ever draws from the
+      document, deliberately grey, never green; this is the other half.
+
+      Proved with a real end-to-end test, not a shape check: the promise is that the
+      written file carries the `fn-chip-box-earned` class (a real green fill, applied only
+      when a chip has actual `DisplayState::Earned` evidence attached) and the plain
+      declared render never does. Confirmed red without the flag (clap rejects it) and red
+      again on a first draft that asserted the wrong signal (the check-kind label like
+      "fuzz: 64 cases" turned out to be part of the *declared* chip too, present whether or
+      not anything ever ran -- an assumption worth recording since it looked right at a
+      glance and was not).
+
+- [x] **A new required CI job, `ply-self-check`**, added to the one gate `main` actually
+      requires. It builds the tool, runs it against both of Ply's own documents with
+      `--fail-on error` (the looser mode: only a real regression -- a broken promise, a
+      harness that stops compiling -- fails the build; the one already-recorded gap,
+      `record::fingerprint`'s refusal, is warning severity and does not), and uploads both
+      verified drawings as a downloadable build artifact on every run, pass or fail.
+
+      `--fail-on error` was chosen by checking, not assumed: `cargo ply explain` confirms a
+      real violation and a real tool error are both error-severity, and the fingerprint
+      gap's own diagnostic is warning-severity, so this is strict where it needs to be and
+      tolerant only of the one gap already written down elsewhere in this file.
+
+      Simulated the exact commands CI will run before committing: both crates verify clean
+      at exit 0, and the two drawings were opened and read, not just size-checked -- every
+      chip in both is genuinely filled and checkmarked, with the header line itself now
+      reading "6 earned" rather than the declared form's plain function count.
+
 ## Landed: the CLI's own library gets its first six claims — 2026-09-05
 
 `crates/ply-cli/ply.yaml` is new: 6 claims, all in `shared.rs` plus one in `lib.rs`, all

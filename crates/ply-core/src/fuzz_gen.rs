@@ -3422,9 +3422,9 @@ pub fn wrap_fn_harness_module(
     // it here is what keeps this from becoming a second, disagreeing
     // fn/module split.
     let sibling_module_import = match import_path.rsplit_once("::") {
-        Some((module, _)) => format!(
-            "    #[allow(unused_imports)]\n    use {target_crate_ident}::{module}::*;\n"
-        ),
+        Some((module, _)) => {
+            format!("    #[allow(unused_imports)]\n    use {target_crate_ident}::{module}::*;\n")
+        }
         None => String::new(),
     };
     let mut out = format!(
