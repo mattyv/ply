@@ -44,6 +44,13 @@ components:
   # to excuse one file -- the crate tier cannot say "one test file may".
   e2e:
     anchor: ply_e2e
+    # What a run of the built binary comes back as: the machine-readable
+    # envelope, and the exit code the shell would have seen. Both, because a
+    # suite that reads only one of them can pass on a run that told the user
+    # something different from what it told the test.
+    state:
+      of: VerifyRun
+      show: [json, exit_code]
     note: >-
       Drives the built binary the way a user does, and depends on nothing.
       A suite that links the library instead stops testing what ships. It

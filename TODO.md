@@ -1,5 +1,9 @@
 # TODO
 
+**Picking this up fresh?** `docs/handoff-2026-09-04.md` is the narrative and the traps; this
+file is the state. Read that one first, then this.
+
+
 ## Landed: a timed-out engine run now kills the whole process tree, not just cargo — 2026-09-04 (`9037b83`)
 
 `run_with_timeout` (`crates/ply-core/src/engines/mod.rs`) only ever killed the one process
@@ -66,6 +70,545 @@ the whole process group by default.
       gap on collections, it makes that trust cheaper to believe.
       **First step:** one fixture with a hand test that kills a mutant the generated
       examples miss, red before the feature and green after.
+
+## Landed: a skill for writing code Ply can check at all — 2026-09-04
+
+The maintainer's observation, and it closes the loop: the side-effect scan finds a bad
+shape *after* the code exists, and nothing was stopping an agent writing that shape in the
+first place. `skills/ply-checkable-code/` is the generative counterpart.
+
+Seven rules, and **every one has a real incident behind it in this repository** rather than
+being a style preference:
+
+1. Separate deciding from writing (`write_harness_lib_rs`, split this session).
+2. Do not take an index into a separate argument (`schedule::order`, panicked on
+   `domain = {15}`).
+3. Return values rather than writing through `&mut` (a shape neither engine builds).
+4. Keep a public struct under about a dozen fields (`FingerprintInputs` has 20, and is the
+   one claim in Ply's own library still earning nothing).
+5. Watch what a precondition throws away (1025 of 1195 inputs rejected, verdict fell to
+   `unclaimed`).
+6. Write a promise that can fail.
+7. Prefer types the engines can build, and reach for `routes:` when one cannot be.
+
+Plus the ordering that matters when Ply refuses: read it as a fact about the code first and
+about Ply second, and only call it a limitation after the three questions above.
+
+Four contract tests, including the one rule that is `never` rather than `ask-first` --
+weakening a promise to make a check pass, which converts a real finding into a result
+nobody can trust. Confirmed by relaxing it to `ask-first` and watching the test go red.
+
+## Landed: fifteen claims on Ply's own library, and what they found — 2026-09-04
+
+The standing programme, started. Measured first rather than guessed: of 165 public
+functions in `ply-core`, **63 are checkable today with no refactoring at all** -- they only
+lack a promise. Nine were claimed this sitting, chosen for promises worth making rather
+than promises easy to satisfy.
+
+- [x] **Eight earn `fuzzed(256)`**: the harness package name always ends in the suffix; its
+      path always starts under `target/ply/fuzz/`; a seed always renders as 64 characters;
+      stripping terminal colour never makes text longer; an empty string is never an
+      identifier; a suggestion is never made from an empty list of keys; a string is always
+      the same expression as itself; and one span per generated module.
+- [x] **`schedule::order` found a real undocumented precondition.** It indexes `node_ids` by
+      the values in `domain`, and Ply panicked it with `domain = {15}`, `node_ids = []`.
+      Real callers build both from the same list so they always agree; nothing said so.
+      Now written down.
+
+**And writing it down made the function unfuzzable, which is the honest outcome and worth
+recording as a worked example.** The precondition threw away 1025 of 1195 generated inputs,
+proptest gave up, and the verdict is `unclaimed` -- not a thin green. That is exactly the
+trap the README's new contracts section warns about, hit on Ply's own code within an hour
+of the warning being written.
+
+- [x] **FIXED same day.** `node_ids` is consulted for exactly one thing -- a deterministic
+      tie-break key so two independent nodes always place in the same order -- so the index
+      never needed to be fatal. It is now a checked lookup with an empty-string fallback,
+      which leaves every existing input's behaviour byte-for-byte and makes the function
+      total. The precondition came back out of the document: it was true and it cost the
+      function all of its evidence, while every node being accounted for is the property
+      that actually matters. `order` earns `fuzzed(256)` over every input now, and the
+      exhaustive scheduler enumeration is still green.
+
+**All fifteen claims now earn evidence** except `record::fingerprint`, which is refused by
+name for a documented Ply limitation (20 public fields, past what the sampling engine's
+tuple strategy reaches).
+
+**The remaining checkable-today functions are the worklist** (54 at the time of writing;
+eight of them claimed in the section above). Each needs a promise
+worth writing, which is the slow part and the only part that matters -- a promise that
+cannot fail would turn all 54 green and mean nothing.
+
+## Open: claims an agent found that are not in the document yet — 2026-09-04
+
+An agent worked the remaining ply-core functions in an isolated copy, but its copy was
+branched from a **stale point** -- 6 claims, not the 44 already landed -- so most of its 35
+claims duplicate work already here, and it independently rediscovered two bugs fixed
+earlier the same day (the `assign_ranks` panic and the unescaped braces in an `examples:`
+entry). Its branch is not merged: rebasing 35 mostly-duplicate claims onto a document that
+has since gained state blocks everywhere would cost more than rewriting the handful that
+are genuinely new.
+
+These are the ones that are **not** in `crates/ply-core/ply.yaml` and are worth adding:
+
+- [ ] `registry::all` -- no two rows share a diagnostic code. A duplicate would make
+      `cargo ply explain` ambiguous about which rule a reader is looking at.
+- [ ] `schema::known_keys` -- every key it returns satisfies the schema's own identifier
+      grammar, so the vocabulary and the validator cannot drift apart.
+- [ ] `engines::kani::classify_probe` and `parse_output` -- never conflate a timeout with a
+      real counterexample. This is §5.4c's structural rule written as a promise.
+- [ ] `visual::state_shapes::glyph_svg` -- always draws the hatch mark when a field could
+      not be built. The hatch is the only thing telling a reader that shape is a guess.
+- [ ] `kernel::StatusSet::is_empty` -- agrees with `len`, checked against the other's
+      independent code path rather than restating either.
+- [ ] `fuzz_gen::classify_seedable_wrap` and the two `extract_examples_seed_strings`
+      functions -- never invent a shape or a seed the source text did not contain.
+
+Refusals it confirmed by running, worth not re-attempting: `StatusSet::contains` (a
+by-value enum parameter cannot be read after the call consumes it, even when `Copy`);
+`contract_rt::wrap_test_module` and `engines::fuzz::attribute_build_errors` (a slice of a
+plain struct breaks the shared harness build, taking every other claim in the crate with
+it -- the same nested-container gap recorded above); `promise`'s three accessors (only a
+derived `Default`, no real constructor); `visual::svg::ceiling_class` (two different types
+both named `Evidence`, and Ply will not guess -- the same ambiguity the `A0414` fix now
+reports properly for state types, still unreported for a parameter type).
+
+## Landed: what each part holds, drawn everywhere — 2026-09-04
+
+Every component in both documents that owns a type now declares it, so the field shapes are
+drawn across the whole picture rather than on six boxes out of twenty-two. 16 components
+gained a `state:` block.
+
+- [x] **Six are still without one, and each says why in the document itself** -- an absence
+      a reader can mistake for an oversight is worth a line: a proc-macro crate defines
+      attributes rather than holding a value; the standalone validator is a binary with no
+      library; the render facade owns no struct; the scheduler's result is a plain pair of
+      collections rather than a named struct, so there are no field names to draw; and
+      `config` declares no type at all.
+
+- [x] **`check` is the sixth, and its reason found a bug.** Declaring state on it and on
+      `diag` was refused with "declares no type called that" -- for `Diagnostic`, which both
+      modules plainly declare. The scanner records a duplicate name by storing "ambiguous",
+      and the one place that reads it collapsed ambiguous and absent into the same answer.
+      So a reader was sent hunting for a type sitting right there, twice.
+
+      `A0414` now has three sentences instead of one: not declared anywhere; declared, but
+      under a different anchor, and here is which; declared more than once, and here are the
+      modules. Found by using the feature, not by looking for it.
+
+- [x] Private fields resolve fine, which was an open question -- `reach::FirstParty` and
+      `fuzz_gen::ParamSeedPlan` are drawn from fields no caller can touch. That is correct:
+      `state:` answers "what does this hold", not "what can Ply build".
+
+## Landed: Ply crashed on a list-of-struct field — 2026-09-04
+
+Found by planning the wide-struct question, not by looking for it. **Exit 101, no JSON, and
+every claim in the crate lost -- not one honest refusal, the whole run.** Reproduced in a
+four-line crate before anything was changed:
+
+```rust
+pub struct Inner { pub name: String, pub n: u32 }
+pub struct Outer { pub items: Vec<Inner> }      // Ply panicked here
+```
+
+`is_fuzz_supported` answered `true` for any struct or enum without looking inside it, so a
+field Ply cannot build passed the gate, reached codegen, and hit a panic codegen writes
+*because* it trusts that gate ("safe: every caller gated on `is_fuzz_supported`").
+
+- [x] **The gate looks inside now** -- a struct's fields, an enum's variant fields, and a
+      constructor's arguments, each recursively. That crate reports `unsupported` with the
+      parameter named, which is the honest answer. Three tests: two red before the fix, one
+      guarding against newly refusing types that work today.
+
+      This is Ply failing to take its own advice at the sharpest possible point: the project
+      rule is to refuse with a named status rather than crash, and the crash was in the code
+      that decides whether to refuse.
+
+- [ ] **KNOWN GAP, deliberately not closed here.** This makes the shape refuse honestly; it
+      does not make it *work*. The plan's step 0 also wants the four sites that resolve a
+      field/variant/constructor/route type to walk containers the way a top-level parameter
+      already does, and the codegen panic turned into a reported tool error so a future
+      gate/codegen disagreement cannot take a run down at all. Both still open.
+
+## Open: the twelve-field ceiling is a tool artifact, and the plan to lift it — 2026-09-04
+
+A plan came back on why `record::fingerprint` cannot be checked. **The hypothesis in the
+brief was half right, and the wrong half mattered.**
+
+Right: the ceiling is an artifact of folding every leaf into one flat tuple, and the
+sampling library's tuple trait stops at 12. Confirmed by running it rather than reading the
+docs -- a flat 13-tuple does not compile; a nested `((12),(8))` compiles, runs 256 cases,
+and finds a bug planted on leaf 19 with shrinking intact.
+
+Wrong: `default()`-then-assign buys nothing. Ply already assembles the struct with an
+ordinary struct literal, so *construction* never had a ceiling -- only *generation* did.
+Assignment would additionally require `Default` and public fields, a strict subset of what
+the literal already does. Nested tuples chunked at 12 is the fix.
+
+Also found, and neither of us knew it: **the guard counts fields, the tuple counts leaves.**
+A 2-field struct holding two 7-field structs is 14 leaves, sails past the guard, and dies as
+raw compiler output.
+
+- [x] **Done.** `nest_tuple` folds the parts in chunks of twelve, applied only past twelve
+      so every existing harness stays byte-identical; the constant and its refusal arm are
+      gone; the `fiveshapes` e2e test that asserted the refusal by name now asserts the
+      opposite.
+
+      Proved rather than assumed: a 20-field struct whose promise is false only on the
+      **19th** field is caught, with that leaf shrinking to exactly the planted boundary and
+      every other leaf to zero.
+
+      **The first version of the fixture's planted bug was the wrong instrument, and an
+      agent caught it rather than patching around it.** The threshold was large, so the
+      promise was false in only the top few percent of the range -- which the sampler
+      reaches rarely enough that the fixed seed missed it every run. The threshold is small
+      now, and that is the trick: a defaulted `u32` is 0, so a codegen that quietly left the
+      13th leaf at its default would make the promise HOLD. It fails only when the field is
+      really drawn.
+
+      Mutation-checked: keeping only the first chunk (fields past 12 never drawn) turns the
+      e2e test red.
+- [ ] **`record::fingerprint` is still refused, now for the other reason.** With the ceiling
+      gone it is no longer a field count -- it has two `Vec<UserStruct>` fields, and a
+      container of a user type below the top level is the shape whose crash was turned into
+      an honest refusal earlier today. Closing it needs the rest of that fix (walk containers
+      when resolving a field's type), not more work here.
+- [ ] Rewrite `skills/ply-checkable-code` rule 4: wide structs are fine, and the real
+      constraints are public, named, and not `#[non_exhaustive]`. Still open -- the skill
+      currently tells authors to design around a limit that no longer exists.
+
+**An agent-written producer was considered and rejected for this type**, under the
+maintainer's steer that LLM help is acceptable. It is strictly weaker here and for a
+non-obvious reason: a producer's own arguments hit the same 12-limit, so it would have to
+fabricate 20 fields from at most 12 inputs -- a narrowing Ply cannot see and has no code to
+report, and a field added later but not to the producer would silently never be varied.
+Routes stay the right answer for types with real invariants and private fields.
+
+## Landed: what the last refusal taught the writing skill — 2026-09-04
+
+`record::fingerprint` is the one claim in Ply's own library that earns nothing, and the
+question "can the route mechanism fix it" turned out to be a question about the skill.
+
+**It cannot, and the skill said it could.** A route names an existing public function that
+returns the type; it does not create one. Nothing anywhere returns a `FingerprintInputs`
+except a private test helper, so there is nothing to name. Worse, the skill's own worked
+example was `routes: { FingerprintInputs: fingerprint_inputs_for }` -- a function that does
+not exist, invented for the one type in this codebase that has no producer. That is the
+same defect the 2026-09-04 review found in the generics rule, introduced while fixing it.
+
+- [x] **The route rule now states its precondition** and says what to do when no producer
+      exists: adding a public function whose only caller is Ply is adding API for the
+      tool's benefit, and belongs to the developer.
+
+- [x] **New rule 8: some functions should be checked by an ordinary test instead.**
+      `fingerprint` is one line over a private encoder. The property worth checking is that
+      encoder's length-prefixing -- without it, a contract containing a newline could be
+      arranged to hash the same as two different fields -- and it is not reachable from any
+      public function. So the only promise the wrapper can carry is "returns 64 characters",
+      which is a fact about the type.
+
+      **That property is already checked, thoroughly, by an ordinary Rust test**: 22
+      mutations, one per input the spec lists, each asserting the hash moves and naming
+      which input stopped counting when it does not. Better coverage than any promise about
+      the wrapper, and it needs nothing from Ply. The skill now says so, with a table for
+      deciding: property in the function → claim it; in a private helper → ordinary test,
+      leave the wrapper unclaimed; in a public helper → claim the helper.
+
+      It also closes rule 6's loop, which stopped one step short: the fix for a promise that
+      cannot fail is sometimes to delete the claim, not reword the promise.
+
+      OPEN, for the maintainer: by that rule `record::fingerprint`'s own claim should
+      probably go. Its promise (`result.len() == 64`) is a type-level fact, and deleting a
+      declaration is the developer's call, so it is left in place and raised here.
+
+- [x] Three tests for the new material, each confirmed red under a deliberate breakage:
+      restoring the invented function name, deleting rule 8, and softening the
+      delete-the-claim sentence.
+
+## Landed: ten more claims, and the second half of the typo suggestion — 2026-09-04
+
+44 promises now, in 22 components. Every one earns evidence except `record::fingerprint`.
+
+- [x] **Ten more claims**: the sampling engine's remaining output readers
+      (`parse_fuzz_marker`, `parse_proptest_minimal_input`, `build_errors_with_lines`),
+      `fuzz_gen::derive_seed` and `seed_from_hex`, `model::parse_deny`,
+      `config::validate_keys`, `schema::unknown_key_message` and `validate_text`, and
+      `visual::svg::examples_prose`.
+
+- [x] **`derive_seed`'s promise was mutation-checked, not assumed.** Its two inputs are
+      kept apart by a `\x1f` separator, so swapping them must give a different seed.
+      Deleting that one line turned the claim red -- by sampling *and* by the worked case,
+      `("ab","c")` against `("a","bc")` -- and the separator was restored. That is the
+      answer to "would this promise notice if the code broke", asked rather than assumed.
+
+- [x] **Ply was writing a test into the user's crate that did not compile**, and the first
+      fix for it was wrong in two new ways. A promise may name something the function's own
+      module defines or imports; that text is spliced into the counterexample replay test
+      verbatim, but the test sits at the crate root under `use super::*`, where such a name
+      is not in scope. So `cargo test` broke for a reason the user did not cause, which is
+      the failure this project treats as worst.
+
+      The review of the first fix (2026-09-04) found it made things worse for two shapes,
+      both confirmed by running rather than by reading:
+
+      - a claim on a receiverless associated function (`Bucket::new`) emitted
+        `use crate::Bucket::*;` -- a hard compile error where the old output built. The
+        repo's own `nonnumericcompare` fixture has exactly that shape with a deliberately
+        false promise, so this was reachable in production, not hypothetical.
+      - every nested replay whose promise names no sibling -- nearly all of them -- carried
+        an unused-import warning, which is an error under `-D warnings`.
+
+      Both came from writing a second copy of a split `ContractFn::import_path` already
+      does correctly. It is reused now, with the two `allow`s the harness has carried since
+      August. The generated test name also gained `#[allow(non_snake_case)]`:
+      `ply_cex_Bucket_new_01` warned, same failure one step along.
+
+      **The claim that this made the two paths agree was wrong**, and is retracted. The
+      sampling harness imports the function *by name* plus a crate-root glob; the replay
+      test imports the function's *module*. Neither is a superset. The gap that showed it:
+      a promise naming a type the module imported (`Ordering`, via `use std::cmp::Ordering`)
+      resolved in the harness and not in the replay. Fixed by asking the question in one
+      place -- `contract_rt::contract_use_paths` -- and letting each renderer spell the
+      answer for its own scope, since a second copy of this rule is what caused the bug in
+      the first place.
+
+      The test that guards this builds a real crate under `-D warnings` and asserts every
+      rendered shape fails on its promise rather than on its syntax. The two string-contains
+      tests it replaces both passed while the renderer emitted a compile error. Four
+      deliberate breakages of the renderer were run against it; the first version of the
+      new test survived one of them, because its fixture had no nested promise that names
+      no sibling. That shape was added and all four now die.
+
+- [x] **`E0301` now tells you when a claim is under the wrong module.** The suggestion
+      fixed earlier today only covered a misspelling; a claim whose *name* is right but
+      whose component is wrong got nothing, because `visual::examples_prose` is five
+      characters from `visual::svg::examples_prose` and edit distance cannot see that.
+      Matched on the final segment when the distance match finds nothing, and only when
+      the answer is unambiguous -- two functions of the same name in different modules is
+      a question, not a suggestion.
+
+      The two cases get different sentences. Telling someone their function "was renamed"
+      when it is sitting one module over sends them looking for a change nobody made.
+      Found by writing the `examples_prose` claim in the wrong place and being told the
+      function did not exist.
+
+## Landed: eleven more claims — 2026-09-04
+
+The library goes from 23 promises to 34, in seven modules that had none: the fast
+document pass, the diagnostic vocabulary, the call graph, the reachability scan, the
+config loader, and the sampling and proof engines' own output readers. Every one earns
+evidence; `record::fingerprint` is still the only refusal.
+
+Promises chosen against `skills/ply-checkable-code`'s own rule 6 rather than for an easy
+green -- most are a single clause relating input to output, with no `||` to hide behind:
+
+- never report something the tool's output did not contain (`first_build_error`,
+  `path_dependencies`)
+- never count more tests than the output has lines (`count_tests_executed`)
+- never hand back an empty dependency path, which would silently resolve to the crate
+  itself (`path_dependency`)
+- never grow the text (`tidy_contract_text`) -- it is quoted back to the reader as "the
+  line you wrote", so growing means it started rewriting
+- the flags come in pairs, `-Z` then its value (`unstable_flags`) -- an odd list builds a
+  malformed command and the proof engine fails for a reason nothing to do with the code
+- the message says where the problem is (`mutate_kill_signal_message`), which is the
+  newbie bar written as a promise
+- the rejection names the code the reader types into `cargo ply explain`
+  (`parse_check_string`)
+
+`diag::is_absence` is checked by worked cases alone and earns `tested`, one rung below the
+rest. Its input is a fixed vocabulary of eight words; sampling text against it would say
+nothing, and dressing that up as a stronger verdict would be exactly the green paint the
+rest of this file argues against.
+
+`check::crate_has_workspace_table` still reports a lopsided sampling half -- random text is
+never `[workspace]`. Its three worked cases carry the other side: the plain form, the
+indented form, and `[workspace.dependencies]`, which is a near-miss that must read as
+false or Ply would edit a manifest that owns no members.
+
+## Landed: the three gaps found by deliberately breaking things — 2026-09-04
+
+Every failure path was exercised on purpose against `crates/ply-core`: a false promise, a
+false structure promise, a claim naming a function that does not exist, and a harness that
+does not compile. All four reported correctly, at the right severity, and propagated to the
+root; the `--json` envelope and the terminal tree agreed on all 39 nodes and every
+diagnostic code. Three gaps in *how well* they reported, all now closed.
+
+- [x] **A counterexample on a string parameter is now replayable.** `WitnessValue` gained a
+      `Str` arm, `RustType::String` is `is_witness_renderable`, and `render_cex_test`
+      writes the value back out with `str`'s own `Debug`, which is exactly a valid Rust
+      literal -- quotes, backslashes and control characters all escaped, so there is
+      nothing left for Ply to get wrong by hand. Measured: 17 of ply-core's 23 claims take
+      text, so this was the common case, not an edge one.
+
+      Checked end to end, not just in a unit test: breaking `schema::dotted` on purpose
+      moved the report from `W0541` (witness only) to `P0502` with a written test, and
+      `cargo test` then failed on `ply_cex_schema_dotted_01` exactly as the report said it
+      would.
+
+- [x] **An empty-string witness says `(empty)` instead of printing nothing.** Everything
+      else still passes through exactly as the engine produced it; only the empty case is
+      named, because bare it is indistinguishable from a rendering failure.
+
+- [x] **`E0301` suggests the nearest name again under a module anchor.** The diagnosis in
+      the first draft of this entry was wrong: the suggestion was never missing, it was
+      *broken by this session's own anchor-relative claim keys*. The typo was matched as
+      the user wrote it (`dottted`) against names held as crate-root paths
+      (`schema::dotted`), which are never within edit distance, so the suggestion went
+      quiet exactly where this project had just moved all of its own claims. Now matched on
+      the crate-root key and shown back relative to the anchor, ready to paste over the
+      typo.
+
+      KNOWN GAP: `verify`'s own `E0301` (a separate emitter in `verify.rs`) still carries no
+      suggestion at all. `check` is the command that runs in a second and is meant to catch
+      this, so the miss there was the one that mattered; wiring the same suggestion into
+      `verify` is small and unstarted.
+
+## Landed: eight more claims, a crash Ply found in the renderer, and a bug in Ply itself — 2026-09-04
+
+- [x] **Eight new claims in `crates/ply-core/ply.yaml`**, taking the library from 15 to 23:
+      `model::parse_check`, `model::parse_edge`, `registry::lookup`,
+      `record::verdict_is_earnable`, `schema::dotted`, `surface::contract_helpers`,
+      `harness_crate::remove_workspace_member`, `visual::layout::assign_ranks`.
+      All 23 earn evidence except `record::fingerprint`, still refused for the documented
+      20-field limit.
+
+- [x] **The layout code crashed on an edge naming a node nobody declared.** Ply's first run
+      of the new `assign_ranks` claim panicked on `edges = [("","0")], names = [""]`: an
+      edge target was looked up in a map built only from the declared names. Fixed by
+      dropping an edge whose either end is undeclared, which also repairs the quieter half
+      -- an edge *from* an unknown node used to freeze the rank of the node it pointed at.
+      Two tests in `visual/layout.rs`, red before the fix.
+
+      This is the same shape as the scheduler bug a week earlier, keyed by a name rather
+      than an index, and both fixes were "make the lookup total". `skills/ply-checkable-code`
+      now says so.
+
+- [x] **A real defect in Ply: an `examples:` entry containing `{}` broke the harness.**
+      `generate_example_test` echoes the entry into the assert's failure message, which is
+      a `format!` template, so `format!("{:?}", ..)` inside an example was read as a
+      placeholder and the whole crate failed to build with "1 positional argument in
+      format string". Braces are now doubled, alongside the existing quote escaping. Found
+      by writing one for Ply's own document.
+
+- [x] **Six promises rewritten because one side of the `||` was doing all the work.**
+      Ply's own disclosure caught them: `parse_check`'s `result.is_err() || !s.is_empty()`
+      was decided by the first half in 256 of 256 cases, because random text is never a
+      valid check string. Rewritten to "a rejection always quotes the text it rejected",
+      which moved all 256 onto the half that says something. Where the interesting case
+      is genuinely rare (`registry::lookup`, `record::verdict_is_earnable`,
+      `surface::same_expression`), `test` was declared alongside `fuzz` with worked cases,
+      so the branch random text never reaches is exercised by hand.
+
+      KNOWN GAP, left open on purpose: those three still report a lopsided fuzz half, and
+      that report is true -- the fuzz run really does say little about them. The concrete
+      cases are what carries the other side. Hiding the disclosure by rewriting the
+      promise as a single non-`||` clause would have been worse.
+
+- [x] **`skills/ply-checkable-code` rewritten after an adversarial review, and its tests
+      given teeth.** The review found three behavioural claims that were wrong or stale:
+      the skill said Ply catches a function that writes files (it does not -- `effects.rs`
+      has no callers, and a function that builds a path from a `String` will be run for
+      real against generated inputs); rule 2's headline told an agent to restructure a
+      signature Ply's own maintainers kept; and it offered naming a concrete type for a
+      generic parameter as an escape, which is in the spec and drawn but not wired at
+      verify time. It also granted `may-do` over reshaping existing I/O while the prose
+      said that belongs to the developer. All fixed, plus the gaps it named: `HashMap`/
+      `HashSet` and tuple structs are refused, `&mut` blocks `fuzz`/`bounded` but not a
+      `test` with examples, `fuzz` needs a promise at all, and methods (`&self` yes,
+      `&mut self` no) now have their own rule.
+
+      The old four tests passed with every rule body deleted. The eleven that replace them
+      go red under each of: gutting the bodies, flipping the authority table, and restoring
+      the old rule-2 headline -- checked, not assumed.
+
+## Landed: the side-effect scan is a design signal, not a gate — 2026-09-04
+
+The maintainer's correction, and it is the better frame: **not every function should be
+unit tested, and a refusal is often the right answer.** A path-taking function that writes
+is not Ply failing to check it -- it is a function where the deciding and the writing sit
+in the same place, so the deciding cannot be checked. The fix is to separate them, not to
+teach Ply to run I/O against invented paths.
+
+So the fork recorded above dissolves. Enumerating danger to clear more functions would
+optimise for the wrong thing. **The scan stays sound and fails closed; what changes is
+what it is for.** And 1-of-35 stops being a bad number: it is a measurement of ply-core,
+saying nearly every path-taking public function there is shell. Some of that is correct
+(`record::save` should just save a record) and some is a factoring smell.
+
+- [x] **Worked example, and it was a real one.** `harness_crate::write_harness_lib_rs`
+      computed each generated module's line span *and* wrote the file. Those spans are what
+      map a compiler error back to the one claim that caused it, so a slip there
+      misattributes a build failure to an innocent function -- the exact defect the
+      attribution mechanism exists to end. Split into `harness_lib_source(&[HarnessModule])
+      -> (String, Vec<ModuleSpan>)`, which takes no path at all, and claimed in
+      `crates/ply-core/ply.yaml` with a promise that is worth making: one span per module.
+      It earns `fuzzed(256)`.
+- [x] **Which immediately found a codegen bug, by dogfooding.** A parameter of type
+      `&[UserType]` generated a value collected with no target type, so inference took it
+      from the call site -- which wants `&[T]`, so the binding inferred to the unsized
+      `[T]` and the harness would not compile. Shipped with slice support on 2026-09-02 and
+      never noticed, because no fixture took a slice of a user type. One harness is shared
+      by every claim in a crate, so it took all of them down. Fixed by naming the
+      collection; test added, confirmed red before the fix.
+
+**NEXT, and this is the standing programme rather than one item: prove as much of Ply's own
+code as Ply's own mechanisms allow.** The scan's output is the worklist -- 6 writers and 28
+unknowns in `ply-core` alone. Each is one of three things: correctly a shell and to be left
+unclaimed on purpose, a logic-and-I/O split waiting to be made, or a Ply limitation worth
+fixing. The two found so far were one of each.
+
+## Landed: contracts explained, and the text form pointed at — 2026-09-04
+
+- [x] **What `requires` and `ensures` mean.** The reference had every mechanic and none of
+      the meaning: nothing anywhere defined the two words. Now stated, with what each one
+      *does* on each tier (a filter on the sampling tier, a narrowing of the search on the
+      proving tier), the caller-side reading that makes proving tractable at all, and the
+      trap that had no home -- a precondition too narrow makes a green result mean less,
+      because a promise checked on the three inputs that survived out of 256 is thinner
+      than `fuzzed(256)` sounds.
+- [x] **No rendering skill, and the reason written down.** A skill earns its place when
+      there is a decision to get wrong and an authority to overstep; rendering has neither.
+      What was real was the neighbouring risk: only one of four skills mentioned the text
+      form, so an agent asked to explain a document would reach for the picture and read
+      about a twentieth of it. `ply-review` and `ply-audit` now point at `--text`, with
+      `ply-review` required to say it is describing declared intent and not evidence. Two
+      tests cover it, confirmed red by removing the pointer.
+
+## Landed: the parts of the tool nothing explained — 2026-09-04
+
+All raised by the maintainer reading the README and the `skills/` folder as a newcomer
+would, which found gaps no amount of internal review had.
+
+- [x] **`cargo ply explain <CODE>`.** Every message ends in a code and there was no way to
+      find out what one meant: the table is in Ply's own source, and the meaning of the
+      leading letter -- whether the prover, the sampler, or Ply itself is speaking -- was
+      written down nowhere at all. The command reads from the same registry the two
+      invariant tests already hold the tool to, so it cannot drift from what is emitted,
+      and it says outright when a code is described but never produced.
+- [x] **What each check kind is worth**, and when each applies -- including the point about
+      `mutate` that everyone misses: it does not check your function, it checks whether
+      your checks would notice if the function broke.
+- [x] **A legend for reading a drawing**, grouped by channel, leading with the rule the
+      whole grammar rests on: green means earned evidence and nothing else.
+- [x] **The text form has its own section**, with the measurement that justifies it: on the
+      trading-system example, 95% of the render is in the hover text, and a model cannot
+      hover.
+- [x] **The failed-check section no longer reads as "Ply writes your tests."** It leads with
+      the opposite and separates the scratch harness from the one test written into the
+      crate only when a promise really breaks.
+- [x] **Two new skills, and two folded-in workflows.** `ply-author` (writing a document
+      that says something a run can be wrong about) and `ply-audit` (what the green rests
+      on) join the two that existed; the counterexample repair loop and `explain` folded
+      into `ply-verify`. Each new skill's authority table is covered by a test that goes red
+      when the rule is removed -- both breakages were made and reverted to check.
+
+**One paragraph was not confusing but false.** The README described the case where Ply
+finds a failing input and cannot render it as a test, blamed it on a stubbed callee's
+invented return value, and claimed the diagnostic proposes a tightening of the promise.
+Neither is true: the real reason is that the value cannot be spelled as a Rust literal
+(usually one built by a constructor plus a sequence of calls), and that diagnostic carries
+no proposed fix at all. Retracted and rewritten to describe the code.
 
 ## Landed: the structure-promise review, and what it found — 2026-09-04
 
@@ -825,7 +1368,36 @@ work nobody assigned to it.
       skipped — see the DONE section above for why); and a declared route in `ply.yaml`'s
       new `routes:` map. Variety comes from Ply sampling the route's own inputs, never
       from an author listing values, and the degenerate-route guard ships with it.
-- [ ] **3. A syntactic "this body reaches file-writing calls" check, and only then paths.**
+- [~] **3. A syntactic "this body reaches file-writing calls" check, and only then paths.**
+      **The check is built (`crates/ply-core/src/effects.rs`); paths are NOT unlocked, and
+      the measurement says they should not be yet.**
+
+      The scan answers three ways -- writes, none, unknown -- and fails closed: anything it
+      cannot follow is `unknown`, and `unknown` never reads as safe. It follows calls into
+      first-party source transitively, resolves a sibling call relative to the caller's own
+      module, and reports the chain so a refusal can name the route rather than only the
+      verdict. Seven tests; the two that matter (unknown-is-not-safe, and following calls
+      at all) were each confirmed by breaking the rule and watching them go red.
+
+      **It finds real writes.** Run against `ply-core`'s own 35 path-taking public
+      functions it names 6, each with a correct route -- `record::save` through
+      `std::fs::write`, `harness_crate::write_harness_lib_rs` through
+      `std::fs::create_dir_all`, and so on. Two of those six were only found once sibling
+      calls resolved, so that was a correctness fix rather than a coverage one.
+
+      **And it clears almost nothing: 1 of 35.** The other 28 are `unknown`, each blocked by
+      a *different* call not on any list -- `Command::new`, `SourceSurface::default`,
+      `i64::from`. Three rounds of widening the benign list moved the cleared count from 0
+      to 1. This is the same shape as the type wall itself: **enumerating what is safe is a
+      list that grows forever and never finishes.**
+
+      **The fork, and it is a soundness posture, so it is the maintainer's.** Either keep
+      enumerating safety (sound, and unlocks nothing), or invert to enumerating danger --
+      filesystem write, process spawn, network -- and treat everything else as benign. The
+      second is how capability systems usually work, generalises instead of growing, and is
+      a *bet*: a third-party crate writing files through something not on the danger list
+      would be cleared. Not flipped unilaterally, because the whole reason paths were
+      deferred is that being wrong here means Ply writes files at paths it invented.
 
 **What notices when a declared route goes stale, since that is the question the design must
 answer:** the route names a function, and the generated harness is a separate downstream

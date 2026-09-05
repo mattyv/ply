@@ -482,12 +482,74 @@ pub fn parse_proptest_minimal_input(combined: &str) -> Option<Vec<String>> {
         let inner = &text[1..text.len() - 1];
         split_top_level(inner, ',')
             .into_iter()
-            .map(|s| s.trim().to_string())
+            .map(|s| decode_debug_string(s.trim()))
             .filter(|s| !s.is_empty())
             .collect()
     } else {
-        vec![text]
+        vec![decode_debug_string(&text)]
     })
+}
+
+/// proptest prints its shrunk input through `Debug`, so a `String` arrives as
+/// the Rust *literal* -- surrounding quotes, and `\n`/`\"`/`\u{...}` for
+/// anything not printable ASCII. Reported verbatim that tells the reader the
+/// failing input was `"a"` (three characters) when it was `a` (one), and it
+/// does not paste into a test. The marker path decodes via
+/// `unescape_marker_value`; this is the same duty on the panic path.
+///
+/// Only a value that is wholly a quoted literal is decoded. A number, a
+/// struct, a `Vec` is returned untouched -- those witnesses were already
+/// right, and decoding them would corrupt them.
+fn decode_debug_string(value: &str) -> String {
+    let inner = match value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+        Some(inner) if !ends_with_dangling_escape(inner) => inner,
+        // Not a string literal, or a lone `"` -- leave it exactly as printed.
+        _ => return value.to_string(),
+    };
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('0') => out.push('\0'),
+            Some('u') => {
+                // `\u{2764}` -- Rust's spelling, not JSON's `\uXXXX`, which is
+                // why this cannot just defer to a JSON parser.
+                let hex: String = chars
+                    .by_ref()
+                    .skip_while(|c| *c == '{')
+                    .take_while(|c| *c != '}')
+                    .collect();
+                match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    Some(decoded) => out.push(decoded),
+                    // An escape Ply cannot read is kept in its literal form
+                    // rather than dropped: a witness with one unreadable
+                    // character still names the failing input.
+                    None => {
+                        out.push_str("\\u{");
+                        out.push_str(&hex);
+                        out.push('}');
+                    }
+                }
+            }
+            // `\"`, `\\`, `\'` and anything else stand for themselves.
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// A closing quote that is itself escaped (`"a\"`) never terminated the
+/// literal, so the text is not a whole quoted value and must not be decoded.
+fn ends_with_dangling_escape(inner: &str) -> bool {
+    inner.chars().rev().take_while(|c| *c == '\\').count() % 2 == 1
 }
 
 fn is_balanced(s: &str) -> bool {
@@ -833,6 +895,10 @@ pub fn decode_marker_fields(
                 let nanos = nanos_str.parse::<u32>().ok()?;
                 WitnessValue::Duration(secs, nanos)
             }
+            // `parse_fuzz_marker` has already unescaped the wire form back
+            // to the real string content, so the witness is the content
+            // itself; `render_cex_test` is what turns it into a literal.
+            RustType::String => WitnessValue::Str(raw.clone()),
             // The 2026-08-25 fragment widening: `char`, `Option`, `Result`
             // and `[T; N]` reach the engines, but `WitnessValue` has no way
             // to spell them as a literal, so a failure on one is reported
@@ -854,15 +920,7 @@ pub fn decode_marker_fields(
             // never a fabricated one.
             | RustType::F32
             | RustType::F64
-            // Same reason as the float arms just above -- `String` is not
-            // `is_witness_renderable` either (see that method's own doc),
-            // so a failure on one is reported witness-only (`W0541`),
-            // never with an invented Rust literal. The raw text is still
-            // shown to the reader (via `fields`, populated by
-            // `parse_fuzz_marker` below) -- already unescaped back to the
-            // real string content by the time it gets there, never the
-            // wire-escaped form `marker_display_expr` printed.
-            | RustType::String
+
             // Never reached: both are return-only shapes, never a
             // parameter's, so no witness ever needs to decode one.
             | RustType::SelfType
@@ -1149,6 +1207,45 @@ mod tests {
         assert_eq!(
             parse_proptest_minimal_input(combined),
             Some(vec!["[1,2]".to_string()])
+        );
+    }
+
+    // proptest prints a `String` through `Debug`, so its report carries the
+    // Rust literal -- quotes and escapes included -- not the value. Reporting
+    // that verbatim tells the reader the failing input was `"a"` (three
+    // characters) when it was `a` (one), and it does not paste into a test.
+    // The marker path already decodes; this is the panic path catching up.
+    #[test]
+    fn a_string_input_is_reported_as_its_value_not_as_proptests_debug_literal() {
+        let combined = "proptest found a failing case for `preview`: Test failed: boom.\nminimal failing input: \"\\u{10000}\"\nnote: run with `RUST_BACKTRACE=1`\n";
+        assert_eq!(
+            parse_proptest_minimal_input(combined),
+            Some(vec!["\u{10000}".to_string()]),
+            "a String witness must come back as the real string, not wrapped in \
+             the quotes and escapes Debug added"
+        );
+    }
+
+    #[test]
+    fn a_string_inside_a_tuple_is_decoded_too_and_its_escapes_survive() {
+        let combined = "minimal failing input: (\n    \"a\\\"b\\\\c\",\n    7,\n)\nnote: x\n";
+        assert_eq!(
+            parse_proptest_minimal_input(combined),
+            Some(vec!["a\"b\\c".to_string(), "7".to_string()]),
+            "an escaped quote and backslash must decode back to the one \
+             character each stands for"
+        );
+    }
+
+    #[test]
+    fn a_non_string_value_is_left_exactly_as_proptest_printed_it() {
+        // The decode must not fire on anything that is not a quoted literal --
+        // a number, a struct, a Vec -- or it would corrupt witnesses that were
+        // already correct.
+        let combined = "minimal failing input: (\n    -3,\n    Item { n: 1 },\n)\nnote: x\n";
+        assert_eq!(
+            parse_proptest_minimal_input(combined),
+            Some(vec!["-3".to_string(), "Item { n: 1 }".to_string()])
         );
     }
 

@@ -957,6 +957,43 @@ fn build_user_value_stmt(
 /// leaf's value the marker also wants to show) -- built from each leaf's
 /// own already-decodable `marker_display_expr`, since every leaf is by
 /// construction an ordinary type, never another unresolved user type.
+/// Folds `parts` into one tuple expression, nesting in chunks of twelve.
+///
+/// The sampling library implements its composing trait for tuples up to
+/// twelve wide and no further, so a flat thirteen-part tuple does not
+/// compile. Ply used to refuse a struct with more than twelve fields for
+/// this reason and call it a fact about the struct; it is a fact about how
+/// Ply folds the parts. `((a..l), (m..t))` compiles, draws every part, and
+/// shrinks through the nesting -- measured against the pinned library
+/// version before this was written (2026-09-04).
+///
+/// Applied only past twelve, so every harness Ply already emits stays
+/// byte-identical.
+fn nest_tuple(parts: &[String]) -> String {
+    const CHUNK: usize = 12;
+    match parts.len() {
+        0 => "()".to_string(),
+        1 => parts[0].clone(),
+        n if n <= CHUNK => format!("({})", parts.join(", ")),
+        _ => {
+            // Chunk, then fold the chunks the same way -- so a struct wide
+            // enough to need more than twelve chunks nests again rather
+            // than hitting the same wall one level up.
+            let chunks: Vec<String> = parts
+                .chunks(CHUNK)
+                .map(|c| {
+                    if c.len() == 1 {
+                        c[0].clone()
+                    } else {
+                        format!("({})", c.join(", "))
+                    }
+                })
+                .collect();
+            nest_tuple(&chunks)
+        }
+    }
+}
+
 fn build_marker_stmt(param_name: &str, leaves: &[LeafSlot]) -> String {
     if leaves.is_empty() {
         return format!("            let __ply_marker_val_{param_name}: String = String::new();\n");
@@ -1004,26 +1041,15 @@ fn plan_for_param(p: &Param) -> Result<ParamPlan> {
             )?;
             let pattern = match leaves.len() {
                 0 => "_".to_string(),
-                1 => leaves[0].name.clone(),
-                _ => format!(
-                    "({})",
-                    leaves
-                        .iter()
-                        .map(|l| l.name.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
+                _ => nest_tuple(&leaves.iter().map(|l| l.name.clone()).collect::<Vec<_>>()),
             };
             let strategy = match leaves.len() {
                 0 => "proptest::strategy::Just(())".to_string(),
-                1 => leaves[0].strategy.clone(),
-                _ => format!(
-                    "({})",
-                    leaves
+                _ => nest_tuple(
+                    &leaves
                         .iter()
                         .map(|l| l.strategy.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                        .collect::<Vec<_>>(),
                 ),
             };
             let marker_stmt = build_marker_stmt(&p.name, &leaves);
@@ -1088,8 +1114,21 @@ fn unwrap_composed_expr(ty: &RustType, var: &str) -> String {
             "{var}.map(|__ply_v| {})",
             unwrap_composed_expr(inner, "__ply_v")
         ),
-        RustType::Vec(inner) | RustType::BTreeSet(inner) | RustType::Slice(inner) => format!(
+        RustType::Vec(inner) | RustType::BTreeSet(inner) => format!(
             "{var}.into_iter().map(|__ply_v| {}).collect()",
+            unwrap_composed_expr(inner, "__ply_v")
+        ),
+        // A slice needs the collection named, where `Vec` and `BTreeSet` do
+        // not: their bindings are annotated by the parameter's own type, but
+        // a `&[T]` parameter is lent from an owned value whose type nothing
+        // else states. Left to inference, the call site decided it -- and
+        // the call site wants `&[T]`, so the binding inferred to the unsized
+        // `[T]` and the harness would not compile. Shipped that way with
+        // slice support on 2026-09-02, and found by pointing Ply at its own
+        // code: one function taking `&[HarnessModule]` took every claim in
+        // the crate down with it, because they share one harness.
+        RustType::Slice(inner) => format!(
+            "{var}.into_iter().map(|__ply_v| {}).collect::<Vec<_>>()",
             unwrap_composed_expr(inner, "__ply_v")
         ),
         RustType::Tuple(items) => {
@@ -2649,7 +2688,16 @@ pub fn generate_example_test(cf: &ContractFn, index: u32, example_src: &str) -> 
     // crate fails to build with a *syntax* error inside Ply's own generated
     // file -- burying the user's real mistake (2026-08-24 M4 review, D1's
     // own probe).
-    let escaped_src = example_src.replace('\\', "\\\\").replace('"', "\\\"");
+    // The message is a `format!` template as well as a string literal, so a
+    // brace the user wrote for Rust (`format!("{:?}", ..)` inside an entry)
+    // has to be doubled or it is read as a placeholder and the harness dies
+    // with "1 positional argument in format string" (2026-09-04, found by
+    // Ply's own document).
+    let escaped_src = example_src
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('{', "{{")
+        .replace('}', "}}");
     let ident = cf.ident();
     Ok(format!(
         "    #[test]\n\
@@ -3036,7 +3084,7 @@ fn extra_type_imports(cf: &ContractFn, target_crate_ident: &str) -> Vec<String> 
 /// to be a key in the file's own `use` aliases, and a parameter or `result`
 /// never is one. Mirrors `find_moved_param_read`'s own `Visit`-based walk
 /// two functions above it in this file.
-fn collect_leading_idents(expr: &Expr, out: &mut BTreeSet<String>) {
+pub(crate) fn collect_leading_idents(expr: &Expr, out: &mut BTreeSet<String>) {
     struct Finder<'a> {
         out: &'a mut BTreeSet<String>,
     }
@@ -3088,29 +3136,24 @@ fn collect_leading_idents(expr: &Expr, out: &mut BTreeSet<String>) {
 /// `extra_type_imports`'s own doc already states for a bare struct/enum
 /// name.
 fn contract_referenced_use_imports(cf: &ContractFn, target_crate_ident: &str) -> Vec<String> {
-    let mut idents = BTreeSet::new();
-    if let Some((expr, _)) = &cf.requires {
-        collect_leading_idents(expr, &mut idents);
-    }
-    if let Some((closure, _)) = &cf.ensures {
-        collect_leading_idents(&closure.body, &mut idents);
-    }
-    let mut out = Vec::new();
-    for ident in idents {
-        let Some(segments) = cf.use_aliases.get(&ident) else {
-            continue;
-        };
-        match segments.first().map(String::as_str) {
-            Some("self") | Some("super") => continue,
+    // The *question* -- which names does this contract need brought into
+    // scope -- is asked in one place (`contract_rt::contract_use_paths`),
+    // because the counterexample replay test has to answer it identically
+    // or the two disagree about what a promise is allowed to say. Only the
+    // spelling differs: the harness is a separate crate, so `crate::` has
+    // to become the target crate's own name; the replay test lives inside
+    // the crate and keeps `crate::` as written.
+    crate::contract_rt::contract_use_paths(cf)
+        .into_iter()
+        .map(|segments| match segments.first().map(String::as_str) {
             Some("crate") => {
                 let mut rewritten = vec![target_crate_ident.to_string()];
                 rewritten.extend(segments[1..].iter().cloned());
-                out.push(rewritten.join("::"));
+                rewritten.join("::")
             }
-            _ => out.push(segments.join("::")),
-        }
-    }
-    out
+            _ => segments.join("::"),
+        })
+        .collect()
 }
 
 /// The generated check for a `state:`'s `holds:` clauses -- §5.4c's "type
@@ -4176,6 +4219,39 @@ pub fn greet(x: u32) -> u32 { x }
         );
     }
 
+    /// The same failure one step along: the echoed text also lands inside a
+    /// `format!` template, so a `{}` or `{:?}` in the example is read as a
+    /// placeholder and the harness dies with "1 positional argument in
+    /// format string, but no arguments were given" -- a compiler error in a
+    /// file the user never wrote, about a brace they wrote for Rust and not
+    /// for a format string. Found 2026-09-04 by an `examples:` entry in
+    /// Ply's own document that compared a debug-formatted value.
+    #[test]
+    fn an_example_containing_braces_is_not_read_as_a_format_placeholder() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result == 0)]
+pub fn greet(x: u32) -> u32 { x }
+"#,
+            "greet",
+        );
+        let body = generate_example_test(&cf, 1, r#"format!("{:?}", greet(0)) == "0""#).unwrap();
+        let message = body
+            .split("does not hold")
+            .next()
+            .and_then(|s| s.rsplit("assert!(").next())
+            .unwrap_or_default();
+        let echoed = message
+            .rsplit(", \"example failed:")
+            .next()
+            .unwrap_or_default();
+        assert!(
+            echoed.contains("{{:?}}"),
+            "the braces in the echoed example text must be doubled, or `format!` reads \
+             them as a placeholder and the harness fails to build:\n{body}"
+        );
+    }
+
     /// §5.4a: `old(expr)` is "the value `expr` had on entry", and the spec
     /// is explicit about how a generated test/fuzz harness must honour it --
     /// "evaluate `expr` before the call and substitute the snapshot". It did
@@ -5166,5 +5242,134 @@ pub fn byte_len(s: String) -> usize { s.len() }
         // Iterates by `char`, never by byte -- a multi-byte character must
         // never be split mid-encoding.
         assert!(expr.contains(".chars()"), "{expr}");
+    }
+
+    /// A parsed view of a `nest_tuple` expression: either one leaf part, or
+    /// a parenthesised, top-level-comma-separated group of further nodes.
+    /// Parsing (rather than pattern-matching the string) is what lets the
+    /// test below assert the actual property -- arity and membership -- and
+    /// not just that the output *looks* like nested parentheses.
+    enum TupleNode {
+        Leaf(String),
+        Tuple(Vec<TupleNode>),
+    }
+
+    /// Splits `s` on commas that sit at paren-depth 0 -- so a nested
+    /// `(a, b)` inside a larger tuple is kept whole instead of being split
+    /// on its own internal comma.
+    fn split_top_level_commas(s: &str) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut depth = 0i32;
+        let mut start = 0usize;
+        for (i, c) in s.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(s[start..i].trim());
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(s[start..].trim());
+        parts
+    }
+
+    fn parse_tuple_node(s: &str) -> TupleNode {
+        let s = s.trim();
+        if s.starts_with('(') && s.ends_with(')') {
+            let inner = &s[1..s.len() - 1];
+            if inner.is_empty() {
+                return TupleNode::Tuple(Vec::new());
+            }
+            TupleNode::Tuple(
+                split_top_level_commas(inner)
+                    .into_iter()
+                    .map(parse_tuple_node)
+                    .collect(),
+            )
+        } else {
+            TupleNode::Leaf(s.to_string())
+        }
+    }
+
+    /// Every `Tuple` node anywhere in the tree, including nested ones, must
+    /// have at most twelve children -- that is the actual constraint the
+    /// sampling library imposes, and the one `nest_tuple` exists to satisfy
+    /// no matter how deep the nesting goes.
+    fn assert_max_arity(node: &TupleNode, limit: usize) {
+        if let TupleNode::Tuple(children) = node {
+            assert!(
+                children.len() <= limit,
+                "a tuple with {} elements exceeds the limit of {limit}",
+                children.len()
+            );
+            for child in children {
+                assert_max_arity(child, limit);
+            }
+        }
+    }
+
+    fn collect_leaves<'a>(node: &'a TupleNode, out: &mut Vec<&'a str>) {
+        match node {
+            TupleNode::Leaf(s) => out.push(s),
+            TupleNode::Tuple(children) => {
+                for child in children {
+                    collect_leaves(child, out);
+                }
+            }
+        }
+    }
+
+    /// The property that matters, not the shape of the string: no tuple
+    /// anywhere in a folded expression may be wider than twelve (the
+    /// sampling library's own ceiling), and every input part must still
+    /// appear exactly once -- a folding scheme that silently dropped or
+    /// duplicated a leaf would pass a shape check but draw the wrong
+    /// struct.
+    #[test]
+    fn nest_tuple_never_exceeds_arity_twelve_and_keeps_every_part_exactly_once() {
+        for n in [1usize, 12, 13, 20, 200] {
+            let parts: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+            let out = nest_tuple(&parts);
+            let tree = parse_tuple_node(&out);
+            assert_max_arity(&tree, 12);
+
+            let mut leaves = Vec::new();
+            collect_leaves(&tree, &mut leaves);
+            assert_eq!(
+                leaves.len(),
+                n,
+                "n={n}: expected every one of the {n} input parts to appear exactly once, got \
+                 {leaves:?} from: {out}"
+            );
+            for part in &parts {
+                let occurrences = leaves.iter().filter(|l| **l == part.as_str()).count();
+                assert_eq!(
+                    occurrences, 1,
+                    "n={n}: part `{part}` must appear exactly once, appeared {occurrences} \
+                     times in: {out}"
+                );
+            }
+        }
+    }
+
+    /// At twelve parts or fewer, folding must be a no-op: the output is
+    /// byte-identical to the plain flat tuple Ply emitted before nesting
+    /// existed, which is what keeps every already-generated harness
+    /// unchanged.
+    #[test]
+    fn nest_tuple_at_or_below_twelve_is_the_plain_flat_tuple() {
+        for n in [1usize, 12] {
+            let parts: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+            let out = nest_tuple(&parts);
+            let expected = if n == 1 {
+                parts[0].clone()
+            } else {
+                format!("({})", parts.join(", "))
+            };
+            assert_eq!(out, expected, "n={n}: flat-tuple form must be unchanged");
+        }
     }
 }

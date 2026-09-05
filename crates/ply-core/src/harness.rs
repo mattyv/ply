@@ -681,7 +681,28 @@ impl RustType {
             // `String` need their own arm: the fallback would otherwise
             // inherit `false` from `is_bounded_supported`, which is
             // backwards here too.
-            RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => true,
+            // Recursive, and it has to be: this arm used to answer `true`
+            // for any struct or enum without looking inside it, so a field
+            // or constructor argument Ply cannot build passed the gate,
+            // reached codegen, and hit a panic that codegen writes *because*
+            // it trusts this gate. That took the whole run down -- exit 101,
+            // no JSON, every claim in the crate lost, not one honest
+            // refusal (2026-09-04, found by a `Vec<UserStruct>` field, which
+            // Ply's own `FingerprintInputs` has two of).
+            RustType::UserTypeCtor(plan) => plan
+                .ctor_params
+                .iter()
+                .all(|p| p.ty.is_fuzz_supported() && p.ty.is_fuzz_nestable()),
+            RustType::UserTypeFields(plan) => match &plan.shape {
+                UserTypeShape::Struct(fields) => fields
+                    .iter()
+                    .all(|p| p.ty.is_fuzz_supported() && p.ty.is_fuzz_nestable()),
+                UserTypeShape::Enum(variants) => variants.iter().all(|(_name, fields)| {
+                    fields
+                        .iter()
+                        .all(|p| p.ty.is_fuzz_supported() && p.ty.is_fuzz_nestable())
+                }),
+            },
             other => other.is_bounded_supported(),
         }
     }
@@ -921,6 +942,10 @@ impl RustType {
             // already-solved question from "can this become a runnable
             // `#[test]`").
             RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => false,
+            // 2026-09-04: `str`'s own `Debug` is a valid Rust string
+            // literal, so there is nothing left to invent -- see
+            // `WitnessValue::Str`.
+            RustType::String => true,
             _ => self.scalar_byte_width().is_some(),
         }
     }
@@ -3499,17 +3524,6 @@ pub fn discover_method_with_receiver(
 /// alias chain.
 const MAX_USER_TYPE_DEPTH: usize = 6;
 
-/// The most public fields direct field construction (rule 2) will build a
-/// struct out of -- measured, not guessed (2026-08-28, docs/review-structs-
-/// enums.md's "Also fix" list, "a struct with 13 or more fields"): the
-/// generated strategy is a tuple of one value per field, and proptest's own
-/// tuple `Strategy` impls (like the standard library's own tuple trait
-/// impls) stop being generated past 12 elements, so a 13-field struct's
-/// harness fails to compile with "the trait bound (…13 types…): Strategy is
-/// not satisfied" -- raw compiler output about Ply's own generated code,
-/// for a shape Ply had every field it needed to refuse by name instead.
-const MAX_DIRECT_CONSTRUCTION_FIELDS: usize = 12;
-
 /// Where Ply found a bare struct/enum name declared, scanning every `.rs`
 /// file under a crate's `src/` directory (recursing into subdirectories,
 /// following Ply's own file-per-module convention) -- keyed by bare name.
@@ -3600,6 +3614,72 @@ pub fn scan_type_fields(crate_dir: &Path, type_name: &str) -> Option<Vec<StateFi
 /// A type in a module *below* the anchor counts as under it: a component
 /// anchored at `visual` may name a type declared in `visual::svg`, which is
 /// still its own code.
+/// Every module path in `crate_dir` that declares a type called
+/// `type_name`, as dotted segments (empty string for the crate root).
+///
+/// [`TypeLocations`] already records that a name is declared twice -- it
+/// stores `None` for it -- but it does not record *where*, and the one
+/// reader of that map collapsed "declared twice" and "not declared" into
+/// the same answer. So a duplicate name was reported as a type the crate
+/// does not have, sending the reader to look for something that is sitting
+/// right there, twice (2026-09-04). Only called on the error path, so a
+/// second walk of the crate costs nothing a reader will notice.
+pub fn type_declaration_sites(crate_dir: &Path, type_name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![crate_dir.join("src")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(file) = syn::parse_file(&src) else {
+                continue;
+            };
+            let mut work: Vec<(&Vec<syn::Item>, Vec<String>)> = vec![(&file.items, Vec::new())];
+            while let Some((items, mods)) = work.pop() {
+                for item in items {
+                    if let syn::Item::Mod(m) = item
+                        && let Some((_, inner)) = &m.content
+                    {
+                        let mut deeper = mods.clone();
+                        deeper.push(m.ident.to_string());
+                        work.push((inner, deeper));
+                        continue;
+                    }
+                    let declares = match item {
+                        syn::Item::Struct(st) => st.ident == type_name,
+                        syn::Item::Enum(en) => en.ident == type_name,
+                        _ => false,
+                    };
+                    if !declares {
+                        continue;
+                    }
+                    let file_mods = file_module_segments(crate_dir, &path);
+                    let mut segments = file_mods;
+                    segments.extend(mods.iter().cloned());
+                    let dotted = segments.join("::");
+                    if !out.contains(&dotted) {
+                        out.push(dotted);
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 pub fn scan_type_fields_under(
     crate_dir: &Path,
     under: &[String],
@@ -4876,15 +4956,6 @@ fn resolve_user_type(
                      does not read yet",
                 ));
             };
-            if fields.len() > MAX_DIRECT_CONSTRUCTION_FIELDS {
-                return Err(no_ctor(&format!(
-                    "it has {} public fields -- direct field construction's generated strategy \
-                     is a tuple of one value per field, and the trait proptest builds that on \
-                     stops being implemented past {MAX_DIRECT_CONSTRUCTION_FIELDS} \
-                     (2026-08-28, docs/review-structs-enums.md's \"Also fix\" list)",
-                    fields.len()
-                )));
-            }
             let mut resolved = Vec::with_capacity(fields.len());
             for f in fields {
                 match resolve_param_type(crate_dir, locations, routes, &f.ty, depth + 1) {
@@ -6171,6 +6242,83 @@ fn crate_and_module_for_anchor(
 
 #[cfg(test)]
 mod tests {
+
+    /// Ply crashed on this shape: exit 101, no JSON, and every claim in the
+    /// crate lost -- not one refusal, the whole run. The gate said any user
+    /// struct is buildable without looking at its fields, so a field Ply
+    /// cannot build reached codegen, which panics by design because it
+    /// trusted the gate. Found 2026-09-04 by a struct with a
+    /// `Vec<UserStruct>` field, which is what Ply's own `FingerprintInputs`
+    /// has two of.
+    #[test]
+    fn a_struct_whose_field_ply_cannot_build_is_refused_not_accepted() {
+        let plan = UserTypeFieldsPlan {
+            type_name: "Outer".into(),
+            import_path: "Outer".into(),
+            shape: UserTypeShape::Struct(vec![Param {
+                name: "items".into(),
+                ty: RustType::Vec(Box::new(RustType::Unsupported("Inner".into()))),
+                by_ref: false,
+            }]),
+            skipped_constructor: None,
+        };
+        assert!(
+            !RustType::UserTypeFields(Box::new(plan)).is_fuzz_supported(),
+            "a field Ply cannot build makes the whole struct unbuildable -- \
+             saying otherwise sends an unbuildable type into codegen, which \
+             takes the entire run down"
+        );
+    }
+
+    /// The same hole one door along: a constructor argument Ply cannot
+    /// build. `Vec<Inner>` as a constructor parameter crashed identically.
+    #[test]
+    fn a_constructor_argument_ply_cannot_build_is_refused_not_accepted() {
+        let plan = ReceiverPlan {
+            type_name: "Outer".into(),
+            import_path: "Outer".into(),
+            constructor: "Outer::new".into(),
+            ctor_params: vec![Param {
+                name: "items".into(),
+                ty: RustType::Vec(Box::new(RustType::Unsupported("Inner".into()))),
+                by_ref: false,
+            }],
+            ctor_requires: None,
+            ctor_return: CtorReturn::Bare,
+            operations: vec![],
+            excluded_operations: vec![],
+            other_constructors: vec![],
+            max_sequence_len: 0,
+            route: None,
+        };
+        assert!(
+            !RustType::UserTypeCtor(Box::new(plan)).is_fuzz_supported(),
+            "a constructor argument Ply cannot build makes the type unbuildable"
+        );
+    }
+
+    /// The other half: this must not start refusing types that work today.
+    #[test]
+    fn a_struct_whose_fields_ply_can_build_is_still_accepted() {
+        let plan = UserTypeFieldsPlan {
+            type_name: "Ok".into(),
+            import_path: "Ok".into(),
+            shape: UserTypeShape::Struct(vec![
+                Param {
+                    name: "n".into(),
+                    ty: RustType::U32,
+                    by_ref: false,
+                },
+                Param {
+                    name: "names".into(),
+                    ty: RustType::Vec(Box::new(RustType::String)),
+                    by_ref: false,
+                },
+            ]),
+            skipped_constructor: None,
+        };
+        assert!(RustType::UserTypeFields(Box::new(plan)).is_fuzz_supported());
+    }
     /// `state:` names a type and the fields worth drawing, and the whole
     /// point of the grammar is that a document cannot lie about them: the
     /// fields come from the real source, and a name nobody declared is a

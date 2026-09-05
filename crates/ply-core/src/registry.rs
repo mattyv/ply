@@ -877,6 +877,46 @@ impl Code {
 /// Every row, in [`Code::ALL`] order. Cheap to call (no allocation beyond
 /// the returned `Vec` itself, and there are fewer than a hundred rows), so
 /// callers needing the whole table just call this rather than caching it.
+/// The letter every code starts with, and what it says about who is
+/// speaking. Written down here because it was not written down anywhere: a
+/// reader with `K0502` in their terminal had no way to learn that the `K`
+/// means the exhaustive prover found it, short of reading this file.
+pub fn family(code: Code) -> &'static str {
+    match code.entry().letter() {
+        'E' => "Ply reading your document, or looking for the code a claim names",
+        'A' => "Ply checking the architecture rules your document declares",
+        'W' => "any part of Ply, as a warning rather than a stop",
+        'V' => "Ply itself, refusing or qualifying a check before an engine ran",
+        'K' => "the exhaustive prover (Kani)",
+        'P' => "the random sampler (proptest)",
+        'R' => "a plain test run",
+        'M' => "the mutation tester",
+        'X' => "Ply's own tooling, when it broke rather than found something",
+        _ => "Ply",
+    }
+}
+
+impl RuleEntry {
+    /// The code's leading letter.
+    pub fn letter(&self) -> char {
+        format!("{:?}", self.code).chars().next().unwrap_or('?')
+    }
+}
+
+/// The row for a code written the way a user types it (`K0502`), or `None`
+/// when no such code exists.
+///
+/// Case-insensitive, because a code copied out of a terminal and retyped by
+/// hand is as likely to arrive lowercase as not, and refusing that would be
+/// a refusal about typing rather than about the code.
+pub fn lookup(code: &str) -> Option<RuleEntry> {
+    let wanted = code.trim().to_ascii_uppercase();
+    Code::ALL
+        .iter()
+        .find(|c| format!("{c:?}") == wanted)
+        .map(|c| c.entry())
+}
+
 pub fn all() -> Vec<RuleEntry> {
     Code::ALL.iter().map(|c| c.entry()).collect()
 }

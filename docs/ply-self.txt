@@ -11,6 +11,9 @@ components:
 
   component e2e — maps to Rust module ply_e2e
     note: Drives the built binary the way a user does, and depends on nothing. A suite that links the library instead stops testing what ships. It had grown exactly that dependency once; the fix was to move the test rather than widen the rule.
+    state VerifyRun — the structure this component holds. 2 of 2 of its fields shown
+      json is a structure of your own, written `serde_json::Value` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      exit_code is something that might not be there, written `Option<i32>`
     hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
   component attrs — maps to Rust module ply_attrs

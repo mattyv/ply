@@ -329,19 +329,44 @@ fn verify_state(
         return;
     };
     let Some(fields) = ply_core::harness::scan_type_fields_under(&dir, &segments, &state.of) else {
-        diagnostics.push(state_diag(
-            "A0414",
-            qualified,
-            format!(
-                "`{qualified}` says its state lives in `{of}`, but `{anchor}` declares no \
-                 type called that. A component's state is resolved under its own anchor, \
-                 never guessed at, so a type of that name declared elsewhere in the crate \
-                 is not this component's and was not accepted. Check the spelling, or move \
-                 the claim to the component the type really belongs to. (A0414)",
+        // Three different facts, three different sentences. A name declared
+        // twice used to read as a name not declared at all, which sends the
+        // reader looking for a type that is sitting right there (2026-09-04).
+        let sites = ply_core::harness::type_declaration_sites(&dir, &state.of);
+        let where_at = |m: &String| {
+            if m.is_empty() {
+                "the crate root".to_string()
+            } else {
+                format!("`{m}`")
+            }
+        };
+        let message = match sites.len() {
+            0 => format!(
+                "`{qualified}` says its state lives in `{of}`, but this crate declares no \
+                 type called that anywhere. Check the spelling. (A0414)",
+                of = state.of,
+            ),
+            1 => format!(
+                "`{qualified}` says its state lives in `{of}`, but `{anchor}` does not \
+                 declare it -- {site} does. A component's state is resolved under its own \
+                 anchor, never guessed at, so a type of that name declared elsewhere in \
+                 the crate is not this component's and was not accepted. Move the claim to \
+                 the component that type belongs to, or re-anchor this one. (A0414)",
                 of = state.of,
                 anchor = comp.anchor,
+                site = where_at(&sites[0]),
             ),
-        ));
+            _ => format!(
+                "`{qualified}` says its state lives in `{of}`, and this crate declares more \
+                 than one type by that name: {list}. Ply will not guess which one a \
+                 component holds, so the claim was not accepted -- and this is not a \
+                 missing type, it is an ambiguous one. Either rename one of them, or \
+                 anchor this component at the module that owns the one you mean. (A0414)",
+                of = state.of,
+                list = sites.iter().map(where_at).collect::<Vec<_>>().join(" and "),
+            ),
+        };
+        diagnostics.push(state_diag("A0414", qualified, message));
         return;
     };
     let declared: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
@@ -766,7 +791,13 @@ fn walk_anchors(
                 Some(err) => {
                     tally.unresolved += 1;
                     diagnostics.push(unresolved_anchor_diag(
-                        &node_id, fn_name, known_fns, &err, lib_path,
+                        &node_id,
+                        fn_name,
+                        fn_path,
+                        &module_path,
+                        known_fns,
+                        &err,
+                        lib_path,
                     ));
                 }
             }
@@ -796,6 +827,8 @@ fn walk_anchors(
 fn unresolved_anchor_diag(
     node_id: &str,
     fn_name: &str,
+    fn_path: &str,
+    module_path: &str,
     known_fns: &[String],
     err: &AnchorError,
     lib_path: &Path,
@@ -805,11 +838,56 @@ fn unresolved_anchor_diag(
     // a typo that is not there — which is the whole reason this branches.
     let title = match err {
         AnchorError::NotFound => {
-            let suggestion = match schema::nearest_key(fn_name, known_fns) {
-                Some(near) => format!(
-                    " The closest name Ply can see is `{near}` — if the function was renamed, \
-                     the claim needs renaming with it."
-                ),
+            // Matched on the *crate-root* key, because that is the shape
+            // `known_fns` holds: comparing the key as written under a module
+            // anchor (`dottted`) against `schema::dotted` puts every real
+            // name far outside edit distance, and the suggestion goes quiet
+            // exactly where module anchors are used (2026-09-04). Shown
+            // back relative to the same anchor, so it can be pasted straight
+            // over the typo.
+            // Edit distance cannot see a claim that sits under the wrong
+            // module: `visual::examples_prose` is five characters from
+            // `visual::svg::examples_prose`, so the reader was told the
+            // function does not exist when it plainly does, just one box
+            // over. Matching on the final segment finds it, and is only
+            // consulted when the distance match found nothing.
+            let same_leaf = || {
+                let leaf = fn_path.rsplit("::").next().unwrap_or(fn_path);
+                let mut hits = known_fns
+                    .iter()
+                    .filter(|k| k.rsplit("::").next() == Some(leaf));
+                // One unambiguous answer only: two functions with the same
+                // name in different modules is a question, not a suggestion.
+                let first = hits.next()?;
+                hits.next().is_none().then(|| first.clone())
+            };
+            // Two different facts, two different sentences: a near-miss on
+            // spelling is a rename, a same-name-elsewhere is a claim under
+            // the wrong box. Telling someone their function "was renamed"
+            // when it is sitting one module over sends them looking for a
+            // change nobody made.
+            let by_distance = schema::nearest_key(fn_path, known_fns);
+            let moved = by_distance.is_none();
+            let suggestion = match by_distance.or_else(same_leaf) {
+                Some(near) => {
+                    let shown = near
+                        .strip_prefix(module_path)
+                        .and_then(|rest| rest.strip_prefix("::"))
+                        .filter(|_| !module_path.is_empty())
+                        .unwrap_or(near.as_str());
+                    if moved {
+                        format!(
+                            " There is a function of that name at `{shown}` — the claim is \
+                             under the wrong component, or its anchor points at the wrong \
+                             module."
+                        )
+                    } else {
+                        format!(
+                            " The closest name Ply can see is `{shown}` — if the function was \
+                             renamed, the claim needs renaming with it."
+                        )
+                    }
+                }
                 None if known_fns.is_empty() => {
                     format!(" Ply found no functions at all in {}.", lib_path.display())
                 }
@@ -1297,6 +1375,64 @@ pub struct OrderBook {
                 .any(|d| d.code == "A0415" && d.title.contains("`bids` is")),
             "a field that really exists must not be reported"
         );
+    }
+
+    /// A type declared in two modules used to be reported as one the crate
+    /// "declares no type called" -- the scanner stores a duplicate name as
+    /// "ambiguous", and the one place that reads it collapsed ambiguous and
+    /// absent into the same answer. So a reader was sent hunting for a type
+    /// sitting right there, twice. Found 2026-09-04 declaring state on
+    /// ply-core's own `diag`, which has a `Diagnostic` and so does `check`.
+    #[test]
+    fn a_state_type_declared_in_two_modules_says_so_rather_than_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub mod probe;\npub mod other;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/probe.rs"),
+            "pub struct Thing { pub a: u32 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/other.rs"),
+            "pub struct Thing { pub b: u32 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("ply.yaml"),
+            "ply: 1\ncomponents:\n  probe:\n    anchor: probe::probe\n    state:\n      of: Thing\n",
+        )
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        let doc = ply_core::model::parse_document(
+            &std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap(),
+        )
+        .unwrap();
+        check_anchors(dir.path(), &doc, &mut diagnostics);
+
+        let found = diagnostics
+            .iter()
+            .find(|d| d.code == "A0414")
+            .expect("an ambiguous state type must still be refused");
+        assert!(
+            !found.title.contains("declares no type called that"),
+            "the type is declared -- twice. Saying it does not exist sends the \
+             reader looking for something that is right there:\n{}",
+            found.title
+        );
+        for module in ["probe", "other"] {
+            assert!(
+                found.title.contains(module),
+                "the finding has to name where the duplicates are, or there is \
+                 nothing to act on:\n{}",
+                found.title
+            );
+        }
     }
 
     /// The same rule one level up: a type the crate does not declare at all.
@@ -1970,6 +2106,68 @@ pub struct OrderBook {
     /// orphan its claims" — and §5.2 asks the diagnostic to suggest the
     /// nearest name, which is what makes the break actionable rather than
     /// merely loud.
+    /// The same suggestion, for a claim written under a module anchor.
+    /// Anchor-relative claim keys (2026-09-04) silently broke this: the
+    /// typo is matched as the user wrote it (`dottted`) against names held
+    /// as crate-root paths (`schema::dotted`), which are never within edit
+    /// distance of each other, so the suggestion went quiet exactly where
+    /// this project had just moved all of its own claims. Found by making
+    /// the typo on purpose.
+    #[test]
+    fn a_typo_under_a_module_anchor_still_names_the_nearest_name() {
+        let dir = crate_with(
+            "pub mod schema { pub fn dotted(p: &str) -> String { p.to_string() } }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    components:\n      schema:\n        anchor: demo::schema\n        fns:\n          dottted:\n            checks: [fuzz(8)]\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E0301")
+            .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
+        assert!(
+            d.title.contains("The closest name Ply can see is `dotted`"),
+            "the suggestion has to be the name as it would be written under \
+             this anchor, ready to paste over the typo:\n{}",
+            d.title
+        );
+    }
+
+    /// The other way a module anchor goes wrong: the name is spelled
+    /// right but the claim sits under the wrong box. Edit distance cannot
+    /// see this -- `visual::examples_prose` is five characters from
+    /// `visual::svg::examples_prose`, so the suggestion stayed silent and
+    /// the reader was told the function does not exist when it plainly
+    /// does. Found 2026-09-04 while claiming it.
+    #[test]
+    fn a_claim_under_the_wrong_module_is_told_where_the_function_actually_is() {
+        let dir = crate_with(
+            "pub mod visual { pub mod svg { pub fn examples_prose(n: usize) -> String { n.to_string() } } }\n",
+            "ply: 1\ncomponents:\n  demo:\n    anchor: demo\n    components:\n      visual:\n        anchor: demo::visual\n        fns:\n          examples_prose:\n            checks: [fuzz(8)]\n",
+        );
+        let report = check_crate(dir.path()).unwrap();
+        let d = report
+            .envelope
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E0301")
+            .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
+        assert!(
+            d.title
+                .contains("There is a function of that name at `svg::examples_prose`"),
+            "the reader has to be told where the function actually is, relative to \
+             the anchor they wrote -- and that nothing was renamed:\n{}",
+            d.title
+        );
+        assert!(
+            !d.title.contains("was renamed"),
+            "nothing was renamed here; saying so sends the reader looking for a \
+             change nobody made:\n{}",
+            d.title
+        );
+    }
+
     #[test]
     fn a_renamed_function_is_e0301_and_names_the_nearest_name() {
         let dir = crate_with("pub fn clamped(x: u32) -> u32 { x.min(100) }\n", CLEAN_YAML);

@@ -34,6 +34,51 @@ cargo ply verify path/to/crate --json --publish-view
 
 `--publish-view` records the completed outcome; it does not turn that outcome into success. Do not construct or edit `target/ply/view.json`, a `visual.json`, or `ply.lock` yourself.
 
+## Repair a broken promise
+
+A violation comes with a generated `#[test]` at `src/ply_generated_cex.rs`, holding the
+exact input that broke the promise. That file is the repair loop:
+
+```bash
+cargo test        # from the crate root -- it fails the same way the run just did
+```
+
+It is ordinary Rust and needs no engine, so iterate against it directly and only re-run
+`cargo ply verify` once it passes.
+
+Read the panic before changing anything. It prints what the promise's left and right sides
+each evaluated to for that input, which usually says immediately whether the body is wrong
+or the promise is.
+
+| What you conclude | What to do |
+| --- | --- |
+| The body is wrong | Fix the body. This is the default and needs no approval |
+| The promise is wrong | **Stop and ask.** Weakening a promise until a test passes converts a real finding into a green result |
+| The promise is right but far too broad for this callee | Ask, with the proposed narrowing and the failing input |
+
+Two failure shapes are not repairable this way and must not be treated as one:
+
+- **No generated test, only a recorded input** (`W0541`). Ply found the failing case and
+  could not write it as Rust source — usually a value built by a constructor plus a
+  sequence of calls, which has no literal form. The violation is real; reproduce it by
+  hand from the recorded input rather than assuming it is spurious.
+- **A tool error.** The generated check did not compile or did not run. Nothing is known
+  about the promise. Never report this as a failing promise, and never as a passing one.
+
+Leave the generated test in place after the fix. It stays as a regression test, and it is
+the one artifact that proves the repair addressed the actual case.
+
+## Decode any code Ply prints
+
+```bash
+cargo ply explain <CODE>
+```
+
+Every diagnostic ends in a short code. This says what it means, who reported it — the
+prover, the sampler, or Ply itself — and whether a run carrying it passed. It also says
+when a code is described but not emitted by this build, which must never be reported as a
+check that ran.
+
 ## Result policy
 
 | scenario | completion | next action | visual publication |

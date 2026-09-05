@@ -7,6 +7,22 @@ description: Review a completed Ply visual run, explain its declared structure a
 
 Review Ply's immutable public artifact. Treat its outcome and evidence fields as authoritative; do not derive a new verdict from SVG marks, diagnostic severity, or private records.
 
+## When there is no run to review
+
+This skill reviews a **completed run**. If no run has been published — or the question is
+about what the document declares rather than what a run found — do not reach for the SVG.
+Read the text form instead:
+
+```bash
+cargo ply render path/to/crate --text
+```
+
+Roughly 95% of a drawing lives in hover text, so a model reading the picture reads about a
+twentieth of it. The text form carries every construct, each with its meaning inline, and
+a test walks the real document to keep it that way. Say plainly that you are describing
+declared intent and not evidence — a document full of promises must never be reported as a
+codebase full of results.
+
 ## Select the run
 
 1. Identify the relevant directory containing `ply.yaml`.

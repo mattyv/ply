@@ -5,6 +5,10 @@ edition.workspace = true
 publish.workspace = true
 description = "cargo-ply: the Ply CLI (verify, --json)."
 
+[lib]
+name = "ply_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cargo-ply"
 path = "src/main.rs"

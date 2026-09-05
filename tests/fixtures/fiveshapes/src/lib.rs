@@ -60,7 +60,23 @@ pub struct Big13 {
 
 #[ply::ensures(|result| *result)]
 pub fn uses_big13(b: Big13) -> bool {
-    b.f0 == b.f0
+    // Deliberately false only when the *thirteenth* field is large. Before
+    // 2026-09-04 this whole shape was refused, on the grounds that a
+    // struct's generated recipe is one flat tuple and the sampling
+    // library's trait for those stops at twelve. That was a fact about
+    // Ply's own folding, not about the struct: nesting the tuple lifts it.
+    // So this promise is the proof the thirteenth leaf is really drawn --
+    // if it were quietly left at its default, the check would come back
+    // green and mean nothing.
+    //
+    // The threshold is small on purpose, and it is the whole trick: a
+    // default `u32` is 0, so if the thirteenth leaf were quietly left at
+    // its default this promise would HOLD and the check would pass. It
+    // fails only when that field is really being drawn. A large threshold
+    // was tried first and was the wrong instrument -- it made the promise
+    // false in only the top few percent of the range, which the sampler
+    // reaches rarely enough that a fixed seed missed it every run.
+    b.f12 < 100
 }
 
 /// Shape 4: `#[non_exhaustive]` on one *variant*, not the enum itself.

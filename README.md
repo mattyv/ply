@@ -179,10 +179,21 @@ entirely — it runs the callee's real code, contract or not, so it never needs 
 And whether a stored result can be reused instead of running any of this again is a
 separate diagram, [`verdict-lifecycle`](.archi/ply.json), rendered alongside this one.
 
-### What step 5 gives you
+### What you get when a check fails (step 5)
 
-A failed executable claim comes back as three things, and every one of them is a file
-you can open. The example below is real output from
+**Ply does not write your tests.** It writes exactly one, only when a promise actually
+breaks, and it puts the input that broke it inside. A clean run leaves your source tree
+untouched.
+
+Two different things get generated and only one of them is yours to keep:
+
+| | Where it lives | When | Yours? |
+|---|---|---|---|
+| The harness that runs the checks | `target/ply/fuzz/…` | every run | No — scratch, rewritten each time, never committed |
+| **The failing test** | `src/ply_generated_cex.rs` | only when a promise breaks | Yes — an ordinary file in your crate |
+
+The second one is the point of this section. A broken promise comes back as three things,
+and every one of them is a file you can open. The example below is real output from
 [`tests/fixtures/clamp`](tests/fixtures/clamp), a function whose promise is wrong for
 every input above 100:
 
@@ -204,8 +215,9 @@ quotes the promise it broke, and gives the input that breaks it:
 
 **2. A plain `#[test]` in your own crate**, at `src/ply_generated_cex.rs`. It calls the
 real function with that input and asserts the promise itself, so it fails under bare
-`cargo test` with no engine installed. This is the artifact an agent repairs against
-(panic messages abridged here; the file carries them in full):
+`cargo test` on a machine with no Ply and no proof engine installed at all — which is
+what makes it something you, or an agent, can iterate against. Fix it and it stays as a
+regression test (panic messages abridged here; the file carries them in full):
 
 ```rust
 #[test]
@@ -245,11 +257,111 @@ reason.
 `target/ply/witness/<fn>.json` (here `[[255,255,255,255]]`), so a later run that no
 longer fails can still re-render the test from the input that once did.
 
-One honest limit. When the failure depends on a stand-in callee's invented return value
-rather than on the function's own body, no plain-Rust test can reproduce it faithfully —
-the rendered test would call the real callee, which never returns that value. Ply reports
-that case by name (`W0541`) with the value and a proposed tightening of the promise,
-instead of writing a test that passes for the wrong reason.
+**One honest limit: sometimes Ply finds the input but cannot write it down.** A test needs
+the failing value spelled out as Rust source, and not every value can be. The usual case
+is a value Ply built rather than drew — one made by calling a constructor and then a
+sequence of the type's own methods — which is a recipe, not something that can be pasted
+in as a literal.
+
+When that happens you still get the violation and you still get the input, exactly as the
+engine reported it; what you do not get is step 2, the runnable test. Ply says so by name
+(`W0541`) rather than writing a test with a guessed value in it, because a test built on a
+guess can pass while the promise is still broken.
+
+## What a contract is: `requires` and `ensures`
+
+Two halves of one statement — **what must be true going in, and what must be true coming
+out.**
+
+```rust
+#[ply::requires(amount <= 1_000)]              // callers must satisfy this
+#[ply::ensures(|result| *result >= amount)]    // the function guarantees this
+pub fn total(amount: u32, tier: u8) -> u32 {
+    amount + legacy_rate(tier)
+}
+```
+
+Read together: *given an amount of at most 1000, you get back at least what you put in.*
+`requires` is the function's price; `ensures` is what you buy. Under a plain `cargo build`
+both vanish — the macro re-emits your function unchanged, so there is no runtime cost and
+nothing about Ply in what you ship.
+
+### What they do, which depends on who is asking
+
+| | `requires` | `ensures` |
+|---|---|---|
+| **Generated cases** (`test`, `fuzz`) | A filter: inputs failing it are discarded, not counted, and never blamed on the function | The assertion each surviving case must pass |
+| **Proof** (`bounded`) | Narrows the space the prover searches | The thing it must prove for every point in that space |
+| **A caller** | Something the caller has to satisfy | Something the caller may assume without re-checking |
+
+That last row is the one people miss, and it is the reason contracts scale. When Ply proves
+a function that calls yours, it can stand on your `ensures` instead of walking into your
+body — which is what makes proving tractable in a real codebase rather than only in a toy
+one. The cost is that the result now rests on your promise, so Ply marks it as conditional
+rather than passing it silently, and tracks the debt until something checks that promise
+against your real code.
+
+### Watch what `requires` throws away
+
+Because `requires` filters, a precondition that is too narrow quietly makes a green result
+mean less: a promise checked on the 3 inputs that survived out of 256 generated is far
+thinner than `fuzzed(256)` sounds. Ply warns when the rejection rate is high, and the
+number it reports is the honest one — but the fix is yours, and it is usually to widen the
+precondition or give Ply a better way to build valid inputs.
+
+### Writing one
+
+Boolean Rust over the parameters and `result`: comparisons, `&&` / `||` / `!`, arithmetic,
+field access, `.len()`, `.is_ok()`, `matches!()`, literals. An `ensures` clause is a closure
+naming the returned value — `|result|`, and `*result` because it arrives by reference.
+
+`old(expr)` gives you the value an expression had **on entry**, which is how you say "the
+count went up by one" rather than only "the count is positive".
+
+You can also write both in `ply.yaml` instead of on the function. A clause written there is
+ANDed with any attribute on the function itself — both hold, neither replaces the other —
+which is how you give a promise to code you cannot or should not annotate.
+
+The full expression subset, the caveats, and the boundary rules are in
+[`docs/SCHEMA.md` §6](docs/SCHEMA.md).
+
+## Which check to ask for, and what each one is worth
+
+`checks:` on a function names the evidence you want. They are not interchangeable, and
+they are not a difficulty ladder you climb — each one answers a different question, and
+each one refuses different code.
+
+| Ask for | What it does | What a pass means | Reach |
+|---|---|---|---|
+| `test` | Runs the concrete cases you wrote under `examples:`, through the real function, asserting the promise | These exact inputs work | Anything you can call |
+| `fuzz(n)` | Generates `n` inputs (256 by default), runs the real function, shrinks any failure to the smallest one | It held for `n` generated cases; a counterexample is real | Wide — real code runs, so it crosses into libraries and legacy freely |
+| `bounded(k)` | Asks a prover to search **every** value, with loops unrolled `k` times | Nothing in that space breaks it — a much stronger claim than any number of samples | Narrow — see below |
+| `mutate` | Deliberately breaks the function and checks your `test`/`fuzz` cases notice | Your checks have teeth | Needs a `test` or `fuzz` beside it; it measures those |
+| `prove` | Unbounded proof, no loop limit | Holds for all inputs, full stop | Not built yet — the experimental path |
+
+**These stack.** `checks: [fuzz(256), bounded(2), mutate]` is a normal thing to write. The
+verdict you get is the strongest one that actually passed, and a component is never shown
+as stronger than its weakest part.
+
+**Start with `fuzz`, reach for `bounded` deliberately.** Fuzzing runs your real code, so
+it works on almost anything and finds real bugs cheaply. Proving searches exhaustively,
+which is a genuinely stronger claim — but the prover has to build every input itself, so
+it refuses shapes it cannot construct, and it gets slower as the code gets bigger. Ply
+tells you which case you are in by name rather than hanging: a shape it will not attempt
+comes back `unsupported` with the parameter and the reason, and a search that ran out of
+time comes back `timeout`, never as a pass.
+
+**The one that surprises people is `mutate`.** It does not check your function; it checks
+your *checks*. A promise like "returns a number" is true of almost any body, so it passes
+everything and catches nothing. `mutate` breaks the body on purpose and reports how many
+of those breakages your cases failed to notice. A promise that survives its own mutants is
+green paint, and this is how you find that out.
+
+**What a verdict is worth, weakest to strongest**: a run that found a real break, code
+nobody claimed anything about, your own examples passing, generated cases passing,
+exhaustive search passing, unbounded proof. Ply reports the whole tree at once, folds each
+box down to its weakest part, and marks anything resting on an unproven assumption rather
+than letting it pass as settled.
 
 ## A declarative grammar, and the line where it stops
 
@@ -331,6 +443,58 @@ Every visual mark must have one stable meaning. Colour alone must never carry th
 meaning, and an unknown or unsupported fact must never look verified. A diagram that
 hides uncertainty would recreate the problem Ply exists to solve.
 
+### How to read one of these drawings
+
+Every channel means exactly one thing, and no meaning uses two channels. Once you know
+these you can read any Ply drawing without a key beside it.
+
+**Shape — what the thing is**
+
+| | |
+|---|---|
+| A box | A component. Boxes inside boxes are components inside components |
+| A chip inside a box | One function |
+| A **dashed** border | Nothing has been claimed in here yet — no functions, no promises. A sketch, not a failure |
+| A **sealed** border, no badges | Declared pure: no filesystem, no network, no clock, nothing |
+| A box **outside the frame** | Something outside your codebase — a person, an exchange, a payment processor. Ply draws the boundary and checks nothing across it |
+| A **flat card** where a box should be | Folded up. Whatever is inside is summarised, not gone |
+
+**Colour — how sure Ply is**
+
+| | |
+|---|---|
+| **Green** | Earned. A run actually produced this. Green is used for nothing else |
+| **Red** | Broken, or forbidden. A promise that failed, or a dependency a rule bans |
+| **Grey, light to dark** | The *ceiling* — how strongly this could ever be checked if every declared check ran and passed. **Grey is a promise, not a result.** A dark grey box has not been verified; it has been ambitiously claimed |
+| **Violet** | Machine-written — the body below the line was generated from the contract |
+| **Diagonal hatching** | Nothing here is claimed at all, so nothing was checked |
+
+**Marks on a chip**
+
+| | |
+|---|---|
+| A solid bar down the left edge | Something binding is stated here — a precondition, a postcondition. Hover, or use the text form, to read it |
+| A second line of small text | The checks asked for: `fuzz: 256 cases`, `bounded: loop<=2` |
+| `✓` `✗` `?` `↻` | Earned, broken, a run that could not say, and a stored result whose code has since moved |
+| A hollow shield | Attested by named evidence a human vouched for, not machine-checked |
+| A numbered pin | An open decision recorded against this item |
+
+**Lines between boxes**
+
+| | |
+|---|---|
+| Solid arrow | One component calls another |
+| Dashed arrow, labelled with a type | Data flows this way |
+| Barred red arrow | A forbidden dependency, drawn where the rule was broken |
+| Thin dotted arrow | This verdict rested on that promise — the assumption it stands on |
+
+**The strip along the top** counts what the document declares and how much of it promises
+nothing, so a page of confident-looking boxes cannot hide that half of it is empty.
+
+The rule behind all of this: **one channel, one meaning.** Green never means anything but
+earned evidence, so a grey box can never be mistaken for a checked one — which is the
+mistake worth engineering against.
+
 ### What it renders today
 
 `cargo ply render <dir> -o system.svg` draws the spec you wrote before any code is
@@ -390,16 +554,8 @@ nothing. It counts promises only, never results — the render never sees what a
 verification found, and a picture full of promises should not look like a picture full of
 results.
 
-Most of what a diagram says is only reachable by hovering: on the trading-system example,
-474 characters are drawn on the canvas and 9,923 sit in hover text — 95% of the render,
-and all of the reasoning. `cargo ply render <dir> --text` writes the whole thing out as
-prose instead, for reading in a terminal, piping into another tool, or handing to a model,
-none of which can hover. Nothing in it is written by hand, and it is not a summary: every
-check, contract clause, capability, profile rule, inherited default, trusted claim, edge,
-forbidden rule and open question in the document appears in it, and a test walks the
-document to prove it. One is committed beside each scenario in `vetting/`, kept in step
-with the renderer by a test, so a change to the wording shows up in review as a diff
-rather than passing unseen.
+The text form below says the same things in prose, for anyone — or anything — that cannot
+hover.
 
 Nothing on this diagram is green, and that is the rule rather than an accident of this
 example: green means evidence a run has actually earned, so before `cargo ply verify` has
@@ -450,6 +606,56 @@ about six of its own functions. Both are checked by `cargo ply check` like anyon
 the rule this codebase was found to be breaking when the checker was pointed at it, and
 what declaring the exception would have cost.
 
+### The same drawing, as text — for terminals and for models
+
+**A model cannot hover, and most of a diagram is in the hover text.** Measured on the
+trading-system example: 474 characters are drawn on the canvas and 9,923 sit in tooltips.
+That is 95% of the render — and it is the 95% that carries the reasoning, not the labels.
+Hand a model the SVG and you have handed it the 5%.
+
+```
+$ cargo ply render . --text
+```
+
+An excerpt of the real output (two long lines soft-wrapped here to fit the page; the tool
+emits them unwrapped):
+
+```
+5 components · 6 functions · 0 promise nothing
+("promise nothing" counts functions that end up with nothing checked — whether nobody
+wrote any checks for them, or the document switched checking off for them on purpose)
+
+  component core — maps to Rust module ply_core
+    state Envelope — the structure this component holds. 4 of 8 of its fields shown
+      command is text, written `String`
+      root is a structure of your own, written `Node` — Ply has no way to make one of
+        these, which is usually why the functions around it come back unchecked
+    component kernel — maps to Rust module ply_core::kernel
+      fn StatusSet::len
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code
+        itself takes over:
+          ensures: result <= 7 (what the function guarantees coming out)
+```
+
+Three things make this worth using rather than screenshotting the picture:
+
+- **It is complete, and that is enforced.** Every check, contract clause, capability,
+  profile rule, inherited default, trusted claim, edge, forbidden rule and open question
+  in the document appears here. A test walks the real document and fails if any construct
+  is missing, so the text cannot quietly fall behind the drawing.
+- **It is generated, never written.** Nothing in it is prose someone maintained by hand,
+  so it cannot describe a system you no longer have. Editing the text changes nothing —
+  you edit the document and generate again.
+- **It explains its own vocabulary as it goes.** Every line carries its gloss inline, so a
+  reader (or a model) meeting `fuzz(256)` for the first time is told what it means on the
+  spot rather than needing the spec open beside it.
+
+One is committed next to each scenario in [`vetting/`](vetting/) and kept in step with the
+renderer by a test — so a change to the wording shows up in review as a readable diff
+rather than passing unseen. That is also the fastest way to see what a wording change
+actually does to the output.
+
 ### Interactive evidence views
 
 `cargo ply verify <dir> --publish-view` publishes an immutable visual envelope under
@@ -498,10 +704,31 @@ Six commands exist:
 | `cargo ply verify <dir>` | Run declared checks and report the evidence each function earned. |
 | `cargo ply audit <dir>` | List the trust surface: assumptions and declarations Ply does not verify. |
 | `cargo ply worklist <dir>` | List unresolved decisions and evidence still owed. |
+| `cargo ply explain <CODE>` | Say what one diagnostic code means, who reports it, and whether a run carrying it passed. No code lists every one this build can produce. |
 | `cargo ply clean-views <dir>` | Remove older published visual runs while preserving the current run. |
 
 The render, inspection, and verification commands support `--json`. Published visual envelopes
 are the stable integration surface for editor extensions and other visual clients.
+
+## Skills, for agents working with Ply
+
+[`skills/`](skills/) holds five skills — four for the stages of the loop, and one for
+writing code the loop can act on at all. Each is written against
+Ply's public CLI and says plainly where its authority stops, because the temptation an agent
+faces here is specific: when a check fails, editing the promise is always easier than fixing
+the code, and it turns a real finding into a green result.
+
+| Skill | For |
+| --- | --- |
+| [`ply-author`](skills/ply-author/) | Writing or extending a `ply.yaml`: components, dependency rules, contracts, structure promises — checking each addition before adding the next |
+| [`ply-verify`](skills/ply-verify/) | Running the checks on a change, reading the result honestly, and repairing against the generated counterexample |
+| [`ply-audit`](skills/ply-audit/) | Reporting what the green results rest on and what evidence is still owed |
+| [`ply-review`](skills/ply-review/) | Reviewing a published run: its structure, its evidence, and its diagnostics down to exact source |
+| [`ply-checkable-code`](skills/ply-checkable-code/) | Writing Rust that Ply can check at all — separating decisions from side effects, keeping signatures buildable, promising things that can fail |
+
+The common rule across all four: **adding a promise is work an agent may do; weakening or
+deleting one is a decision about what the codebase is allowed to do, and it belongs to the
+developer.** A test walks each skill's own authority table and fails if that slips.
 
 Ply delegates checking rather than building its own solver. Depending on the declared
 check, it uses Cargo's test runner, property testing, Kani, or `cargo-mutants`. Passing

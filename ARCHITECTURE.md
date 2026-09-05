@@ -64,12 +64,15 @@ stops testing what ships.
 Rendered from [`crates/ply-core/ply.yaml`](crates/ply-core/ply.yaml).
 
 <p align="center">
-  <img src="docs/ply-core-self.svg" alt="A frame labelled ply.yaml, with a line reading 5 components, 6 functions, 0 promise nothing. Inside is a solid box named core, filled mid-grey rather than hatched. Under its name a line reads state Envelope, 4 of 8 shown, followed by four rows: command, root, diagnostics and coverage, each with a small shape beside it and its type to the right. Nested inside core are four smaller boxes, one per module — kernel, harness, visual and record — each with its own state line and field rows, and each holding the chips for its own functions: StatusSet::len and StatusSet::union under kernel, last_two_segments and rust_type_from_source under harness, stable_element_id under visual, fingerprint under record. Every chip reads fuzz: 256 cases. The kernel box has no field rows; its state line reads state StatusSet, promises 1 thing about itself. There are no arrows." width="440">
+  <img src="docs/ply-core-self.svg" alt="A frame labelled ply.yaml, with a line reading 22 components, 44 functions, 0 promise nothing. Inside is a solid box named core, filled mid-grey rather than hatched. Under its name a line reads state Envelope, 4 of 8 shown, followed by four rows: command, root, diagnostics and coverage, each with a small shape beside it and its type to the right. Nested inside core is one box per module, each holding the chips for its own functions: kernel, harness, schedule, surface, model, registry, record, schema, engines (which itself contains two further boxes, fuzz_engine and kani_engine), check, diag, callgraph, reach, config, fuzz_gen, harness_crate, layout, svg and visual. Most chips read fuzz: 256 cases; about half also read test and carry a small grey badge counting the worked examples they run, and one chip, is_absence, reads test alone. The kernel, harness, record, engines and visual boxes carry their own state lines and field rows; kernel's reads state StatusSet, promises 1 thing about itself. There are no arrows." width="440">
 </p>
 
 This is the first drawing of Ply's own code that is not hatched. Each chip is a function
 that states something that must be true of what it returns, and how that statement is to
-be tested — 256 generated inputs each. A box is filled mid-grey because grey depth is how
+be tested — 256 generated inputs each, and for about half of them a set of worked cases
+run as concrete tests alongside, because random text almost never reaches the branch that
+matters. One of them is checked by worked cases only: its input is a fixed vocabulary of
+eight words, so there is nothing for random text to explore. A box is filled mid-grey because grey depth is how
 strongly a thing promises to be checked, and a box is never shown as stronger than the
 weakest function inside it.
 

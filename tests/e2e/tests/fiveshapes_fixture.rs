@@ -32,7 +32,7 @@ fn each_shape_is_refused_by_name_and_the_rest_of_the_crate_stays_checkable() {
 
     // None of the four genuinely-unbuildable shapes may ever read as a tool
     // error: each must be refused honestly, before generation.
-    for id in ["uses_hidden", "uses_big13", "uses_status", "uses_quota"] {
+    for id in ["uses_hidden", "uses_status", "uses_quota"] {
         let v = verdict_of(id);
         assert!(
             v.starts_with("unsupported"),
@@ -89,11 +89,14 @@ fn each_shape_is_refused_by_name_and_the_rest_of_the_crate_stays_checkable() {
         "{}",
         title_for("uses_hidden")
     );
-    assert!(
-        title_for("uses_big13").contains("13"),
-        "{}",
-        title_for("uses_big13")
-    );
+    // `uses_big13` used to be here, asserting the refusal by name. Ply
+    // refused a struct with more than twelve public fields because its
+    // generated recipe was one flat tuple and the sampling library's trait
+    // for those stops at twelve -- a fact about Ply's folding, not about
+    // the struct. The tuple nests now, and the assertion moved to
+    // `a_struct_wider_than_a_flat_tuple_allows_is_checked_not_refused`
+    // below, which proves the thirteenth field is drawn rather than
+    // silently defaulted.
     assert!(
         title_for("uses_status").contains("Weird")
             && title_for("uses_status").contains("non_exhaustive"),
@@ -116,5 +119,42 @@ fn each_shape_is_refused_by_name_and_the_rest_of_the_crate_stays_checkable() {
     assert!(
         privctor_title.contains("WithPrivateCtor::new") && privctor_title.contains("private"),
         "{privctor_title}"
+    );
+}
+
+/// The shape that used to be refused, and why the refusal was wrong.
+///
+/// Ply declined any struct with more than twelve public fields, saying so
+/// as if it were a fact about the struct. It was a fact about Ply: a
+/// struct's generated recipe was one flat tuple, and the sampling
+/// library's trait for tuples stops at twelve. Nesting the tuple in chunks
+/// removes the limit, which was measured against the pinned library
+/// version before this changed (2026-09-04).
+///
+/// Asserting that it now *compiles* would prove almost nothing -- a
+/// codegen that quietly filled every field past the twelfth with a default
+/// would also compile, and report a confident green over a space it never
+/// explored. So the fixture's promise is false only when its **thirteenth**
+/// field is large, and this asserts the violation is found. That can only
+/// happen if the thirteenth leaf is genuinely being drawn.
+#[test]
+fn a_struct_wider_than_a_flat_tuple_allows_is_checked_not_refused() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("fiveshapes");
+    let run = run_verify(&cargo_ply, fixture.path(), 120);
+
+    let children = run.json["root"]["children"][0]["children"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no component children: {}", run.json));
+    let node = children
+        .iter()
+        .find(|c| c["id"] == "uses_big13")
+        .unwrap_or_else(|| panic!("no node for uses_big13: {}", run.json));
+    assert_eq!(
+        node["verdict"].as_str().unwrap(),
+        "violation",
+        "a promise false only on the thirteenth field must be caught, or that \
+         leaf is not being drawn: {}",
+        run.json
     );
 }

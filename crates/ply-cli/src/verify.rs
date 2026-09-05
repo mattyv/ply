@@ -6943,6 +6943,9 @@ fn format_value(v: &kani::WitnessValue) -> String {
         kani::WitnessValue::Bool(b) => b.to_string(),
         kani::WitnessValue::VecU8(bytes) => format!("{bytes:?}"),
         kani::WitnessValue::Duration(secs, nanos) => format!("{secs}.{nanos:09}s"),
+        // Quoted and escaped, so the reader can see leading spaces, a
+        // trailing newline, or an empty string for what they are.
+        kani::WitnessValue::Str(text) => format!("{text:?}"),
     }
 }
 
@@ -7777,6 +7780,58 @@ mod tests {
                 .iter()
                 .any(|d| d.code == "W0417"),
             "and it has to say why, rather than going quiet: {:#?}",
+            result.envelope.diagnostics
+        );
+    }
+    /// A slice of a user type, which shipped broken with slice support on
+    /// 2026-09-02 and was found by pointing Ply at its own code.
+    ///
+    /// The generated value was collected with no target type, so inference
+    /// took it from the call site -- `total(&items)` wants `&[Item]`, so
+    /// `items` inferred to the unsized `[Item]` and the harness would not
+    /// compile. Because one harness is shared by every claim in a crate,
+    /// that took every other claim down with it.
+    #[test]
+    fn a_slice_of_a_user_type_builds_an_owned_vec_to_lend() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"sliceuser-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub struct Item {\n    pub name: String,\n    pub size: u32,\n}\n\npub fn total(items: &[Item]) -> usize {\n    items.len()\n}\n",
+        )
+        .unwrap();
+        let yaml_path = dir.path().join("ply.yaml");
+        std::fs::write(
+            &yaml_path,
+            "ply: 1\ncomponents:\n  demo:\n    anchor: sliceuser_demo\n    fns:\n      total:\n        \
+             ensures: [\"|result| *result == items.len()\"]\n        checks: [fuzz(64)]\n",
+        )
+        .unwrap();
+        let loaded = config::load(&yaml_path).unwrap();
+        let result = verify_loaded_crate(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: Some(120),
+                seed: None,
+            },
+            loaded,
+        )
+        .unwrap();
+        fn verdict_of<'a>(node: &'a Node, id: &str) -> Option<&'a str> {
+            if node.id == id {
+                return Some(node.verdict.as_str());
+            }
+            node.children.iter().find_map(|c| verdict_of(c, id))
+        }
+        assert_eq!(
+            verdict_of(&result.envelope.root, "total"),
+            Some("fuzzed(64)"),
+            "the harness has to build an owned `Vec<Item>` and lend it: {:#?}",
             result.envelope.diagnostics
         );
     }
