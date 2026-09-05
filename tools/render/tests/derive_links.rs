@@ -19,6 +19,11 @@ use std::path::Path;
 /// A minimal real crate on disk: `Cargo.toml` plus `src/lib.rs`, which is
 /// all `ply_core::harness::workspace_library_crates` needs to find it, and
 /// its own `ply.yaml` alongside.
+fn write_crate_with_src(dir: &Path, crate_name: &str, ply_yaml: &str, lib_rs: &str) {
+    write_crate(dir, crate_name, ply_yaml);
+    std::fs::write(dir.join(crate_name).join("src/lib.rs"), lib_rs).unwrap();
+}
+
 fn write_crate(dir: &Path, crate_name: &str, ply_yaml: &str) {
     let crate_dir = dir.join(crate_name);
     std::fs::create_dir_all(crate_dir.join("src")).unwrap();
@@ -264,4 +269,122 @@ fn a_component_with_real_local_content_ignores_a_resolvable_link() {
          rendering:\n{svg}"
     );
     assert!(drawn_link_paths(&svg).is_empty(), "{svg}");
+}
+
+/// A linked component is "hollow" only in the narrow sense that it declares
+/// no fns, no nested components and no state fields. It can still declare a
+/// note, capabilities, a purity seal, a strictness notch and its own checks
+/// -- and those are *this* document's statements about the component, not
+/// the other file's.
+///
+/// Drawing the target's copy of them instead silently replaces what this
+/// document's author wrote with what someone else wrote. It also splits the
+/// two views: the transcript reads the local component for its header, so
+/// the picture and the text disagreed about the same box. Caught by Fable's
+/// review of the expansion change, 2026-09-05, against Ply's own root
+/// document -- whose `core` note appeared in `docs/ply-self.txt` and zero
+/// times in `docs/ply-self.svg`.
+#[test]
+fn a_linked_box_keeps_this_documents_own_words_not_the_other_files() {
+    let dir = tempfile::tempdir().unwrap();
+    write_crate(
+        dir.path(),
+        "inner_lib",
+        "ply: 1\ncomponents:\n  inner:\n    anchor: inner_lib\n    note: THE INNER FILES OWN NOTE\n    components:\n      nested:\n        anchor: inner_lib::nested\n        fns:\n          go:\n            checks: [bounded(2)]\n",
+    );
+    let outer_text =
+        "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    note: THIS DOCUMENTS OWN NOTE\n";
+    std::fs::write(dir.path().join("ply.yaml"), outer_text).unwrap();
+    let doc = parse_document(outer_text).unwrap();
+
+    let link_set = derive_links(&doc, dir.path());
+    assert!(link_set.findings.is_empty(), "{:?}", link_set.findings);
+    let state_fields = ply_core::harness::resolve_state_fields(dir.path(), &doc);
+    let svg = render_svg_with_state_and_links(
+        &doc,
+        &RenderOptions::default(),
+        &state_fields,
+        &link_set.links,
+    )
+    .unwrap();
+    let transcript = ply_render::transcript::render_transcript_with_state_and_links(
+        &doc,
+        Some(&state_fields),
+        Some(&link_set.links),
+    );
+
+    assert!(
+        svg.contains("THIS DOCUMENTS OWN NOTE"),
+        "the drawing dropped this document's own note:\n{svg}"
+    );
+    assert!(
+        !svg.contains("THE INNER FILES OWN NOTE"),
+        "the drawing showed the other file's note in its place:\n{svg}"
+    );
+    // The interior still comes from the other file -- that is the feature.
+    assert!(svg.contains(">nested<") && svg.contains(">go<"), "{svg}");
+
+    // And the two views must agree about the same box, which is the
+    // property that actually failed on Ply's own document.
+    assert!(
+        transcript.contains("THIS DOCUMENTS OWN NOTE"),
+        "{transcript}"
+    );
+    assert!(
+        !transcript.contains("THE INNER FILES OWN NOTE"),
+        "{transcript}"
+    );
+}
+
+/// A linked component's declared `state:` must be measured against the real
+/// code in the crate it points at -- the same measurement the target
+/// document's own drawing makes.
+///
+/// Before this, the walk that reads fields never followed a link, so the
+/// fields resolved to nothing and the drawing explained that absence with a
+/// sentence that was *false*: "there is no code here to read one from
+/// either", about a type whose own crate's drawing measured four of its
+/// eight fields. Worse than a missing row: a confident wrong reason.
+///
+/// Found by Fable's review, 2026-09-05, which also noted the golden diff
+/// carrying that sentence had been accepted -- the "reviewed, never
+/// blind-accepted" rule not holding, because the picture was read and its
+/// hover text was not.
+#[test]
+fn a_linked_components_state_is_measured_against_the_other_crates_real_code() {
+    let dir = tempfile::tempdir().unwrap();
+    write_crate_with_src(
+        dir.path(),
+        "inner_lib",
+        "ply: 1\ncomponents:\n  inner:\n    anchor: inner_lib\n    state:\n      of: Envelope\n      show: [command, root]\n",
+        "pub struct Envelope { pub command: String, pub root: u32, pub extra: bool }\n",
+    );
+    let outer_text = "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n";
+    std::fs::write(dir.path().join("ply.yaml"), outer_text).unwrap();
+    let doc = parse_document(outer_text).unwrap();
+    let link_set = derive_links(&doc, dir.path());
+    assert!(link_set.findings.is_empty(), "{:?}", link_set.findings);
+
+    let state_fields =
+        ply_core::harness::resolve_state_fields_with_links(dir.path(), &doc, Some(&link_set.links));
+    assert!(
+        state_fields.contains_key("core"),
+        "the linked component's state was never resolved: {state_fields:?}"
+    );
+
+    let svg = render_svg_with_state_and_links(
+        &doc,
+        &RenderOptions::default(),
+        &state_fields,
+        &link_set.links,
+    )
+    .unwrap();
+    assert!(
+        svg.contains("2 of 3 shown"),
+        "the drawing must state what it measured:\n{svg}"
+    );
+    assert!(
+        !svg.contains("there is no code here to read one from either"),
+        "the drawing must not explain a resolved type as unresolvable:\n{svg}"
+    );
 }

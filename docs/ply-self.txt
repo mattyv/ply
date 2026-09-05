@@ -44,8 +44,11 @@ components:
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component harness — maps to Rust module ply_core::harness
       note: Works out what a function's inputs are and whether Ply can make one of each. This is the part that decides whether a function can be checked at all, and it is where a refusal gets its reason.
-      state ContractFn — the structure this component holds
-        this document asks to show name, params, requires, ensures and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state ContractFn — the structure this component holds. 4 of 12 of its fields shown
+        name is text, written `String`
+        params is a list, written `Vec<Param>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        requires is something that might not be there, written `Option<(Expr, String)>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        ensures is something that might not be there, written `Option<(ExprClosure, String)>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, last_two_segments — nothing here counts as checked more strongly than the weakest thing inside it
       fn last_two_segments
@@ -76,8 +79,10 @@ components:
           ensures: |result| result.0.len() + result.1.len() == domain.len() (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component surface — maps to Rust module ply_core::surface
-      state SourceSurface — the structure this component holds
-        this document asks to show markers, escapes, derived and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state SourceSurface — the structure this component holds. 3 of 3 of its fields shown
+        markers is a list, written `Vec<Marker>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        escapes is a list, written `Vec<Escape>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        derived is a list, written `Vec<Derived>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, contract_helpers — nothing here counts as checked more strongly than the weakest thing inside it
       fn contract_helpers
@@ -99,8 +104,11 @@ components:
           !same_expression("x + 1", "x + 2")
     component model — maps to Rust module ply_core::model
       note: The document as data: what a ply.yaml means once it has been read.
-      state Document — the structure this component holds
-        this document asks to show components, edges, deny, routes and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state Document — the structure this component holds. 4 of 8 of its fields shown
+        components is a lookup table, written `IndexMap<String, Component>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        edges is a list, written `Vec<String>`
+        deny is a list, written `Vec<String>`
+        routes is a lookup table, written `IndexMap<String, String>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, parse_check — nothing here counts as checked more strongly than the weakest thing inside it
       fn parse_check
@@ -133,8 +141,11 @@ components:
           parse_edge("a ~> b : Order").is_ok()
     component registry — maps to Rust module ply_core::registry
       note: Every message Ply can produce, listed once as data rather than as a document two people have to keep in step by hand.
-      state RuleEntry — the structure this component holds
-        this document asks to show code, tier, severity, gloss and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state RuleEntry — the structure this component holds. 4 of 6 of its fields shown
+        code is a structure of your own, written `Code` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        tier is a structure of your own, written `Tier` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        severity is a structure of your own, written `Severity` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        gloss is text, written `&'static str`
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, lookup — nothing here counts as checked more strongly than the weakest thing inside it
       fn lookup
@@ -149,8 +160,10 @@ components:
           lookup("E9999").is_none()
     component record — maps to Rust module ply_core::record
       note: What was checked, and everything a result depended on. A stored result is only reused when every one of those inputs still hashes the same, which is what stops a stale green outliving the code that earned it.
-      state RecordEntry — the structure this component holds
-        this document asks to show verdict, statuses, inputs and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state RecordEntry — the structure this component holds. 3 of 6 of its fields shown
+        verdict is text, written `String`
+        statuses is a list, written `Vec<String>`
+        inputs is a lookup table, written `BTreeMap<String, String>`
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, fingerprint — nothing here counts as checked more strongly than the weakest thing inside it
       fn fingerprint
@@ -168,8 +181,10 @@ components:
           verdict_is_earnable("fuzzed(256)", &["fuzz(256)".to_string()], &[])
           !verdict_is_earnable("bounded(3)·spec-strong", &["bounded(3)".to_string()], &[])
     component schema — maps to Rust module ply_core::schema
-      state SchemaViolation — the structure this component holds
-        this document asks to show code, pointer, message and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state SchemaViolation — the structure this component holds. 3 of 3 of its fields shown
+        code is text, written `&'static str`
+        pointer is text, written `String`
+        message is text, written `String`
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, dotted — nothing here counts as checked more strongly than the weakest thing inside it
       fn dotted
@@ -199,8 +214,10 @@ components:
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component engines — maps to Rust module ply_core::engines
       note: The adapters that drive each outside checking tool as a separate program and read back what it said. Ply never re-implements a checker; everything here is translation, in both directions.
-      state TimedOutput — the structure this component holds
-        this document asks to show stdout, stderr, status and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state TimedOutput — the structure this component holds. 3 of 4 of its fields shown
+        stdout is a list, written `Vec<u8>`
+        stderr is a list, written `Vec<u8>`
+        status is a structure of your own, written `ExitStatus` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, strip_ansi — nothing here counts as checked more strongly than the weakest thing inside it
       fn strip_ansi
@@ -210,8 +227,11 @@ components:
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
       component fuzz_engine — maps to Rust module ply_core::engines::fuzz
         note: Reads what the sampling engine actually printed. Everything here is a parser over another tool's output, so the promises are all the same shape: never report something the output did not contain.
-        state HarnessTestRun — the structure this component holds
-          this document asks to show timed_out, success, combined_output, failed_tests and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+        state HarnessTestRun — the structure this component holds. 4 of 4 of its fields shown
+          timed_out is a single value, written `bool`
+          success is a single value, written `bool`
+          combined_output is text, written `String`
+          failed_tests is a list, written `Vec<String>`
         declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
         that level comes from its weakest part, count_tests_executed — nothing here counts as checked more strongly than the weakest thing inside it
         fn count_tests_executed
@@ -256,8 +276,11 @@ components:
             first_build_error("error[E0425]: cannot find value\n").is_some()
             first_build_error("all good\n").is_none()
       component kani_engine — maps to Rust module ply_core::engines::kani
-        state KaniRunConfig — the structure this component holds
-          this document asks to show crate_dir, harness_path, engine_timeout_secs, enable_stubbing and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+        state KaniRunConfig — the structure this component holds. 4 of 4 of its fields shown
+          crate_dir is text, written `std::path::PathBuf` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+          harness_path is text, written `String`
+          engine_timeout_secs is a single value, written `u32`
+          enable_stubbing is a single value, written `bool`
         declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
         that level comes from its weakest part, unstable_flags — nothing here counts as checked more strongly than the weakest thing inside it
         fn unstable_flags
@@ -286,8 +309,10 @@ components:
           ensures: |result| result.contains(&location[..]) (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component diag — maps to Rust module ply_core::diag
-      state Counterexample — the structure this component holds
-        this document asks to show inputs, kani_witness, cargo_test and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state Counterexample — the structure this component holds. 3 of 3 of its fields shown
+        inputs is a lookup table, written `BTreeMap<String, String>`
+        kani_witness is something that might not be there, written `Option<String>`
+        cargo_test is something that might not be there, written `Option<String>`
       declares checks up to tested — checked once against the declared examples and generated inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, is_absence — nothing here counts as checked more strongly than the weakest thing inside it
       fn is_absence
@@ -302,8 +327,9 @@ components:
           !is_absence("proved")
           !is_absence("fuzzed(256)")
     component callgraph — maps to Rust module ply_core::callgraph
-      state ResolvedCall — the structure this component holds
-        this document asks to show site, status and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state ResolvedCall — the structure this component holds. 2 of 2 of its fields shown
+        site is a structure of your own, written `CallSite` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        status is a structure of your own, written `CalleeStatus` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, path_dependency — nothing here counts as checked more strongly than the weakest thing inside it
       fn path_dependency
@@ -316,8 +342,9 @@ components:
           path_dependency("[dependencies]\nfoo = { path = \"../foo\" }\n", "foo") == Some("../foo".to_string())
           path_dependency("[dependencies]\nfoo = \"1.0\"\n", "foo").is_none()
     component reach — maps to Rust module ply_core::reach
-      state FirstParty — the structure this component holds
-        this document asks to show units, gate and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state FirstParty — the structure this component holds. 2 of 2 of its fields shown
+        units is a list, written `Vec<(String, String)>`
+        gate is something that might not be there, written `Option<String>`
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, path_dependencies — nothing here counts as checked more strongly than the weakest thing inside it
       fn path_dependencies
@@ -351,8 +378,10 @@ components:
           parse_check_string("fuzz(256)").is_ok()
           parse_check_string("nonsense").is_err()
     component fuzz_gen — maps to Rust module ply_core::fuzz_gen
-      state ParamSeedPlan — the structure this component holds
-        this document asks to show param_name, shape, examples_seeds and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state ParamSeedPlan — the structure this component holds. 3 of 4 of its fields shown
+        param_name is text, written `String`
+        shape is a structure of your own, written `SeedableWrap` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        examples_seeds is a list, written `Vec<String>`
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, derive_seed — nothing here counts as checked more strongly than the weakest thing inside it
       fn derive_seed
@@ -380,8 +409,9 @@ components:
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component harness_crate — maps to Rust module ply_core::harness_crate
       note: Writes the generated harness crate. Almost all of it is filesystem work, and that is the honest shape of it -- but the one real piece of reasoning in here was welded to a write until 2026-09-04, and so could not be checked. Split out, it can be.
-      state HarnessModule — the structure this component holds
-        this document asks to show fn_ident, source and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state HarnessModule — the structure this component holds. 2 of 2 of its fields shown
+        fn_ident is text, written `String`
+        source is text, written `String`
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, harness_lib_source — nothing here counts as checked more strongly than the weakest thing inside it
       fn harness_lib_source
@@ -416,8 +446,10 @@ components:
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component layout — maps to Rust module ply_core::visual::layout
       note: Where each box goes. The promise below is that it never invents one: a rank for a name the document never declared would draw something nobody wrote.
-      state LayeredLayout — the structure this component holds
-        this document asks to show positions, content_w, content_h and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state LayeredLayout — the structure this component holds. 3 of 3 of its fields shown
+        positions is a lookup table, written `IndexMap<String,(f64, f64)>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        content_w is a single value, written `f64`
+        content_h is a single value, written `f64`
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, assign_ranks — nothing here counts as checked more strongly than the weakest thing inside it
       fn assign_ranks
@@ -427,8 +459,10 @@ components:
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component svg — maps to Rust module ply_core::visual::svg
       note: Turns the document into the picture. The promises here are about the sentences a reader sees, not the shapes.
-      state RenderOptions — the structure this component holds
-        this document asks to show depth, focus, collapse and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state RenderOptions — the structure this component holds. 3 of 3 of its fields shown
+        depth is something that might not be there, written `Option<usize>`
+        focus is something that might not be there, written `Option<String>`
+        collapse is a list, written `Vec<String>`
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, examples_prose — nothing here counts as checked more strongly than the weakest thing inside it
       fn examples_prose
@@ -438,8 +472,10 @@ components:
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component visual — maps to Rust module ply_core::visual
       note: The drawing, the prose form of the same facts, and the portable package an editor reads. Nothing here decides anything; it only shows what was decided.
-      state VisualEnvelope — the structure this component holds
-        this document asks to show svg, elements, diagnostics and none of them declare a shape of their own, so none is described below: a bare name carries no shape, and there is no code here to read one from either
+      state VisualEnvelope — the structure this component holds. 3 of 6 of its fields shown
+        svg is text, written `String`
+        elements is a lookup table, written `BTreeMap<String, VisualElement>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        diagnostics is a list, written `Vec<VisualDiagnostic>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, stable_element_id — nothing here counts as checked more strongly than the weakest thing inside it
       fn stable_element_id

@@ -198,3 +198,41 @@ edges:
          `core.check`."
     );
 }
+
+#[test]
+fn a_name_shadowing_more_than_one_nested_component_still_reads_as_english() {
+    // The one-shadow message is exact-tested above; this is the plural
+    // branch, which a reader hits exactly when the advice matters most --
+    // there is more than one thing they might have meant, so "write `x`"
+    // would be picking one of them for them.
+    let yaml = r#"
+ply: 1
+components:
+  core:
+    anchor: app::core
+    components:
+      check:
+        anchor: app::core::check
+  cli:
+    anchor: app::cli
+    components:
+      check:
+        anchor: app::cli::check
+  check:
+    anchor: app::check
+edges:
+  - "check -> core"
+"#;
+    let doc = parse_document(yaml).expect("doc should parse");
+    let diags = run_checks(&doc);
+    let d = diags
+        .iter()
+        .find(|d| d.code == "W0419")
+        .unwrap_or_else(|| panic!("expected W0419, got {diags:?}"));
+    assert_eq!(
+        d.message,
+        "\"check\" here means the top-level component `check`, but `cli.check` and \
+         `core.check` also exist and this name does not reach them. If you meant one \
+         of those, write its dotted path (e.g. `cli.check`)."
+    );
+}

@@ -113,6 +113,38 @@ pub struct ResolvedLink {
 /// candidates -- see [`derive_links`]'s doc comment for why.
 pub type LinkIndex = BTreeMap<String, ResolvedLink>;
 
+/// The component a view should actually draw, measure or resolve for the
+/// top-level entry `name`: this document's own, with a linked document's
+/// **interior** substituted in when a link resolved for it.
+///
+/// Interior means fns, nested components, and the `state:` that goes with
+/// them. Everything else stays this document's: its note, capability
+/// badges, purity seal, strictness notch and declared checks are statements
+/// this file makes about the component, and another file cannot make them
+/// on its behalf. "Hollow" is only the narrow claim that a component
+/// declares no interior.
+///
+/// `None` when no link applies, so a caller can keep using its own
+/// reference and allocate nothing on the overwhelmingly common path.
+///
+/// One function because there were four copies of this gate -- the drawing,
+/// the counts, the transcript and the document checks -- each free to drift
+/// from the others (Fable review, 2026-09-05). The drawing had already
+/// drifted: it took the target wholesale and silently replaced this
+/// document's own note with the other file's.
+pub fn linked_body(name: &str, comp: &Component, links: Option<&LinkIndex>) -> Option<Component> {
+    if !crate::visual::is_hollow(comp) {
+        return None;
+    }
+    let link = links?.get(name)?;
+    Some(Component {
+        fns: link.target.fns.clone(),
+        components: link.target.components.clone(),
+        state: comp.state.clone().or_else(|| link.target.state.clone()),
+        ..comp.clone()
+    })
+}
+
 /// One of the four named ways a candidate link can fail to form, attached
 /// to the *including* component rather than the document it was reaching
 /// for: a reader sees this on the box that tried to link, not on a file

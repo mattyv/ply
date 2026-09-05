@@ -6211,6 +6211,46 @@ pub fn resolve_state_fields(root: &Path, doc: &crate::model::Document) -> StateF
     out
 }
 
+/// [`resolve_state_fields`], for a document whose components may draw their
+/// interior from another one (§7.1).
+///
+/// Without this, a linked component's declared state resolved to nothing
+/// and the drawing said so *in a sentence that was false*: "there is no
+/// code here to read one from either", about a type whose own crate's
+/// drawing measures four of its eight fields. The code was there; only this
+/// walk never looked (Fable review, 2026-09-05).
+pub fn resolve_state_fields_with_links(
+    root: &Path,
+    doc: &crate::model::Document,
+    links: Option<&crate::config::LinkIndex>,
+) -> StateFieldIndex {
+    let Some(links) = links else {
+        return resolve_state_fields(root, doc);
+    };
+    // Exactly the tree the renderer draws, so a field it shows and a field
+    // this resolves can never be two different questions.
+    let merged: indexmap::IndexMap<String, crate::model::Component> = doc
+        .components
+        .iter()
+        .map(|(name, comp)| {
+            let body = crate::config::linked_body(name, comp, Some(links));
+            (name.clone(), body.unwrap_or_else(|| comp.clone()))
+        })
+        .collect();
+    if !any_state(&merged) {
+        return StateFieldIndex::new();
+    }
+    let root = if root.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        root
+    };
+    let crates = workspace_library_crates(root);
+    let mut out = StateFieldIndex::new();
+    walk_state(&merged, "", root, &crates, &mut out);
+    out
+}
+
 /// Whether any component anywhere in the tree declares a `state:`.
 fn any_state(components: &indexmap::IndexMap<String, crate::model::Component>) -> bool {
     components

@@ -126,9 +126,10 @@ fn main() -> ExitCode {
         // drawing shows, shapes included.
         let text = ply_render::transcript::render_transcript_with_state_and_links(
             &doc,
-            Some(&ply_render::harness::resolve_state_fields(
+            Some(&ply_render::harness::resolve_state_fields_with_links(
                 source_root,
                 &doc,
+                Some(&link_set.links),
             )),
             Some(&link_set.links),
         );
@@ -156,7 +157,11 @@ fn main() -> ExitCode {
     // says what they are -- so read them from the crate each component's
     // anchor points at before drawing. A document with no code under it
     // resolves nothing and draws the type name alone.
-    let state_fields = ply_render::harness::resolve_state_fields(source_root, &doc);
+    let state_fields = ply_render::harness::resolve_state_fields_with_links(
+        source_root,
+        &doc,
+        Some(&link_set.links),
+    );
     let svg = match render_svg_with_state_and_links(&doc, &options, &state_fields, &link_set.links)
     {
         Ok(svg) => svg,

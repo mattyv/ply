@@ -433,11 +433,14 @@ pub(super) fn document_counts(doc: &Document, links: Option<&LinkIndex>) -> (usi
     }
     let (mut c, mut f, mut u) = (0, 0, 0);
     for (name, comp) in &doc.components {
-        let body = super::is_hollow(comp)
-            .then(|| links.and_then(|l| l.get(name)))
-            .flatten()
-            .map_or(comp, |l| &l.target);
-        walk(body, None, &mut c, &mut f, &mut u);
+        let merged = crate::config::linked_body(name, comp, links);
+        walk(
+            merged.as_ref().unwrap_or(comp),
+            None,
+            &mut c,
+            &mut f,
+            &mut u,
+        );
     }
     (c, f, u)
 }
@@ -2069,13 +2072,15 @@ pub use crate::harness::StateFieldIndex;
 /// A derived link (`walk.links`) overrides both of those defaults for a
 /// component with an **empty declared interior of its own**, and the
 /// override **must be checked first**: such a component is not hollow when
-/// a link resolves (its interior lives in another file, not nowhere), and
-/// it draws collapsed unconditionally, never subject to
-/// `--depth`/`--focus`/`--collapse` -- there is nothing local for those
-/// flags to expand into. Getting this ordering backwards draws the link
-/// dashed, meaning "nothing to zoom into yet" — the exact opposite of the
-/// truth (see `a_linked_hollow_component_draws_collapsed_not_hollow` in
+/// a link resolves, because its interior lives in another file rather than
+/// nowhere. Getting this ordering backwards draws the link dashed, meaning
+/// "nothing to zoom into yet" -- the exact opposite of the truth (see
+/// `a_linked_component_draws_the_other_documents_interior_in_place` in
 /// `tools/render/tests/derive_links.rs`).
+///
+/// Since 2026-09-05 that interior is drawn here rather than folded into a
+/// pointer, so `--depth` and the viewer's own control fold it like any
+/// other box.
 ///
 /// A component that already declares real fns or nested components of its
 /// own never consults a link at all, even one that would otherwise
@@ -2110,10 +2115,21 @@ fn render_component_dispatch<'a>(
     // viewer's own control), so it is offered rather than imposed, and
     // `should_collapse` below still honours it.
     //
-    // Everything past this point reads `body` rather than `comp`: the
-    // local component is hollow by construction (that is what made it
-    // eligible to link at all), so drawing it would draw nothing.
-    let body: &'a Component = link.map_or(comp, |l| &l.target);
+    // What the target supplies is the *interior* -- fns, nested components,
+    // and the state fields that go with them. Everything else on the box
+    // stays this document's own: its note, its capability badges, its
+    // purity seal, its strictness notch, its declared checks. "Hollow" is
+    // the narrow claim that a component declares no interior; it says
+    // nothing about the rest, and a component can be hollow while still
+    // saying a great deal about itself.
+    //
+    // Taking the target wholesale replaced this document's statements with
+    // another file's -- silently, and only in the drawing, because the text
+    // form reads the local component for its header. Ply's own root
+    // document showed it: its `core` note appeared in `docs/ply-self.txt`
+    // and zero times in `docs/ply-self.svg` (Fable review, 2026-09-05).
+    let merged = crate::config::linked_body(qualified, comp, walk.links);
+    let body: &Component = merged.as_ref().unwrap_or(comp);
     if !is_hollow && walk.collapse.should_collapse(qualified, level) {
         render_collapsed_component(
             name,

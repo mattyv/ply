@@ -313,6 +313,18 @@ fn join_or(items: &[String]) -> String {
     }
 }
 
+/// The same list where the sentence states what *is* rather than offering
+/// a choice: "A and B also exist". `join_or` there reads as though only one
+/// of them might be real.
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [a, b] => format!("{a} and {b}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
 fn check_token_ambiguity(
     token: &str,
     leaf_index: &HashMap<String, Vec<String>>,
@@ -359,8 +371,8 @@ fn check_token_ambiguity(
             "W0419",
             format!(
                 "{token:?} here means the top-level component `{token}`, but {} also \
-                 {} and this name does not reach {}. If you meant {}, write `{}`.",
-                join_or(&quoted),
+                 {} and this name does not reach {}. If you meant {}, write {}.",
+                join_and(&quoted),
                 if shadowed.len() == 1 {
                     "exists"
                 } else {
@@ -368,11 +380,19 @@ fn check_token_ambiguity(
                 },
                 if shadowed.len() == 1 { "it" } else { "them" },
                 if shadowed.len() == 1 {
-                    "that one".to_string()
+                    "that one"
                 } else {
-                    "one of those".to_string()
+                    "one of those"
                 },
-                shadowed[0],
+                // One candidate: name it, there is nothing to choose
+                // between. Several: naming the first would be choosing for
+                // the reader, which is the mistake `E0206`'s own wording is
+                // careful to avoid.
+                if shadowed.len() == 1 {
+                    format!("`{}`", shadowed[0])
+                } else {
+                    format!("its dotted path (e.g. `{}`)", shadowed[0])
+                },
             ),
             target.clone(),
         ));
