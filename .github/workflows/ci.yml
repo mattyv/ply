@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Lets this run be started by hand, from the Actions tab or the API, without
+  # inventing a commit to trigger it. Added 2026-09-05 for the case that
+  # prompted it: `publish-evidence` had failed for a reason outside the code
+  # (Pages was not switched on yet), the fix was a settings change rather than
+  # a commit, and re-running it needed a control that is hard to reach on a
+  # phone and unavailable to an API token that can start a run but not re-run
+  # one. Anything whose fix lives outside the repository has this shape.
+  workflow_dispatch:
 
 jobs:
   # What kind of change this is: `code`, or `docs` for a change that touches
@@ -40,8 +48,9 @@ jobs:
           elif [ -n "$BEFORE" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
             base="$BEFORE"
           else
-            # A push with no usable "before" (a new branch): nothing to
-            # classify against, so the safe answer is the full suite.
+            # Nothing to classify against: a push with no usable "before" (a
+            # new branch), or a run started by hand, which has no range at
+            # all. The safe answer to "no range" is the full suite.
             echo "kind=code" >> "$GITHUB_OUTPUT"
             echo "no base to classify against; running everything"
             exit 0
