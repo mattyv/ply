@@ -4,6 +4,54 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: three ways a *fresh* run overstated what it checked — 2026-09-05
+
+A second review round, again explicitly not executed by its author. **All three reproduce.**
+Worse than the cache findings: these do not need a stale record. A cold run reports them.
+
+| the case | before | after |
+|---|---|---|
+| `identity(x: f64) = x.trunc()` promising `*result == x` | `fuzzed(256)` | `violation`, fractional witness |
+| two contradictory `ensures` attributes | `tested` (only the last checked) | `violation`, both ANDed |
+| `requires(x == 42)`, body returns `0`, `checks: [test]` | `tested`, **no disclosure** | `violation` |
+
+- [x] **Floats are no longer widened to `i128`.** The rule was "Rust's `as` can cast it
+      without a compile error", which is the wrong test: a cast that compiles is not a cast
+      that preserves what the comparison asked. `*result == x` became `(*result as i128) ==
+      (x as i128)`, so truncating the input satisfied a promise it obviously breaks. The
+      widening exists so an assertion cannot overflow; float arithmetic saturates rather
+      than overflowing, so floats never needed it.
+
+      **This is why a higher rung would not have helped.** `contract_rt` is shared with the
+      Kani path -- its own comment says so -- so `bounded` on that function would have
+      exhaustively proved the *rewritten integer* comparison and reported a stronger,
+      more confident wrong answer.
+
+- [x] **Every contract attribute is kept, not the last one.** Repeated `requires`/`ensures`
+      assigned into one slot each and dropped the rest in silence. Reuses the existing
+      `conjoin_exprs`/`conjoin_ensures` the document's own list form already uses.
+
+- [x] **A generated `test` case that its precondition rejects no longer counts as a check.**
+      Each case returned early on rejection, Rust reported the early return as a *passing*
+      test, and Ply counted passing tests as executed cases. One extra generated test now
+      asserts at least one case actually reaches the function. Checked both ways: an
+      unsatisfiable precondition goes red, a satisfiable one still earns `tested`.
+
+- [ ] **KNOWN GAP: the admissibility failure reads as a plain broken example.** It reports
+      `failed 1 of its own ... direct-contract test(s): ..._admissible`. The assertion's own
+      sentence -- "none of the generated cases satisfy its own precondition, so its promise
+      was never checked on a single input" -- is written and correct, but the engine surfaces
+      the failing test's *name*, not its message. Right verdict, wrong explanation.
+
+  **What this round says about the self-proof**, which is the maintainer's question and
+  matters more than the three fixes: all 56 of Ply's own claims earn **70 `fuzzed(256)` and
+  4 `tested`. Zero `bounded`. Zero `proved`.** Every declaration is `fuzz(256)` or
+  `fuzz(256), test`; `bounded` and `prove` appear nowhere. The one genuinely proved thing
+  here -- the kernel, exhaustive over 991,389 trees plus the Verus induction proof -- is not
+  a `ply.yaml` claim at all. So the part that is proved is not counted, and the part counted
+  is not proved. "All 50 claims earn evidence" has been the standing headline, including on
+  the published page, and it reads as proved while meaning sampled.
+
 ## Landed: two ways a change could escape cache invalidation — 2026-09-05
 
 An external review of `32f8469` reported three ways an edit to the checked program could

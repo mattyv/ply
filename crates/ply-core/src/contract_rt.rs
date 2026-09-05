@@ -308,9 +308,20 @@ fn widen_leaf(expr: &Expr, cf: &ContractFn) -> proc_macro2::TokenStream {
 }
 
 /// The plain integer scalars widen may safely cast to `i128`, plus
-/// `bool`/`char`/`f32`/`f64` -- every `RustType` shape Rust's own `as`
-/// operator can cast to `i128` without a compile error (verified
-/// directly against `rustc`, not assumed: a bare fieldless enum can *also*
+/// `bool`/`char`.
+///
+/// **Not floats**, though `f32 as i128` compiles perfectly well. That the
+/// cast compiles was the test until 2026-09-05, and it is the wrong one: a
+/// cast that compiles is not a cast that preserves what the comparison was
+/// asking. `*result == x` on `f64` became `(*result as i128) == (x as
+/// i128)`, so a function returning `x.trunc()` satisfied `*result == x` at
+/// every input whose fractional part was the entire difference -- earning
+/// `fuzzed(256)` against a promise false almost everywhere. Floats never
+/// needed the widening either: it exists so an assertion cannot overflow
+/// while checking a contract, and float arithmetic saturates to infinity
+/// rather than overflowing.
+///
+/// (verified directly against `rustc`, not assumed: a bare fieldless enum can *also*
 /// take this cast, but only until it gains a `Drop` impl, so enums are
 /// deliberately not on this list -- see the `tests` module's own
 /// `an_enum_variant_comparison_is_rendered_verbatim_never_cast_to_i128`).
@@ -334,8 +345,6 @@ fn is_numeric_rust_type(ty: &RustType) -> bool {
             | RustType::Isize
             | RustType::Bool
             | RustType::Char
-            | RustType::F32
-            | RustType::F64
     )
 }
 
@@ -1327,6 +1336,40 @@ pub fn always_pos(x: i32) -> Sign { let _ = x; Sign::Pos }
             !widened.replace(' ', "").contains("asi128"),
             "an enum-variant comparison must never be cast `as i128`:\n{widened}"
         );
+    }
+
+    /// Casting a float to `i128` compiles, and throws away everything that
+    /// makes it a float. `*result == x` on `f64` became
+    /// `(*result as i128) == (x as i128)`, so a function returning
+    /// `x.trunc()` satisfied a promise of `*result == x` for every input
+    /// whose fractional part was the whole difference.
+    ///
+    /// Reproduced end to end on 2026-09-05, before this test existed:
+    /// `identity(x: f64) -> f64 { x.trunc() }` earned `fuzzed(256)` against
+    /// `|result| *result == x`, which is false at 0.5 and at almost every
+    /// other input. Two hundred and fifty-six random doubles found nothing,
+    /// because the check could not see the difference it was asked about.
+    ///
+    /// The widening exists so an assertion cannot overflow while checking a
+    /// contract. Float arithmetic does not overflow -- it saturates to
+    /// infinity -- so floats never needed it in the first place.
+    #[test]
+    fn a_float_comparison_is_rendered_verbatim_never_cast_to_i128() {
+        for ty in ["f64", "f32"] {
+            let cf = discover(
+                &format!(
+                    "#[ply::ensures(|result| *result == x)]\npub fn identity(x: {ty}) -> {ty} {{ \
+                     x.trunc() }}\n"
+                ),
+                "identity",
+            );
+            let widened = widen(&cf.ensures.as_ref().unwrap().0.body, &cf).to_string();
+            assert!(
+                !widened.replace(' ', "").contains("asi128"),
+                "a {ty} comparison cast to i128 compares two truncated integers, so \
+                 every fractional difference the promise is about disappears:\n{widened}"
+            );
+        }
     }
 
     #[test]
