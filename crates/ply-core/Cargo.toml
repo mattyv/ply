@@ -3,6 +3,7 @@ name = "ply-core"
 version = "0.1.0"
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Ply core: config, harness codegen, engine adapters, contract runtime rendering, diagnostics."
 
 [dependencies]
