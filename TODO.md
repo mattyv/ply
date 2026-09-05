@@ -70,19 +70,69 @@ remembering to run it.
 - [x] **A new required CI job, `ply-self-check`**, added to the one gate `main` actually
       requires. It builds the tool, runs it against both of Ply's own documents with
       `--fail-on error` (the looser mode: only a real regression -- a broken promise, a
-      harness that stops compiling -- fails the build; the one already-recorded gap,
-      `record::fingerprint`'s refusal, is warning severity and does not), and uploads both
-      verified drawings as a downloadable build artifact on every run, pass or fail.
+      harness that stops compiling -- fails the build), and uploads both verified drawings
+      as a downloadable build artifact on every run, pass or fail.
 
       `--fail-on error` was chosen by checking, not assumed: `cargo ply explain` confirms a
       real violation and a real tool error are both error-severity, and the fingerprint
       gap's own diagnostic is warning-severity, so this is strict where it needs to be and
       tolerant only of the one gap already written down elsewhere in this file.
 
+      **Retracted the same day, by the section above this one.** `--fail-on error` was
+      picked to tolerate exactly one gap -- `record::fingerprint`'s refusal -- and that gap
+      was closed hours later. The setting is now looser than anything justifies it being.
+      Tightening it is carried as an open item below rather than left implied here.
+
       Simulated the exact commands CI will run before committing: both crates verify clean
       at exit 0, and the two drawings were opened and read, not just size-checked -- every
       chip in both is genuinely filled and checkmarked, with the header line itself now
       reading "6 earned" rather than the declared form's plain function count.
+
+## Landed: the evidence is published where a person can look at it — 2026-09-05
+
+The job above proved both documents on every change and then put the result somewhere
+almost nobody would ever go: a zip attached to a build, which expires after 90 days, which
+the forge will not render an SVG out of, and which costs a download and an unzip to read.
+Evidence that expensive to look at is evidence nobody looks at, and "Ply proves itself" was
+still, in practice, a sentence in a commit message.
+
+- [x] **A small published page, written by the build and only by a build that passed.**
+      New `publish-evidence` job and `.github/scripts/build-evidence-page.sh`. Both
+      drawings, plus three short paragraphs telling a stranger how to read them, at a
+      permanent address rather than an expiring one. Linked from the top of the README.
+
+      From CI and only from CI, on the same reasoning that already keeps `ply.lock` out of
+      commits: Ply's evidence about itself must never be something one developer's machine
+      can put in front of a reader. A drawing committed to the repository could be
+      regenerated and committed by hand; a page only a passing run can write cannot.
+
+      Deliberately not added to `ci-gate`. Publishing is not checking, and a page that
+      cannot deploy should not turn `main` red. The risk that buys -- a publish quietly
+      breaking, leaving a stale page under an address people trust as current -- is handled
+      where it can actually be seen: the page prints the commit it was built from and when,
+      so staleness is visible to the reader rather than silent.
+
+      The page generation is a script, not inline YAML, specifically so it can be built and
+      *looked at* before deploying. That is not decoration -- it was used: the page was
+      generated locally from the real drawings CI produced (downloaded from the actual run,
+      not regenerated), rasterised at its true full height of 4,638px after a first capture
+      at 4,400px silently cut the second drawing in half, and read. Both drawings render,
+      all 50 chips are filled and checkmarked, and the header lines read "44 earned" and
+      "6 earned". The truncated first capture is exactly the failure CLAUDE.md warns about
+      one level up, and it happened here on the first try.
+
+- [ ] **KNOWN GAP: `ply-self-check` is looser than anything now justifies.** It runs
+      `--fail-on error`, chosen to tolerate `record::fingerprint`'s refusal, which was
+      fixed the same day. Every claim in both documents now earns evidence, so the default
+      `--fail-on evidence` -- which fails the build the moment *any* promise stops being
+      checked at all -- should be within reach and is strictly stronger.
+
+      Not done in the change that noticed it, on purpose: `evidence` also rejects the
+      evidence-quality disclosures, and which of those currently fire on the two real
+      documents is a question to answer by running the thing, not by reading the flag's
+      description. Wants one deliberate run of both crates under `evidence`, a look at
+      whatever it rejects, and then either the tightening or a written reason it cannot
+      tighten yet.
 
 ## Landed: the CLI's own library gets its first six claims — 2026-09-05
 

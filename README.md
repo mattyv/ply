@@ -15,6 +15,12 @@ the boundaries, and the uncovered risk instead of treating plausible code as pro
 > ran. Capabilities may change quickly; Ply is not ready to serve as production assurance.
 > See [Current status](#current-status).
 
+**Ply is pointed at its own source code, and the result is published:**
+[what Ply currently proves about Ply](https://mattyv.github.io/ply/). Every function
+carrying a promise is drawn as a chip, filled in green when the promise was checked on
+the latest commit to `main` and held. The page is written by the build and only by a
+build that passed, so nothing on it is a claim made by hand.
+
 ## Install
 
 Two things go in: the command, and one dependency in the crate you want checked.
