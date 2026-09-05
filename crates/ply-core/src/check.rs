@@ -322,8 +322,16 @@ fn check_token_ambiguity(
     if token == "*" || token.contains('.') {
         return;
     }
+    // A token that already names a top-level component outright is not
+    // ambiguous, however many nested components share its leaf name: a
+    // top-level component's full path *is* its bare name, so the token is
+    // already as specific as it can be. Reporting it otherwise gave advice
+    // nobody could follow -- the suggested "dotted form" of a top-level
+    // component is the bare name just rejected. Ply's own workspace has
+    // the pair (`check` the crate, `core.check` the module).
     if let Some(paths) = leaf_index.get(token)
         && paths.len() > 1
+        && !paths.iter().any(|p| p == token)
     {
         let mut candidates = paths.clone();
         candidates.sort();
@@ -357,6 +365,12 @@ fn resolve_component_ref(
     }
     if token.contains('.') {
         return all_qualified.contains(token).then(|| token.to_string());
+    }
+    // Exactly as in `check_token_ambiguity` and the renderer's own
+    // `resolve`: a token that already names a component outright is that
+    // component, and the leaf search never runs for it.
+    if all_qualified.contains(token) {
+        return Some(token.to_string());
     }
     match leaf_index.get(token) {
         Some(paths) if paths.len() == 1 => Some(paths[0].clone()),

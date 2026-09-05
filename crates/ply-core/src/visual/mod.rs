@@ -498,6 +498,21 @@ pub fn build_declared_visual_envelope(
     options: &svg::RenderOptions,
     state_fields: Option<&crate::harness::StateFieldIndex>,
 ) -> Result<VisualEnvelope, VisualEnvelopeError> {
+    build_declared_visual_envelope_with_links(document, run, options, state_fields, None)
+}
+
+/// [`build_declared_visual_envelope`], plus every derived cross-document
+/// link (`crate::config::derive_links`) — resolved by the caller, the same
+/// way `state_fields` already is, since deriving one means reading real
+/// crate directories off disk and this function only ever sees the parsed
+/// document.
+pub fn build_declared_visual_envelope_with_links(
+    document: &Document,
+    run: RunMetadata,
+    options: &svg::RenderOptions,
+    state_fields: Option<&crate::harness::StateFieldIndex>,
+    links: Option<&crate::config::LinkIndex>,
+) -> Result<VisualEnvelope, VisualEnvelopeError> {
     fn component_node(path: &str, component: &crate::model::Component) -> Node {
         let mut children = component
             .fns
@@ -558,14 +573,22 @@ pub fn build_declared_visual_envelope(
         ..run
     };
     let mut visual = build_visual_envelope(document, &result, run)?;
-    visual.svg = svg::render_svg_with_evidence_state_and_options(
+    visual.svg = svg::render_svg_with_evidence_state_options_and_links(
         document,
         &visual.elements,
         &[],
         options,
         state_fields,
+        links,
     )?;
-    visual.folded = folded_drawings(document, &visual.elements, &[], options, state_fields)?;
+    visual.folded = folded_drawings(
+        document,
+        &visual.elements,
+        &[],
+        options,
+        state_fields,
+        links,
+    )?;
     visual.validate()?;
     Ok(visual)
 }
@@ -606,6 +629,7 @@ pub fn build_visual_envelope_with_sources(
         &diagnostics,
         &svg::RenderOptions::default(),
         None,
+        None,
     )?;
     let envelope = VisualEnvelope {
         protocol_version: VISUAL_PROTOCOL_VERSION,
@@ -636,18 +660,20 @@ fn folded_drawings(
     diagnostics: &[VisualDiagnostic],
     base: &svg::RenderOptions,
     state_fields: Option<&crate::harness::StateFieldIndex>,
+    links: Option<&crate::config::LinkIndex>,
 ) -> Result<Vec<FoldedDrawing>, VisualEnvelopeError> {
     // A reader who already narrowed the drawing by hand has made this choice
     // themselves; offering alternatives to a selection would silently undo it.
     if base.depth.is_some() || base.focus.is_some() || !base.collapse.is_empty() {
         return Ok(Vec::new());
     }
-    let full = svg::render_svg_with_evidence_state_and_options(
+    let full = svg::render_svg_with_evidence_state_options_and_links(
         document,
         elements,
         diagnostics,
         base,
         state_fields,
+        links,
     )?;
     let mut folded = Vec::new();
     for depth in 1..nesting_levels(document) {
@@ -655,12 +681,13 @@ fn folded_drawings(
             depth: Some(depth),
             ..base.clone()
         };
-        let svg = svg::render_svg_with_evidence_state_and_options(
+        let svg = svg::render_svg_with_evidence_state_options_and_links(
             document,
             elements,
             diagnostics,
             &options,
             state_fields,
+            links,
         )?;
         if svg != full {
             folded.push(FoldedDrawing { depth, svg });

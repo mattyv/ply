@@ -9,6 +9,7 @@
 use super::layout;
 use super::state_shapes;
 use crate::check::{Diagnostic, Target as FindingTarget, run_checks};
+use crate::config::{LinkIndex, ResolvedLink};
 use crate::kernel::{Evidence, NodeKind, VerdictNode, aggregate};
 use crate::model::{
     Check, Component, Deny, Document, Edge, EdgeKind, External, FnClaim, InheritedChecks, Mode,
@@ -406,7 +407,11 @@ pub(super) fn check_prose(c: &str) -> String {
 /// document the two views printed different totals, and the drawing
 /// contradicted its own component tooltips, which were computed correctly
 /// (external review, 2026-08-30). One derivation, or the number is a guess.
-pub(super) fn document_counts(doc: &Document) -> (usize, usize, usize) {
+/// `links` follows a component whose interior is drawn from another
+/// document (§7.1), so these numbers describe what a reader actually sees
+/// rather than what this file happens to spell out. Pass `None` wherever
+/// no link was ever resolved and the walk is unchanged.
+pub(super) fn document_counts(doc: &Document, links: Option<&LinkIndex>) -> (usize, usize, usize) {
     fn walk(
         comp: &Component,
         inherited: Option<InheritedChecks>,
@@ -427,8 +432,12 @@ pub(super) fn document_counts(doc: &Document) -> (usize, usize, usize) {
         }
     }
     let (mut c, mut f, mut u) = (0, 0, 0);
-    for comp in doc.components.values() {
-        walk(comp, None, &mut c, &mut f, &mut u);
+    for (name, comp) in &doc.components {
+        let body = super::is_hollow(comp)
+            .then(|| links.and_then(|l| l.get(name)))
+            .flatten()
+            .map_or(comp, |l| &l.target);
+        walk(body, None, &mut c, &mut f, &mut u);
     }
     (c, f, u)
 }
@@ -1073,8 +1082,10 @@ fn resolve_component_ref(flag: &str, token: &str, doc: &Document) -> Result<Stri
 
 /// Recursive `(components, fns)` counts over everything *beneath* `comp`
 /// (not counting `comp` itself as a component) — §7.1's collapsed-box
-/// contents line, `N components · M fns`.
-fn count_subtree(comp: &Component) -> (usize, usize) {
+/// contents line, `N components · M fns`. `pub(super)` so the transcript
+/// can report the same counts for a linked box without a second copy of
+/// this walk (transcript.rs's own module doc names that drift risk).
+pub(super) fn count_subtree(comp: &Component) -> (usize, usize) {
     let mut components = comp.components.len();
     let mut fns = comp.fns.len();
     for child in comp.components.values() {
@@ -1083,6 +1094,41 @@ fn count_subtree(comp: &Component) -> (usize, usize) {
         fns += f;
     }
     (components, fns)
+}
+
+/// §7.1's derived-link sentence, long form — shared by the SVG tooltip and
+/// the transcript so the two views can never drift about what a link
+/// means (the exact failure mode `visual/transcript.rs`'s own module doc
+/// calls out: "one derivation where there is one fact").
+pub(super) fn linked_explanation(n_components: usize, n_fns: usize, target_path: &str) -> String {
+    format!(
+        "linked — {n_components} component{} and {n_fns} function{} are written down in a \
+         different file, `{target_path}`, and drawn here as if they were part of this one. \
+         Nothing inside this box is declared in the document you are looking at, so that is \
+         the file to open to change any of it. Folding this box away (--depth, --focus, or \
+         the viewer's own control) hides them the same way it hides anything else.",
+        if n_components == 1 { "" } else { "s" },
+        if n_fns == 1 { "" } else { "s" },
+    )
+}
+
+/// The anchor line of a box drawn from another document: its own anchor,
+/// then the file its interior is written in. Short enough to sit on the
+/// line a reader already looks at for "what is this box", rather than
+/// buying a whole line of its own on every linked box.
+pub(super) fn linked_source_line(anchor: &str, target_path: &str) -> String {
+    format!("{anchor} \u{2014} {target_path}")
+}
+
+/// §7.1's derived-link contents line, short form: `"N components · M fns —
+/// path"`. Shared with the transcript for the same reason as
+/// [`linked_explanation`].
+pub(super) fn linked_contents_line(n_components: usize, n_fns: usize, target_path: &str) -> String {
+    format!(
+        "{n_components} component{} \u{b7} {n_fns} fn{} \u{2014} {target_path}",
+        if n_components == 1 { "" } else { "s" },
+        if n_fns == 1 { "" } else { "s" },
+    )
 }
 
 /// Union of every capability `comp`'s subtree (including `comp` itself)
@@ -1993,6 +2039,13 @@ struct WalkCtx<'a> {
     /// mode but the ordinary one for a document being drawn before its
     /// code exists, and is what keeps those paths byte-for-byte unchanged.
     state: Option<&'a StateFieldIndex>,
+    /// Every top-level component's derived cross-document link (§7.1's
+    /// derive-links brief), keyed by bare top-level name -- so a nested
+    /// component's qualified path (`core.kernel`) never matches an entry
+    /// here, and only a document's own top-level boxes are ever eligible.
+    /// `None` throughout every render path that never resolved one, which
+    /// keeps every pre-existing entry point byte-for-byte unchanged.
+    links: Option<&'a LinkIndex>,
 }
 
 /// Every declared state type's real fields, keyed by the component's
@@ -2012,11 +2065,27 @@ pub use crate::harness::StateFieldIndex;
 /// collapses — "hollow means nothing inside; collapsed means plenty inside,
 /// folded" are mutually exclusive states, and hollow wins when the subtree
 /// really is empty.
+///
+/// A derived link (`walk.links`) overrides both of those defaults for a
+/// component with an **empty declared interior of its own**, and the
+/// override **must be checked first**: such a component is not hollow when
+/// a link resolves (its interior lives in another file, not nowhere), and
+/// it draws collapsed unconditionally, never subject to
+/// `--depth`/`--focus`/`--collapse` -- there is nothing local for those
+/// flags to expand into. Getting this ordering backwards draws the link
+/// dashed, meaning "nothing to zoom into yet" — the exact opposite of the
+/// truth (see `a_linked_hollow_component_draws_collapsed_not_hollow` in
+/// `tools/render/tests/derive_links.rs`).
+///
+/// A component that already declares real fns or nested components of its
+/// own never consults a link at all, even one that would otherwise
+/// resolve: a link stands in for an interior nobody wrote here, and a
+/// document that *did* write one gets to keep showing it.
 fn render_component_dispatch<'a>(
     name: &'a str,
     qualified: &str,
     comp: &'a Component,
-    walk: &WalkCtx,
+    walk: &WalkCtx<'a>,
     level: usize,
     inherited: Option<InheritedChecks<'a>>,
     // The id of the evidence element that draws this component's own
@@ -2027,26 +2096,45 @@ fn render_component_dispatch<'a>(
     // rather than staying fixed for the whole walk the way `WalkCtx` does.
     parent_element_id: Option<&str>,
 ) -> ComponentBox {
-    let is_hollow = super::is_hollow(comp);
+    let declared_hollow = super::is_hollow(comp);
+    let link = declared_hollow
+        .then(|| walk.links.and_then(|links| links.get(qualified)))
+        .flatten();
+    let is_hollow = declared_hollow && link.is_none();
+    // A linked component draws the linked document's own interior, here,
+    // in place -- not a box telling the reader to go and open another
+    // file. Changed 2026-09-05: it drew collapsed until then, and the
+    // effect was a root drawing that showed five of `core`'s parts when
+    // the real document had twenty-one, with no hint that sixteen were
+    // missing. Folding is a reader's choice (`--depth`, `--focus`, the
+    // viewer's own control), so it is offered rather than imposed, and
+    // `should_collapse` below still honours it.
+    //
+    // Everything past this point reads `body` rather than `comp`: the
+    // local component is hollow by construction (that is what made it
+    // eligible to link at all), so drawing it would draw nothing.
+    let body: &'a Component = link.map_or(comp, |l| &l.target);
     if !is_hollow && walk.collapse.should_collapse(qualified, level) {
         render_collapsed_component(
             name,
             qualified,
-            comp,
+            body,
             walk.profiles,
             walk.findings,
             inherited,
             walk.evidence.zip(parent_element_id),
+            link,
         )
     } else {
         render_component(
             name,
             qualified,
-            comp,
+            body,
             walk,
             level,
             inherited,
             parent_element_id,
+            link,
         )
     }
 }
@@ -2060,6 +2148,7 @@ fn render_component_dispatch<'a>(
 /// unresolved-marker count, and — via `collect_findings_subtree` — the
 /// subtree's finding count. No fn chips, no nested boxes: everything below
 /// this box is folded into those counts.
+#[allow(clippy::too_many_arguments)]
 fn render_collapsed_component(
     name: &str,
     qualified: &str,
@@ -2072,10 +2161,20 @@ fn render_collapsed_component(
     // `resolved_component`'s doc comment for why the pair travels as one
     // parameter rather than two.
     evidence_parent: Option<(&EvidenceView, &str)>,
+    // A derived cross-document link (§7.1's derive-links brief): when
+    // present, the counts and contents line below describe *its* target
+    // rather than `comp`'s own (possibly empty) declared interior, and the
+    // path it names rides in the text tier since no visual channel is
+    // free (`docs/state-shapes.svg`'s own glyph budget is already spoken
+    // for).
+    link: Option<&ResolvedLink>,
 ) -> ComponentBox {
     let findings = collect_findings_subtree(qualified, comp, ctx);
     let ceiling = component_ceiling(name, comp, inherited);
-    let (n_components, n_fns) = count_subtree(comp);
+    let (n_components, n_fns) = match link {
+        Some(link) => count_subtree(&link.target),
+        None => count_subtree(comp),
+    };
     // Resolved here, ahead of `contents_line`, rather than at its usual
     // place right before the tooltip is built: this box's earned-over-
     // promised split (below) needs it, and the tooltip push further down
@@ -2089,19 +2188,31 @@ fn render_collapsed_component(
     // exceed it (the invariant this exists to uphold), but a stale
     // evidence view built from a since-edited document must not be allowed
     // to claim more earned than this box's own contents hold.
-    let earned_of_promised = resolved
-        .zip(evidence_parent)
-        .and_then(|((element, _), (ev, _))| {
-            (n_fns > 0).then(|| ev.fn_state_counts(&element.id).earned.min(n_fns))
-        });
-    let contents_line = format!(
-        "{n_components} component{} \u{b7} {n_fns} fn{}{}",
-        if n_components == 1 { "" } else { "s" },
-        if n_fns == 1 { "" } else { "s" },
-        earned_of_promised
-            .map(|earned| format!(" \u{b7} {earned} of {n_fns} earned"))
-            .unwrap_or_default(),
-    );
+    //
+    // A linked box never gets this split at all: this document's own
+    // verify run has no evidence about *another file's* functions, and
+    // "0 of 44 earned" would read as a real answer about work nobody
+    // checked rather than the true "not this document's to say".
+    let earned_of_promised = if link.is_some() {
+        None
+    } else {
+        resolved
+            .zip(evidence_parent)
+            .and_then(|((element, _), (ev, _))| {
+                (n_fns > 0).then(|| ev.fn_state_counts(&element.id).earned.min(n_fns))
+            })
+    };
+    let contents_line = match link {
+        Some(link) => linked_contents_line(n_components, n_fns, &link.target_path),
+        None => format!(
+            "{n_components} component{} \u{b7} {n_fns} fn{}{}",
+            if n_components == 1 { "" } else { "s" },
+            if n_fns == 1 { "" } else { "s" },
+            earned_of_promised
+                .map(|earned| format!(" \u{b7} {earned} of {n_fns} earned"))
+                .unwrap_or_default(),
+        ),
+    };
     let badges = union_badges_subtree(comp);
     let unresolved = collect_unresolved_subtree(comp);
 
@@ -2191,12 +2302,15 @@ fn render_collapsed_component(
     // so its tooltip gets the same sentence a box with nothing resolved
     // does, which is the true one for it.
     let mut tip = component_tip_lines(name, comp, profiles, &findings, &[], false);
-    tip.push(format!(
-        "collapsed — {n_components} component{} and {n_fns} function{} folded inside; render \
-         with --depth or --focus <name> to expand",
-        if n_components == 1 { "" } else { "s" },
-        if n_fns == 1 { "" } else { "s" },
-    ));
+    match link {
+        Some(link) => tip.push(linked_explanation(n_components, n_fns, &link.target_path)),
+        None => tip.push(format!(
+            "collapsed — {n_components} component{} and {n_fns} function{} folded inside; \
+             render with --depth or --focus <name> to expand",
+            if n_components == 1 { "" } else { "s" },
+            if n_fns == 1 { "" } else { "s" },
+        )),
+    }
     tip.push(ceiling_tooltip_line(ceiling));
     if let Some(reason) = colour_reason_line(comp, inherited, name) {
         tip.push(reason);
@@ -2299,6 +2413,7 @@ fn internal_child_edges(
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_component<'a>(
     name: &'a str,
     qualified: &str,
@@ -2307,6 +2422,13 @@ fn render_component<'a>(
     level: usize,
     inherited: Option<InheritedChecks<'a>>,
     parent_element_id: Option<&str>,
+    // Set only when `comp` is another document's content drawn in place
+    // (§7.1's derived link). The box then names the file its interior came
+    // from, so a reader who wants to change something knows which file to
+    // open -- without it, this document's drawing would show twenty-one
+    // components and forty-four promises that are not written down here at
+    // all, and nothing would say so.
+    link: Option<&ResolvedLink>,
 ) -> ComponentBox {
     let WalkCtx {
         profiles,
@@ -2779,7 +2901,10 @@ fn render_component<'a>(
     svg.push_str(&format!(
         "<text class=\"component-anchor\" x=\"{PAD:.1}\" y=\"{:.1}\">{}</text>",
         PAD + LINE_H * 2.0 - 4.0,
-        esc(&comp.anchor)
+        esc(&match link {
+            Some(l) => linked_source_line(&comp.anchor, &l.target_path),
+            None => comp.anchor.clone(),
+        })
     ));
     let mut extra_line = 0.0;
     if let Some(line) = &owns_line {
@@ -3130,6 +3255,21 @@ fn resolve(
 ) -> Result<Option<(String, Rect)>, RenderError> {
     if token.contains('.') {
         return Ok(positions.get(token).map(|r| (token.to_string(), *r)));
+    }
+    // A token that already names a component outright is that component,
+    // and the leaf-name search below never runs for it. The search exists
+    // to turn a short name into a path; there is nothing to search for
+    // when the token *is* the path, and a top-level component's full path
+    // is its bare name.
+    //
+    // Without this, a top-level component was reported ambiguous against a
+    // nested one sharing its leaf name -- and the advice that came with it
+    // could not be followed, because the "dotted form" of a top-level
+    // component is the bare name that was just rejected. Ply's own
+    // workspace has the pair (`check` the crate, `core.check` the module)
+    // and hit it on 2026-09-05.
+    if let Some(rect) = positions.get(token) {
+        return Ok(Some((token.to_string(), *rect)));
     }
     match leaf_index.get(token) {
         None => Ok(None),
@@ -3629,7 +3769,7 @@ pub fn render_svg_with_evidence_and_options(
         elements,
         diagnostics,
     };
-    render_svg_impl(doc, options, Some(&evidence), None)
+    render_svg_impl(doc, options, Some(&evidence), None, None)
 }
 
 /// `render_svg`, plus The-Ply-Spec.md §7.1's `--depth`/`--focus`/`--collapse`
@@ -3640,7 +3780,7 @@ pub fn render_svg_with_options(
     doc: &Document,
     options: &RenderOptions,
 ) -> Result<String, RenderError> {
-    render_svg_impl(doc, options, None, None)
+    render_svg_impl(doc, options, None, None, None)
 }
 
 /// `render_svg_with_options`, plus what each component's declared state
@@ -3656,7 +3796,21 @@ pub fn render_svg_with_state(
     options: &RenderOptions,
     state_fields: &StateFieldIndex,
 ) -> Result<String, RenderError> {
-    render_svg_impl(doc, options, None, Some(state_fields))
+    render_svg_impl(doc, options, None, Some(state_fields), None)
+}
+
+/// `render_svg_with_state`, plus every derived cross-document link
+/// (`crate::config::derive_links`). Separate for the same reason
+/// [`render_svg_with_state`] is separate from [`render_svg_with_options`]:
+/// a caller with nothing to link keeps getting byte-for-byte the same
+/// drawing it always did.
+pub fn render_svg_with_state_and_links(
+    doc: &Document,
+    options: &RenderOptions,
+    state_fields: &StateFieldIndex,
+    links: &LinkIndex,
+) -> Result<String, RenderError> {
+    render_svg_impl(doc, options, None, Some(state_fields), Some(links))
 }
 
 /// Every input at once: folding, a run's evidence, and the real state
@@ -3668,11 +3822,32 @@ pub fn render_svg_with_evidence_state_and_options(
     options: &RenderOptions,
     state_fields: Option<&StateFieldIndex>,
 ) -> Result<String, RenderError> {
+    render_svg_with_evidence_state_options_and_links(
+        doc,
+        elements,
+        diagnostics,
+        options,
+        state_fields,
+        None,
+    )
+}
+
+/// `render_svg_with_evidence_state_and_options`, plus every derived
+/// cross-document link. What `cargo ply render`/`build_declared_visual_
+/// envelope` draw once a document's own links have been resolved.
+pub fn render_svg_with_evidence_state_options_and_links(
+    doc: &Document,
+    elements: &BTreeMap<String, super::VisualElement>,
+    diagnostics: &[super::VisualDiagnostic],
+    options: &RenderOptions,
+    state_fields: Option<&StateFieldIndex>,
+    links: Option<&LinkIndex>,
+) -> Result<String, RenderError> {
     let evidence = EvidenceView {
         elements,
         diagnostics,
     };
-    render_svg_impl(doc, options, Some(&evidence), state_fields)
+    render_svg_impl(doc, options, Some(&evidence), state_fields, links)
 }
 
 /// The real render walk, shared by every public entry point above. `evidence`
@@ -3690,6 +3865,7 @@ fn render_svg_impl(
     options: &RenderOptions,
     evidence: Option<&EvidenceView>,
     state_fields: Option<&StateFieldIndex>,
+    links: Option<&LinkIndex>,
 ) -> Result<String, RenderError> {
     // §7.1 "finding (tool-computed, not declared)": run `ply-check`'s
     // document-local rules up front, then thread `ctx` through every render
@@ -3744,6 +3920,7 @@ fn render_svg_impl(
                         edges: &doc.edges,
                         evidence,
                         state: state_fields,
+                        links,
                     },
                     1,
                     None,
@@ -4374,16 +4551,13 @@ fn render_svg_impl(
     // never stated, so a reader had to scan every box to find out. Counts
     // only what is *promised*, because nothing has been run: a strip that
     // reported results would be inventing them.
-    let (total_components, total_fns) = doc
-        .components
-        .values()
-        .map(|c| {
-            let (nested, fns) = count_subtree(c);
-            (nested + 1, fns)
-        })
-        .fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
-    // Was a second, wrong walk over the same tree. See `document_counts`.
-    let (_, _, unclaimed_fns) = document_counts(doc);
+    // All three numbers from the one shared walk -- see `document_counts`,
+    // whose own comment records what a second, independent walk cost last
+    // time. It follows a linked component's interior since 2026-09-05, so
+    // this line counts what is on the picture: without that it read "8
+    // components · 0 functions" above a drawing of twenty-nine boxes and
+    // forty-four promises.
+    let (total_components, total_fns, unclaimed_fns) = document_counts(doc, links);
     fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
         if n == 1 { one } else { many }
     }

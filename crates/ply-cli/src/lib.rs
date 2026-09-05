@@ -29,11 +29,12 @@ use clap::{Parser, Subcommand, ValueEnum};
 // results that earned evidence). Two copies of one vocabulary is how the
 // next absence gets missed by one of them, which is the exact shape of the
 // defect that put this rule here.
+use ply_core::config::derive_links;
 use ply_core::diag::is_absence;
 use ply_core::model::parse_document;
-use ply_core::visual::svg::{RenderOptions, render_svg_with_state};
+use ply_core::visual::svg::{RenderOptions, render_svg_with_state_and_links};
 use ply_core::visual::{
-    DEFAULT_RETAINED_RUNS, RunOutcome, VisualPublisher, build_declared_visual_envelope,
+    DEFAULT_RETAINED_RUNS, RunOutcome, VisualPublisher, build_declared_visual_envelope_with_links,
     build_visual_envelope_with_sources, completed_run_metadata, outcome_of,
 };
 use verify::VerifyOptions;
@@ -463,9 +464,14 @@ fn render_command_with_format(
     // so none of them can disagree about what a component's state holds.
     let source_root = input.parent().unwrap_or(Path::new("."));
     let state_fields = ply_core::harness::resolve_state_fields(source_root, &document);
+    // §7.1's derive-links brief: a component links to another document when
+    // that document's own top-level anchor sits under this one's -- resolved
+    // here, next to `state_fields`, for the same reason: it reads real crate
+    // directories off disk, which nothing below this line does again.
+    let link_set = derive_links(&document, source_root);
 
     if json {
-        let visual = build_declared_visual_envelope(
+        let visual = build_declared_visual_envelope_with_links(
             &document,
             completed_run_metadata(
                 input.parent().unwrap_or_else(|| Path::new(".")),
@@ -477,6 +483,7 @@ fn render_command_with_format(
             ),
             options,
             Some(&state_fields),
+            Some(&link_set.links),
         )?;
         let json = visual.to_json_pretty();
         return match output {
@@ -490,9 +497,10 @@ fn render_command_with_format(
     if text {
         // Same read the drawing does, for the same reason: the text form's
         // contract is that it states everything the drawing shows.
-        let transcript = ply_core::visual::transcript::render_transcript_with_state(
+        let transcript = ply_core::visual::transcript::render_transcript_with_state_and_links(
             &document,
             Some(&state_fields),
+            Some(&link_set.links),
         );
         return match output {
             Some(path) => std::fs::write(path, transcript)
@@ -503,7 +511,7 @@ fn render_command_with_format(
         };
     }
 
-    let svg = render_svg_with_state(&document, options, &state_fields)
+    let svg = render_svg_with_state_and_links(&document, options, &state_fields, &link_set.links)
         .map_err(|error| anyhow::anyhow!("could not render {}: {error}", input.display()))?;
 
     // A selection that selects nothing is worth saying out loud. On a flat
@@ -515,7 +523,12 @@ fn render_command_with_format(
     // layout pass and cannot disagree with what was actually drawn. The
     // note goes to stderr, so it can never contaminate an SVG on stdout.
     if options.depth.is_some() || options.focus.is_some() || !options.collapse.is_empty() {
-        let plain = render_svg_with_state(&document, &RenderOptions::default(), &state_fields);
+        let plain = render_svg_with_state_and_links(
+            &document,
+            &RenderOptions::default(),
+            &state_fields,
+            &link_set.links,
+        );
         if plain.as_deref().ok() == Some(svg.as_str()) {
             eprintln!(
                 "note: this drawing is identical to the one with no --depth/--focus/--collapse \
