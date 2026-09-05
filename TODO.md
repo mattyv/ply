@@ -220,6 +220,49 @@ cases, which are not Ply-buildable types -- those functions stay unclaimed until
 around or reduced to their buildable inputs, same as everywhere else in this codebase.
 
 
+## Landed: seven defects Fable's review found in the expansion change — 2026-09-05
+
+Every one was in rendering, and **not one was caught by a test** -- the suites stayed green
+through all of them. Three were the tool stating something false, which is the failure this
+project exists to refuse.
+
+- [x] **The drawing overwrote this document's own words.** A linked component was taken
+      wholesale, so its note, capability badges, purity seal and declared checks came from
+      the other file. "Hollow" is only the narrow claim that a component declares no
+      interior. Ply's own root note appeared in the text form and **zero times** in the
+      drawing. The target now supplies the interior and nothing else.
+
+- [x] **A false sentence about state.** The field walk never followed a link, so a linked
+      component's state resolved to nothing and the drawing explained it with "there is no
+      code here to read one from either" -- about a type whose own crate's drawing measures
+      4 of its 8 fields. Both now read `4 of 8 shown`.
+
+- [x] **The golden test rendered link-blind**, so it compared the committed drawing against
+      a render nothing produces. Exposed by the fix above. It now makes the binary's call.
+
+- [x] **The envelope contradicted its own picture:** 9 elements listed beside an SVG drawing
+      44 chips, so a viewer addressed a different system from the one it displayed. Now
+      29 + 44 + workspace = 74, and the pre-folded drawings went 1 to 2.
+
+- [x] **`verify` drew a different picture from `render` for one file.** It got no source
+      root at all, so it drew linked components dashed and "promises nothing yet". Both
+      commands now draw 29 boxes and the same 6 genuinely-hollow ones.
+
+- [x] **`--focus`/`--collapse` could not reach a linked interior**, while a tooltip on that
+      very box promised they would. They were a fourth copy of the reference rule nobody
+      updated -- and it lacked the exact-match-wins rule the other three had.
+
+- [x] **The shadowing warning's plural branch** read "`a` or `b` also exist" and then said
+      to write `a`, choosing one candidate for the reader.
+
+  Also consolidated the link substitution, which had **four copies** free to drift, into one
+  function. The drawing's copy had already drifted -- that is the first item above.
+
+  **The honest note on process:** the golden carrying the false state sentence was reviewed
+  and accepted. The picture was rasterised and read; its hover text was not, and about 95%
+  of a drawing is hover text. Reading the *text form* beside the picture is what would have
+  caught it, and is what CLAUDE.md's own guidance already implies.
+
 ## Landed: a name shadowed across documents is reported, not silently preferred — 2026-09-05
 
 Expanding a linked document made a new kind of collision reachable: names arrive from a

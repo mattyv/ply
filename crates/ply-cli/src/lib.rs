@@ -35,7 +35,7 @@ use ply_core::model::parse_document;
 use ply_core::visual::svg::{RenderOptions, render_svg_with_state_and_links};
 use ply_core::visual::{
     DEFAULT_RETAINED_RUNS, RunOutcome, VisualPublisher, build_declared_visual_envelope_with_links,
-    build_visual_envelope_with_sources, completed_run_metadata, outcome_of,
+    build_visual_envelope_at, completed_run_metadata, outcome_of,
 };
 use verify::VerifyOptions;
 
@@ -286,11 +286,16 @@ pub fn run() -> anyhow::Result<()> {
             // of the same run.
             if publish_view || svg.is_some() {
                 let run = completed_run_metadata(&path, verify::PLY_VERSION, outcome_of(&envelope));
-                let visual = build_visual_envelope_with_sources(
+                // With the crate directory, so a verified drawing reads the
+                // same code and the same linked documents `cargo ply render`
+                // does. Without it, one file drew two different pictures
+                // depending on which command asked.
+                let visual = build_visual_envelope_at(
                     &verification.document,
                     &envelope,
                     run,
                     &verification.source_map,
+                    Some(Path::new(&path)),
                 )?;
                 if publish_view {
                     let publication = VisualPublisher::new(&path).publish(&visual, retain_views)?;
@@ -463,12 +468,21 @@ fn render_command_with_format(
     // ahead of every drawn form below (JSON envelope, transcript, plain SVG)
     // so none of them can disagree about what a component's state holds.
     let source_root = input.parent().unwrap_or(Path::new("."));
-    let state_fields = ply_core::harness::resolve_state_fields(source_root, &document);
     // §7.1's derive-links brief: a component links to another document when
     // that document's own top-level anchor sits under this one's -- resolved
     // here, next to `state_fields`, for the same reason: it reads real crate
     // directories off disk, which nothing below this line does again.
+    //
+    // Before `state_fields`, because that read needs it: a linked
+    // component's declared state lives in the other crate, and a walk that
+    // does not follow the link reports it as unresolvable rather than
+    // reading it.
     let link_set = derive_links(&document, source_root);
+    let state_fields = ply_core::harness::resolve_state_fields_with_links(
+        source_root,
+        &document,
+        Some(&link_set.links),
+    );
 
     if json {
         let visual = build_declared_visual_envelope_with_links(

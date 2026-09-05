@@ -1024,7 +1024,7 @@ impl<'a> CollapseCtx<'a> {
 /// declaration order — independent of rendering/collapsing, used to resolve
 /// `--focus` and to redirect a collapsed-away edge endpoint to whichever
 /// ancestor box is actually drawn.
-fn all_qualified_paths(doc: &Document) -> Vec<String> {
+fn all_qualified_paths(doc: &Document, links: Option<&LinkIndex>) -> Vec<String> {
     fn walk(qualified: &str, comp: &Component, out: &mut Vec<String>) {
         for (cname, child) in &comp.components {
             let q = format!("{qualified}.{cname}");
@@ -1035,7 +1035,13 @@ fn all_qualified_paths(doc: &Document) -> Vec<String> {
     let mut out = Vec::new();
     for (name, comp) in &doc.components {
         out.push(name.clone());
-        walk(name, comp, &mut out);
+        // A linked component's interior is drawn, so it is addressable:
+        // `--focus core.kernel` failed with "does not match any component
+        // in this document" while the drawing showed `kernel` plainly, and
+        // a tooltip on the very same box promised that flag would work
+        // (Fable review, 2026-09-05).
+        let merged = crate::config::linked_body(name, comp, links);
+        walk(name, merged.as_ref().unwrap_or(comp), &mut out);
     }
     out
 }
@@ -1057,14 +1063,27 @@ fn no_such_component_message(flag: &str, token: &str) -> String {
 /// exactly; a bare token must name a unique leaf across the whole document.
 /// `flag` (e.g. `"--focus"`) names the offending flag in any error, so two
 /// different flags sharing this resolver still read as themselves.
-fn resolve_component_ref(flag: &str, token: &str, doc: &Document) -> Result<String, RenderError> {
-    let paths = all_qualified_paths(doc);
+fn resolve_component_ref(
+    flag: &str,
+    token: &str,
+    doc: &Document,
+    links: Option<&LinkIndex>,
+) -> Result<String, RenderError> {
+    let paths = all_qualified_paths(doc, links);
     if token.contains('.') {
         return paths
             .iter()
             .find(|p| p.as_str() == token)
             .cloned()
             .ok_or_else(|| RenderError(no_such_component_message(flag, token)));
+    }
+    // The same rule `resolve` and both halves of `check.rs` apply: a token
+    // that already names a component outright is that component, and the
+    // leaf search never runs for it. Without it, `--focus check` on a
+    // document with a top-level `check` and a nested `core.check` is
+    // rejected as ambiguous with advice that cannot be followed.
+    if paths.iter().any(|p| p == token) {
+        return Ok(token.to_string());
     }
     let matches: Vec<String> = paths
         .iter()
@@ -3899,12 +3918,12 @@ fn render_svg_impl(
     // the default — every branch gated on it is therefore dead code on the
     // default path, which is what keeps `render_svg` byte-for-byte unchanged.
     let focus_qualified: Option<String> = match &options.focus {
-        Some(f) => Some(resolve_component_ref("--focus", f, doc)?),
+        Some(f) => Some(resolve_component_ref("--focus", f, doc, links)?),
         None => None,
     };
     let mut explicit_collapse: Vec<String> = Vec::new();
     for token in &options.collapse {
-        explicit_collapse.push(resolve_component_ref("--collapse", token, doc)?);
+        explicit_collapse.push(resolve_component_ref("--collapse", token, doc, links)?);
     }
     let collapse = CollapseCtx {
         depth: options.depth,
@@ -4097,7 +4116,7 @@ fn render_svg_impl(
     // under the folded-away key too, so `resolve()` itself needs no change.
     let mut effective: HashMap<String, String> = HashMap::new();
     if collapsing_active {
-        for p in all_qualified_paths(doc) {
+        for p in all_qualified_paths(doc, links) {
             if positions.contains_key(&p) {
                 effective.insert(p.clone(), p);
                 continue;

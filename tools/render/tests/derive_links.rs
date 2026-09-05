@@ -388,3 +388,52 @@ fn a_linked_components_state_is_measured_against_the_other_crates_real_code() {
         "the drawing must not explain a resolved type as unresolvable:\n{svg}"
     );
 }
+
+/// `--focus` and `--collapse` must reach into a linked interior, because
+/// the drawing shows it and a tooltip on that very box tells the reader
+/// those flags will fold it.
+///
+/// They could not: the path list those flags resolve against was a fourth
+/// copy of the reference rule that nobody updated, so `--focus core.kernel`
+/// on Ply's own root document failed with "does not match any component in
+/// this document" while `kernel` sat plainly on the picture (Fable review,
+/// 2026-09-05).
+#[test]
+fn focus_and_collapse_reach_a_linked_documents_interior() {
+    let dir = tempfile::tempdir().unwrap();
+    write_crate(
+        dir.path(),
+        "inner_lib",
+        "ply: 1\ncomponents:\n  inner:\n    anchor: inner_lib\n    components:\n      nested:\n        anchor: inner_lib::nested\n        fns:\n          go:\n            checks: [bounded(2)]\n",
+    );
+    let outer_text = "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n";
+    std::fs::write(dir.path().join("ply.yaml"), outer_text).unwrap();
+    let doc = parse_document(outer_text).unwrap();
+    let link_set = derive_links(&doc, dir.path());
+    let state_fields =
+        ply_core::harness::resolve_state_fields_with_links(dir.path(), &doc, Some(&link_set.links));
+
+    for token in ["core.nested", "nested"] {
+        let options = RenderOptions {
+            focus: Some(token.to_string()),
+            ..RenderOptions::default()
+        };
+        render_svg_with_state_and_links(&doc, &options, &state_fields, &link_set.links)
+            .unwrap_or_else(|e| {
+                panic!("--focus {token:?} must resolve into the linked interior: {e}")
+            });
+    }
+
+    // A name that really is absent is still refused -- the fix must not turn
+    // the flag into one that silently accepts anything.
+    let options = RenderOptions {
+        focus: Some("nosuchthing".to_string()),
+        ..RenderOptions::default()
+    };
+    let err = render_svg_with_state_and_links(&doc, &options, &state_fields, &link_set.links)
+        .expect_err("an absent name must still be refused");
+    assert!(
+        err.to_string().contains("does not match any component"),
+        "{err}"
+    );
+}

@@ -553,7 +553,17 @@ pub fn build_declared_visual_envelope_with_links(
             children: document
                 .components
                 .iter()
-                .map(|(name, component)| component_node(name, component))
+                // A linked component's interior is drawn, so it is part of
+                // what this envelope describes. Walking the document alone
+                // listed 9 elements beside an SVG drawing 44 fn chips: a
+                // viewer whose only input is the envelope addressed a
+                // different system from the one it displayed, and its
+                // filters could not reach 44 of the chips (Fable review,
+                // 2026-09-05).
+                .map(|(name, component)| {
+                    let merged = crate::config::linked_body(name, component, links);
+                    component_node(name, merged.as_ref().unwrap_or(component))
+                })
                 .collect(),
             ..Node::default()
         },
@@ -602,6 +612,33 @@ pub fn build_visual_envelope_with_sources(
     run: RunMetadata,
     source_map: &BTreeMap<String, Span>,
 ) -> Result<VisualEnvelope, VisualEnvelopeError> {
+    build_visual_envelope_at(document, result, run, source_map, None)
+}
+
+/// [`build_visual_envelope_with_sources`], told where the document lives on
+/// disk so it can read what a verified drawing needs from the code beside
+/// it: a component's declared state fields, and any document its components
+/// link to (§7.1).
+///
+/// Without a root, a verified drawing of a document with links drew those
+/// components dashed and tooltipped "hollow — promises nothing yet", while
+/// `cargo ply render` on the same file drew their full interior. One file,
+/// two commands, two different pictures (Fable review, 2026-09-05).
+pub fn build_visual_envelope_at(
+    document: &Document,
+    result: &Envelope,
+    run: RunMetadata,
+    source_map: &BTreeMap<String, Span>,
+    source_root: Option<&std::path::Path>,
+) -> Result<VisualEnvelope, VisualEnvelopeError> {
+    let resolved = source_root.map(|root| {
+        let links = crate::config::derive_links(document, root);
+        let state =
+            crate::harness::resolve_state_fields_with_links(root, document, Some(&links.links));
+        (links, state)
+    });
+    let links: Option<&crate::config::LinkIndex> = resolved.as_ref().map(|(l, _)| &l.links);
+    let state_fields: Option<&crate::harness::StateFieldIndex> = resolved.as_ref().map(|(_, s)| s);
     let mut elements = BTreeMap::new();
     let mut semantic_ids = BTreeMap::new();
     collect_elements(
@@ -619,17 +656,21 @@ pub fn build_visual_envelope_with_sources(
         .enumerate()
         .map(|(index, diagnostic)| visual_diagnostic(index, diagnostic, &semantic_ids))
         .collect::<Vec<_>>();
-    let svg = svg::render_svg_with_evidence(document, &elements, &diagnostics)?;
-    // No source root travels with a completed run's evidence, so there is
-    // nothing to resolve state fields against here -- `None` keeps this
-    // path exactly as it was before state resolution existed.
+    let svg = svg::render_svg_with_evidence_state_options_and_links(
+        document,
+        &elements,
+        &diagnostics,
+        &svg::RenderOptions::default(),
+        state_fields,
+        links,
+    )?;
     let folded = folded_drawings(
         document,
         &elements,
         &diagnostics,
         &svg::RenderOptions::default(),
-        None,
-        None,
+        state_fields,
+        links,
     )?;
     let envelope = VisualEnvelope {
         protocol_version: VISUAL_PROTOCOL_VERSION,
@@ -676,7 +717,7 @@ fn folded_drawings(
         links,
     )?;
     let mut folded = Vec::new();
-    for depth in 1..nesting_levels(document) {
+    for depth in 1..nesting_levels(document, links) {
         let options = svg::RenderOptions {
             depth: Some(depth),
             ..base.clone()
@@ -698,7 +739,7 @@ fn folded_drawings(
 
 /// How many levels of boxes the document actually has: 1 when no component
 /// contains another.
-fn nesting_levels(document: &Document) -> usize {
+fn nesting_levels(document: &Document, links: Option<&crate::config::LinkIndex>) -> usize {
     fn deepest(component: &crate::model::Component) -> usize {
         1 + component
             .components
@@ -707,7 +748,18 @@ fn nesting_levels(document: &Document) -> usize {
             .max()
             .unwrap_or(0)
     }
-    document.components.values().map(deepest).max().unwrap_or(0)
+    // Linked interiors included, or the pre-folded drawings this envelope
+    // ships stop one level short of what the picture actually nests, and a
+    // viewer offering "fold to depth N" runs out of depths early.
+    document
+        .components
+        .iter()
+        .map(|(name, component)| {
+            let merged = crate::config::linked_body(name, component, links);
+            deepest(merged.as_ref().unwrap_or(component))
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Maps the renderer's own classification to the four strings a client is
