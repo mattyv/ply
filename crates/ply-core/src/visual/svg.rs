@@ -8,7 +8,7 @@
 
 use super::layout;
 use super::state_shapes;
-use crate::check::{Diagnostic, Target as FindingTarget, run_checks};
+use crate::check::{Diagnostic, Target as FindingTarget, run_checks_with_links};
 use crate::config::{LinkIndex, ResolvedLink};
 use crate::kernel::{Evidence, NodeKind, VerdictNode, aggregate};
 use crate::model::{
@@ -3873,7 +3873,9 @@ fn render_svg_impl(
     // tally whatever it doesn't (`ctx.unattached_count()`, consulted once
     // rendering finishes). A clean document (`findings` empty) makes every
     // lookup below return nothing, so nothing about its output changes.
-    let findings = run_checks(doc);
+    // With `links`, so a name arriving from a linked document and shadowing
+    // a local one is reported on the picture that actually draws both.
+    let findings = run_checks_with_links(doc, links);
     let ctx = FindingCtx::new(&findings);
 
     // §7.1 collapse/expand: resolved once, consulted at every component

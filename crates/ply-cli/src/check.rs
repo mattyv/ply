@@ -126,8 +126,20 @@ pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
         }
     };
 
+    // §7.1's derive-links brief: a component links to another document
+    // when that document's own top-level anchor sits under this one's,
+    // discovered from real crate directories rather than a declared key.
+    // No engine and no `cargo metadata` call, so this runs whether or not
+    // the architecture tier below could.
+    //
+    // Resolved before the document rules rather than after, because one of
+    // them needs it: a name arriving from a linked document can shadow a
+    // local one, and the rule that says so (`W0419`) can only see that if
+    // it knows those names exist.
+    let link_set = ply_core::config::derive_links(&doc, crate_dir);
+
     // Tier 1b: every document-local rule, in document order.
-    for d in ply_core::check::run_checks(&doc) {
+    for d in ply_core::check::run_checks_with_links(&doc, Some(&link_set.links)) {
         diagnostics.push(document_diag(&d));
     }
 
@@ -139,12 +151,7 @@ pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
     // declared components and `edges:`/`deny:`.
     let arch_outcome = run_architecture_tier(crate_dir, &doc, &mut diagnostics);
 
-    // §7.1's derive-links brief: a component links to another document
-    // when that document's own top-level anchor sits under this one's,
-    // discovered from real crate directories rather than a declared key.
-    // No engine and no `cargo metadata` call, so this runs whether or not
-    // the architecture tier above could.
-    for f in &ply_core::config::derive_links(&doc, crate_dir).findings {
+    for f in &link_set.findings {
         diagnostics.push(link_diag(f));
     }
 

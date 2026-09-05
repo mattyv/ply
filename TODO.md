@@ -220,6 +220,32 @@ cases, which are not Ply-buildable types -- those functions stay unclaimed until
 around or reduced to their buildable inputs, same as everywhere else in this codebase.
 
 
+## Landed: a name shadowed across documents is reported, not silently preferred — 2026-09-05
+
+Expanding a linked document made a new kind of collision reachable: names arrive from a
+file the author of this one never edited, and can shadow theirs without either file
+changing. The fix that unblocked the drawing resolved a top-level name in favour of the
+top-level component -- correctly, but *silently*, which is its own trap.
+
+- [x] **`W0419`, a warning: "this name means the top-level component, and something nested
+      shares its short name."** Names the reading Ply took and the path that would reach the
+      other one. A warning rather than an error because the name does resolve, to exactly
+      one thing, by a rule that does not depend on what else exists -- there is nothing here
+      Ply had to guess. Genuine ambiguity between two *nested* components is still the hard
+      error it was.
+
+      It fires on this repository: `check` the crate against `core.check` the module. That
+      warning is correct and is staying -- the edge really does mean the crate, and the
+      shadow really does exist.
+
+- [x] **The rule can see the case it exists for.** `run_checks` only ever saw this
+      document's own tree, so the shadow -- which arrives from the *linked* file -- was
+      invisible to it. It now takes the resolved links and widens its name index with them.
+
+      Only the name index: a linked document's own rules stay that document's business, and
+      running them here would report the same problem twice against a file whose author may
+      not be able to edit this one.
+
 ## Landed: a linked component draws the other document's interior, not a pointer to it — 2026-09-05
 
 Follows the section below, which stopped the root document *copying* `core`'s interior but

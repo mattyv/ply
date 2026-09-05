@@ -67,7 +67,7 @@ macro_rules! codes {
 codes!(
     // --- Tier::Schema: document-local ply.yaml validation (§5.1/§5.1a),
     // no anchored source needed. ---
-    E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0208, E0209, E0504, W0409, W0410,
+    E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0208, E0209, E0504, W0409, W0410, W0419,
     // --- Tier::Anchor: resolving a claim to real code (§5.2). ---
     E0301, E0304, E0306, // --- Tier::Crate: architecture, exact and sound (§5.3). ---
     A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, A0416, A0417, W0413, W0532,
@@ -201,6 +201,14 @@ impl Code {
                 severity: Error,
                 spec_anchor: "§5.1a",
                 gloss: "A name in an edge, a deny rule, or a reference could mean more than one thing -- for example it matches both a declared external and a same-named component -- and Ply lists every candidate rather than guess which one you meant.",
+            },
+            W0419 => RuleEntry {
+                code: self,
+                tier: Schema,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.1a",
+                gloss: "A name used in an edge, a deny rule, or a reference matches a top-level component outright, so that is what it means -- but something nested somewhere else shares the same short name, and this name cannot reach it. Ply says which one it took rather than letting you find out from a picture, because the two readings look identical in the file and mean different things.",
             },
             E0207 => RuleEntry {
                 code: self,
