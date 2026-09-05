@@ -4,6 +4,59 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: two ways a change could escape cache invalidation — 2026-09-05
+
+An external review of `32f8469` reported three ways an edit to the checked program could
+keep a cached green, and said plainly that it had not run them ("source-level findings, not
+locally executed reproductions"). **Two reproduce exactly.** Both are the worst thing this
+tool can do: report evidence it did not earn.
+
+Reproduced before fixing, each as the same source giving two answers:
+
+| change | with the cache | fresh |
+|---|---|---|
+| `type Input = u8` → `u16` | `fuzzed(256) [reused]` | `violation`, `x = 256` |
+| edit only `maths::helper`'s body | `fuzzed(256) [reused]` | `violation`, `x = 0` |
+
+Ply did not fail quietly: it printed "every input Ply hashes still hashes the same -- the
+function's own source, the code it calls, ..." while being wrong about exactly that.
+
+- [x] **A name is resolved from its own module first, then the crate root** -- the way Rust
+      reads it. A bare `helper(x)` written inside `mod maths` resolved to nothing, and
+      "nothing" fell into the arm whose comment reads "out of the workspace: `std`, or a
+      registry crate". It was the function on the next line.
+
+- [x] **Type declarations are hashed, though no walk of bodies reaches one.** Aliases,
+      structs and enums are on the walk's allowlist and were then hashed nowhere, so
+      changing one left every function byte-identical while changing what they mean.
+      Hashed as one set rather than per-reached-type: working out which declarations a body
+      depends on needs the type checker Ply is not, so an unused struct changing re-earns
+      the crate's claims. Coarser, never wrong -- this module's own stated trade.
+
+  Reuse was checked to still work, not assumed: an untouched crate reuses, and so does one
+  with an unrelated comment added. Ply's own 50 claims still pass under the stricter
+  hashing.
+
+- [ ] **KNOWN GAP: dependency identity still loses information** (the review's third
+      finding, not fixed here). The lockfile reader reduces each external package to name
+      and version, discarding the git revision, and keys packages by name alone so two
+      versions of one crate overwrite each other. Updating a git dependency without bumping
+      its version therefore produces the same identity. Wants Cargo's full package
+      identities and dependency edges, including source revisions.
+
+- [ ] **KNOWN GAP: the filesystem-effect scanner fails open** (the review's fourth). An
+      unrecognised method call (`writer.flush()`) returns `Reach::None` rather than
+      `Unknown`, contradicting its own module doc: "**It fails closed.** ... Anything this
+      scan cannot follow ... is `Unknown`". Confirmed to have **no callers outside its own
+      file**, so it is a latent defect rather than a live unsafe path -- fix before
+      integrating it.
+
+  **The architectural point the review makes, which outranks its four findings:** a correct
+  verdict aggregator still gives the wrong assurance if its inputs describe an earlier or
+  different program. The kernel has been proved four ways; none of that helps when the
+  fingerprint says a stale result still applies. Note `--fail-on evidence` does not catch
+  any of this -- the verdict is `fuzzed(256)`, not an absence.
+
 ## Landed: the last unchecked promise in Ply's own library now earns evidence — 2026-09-05
 
 `record::fingerprint` was the one claim in `crates/ply-core/ply.yaml` that earned nothing,

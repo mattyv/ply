@@ -342,9 +342,10 @@ components:
           path_dependency("[dependencies]\nfoo = { path = \"../foo\" }\n", "foo") == Some("../foo".to_string())
           path_dependency("[dependencies]\nfoo = \"1.0\"\n", "foo").is_none()
     component reach — maps to Rust module ply_core::reach
-      state FirstParty — the structure this component holds. 2 of 2 of its fields shown
+      state FirstParty — the structure this component holds. 3 of 3 of its fields shown
         units is a list, written `Vec<(String, String)>`
         gate is something that might not be there, written `Option<String>`
+        type_decls is a list, written `Vec<(String, String)>`
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
       that level comes from its weakest part, path_dependencies — nothing here counts as checked more strongly than the weakest thing inside it
       fn path_dependencies
