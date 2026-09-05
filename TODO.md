@@ -220,6 +220,221 @@ cases, which are not Ply-buildable types -- those functions stay unclaimed until
 around or reduced to their buildable inputs, same as everywhere else in this codebase.
 
 
+## Landed: six more of Ply's own rendering proved by Ply — 2026-09-05
+
+Rendering was the least self-proved part of the tool and the part every other result is
+judged through: 3 promises across 8,749 lines. Today made the case -- every defect found
+was in rendering, and not one was caught by a test. Now 9, and ply-core is at **50 claims**.
+
+- [x] **The sentences a linked box depends on**: `linked_source_line`, `linked_explanation`,
+      `linked_contents_line`. Each must carry the file path and the counts, because a reader
+      told content lives elsewhere without being told *where* has been given a worse answer
+      than silence. These are the exact lines today's expansion change rests on.
+- [x] **`tame`** -- author text on its way into both views. Two promises: no control
+      character survives except a newline, **and the character count is unchanged**. The
+      second is the one that matters: a "fix" that drops characters instead of replacing
+      them silently loses a word from a note, which is the quieter bug.
+- [x] **`format_version_line`**, **`unresolved_fn_pin_prose`** -- the version a document is
+      read under, and an open decision's own number and question. Losing either turns a
+      specific thing into a vague one.
+
+  **The disclosure did its job, and so did the worked examples.** Ply reports that it never
+  generates control characters, so sampling can *never* reach the case `tame` exists for --
+  it says so itself in the run's own output. Three worked examples cover it instead, which
+  is what CLAUDE.md's guidance asks for where the interesting case is rare. Proved by
+  breaking it: replacing the replacement character with a space keeps the count promise true
+  and still gets caught, `tame — violation`, naming the failing example.
+
+  Two mistakes worth recording, both caught by Ply rather than by review. A `\n` inside a
+  double-quoted YAML scalar becomes a real newline, and the spliced Rust then reads
+  `'<newline>'` -- the harness would not compile, and Ply refused to blame any one function
+  for it. And a `&str` parameter arrives in the harness as an owned `String`, so
+  `result.contains(param)` needs `&*param`. Neither is obvious from the document.
+
+## Landed: seven defects Fable's review found in the expansion change — 2026-09-05
+
+Every one was in rendering, and **not one was caught by a test** -- the suites stayed green
+through all of them. Three were the tool stating something false, which is the failure this
+project exists to refuse.
+
+- [x] **The drawing overwrote this document's own words.** A linked component was taken
+      wholesale, so its note, capability badges, purity seal and declared checks came from
+      the other file. "Hollow" is only the narrow claim that a component declares no
+      interior. Ply's own root note appeared in the text form and **zero times** in the
+      drawing. The target now supplies the interior and nothing else.
+
+- [x] **A false sentence about state.** The field walk never followed a link, so a linked
+      component's state resolved to nothing and the drawing explained it with "there is no
+      code here to read one from either" -- about a type whose own crate's drawing measures
+      4 of its 8 fields. Both now read `4 of 8 shown`.
+
+- [x] **The golden test rendered link-blind**, so it compared the committed drawing against
+      a render nothing produces. Exposed by the fix above. It now makes the binary's call.
+
+- [x] **The envelope contradicted its own picture:** 9 elements listed beside an SVG drawing
+      44 chips, so a viewer addressed a different system from the one it displayed. Now
+      29 + 44 + workspace = 74, and the pre-folded drawings went 1 to 2.
+
+- [x] **`verify` drew a different picture from `render` for one file.** It got no source
+      root at all, so it drew linked components dashed and "promises nothing yet". Both
+      commands now draw 29 boxes and the same 6 genuinely-hollow ones.
+
+- [x] **`--focus`/`--collapse` could not reach a linked interior**, while a tooltip on that
+      very box promised they would. They were a fourth copy of the reference rule nobody
+      updated -- and it lacked the exact-match-wins rule the other three had.
+
+- [x] **The shadowing warning's plural branch** read "`a` or `b` also exist" and then said
+      to write `a`, choosing one candidate for the reader.
+
+  Also consolidated the link substitution, which had **four copies** free to drift, into one
+  function. The drawing's copy had already drifted -- that is the first item above.
+
+  **The honest note on process:** the golden carrying the false state sentence was reviewed
+  and accepted. The picture was rasterised and read; its hover text was not, and about 95%
+  of a drawing is hover text. Reading the *text form* beside the picture is what would have
+  caught it, and is what CLAUDE.md's own guidance already implies.
+
+## Landed: a name shadowed across documents is reported, not silently preferred — 2026-09-05
+
+Expanding a linked document made a new kind of collision reachable: names arrive from a
+file the author of this one never edited, and can shadow theirs without either file
+changing. The fix that unblocked the drawing resolved a top-level name in favour of the
+top-level component -- correctly, but *silently*, which is its own trap.
+
+- [x] **`W0419`, a warning: "this name means the top-level component, and something nested
+      shares its short name."** Names the reading Ply took and the path that would reach the
+      other one. A warning rather than an error because the name does resolve, to exactly
+      one thing, by a rule that does not depend on what else exists -- there is nothing here
+      Ply had to guess. Genuine ambiguity between two *nested* components is still the hard
+      error it was.
+
+      It fires on this repository: `check` the crate against `core.check` the module. That
+      warning is correct and is staying -- the edge really does mean the crate, and the
+      shadow really does exist.
+
+- [x] **The rule can see the case it exists for.** `run_checks` only ever saw this
+      document's own tree, so the shadow -- which arrives from the *linked* file -- was
+      invisible to it. It now takes the resolved links and widens its name index with them.
+
+      Only the name index: a linked document's own rules stay that document's business, and
+      running them here would report the same problem twice against a file whose author may
+      not be able to edit this one.
+
+## Landed: a linked component draws the other document's interior, not a pointer to it — 2026-09-05
+
+Follows the section below, which stopped the root document *copying* `core`'s interior but
+replaced the copy with a single folded box reading "look in that file". The maintainer's
+report was that the root drawing still showed a subset of `core` -- and it did: five parts
+before, then none at all, against a real twenty-one.
+
+- [x] **A linked box now draws the linked document's whole interior, in place.** The root
+      drawing goes from one folded box to twenty-nine boxes and forty-four promises, none of
+      them written down twice. Folding is a reader's choice again (`--depth`, `--focus`, the
+      viewer's own control) rather than the only thing on offer.
+
+      The box keeps its provenance on the anchor line -- `ply_core — crates/ply-core/ply.yaml`
+      -- because a reader looking at forty-four promises that are declared in a different
+      file needs to know which file to open, and without it the drawing would silently
+      present another document's content as this one's.
+
+- [x] **Three things that would have quietly disagreed with the picture, fixed with it.**
+      Each was found by looking at the output rather than by a failing test:
+
+      - The *text form* still said "they live in a different file" while the drawing showed
+        them. Its own contract is that it states everything the drawing shows, so it now
+        walks the linked interior too: 70 lines to 494.
+      - The *summary strip* counted only what this file spells out -- "8 components ·
+        0 functions" above a drawing of twenty-nine boxes and forty-four chips. Both views
+        now read `29 components · 44 functions`, byte-identical, from the one shared walk.
+      - That shared walk is `document_counts`, whose own comment records what a second
+        independent walk cost the last time one existed. A first draft of this change added
+        exactly that second walk; it was removed rather than left to rot.
+
+- [x] **A real resolution bug, surfaced by expanding.** The root document has a top-level
+      `check` (the standalone validator crate) and `core` has a `check` module. The moment
+      core's interior was drawn, the edge `check -> core` was reported ambiguous and the
+      whole drawing failed to render -- and the advice attached to it could not be followed,
+      because the "dotted form" of a top-level component is the bare name just rejected.
+
+      A token that already names a component outright is now that component, and the
+      leaf-name search never runs for it; the search exists to turn a short name into a
+      path, and there is nothing to search for when the token *is* the path. Fixed in all
+      three copies of the rule (the renderer, and both halves of `check.rs`). Genuine
+      ambiguity between two nested components is still a hard error -- the test that pins
+      that was checked, not assumed.
+
+      Covered by a test written before the fix, confirmed red for the right reason.
+
+- [x] **The link invariant tightened from "the counts match" to "everything is drawn."**
+      The sweep re-opens every file a drawing says it took content from and asserts each
+      declared component and promise actually appears. A count can match while the wrong
+      things are drawn, and a box quietly showing *some* of a file is precisely the failure
+      this change exists to fix. Both rewritten tests confirmed red when the expansion is
+      reverted, green when restored.
+
+## Landed: a component links to another document instead of copying its interior by hand — 2026-09-04 (`cf2fc2e`, branch `claude/derive-document-links`)
+
+`ply.yaml` at the repository root used to hand-declare `core`'s five modules and a
+`state:` block as a copy of what `crates/ply-core/ply.yaml` says about itself, and the
+two had already drifted (five modules here, twenty-one there) before either file noticed.
+No `include:` key was added — a component now links to another document when that
+document's own top-level anchor equals, or sits under, the linking component's anchor,
+derived from real crate directories the same way anchor resolution already works
+(`ply_core::config::derive_links`, `crates/ply-core/src/config.rs`). The linked box draws
+with the existing collapsed-component stack (no new glyph), with the target file's path
+riding in the text tier after the usual `N components · M fns` count.
+
+- [x] **Four named ways a candidate fails to link, each tested**: the target exists but
+      cannot be read or does not parse (`A0417`, error); its top-level anchor no longer
+      sits under the linking anchor (`W0532`, "drifted", warning); a chain of documents
+      would lead back into itself (`W0534`, warning — real in this repo only as the
+      two-file fixture the unit tests build directly, since discovery is a real crate
+      directory per hop and today's two documents are one hop apart); another component
+      in the same document already claimed the same target (`W0533`, warning). A crate
+      with no `ply.yaml` of its own produces neither a link nor a finding — the ordinary
+      case for four of `core`'s five siblings. All four codes registered in
+      `crates/ply-core/src/registry.rs`. `cargo ply check` reports all four; both real
+      `check` runs (`.` and `crates/ply-core`) stay clean, since the one real link
+      resolves cleanly and the self-reference `crates/ply-core/ply.yaml`'s own top
+      component would otherwise "link to itself" (a document naming its own crate, not a
+      link to "another" document) is refused silently rather than as a finding.
+- [x] **The ordering trap held**: a derived-link box with no declared interior of its own
+      ranks above the hollow rule (checked first in `render_component_dispatch`), so it
+      draws the collapsed stack rather than a dashed hollow box — verified by temporarily
+      swapping the check order and watching the regression tests fail for the right
+      reason, then restoring it. Gated the other way too: a component that already
+      declares a real fn or nested component never consults a link at all, even a
+      resolvable one — a link stands in for an interior nobody wrote, never overrides one
+      the document did write.
+- [x] **The invariant the design pass asked for**: every cross-document link's drawn
+      counts match the target document, checked as a sweep over the real rendered SVG
+      markup against an independent from-scratch recount of the target file
+      (`tools/render/tests/derive_links.rs`), not a spot-check on one pair.
+- [x] **A real bug caught along the way, not by the docs regeneration itself but by
+      updating `self_architecture.rs`'s comparison to resolve links the same way**:
+      `target_path` was stripping a literal `"./"` prefix rather than the actual root path
+      handed to `derive_links`, so a caller that resolved an absolute root first (as a
+      test comparing against a fixed checkout must) would have leaked that host's own
+      filesystem layout into a committed drawing. Fixed by stripping `root` as a real path
+      prefix; pinned by a regression test asserting the exact relative string with an
+      absolute tempdir root.
+- [x] Deleted `core`'s hand-declared interior from the root `ply.yaml`, with a comment
+      explaining why so nobody restores it. Regenerated `docs/ply-self.svg`/`.txt` (now
+      roughly a quarter of the former height — five drawn boxes became one stacked card);
+      `docs/ply-core-self.*` unchanged. Updated `ARCHITECTURE.md`'s alt text, component
+      table, and "why a second file" paragraph.
+
+**KNOWN GAP, left open on purpose.** Link derivation only ever considers a document's
+**top-level** components, and only ever resolves **one hop**: a linked box's drawn counts
+come from the target's own file taken at face value, never further expanded through any
+link *that* document might itself declare. Both restrictions are deliberate (a nested
+component's anchor almost always shares its crate with the document it already lives in,
+which would make every module "discover" its own document; and nothing in this
+repository's two real documents needs more than one hop), not something a future chain of
+three or more real documents is guaranteed to want. The cycle guard (`would_cycle` in
+`config.rs`) is already written generically over an arbitrary chain, so extending
+resolution past one hop would not need a new safety mechanism, only a decision about what
+"the target's counts" should mean once the target itself links onward.
 
 ## Landed: a timed-out engine run now kills the whole process tree, not just cargo — 2026-09-04 (`9037b83`)
 

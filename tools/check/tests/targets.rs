@@ -153,3 +153,86 @@ deny:
          — write the dotted form (e.g. alpha.shared) to say which"
     );
 }
+
+#[test]
+fn a_top_level_name_shadowing_a_nested_one_is_reported_not_silently_preferred() {
+    // A bare name that is itself a top-level component resolves to that
+    // component -- it is already as specific as it can be, so it is not
+    // ambiguous. But when something nested shares its leaf name, an author
+    // who meant the nested one gets the other silently, and every check
+    // passes. That is the whole failure this project exists to refuse, so
+    // the resolution is stated rather than assumed.
+    //
+    // This became reachable when a component started drawing another
+    // document's interior in place: names arrive from a file the author of
+    // this one never edited, and can shadow theirs without either file
+    // changing.
+    let yaml = r#"
+ply: 1
+components:
+  core:
+    anchor: app::core
+    components:
+      check:
+        anchor: app::core::check
+  check:
+    anchor: app::check
+edges:
+  - "check -> core"
+"#;
+    let doc = parse_document(yaml).expect("doc should parse");
+    let diags = run_checks(&doc);
+    assert!(
+        !diags.iter().any(|d| d.code == "E0206"),
+        "a top-level name is not ambiguous -- it must not be a hard error: {diags:?}"
+    );
+    let d = diags
+        .iter()
+        .find(|d| d.code == "W0419")
+        .unwrap_or_else(|| panic!("expected a W0419 shadowing diagnostic, got {diags:?}"));
+    assert_eq!(d.target, Target::EdgeIndex(0));
+    assert_eq!(
+        d.message,
+        "\"check\" here means the top-level component `check`, but `core.check` also \
+         exists and this name does not reach it. If you meant that one, write \
+         `core.check`."
+    );
+}
+
+#[test]
+fn a_name_shadowing_more_than_one_nested_component_still_reads_as_english() {
+    // The one-shadow message is exact-tested above; this is the plural
+    // branch, which a reader hits exactly when the advice matters most --
+    // there is more than one thing they might have meant, so "write `x`"
+    // would be picking one of them for them.
+    let yaml = r#"
+ply: 1
+components:
+  core:
+    anchor: app::core
+    components:
+      check:
+        anchor: app::core::check
+  cli:
+    anchor: app::cli
+    components:
+      check:
+        anchor: app::cli::check
+  check:
+    anchor: app::check
+edges:
+  - "check -> core"
+"#;
+    let doc = parse_document(yaml).expect("doc should parse");
+    let diags = run_checks(&doc);
+    let d = diags
+        .iter()
+        .find(|d| d.code == "W0419")
+        .unwrap_or_else(|| panic!("expected W0419, got {diags:?}"));
+    assert_eq!(
+        d.message,
+        "\"check\" here means the top-level component `check`, but `cli.check` and \
+         `core.check` also exist and this name does not reach them. If you meant one \
+         of those, write its dotted path (e.g. `cli.check`)."
+    );
+}

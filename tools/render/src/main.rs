@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
+use ply_core::config::derive_links;
 use ply_render::model::parse_document;
-use ply_render::svg::{RenderOptions, render_svg_with_state};
+use ply_render::svg::{RenderOptions, render_svg_with_state_and_links};
 
 /// `--depth` is 1-indexed (top-level boxes are level 1, per §7.1), so 0
 /// names no real level and a non-numeric value isn't a level at all. Both
@@ -108,15 +109,29 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // §7.1's derive-links brief: a component links to another document
+    // when that document's own top-level anchor sits under this one's,
+    // resolved from real crate directories before either drawn form below.
+    let source_root = cli.input.parent().unwrap_or(std::path::Path::new("."));
+    let link_set = derive_links(&doc, source_root);
+    for finding in &link_set.findings {
+        eprintln!(
+            "note: {} {}: {}",
+            finding.severity, finding.code, finding.message
+        );
+    }
+
     if cli.text {
         // Same read the drawing does -- the text form states everything the
         // drawing shows, shapes included.
-        let text = ply_render::transcript::render_transcript_with_state(
+        let text = ply_render::transcript::render_transcript_with_state_and_links(
             &doc,
-            Some(&ply_render::harness::resolve_state_fields(
-                cli.input.parent().unwrap_or(std::path::Path::new(".")),
+            Some(&ply_render::harness::resolve_state_fields_with_links(
+                source_root,
                 &doc,
+                Some(&link_set.links),
             )),
+            Some(&link_set.links),
         );
         return match cli.out {
             Some(path) => match std::fs::write(&path, text) {
@@ -142,9 +157,13 @@ fn main() -> ExitCode {
     // says what they are -- so read them from the crate each component's
     // anchor points at before drawing. A document with no code under it
     // resolves nothing and draws the type name alone.
-    let source_root = cli.input.parent().unwrap_or(std::path::Path::new("."));
-    let state_fields = ply_render::harness::resolve_state_fields(source_root, &doc);
-    let svg = match render_svg_with_state(&doc, &options, &state_fields) {
+    let state_fields = ply_render::harness::resolve_state_fields_with_links(
+        source_root,
+        &doc,
+        Some(&link_set.links),
+    );
+    let svg = match render_svg_with_state_and_links(&doc, &options, &state_fields, &link_set.links)
+    {
         Ok(svg) => svg,
         Err(e) => {
             eprintln!("error: {} could not be rendered: {e}", cli.input.display());
@@ -160,7 +179,12 @@ fn main() -> ExitCode {
     // check is the honest one: render the default too, and compare. It
     // costs one extra layout pass and cannot disagree with what was drawn.
     if options.depth.is_some() || options.focus.is_some() || !options.collapse.is_empty() {
-        let plain = render_svg_with_state(&doc, &RenderOptions::default(), &state_fields);
+        let plain = render_svg_with_state_and_links(
+            &doc,
+            &RenderOptions::default(),
+            &state_fields,
+            &link_set.links,
+        );
         if plain.as_deref().ok() == Some(svg.as_str()) {
             eprintln!(
                 "note: this drawing is identical to the one with no --depth/--focus/--collapse \

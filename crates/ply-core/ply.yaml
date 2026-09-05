@@ -536,6 +536,70 @@ components:
             ensures:
               - "|result| result.contains(&n.to_string())"
             checks: [fuzz(256)]
+          tame:
+            # Author-written text -- notes, contracts, examples -- on its way
+            # into both views. A terminal control byte reaching a terminal is
+            # the thing this exists to stop, and the count promise is what
+            # stops a "fix" that drops characters instead of replacing them:
+            # silently losing a word from a note is the quieter bug.
+            ensures:
+              - "|result| result.chars().count() == text.chars().count()"
+              # Single-quoted on purpose: YAML turns `\n` inside a
+              # double-quoted scalar into a real newline, and the spliced
+              # Rust then reads `'<newline>'`, which the compiler rejects
+              # with "character constant must be escaped". Ply caught it and
+              # refused to blame any one function for the broken harness.
+              - '|result| result.chars().all(|c| c == ''\n'' || !c.is_control())'
+            checks: [fuzz(256), test]
+            # Ply never generates control characters (it says so itself, and
+            # this run's own report will), so sampling can never reach the
+            # case this function exists for. These do.
+            examples:
+              - 'tame("a\u{7}b") == "a\u{fffd}b"'
+              - 'tame("keeps\nnewlines") == "keeps\nnewlines"'
+              - 'tame("plain") == "plain"'
+          format_version_line:
+            # A reader who cannot see which version their document is read
+            # under cannot tell a refusal from a misreading.
+            ensures:
+              - "|result| result.contains(&version.to_string())"
+            checks: [fuzz(256)]
+          unresolved_fn_pin_prose:
+            # The marker's own number and the question it stands for. Losing
+            # either turns a specific open decision into a vague warning
+            # nobody can act on.
+            ensures:
+              - "|result| result.contains(&format!(\"#{id}\"))"
+              - "|result| note.is_empty() || result.contains(&*note)"
+            checks: [fuzz(256)]
+          linked_source_line:
+            # The line that tells a reader the box in front of them is
+            # declared in a different file. Both halves must survive: the
+            # anchor says what the component is, the path says where to go
+            # and change it. This is what stops another document's content
+            # reading as this one's.
+            ensures:
+              - "|result| result.contains(&*anchor)"
+              - "|result| result.contains(&*target_path)"
+            checks: [fuzz(256), test]
+            examples:
+              - 'linked_source_line("ply_core", "crates/ply-core/ply.yaml").contains("crates/ply-core/ply.yaml")'
+          linked_explanation:
+            # The long form of the same fact. It must name the file, or the
+            # reader is told content lives elsewhere without being told
+            # where.
+            ensures:
+              - "|result| result.contains(&*target_path)"
+              - "|result| result.contains(&n_components.to_string())"
+              - "|result| result.contains(&n_fns.to_string())"
+            checks: [fuzz(256)]
+          linked_contents_line:
+            # Short form, same obligation.
+            ensures:
+              - "|result| result.contains(&*target_path)"
+              - "|result| result.contains(&n_components.to_string())"
+              - "|result| result.contains(&n_fns.to_string())"
+            checks: [fuzz(256)]
       visual:
         anchor: ply_core::visual
         state:

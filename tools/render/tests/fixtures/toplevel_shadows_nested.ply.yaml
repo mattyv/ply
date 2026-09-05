@@ -1,0 +1,20 @@
+ply: 1
+
+# A top-level component whose name also exists nested inside another
+# component. `check` here is a whole crate; `core.check` is one module
+# inside a different crate. Ply's own workspace has exactly this pair, and
+# it only appeared once the root document started drawing `core`'s real
+# interior instead of a hand-copied summary of it.
+components:
+  core:
+    anchor: demo_core
+    components:
+      check:
+        anchor: demo_core::check
+        note: A module inside core, which happens to share a name with the tool.
+  check:
+    anchor: demo_check
+    note: A crate of its own, which happens to share a name with a module.
+
+edges:
+  - "check -> core"
