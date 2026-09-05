@@ -2029,8 +2029,20 @@ pub fn build_contract_fn(
         });
     }
 
-    let mut requires = None;
-    let mut ensures = None;
+    // Every clause, not the last one. A function may carry more than one
+    // `#[ply::requires]` or `#[ply::ensures]`, and each is a separate
+    // promise its author made: they combine with AND, exactly as the
+    // document's own `requires:`/`ensures:` lists already do (see
+    // `conjoin_exprs`/`conjoin_ensures`, which this reuses rather than
+    // repeating).
+    //
+    // Assigning into one slot per kind kept only the last and dropped the
+    // rest in silence. Two contradictory `ensures` attributes -- `*result
+    // == 1` and `*result == 2` -- then reported `tested` on a body that
+    // satisfies only the second, and a dropped `requires` silently widens
+    // which inputs count as valid (external review, reproduced 2026-09-05).
+    let mut requires_all: Vec<Expr> = Vec::new();
+    let mut ensures_all: Vec<ExprClosure> = Vec::new();
     for attr in &f.attrs {
         let segs: Vec<String> = attr
             .path()
@@ -2039,19 +2051,24 @@ pub fn build_contract_fn(
             .map(|s| s.ident.to_string())
             .collect();
         if segs == ["ply", "requires"] {
-            let expr: Expr = attr
-                .parse_args()
-                .context("E0501: could not parse #[ply::requires] as an expression")?;
-            let text = tidy_contract_text(&expr.to_token_stream().to_string());
-            requires = Some((expr, text));
+            requires_all.push(
+                attr.parse_args()
+                    .context("E0501: could not parse #[ply::requires] as an expression")?,
+            );
         } else if segs == ["ply", "ensures"] {
-            let closure: ExprClosure = attr
-                .parse_args()
-                .context("E0501: could not parse #[ply::ensures] as a `|result| expr` closure")?;
-            let text = tidy_contract_text(&closure.to_token_stream().to_string());
-            ensures = Some((closure, text));
+            ensures_all.push(
+                attr.parse_args().context(
+                    "E0501: could not parse #[ply::ensures] as a `|result| expr` closure",
+                )?,
+            );
         }
     }
+    let requires = (!requires_all.is_empty()).then(|| {
+        let joined = conjoin_exprs(requires_all);
+        let text = tidy_contract_text(&joined.to_token_stream().to_string());
+        (joined, text)
+    });
+    let ensures = (!ensures_all.is_empty()).then(|| conjoin_ensures(ensures_all));
 
     let return_type = return_rust_type_from_syn(&f.sig.output, aliases);
 
@@ -7563,6 +7580,44 @@ pub fn clamp(x: u32) -> u32 {
     /// while the identical shape as a *field* did not. Found 2026-09-05
     /// finishing yesterday's crash fix, which stopped this shape from
     /// taking the whole run down but never made it actually resolve.
+    /// Every contract attribute is a promise its author made. Keeping only
+    /// the last one silently discards the others.
+    ///
+    /// Reproduced end to end on 2026-09-05: a function carrying
+    /// `#[ply::ensures(|result| *result == 1)]` and
+    /// `#[ply::ensures(|result| *result == 2)]` with a body returning `2`
+    /// reported `tested`. Only the second promise was ever checked, and the
+    /// two cannot both hold -- so a green said the function honoured a pair
+    /// of promises it demonstrably could not.
+    #[test]
+    fn every_contract_attribute_is_kept_not_only_the_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+#[ply::requires(x > 0)]
+#[ply::requires(x < 10)]
+#[ply::ensures(|result| *result == 1)]
+#[ply::ensures(|result| *result == 2)]
+pub fn f(x: u8) -> u8 { let _ = x; 2 }
+"#,
+            )],
+        );
+        let cf = discover_fn(&lib, "f").unwrap();
+        let ensures = cf.ensures.as_ref().expect("an ensures").1.clone();
+        assert!(
+            ensures.contains("== 1") && ensures.contains("== 2"),
+            "both promises must survive, combined: {ensures}"
+        );
+        let requires = cf.requires.as_ref().expect("a requires").1.clone();
+        assert!(
+            requires.contains("> 0") && requires.contains("< 10"),
+            "both preconditions must survive, combined: {requires}"
+        );
+    }
+
     #[test]
     fn a_struct_field_holding_a_vec_of_another_struct_still_resolves() {
         let dir = tempfile::tempdir().unwrap();

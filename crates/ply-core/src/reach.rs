@@ -82,6 +82,22 @@ pub struct FirstParty {
     /// `Some(reason)` when first-party source contains something a
     /// syntactic call walk cannot bound -- see the module comment.
     gate: Option<String>,
+    /// `(label, token text)` for every type declaration in first-party
+    /// source: the aliases, structs and enums the gate lets through.
+    ///
+    /// A walk of *bodies* can never reach these, and they were therefore
+    /// not hashed at all -- while changing one changes what every body
+    /// around it means. `type Input = u8;` widened to `u16` left every
+    /// function byte-identical and made `|result| *result <= 255` false,
+    /// and the record matched, so Ply reported a green it had earned over
+    /// a strictly smaller input space (reproduced end to end, 2026-09-05:
+    /// cached `fuzzed(256) [reused]`, fresh `violation` at `x = 256`).
+    ///
+    /// Hashed as one set rather than per-reached-type on purpose: working
+    /// out which declarations a body depends on needs the type checker Ply
+    /// is not, so an unused struct changing re-earns the crate's claims.
+    /// That is this module's stated trade -- coarser, never wrong.
+    type_decls: Vec<(String, String)>,
 }
 
 impl FirstParty {
@@ -267,6 +283,7 @@ fn is_ply_generated(name: &str) -> bool {
 /// can be trusted over this crate at all.
 pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
     let mut units: Vec<(String, String)> = Vec::new();
+    let mut type_decls: Vec<(String, String)> = Vec::new();
     let mut gate: Option<String> = None;
     for (label, path) in first_party_files(crate_dir) {
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -290,12 +307,49 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
             if let Err(reason) = item_is_walkable(item, &label) {
                 gate.get_or_insert(reason);
             }
+            collect_type_decls(item, &label, &mut type_decls);
             item.to_tokens(&mut tokens);
         }
         units.push((label, tokens.to_string()));
     }
     units.sort();
-    FirstParty { units, gate }
+    type_decls.sort();
+    FirstParty {
+        units,
+        gate,
+        type_decls,
+    }
+}
+
+/// Every type declaration in one item, including inside modules, as
+/// `(label, token text)`.
+///
+/// Only the kinds `item_is_walkable` lets past its gate reach this: an
+/// alias, a struct, an enum. Anything else has already widened the scope to
+/// the whole crate, where the file's own tokens are hashed regardless.
+fn collect_type_decls(item: &syn::Item, label: &str, out: &mut Vec<(String, String)>) {
+    match item {
+        syn::Item::Type(t) => out.push((
+            format!("{label}::{}", t.ident),
+            t.to_token_stream().to_string(),
+        )),
+        syn::Item::Struct(t) => out.push((
+            format!("{label}::{}", t.ident),
+            t.to_token_stream().to_string(),
+        )),
+        syn::Item::Enum(t) => out.push((
+            format!("{label}::{}", t.ident),
+            t.to_token_stream().to_string(),
+        )),
+        syn::Item::Mod(m) => {
+            if let Some((_, items)) = &m.content {
+                for inner in items {
+                    collect_type_decls(inner, &format!("{label}::{}", m.ident), out);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The code one claim's checks can reach, as the fingerprint records it.
@@ -317,7 +371,10 @@ pub fn code_scope(
     }
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut queue: VecDeque<String> = VecDeque::new();
-    let mut units: Vec<(String, String)> = Vec::new();
+    // Seeded with every first-party type declaration, because no walk of
+    // bodies can reach one and changing one changes what the bodies mean.
+    // See `FirstParty::type_decls`.
+    let mut units: Vec<(String, String)> = first_party.type_decls.clone();
     queue.push_back(root_fn_path.to_string());
     while let Some(spelling) = queue.pop_front() {
         let is_root = seen.is_empty();
@@ -376,7 +433,39 @@ pub fn code_scope(
                 ),
             );
         }
+        // A name written inside a module is resolved from that module
+        // first, then from the crate root -- the way Rust reads it. Without
+        // this, a bare `helper(x)` inside `mod maths` resolved to nothing,
+        // and "nothing" fell into the `Unresolved` arm below, whose comment
+        // says "out of the workspace: `std`, or a registry crate". It was
+        // neither: it was the function on the next line. Editing it left
+        // the caller's fingerprint unchanged and Ply carried a green
+        // forward over code a cold run reports as a violation
+        // (reproduced end to end, 2026-09-05).
+        let module_prefix = found
+            .canonical
+            .rsplit_once("::")
+            .map(|(module, _)| module.to_string());
         for path in mentions.paths {
+            // Module-qualified first, bare second. The first spelling that
+            // resolves to anything at all is the one Rust would have run;
+            // only if neither resolves is this genuinely outside.
+            let qualified = module_prefix
+                .as_ref()
+                .map(|m| format!("{m}::{path}"))
+                .filter(|q| {
+                    !matches!(
+                        resolver
+                            .classify(&CallSite {
+                                path: q.clone(),
+                                line: 0,
+                                col: 0,
+                            })
+                            .status,
+                        CalleeStatus::Unresolved
+                    )
+                });
+            let path = qualified.unwrap_or(path);
             let site = CallSite {
                 path: path.clone(),
                 line: 0,
@@ -918,6 +1007,66 @@ pub fn twice(x: u32) -> u32 { x + x }
             labels(&scope),
             vec!["expected"],
             "the oracle the contract calls is code the check runs"
+        );
+    }
+
+    /// A helper in the *same module* as the claimed function is code the
+    /// check runs, and editing it must re-earn the result.
+    ///
+    /// It did not. Resolution ran from the crate root, so a bare `helper(x)`
+    /// written inside `mod maths` resolved to nothing, and "nothing" was
+    /// read as "outside this workspace -- covered by the dependency
+    /// versions instead". Editing `maths::helper` then left the caller's
+    /// fingerprint identical and Ply carried a green forward over code a
+    /// cold run reports as a violation. Reproduced end to end on
+    /// 2026-09-05 before this test existed: cached `fuzzed(256) [reused]`,
+    /// fresh `violation` at `x = 0`, same source.
+    #[test]
+    fn a_helper_in_the_claimed_functions_own_module_is_in_scope() {
+        let dir = crate_with(&[(
+            "src/lib.rs",
+            "pub mod maths {
+    pub fn helper(x: u32) -> u32 { x }
+    pub fn call(x: u32) -> u32 { helper(x) }
+}
+",
+        )]);
+        let scope = scope_of(dir.path(), "maths::call", &[]);
+        assert_eq!(scope.scope, "reached", "{:?}", scope.widened_because);
+        assert!(
+            labels(&scope).iter().any(|l| l.ends_with("helper")),
+            "the helper this function calls must be hashed, or editing it \
+             leaves the caller's fingerprint unchanged: {:?}",
+            labels(&scope)
+        );
+    }
+
+    /// A type declaration is not a body, so no walk of bodies reaches it --
+    /// but changing one changes what the bodies mean.
+    ///
+    /// `type Input = u8;` widened to `u16` leaves every function's tokens
+    /// byte-identical while making `|result| *result <= 255` false. The
+    /// walk allowed type aliases through its gate and then hashed only
+    /// function bodies, so the change was invisible. Reproduced end to end
+    /// on 2026-09-05: cached `fuzzed(256) [reused]`, fresh `violation` at
+    /// `x = 256`, same source.
+    #[test]
+    fn a_type_declaration_is_hashed_even_though_no_body_reaches_it() {
+        let alias = |ty: &str| {
+            let dir = crate_with(&[(
+                "src/lib.rs",
+                &format!("pub type Input = {ty};\npub fn widen(x: Input) -> u32 {{ x as u32 }}\n"),
+            )]);
+            let scope = scope_of(dir.path(), "widen", &[]);
+            assert_eq!(scope.scope, "reached", "{:?}", scope.widened_because);
+            scope.units.clone()
+        };
+        assert_ne!(
+            alias("u8"),
+            alias("u16"),
+            "widening the alias changes what `widen` accepts, so it must change \
+             what the record hashes -- otherwise a green earned over `u8` is \
+             carried forward onto `u16`"
         );
     }
 

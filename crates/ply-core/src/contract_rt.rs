@@ -308,9 +308,20 @@ fn widen_leaf(expr: &Expr, cf: &ContractFn) -> proc_macro2::TokenStream {
 }
 
 /// The plain integer scalars widen may safely cast to `i128`, plus
-/// `bool`/`char`/`f32`/`f64` -- every `RustType` shape Rust's own `as`
-/// operator can cast to `i128` without a compile error (verified
-/// directly against `rustc`, not assumed: a bare fieldless enum can *also*
+/// `bool`/`char`.
+///
+/// **Not floats**, though `f32 as i128` compiles perfectly well. That the
+/// cast compiles was the test until 2026-09-05, and it is the wrong one: a
+/// cast that compiles is not a cast that preserves what the comparison was
+/// asking. `*result == x` on `f64` became `(*result as i128) == (x as
+/// i128)`, so a function returning `x.trunc()` satisfied `*result == x` at
+/// every input whose fractional part was the entire difference -- earning
+/// `fuzzed(256)` against a promise false almost everywhere. Floats never
+/// needed the widening either: it exists so an assertion cannot overflow
+/// while checking a contract, and float arithmetic saturates to infinity
+/// rather than overflowing.
+///
+/// (verified directly against `rustc`, not assumed: a bare fieldless enum can *also*
 /// take this cast, but only until it gains a `Drop` impl, so enums are
 /// deliberately not on this list -- see the `tests` module's own
 /// `an_enum_variant_comparison_is_rendered_verbatim_never_cast_to_i128`).
@@ -334,8 +345,6 @@ fn is_numeric_rust_type(ty: &RustType) -> bool {
             | RustType::Isize
             | RustType::Bool
             | RustType::Char
-            | RustType::F32
-            | RustType::F64
     )
 }
 
@@ -1329,6 +1338,40 @@ pub fn always_pos(x: i32) -> Sign { let _ = x; Sign::Pos }
         );
     }
 
+    /// Casting a float to `i128` compiles, and throws away everything that
+    /// makes it a float. `*result == x` on `f64` became
+    /// `(*result as i128) == (x as i128)`, so a function returning
+    /// `x.trunc()` satisfied a promise of `*result == x` for every input
+    /// whose fractional part was the whole difference.
+    ///
+    /// Reproduced end to end on 2026-09-05, before this test existed:
+    /// `identity(x: f64) -> f64 { x.trunc() }` earned `fuzzed(256)` against
+    /// `|result| *result == x`, which is false at 0.5 and at almost every
+    /// other input. Two hundred and fifty-six random doubles found nothing,
+    /// because the check could not see the difference it was asked about.
+    ///
+    /// The widening exists so an assertion cannot overflow while checking a
+    /// contract. Float arithmetic does not overflow -- it saturates to
+    /// infinity -- so floats never needed it in the first place.
+    #[test]
+    fn a_float_comparison_is_rendered_verbatim_never_cast_to_i128() {
+        for ty in ["f64", "f32"] {
+            let cf = discover(
+                &format!(
+                    "#[ply::ensures(|result| *result == x)]\npub fn identity(x: {ty}) -> {ty} {{ \
+                     x.trunc() }}\n"
+                ),
+                "identity",
+            );
+            let widened = widen(&cf.ensures.as_ref().unwrap().0.body, &cf).to_string();
+            assert!(
+                !widened.replace(' ', "").contains("asi128"),
+                "a {ty} comparison cast to i128 compares two truncated integers, so \
+                 every fractional difference the promise is about disappears:\n{widened}"
+            );
+        }
+    }
+
     #[test]
     fn a_duration_witness_renders_through_duration_new() {
         let cf = discover(
@@ -1349,5 +1392,176 @@ pub fn identity(d: Duration) -> Duration { d }
              constructor the harness itself uses to build one:\n{}",
             rendered.source
         );
+    }
+}
+
+/// The float bug, closed by exhaustion rather than by a spot-check.
+///
+/// `is_numeric_rust_type` decides whether a comparison's leaves may be cast
+/// to `i128` before being checked. It answered "yes" for `f32`/`f64`
+/// because that cast *compiles*, and the cast then threw away exactly the
+/// difference the promise was about: `x.trunc()` satisfied `*result == x`.
+///
+/// One wrong entry in a classification is not the kind of defect a sample
+/// finds -- 256 random doubles did not -- so this closes it the way this
+/// repository closes the verdict kernel: an **independent oracle**, and
+/// **every case**, not a chosen few.
+///
+/// Two things make "every case" true rather than aspirational:
+///
+/// 1. [`cast_to_i128_is_lossless`] is a wildcard-free `match`. A variant
+///    added to `RustType` later stops this file compiling until somebody
+///    says which side it falls on. That is the part a list of examples
+///    cannot give.
+/// 2. `every_rust_type_variant` builds one value per variant, and the test
+///    checks it really does cover every discriminant the oracle can see.
+///
+/// The honesty condition, stated so it travels with the claim: this is
+/// exhaustive over the *variants*, and representative over what a variant
+/// carries -- `Vec<u8>` stands for every `Vec<T>`. That is sound only
+/// because the property under test reads the outermost constructor and
+/// nothing inside it, which is visible in the oracle: no arm inspects its
+/// payload. If that ever stops being true, this stops being a proof.
+#[cfg(test)]
+mod numeric_classification_proof {
+    use super::is_numeric_rust_type;
+    use crate::harness::{CtorReturn, ReceiverPlan, RustType, UserTypeFieldsPlan, UserTypeShape};
+
+    /// Whether `x as i128` keeps everything a comparison could ask about,
+    /// written from Rust's own semantics rather than from the function
+    /// under test -- so the two can disagree, which is the point.
+    ///
+    /// Deliberately no `_` arm.
+    fn cast_to_i128_is_lossless(ty: &RustType) -> bool {
+        match ty {
+            // Every integer here is at most 64 bits, so `i128` holds every
+            // value of it exactly. `bool` casts to 0/1 and `char` to its
+            // scalar value: both injective, both order-preserving.
+            RustType::U8
+            | RustType::U16
+            | RustType::U32
+            | RustType::U64
+            | RustType::I8
+            | RustType::I16
+            | RustType::I32
+            | RustType::I64
+            | RustType::Usize
+            | RustType::Isize
+            | RustType::Bool
+            | RustType::Char => true,
+            // The bug. `f64 as i128` compiles and truncates toward zero, so
+            // 0.5 and 0.0 become the same value and every promise about the
+            // fractional part is answered about a number that no longer has
+            // one.
+            RustType::F32 | RustType::F64 => false,
+            // Containers, wrappers and opaque types: `as i128` does not
+            // compile at all, so there is nothing to preserve.
+            RustType::Option(_)
+            | RustType::Result(_, _)
+            | RustType::Array(_, _)
+            | RustType::VecU8
+            | RustType::Vec(_)
+            | RustType::BTreeSet(_)
+            | RustType::NonZero(_)
+            | RustType::Duration
+            | RustType::String
+            | RustType::SelfType
+            | RustType::Unit
+            | RustType::UserTypeCtor(_)
+            | RustType::UserTypeFields(_)
+            | RustType::Slice(_)
+            | RustType::Tuple(_)
+            | RustType::BTreeMap(_, _)
+            | RustType::BoxT(_)
+            | RustType::Unsupported(_) => false,
+        }
+    }
+
+    fn every_rust_type_variant() -> Vec<RustType> {
+        let inner = || Box::new(RustType::U8);
+        vec![
+            RustType::U8,
+            RustType::U16,
+            RustType::U32,
+            RustType::U64,
+            RustType::I8,
+            RustType::I16,
+            RustType::I32,
+            RustType::I64,
+            RustType::Usize,
+            RustType::Isize,
+            RustType::Bool,
+            RustType::Char,
+            RustType::F32,
+            RustType::F64,
+            RustType::Option(inner()),
+            RustType::Result(inner(), inner()),
+            RustType::Array(inner(), 3),
+            RustType::VecU8,
+            RustType::Vec(inner()),
+            RustType::BTreeSet(inner()),
+            RustType::NonZero(inner()),
+            RustType::Duration,
+            RustType::String,
+            RustType::SelfType,
+            RustType::Unit,
+            RustType::Slice(inner()),
+            RustType::Tuple(vec![RustType::U8]),
+            RustType::BTreeMap(inner(), inner()),
+            RustType::BoxT(inner()),
+            RustType::Unsupported("Whatever".into()),
+            RustType::UserTypeCtor(Box::new(ReceiverPlan {
+                type_name: "T".into(),
+                import_path: "c::T".into(),
+                constructor: "new".into(),
+                ctor_params: Vec::new(),
+                ctor_requires: None,
+                ctor_return: CtorReturn::Bare,
+                operations: Vec::new(),
+                excluded_operations: Vec::new(),
+                other_constructors: Vec::new(),
+                max_sequence_len: 0,
+                route: None,
+            })),
+            RustType::UserTypeFields(Box::new(UserTypeFieldsPlan {
+                type_name: "T".into(),
+                import_path: "c::T".into(),
+                shape: UserTypeShape::Struct(Vec::new()),
+                skipped_constructor: None,
+            })),
+        ]
+    }
+
+    #[test]
+    fn the_enumeration_really_does_reach_every_variant() {
+        let all = every_rust_type_variant();
+        // `discriminant`, not the `Debug` rendering: two different variants
+        // can print the same and did (30 distinct strings for 32 entries),
+        // which would have quietly left two variants unchecked by a test
+        // whose whole job is to say none are.
+        let distinct: std::collections::HashSet<std::mem::Discriminant<RustType>> =
+            all.iter().map(std::mem::discriminant).collect();
+        assert_eq!(
+            distinct.len(),
+            all.len(),
+            "two entries are the same variant, so one variant is unchecked"
+        );
+        // Every variant `RustType` declares. If this number moves, a variant
+        // was added: the oracle above will already have refused to compile
+        // until it was classified, and this says the enumeration needs it too.
+        assert_eq!(all.len(), 32, "RustType gained or lost a variant");
+    }
+
+    #[test]
+    fn no_type_is_widened_to_i128_unless_that_cast_loses_nothing() {
+        for ty in every_rust_type_variant() {
+            assert_eq!(
+                is_numeric_rust_type(&ty),
+                cast_to_i128_is_lossless(&ty),
+                "`{ty:?}`: what the widening does and what the cast actually \
+                 preserves disagree -- a comparison about this type would be \
+                 checked after throwing information away"
+            );
+        }
     }
 }
