@@ -4,6 +4,46 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: the float bug closed by exhaustion, not by a spot-check — 2026-09-05
+
+"Plug bugs with proofs." The float defect is the one of today's eight whose domain is small
+enough to exhaust, so it is closed the way this repository closes the verdict kernel: an
+independent oracle, and **every case**, not a chosen few.
+
+- [x] **Every `RustType` variant is checked against an independently written oracle** for
+      whether `x as i128` keeps what a comparison could ask about. 32 variants, no sampling.
+      The oracle is written from Rust's semantics rather than from the function under test,
+      so the two can disagree -- which is the entire point.
+
+      Two things make "every case" true rather than aspirational. The oracle is a
+      **wildcard-free match**, so a variant added later stops the file compiling until
+      somebody classifies it -- verified by adding one and watching three `E0004`s. And the
+      enumeration is checked to reach every variant by `discriminant`, not by the `Debug`
+      rendering: the first draft used `Debug` and reported 30 distinct strings for 32
+      entries, which would have left two variants silently unchecked by a test whose whole
+      job is to say none are.
+
+      Proved to bite: putting `F32`/`F64` back on the numeric list fails it by name.
+
+  **The honesty condition, which travels with the claim:** exhaustive over the *variants*,
+  representative over what a variant carries -- `Vec<u8>` stands for every `Vec<T>`. Sound
+  only because the property reads the outermost constructor and nothing inside it, which is
+  visible in the oracle: no arm inspects its payload. If that stops being true, this stops
+  being a proof.
+
+- [ ] **KNOWN GAP: two `RustType` variants print identically under `Debug`.** Found by the
+      enumeration above (30 strings, 32 variants) and not chased down. Harmless here, since
+      the check now keys on `discriminant`, but any diagnostic that names a type by its
+      `Debug` rendering is telling two different types apart by a name they share.
+
+  **Why the other seven were not closed this way.** They are not classifications over a
+  bounded domain: they live in a call walk over arbitrary source, in attribute parsing, in
+  generated-code shape, and in a fingerprint over whole files. Those need the differential
+  and negative-case checks recorded above, not enumeration. Reaching for a proof where the
+  domain does not support one produces a proof of the wrong thing, which is the failure this
+  very bug was: the old rule proved `as i128` compiles, and what mattered was whether it
+  preserved the question.
+
 ## Landed: three ways a *fresh* run overstated what it checked — 2026-09-05
 
 A second review round, again explicitly not executed by its author. **All three reproduce.**
