@@ -220,6 +220,37 @@ cases, which are not Ply-buildable types -- those functions stay unclaimed until
 around or reduced to their buildable inputs, same as everywhere else in this codebase.
 
 
+## Landed: six more of Ply's own rendering proved by Ply — 2026-09-05
+
+Rendering was the least self-proved part of the tool and the part every other result is
+judged through: 3 promises across 8,749 lines. Today made the case -- every defect found
+was in rendering, and not one was caught by a test. Now 9, and ply-core is at **50 claims**.
+
+- [x] **The sentences a linked box depends on**: `linked_source_line`, `linked_explanation`,
+      `linked_contents_line`. Each must carry the file path and the counts, because a reader
+      told content lives elsewhere without being told *where* has been given a worse answer
+      than silence. These are the exact lines today's expansion change rests on.
+- [x] **`tame`** -- author text on its way into both views. Two promises: no control
+      character survives except a newline, **and the character count is unchanged**. The
+      second is the one that matters: a "fix" that drops characters instead of replacing
+      them silently loses a word from a note, which is the quieter bug.
+- [x] **`format_version_line`**, **`unresolved_fn_pin_prose`** -- the version a document is
+      read under, and an open decision's own number and question. Losing either turns a
+      specific thing into a vague one.
+
+  **The disclosure did its job, and so did the worked examples.** Ply reports that it never
+  generates control characters, so sampling can *never* reach the case `tame` exists for --
+  it says so itself in the run's own output. Three worked examples cover it instead, which
+  is what CLAUDE.md's guidance asks for where the interesting case is rare. Proved by
+  breaking it: replacing the replacement character with a space keeps the count promise true
+  and still gets caught, `tame — violation`, naming the failing example.
+
+  Two mistakes worth recording, both caught by Ply rather than by review. A `\n` inside a
+  double-quoted YAML scalar becomes a real newline, and the spliced Rust then reads
+  `'<newline>'` -- the harness would not compile, and Ply refused to blame any one function
+  for it. And a `&str` parameter arrives in the harness as an owned `String`, so
+  `result.contains(param)` needs `&*param`. Neither is obvious from the document.
+
 ## Landed: seven defects Fable's review found in the expansion change — 2026-09-05
 
 Every one was in rendering, and **not one was caught by a test** -- the suites stayed green

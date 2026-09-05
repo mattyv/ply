@@ -461,7 +461,7 @@ pub(super) fn document_counts(doc: &Document, links: Option<&LinkIndex>) -> (usi
 /// legitimate meaning here, and the layout problem they cause (a multi-line
 /// note rendering at column 0, able to impersonate a heading) is recorded as
 /// an open gap rather than half-solved.
-pub(super) fn tame(text: &str) -> String {
+pub fn tame(text: &str) -> String {
     text.chars()
         .map(|c| {
             if c == '\n' || !c.is_control() {
@@ -541,7 +541,7 @@ pub(super) fn contract_close_prose(nothing_runs: bool) -> String {
 /// a version this build does not speak is refused at the command rather than
 /// guessed at, and the one it did read is printed. A v1 and an unsupported
 /// v2 document used to render identically (external review, 2026-08-30).
-pub(super) fn format_version_line(version: u32) -> String {
+pub fn format_version_line(version: u32) -> String {
     format!(
         "ply: {version} — the format version every rule below is read under; a version this \
          build does not speak is refused, never guessed at"
@@ -582,7 +582,7 @@ pub(super) fn declared_not_checked(slips: &str) -> String {
 /// claim against a body that panics at the marker. `worklist` has always
 /// said so on every marker line; the two views said the opposite until
 /// 2026-08-30.
-pub(super) fn unresolved_fn_pin_prose(id: u64, note: &str) -> String {
+pub fn unresolved_fn_pin_prose(id: u64, note: &str) -> String {
     format!(
         "#{id} marks an unresolved decision — a question this function still owes an \
          answer: {note}. While it is open, this function's checks are meant to be held down \
@@ -1122,7 +1122,7 @@ pub(super) fn count_subtree(comp: &Component) -> (usize, usize) {
 /// the transcript so the two views can never drift about what a link
 /// means (the exact failure mode `visual/transcript.rs`'s own module doc
 /// calls out: "one derivation where there is one fact").
-pub(super) fn linked_explanation(n_components: usize, n_fns: usize, target_path: &str) -> String {
+pub fn linked_explanation(n_components: usize, n_fns: usize, target_path: &str) -> String {
     format!(
         "linked — {n_components} component{} and {n_fns} function{} are written down in a \
          different file, `{target_path}`, and drawn here as if they were part of this one. \
@@ -1138,14 +1138,14 @@ pub(super) fn linked_explanation(n_components: usize, n_fns: usize, target_path:
 /// then the file its interior is written in. Short enough to sit on the
 /// line a reader already looks at for "what is this box", rather than
 /// buying a whole line of its own on every linked box.
-pub(super) fn linked_source_line(anchor: &str, target_path: &str) -> String {
+pub fn linked_source_line(anchor: &str, target_path: &str) -> String {
     format!("{anchor} \u{2014} {target_path}")
 }
 
 /// §7.1's derived-link contents line, short form: `"N components · M fns —
 /// path"`. Shared with the transcript for the same reason as
 /// [`linked_explanation`].
-pub(super) fn linked_contents_line(n_components: usize, n_fns: usize, target_path: &str) -> String {
+pub fn linked_contents_line(n_components: usize, n_fns: usize, target_path: &str) -> String {
     format!(
         "{n_components} component{} \u{b7} {n_fns} fn{} \u{2014} {target_path}",
         if n_components == 1 { "" } else { "s" },

@@ -4,7 +4,7 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 
 ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
 
-29 components · 44 functions · 0 promise nothing
+29 components · 50 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
 components:
@@ -22,7 +22,7 @@ components:
 
   component core — maps to Rust module ply_core
     note: Everything Ply knows how to do, with no terminal attached. It must never reach up into the command-line layer: that constraint is what makes the engine adapters testable at all, because the moment a diagnostic's wording lives here, the wording and the engine can only be tested together.
-    linked — 21 components and 44 functions are written down in a different file, `crates/ply-core/ply.yaml`, and drawn here as if they were part of this one. Nothing inside this box is declared in the document you are looking at, so that is the file to open to change any of it. Folding this box away (--depth, --focus, or the viewer's own control) hides them the same way it hides anything else.
+    linked — 21 components and 50 functions are written down in a different file, `crates/ply-core/ply.yaml`, and drawn here as if they were part of this one. Nothing inside this box is declared in the document you are looking at, so that is the file to open to change any of it. Folding this box away (--depth, --focus, or the viewer's own control) hides them the same way it hides anything else.
     component kernel — maps to Rust module ply_core::kernel
       note: Decides what a pile of results adds up to: the order that ranks one kind of evidence above another, the rule that a parent is never reported as stronger than its weakest part, and the flags that travel upward beside a verdict without being confused for one.
       state StatusSet — the structure this component holds
@@ -469,6 +469,51 @@ components:
         fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
         what this function promises — the last thing the document states before the code itself takes over:
           ensures: |result| result.contains(&n.to_string()) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn tame
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.chars().count() == text.chars().count() (what the function guarantees coming out)
+          ensures: |result| result.chars().all(|c| c == '\n' || !c.is_control()) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        3 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          tame("a\u{7}b") == "a\u{fffd}b"
+          tame("keeps\nnewlines") == "keeps\nnewlines"
+          tame("plain") == "plain"
+      fn format_version_line
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.contains(&version.to_string()) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn unresolved_fn_pin_prose
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.contains(&format!("#{id}")) (what the function guarantees coming out)
+          ensures: |result| note.is_empty() || result.contains(&*note) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn linked_source_line
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.contains(&*anchor) (what the function guarantees coming out)
+          ensures: |result| result.contains(&*target_path) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        1 worked example — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          linked_source_line("ply_core", "crates/ply-core/ply.yaml").contains("crates/ply-core/ply.yaml")
+      fn linked_explanation
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.contains(&*target_path) (what the function guarantees coming out)
+          ensures: |result| result.contains(&n_components.to_string()) (what the function guarantees coming out)
+          ensures: |result| result.contains(&n_fns.to_string()) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn linked_contents_line
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.contains(&*target_path) (what the function guarantees coming out)
+          ensures: |result| result.contains(&n_components.to_string()) (what the function guarantees coming out)
+          ensures: |result| result.contains(&n_fns.to_string()) (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component visual — maps to Rust module ply_core::visual
       note: The drawing, the prose form of the same facts, and the portable package an editor reads. Nothing here decides anything; it only shows what was decided.
