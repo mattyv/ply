@@ -30,7 +30,7 @@ jobs:
     outputs:
       kind: ${{ steps.classify.outputs.kind }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # The whole history: a pull request is classified against its
           # merge base with main, and a push against the commit before it.
@@ -68,7 +68,7 @@ jobs:
   product:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -125,7 +125,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.kind == 'code'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -179,7 +179,7 @@ jobs:
         shard: [0, 1, 2, 3]
     name: product-e2e (${{ matrix.shard }}/4)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -229,22 +229,26 @@ jobs:
   # never by CI -- so nothing stopped either document quietly drifting out
   # of truth the next time the code under it changed.
   #
-  # `--fail-on error` fails on anything that actually breaks: a broken
-  # promise reports as an error-severity violation, and a harness that stops
-  # compiling reports as an error-severity tool error -- both confirmed by
-  # `cargo ply explain` before this was written, neither tolerated here. The
-  # default, `evidence`, additionally fails on any *absence* of evidence.
+  # `--fail-on evidence` is the strict setting: it fails not only on a broken
+  # promise or a harness that stops compiling (both error severity) but on any
+  # *absence* of evidence -- a function Ply refuses to check, and so reports
+  # by name rather than checking, is warning severity and passes under
+  # `error`. That is exactly the regression this job exists to catch: a
+  # refusal is how `record::fingerprint` sat unchecked for days while every
+  # build stayed green, and under `error` the next one would do the same.
   #
-  # `error` was chosen to tolerate one named, recorded gap: `record::
-  # fingerprint` could not be checked at all, because Ply could not build a
-  # value for a struct with two list-of-struct fields, and that refusal is
-  # warning severity. **That gap was closed on 2026-09-05** -- every claim in
-  # both documents now earns evidence -- so the reason for the looser setting
-  # no longer holds. Tightening it to the default is owed and is recorded in
-  # TODO.md; it is not done in the same change that noticed it, because
-  # `evidence` also rejects the evidence-quality disclosures, and which of
-  # those currently fire is a question to answer by running rather than by
-  # assuming.
+  # This job ran `--fail-on error` until 2026-09-05, chosen to tolerate that
+  # one refusal, which was then fixed. Tightening it was checked by running
+  # rather than reasoned about: both documents were verified under `evidence`
+  # first, and both exit clean, so the stricter setting costs nothing today
+  # and starts failing the moment any promise stops being checked at all.
+  #
+  # It does *not* fail on the evidence-quality disclosures -- ply-core's own
+  # run reports 74 "this used generated text, which excludes control
+  # characters" and 32 "one side of this either/or decided every case", and
+  # still exits 0. Those are disclosures about what a passing check did and
+  # did not cover, not absences; `--fail-on warn` is the setting that would
+  # reject them, and it is not wanted here.
   #
   # `--svg` writes the real, evidence-coloured drawing -- the picture
   # `cargo ply render` cannot draw, because it only ever reads the document
@@ -257,7 +261,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.kind == 'code'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -271,19 +275,19 @@ jobs:
       - name: Ply verifies its own library
         run: |
           ./target/debug/cargo-ply verify crates/ply-core \
-            --fail-on error --svg ply-core-verified.svg
+            --fail-on evidence --svg ply-core-verified.svg
 
       - name: Ply verifies its own command line
         run: |
           ./target/debug/cargo-ply verify crates/ply-cli \
-            --fail-on error --svg ply-cli-verified.svg
+            --fail-on evidence --svg ply-cli-verified.svg
 
       # `if: always()` so a drawing from a run that just failed is still
       # attached -- that is the one a reader most wants, since it shows
       # exactly which chip stopped earning what it used to.
       - name: Upload the verified drawings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ply-self-check-drawings
           path: |
@@ -328,10 +332,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Collect the drawings this run produced
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ply-self-check-drawings
 
@@ -346,7 +350,7 @@ jobs:
           path: site
 
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   # The one check to require on `main`, and the only one whose name is
   # fixed. It depends on every job above and does nothing else, so two

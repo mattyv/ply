@@ -121,18 +121,40 @@ still, in practice, a sentence in a commit message.
       "6 earned". The truncated first capture is exactly the failure CLAUDE.md warns about
       one level up, and it happened here on the first try.
 
-- [ ] **KNOWN GAP: `ply-self-check` is looser than anything now justifies.** It runs
-      `--fail-on error`, chosen to tolerate `record::fingerprint`'s refusal, which was
-      fixed the same day. Every claim in both documents now earns evidence, so the default
-      `--fail-on evidence` -- which fails the build the moment *any* promise stops being
-      checked at all -- should be within reach and is strictly stronger.
+- [x] **The self-check now fails on a refusal, not just on a broken promise** — 2026-09-05.
+      It ran `--fail-on error`, chosen to tolerate `record::fingerprint`'s refusal, which
+      was fixed hours later; the looser setting then had nothing justifying it.
 
-      Not done in the change that noticed it, on purpose: `evidence` also rejects the
-      evidence-quality disclosures, and which of those currently fire on the two real
-      documents is a question to answer by running the thing, not by reading the flag's
-      description. Wants one deliberate run of both crates under `evidence`, a look at
-      whatever it rejects, and then either the tightening or a written reason it cannot
-      tighten yet.
+      Answered by running, which is what the open item asked for. Both documents were
+      verified under `--fail-on evidence` first: **both exit 0**, so the stricter setting
+      costs nothing today. The worry that prompted the delay -- that `evidence` would also
+      reject the evidence-quality disclosures -- turned out to be wrong, and measurably so:
+      ply-core's run reports 74 "generated text excludes control characters" and 32 "one
+      side of this either/or decided every case" disclosures and still exits clean. Those
+      describe what a *passing* check did and did not cover; they are not absences.
+      `--fail-on warn` is the setting that rejects them, and it is not wanted.
+
+      What the tightening actually buys, confirmed with `cargo ply explain`: a function Ply
+      refuses to check reports at **warning** severity, so `error` waved it through. That is
+      precisely how `record::fingerprint` sat unchecked for days while every build stayed
+      green. The next such refusal now fails the build instead of being discovered by
+      someone reading a report.
+
+- [x] **The build's actions moved off a runtime that is being removed** — 2026-09-05.
+      GitHub removes Node 20 entirely on 2026-09-16 and had already started force-running
+      these actions on Node 24, which is a warning today and a broken build shortly.
+
+      Version numbers picked by reading each action's declared runtime rather than its
+      release notes, which was not paranoia: `upload-artifact@v5`'s notes announce Node 24
+      support, and its manifest still says `node20` -- "preliminary support" that a reader
+      would reasonably take for the fix. Each action moved to the lowest major that
+      actually declares `node24`: checkout v4→v5, upload-artifact v4→v6, download-artifact
+      v4→v7, deploy-pages v4→v5. Deliberately not "latest of everything": `download-artifact`
+      v8 changes when it unzips a download, and that is the exact hand-off `publish-evidence`
+      depends on and the one path a pull request cannot exercise.
+
+      `upload-pages-artifact@v3` and `actions/cache@v4` are untouched and were never in the
+      warning -- the first is a composite action with no Node runtime at all.
 
 ## Landed: the CLI's own library gets its first six claims — 2026-09-05
 
