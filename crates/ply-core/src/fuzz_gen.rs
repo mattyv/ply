@@ -3408,9 +3408,28 @@ pub fn wrap_fn_harness_module(
     // every method's harness crate failed to compile with an unresolved
     // import naming the method.
     let import_path = cf.import_path();
+    // The checked fn's own containing module, brought in as a glob --
+    // same fix as `contract_rt::render_cex_test`'s `module_import`, and
+    // the same reason: a promise may call a sibling function defined in
+    // that module and never `use`-imported, because same-module items
+    // need no `use` at all. Before this, only the crate-root glob and the
+    // checked fn's own bare import were brought in, so a sibling one level
+    // down compiled fine in the real crate and failed here with "cannot
+    // find function" (found 2026-09-05 pointing Ply at its own CLI crate).
+    // `import_path()` already strips the right number of segments -- one
+    // for a free function's own name, two for `Type::method` -- so reusing
+    // it here is what keeps this from becoming a second, disagreeing
+    // fn/module split.
+    let sibling_module_import = match import_path.rsplit_once("::") {
+        Some((module, _)) => format!(
+            "    #[allow(unused_imports)]\n    use {target_crate_ident}::{module}::*;\n"
+        ),
+        None => String::new(),
+    };
     let mut out = format!(
         "#[cfg(test)]\nmod {module_ident}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{import_path};\n\
-         \x20\x20\x20\x20#[allow(unused_imports)]\n    use {target_crate_ident}::*;\n"
+         \x20\x20\x20\x20#[allow(unused_imports)]\n    use {target_crate_ident}::*;\n\
+         {sibling_module_import}"
     );
     // The glob import above (2026-09-01, plain-parameter seeding widening,
     // TODO.md): an `examples:` entry may reference a type -- `Opaque` in
@@ -3898,6 +3917,38 @@ pub fn f(x: u32) -> bool { x > 0 }
              that same import into the generated harness module, or the harness fails to \
              compile with \"cannot find type `Ordering` in this scope\" even though the type \
              is right there in scope for the real function:\n{module}"
+        );
+    }
+
+    /// A promise calling a *sibling function in the same module*, never
+    /// `use`-imported because same-module items need no `use` at all. The
+    /// checked fn's own module was never brought into the harness's scope
+    /// -- only its crate-root glob and its own bare import -- so this
+    /// compiled fine in the real crate and failed in the generated harness
+    /// with "cannot find function `helper` in this scope". Found
+    /// 2026-09-05 pointing Ply at its own CLI crate: `shared::is_local`'s
+    /// promise calls its neighbour `shared::local_module_path` by bare
+    /// name, exactly this shape.
+    #[test]
+    fn a_promise_calling_a_sibling_in_a_non_root_module_still_resolves() {
+        let cf = discover(
+            r#"
+pub mod helpers {
+    #[ply::ensures(|result| *result == twice(x))]
+    pub fn double(x: u32) -> u32 { x * 2 }
+    pub fn twice(x: u32) -> u32 { x + x }
+}
+"#,
+            "helpers::double",
+        );
+        let fuzz_body = generate_fuzz_test(&cf, 8, &derive_seed("double", "")).unwrap();
+        let module = wrap_fn_harness_module(&cf, "target_crate", &[fuzz_body]);
+        assert!(
+            module.contains("use target_crate::helpers::*;"),
+            "a promise naming a sibling function in the checked fn's own \
+             module must bring that module into scope, or the harness \
+             fails to compile with \"cannot find function\" even though \
+             the sibling is right there for the real function:\n{module}"
         );
     }
 

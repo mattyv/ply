@@ -664,7 +664,7 @@ const MARK_GLOSS: [(&str, &str); 8] = [
 ];
 
 /// `a`, `a and b`, `a, b and c` — a list a person reads, not a debug print.
-pub(crate) fn join_plainly(items: &[String]) -> String {
+pub fn join_plainly(items: &[String]) -> String {
     match items {
         [] => String::new(),
         [one] => one.clone(),

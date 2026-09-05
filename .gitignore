@@ -28,3 +28,4 @@ demos/verified-green/src/ply_generated.rs
 # its verdicts. (D14 still holds for real downstream projects -- they should
 # commit theirs.)
 crates/ply-core/ply.lock
+crates/ply-cli/ply.lock

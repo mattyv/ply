@@ -1,0 +1,83 @@
+This is a Ply transcript: everything the diagram of this document shows — every box, arrow, and rule, and all the text that is otherwise visible only by hovering — written out in full.
+It is generated from that document, like a compiler's output, and nothing in it is written by hand. Editing this text changes nothing; edit the ply.yaml document and generate it again.
+No result reaches this page. Every line below is a declaration or a promise, never a result — whatever `cargo ply verify` has found, it is reported there and never here.
+
+ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
+
+2 components · 6 functions · 0 promise nothing
+("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
+
+components:
+
+  component cli — maps to Rust module ply_cli
+    note: The library behind `cargo-ply`. Its shell -- argument parsing, file I/O, subprocess calls -- is deliberately unclaimed; what is claimed is the logic those commands share.
+    declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+    that level comes from its weakest part, join_plainly — nothing here counts as checked more strongly than the weakest thing inside it
+    fn join_plainly
+      fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+      test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+      what this function promises — the last thing the document states before the code itself takes over:
+        ensures: |result| items.is_empty() || items.iter().all(|i| result.contains(i.as_str())) (what the function guarantees coming out)
+        the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      4 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+        join_plainly(&[]) == ""
+        join_plainly(&["a".to_string()]) == "a"
+        join_plainly(&["a".to_string(), "b".to_string()]) == "a and b"
+        join_plainly(&["a".to_string(), "b".to_string(), "c".to_string()]) == "a, b and c"
+    component shared — maps to Rust module ply_cli::shared
+      note: What `check`, `audit` and `worklist` all need from a document before any engine runs. One copy, so the three commands cannot quietly disagree about what they read.
+      declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
+      that level comes from its weakest part, is_local — nothing here counts as checked more strongly than the weakest thing inside it
+      fn is_local
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| *result == local_module_path(&local_anchors, &anchor).is_some() (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      fn local_module_path
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| !local_anchors.is_empty() || *result == Some(String::new()) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        3 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          local_module_path(&[], "anything::at::all") == Some(String::new())
+          local_module_path(&["demo".to_string()], "demo::inner") == Some("inner".to_string())
+          local_module_path(&["demo".to_string()], "other::inner").is_none()
+      fn crate_root_fn_key
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| result.ends_with(fn_key.as_str()) (what the function guarantees coming out)
+          ensures: |result| module.is_empty() || result.starts_with(module.as_str()) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          crate_root_fn_key("", "clamp") == "clamp"
+          crate_root_fn_key("schema", "dotted") == "schema::dotted"
+      fn contract_text
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| !result.is_empty() (what the function guarantees coming out)
+          ensures: |result| requires.iter().all(|r| result.contains(r.as_str())) (what the function guarantees coming out)
+          ensures: |result| ensures.iter().all(|e| result.contains(e.as_str())) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+        2 worked examples — the `test` check above compiles each into a test when `cargo ply verify` runs; a promise of what will run, never a result:
+          contract_text(&[], &[]) == "a contract declared with no clauses"
+          contract_text(&["x > 0".to_string()], &[]) == "requires x > 0"
+      fn wrap
+        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
+        what this function promises — the last thing the document states before the code itself takes over:
+          ensures: |result| text.split_whitespace().all(|w| result.contains(w)) (what the function guarantees coming out)
+          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+
+externals — systems and people outside this codebase: none declared
+
+edges — who may call whom, and what data flows where: none declared
+
+forbidden calls: none declared
+
+profiles — named bundles of extra rules a component can adopt: none declared
+
+unresolved decisions held by the workspace as a whole: none declared
+
+routes — a public function this document names as the way to build a value of a type Ply has no other way in for: none declared

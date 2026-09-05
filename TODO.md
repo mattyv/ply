@@ -4,6 +4,71 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: the CLI's own library gets its first six claims — 2026-09-05
+
+`crates/ply-cli/ply.yaml` is new: 6 claims, all in `shared.rs` plus one in `lib.rs`, all
+earning evidence. This is 6 of roughly 180 public functions in the crate -- the fast
+first cut of pure helpers, not the whole crate. `verify.rs` (9,100 lines, the code that
+decides every verdict) is entirely unclaimed still; that is the next, much bigger step.
+
+Three real defects found and fixed along the way, all confirmed by running rather than
+by reading:
+
+- [x] **`wrap` could abort the whole process.** Every real call site passes a small
+      literal indent (0, 4, 6, 14 ...); nothing stopped a pathological one, and Ply's own
+      first fuzz run against its own CLI crate found it in seconds -- an indent near
+      `usize::MAX` makes `" ".repeat(indent)` try to allocate that many bytes. Fixed by
+      clamping the indent to just under the line width, since an indent at or past the
+      width already makes wrapping meaningless -- a fact about what the width means, not
+      an invented answer for an input nobody meant.
+
+- [x] **The fuzz harness never imported the checked function's own containing module.**
+      A promise may call a sibling function defined right next to it in the same file --
+      no `use` statement needed, since same-module items need none. That compiled fine in
+      the real crate and failed in the generated check with "cannot find function", because
+      the harness only ever imported the checked function's own bare path plus a
+      crate-root glob, never the specific module it actually lives in. This is a second,
+      independent instance of the class of bug fixed 2026-09-04 for the counterexample
+      replay test (`contract_rt::render_cex_test`'s `module_import`) -- that fix covered
+      only the reactive replay path; the *initial* check, which is what actually finds a
+      violation in the first place, still had the gap. Fixed the same way, in
+      `fuzz_gen::wrap_fn_harness_module`, reusing the same `import_path()` split so the two
+      fixes cannot again disagree about how many segments to drop.
+
+- [ ] **OPEN, recorded rather than fixed: `check` accepts a function that `verify` can
+      never actually check.** `bounded(k)` (Kani) runs inside the target crate's own
+      source, where `pub(crate)` is visible; `fuzz`/`test`/`mutate` run in a genuinely
+      separate crate that depends on the target as an external dependency, where
+      `pub(crate)` is invisible. Ply's own resolver only distinguishes "private to its
+      module" from everything else, so `check` reports a `pub(crate)` function as
+      perfectly resolvable and `verify` then fails opaquely with a raw compiler error
+      naming some unrelated function first in line -- never explaining that the real
+      cause is visibility crossing a crate boundary. Worked around here by promoting the
+      six claimed helpers to full `pub`, which is a safe, reversible visibility widening
+      and not new API surface. The underlying disagreement between `check` and `verify`
+      is untouched and worth its own session: `check` would need to know which checks a
+      claim declares before it can say whether `pub(crate)` is actually sufficient.
+
+- [x] Rendered and reviewed (`docs/ply-cli-self.svg`/`.txt`), added to ARCHITECTURE.md.
+      **Note for future review, not a Ply defect:** the first rasterisation clipped the
+      bottom chip even though the window size exactly matched the SVG's own declared
+      width and height -- CLAUDE.md's own prescribed check. Headless Chrome's rendering
+      of a bare SVG file can carry a few pixels of margin the declared size doesn't
+      account for. Re-rendering with ~40-60px of headroom beyond the declared size, then
+      confirming the content doesn't reach that margin, is the more reliable check.
+
+## Open: the CLI crate is claimed 6 of ~180 — 2026-09-05
+
+The obvious next batch is `shared.rs`'s remaining pure surface (`declared_contracts`,
+`assumed_contracts`, `FnClaimRef`'s methods) and `verify.rs`'s standalone helpers
+(`default_engine_timeout_secs` is a clean, already-pure candidate: real properties like
+"a stubbed harness never gets less than the stubbed floor" and "the vec-param cost grows
+with the bound"). Both take `Document`/`ContractFn`/`FnClaimRef` as parameters in several
+cases, which are not Ply-buildable types -- those functions stay unclaimed until routed
+around or reduced to their buildable inputs, same as everywhere else in this codebase.
+
+
+
 ## Landed: a timed-out engine run now kills the whole process tree, not just cargo — 2026-09-04 (`9037b83`)
 
 `run_with_timeout` (`crates/ply-core/src/engines/mod.rs`) only ever killed the one process

@@ -126,6 +126,42 @@ One caveat that belongs here rather than in a footnote: a promise written in thi
 plumbing that would make a failing promise fail the run is a recorded gap in
 [TODO.md](TODO.md), not a claim being made on this page.
 
+## What the CLI promises about itself
+
+Rendered from [`crates/ply-cli/ply.yaml`](crates/ply-cli/ply.yaml).
+
+<p align="center">
+  <img src="docs/ply-cli-self.svg" alt="A frame labelled ply.yaml, with a line reading 2 components, 6 functions, 0 promise nothing. Inside is a solid box named cli, filled mid-grey rather than hatched, holding one chip of its own (join_plainly) and one nested box named shared holding five more chips: is_local, local_module_path, crate_root_fn_key, contract_text and wrap. Every chip reads fuzz: 256 cases; three carry a small grey badge counting worked examples." width="440">
+</p>
+
+Until 2026-09-04 this crate was a binary and nothing else, so Ply could not check a single
+line of it: a claim resolves against a crate's own library file, and a crate with only a
+binary entry point has none. That exempted 16,500 lines — including the 9,100 that decide
+every verdict Ply reports — from the tool that produces them. The binary is now six lines
+that call into a library sitting beside it, and this document is the start of claiming
+what moved.
+
+What is claimed so far is deliberately small: the handful of pure functions the checking,
+auditing and worklist commands all share, so the three cannot quietly disagree about what
+they read from a document. Everything else in this crate — argument parsing, file
+reading, running another program, printing to a terminal — is the shell the writing
+skill says to leave unclaimed, and it stays that way here too.
+
+Two real defects came out of writing this six-function document, both fixed rather than
+worked around:
+
+- One of the claimed functions could be made to abort the whole process. Every real call
+  site passes a small, literal indent for wrapping terminal text; nothing stops a much
+  larger one, and a sufficiently large one tries to allocate more memory than exists
+  rather than failing gracefully. Found by the very first run of Ply's own fuzzing against
+  its own code, in under a second.
+- A promise naming a *sibling function in the same file*, not previously imported by name
+  because nothing needs an import to call something next to it — was invisible to the
+  generated check, which failed to compile with "cannot find function" even though the
+  real code compiles fine. Ply's checker only ever imported the checked function's own
+  crate-wide fallback, never the specific corner of the crate it actually lives in. Fixed
+  by bringing that corner into scope too.
+
 ## What happened when Ply was pointed at itself
 
 The `e2e` rule above is the interesting one, because Ply caught this codebase breaking it.
