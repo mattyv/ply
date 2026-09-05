@@ -945,7 +945,23 @@ fn build_user_value_stmt(
                 ty: ty.clone(),
                 strategy: strategy_expr(ty)?,
             });
-            preamble.push_str(&format!("            let {binding_name} = {leaf_name};\n"));
+            // A container of a user type (`Vec<AssumedPromise>`, a field's
+            // own type here, never a top-level parameter's -- those already
+            // went through `plan_for_param`/`unwrap_composed_expr` before
+            // reaching this function) falls through to this generic leaf
+            // arm same as any scalar, but the leaf proptest draws is a raw
+            // tuple of the struct's own fields, not the struct itself. Left
+            // as `let {binding_name} = {leaf_name};`, the field ends up
+            // holding `Vec<(String, ...)>` where the real struct declares
+            // `Vec<AssumedPromise>`, and the harness fails to compile with
+            // "mismatched types" -- found 2026-09-05 on `record::
+            // fingerprint`'s own `assumed`/`engines` fields, both
+            // `Vec<PlainStruct>`. `unwrap_composed_expr` already does this
+            // exact conversion for a top-level parameter; a no-op whenever
+            // `ty` holds no user type at all, so every existing field keeps
+            // generating byte-identical code.
+            let value_expr = unwrap_composed_expr(ty, &leaf_name);
+            preamble.push_str(&format!("            let {binding_name} = {value_expr};\n"));
             Ok(())
         }
     }
@@ -3409,9 +3425,28 @@ pub fn wrap_fn_harness_module(
     // every method's harness crate failed to compile with an unresolved
     // import naming the method.
     let import_path = cf.import_path();
+    // The checked fn's own containing module, brought in as a glob --
+    // same fix as `contract_rt::render_cex_test`'s `module_import`, and
+    // the same reason: a promise may call a sibling function defined in
+    // that module and never `use`-imported, because same-module items
+    // need no `use` at all. Before this, only the crate-root glob and the
+    // checked fn's own bare import were brought in, so a sibling one level
+    // down compiled fine in the real crate and failed here with "cannot
+    // find function" (found 2026-09-05 pointing Ply at its own CLI crate).
+    // `import_path()` already strips the right number of segments -- one
+    // for a free function's own name, two for `Type::method` -- so reusing
+    // it here is what keeps this from becoming a second, disagreeing
+    // fn/module split.
+    let sibling_module_import = match import_path.rsplit_once("::") {
+        Some((module, _)) => {
+            format!("    #[allow(unused_imports)]\n    use {target_crate_ident}::{module}::*;\n")
+        }
+        None => String::new(),
+    };
     let mut out = format!(
         "#[cfg(test)]\nmod {module_ident}_harness {{\n    #[allow(unused_imports)]\n    use {target_crate_ident}::{import_path};\n\
-         \x20\x20\x20\x20#[allow(unused_imports)]\n    use {target_crate_ident}::*;\n"
+         \x20\x20\x20\x20#[allow(unused_imports)]\n    use {target_crate_ident}::*;\n\
+         {sibling_module_import}"
     );
     // The glob import above (2026-09-01, plain-parameter seeding widening,
     // TODO.md): an `examples:` entry may reference a type -- `Opaque` in
@@ -3592,6 +3627,50 @@ pub fn maybe_pass_through(x: u32) -> Option<u32> {
     /// `flatten_top_level_or` refuses quietly (CLAUDE.md: "refusing
     /// quietly rather than guessing"), and the generated harness must stay
     /// byte-for-byte what it was before this feature existed.
+    /// The codegen half of `record::fingerprint`'s own fix (2026-09-05):
+    /// a struct field whose type is `Vec<AnotherStruct>` used to reach the
+    /// generic leaf arm of `build_user_value_stmt` untouched, so the field
+    /// ended up bound to the raw tuple proptest drew rather than a real
+    /// `Vec<Inner>` -- "mismatched types, expected Vec<Inner>, found
+    /// Vec<(String, ...)>". This asserts the generated code actually
+    /// constructs `Inner` values (the type name and a field initializer
+    /// list appear inside a `.map()` over the raw leaves), not just that
+    /// the fn was accepted -- accepted-but-uncompilable is exactly the
+    /// shape that slipped through before this fix, and a test that only
+    /// checked `is_fuzz_supported()` would not have caught it.
+    #[test]
+    fn a_vec_of_struct_field_constructs_real_values_not_raw_tuples() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            r#"
+#[derive(Debug, Clone)]
+pub struct Inner { pub callee: String, pub requires: Vec<String> }
+
+#[derive(Debug, Clone, Default)]
+pub struct Wide { pub node_id: String, pub assumed: Vec<Inner> }
+
+#[ply::ensures(|result| *result >= 0)]
+pub fn count(w: &Wide) -> i64 { w.assumed.len() as i64 }
+"#,
+        )
+        .unwrap();
+        let mut cf = discover_fn(&src_dir.join("lib.rs"), "count").unwrap();
+        let refused =
+            harness::enrich_contract_fn_user_types(&mut cf, dir.path(), &Default::default());
+        assert!(refused.is_empty(), "{refused:?}");
+        assert!(cf.is_fuzz_supported());
+
+        let body = generate_fuzz_test(&cf, 8, &derive_seed("count", "")).unwrap();
+        assert!(
+            body.contains("Inner {") && body.contains(".into_iter().map(|__ply_v|"),
+            "the field's raw leaves must be turned into real `Inner` values \
+             through a map, not left as the tuple proptest drew:\n{body}"
+        );
+    }
+
     #[test]
     fn a_plain_postcondition_generates_none_of_the_split_machinery() {
         let cf = discover(
@@ -3899,6 +3978,38 @@ pub fn f(x: u32) -> bool { x > 0 }
              that same import into the generated harness module, or the harness fails to \
              compile with \"cannot find type `Ordering` in this scope\" even though the type \
              is right there in scope for the real function:\n{module}"
+        );
+    }
+
+    /// A promise calling a *sibling function in the same module*, never
+    /// `use`-imported because same-module items need no `use` at all. The
+    /// checked fn's own module was never brought into the harness's scope
+    /// -- only its crate-root glob and its own bare import -- so this
+    /// compiled fine in the real crate and failed in the generated harness
+    /// with "cannot find function `helper` in this scope". Found
+    /// 2026-09-05 pointing Ply at its own CLI crate: `shared::is_local`'s
+    /// promise calls its neighbour `shared::local_module_path` by bare
+    /// name, exactly this shape.
+    #[test]
+    fn a_promise_calling_a_sibling_in_a_non_root_module_still_resolves() {
+        let cf = discover(
+            r#"
+pub mod helpers {
+    #[ply::ensures(|result| *result == twice(x))]
+    pub fn double(x: u32) -> u32 { x * 2 }
+    pub fn twice(x: u32) -> u32 { x + x }
+}
+"#,
+            "helpers::double",
+        );
+        let fuzz_body = generate_fuzz_test(&cf, 8, &derive_seed("double", "")).unwrap();
+        let module = wrap_fn_harness_module(&cf, "target_crate", &[fuzz_body]);
+        assert!(
+            module.contains("use target_crate::helpers::*;"),
+            "a promise naming a sibling function in the checked fn's own \
+             module must bring that module into scope, or the harness \
+             fails to compile with \"cannot find function\" even though \
+             the sibling is right there for the real function:\n{module}"
         );
     }
 

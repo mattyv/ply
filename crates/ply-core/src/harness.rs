@@ -4208,13 +4208,70 @@ fn resolve_param_type(
     ty: &RustType,
     depth: usize,
 ) -> std::result::Result<RustType, UserTypeError> {
-    let RustType::Unsupported(src) = ty else {
-        return Ok(ty.clone());
-    };
-    if !is_bare_ident(src) {
-        return Err(UserTypeError::NotFound);
+    // Recurse into every container shape before falling through to the
+    // bare-identifier case below. Before this, a field/constructor
+    // argument/variant field/route argument whose type *was* a bare user
+    // type name resolved fine, but the identical name one container deep
+    // (`Vec<Inner>`, `Option<Inner>`, a tuple element, a map's key or
+    // value) never reached this function's own bare-name arm at all --
+    // `enrich_rust_type` already walked containers for a *top-level*
+    // parameter, which is why the same shape worked there and nowhere
+    // else. `depth` is passed through unchanged for a container wrapper:
+    // it counts how many structs are nested inside one another, not how
+    // many containers wrap a leaf, and every call site above already
+    // passes `depth + 1` at the point a field's type turns out to be
+    // another struct to recurse into (found 2026-09-05, `record::
+    // fingerprint`'s own `Vec<AssumedPromise>` field).
+    match ty {
+        RustType::Option(inner) => Ok(RustType::Option(Box::new(resolve_param_type(
+            crate_dir, locations, routes, inner, depth,
+        )?))),
+        RustType::Array(inner, n) => Ok(RustType::Array(
+            Box::new(resolve_param_type(
+                crate_dir, locations, routes, inner, depth,
+            )?),
+            *n,
+        )),
+        RustType::Vec(inner) => Ok(RustType::Vec(Box::new(resolve_param_type(
+            crate_dir, locations, routes, inner, depth,
+        )?))),
+        RustType::BTreeSet(inner) => Ok(RustType::BTreeSet(Box::new(resolve_param_type(
+            crate_dir, locations, routes, inner, depth,
+        )?))),
+        RustType::Slice(inner) => Ok(RustType::Slice(Box::new(resolve_param_type(
+            crate_dir, locations, routes, inner, depth,
+        )?))),
+        RustType::BoxT(inner) => Ok(RustType::BoxT(Box::new(resolve_param_type(
+            crate_dir, locations, routes, inner, depth,
+        )?))),
+        RustType::Result(ok, err) => Ok(RustType::Result(
+            Box::new(resolve_param_type(crate_dir, locations, routes, ok, depth)?),
+            Box::new(resolve_param_type(
+                crate_dir, locations, routes, err, depth,
+            )?),
+        )),
+        RustType::Tuple(items) => Ok(RustType::Tuple(
+            items
+                .iter()
+                .map(|item| resolve_param_type(crate_dir, locations, routes, item, depth))
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        )),
+        RustType::BTreeMap(key, value) => Ok(RustType::BTreeMap(
+            Box::new(resolve_param_type(
+                crate_dir, locations, routes, key, depth,
+            )?),
+            Box::new(resolve_param_type(
+                crate_dir, locations, routes, value, depth,
+            )?),
+        )),
+        RustType::Unsupported(src) => {
+            if !is_bare_ident(src) {
+                return Err(UserTypeError::NotFound);
+            }
+            resolve_user_type(crate_dir, locations, routes, src, depth)
+        }
+        other => Ok(other.clone()),
     }
-    resolve_user_type(crate_dir, locations, routes, src, depth)
 }
 
 /// The resolver at the centre of this section: try to build `RustType`
@@ -7451,6 +7508,52 @@ pub fn clamp(x: u32) -> u32 {
         assert_eq!(cf.params[0].ty, RustType::U32);
         assert!(cf.ensures.is_some());
         assert!(cf.is_bounded_supported());
+    }
+
+    /// The shape `record::fingerprint`'s own parameter has, and the reason
+    /// it stayed refused a day after the twelve-field ceiling that first
+    /// hid it was lifted: a field whose type is `Vec<UserStruct>` never
+    /// reached the resolver that turns a bare user-type name into a real
+    /// one. Fields, constructor arguments, variant fields and route
+    /// arguments all go through `resolve_param_type`, which only ever
+    /// handled a field whose type *is* a bare user-type name directly --
+    /// never one buried inside a `Vec`/`Option`/tuple/etc. Top-level
+    /// parameters never had this gap (`enrich_rust_type` already walks
+    /// containers), which is why a `Vec<UserStruct>` parameter worked
+    /// while the identical shape as a *field* did not. Found 2026-09-05
+    /// finishing yesterday's crash fix, which stopped this shape from
+    /// taking the whole run down but never made it actually resolve.
+    #[test]
+    fn a_struct_field_holding_a_vec_of_another_struct_still_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+#[derive(Debug, Clone)]
+pub struct Inner { pub callee: String, pub requires: Vec<String> }
+
+#[derive(Debug, Clone, Default)]
+pub struct Wide {
+    pub node_id: String,
+    pub assumed: Vec<Inner>,
+    pub verified_bounds: Vec<(String, u32)>,
+}
+
+#[ply::ensures(|result| *result >= 0)]
+pub fn count(w: &Wide) -> i64 { w.assumed.len() as i64 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "count").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &RouteTable::new());
+        assert!(
+            cf.is_fuzz_supported(),
+            "a Vec<Inner> field should not make the whole struct unbuildable once \
+             Inner is itself a buildable type -- refused: {refused:?}, ty: {:#?}",
+            cf.params[0].ty
+        );
     }
 
     #[test]

@@ -212,6 +212,71 @@ jobs:
           # shellcheck disable=SC2086
           cargo test -p ply-e2e $args
 
+  # Ply, run against its own two documents (`crates/ply-core/ply.yaml`,
+  # `crates/ply-cli/ply.yaml`) -- the thing every other job in this file
+  # takes on faith. Until this job existed, every claim built up over
+  # 2026-09-04/05 (44 promises about ply-core, 6 about ply-cli, all earning
+  # real evidence) had only ever been checked by hand, on one machine,
+  # never by CI -- so nothing stopped either document quietly drifting out
+  # of truth the next time the code under it changed.
+  #
+  # `--fail-on error` rather than the default (`evidence`): one function
+  # (`record::fingerprint`) is refused by name for a documented reason (a
+  # struct with two fields Ply cannot yet build through) and is warning
+  # severity, not error -- a known, recorded gap, not a regression. The
+  # default would fail this job on that gap forever, which is exactly the
+  # "excused failure nobody looks at again" shape `kernel-mutants`' own
+  # comment above warns against. `error` still fails on anything that
+  # actually breaks: a broken promise reports as an error-severity
+  # violation, and a harness that stops compiling reports as an
+  # error-severity tool error -- both confirmed by `cargo ply explain`
+  # before this was written, neither tolerated here.
+  #
+  # `--svg` writes the real, evidence-coloured drawing -- the picture
+  # `cargo ply render` cannot draw, because it only ever reads the document
+  # and never runs anything. This is what makes the claims in this file
+  # visible as something other than a paragraph in a commit message: open
+  # the run, download the drawing, see which chips this exact commit
+  # actually earned.
+  ply-self-check:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.kind == 'code'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ply-self-check
+
+      - name: Build cargo-ply
+        run: cargo build -p ply-cli
+
+      - name: Ply verifies its own library
+        run: |
+          ./target/debug/cargo-ply verify crates/ply-core \
+            --fail-on error --svg ply-core-verified.svg
+
+      - name: Ply verifies its own command line
+        run: |
+          ./target/debug/cargo-ply verify crates/ply-cli \
+            --fail-on error --svg ply-cli-verified.svg
+
+      # `if: always()` so a drawing from a run that just failed is still
+      # attached -- that is the one a reader most wants, since it shows
+      # exactly which chip stopped earning what it used to.
+      - name: Upload the verified drawings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ply-self-check-drawings
+          path: |
+            ply-core-verified.svg
+            ply-cli-verified.svg
+          if-no-files-found: ignore
+
   # The one check to require on `main`, and the only one whose name is
   # fixed. It depends on every job above and does nothing else, so two
   # things become safe that were not:
@@ -231,7 +296,7 @@ jobs:
   # which is the missing-check problem again.
   ci-gate:
     runs-on: ubuntu-latest
-    needs: [changes, product, kernel-mutants, product-e2e]
+    needs: [changes, product, kernel-mutants, product-e2e, ply-self-check]
     if: always()
     steps:
       - name: Fail if any job failed or was cancelled
@@ -241,6 +306,7 @@ jobs:
           echo "product:        ${{ needs.product.result }}"
           echo "kernel-mutants: ${{ needs.kernel-mutants.result }}"
           echo "product-e2e:    ${{ needs.product-e2e.result }}"
+          echo "ply-self-check: ${{ needs.ply-self-check.result }}"
           exit 1
       - name: Every job passed or had nothing to do
         run: |
@@ -248,3 +314,4 @@ jobs:
           echo "product:        ${{ needs.product.result }}"
           echo "kernel-mutants: ${{ needs.kernel-mutants.result }}"
           echo "product-e2e:    ${{ needs.product-e2e.result }}"
+          echo "ply-self-check: ${{ needs.ply-self-check.result }}"

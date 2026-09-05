@@ -4,6 +4,151 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: the last unchecked promise in Ply's own library now earns evidence — 2026-09-05
+
+`record::fingerprint` was the one claim in `crates/ply-core/ply.yaml` that earned nothing,
+refused because its parameter has two fields that are lists of another struct
+(`assumed: Vec<AssumedPromise>`, `engines: Vec<EngineId>`). All 44 claims in the library now
+earn real evidence -- confirmed by running, not by reading: `cargo ply verify crates/ply-core`
+exits clean with zero refusals of any kind, and the same is still true of `crates/ply-cli`.
+
+Two separate, real bugs, not one -- found by tracing exactly why a shape that should have
+worked (once yesterday's crash fix made it stop being refused outright) still would not
+actually build:
+
+- [x] **A struct's own field, one container deep, was never resolved at all.** The function
+      that turns a bare type name into a real, buildable one only ever handled a field
+      whose type *is* that bare name directly -- never one sitting inside a `Vec`, `Option`,
+      a tuple, or a map. A top-level *parameter* of the same shape already worked, because
+      the code path for parameters walks containers and the code path for fields did not;
+      two implementations of the same idea, one of them incomplete. Fixed by making the
+      field path recurse through every container shape the parameter path already knows,
+      reusing the exact same per-leaf resolution either way so the two cannot drift apart
+      again.
+
+- [x] **Once resolved, the generated code still built the wrong value.** A field whose type
+      is `Vec<AnotherStruct>` fell into the generic "just bind whatever proptest drew" path,
+      so it ended up holding a list of raw tuples where the real field expects a list of
+      real struct values -- "mismatched types" in the generated file, not a refusal. The
+      exact conversion already existed for a *parameter* of this shape; applying the same
+      conversion to a field's own generated code, which previously skipped it, was the whole
+      fix.
+
+  Both proved rather than assumed. A focused test for each: one asserting the resolver
+  accepts the shape at all, a second asserting the *generated code itself* -- not just
+  whether the function was accepted -- actually constructs real values, because
+  accepted-but-uncompilable is exactly the failure that slipped through before. Both
+  confirmed red without their respective fix. And the real case, not just a synthetic one:
+  `record::fingerprint`'s own promise was broken on purpose (truncating the hash it
+  returns) and the check caught it as a genuine violation, naming both struct-typed fields
+  in the failing input it reported, before being restored.
+
+## Landed: CI now runs Ply against its own two documents — 2026-09-05
+
+Until now, every claim built up over the last two days -- 44 promises about ply-core, 6
+about ply-cli, all earning real evidence -- had only ever been checked by hand, on one
+machine, never by CI. Nothing stopped either document quietly drifting out of truth the
+next time the code under it changed; the whole "Ply proves itself" story rested on someone
+remembering to run it.
+
+- [x] **`cargo ply verify` can now write the real, evidence-coloured drawing to a file.**
+      New `--svg <path>` flag. The colouring code already existed (`render_svg_with_evidence`)
+      and was already computed on every `--publish-view` run, but only ever wrapped in a
+      JSON envelope for an editor to poll -- nobody could get a plain `.svg` file out of a
+      real run at all before this. `cargo ply render` still only ever draws from the
+      document, deliberately grey, never green; this is the other half.
+
+      Proved with a real end-to-end test, not a shape check: the promise is that the
+      written file carries the `fn-chip-box-earned` class (a real green fill, applied only
+      when a chip has actual `DisplayState::Earned` evidence attached) and the plain
+      declared render never does. Confirmed red without the flag (clap rejects it) and red
+      again on a first draft that asserted the wrong signal (the check-kind label like
+      "fuzz: 64 cases" turned out to be part of the *declared* chip too, present whether or
+      not anything ever ran -- an assumption worth recording since it looked right at a
+      glance and was not).
+
+- [x] **A new required CI job, `ply-self-check`**, added to the one gate `main` actually
+      requires. It builds the tool, runs it against both of Ply's own documents with
+      `--fail-on error` (the looser mode: only a real regression -- a broken promise, a
+      harness that stops compiling -- fails the build; the one already-recorded gap,
+      `record::fingerprint`'s refusal, is warning severity and does not), and uploads both
+      verified drawings as a downloadable build artifact on every run, pass or fail.
+
+      `--fail-on error` was chosen by checking, not assumed: `cargo ply explain` confirms a
+      real violation and a real tool error are both error-severity, and the fingerprint
+      gap's own diagnostic is warning-severity, so this is strict where it needs to be and
+      tolerant only of the one gap already written down elsewhere in this file.
+
+      Simulated the exact commands CI will run before committing: both crates verify clean
+      at exit 0, and the two drawings were opened and read, not just size-checked -- every
+      chip in both is genuinely filled and checkmarked, with the header line itself now
+      reading "6 earned" rather than the declared form's plain function count.
+
+## Landed: the CLI's own library gets its first six claims — 2026-09-05
+
+`crates/ply-cli/ply.yaml` is new: 6 claims, all in `shared.rs` plus one in `lib.rs`, all
+earning evidence. This is 6 of roughly 180 public functions in the crate -- the fast
+first cut of pure helpers, not the whole crate. `verify.rs` (9,100 lines, the code that
+decides every verdict) is entirely unclaimed still; that is the next, much bigger step.
+
+Three real defects found and fixed along the way, all confirmed by running rather than
+by reading:
+
+- [x] **`wrap` could abort the whole process.** Every real call site passes a small
+      literal indent (0, 4, 6, 14 ...); nothing stopped a pathological one, and Ply's own
+      first fuzz run against its own CLI crate found it in seconds -- an indent near
+      `usize::MAX` makes `" ".repeat(indent)` try to allocate that many bytes. Fixed by
+      clamping the indent to just under the line width, since an indent at or past the
+      width already makes wrapping meaningless -- a fact about what the width means, not
+      an invented answer for an input nobody meant.
+
+- [x] **The fuzz harness never imported the checked function's own containing module.**
+      A promise may call a sibling function defined right next to it in the same file --
+      no `use` statement needed, since same-module items need none. That compiled fine in
+      the real crate and failed in the generated check with "cannot find function", because
+      the harness only ever imported the checked function's own bare path plus a
+      crate-root glob, never the specific module it actually lives in. This is a second,
+      independent instance of the class of bug fixed 2026-09-04 for the counterexample
+      replay test (`contract_rt::render_cex_test`'s `module_import`) -- that fix covered
+      only the reactive replay path; the *initial* check, which is what actually finds a
+      violation in the first place, still had the gap. Fixed the same way, in
+      `fuzz_gen::wrap_fn_harness_module`, reusing the same `import_path()` split so the two
+      fixes cannot again disagree about how many segments to drop.
+
+- [ ] **OPEN, recorded rather than fixed: `check` accepts a function that `verify` can
+      never actually check.** `bounded(k)` (Kani) runs inside the target crate's own
+      source, where `pub(crate)` is visible; `fuzz`/`test`/`mutate` run in a genuinely
+      separate crate that depends on the target as an external dependency, where
+      `pub(crate)` is invisible. Ply's own resolver only distinguishes "private to its
+      module" from everything else, so `check` reports a `pub(crate)` function as
+      perfectly resolvable and `verify` then fails opaquely with a raw compiler error
+      naming some unrelated function first in line -- never explaining that the real
+      cause is visibility crossing a crate boundary. Worked around here by promoting the
+      six claimed helpers to full `pub`, which is a safe, reversible visibility widening
+      and not new API surface. The underlying disagreement between `check` and `verify`
+      is untouched and worth its own session: `check` would need to know which checks a
+      claim declares before it can say whether `pub(crate)` is actually sufficient.
+
+- [x] Rendered and reviewed (`docs/ply-cli-self.svg`/`.txt`), added to ARCHITECTURE.md.
+      **Note for future review, not a Ply defect:** the first rasterisation clipped the
+      bottom chip even though the window size exactly matched the SVG's own declared
+      width and height -- CLAUDE.md's own prescribed check. Headless Chrome's rendering
+      of a bare SVG file can carry a few pixels of margin the declared size doesn't
+      account for. Re-rendering with ~40-60px of headroom beyond the declared size, then
+      confirming the content doesn't reach that margin, is the more reliable check.
+
+## Open: the CLI crate is claimed 6 of ~180 — 2026-09-05
+
+The obvious next batch is `shared.rs`'s remaining pure surface (`declared_contracts`,
+`assumed_contracts`, `FnClaimRef`'s methods) and `verify.rs`'s standalone helpers
+(`default_engine_timeout_secs` is a clean, already-pure candidate: real properties like
+"a stubbed harness never gets less than the stubbed floor" and "the vec-param cost grows
+with the bound"). Both take `Document`/`ContractFn`/`FnClaimRef` as parameters in several
+cases, which are not Ply-buildable types -- those functions stay unclaimed until routed
+around or reduced to their buildable inputs, same as everywhere else in this codebase.
+
+
+
 ## Landed: a timed-out engine run now kills the whole process tree, not just cargo — 2026-09-04 (`9037b83`)
 
 `run_with_timeout` (`crates/ply-core/src/engines/mod.rs`) only ever killed the one process
@@ -268,11 +413,11 @@ raw compiler output.
 
       Mutation-checked: keeping only the first chunk (fields past 12 never drawn) turns the
       e2e test red.
-- [ ] **`record::fingerprint` is still refused, now for the other reason.** With the ceiling
-      gone it is no longer a field count -- it has two `Vec<UserStruct>` fields, and a
-      container of a user type below the top level is the shape whose crash was turned into
-      an honest refusal earlier today. Closing it needs the rest of that fix (walk containers
-      when resolving a field's type), not more work here.
+- [x] **`record::fingerprint` is fixed** -- see "Landed: the last unchecked promise in
+      Ply's own library now earns evidence" (2026-09-05). The rest of the container fix
+      this note asked for is done: fields resolve through the same container-walking path
+      parameters already did, and the generated code that builds one now constructs real
+      values instead of leaving a raw tuple in a field that expects a struct.
 - [ ] Rewrite `skills/ply-checkable-code` rule 4: wide structs are fine, and the real
       constraints are public, named, and not `#[non_exhaustive]`. Still open -- the skill
       currently tells authors to design around a limit that no longer exists.
@@ -317,9 +462,13 @@ same defect the 2026-09-04 review found in the generics rule, introduced while f
       It also closes rule 6's loop, which stopped one step short: the fix for a promise that
       cannot fail is sometimes to delete the claim, not reword the promise.
 
-      OPEN, for the maintainer: by that rule `record::fingerprint`'s own claim should
-      probably go. Its promise (`result.len() == 64`) is a type-level fact, and deleting a
-      declaration is the developer's call, so it is left in place and raised here.
+      OPEN, for the maintainer, and the facts underneath it changed 2026-09-05: this was
+      written when the claim was permanently refused, so its only honest content really was
+      a type-level fact nothing could disprove. It now runs 256 real generated cases against
+      the real implementation and earns real evidence -- breaking the function on purpose
+      (truncating the hash) was caught as a genuine violation, so the promise is not vacuous
+      any more. Whether that changes the answer is still the developer's call; the question
+      is left open rather than resolved either way.
 
 - [x] Three tests for the new material, each confirmed red under a deliberate breakage:
       restoring the invented function name, deleting rule 8, and softening the

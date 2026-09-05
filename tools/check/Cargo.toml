@@ -2,6 +2,7 @@
 name = "ply-check"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 # Library-free since Phase 1a: the document-local rules this binary prints
 # live in the product now (`ply_core::check`), so there is exactly one copy

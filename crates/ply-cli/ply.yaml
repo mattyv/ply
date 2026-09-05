@@ -1,0 +1,98 @@
+ply: 1
+
+# The CLI's own library, described at the level where promises live.
+#
+# Until 2026-09-04 this crate had no `src/lib.rs` at all -- only a binary --
+# so Ply refused to look at a single line of it: "there is no library for
+# Ply to look in". That exempted 16,500 lines, including the 9,100 that
+# decide every verdict Ply reports, from the tool that produces them. The
+# binary is now six lines that call into this library, and this document is
+# the start of claiming what moved.
+#
+# Most of this crate reads and writes files, runs subprocesses, and prints
+# to a terminal -- the shell `skills/ply-checkable-code` says to leave
+# unclaimed. What is claimed here is the logic underneath that shell: pure
+# functions that take data and return data, the same shape ply-core's own
+# document looks for.
+
+components:
+  cli:
+    anchor: ply_cli
+    note: >-
+      The library behind `cargo-ply`. Its shell -- argument parsing, file
+      I/O, subprocess calls -- is deliberately unclaimed; what is claimed is
+      the logic those commands share.
+    fns:
+      join_plainly:
+        # A list rendered for a person to read, not a debug print. The
+        # oxford-and joiner is the one place a reader would notice if this
+        # silently dropped or duplicated an item.
+        ensures:
+          - "|result| items.is_empty() || items.iter().all(|i| result.contains(i.as_str()))"
+        checks: [fuzz(256), test]
+        examples:
+          - "join_plainly(&[]) == \"\""
+          - "join_plainly(&[\"a\".to_string()]) == \"a\""
+          - "join_plainly(&[\"a\".to_string(), \"b\".to_string()]) == \"a and b\""
+          - "join_plainly(&[\"a\".to_string(), \"b\".to_string(), \"c\".to_string()]) == \"a, b and c\""
+    components:
+      shared:
+        anchor: ply_cli::shared
+        note: >-
+          What `check`, `audit` and `worklist` all need from a document
+          before any engine runs. One copy, so the three commands cannot
+          quietly disagree about what they read.
+        fns:
+          is_local:
+            # Agrees with its own neighbour, `local_module_path`, checked
+            # against that function's independent logic rather than
+            # restating it -- the two must never drift, or a component
+            # would read as local to one reader and foreign to another.
+            ensures:
+              - "|result| *result == local_module_path(&local_anchors, &anchor).is_some()"
+            checks: [fuzz(256)]
+          local_module_path:
+            # An empty manifest degrades to "everything is local" on
+            # purpose (a missing manifest is not a reason to silently
+            # refuse every claim in the document) -- so this is the one
+            # promise that has to hold no matter what the crate looks like.
+            ensures:
+              - "|result| !local_anchors.is_empty() || *result == Some(String::new())"
+            checks: [fuzz(256), test]
+            examples:
+              - "local_module_path(&[], \"anything::at::all\") == Some(String::new())"
+              - "local_module_path(&[\"demo\".to_string()], \"demo::inner\") == Some(\"inner\".to_string())"
+              - "local_module_path(&[\"demo\".to_string()], \"other::inner\").is_none()"
+          crate_root_fn_key:
+            # The one spelling the resolver and the generated harness both
+            # read. Losing the module segment here is exactly the class of
+            # bug that made a module-anchored claim silently unresolvable
+            # before 2026-09-04.
+            ensures:
+              - "|result| result.ends_with(fn_key.as_str())"
+              - "|result| module.is_empty() || result.starts_with(module.as_str())"
+            checks: [fuzz(256), test]
+            examples:
+              - "crate_root_fn_key(\"\", \"clamp\") == \"clamp\""
+              - "crate_root_fn_key(\"schema\", \"dotted\") == \"schema::dotted\""
+          contract_text:
+            # Never silently empty. A caller assumes a callee's promise
+            # only when this names one -- an empty sentence here would read
+            # as "no promise" when a `requires`/`ensures` clause was really
+            # declared, which is the exact overclaim §5.5 exists to refuse.
+            ensures:
+              - "|result| !result.is_empty()"
+              - "|result| requires.iter().all(|r| result.contains(r.as_str()))"
+              - "|result| ensures.iter().all(|e| result.contains(e.as_str()))"
+            checks: [fuzz(256), test]
+            examples:
+              - "contract_text(&[], &[]) == \"a contract declared with no clauses\""
+              - "contract_text(&[\"x > 0\".to_string()], &[]) == \"requires x > 0\""
+          wrap:
+            # Reflowing a sentence for the terminal must never drop a word
+            # -- the newbie-bar prose this wraps is the only explanation a
+            # reader gets, and a word silently lost from it is a sentence
+            # that no longer says what it meant to.
+            ensures:
+              - "|result| text.split_whitespace().all(|w| result.contains(w))"
+            checks: [fuzz(256)]
