@@ -1922,6 +1922,73 @@ pub fn examples_are_consumed(cf: &ContractFn, checks: &[Check], examples: &[Stri
 /// subtree becomes a seed. The same "purely syntactic, zero new vocabulary"
 /// contract as the constructor extractor: an unparseable example, or one
 /// that never calls `fn_path` at all, contributes nothing here.
+/// The argument the author's own `examples:` pass at `param_index`, when it
+/// is a plain literal.
+///
+/// Distinct from [`extract_examples_seed_strings_for_param`] next door,
+/// which collects *string* literals at any depth for text seeding: this one
+/// wants the argument itself, of any literal kind, because it becomes a
+/// value the generated contract cases assert the promise on.
+///
+/// Literals only, deliberately. The value is written straight into the
+/// generated harness as `let x = <value>;`, so anything needing a name this
+/// scan cannot guarantee is in scope there would break the whole crate's
+/// harness rather than one case. `42`, `-3`, `1.5`, `true`, `"text"` are
+/// enough for the shape this exists for -- an author naming the one input
+/// their precondition accepts -- and anything richer is skipped, leaving
+/// the example running as an example test exactly as before.
+pub fn example_argument_literals(
+    examples: &[String],
+    fn_path: &str,
+    param_index: usize,
+) -> Vec<String> {
+    fn literal_text(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Lit(_) => Some(expr.to_token_stream().to_string()),
+            // `-1` parses as a unary minus over a literal, and is exactly as
+            // safe to write into the harness.
+            Expr::Unary(u) if matches!(u.op, syn::UnOp::Neg(_)) => {
+                matches!(&*u.expr, Expr::Lit(_)).then(|| expr.to_token_stream().to_string())
+            }
+            Expr::Group(g) => literal_text(&g.expr),
+            Expr::Paren(p) => literal_text(&p.expr),
+            _ => None,
+        }
+    }
+    struct CallFinder<'a> {
+        target: &'a str,
+        param_index: usize,
+        out: Vec<String>,
+    }
+    impl<'a> Visit<'a> for CallFinder<'a> {
+        fn visit_expr_call(&mut self, node: &'a syn::ExprCall) {
+            let func_text = node.func.to_token_stream().to_string().replace(' ', "");
+            if harness::last_two_segments(&func_text) == self.target
+                && let Some(arg) = node.args.iter().nth(self.param_index)
+                && let Some(text) = literal_text(arg)
+            {
+                self.out.push(text);
+            }
+            syn::visit::visit_expr_call(self, node);
+        }
+    }
+    let target = harness::last_two_segments(fn_path);
+    let mut out = Vec::new();
+    for example in examples {
+        let Ok(expr) = syn::parse_str::<Expr>(example) else {
+            continue;
+        };
+        let mut finder = CallFinder {
+            target: &target,
+            param_index,
+            out: Vec::new(),
+        };
+        finder.visit_expr(&expr);
+        out.append(&mut finder.out);
+    }
+    out
+}
+
 pub fn extract_examples_seed_strings_for_param(
     examples: &[String],
     fn_path: &str,
@@ -2887,7 +2954,23 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
 /// Silently produces nothing for a fn the fuzz codegen cannot build inputs
 /// for (already reported elsewhere as `unsupported`/`V0505`) or with no
 /// `ensures` to assert.
-pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
+/// The boundary values this tier asserts the contract on, plus any argument
+/// values the author's own `examples:` name.
+///
+/// Examples belong here and did not use to be here, and that gap was a way
+/// for a broken promise to report green. An `examples:` entry asserts *its
+/// own expression* -- `broken(42) == 1` says the call returns 1, and says
+/// nothing about the contract. `verify` treated a passing example as proof
+/// the contract had been checked, so a function promising `result == 0`
+/// while returning 1 came back `tested`, exit 0. Reproduced 2026-09-06 from
+/// an external review; `1 == 1` earned it too, without calling the function
+/// at all.
+///
+/// Feeding the example's inputs in here is what makes an example genuinely
+/// worth something: the contract is now asserted on the value the author
+/// named, so the same example turns that function into a reported
+/// violation, which is what it always should have been.
+pub fn generate_direct_contract_cases(cf: &ContractFn, examples: &[String]) -> String {
     let Some((closure, _)) = &cf.ensures else {
         return String::new();
     };
@@ -2906,8 +2989,18 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
     if moved_param_read_in_ensures(cf).is_some() {
         return String::new();
     }
-    let literal_sets: Vec<Vec<String>> =
+    let mut literal_sets: Vec<Vec<String>> =
         cf.params.iter().map(|p| boundary_literals(&p.ty)).collect();
+    // The author's own values, appended to each parameter's boundary set.
+    // A precondition the generator cannot satisfy is exactly the case where
+    // these are the only inputs that reach the body at all.
+    for (idx, set) in literal_sets.iter_mut().enumerate() {
+        for value in example_argument_literals(examples, &cf.path, idx) {
+            if !set.contains(&value) {
+                set.push(value);
+            }
+        }
+    }
     if literal_sets.iter().any(|s| s.is_empty()) {
         return String::new();
     }
@@ -4231,7 +4324,7 @@ pub fn vector(v: Vec<u8>) -> u32 { v.len() as u32 }
             "the message must say what actually goes wrong: {msg}"
         );
         assert!(
-            generate_direct_contract_cases(&cf).is_empty(),
+            generate_direct_contract_cases(&cf, &[]).is_empty(),
             "the `test` tier's direct cases must refuse the same shape, not just `fuzz`"
         );
     }
@@ -4457,7 +4550,7 @@ pub fn bump(x: u32) -> u32 { x.saturating_add(1) }
 "#,
             "bump",
         );
-        let cases = generate_direct_contract_cases(&cf);
+        let cases = generate_direct_contract_cases(&cf, &[]);
         assert!(!cases.is_empty(), "expected generated concrete cases");
         assert!(
             !cases.replace(' ', "").contains("old("),
@@ -4478,7 +4571,7 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
 "#,
             "clamp",
         );
-        let cases = generate_direct_contract_cases(&cf);
+        let cases = generate_direct_contract_cases(&cf, &[]);
         assert!(cases.contains("fn ply_direct_clamp_00()"));
         assert!(cases.contains("0u32"));
         assert!(cases.contains("u32::MAX"));

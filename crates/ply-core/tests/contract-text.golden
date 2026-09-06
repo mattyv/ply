@@ -90,6 +90,8 @@ movedparam::vector requires v.len() <= 4
 mutatetier::lonely ensures |result|*result == x
 nameoverlap::parse ensures |result|*result >= x
 nameoverlap::parse ensures |result|*result >= x
+narrowprecond::broken_but_exampled ensures |result|*result == 0
+narrowprecond::broken_but_exampled requires x == 42
 narrowprecond::only_at_42 ensures |result|*result == x
 narrowprecond::only_at_42 requires x == 42
 narrowprecond::only_at_42_with_example ensures |result|*result == x

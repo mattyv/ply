@@ -162,12 +162,27 @@ jobs:
             --file crates/ply-core/src/kernel.rs \
             --test-package ply-core
 
+      # A failed sweep is not the same as a sweep that found survivors, and
+      # this said it was: when the unmutated baseline itself failed, no bug
+      # was ever planted and `missed.txt` did not exist, yet the step still
+      # printed "These planted bugs were not caught" above an empty list.
+      # Observed on this repository's own CI, 2026-09-06, after an external
+      # review found the identical defect in `pipeline-mutants.yml` -- the
+      # same wording, fixed there and not here.
       - name: Name any bug that survived
         if: failure()
         run: |
-          echo "These planted bugs were not caught. Each is a real gap or"
-          echo "real dead code -- triage it, do not add it to an ignore list:"
-          cat mutants.out/missed.txt || true
+          if [ -s mutants.out/missed.txt ]; then
+            echo "These planted bugs were not caught. Each is a real gap or"
+            echo "real dead code -- triage it, do not add it to an ignore list:"
+            cat mutants.out/missed.txt
+          else
+            echo "No planted bug survived, and no sweep completed either."
+            echo "cargo-mutants stops before planting anything when the"
+            echo "unmutated baseline does not pass, so this is a failing test"
+            echo "in ply-core rather than a gap in the kernel's own check."
+            echo "Read the step above: the baseline failure is the real one."
+          fi
 
   # End-to-end: drives real Kani, proptest and cargo-mutants, so it is slow
   # (minutes per proof) and needs a ~1GB toolchain. Separated so the fast

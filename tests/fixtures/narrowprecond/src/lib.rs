@@ -25,3 +25,22 @@ pub fn only_at_42(x: u32) -> u32 {
 pub fn only_at_42_with_example(x: u32) -> u32 {
     x
 }
+
+/// The promise is **broken**: it says the result is zero and returns one.
+///
+/// No generated boundary value satisfies `x == 42`, and the worked example
+/// asserts only its own expression -- `broken_but_exampled(42) == 1` is a
+/// true statement about a function whose contract is false. From the fix
+/// for the false accusation (2026-09-06 morning) until that evening, a
+/// passing example was read as proof the contract had been checked, and
+/// this came back `tested`, exit 0. That is evidence that lies, which is
+/// the one thing this tool exists not to do.
+///
+/// The example's *input* now feeds the generated contract cases, so the
+/// promise is asserted at 42 and this is a reported violation.
+#[ply::requires(x == 42)]
+#[ply::ensures(|result| *result == 0)]
+pub fn broken_but_exampled(x: u32) -> u32 {
+    let _ = x;
+    1
+}

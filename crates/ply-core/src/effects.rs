@@ -68,28 +68,20 @@
 //! > **A call is passed over only where every implementation its name could
 //! > resolve to is one this scan can read. Anything else is `Unknown`.**
 //!
-//! [`MethodScope`] is that rule for methods, and **the fifth round found
-//! that the rule was right and the walk implementing it was not**: it
-//! enumerated the places a `use` could appear -- file items, then inline
-//! modules -- and Rust allows one in a function body, a nested block, an
-//! `impl`, or another function entirely. An extension trait imported in the
-//! body that uses it, which is the most natural place to put one, went
-//! straight past the check written to catch extension traits.
-//!
-//! Both scope walks are `syn` visitors now, which reach every node by
-//! construction, so neither depends on anyone having enumerated the
-//! positions correctly. That is the same move as the wildcard-free matches
-//! elsewhere in this codebase: completeness becomes the compiler's job
-//! rather than a person's memory. [`names_the_crate_binds`] had the
-//! identical weakness and is fixed the same way -- found by asking what
-//! else here walked items by hand, not by waiting for it to be reported.
-//!
 //! [`MethodScope`] is that rule for methods. A glob import can bring in an
 //! extension trait invisibly; a `use` rooted outside the standard library
 //! reaches code this scan is not reading; a trait declared here may name
 //! the method itself. Any of the three and the name means nothing reliable,
 //! whatever the receiver is. What survives is narrow and honest: a method
 //! on a genuinely standard type, in a file whose scope this can see whole.
+//!
+//! Both scope walks are `syn` visitors, which reach every node by
+//! construction. The fifth round found the rule right and the walk wrong:
+//! it enumerated where a `use` could appear -- file items, inline modules --
+//! and Rust allows one in a function body, a nested block, an `impl`, or
+//! another function. Completeness is the compiler's job now, not a person's
+//! memory, which is the same move as the wildcard-free matches elsewhere
+//! here.
 //!
 //! All four were latent -- nothing outside this file calls into it yet,
 //! which is the only reason any of them cost nothing.
@@ -643,13 +635,6 @@ const STD_TRANSPARENT_TYPES: &[&str] = &[
 /// wearing a standard-library name was read as the standard library's, and
 /// its own inherent `len` -- which may write a file -- was passed over.
 fn names_the_crate_binds(file: &syn::File) -> BTreeSet<String> {
-    // Through `syn`'s visitor, for the reason `MethodScope::of` uses one: a
-    // hand-written walk covers the positions somebody thought of, and Rust
-    // allows a type declaration or a `use` in a function body, a nested
-    // block, an `impl`, or another function entirely. Missing one is how the
-    // method-scope check was got round on 2026-09-06; the same weakness was
-    // here and is closed the same way rather than waiting to be reported.
-    //
     // A name bound inside a module or a body is not in scope at the crate
     // root, so this is coarser than Rust's own rules. Coarser, never wrong:
     // the trade this module makes everywhere else.
@@ -732,22 +717,9 @@ struct MethodScope {
 }
 
 impl MethodScope {
-    /// Read from the file the checked function was declared in.
-    ///
-    /// Through `syn`'s own visitor, which is the point rather than a
-    /// detail. The first version was a hand-written walk over the positions
-    /// somebody had thought of -- file items, then inline modules -- and
-    /// Rust allows a `use` in a function body, in a nested block, in an
-    /// `impl`, inside another function entirely. An extension trait
-    /// imported in the body that uses it, which is the most natural place
-    /// to put one, walked straight past the check written to catch
-    /// extension traits (external review, 2026-09-06, fifth round).
-    ///
-    /// A visitor reaches every node by construction, so this no longer
-    /// depends on anyone having enumerated the positions correctly. That is
-    /// the same move as `walk`'s wildcard-free matches elsewhere in this
-    /// codebase: make the compiler, not a person's memory, responsible for
-    /// completeness.
+    /// Read from the file the checked function was declared in, through
+    /// `syn`'s visitor: a hand-written walk covers the positions somebody
+    /// thought of. See the module header.
     fn of(file: &syn::File) -> Self {
         struct V<'a>(&'a mut MethodScope);
         impl<'ast> syn::visit::Visit<'ast> for V<'_> {
@@ -1388,38 +1360,6 @@ mod tests {
                  {reach:?}"
             );
         }
-    }
-
-    /// An import inside a function body is an import.
-    ///
-    /// The scope walk enumerated the places a `use` could appear -- file
-    /// items, then inline modules -- and a function body was simply not on
-    /// the list. So the one shape that puts an extension trait exactly where
-    /// it is used, and nowhere else, walked straight past the check written
-    /// to catch extension traits.
-    ///
-    /// The trait lives in another file on purpose: with it in this one, the
-    /// declared-methods half of the scope would catch `next` regardless, and
-    /// the test would pass while the defect stayed. Reported by external
-    /// review 2026-09-06, fifth round on this scanner.
-    #[test]
-    fn a_trait_imported_inside_the_function_body_is_still_in_scope() {
-        let dir = fixture_with(
-            "pub mod extensions;\n\npub fn step(x: u32) -> u32 {\n    \
-             use crate::extensions::Counter;\n    x.next()\n}\n",
-            &[(
-                "extensions.rs",
-                "pub trait Counter {\n    fn next(&self) -> u32;\n}\n\n\
-                 impl Counter for u32 {\n    fn next(&self) -> u32 {\n        \
-                 std::fs::write(\"/tmp/x\", b\"\").unwrap();\n        *self + 1\n    }\n}\n",
-            )],
-        );
-        let reach = scan_fn(dir.path(), "step");
-        assert!(
-            !reach.is_safe(),
-            "the `use` is inside the body, which is where an extension trait is most naturally \
-             put, and `Counter::next` writes a file: {reach:?}"
-        );
     }
 
     /// The general form of the defect above, and the reason the fix is a
