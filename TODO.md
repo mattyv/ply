@@ -19,6 +19,14 @@ file `include_str!`-embedded relative to a crate manifest, so it has to sit at t
 depth in the copy). No test needed writing -- the two failing e2e tests already reproduced
 the bug and now pass, so they are the regression test.
 
+- [ ] **KNOWN GAP, recorded not hidden**: that copy list is maintained by hand. The next
+      `include_str!` of a path outside a crate directory will break the same two unrelated
+      build-identity tests, 150 seconds into an e2e shard, with an error naming neither the
+      embedded file nor the copy list -- which is exactly how this one was found. A sweep
+      would close it: resolve every `include_str!` in the copied crates and assert each
+      target sits inside what `copy_ply_source` copies, so a missing file fails fast and by
+      name. Not done here because the PR was wanted merged.
+
 ## Landed: a finding the drawing paints is now in the data beside it — 2026-09-06 (549e33e)
 
 `render`'s envelope hardcoded an empty diagnostics list while the renderer ran the checks
