@@ -37,6 +37,21 @@ identical and the next run carried a pass forward over source that had changed.
       it, because a build script's dependencies run during the build and can write the
       source the crate then compiles.
 
+**KNOWN COST, for the maintainer to weigh.** Widening on a macro is the same fail-closed
+rule the body walk has always had, and it is not free: `matches!` in an example now costs
+that claim its fine-grained reuse. Two claims in Ply's own document are affected --
+`classify_probe` and `parse_output` in `crates/ply-core` -- because each asserts
+`matches!(f(..), SomeVariant)`. Their bodies contain no macros, so before this change they
+hashed the reached set exactly and now hash the whole crate: any edit anywhere in
+`ply-core` re-earns them. Three ways out, none taken here because the choice is the
+maintainer's: rewrite those two examples without `matches!` (cheapest, and they can be
+written as `==` against a constructed value); teach the walk to resolve a macro definition
+and read its expansion (real work, and the general case is undecidable for
+procedural macros); or accept the cost. Deliberately **not** fixed by listing
+`matches!` as a known-harmless macro -- that is the name-whitelist shape four review
+rounds in a row said to stop reaching for, since the invariant that has to hold is that
+the walk saw everything the example can call, and for a macro it did not.
+
 Spec amended in the same commit (§ the fingerprint's third input, and the resolver's
 path-dependency rule). The reach tests cover all seven table spellings in one loop rather
 than one test per spelling, so a spelling added later cannot quietly skip the rule.
