@@ -37,11 +37,15 @@ output is byte-for-byte what the tool prints, checked, not transcribed.
       acknowledge a resolved ambiguity, so the document carries the warning permanently.
       Note that the `check` clash may resolve itself: retiring one of the standalone
       validator / `cargo ply check` is already recorded as pending (`ply.yaml` line ~163).
-- [ ] Proposed, not built: `cargo ply explain §8` -- resolve a section reference
-      (`§8`, `8`, `5.4b`, `5.1a`) against a copy of the spec embedded at build time, so the
-      `§` reference every diagnostic already prints is followable without leaving the
-      terminal. 221 KB embedded; the version in the binary then matches the behaviour it
-      implements rather than whatever is on disk. Awaiting the go-ahead.
+- [x] `cargo ply explain 8` reads a spec section out loud -- landed 2026-09-06. Resolves
+      `8`, `5.4b`, `§5.4b`, `s5.4b`, `sec 5.4b`, `section 5.4b` alike, because the section
+      sign needs a key most keyboards do not have and requiring it would be a refusal
+      about typing. The spec is embedded with `include_str!`, so an installed binary
+      explains the rules it implements rather than whatever file sits beside it. Codes and
+      sections cannot collide (one letter + four digits vs digits and dots), and a bad
+      section reference is never reported as a bad code. Swept, not spot-checked: an
+      invariant test walks every numbered heading in the spec and fails if one cannot be
+      reached by its own number.
 
 ## Landed: the last unchecked promise in Ply's own library now earns evidence — 2026-09-05
 

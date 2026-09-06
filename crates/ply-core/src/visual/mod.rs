@@ -513,12 +513,8 @@ fn declared_findings(
         .enumerate()
         .map(|(index, finding)| {
             let element_id = match &finding.target {
-                crate::check::Target::Component(path) => {
-                    Some(stable_element_id("component", path))
-                }
-                crate::check::Target::External(name) => {
-                    Some(stable_element_id("external", name))
-                }
+                crate::check::Target::Component(path) => Some(stable_element_id("component", path)),
+                crate::check::Target::External(name) => Some(stable_element_id("external", name)),
                 crate::check::Target::Fn {
                     component_path,
                     fn_name,

@@ -299,6 +299,19 @@ With no code, it lists every one this build can produce. In the interactive view
 same answer is a right-click away: any item offers **Explain \<code\>** for each code
 reported on it, and **Explain a code…** to ask about one you have seen elsewhere.
 
+**The spec reference at the end is followable too.** Every message points at the section
+behind it, and the same command reads that section out of the spec this build carries:
+
+```console
+$ cargo ply explain 5.1a          # the section named above
+$ cargo ply explain 8             # the JSON envelope
+$ cargo ply explain 5.4b          # which signatures each engine supports
+```
+
+You never need to type `§`. `8`, `§8`, `s8`, `sec 8` and `section 8` are one request. The
+spec is embedded at build time, so an installed Ply explains the rules it actually
+implements rather than whatever file happens to sit beside it.
+
 **A warning is not automatically a defect.** `W0419` is the clearest example, and it fires
 on Ply's own document. This repository declares a top-level `check` component, and
 `ply-core` separately contains a module called `check`. So the edge `check -> core` is
@@ -751,7 +764,7 @@ Six commands exist:
 | `cargo ply verify <dir>` | Run declared checks and report the evidence each function earned. |
 | `cargo ply audit <dir>` | List the trust surface: assumptions and declarations Ply does not verify. |
 | `cargo ply worklist <dir>` | List unresolved decisions and evidence still owed. |
-| `cargo ply explain <CODE>` | Say what one diagnostic code means, who reports it, and whether a run carrying it passed. No code lists every one this build can produce. |
+| `cargo ply explain <CODE>` | Say what one diagnostic code means, who reports it, and whether a run carrying it passed. Also reads out a spec section by number (`8`, `5.4b`) -- no `§` needed. No argument lists every code this build can produce. |
 | `cargo ply clean-views <dir>` | Remove older published visual runs while preserving the current run. |
 
 The render, inspection, and verification commands support `--json`. Published visual envelopes

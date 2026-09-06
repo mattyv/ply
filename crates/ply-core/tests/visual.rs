@@ -1164,11 +1164,7 @@ fn a_finding_the_drawing_paints_is_also_in_the_envelope_it_travels_with() {
          test is now proving nothing:\n{}",
         visual.svg
     );
-    let codes: Vec<&str> = visual
-        .diagnostics
-        .iter()
-        .map(|d| d.code.as_str())
-        .collect();
+    let codes: Vec<&str> = visual.diagnostics.iter().map(|d| d.code.as_str()).collect();
     assert!(
         codes.contains(&"W0419"),
         "the drawing paints W0419, so the envelope must carry it too -- \
