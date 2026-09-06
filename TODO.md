@@ -1355,9 +1355,11 @@ raw compiler output.
       this note asked for is done: fields resolve through the same container-walking path
       parameters already did, and the generated code that builds one now constructs real
       values instead of leaving a raw tuple in a field that expects a struct.
-- [ ] Rewrite `skills/ply-checkable-code` rule 4: wide structs are fine, and the real
-      constraints are public, named, and not `#[non_exhaustive]`. Still open -- the skill
-      currently tells authors to design around a limit that no longer exists.
+- [x] Rewrite `skills/ply-checkable-code` rule 4: wide structs are fine, and the real
+      constraints are public, named, and not `#[non_exhaustive]` (`d849fb6`). The review
+      of that rewrite also retracted rule 9's claim that a `Result<Self, _>` constructor
+      is not recognised (it has been since 2026-08-28) and the refusal checklist's "too
+      wide", and added slices and tuples to rule 7's buildable list.
 
 **An agent-written producer was considered and rejected for this type**, under the
 maintainer's steer that LLM help is acceptable. It is strictly weaker here and for a
