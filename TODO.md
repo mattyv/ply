@@ -132,11 +132,11 @@ the twenty-field, two-`Vec<Struct>`-field shape stays pinned by the generator's 
 fixture), and the record module still earns `fuzzed(256)` through `verdict_is_earnable`.
 `ply-core` is at 56 claims, down from 57; the number did not get a vote.
 
-- [x] Claim removed; both drawings and both text forms regenerated and read (one chip gone,
+- [x] Claim removed -- `a5c756d`; both drawings and both text forms regenerated and read (one chip gone,
       the record box's weakest-part line now names `verdict_is_earnable`, 57 to 56 functions,
       root drawing 36px shorter). `cargo ply verify crates/ply-core --fail-on evidence` still
       exits clean.
-- [x] Rule 8's stated reason sharpened on `claude/skill-rule-4`: "a fact about the type" was
+- [x] Rule 8's stated reason sharpened on `claude/skill-rule-4` -- `066baff`: "a fact about the type" was
       imprecise (`String` has no width) -- the promise is a fact about the hash library, and
       the test is whether a body that ignored its inputs would pass. Rule 4's worked case,
       which cited this claim as a live run, now says it was the case that proved the shape and
