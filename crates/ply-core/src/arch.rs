@@ -635,6 +635,27 @@ fn a0413_message(construct_str: &str, token: &str) -> String {
     )
 }
 
+/// A rule the crate tier can never evaluate, because both of its ends
+/// belong to the same crate.
+///
+/// A crate does not depend on itself, so there is no dependency pair for
+/// such a rule to match: it neither holds nor fails, it is never asked.
+/// Saying "no problems found" about it is the failure this message exists
+/// to end -- three `deny` rules were written into Ply's own library
+/// document, all inside one crate, and a deliberately false fourth passed
+/// just as quietly.
+fn a0418_message(construct_str: &str, crate_name: &str) -> String {
+    let construct_str = construct_str.trim();
+    format!(
+        "\"{construct_str}\" cannot be checked: every component it names belongs to the crate \
+         `{crate_name}`, and this rule is matched against the crate dependency graph, where a \
+         crate never depends on itself. So the rule is never evaluated -- it does not hold, it \
+         is simply not asked, and a run carrying it reports no problem either way. Rules between \
+         parts of one crate need the item tier (\u{a7}5.3's second paragraph), which is not built \
+         yet; a rule between two crates is checked exactly as written."
+    )
+}
+
 /// §5.3's crate tier, run over an already-fetched dependency graph (kept
 /// separate from [`crate_dependency_graph`] so this half — the actual
 /// classification rule — is a pure function a test can drive directly,
@@ -729,6 +750,57 @@ pub fn check_architecture(doc: &Document, graph: &WorkspaceGraph) -> (Vec<ArchFi
             }
         }
     }
+
+    // A well-formed rule whose ends share a crate: parsed, resolved, drawn,
+    // and unfalsifiable. Computed from the same anchor-to-crate mapping the
+    // matcher itself uses, so this cannot disagree with what does or does
+    // not fire.
+    let crate_of = |token: &str| -> Option<String> {
+        index
+            .component_crate_claims
+            .iter()
+            .find(|(qualified, _)| qualified == token)
+            .map(|(_, crate_name)| crate_name.clone())
+    };
+    let all_crates: BTreeSet<String> = index
+        .component_crate_claims
+        .iter()
+        .map(|(_, c)| c.clone())
+        .collect();
+    let mut inert: Vec<ArchFinding> = Vec::new();
+    let mut check_reachable = |construct_str: &str, from: &str, to: &str, node_id: String| {
+        let Some(target) = crate_of(to) else { return };
+        // `*` stands for every declared component, so the rule is inert
+        // exactly when all of them share the target's crate.
+        let sources: BTreeSet<String> = if from == "*" {
+            all_crates.clone()
+        } else {
+            crate_of(from).into_iter().collect()
+        };
+        // Containment is always permitted with no edge declared, and a
+        // redundant edge between a component and its own descendant is
+        // already `W0409`. Saying "and it could not be checked either"
+        // on top of that is two messages for one mistake.
+        let contains = to.starts_with(&format!("{from}.")) || from.starts_with(&format!("{to}."));
+        if !contains && !sources.is_empty() && sources.iter().all(|c| *c == target) {
+            inert.push(ArchFinding {
+                code: "A0418",
+                message: a0418_message(construct_str, &target),
+                node_id,
+            });
+        }
+    };
+    for (i, e) in doc.edges.iter().enumerate() {
+        if let Ok(edge) = parse_edge(e) {
+            check_reachable(e, &edge.from, &edge.to, format!("edges[{i}]"));
+        }
+    }
+    for (i, d) in doc.deny.iter().enumerate() {
+        if let Ok(deny) = parse_deny(d) {
+            check_reachable(d, &deny.from, &deny.to, format!("deny[{i}]"));
+        }
+    }
+    findings.extend(inert);
 
     // The crate tier proper: every *normal* dependency, classified.
     // Finding 6: a pair touching an ambiguous identity is excluded here
@@ -1829,5 +1901,94 @@ components:
         assert_eq!(tally.workspace_crate_count, 2);
         assert_eq!(tally.declared_crate_count, 1);
         assert_eq!(tally.undeclared_crates, vec!["crate_extra".to_string()]);
+    }
+    /// A rule whose two ends live in the same crate cannot fire at this
+    /// tier, and until now nothing said so.
+    ///
+    /// The crate tier matches components by the anchor's first `::`
+    /// segment, against the real crate dependency graph. A crate never
+    /// depends on itself, so a rule between two components of one crate has
+    /// no pair to match and the run reports no problems -- which reads as
+    /// "the rule holds" rather than "the rule was never evaluated".
+    ///
+    /// Found the hard way (2026-09-06): three `deny` rules protecting the
+    /// verdict kernel, the code registry and the schema were written into
+    /// Ply's own library document, all three inside one crate. They passed.
+    /// So did a rule deliberately made false. `A0411` already promises this
+    /// class of message for its neighbour case -- a shadowed component whose
+    /// rules "never fire" -- and this is the case it was one short of.
+    #[test]
+    fn a_rule_between_two_components_of_one_crate_is_a0418() {
+        let document = doc(r#"
+ply: 1
+components:
+  outer:
+    anchor: one_crate
+    components:
+      left:
+        anchor: one_crate::left
+      right:
+        anchor: one_crate::right
+deny:
+  - "outer.left -> outer.right"
+"#);
+        let graph = graph_of(vec![]);
+        let (findings, _tally) = check_architecture(&document, &graph);
+        let f = findings
+            .iter()
+            .find(|f| f.code == "A0418")
+            .unwrap_or_else(|| panic!("{findings:?}"));
+        assert!(
+            f.message.contains("one_crate"),
+            "the message must name the crate both ends share: {}",
+            f.message
+        );
+        assert_eq!(f.node_id, "deny[0]");
+    }
+
+    /// The wildcard form, which is how the real mistake was written. `*`
+    /// resolves to every declared component, so if all of them claim the
+    /// same crate as the target, nothing can match.
+    #[test]
+    fn a_wildcard_rule_inside_one_crate_is_also_a0418() {
+        let document = doc(r#"
+ply: 1
+components:
+  outer:
+    anchor: one_crate
+    components:
+      left:
+        anchor: one_crate::left
+      right:
+        anchor: one_crate::right
+deny:
+  - "* -> outer.right"
+"#);
+        let graph = graph_of(vec![]);
+        let (findings, _tally) = check_architecture(&document, &graph);
+        assert!(findings.iter().any(|f| f.code == "A0418"), "{findings:?}");
+    }
+
+    /// The ordinary case stays silent. Two components in different crates
+    /// is exactly what this tier checks, so the rule is live and saying
+    /// anything about it would be noise.
+    #[test]
+    fn a_rule_across_two_crates_is_not_reported() {
+        let document = doc(r#"
+ply: 1
+components:
+  a:
+    anchor: crate_a
+  b:
+    anchor: crate_b
+deny:
+  - "a -> b"
+"#);
+        let graph = graph_of(vec![]);
+        let (findings, _tally) = check_architecture(&document, &graph);
+        assert!(
+            !findings.iter().any(|f| f.code == "A0418"),
+            "a cross-crate rule is enforceable and must not be flagged: {findings:?}"
+        );
     }
 }

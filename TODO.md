@@ -405,9 +405,15 @@ output is byte-for-byte what the tool prints, checked, not transcribed.
       There *is* a diagnostic one case away: `A0411` fires for a rule on a shadowed
       component and its message says "every edge or `deny:` rule written for it never
       fires". Nothing says that for a well-formed rule whose two endpoints share a crate.
-      Closing it needs a registry code and a spec line, so it is the maintainer's call:
-      warn when an edge/deny's endpoints resolve to one crate identity, or once per
-      document when every declared component claims the same crate.
+      **Closed 2026-09-06: `A0418`.** A rule whose every named component resolves to one
+      crate is now reported instead of passing silently -- warning severity, because a rule
+      that cannot be evaluated is not a violation of anything. Verified by putting the three
+      original `deny` rules back: all three are now caught. A containment pair is exempt,
+      since `W0409` already says a redundant parent-descendant edge is pointless and two
+      messages for one mistake is worse than one. `arch_diag` also stopped hardcoding
+      `severity: "error"` and reads the registry -- behaviour-identical for every existing
+      arch code, all of which are errors there, and the second copy is what would have made
+      an advisory code fail runs.
       Decided against, deliberately: declaring the 42 real module pairs as `edges`. A false
       edge is indistinguishable from a true one here, so 42 true edges would be
       indistinguishable from 42 stale ones. The drawing's silence is honest either way --

@@ -489,7 +489,21 @@ fn state_diag(code: &str, node_id: &str, title: String) -> Diagnostic {
 fn arch_diag(f: &ArchFinding) -> Diagnostic {
     Diagnostic {
         code: f.code.into(),
-        severity: "error".into(),
+        // From the registry, not hardcoded. Every finding this tier emitted
+        // was an error, and the header says so ("this tier does not
+        // hedge") -- but a rule that *cannot be evaluated* is not a
+        // violation of anything, so `A0418` is advisory and a second copy
+        // of severity here would have made it fail runs the registry says
+        // it should not (2026-09-06). Behaviour is unchanged for every
+        // other code: all of them are `Error` in the registry too.
+        severity: ply_core::registry::lookup(f.code)
+            .map(|entry| match entry.severity {
+                ply_core::registry::Severity::Error => "error",
+                ply_core::registry::Severity::Warning => "warning",
+                ply_core::registry::Severity::Info => "info",
+            })
+            .unwrap_or("error")
+            .into(),
         phase: "check".into(),
         engine: "ply".into(),
         check: "architecture".into(),

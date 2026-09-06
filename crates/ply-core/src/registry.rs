@@ -70,8 +70,8 @@ codes!(
     E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0208, E0209, E0504, W0409, W0410, W0419,
     // --- Tier::Anchor: resolving a claim to real code (§5.2). ---
     E0301, E0304, E0306, // --- Tier::Crate: architecture, exact and sound (§5.3). ---
-    A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, A0416, A0417, W0413, W0532,
-    W0533, W0534, E0210,
+    A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, A0416, A0417, A0418, W0413,
+    W0532, W0533, W0534, E0210,
     // --- Tier::Item: architecture, approximate (§5.3) -- none of these
     // are built yet; see each row's status. ---
     A0402, A0403, A0404, A0406, A0407, A0408, W0411, W0412,
@@ -389,6 +389,14 @@ impl Code {
                 severity: Error,
                 spec_anchor: "§5.3",
                 gloss: "A component's anchor names a crate that Ply cannot find anywhere in this workspace's real dependency graph, so the component owns no crate and every rule written for it is silently doing nothing -- usually a typo or a rename.",
+            },
+            A0418 => RuleEntry {
+                code: self,
+                tier: Crate,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.3",
+                gloss: "Every component this edge or deny rule names belongs to the same crate, and rules at this tier are matched against the crate dependency graph, where a crate never depends on itself. So the rule is never evaluated -- it does not hold, it is simply not asked, and a run carrying it says no problem either way. Rules between parts of one crate need the item tier, which is not built yet.",
             },
             A0411 => RuleEntry {
                 code: self,
