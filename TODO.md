@@ -229,12 +229,40 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       does not do. A check believed stronger than it is, is the failure this file exists to
       catch one level down.
 
-- [ ] **KNOWN GAP: the filesystem-effect scanner fails open** (the review's fourth). An
-      unrecognised method call (`writer.flush()`) returns `Reach::None` rather than
-      `Unknown`, contradicting its own module doc: "**It fails closed.** ... Anything this
-      scan cannot follow ... is `Unknown`". Confirmed to have **no callers outside its own
-      file**, so it is a latent defect rather than a live unsafe path -- fix before
-      integrating it.
+- [x] **The filesystem-effect scanner fails closed now, as it always said it did** --
+      `HASH2`. Its opening promise -- "anything this scan cannot follow is `Unknown`" -- was
+      false for the commonest shape in real Rust. Every method call was skipped outright,
+      reasoning that the list of methods known to *write* had already had its say; but a
+      method that list has never heard of is not thereby known to be safe. `writer.flush()`,
+      the ordinary way a buffered writer commits bytes to a file, came back as a function
+      that touches nothing at all.
+
+      A method is now passed over only if it is on a spelled-out list of things that read or
+      reshape a value already in memory, and everything else is `Unknown`. The list is closed
+      and argued rather than blanket, exactly like the free-call list beside it: the bar for
+      adding one is "name a type whose implementation could touch a file", which `flush`,
+      `send`, `spawn` and `commit` all fail. Both directions are pinned -- an unrecognised
+      method is never safe, and `.len()`/`.trim()`/`.to_string()` still are, because a scan
+      that gives up on everything is worth no more than one that gives up on nothing.
+
+- [x] **The two type variants that print alike are not a defect** -- `HASH2`. Named them
+      rather than leaving "two of them": `VecU8` and `Vec(U8)` both read `Vec<u8>`, and the
+      two user-type variants both read the type's bare name. `RustType`'s `Debug` is a
+      hand-written *user-facing* rendering -- three refusal messages interpolate it so a
+      reader sees `card_bps: [u32; 4]` instead of an internal variant name -- and to that
+      reader those pairs genuinely are the same type. So the rule is the narrow one: nothing
+      may use that rendering to tell two variants apart. Checked; nothing else does.
+
+- [x] **The four crates with no promises now say why** -- `HASH2`. Asked directly, and the
+      answer is not "write four documents". `check` is one `main` of file reading and exit
+      codes; `e2e` is test scaffolding, and pointing Ply at the suite that judges Ply is the
+      circularity the plan exists to rule out; `attrs` takes compiler token streams Ply
+      cannot manufacture; `render`'s library is re-exports, and its one promisable function
+      lives in a binary no harness can reach. The last two could be claimed by making a
+      private function public and moving another out of a binary -- shaping the code to suit
+      the checker, which this repository refuses about its own kernel and refuses here for
+      the same reason. The root document now carries each reason, so a dashed box reads as an
+      answer rather than an omission.
 
   **The architectural point the review makes, which outranks its four findings:** a correct
   verdict aggregator still gives the wrong assurance if its inputs describe an earlier or

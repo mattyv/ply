@@ -51,6 +51,12 @@ components:
     state:
       of: VerifyRun
       show: [json, exit_code]
+    # Also carries no promises, and here the reason is a rule rather than an
+    # absence (2026-09-06). Its three hundred-odd lines are test scaffolding:
+    # copy a fixture, run the binary, read what came back -- filesystem work
+    # with no promise in it. And pointing Ply at its own test harness is the
+    # circularity `docs/plans/evidence-integrity.md` exists to rule out: the
+    # suite that judges Ply must not be judged by Ply.
     note: >-
       Drives the built binary the way a user does, and depends on nothing.
       A suite that links the library instead stops testing what ships. It
@@ -58,6 +64,17 @@ components:
       rather than widen the rule.
   attrs:
     anchor: ply_attrs
+    # Draws with no promises on it, and that is the honest picture rather
+    # than an oversight (asked about 2026-09-06; this is the answer). There
+    # is no `crates/ply-attrs/ply.yaml`, because there is nothing here Ply
+    # can check. All three public entry points take a stream of compiler
+    # tokens and hand one back, and Ply builds inputs by choosing values --
+    # it cannot manufacture a token stream, and a proc-macro crate's
+    # functions cannot be called from an ordinary test at all. One private
+    # helper underneath is an ordinary function, and making it public so Ply
+    # could see it would be shaping the code to suit the checker, which this
+    # repository refuses about its own kernel and refuses here for the same
+    # reason.
     note: >-
       Stands alone. It is a proc-macro crate, compiled for the machine doing
       the building rather than the machine the program will run on, so a
@@ -125,6 +142,13 @@ components:
   # corrected -- which is the check this document exists to be subject to.
   render:
     anchor: ply_render
+    # No promises here either, for a different reason (2026-09-06): this
+    # crate's library is re-exports and nothing else -- every function it
+    # appears to offer belongs to `core` and is claimed there, where the code
+    # is. The one genuinely promisable function of its own turns a `--depth`
+    # argument into a number, and it lives in the binary, where no harness
+    # can reach it. Moving it into the library purely so Ply could claim it
+    # is the same refusal as `attrs` above.
     # No `state:` here, deliberately. This library is a facade over
     # `ply_core::visual` (see `tools/render/src/lib.rs`) and owns no struct
     # of its own, so the only type at this anchor is the binary's own parsed
@@ -141,6 +165,11 @@ components:
       why its wording is tested by exact string rather than by shape.
   check:
     anchor: ply_check
+    # Forty-six lines, one `main`, and every one of them reading a file,
+    # printing a diagnostic or choosing an exit code (2026-09-06). There is
+    # no function here with a promise in it, so there is nothing to write
+    # down. A document declaring nothing would draw the same empty box while
+    # implying somebody had looked -- worse than the empty box.
     note: >-
       The standalone spec validator, which predates the installed `cargo ply
       check` command and overlaps it. Retiring one of the two is recorded

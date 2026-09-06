@@ -20,6 +20,18 @@
 //! never treated as `None` by any caller. A safety check that guesses "no"
 //! when it cannot see is not a safety check.
 //!
+//! **That paragraph was false until 2026-09-06**, for the commonest shape
+//! in real Rust. Every method call was skipped outright, on the reasoning
+//! that the list of methods known to *write* had already had its say -- but
+//! a method that list has never heard of is not thereby known to be safe.
+//! `writer.flush()`, the ordinary way a buffered writer commits bytes to a
+//! file, came back as a function that touches nothing at all. A method is
+//! now passed over only if it is on a spelled-out list of things that read
+//! or reshape a value already in memory ([`BENIGN_METHODS`]), and anything
+//! else is `Unknown`. Found by external review; latent rather than live,
+//! since nothing outside this file calls into it yet, which is the only
+//! reason it cost nothing.
+//!
 //! **What it is not.** It is not the capability tier §5.3 describes and it
 //! does not implement `pure`/`uses:` enforcement (`A0402`, `A0403`, `A0408`
 //! are still planned and still emit nothing). It answers one question about
@@ -282,13 +294,29 @@ fn walk(
         .map(|(head, _)| head.to_string());
 
     for call in &calls {
-        // A method call on an unknown receiver, or a bare closure call:
-        // nothing to follow, and the writing-method list above already had
-        // its say.
-        if call.contains('.') {
+        if is_benign(call) {
             continue;
         }
-        if is_benign(call) {
+        // A method call this scan does not recognise. There is no body to
+        // follow -- the receiver's type is not known here -- so the walk
+        // cannot answer, and the module's own promise says what to do about
+        // that: report `Unknown`, never `None`.
+        //
+        // It used to `continue` past every method with the note that "the
+        // writing-method list above already had its say". That list only
+        // recognises methods known to *write*; one it has never heard of is
+        // not thereby known to be safe. `writer.flush()` -- the ordinary way
+        // a buffered writer commits bytes to a file -- came back as touching
+        // nothing at all.
+        if let Some(method) = call.strip_prefix('.') {
+            if unknown.is_none() {
+                unknown = Some(Reach::Unknown {
+                    because: format!(
+                        "`{fn_path}` calls `.{method}()` on a value whose type this scan cannot \
+                         see, so what that method does is unknown"
+                    ),
+                });
+            }
             continue;
         }
         // Same module first, then the crate root -- the two spellings an
@@ -320,6 +348,167 @@ fn walk(
     unknown.unwrap_or(Reach::None)
 }
 
+/// Methods that plainly touch no file, so meeting one is not a reason to
+/// give up on an answer.
+///
+/// Closed and spelled out, for exactly the reason [`BENIGN_STD_ASSOC`] is:
+/// a blanket "methods are fine" rule is what this module had until
+/// 2026-09-06, and it cleared `writer.flush()` -- the ordinary way a
+/// buffered writer commits bytes to a file -- as touching nothing.
+///
+/// Everything here reads or reshapes a value already in memory. Nothing
+/// here opens, creates, truncates, renames or removes anything, and nothing
+/// here can be *made* to by a caller's choice of receiver: these are
+/// inherent methods and trait methods on the standard library's own
+/// containers, strings, slices, options and results.
+///
+/// The bar for adding one: name a type whose implementation of it could
+/// touch a file. If you can, it does not belong here. `flush`, `write`,
+/// `send`, `spawn`, `execute` and `commit` all fail that bar, which is why
+/// none of them appears -- a body reaching any of them stays `Unknown`,
+/// which is the honest answer and the safe one.
+const BENIGN_METHODS: &[&str] = &[
+    // Length, emptiness and membership.
+    "len",
+    "is_empty",
+    "contains",
+    "contains_key",
+    "starts_with",
+    "ends_with",
+    "count",
+    // Copying and converting a value already in hand.
+    "clone",
+    "to_string",
+    "to_owned",
+    "to_vec",
+    "into",
+    "as_str",
+    "as_ref",
+    "as_bytes",
+    "as_slice",
+    "as_deref",
+    "as_mut",
+    "borrow",
+    "cloned",
+    "copied",
+    "to_lowercase",
+    "to_uppercase",
+    "to_ascii_lowercase",
+    "to_ascii_uppercase",
+    // Reshaping text and slices.
+    "trim",
+    "trim_start",
+    "trim_end",
+    "split",
+    "splitn",
+    "rsplit",
+    "split_once",
+    "rsplit_once",
+    "split_whitespace",
+    "lines",
+    "chars",
+    "bytes",
+    "join",
+    "repeat",
+    "replace",
+    "strip_prefix",
+    "strip_suffix",
+    "trim_matches",
+    "trim_start_matches",
+    "trim_end_matches",
+    "parse",
+    "get",
+    "first",
+    "last",
+    "iter",
+    "iter_mut",
+    "into_iter",
+    "next",
+    "rev",
+    "collect",
+    "map",
+    "filter",
+    "filter_map",
+    "flat_map",
+    "flatten",
+    "any",
+    "all",
+    "find",
+    "find_map",
+    "fold",
+    "sum",
+    "product",
+    "min",
+    "max",
+    "min_by_key",
+    "max_by_key",
+    "sort",
+    "sort_by",
+    "sort_by_key",
+    "dedup",
+    "take",
+    "skip",
+    "zip",
+    "chain",
+    "enumerate",
+    "peekable",
+    "position",
+    // Growing an in-memory container.
+    "push",
+    "push_str",
+    "pop",
+    "insert",
+    "extend",
+    "retain",
+    "remove",
+    "entry",
+    "or_default",
+    "or_insert",
+    "or_insert_with",
+    // Options and results, with the two that panic rather than write.
+    "unwrap",
+    "unwrap_or",
+    "unwrap_or_else",
+    "unwrap_or_default",
+    "expect",
+    "ok",
+    "ok_or",
+    "ok_or_else",
+    "err",
+    "is_some",
+    "is_none",
+    "is_ok",
+    "is_err",
+    "and_then",
+    "unwrap_err",
+    // Paths: naming a file is not touching one. Every one of these answers
+    // a question about a path value and opens nothing.
+    "display",
+    "to_path_buf",
+    "to_str",
+    "to_string_lossy",
+    "file_name",
+    "file_stem",
+    "extension",
+    "parent",
+    "components",
+    "with_extension",
+    "with_file_name",
+    // Formatting and comparison.
+    "eq",
+    "ne",
+    "cmp",
+    "partial_cmp",
+    "hash",
+    "abs",
+    "saturating_sub",
+    "saturating_add",
+    "checked_add",
+    "checked_sub",
+    "checked_mul",
+    "wrapping_add",
+];
+
 /// Whether this call is one the scan can pass over without following.
 fn is_benign(call: &str) -> bool {
     let last_two = call
@@ -330,6 +519,13 @@ fn is_benign(call: &str) -> bool {
         .rev()
         .collect::<Vec<_>>()
         .join("::");
+    // A method call, recorded by `collect` with a leading `.`: benign only
+    // if it is on the spelled-out list. Anything else is a call this scan
+    // cannot follow, and this module's promise is that such a call is
+    // `Unknown`.
+    if let Some(method) = call.strip_prefix('.') {
+        return BENIGN_METHODS.contains(&method);
+    }
     BENIGN_CALLS.contains(&call)
         || BENIGN_STD_ASSOC.contains(&last_two.as_str())
         || BENIGN_PREFIXES.iter().any(|p| call.starts_with(p))
@@ -486,6 +682,63 @@ mod tests {
             !reach.is_safe(),
             "and unknown must never read as safe -- this is the whole point of three answers"
         );
+    }
+
+    /// The same direction as the test above, for the shape that was
+    /// getting through: a *method* this scan does not recognise.
+    ///
+    /// A method call was skipped outright -- "nothing to follow, and the
+    /// writing-method list above already had its say" -- but that list only
+    /// recognises methods known to write. A method it has never heard of is
+    /// neither known to write nor known to be safe, and skipping it let the
+    /// walk finish and answer `None`. So this module's own opening promise,
+    /// "**It fails closed** ... anything this scan cannot follow ... is
+    /// `Unknown`", was false for the commonest shape in real Rust.
+    /// Reported by external review 2026-09-05.
+    ///
+    /// `flush` is the example that shows the stakes: it is exactly how a
+    /// buffered writer commits bytes to a file, and it was answering "this
+    /// function touches no file at all".
+    #[test]
+    fn a_method_this_scan_does_not_recognise_is_unknown_and_never_safe() {
+        let dir = fixture(
+            "pub fn commit<W: std::io::Write>(w: &mut W) -> bool {\n    w.flush().is_ok()\n}\n",
+        );
+        let reach = scan_fn(dir.path(), "commit");
+        assert!(
+            matches!(reach, Reach::Unknown { .. }),
+            "`flush` is how a buffered writer commits bytes to a file, and this scan has never \
+             heard of it -- that is the definition of a call it cannot follow: {reach:?}"
+        );
+        assert!(
+            !reach.is_safe(),
+            "and a call it cannot follow must never read as safe"
+        );
+    }
+
+    /// The other half, and the reason the fix is a spelled-out list rather
+    /// than "every method is unknown": a scan that gives up on `.len()`
+    /// gives up on everything, and an answer nobody can ever get is worth
+    /// no more than a wrong one.
+    #[test]
+    fn the_ordinary_methods_a_body_uses_to_read_its_arguments_stay_safe() {
+        for body in [
+            "pub fn n(p: &str) -> usize {\n    p.len()\n}\n",
+            "pub fn e(p: &str) -> bool {\n    p.is_empty()\n}\n",
+            "pub fn c(p: &str) -> String {\n    p.to_string()\n}\n",
+            "pub fn t(p: &str) -> String {\n    p.trim().to_owned()\n}\n",
+        ] {
+            let dir = fixture(body);
+            let name = body.split_whitespace().nth(2).unwrap();
+            let name = name.split('(').next().unwrap();
+            let reach = scan_fn(dir.path(), name);
+            assert_eq!(
+                reach,
+                Reach::None,
+                "reading a string cannot touch a file, and a scan that says otherwise is \
+                 useless rather than careful: {body}"
+            );
+        }
     }
 
     /// A write through an already-open handle, which no `fs::` path names.

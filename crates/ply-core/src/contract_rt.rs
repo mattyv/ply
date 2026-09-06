@@ -1536,6 +1536,16 @@ mod numeric_classification_proof {
         // can print the same and did (30 distinct strings for 32 entries),
         // which would have quietly left two variants unchecked by a test
         // whose whole job is to say none are.
+        //
+        // Which two, measured rather than left as "two of them": `VecU8`
+        // and `Vec(U8)` both read `Vec<u8>`, and `UserType`/`UserTypeFields`
+        // both read the type's bare name. That is not a defect to fix --
+        // `RustType`'s `Debug` is a hand-written user-facing rendering, and
+        // to the reader of a refusal those pairs genuinely *are* the same
+        // type; the difference is only in how Ply builds a value of it. So
+        // the rule is the narrow one: nothing may use that rendering to
+        // tell two variants apart. Checked 2026-09-06 -- nothing else in
+        // the tree does.
         let distinct: std::collections::HashSet<std::mem::Discriminant<RustType>> =
             all.iter().map(std::mem::discriminant).collect();
         assert_eq!(
