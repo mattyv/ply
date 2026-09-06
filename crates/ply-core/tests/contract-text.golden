@@ -142,6 +142,10 @@ resultreuse::total ensures |result|*result <= 11_000
 resultreuse::total requires amount <= 1_000
 resultreuse::widen ensures |result|*result >= x
 resultreuse::widen requires x <= 1_000
+reuseexamplehelper::bumped ensures |result|*result > x
+reuseexamplehelper::bumped requires x <= 1_000
+reuseexamplehelper::tripled ensures |result|*result >= x
+reuseexamplehelper::tripled requires x <= 1_000
 reusehelper::bumped ensures |result|*result > x
 reusehelper::bumped requires x <= 1_000
 reusehelper::doubled ensures |result|*result >= x
@@ -150,6 +154,8 @@ reuseproof::inner ensures |result|*result <= 200
 reuseproof::inner requires x <= 50
 reuseproof::outer ensures |result|*result <= 200
 reuseproof::outer requires x <= 50
+reusetargetdep::doubled ensures |result|*result >= x
+reusetargetdep::doubled requires x <= 1_000
 reusewiden::bumped ensures |result|*result >= x
 reusewiden::bumped requires x <= 1_000
 reusewiden::halved ensures |result|*result <= x
