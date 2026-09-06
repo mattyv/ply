@@ -126,7 +126,7 @@ function's own source, the code it calls, ..." while being wrong about exactly t
   hashing.
 
 - [x] **Dependency identity now survives a moved git revision and two versions of one
-      crate** (the review's third finding) -- `cd20b03`. Two defects, one reader:
+      crate** (the review's third finding) -- `70246e6`. Two defects, one reader:
 
       The lockfile's `source =` line was read as a boolean ("is this external?") and then
       thrown away, so a git dependency updated without a version bump produced a byte-identical
