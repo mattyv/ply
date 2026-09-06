@@ -94,25 +94,48 @@ examples still runs, because an example's source is spliced in as written — bu
 the concrete cases you wrote and nothing more. A function that computes something should
 return it.
 
-## 4. Keep a public struct under about a dozen fields
+## 4. Keep a struct's fields public and named
 
-A struct Ply builds field by field generates one input recipe per field, and the library
-trait that composes them into a whole value stops being implemented past twelve. Ply's own
-`FingerprintInputs` has twenty public fields and is refused for exactly this reason — the
-one claim in its library that still earns nothing.
+Width is not a problem. **It was until 2026-09-04** — Ply folded every field into one flat
+tuple and the sampling library's tuple trait stops at twelve, so a thirteen-field struct was
+refused outright. That ceiling is gone: the leaves are composed in nested chunks now, so a
+twenty-field struct builds exactly as a five-field one does. If you have read older advice
+here telling you to design around a dozen fields, ignore it — this section said that, and it
+was a limit in the tool rather than anything about your code.
 
-If a type is genuinely that wide, give it a public constructor that takes fewer arguments,
-or declare a route naming a public function that returns one — **a route needs a public
-producer that already exists**; it names one, it does not create one.
+What Ply actually needs to build a struct:
+
+- **every field public** — it constructs the value with a struct literal, so a private field
+  it cannot name means it cannot build one at all
+- **fields named** — a tuple struct has no field names to build against
+- **not `#[non_exhaustive]`** — that attribute exists precisely to forbid the literal Ply
+  would write
+
+A container of a plain type is fine (`Vec<String>`, `Option<u32>`), and so is a container of
+*your own* struct — `Vec<Inner>`. **That was refused until 2026-09-05**, and this section
+said so; the resolver now walks into a container wherever it appears rather than only at the
+top level. Ply's own `FingerprintInputs` was the example of the refusal: twenty public
+fields, two of them lists of another struct. It earns `fuzzed(256)` today, so if you have
+read older advice here about designing around that shape, ignore it too.
+
+When a type has real invariants or private fields, give it a public constructor taking fewer
+arguments, or declare a route naming a public function that returns one — **a route needs a
+public producer that already exists**; it names one, it does not create one.
 
 ```yaml
 routes: { Handle: open_handle }        # open_handle must be a real public fn
 ```
 
 When no such function exists, adding one whose only caller is Ply is adding public API for
-the tool's benefit, and that is the developer's call, not yours. Ply's own twenty-field
-`FingerprintInputs` is in exactly this position and is left refused on purpose. Rule 9 is
-what to do instead.
+the tool's benefit, and that is the developer's call, not yours. Rule 9 is what to do
+instead.
+
+What Ply cannot do for you is know whether those public fields have a relationship between
+them that nothing in the type enforces. On `FingerprintInputs` it says so out loud rather
+than assuming: the run reports that its evidence rests on there being no hidden invariant
+among the fields, and that this is assumed, not proved. A type whose methods quietly keep
+two fields in step is one where that assumption is wrong, and a value Ply builds may be one
+your program never produces.
 
 ## 5. Watch what a precondition throws away
 
