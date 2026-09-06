@@ -1407,6 +1407,27 @@ struct FnChip {
     svg: String,
 }
 
+/// Where a chip's evidence comes from, or would come from.
+///
+/// One parameter rather than two because they answer the same question and
+/// are read together: what does a run know about this promise, and whose run
+/// is it. Bundled when adding `declared_in` pushed the chip renderer past
+/// clippy's argument limit -- which was the right nudge, since a caller
+/// passing one without considering the other is a caller that will word the
+/// tooltip wrongly.
+struct ChipProvenance<'a> {
+    /// This fn's own evidence element, already resolved by the caller
+    /// (`render_component`, which alone knows the component's own resolved
+    /// id -- the parent id a fn's lookup needs) alongside the diagnostics
+    /// that attach to it. `None` whenever there is no evidence to attach.
+    evidence: Option<(&'a super::VisualElement, &'a [super::VisualDiagnostic])>,
+    /// The document that declares this fn, when it is not this one -- i.e.
+    /// when the chip is drawn through a derived link. `None` for a fn this
+    /// document declares itself, which is every chip in a single-document
+    /// drawing.
+    declared_in: Option<&'a str>,
+}
+
 fn render_fn_chip(
     name: &str,
     fc: &FnClaim,
@@ -1423,8 +1444,12 @@ fn render_fn_chip(
     // (`render_component`, which alone knows the component's own resolved
     // id -- the parent id a fn's lookup needs) alongside the diagnostics
     // that attach to it. `None` whenever there is no evidence to attach.
-    evidence: Option<(&super::VisualElement, &[super::VisualDiagnostic])>,
+    provenance: ChipProvenance<'_>,
 ) -> FnChip {
+    let ChipProvenance {
+        evidence,
+        declared_in,
+    } = provenance;
     // §5.1: the list that actually governs this fn — its own if it declared
     // one, else the nearest ancestor component's default (or nothing, if it
     // has neither). Every downstream read of "this fn's checks" — the
@@ -1664,7 +1689,20 @@ fn render_fn_chip(
     // other gloss-then-detail pair in this tooltip — a reader gets the
     // meaning of the mark before the verdict string that backs it.
     if let Some(state) = evidence_state {
-        tip.push(display_state_prose(state));
+        // A chip borrowed from another document must not say nobody checked
+        // it: the other document's own run does. The collapsed linked card
+        // already declines to speak for evidence it does not own -- it omits
+        // the "N of M earned" split for exactly this reason -- and the
+        // expanded chips said "no run has answered this promise yet", which
+        // is false. The verdict stays `declared`, which is true of *this*
+        // run; only the sentence changes, to say which run would answer it
+        // (2026-09-06).
+        match (state, declared_in) {
+            (DisplayState::Declared, Some(document)) => {
+                tip.push(borrowed_chip_prose(document));
+            }
+            _ => tip.push(display_state_prose(state)),
+        }
     }
     if let Some((element, diagnostics)) = evidence {
         tip.push(completed_evidence_tooltip(element, diagnostics));
@@ -2589,6 +2627,17 @@ fn render_component<'a>(
         BADGE_H + GAP
     };
 
+    // Which document declares what is drawn inside this box. A derived link
+    // is keyed by bare top-level name, and its interior is substituted whole
+    // -- so every fn and nested component below this point comes from that
+    // file, and a chip drawn here must say so rather than claim nobody
+    // checked it.
+    let declared_in: Option<&str> = qualified
+        .split('.')
+        .next()
+        .and_then(|top| walk.links.and_then(|links| links.get(top)))
+        .map(|link| link.target_path.as_str());
+
     let children: Vec<(String, ComponentBox)> = comp
         .components
         .iter()
@@ -2622,7 +2671,10 @@ fn render_component<'a>(
                     ctx,
                     this_default,
                     walk.collapse.is_focused_subtree(qualified),
-                    resolved_function(evidence.zip(own_element_id), fname, qualified),
+                    ChipProvenance {
+                        evidence: resolved_function(evidence.zip(own_element_id), fname, qualified),
+                        declared_in,
+                    },
                 ),
             )
         })
@@ -3515,6 +3567,19 @@ pub(super) fn classify_evidence(evidence: &super::ElementEvidence) -> DisplaySta
 /// for a reader who has never seen Ply — the mark itself is only a
 /// character (`render_fn_chip`'s `evidence_mark`), and a character alone
 /// never explains itself.
+/// What to say about a promise this document draws but does not own.
+///
+/// Names the file that declares it and the command that answers it, because
+/// a reader who sees grey concludes "nothing is checked" and the useful
+/// correction is not "it is checked somewhere" but "here is where to look".
+fn borrowed_chip_prose(document: &str) -> String {
+    let folder = document.strip_suffix("/ply.yaml").unwrap_or(document);
+    format!(
+        "This run did not check it. It is declared in `{document}`, and `cargo ply verify \
+         {folder}` is the run that answers it -- open that folder to see its result."
+    )
+}
+
 fn display_state_prose(state: DisplayState) -> String {
     match state {
         DisplayState::Declared => "no run has answered this promise yet".to_string(),

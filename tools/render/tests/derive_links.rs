@@ -437,3 +437,78 @@ fn focus_and_collapse_reach_a_linked_documents_interior() {
         "{err}"
     );
 }
+
+/// A chip drawn from another document must not say nobody checked it.
+///
+/// The collapsed linked card already declines to speak for evidence it does
+/// not own -- it omits the "N of M earned" split on purpose, because "0 of
+/// 44 earned" would read as a real answer about work nobody checked. The
+/// expanded chips got no such courtesy: their tooltip said "no run has
+/// answered this promise yet", which is false whenever the other document's
+/// own run has answered it. The same feature said "not mine to say" folded
+/// and "nobody checked this" unfolded (2026-09-06).
+///
+/// This does not colour the chip -- `declared` is true of *this* run, and
+/// inventing a verdict from another run is what the viewer is forbidden to
+/// do. Only the sentence changes, to say which run would answer it.
+#[test]
+fn a_chip_drawn_from_a_linked_document_says_where_its_evidence_lives() {
+    let dir = tempfile::tempdir().unwrap();
+    write_crate(
+        &dir.path().join("crates/inner"),
+        "inner_lib",
+        "ply: 1\ncomponents:\n  inner:\n    anchor: inner_lib\n    fns:\n      go:\n        checks: [fuzz(64)]\n",
+    );
+    let outer_text = "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n";
+    std::fs::write(dir.path().join("ply.yaml"), outer_text).unwrap();
+    let doc = parse_document(outer_text).unwrap();
+
+    let link_set = derive_links(&doc, dir.path());
+    assert!(
+        link_set.links.contains_key("core"),
+        "{:?}",
+        link_set.findings
+    );
+
+    // The evidence-carrying path, not the static one: the false sentence is
+    // a chip's *evidence* prose, so it only appears once a run's elements
+    // are attached -- which is the case the reader actually saw.
+    let state_fields = ply_core::harness::resolve_state_fields(dir.path(), &doc);
+    let visual = ply_core::visual::build_declared_visual_envelope_with_links(
+        &doc,
+        ply_core::visual::RunMetadata {
+            id: "linked-run".into(),
+            completed_at: "2026-09-06T00:00:00Z".into(),
+            root: ply_core::visual::RootIdentity { path: ".".into() },
+            tool: ply_core::visual::ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "test".into(),
+            },
+            outcome: ply_core::visual::RunOutcome::MissingEvidence,
+        },
+        &RenderOptions::default(),
+        Some(&state_fields),
+        Some(&link_set.links),
+    )
+    .unwrap();
+    let svg = visual.svg;
+
+    assert!(
+        !svg.contains("no run has answered this promise yet"),
+        "a borrowed chip must not claim nobody checked it -- the other \
+         document's run does:\n{svg}"
+    );
+    assert!(
+        svg.contains("This run did not check it"),
+        "the tooltip must say whose run it is, not that there is none:\n{svg}"
+    );
+    assert!(
+        svg.contains("crates/inner/inner_lib/ply.yaml"),
+        "it must name the document that declares it, so the reader can go \
+         there:\n{svg}"
+    );
+    assert!(
+        svg.contains("cargo ply verify crates/inner/inner_lib"),
+        "and name the command that answers it:\n{svg}"
+    );
+}

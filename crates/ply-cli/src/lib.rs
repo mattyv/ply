@@ -316,6 +316,13 @@ pub fn run() -> anyhow::Result<()> {
                 println!("{}", envelope.to_json_pretty());
             } else {
                 print_human(&envelope);
+                // A component whose interior is drawn from another document
+                // is not checked by this run, and the tree above shows it as
+                // an absence -- which reads as "nothing here is checked"
+                // when the other document's own run may have checked all of
+                // it. Say where that run is rather than leave the reader to
+                // conclude the wrong thing (2026-09-06).
+                print!("{}", linked_documents_note(&verification.document, &path));
             }
             std::process::exit(exit_code_for(&envelope, fail_on));
         }
@@ -837,6 +844,48 @@ fn claims_sharing(items: &[ply_core::diag::NotCarriedForward], why: &str) -> (St
         .map(|i| format!("`{}`", i.node_id))
         .collect();
     (join_plainly(&names), names.len() > 1)
+}
+
+/// One line per component this document draws from another file, naming the
+/// run that answers those promises.
+///
+/// Not a warning and not a finding: nothing is wrong. `verify` here checked
+/// what this document declares, which is exactly what it should do; the note
+/// exists because the tree cannot distinguish "nobody checked this" from
+/// "another document's run checks this", and the reader cannot either.
+fn linked_documents_note(document: &ply_core::model::Document, root: &Path) -> String {
+    let links = derive_links(document, root);
+    let mut out = String::new();
+    for (name, link) in &links.links {
+        let folder = link
+            .target_path
+            .strip_suffix("/ply.yaml")
+            .unwrap_or(&link.target_path);
+        let promises = count_promises(&link.target);
+        let (plural, verb) = if promises == 1 {
+            ("", "is")
+        } else {
+            ("s", "are")
+        };
+        out.push_str(&format!(
+            "\n{name} — {promises} promise{plural} drawn here {verb} written in {}, ",
+            link.target_path,
+        ));
+        out.push_str(&format!(
+            "and were not checked by this run. `cargo ply verify {folder}` is the run that checks them.\n",
+        ));
+    }
+    out
+}
+
+/// Every fn the linked component declares, at any depth.
+fn count_promises(component: &ply_core::model::Component) -> usize {
+    component.fns.len()
+        + component
+            .components
+            .values()
+            .map(count_promises)
+            .sum::<usize>()
 }
 
 fn print_human(envelope: &ply_core::diag::Envelope) {
