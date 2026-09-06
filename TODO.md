@@ -4,6 +4,21 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: the e2e build-identity tests build again — 2026-09-06
+
+CI's `product-e2e (5/6)` shard was red: the private copy those tests make of Ply's own
+source (`tests/e2e/src/lib.rs::copy_ply_source`) never listed `The-Ply-Spec.md`, so once
+`cargo ply explain`'s `include_str!("../../../The-Ply-Spec.md")` landed (below, same day),
+the copy's build failed with "No such file or directory" and both build-identity tests
+panicked on "cargo build (Ply source copy) failed" -- a merge interaction between two
+same-day changes, not a defect in the diagnostics-in-the-envelope work this PR shipped.
+
+Fixed by copying `The-Ply-Spec.md` alongside `Cargo.toml`/`Cargo.lock`, and updating the
+copy function's doc comment to say why (it mirrors the existing `schema/` case: another
+file `include_str!`-embedded relative to a crate manifest, so it has to sit at the same
+depth in the copy). No test needed writing -- the two failing e2e tests already reproduced
+the bug and now pass, so they are the regression test.
+
 ## Landed: a finding the drawing paints is now in the data beside it — 2026-09-06 (549e33e)
 
 `render`'s envelope hardcoded an empty diagnostics list while the renderer ran the checks
