@@ -298,7 +298,19 @@ fn a_linked_box_keeps_this_documents_own_words_not_the_other_files() {
     let doc = parse_document(outer_text).unwrap();
 
     let link_set = derive_links(&doc, dir.path());
-    assert!(link_set.findings.is_empty(), "{:?}", link_set.findings);
+    // Both documents give this component a note and they differ, which is
+    // an error as of 2026-09-06 (`E0210`): §5 says merge order cannot
+    // matter, so nothing may settle a disagreement by going first. This
+    // fixture used to assert no findings at all; that was pinning the
+    // silence, not the drawing. The drawing's own rule is unchanged and
+    // still worth pinning -- and a document with findings still renders,
+    // because a picture that refuses to draw hides the problem it should be
+    // showing (§7.1).
+    assert!(
+        link_set.findings.iter().any(|f| f.code == "E0210"),
+        "two differing notes for one component must be reported: {:?}",
+        link_set.findings
+    );
     let state_fields = ply_core::harness::resolve_state_fields(dir.path(), &doc);
     let svg = render_svg_with_state_and_links(
         &doc,

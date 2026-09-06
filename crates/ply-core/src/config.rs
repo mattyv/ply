@@ -145,6 +145,60 @@ pub fn linked_body(name: &str, comp: &Component, links: Option<&LinkIndex>) -> O
     })
 }
 
+/// Every field both documents declare and describe differently.
+///
+/// Only fields a document *states*: an absent `note:` is not a claim that
+/// there is no note, so one side saying nothing is never a disagreement.
+/// `fns` and `components` are excluded on purpose -- the linked interior is
+/// what the link is *for*, and the outer component declares none of it, or
+/// no link would have formed.
+fn conflicting_fields(mine: &Component, theirs: &Component) -> Vec<(&'static str, String, String)> {
+    let mut out = Vec::new();
+    let mut both = |field: &'static str, a: Option<String>, b: Option<String>| {
+        if let (Some(a), Some(b)) = (a, b)
+            && a != b
+        {
+            out.push((field, a, b));
+        }
+    };
+    // Quoted, and shortened: a `note:` is often a paragraph, and printing
+    // two of them whole buries the one thing the reader needs -- which
+    // field disagreed and which two files to open.
+    let brief = |v: &str| {
+        let one_line = v.split_whitespace().collect::<Vec<_>>().join(" ");
+        match one_line.char_indices().nth(60) {
+            Some((cut, _)) => format!("{:?}...", &one_line[..cut]),
+            None => format!("{one_line:?}"),
+        }
+    };
+    let quoted = |t: &Option<String>| t.as_ref().map(|v| brief(v));
+    both("note", quoted(&mine.note), quoted(&theirs.note));
+    both("profile", quoted(&mine.profile), quoted(&theirs.profile));
+    both(
+        "checks",
+        mine.checks.as_ref().map(|c| format!("{c:?}")),
+        theirs.checks.as_ref().map(|c| format!("{c:?}")),
+    );
+    both(
+        "state",
+        mine.state.as_ref().map(|s| format!("{:?}", s.of)),
+        theirs.state.as_ref().map(|s| format!("{:?}", s.of)),
+    );
+    // A `Vec` that is empty was not written; a non-empty one was.
+    let listed = |v: &Vec<String>| (!v.is_empty()).then(|| format!("{v:?}"));
+    both("owns", listed(&mine.owns), listed(&theirs.owns));
+    both("uses", listed(&mine.uses), listed(&theirs.uses));
+    // A bool cannot say "absent", so only a difference is reportable -- and
+    // a difference means one file claims the property and the other does not.
+    if mine.pure != theirs.pure {
+        out.push(("pure", mine.pure.to_string(), theirs.pure.to_string()));
+    }
+    if mine.strict != theirs.strict {
+        out.push(("strict", mine.strict.to_string(), theirs.strict.to_string()));
+    }
+    out
+}
+
 /// One of the four named ways a candidate link can fail to form, attached
 /// to the *including* component rather than the document it was reaching
 /// for: a reader sees this on the box that tried to link, not on a file
@@ -350,6 +404,27 @@ fn resolve_one(
             ),
         });
         return;
+    }
+    // §5: "Merge order cannot matter: duplicate component names are
+    // errors." Two documents describing one component in different words is
+    // exactly that, and the substitution below resolves it by precedence --
+    // which is what makes order matter. So a disagreement is reported and
+    // left for a person or an agent to reconcile: there is no rule that
+    // could say which of two descriptions of the same thing is right, and
+    // choosing one silently discards the other.
+    for (field, mine, theirs) in conflicting_fields(comp, top) {
+        set.findings.push(LinkFinding {
+            code: "E0210",
+            severity: "error",
+            component_path: component_path.to_string(),
+            message: format!(
+                "component `{component_path}` and the same component in `{}` both declare \
+                 `{field}`, and they disagree: this document says {mine}, that one says \
+                 {theirs}. Two descriptions of one component cannot both be shown, and \
+                 nothing can decide between them -- delete one, or make them agree.",
+                display_path(root, &candidate),
+            ),
+        });
     }
     claimed.insert(canonical, component_path.to_string());
     set.links.insert(
@@ -820,5 +895,142 @@ components:
             assert!(set.links.is_empty());
             assert!(set.findings.is_empty(), "{:?}", set.findings);
         }
+    }
+}
+
+#[cfg(test)]
+mod conflict_tests {
+    use super::*;
+
+    fn write(dir: &Path, rel: &str, text: &str) {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    fn workspace(inner_note: &str, outer_note: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/inner_lib\"]\nresolver = \"2\"\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/Cargo.toml",
+            "[package]\nname = \"inner_lib\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"src/lib.rs\"\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/src/lib.rs",
+            "pub fn go() {}\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/ply.yaml",
+            &format!(
+                "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    note: {inner_note}\n    fns:\n      go: {{}}\n"
+            ),
+        );
+        write(
+            dir.path(),
+            "ply.yaml",
+            &format!(
+                "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    note: {outer_note}\n"
+            ),
+        );
+        dir
+    }
+
+    /// §5: "Merge order cannot matter: duplicate component names are
+    /// errors." Two documents describing the same component in different
+    /// words is exactly that, and picking a winner by precedence is what
+    /// makes order matter. So it is reported, not resolved -- there is no
+    /// rule that could tell a reader which of two descriptions of one thing
+    /// is the right one, and inventing one silently discards the other.
+    #[test]
+    fn two_documents_describing_one_component_differently_is_an_error() {
+        let dir = workspace("\"the inner file's words\"", "\"the outer file's words\"");
+        let doc =
+            parse_document(&std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap()).unwrap();
+
+        let set = derive_links(&doc, dir.path());
+        let conflict = set
+            .findings
+            .iter()
+            .find(|f| f.code == "E0210")
+            .unwrap_or_else(|| panic!("expected a conflict error, got {:?}", set.findings));
+
+        assert_eq!(conflict.severity, "error");
+        assert!(
+            conflict.message.contains("note"),
+            "the message must name the field that disagrees: {}",
+            conflict.message
+        );
+        assert!(
+            conflict.message.contains("crates/inner_lib/ply.yaml"),
+            "and the other file, so a reader can go and reconcile them: {}",
+            conflict.message
+        );
+    }
+
+    /// The ordinary case must stay silent: one document describes the
+    /// component, the other only supplies the interior. That is the whole
+    /// point of the link and is not a disagreement.
+    #[test]
+    fn only_one_document_describing_it_is_not_a_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/inner_lib\"]\nresolver = \"2\"\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/Cargo.toml",
+            "[package]\nname = \"inner_lib\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"src/lib.rs\"\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/src/lib.rs",
+            "pub fn go() {}\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/ply.yaml",
+            "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    fns:\n      go: {}\n",
+        );
+        write(
+            dir.path(),
+            "ply.yaml",
+            "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    note: \"only this file says anything\"\n",
+        );
+        let doc =
+            parse_document(&std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap()).unwrap();
+
+        let set = derive_links(&doc, dir.path());
+        assert!(
+            !set.findings.iter().any(|f| f.code == "E0210"),
+            "one description is not a disagreement: {:?}",
+            set.findings
+        );
+        assert!(set.links.contains_key("core"), "and the link must form");
+    }
+
+    /// The same words in both files are not a disagreement either. Two
+    /// files repeating one description is redundant, not contradictory, and
+    /// erroring on it would punish the obvious way of keeping them in step.
+    #[test]
+    fn the_same_description_in_both_documents_is_not_a_conflict() {
+        let dir = workspace("\"identical words\"", "\"identical words\"");
+        let doc =
+            parse_document(&std::fs::read_to_string(dir.path().join("ply.yaml")).unwrap()).unwrap();
+
+        let set = derive_links(&doc, dir.path());
+        assert!(
+            !set.findings.iter().any(|f| f.code == "E0210"),
+            "agreement is not conflict: {:?}",
+            set.findings
+        );
     }
 }

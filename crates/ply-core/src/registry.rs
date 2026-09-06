@@ -71,7 +71,7 @@ codes!(
     // --- Tier::Anchor: resolving a claim to real code (§5.2). ---
     E0301, E0304, E0306, // --- Tier::Crate: architecture, exact and sound (§5.3). ---
     A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, A0416, A0417, W0413, W0532,
-    W0533, W0534,
+    W0533, W0534, E0210,
     // --- Tier::Item: architecture, approximate (§5.3) -- none of these
     // are built yet; see each row's status. ---
     A0402, A0403, A0404, A0406, A0407, A0408, W0411, W0412,
@@ -357,6 +357,14 @@ impl Code {
                 severity: Warning,
                 spec_anchor: "§7.1",
                 gloss: "A component's crate has its own ply.yaml, and it parses fine, but that document's own top-level anchor no longer sits under this component's anchor -- so the link does not form. Realign one of the two anchors to relink them.",
+            },
+            E0210 => RuleEntry {
+                code: self,
+                tier: Crate,
+                status: Enforced,
+                severity: Error,
+                spec_anchor: "§5",
+                gloss: "Two ply.yaml files describe the same component and say different things about it -- both give it a note, or a profile, or declared checks, and the two do not match. §5 says merge order cannot matter, so nothing may decide this by going first: one description has to be deleted, or the two made to agree. Only fields both files actually write are compared; a file that says nothing about a field is not disagreeing.",
             },
             W0533 => RuleEntry {
                 code: self,
