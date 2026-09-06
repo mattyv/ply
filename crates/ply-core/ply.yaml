@@ -23,8 +23,13 @@ ply: 1
 components:
   core:
     anchor: ply_core
-    note: >-
-      Everything Ply knows how to do, with no terminal attached.
+    # No `note:` here on purpose. The root `ply.yaml` describes this
+    # component, at more length, and two files describing one component in
+    # different words is now an error (E0210) rather than a silent
+    # precedence win -- §5 says merge order cannot matter, so nothing may
+    # settle it by going first. The sentence that used to be here was a
+    # prefix of the root's, so deleting it loses nothing; the root is also
+    # where a reader looking at the whole system starts.
     # What this component holds. The type and every named field are resolved
     # against the real source when `cargo ply check` runs -- a field nobody
     # declared is refused by name, never drawn, and the shape drawn beside
