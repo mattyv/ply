@@ -170,18 +170,39 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       verdict's own word rather than a translation, so what a reader sees is what the leaf
       was labelled.
 
-- [ ] **KNOWN GAP: the shipped evidence ladder still has nine rungs and the proved one has
-      six.** The flag now travels, which closes the information loss above, but those three
-      outcomes are *also* still ranked as rungs below `unclaimed` -- so `ply_core::kernel`
-      still cannot be dropped onto this path, and its four proved obligations still govern a
-      ladder the tool does not use. Closing it means those three verdicts becoming
-      `unclaimed` at the leaf with the reason carried only as a flag, which moves
-      user-visible output and wants its goldens reviewed one at a time.
+- [x] **The verdict a user sees now comes from the aggregation that was proved** --
+      `HASH3`. `ply_core::kernel::aggregate` carries the four standing obligations, proved
+      by exhaustive enumeration over 991,389 trees and again by induction in Verus, and none
+      of it governed a single verdict anyone ever saw: `verify` folded results with a private
+      worst-of over a ladder of integers written out by hand, and the two were free to drift
+      with nothing to notice.
 
-      One spec inconsistency to settle first, and it is what the code followed: D6 and
-      §5.4b call `timeout` a status "outside the evidence order", while §5.4's harness rule
-      twice says "the node's verdict is `tool_error`". Both cannot be right. `tool_error`
-      is also absent from D6's status list entirely.
+      Bound two ways now. The six rungs D6 defines are no longer restated here at all -- the
+      ladder carries `kernel::Evidence` itself, so their relative order *is* the proved one
+      by construction. And a bounded differential folds every tree of up to three leaves and
+      depth two both ways and requires the same answer. Both were checked to bite: swapping
+      two rungs makes them fail and name the pair.
+
+      The remaining three -- `tool_error`, `timeout`, `unsupported` -- are an extension this
+      tool makes to D6's order, and after examining it, an extension is what it is rather
+      than a defect. "The engine gave up" is more use at a glance than a bare `unclaimed`,
+      and since the flag fix earlier today nothing is lost by it: each also travels upward as
+      a flag, so a worst-of that hides one behind a `violation` no longer hides the fact. The
+      spec's D6 now records the extension and why the kernel cannot simply be called here.
+
+      One spec inconsistency was looked for and mostly was not there: D6 and §5.4b agree that
+      `timeout` is a status, and §5.4's "the node's verdict is `tool_error`" is about a word
+      D6's status list never contained. What was missing was any statement of where those
+      three sit, which is what the amendment adds.
+
+- [x] **The published page no longer lets "checked" sound like "proved"** -- `HASH3`. It
+      now says what checked means on it: 256 generated inputs for nearly every green chip, a
+      handful of hand-written examples for the rest, and nothing proved -- adding that a
+      promise failing on one value in a billion would sit there looking identical. The
+      2026-09-04 handoff carries the same correction against its own headline. The plan
+      document's own "56 claims earning 70 fuzzed(256)" was inflated too: those were node
+      counts, and the report has a node per component box as well as per function. Corrected
+      to the 56 claims actually declared.
 
 - [x] **A correct function is no longer accused of breaking its promise** -- `971d7fd`.
       The worst defect of the day, reported by external review and reproduced exactly as
