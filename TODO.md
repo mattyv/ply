@@ -1115,7 +1115,7 @@ rather than copied -- each earns real evidence under `cargo ply verify`:
 - [x] `registry::all` -- no two rows share a diagnostic code. A duplicate would make
       `cargo ply explain` ambiguous about which rule a reader is looking at. `tested`,
       clean: a zero-argument function gets exactly one direct-contract case, and that one
-      case is the real 70-odd-row registry.
+      case is the real 66-row registry.
 - [x] `schema::known_keys` -- every key it returns satisfies the schema's own identifier
       grammar, so the vocabulary and the validator cannot drift apart. `fuzzed(256)`
       across all six `Level` variants, clean.
