@@ -77,11 +77,11 @@ column is empty everywhere below and will stay empty until the sweep in step 4 r
 | # | Property | Defect fixed | Regression pinned | General property tested | Mutation-measured |
 |---|---|---|---|---|---|
 | P1 | Every declared clause is preserved, or explicitly rejected | yes — was keeping only the last of repeated attributes | yes | no — "every clause survives, for every contract shape" is untested | no |
-| P2 | The generated check preserves the original expression's meaning | yes, twice — floats, then `u128` in the *second* classifier the first proof never looked at | yes | partial — exhaustive over both classifiers' own domains; the general property (author's contract ≡ generated assertion) is untested | no |
+| P2 | The generated check preserves the original expression's meaning | yes, twice — floats, then `u128` in the *second* classifier the first proof never looked at | yes | yes, in the reachable form — both classifiers exhaustive over their own domains, plus a walking invariant that the rewrite never widens a leaf a classifier refuses. Not evaluated-equivalence; see step 3 | no |
 | P3 | Evidence requires at least one real check, not a passing wrapper | yes — and the first fix was itself a defect, reporting a correct function as a violation; fixed 2026-09-06 | yes — a fixture with both cases, checked to bite both ways | no | no |
 | P4 | Changing a relevant input prevents reuse | yes — module-scoped resolution, type declarations hashed, git revisions kept, two versions of one crate no longer collapsed | yes | no — "every relevant input is in the hash" is not tested as a property | no |
 | P5 | Every drawn component/function has matching metadata; no invented evidence | partial — the declaration-only path (9 elements → 74); the verification publisher still collects metadata from the unexpanded tree | partial | no | no |
-| P6 | The rendered contract text is byte-stable for unchanged source | no | no | no | no |
+| P6 | The rendered contract text is byte-stable for unchanged source | n/a — a hole, not a defect | yes — 223 contracts pinned, checked to catch the exact 2026-09-05 reseed | yes — every fixture contract, not a chosen few | no |
 | P7 | A claim of exhaustiveness is only made where the domain is bounded | n/a — a review rule | n/a | n/a | n/a |
 | P8 | The aggregation a user's verdict comes from is the one that was proved | yes — the shared six rungs now carry `kernel::Evidence` itself instead of a second ladder | yes — a bounded differential folds every small tree both ways | partial — bounded to trees of ≤3 leaves and depth 2, stated inline | no |
 
@@ -95,9 +95,12 @@ every recorded result and made every function draw different inputs. What caught
 end-to-end tests pinning observable output, by accident.
 
 The property is idempotence, not agreement: **rendering an unchanged contract twice, across
-builds, produces the same bytes.** Proposed as a test that renders every fixture's contracts
-and compares against a committed list, so the next such change arrives as a reviewable diff
-rather than as a silent reseed.
+builds, produces the same bytes.** Landed 2026-09-06 as `contract_text_is_stable`: it renders
+every fixture's contracts through the real pipeline and compares 223 lines against a committed
+list, so the next such change arrives as a reviewable diff rather than as a silent reseed.
+Checked against the regression it exists for — putting that bracket back makes it fail in
+seconds and print the pair, where the original took hours and three apparently unrelated
+end-to-end failures.
 
 ### P7, and why it is a review rule rather than a test
 
@@ -116,7 +119,8 @@ the new `RustType` proof both do.
 Per review: **a regression that exposes the wrong observable result, then the fix, then a
 general invariant that covers the class.** A regression catches yesterday's example; the
 invariant is what catches tomorrow's variation. All eight fixes so far followed this except
-the two where the invariant is still owed (P2 general, P4 dependency identity).
+the two where the invariant was still owed (P2 general, P4 dependency identity). Both landed
+on 2026-09-06.
 
 Proposed sequence:
 
@@ -132,9 +136,26 @@ second fix). So:
    kept whole (appended only for non-crates.io sources, since a published crates.io version is
    immutable and appending a constant would have reseeded the world), and packages are keyed by
    name *and* version so two copies of one crate no longer overwrite each other.
-3. **P2 general** — a differential harness: evaluate the author's contract and Ply's
-   generated assertion over the same inputs, compare outcomes including panics. This is the
-   only one of these that would have caught the float bug *as a class* rather than as a case.
+3. ~~**P2 general** — a differential harness~~ — **done, in the form the code actually
+   admits, which is not the form first proposed.** Evaluating both expressions over the same
+   inputs means compiling both, per contract, per input: an end-to-end harness of its own.
+   What the rewrite *does* is narrower than that, and so is the property it needs. It wraps
+   numeric leaves in `as i128` and nothing else, so "does the rewrite preserve meaning"
+   factors into two questions that are each closable:
+
+   - *Is the cast lossless for this leaf's type?* Both classifiers, exhaustively, against
+     independently written oracles. Landed.
+   - *Does the rewrite only ever widen a leaf a classifier admitted?* A walking invariant
+     over the rewrite's real output, across a corpus reaching every arm — the shape
+     `every_painted_element_resolves_a_style_rule` has, so an arm added later cannot quietly
+     skip it. Landed.
+
+   The honesty condition, and it is a real one: **the walking invariant is blind to a wrong
+   classifier by construction**, because it asks the classifier whether each widened leaf is
+   admissible. Measured rather than assumed — putting the floats back on the admitted list
+   leaves it green. What catches that is a separate test asserting the output directly. The
+   two together close the class; neither alone does, and the module says so where a reader
+   will find it.
 4. **L3 sweep** — the mutation job over the checking pipeline, which makes 1–3 measured
    rather than assumed.
 

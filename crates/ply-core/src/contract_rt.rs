@@ -1706,3 +1706,189 @@ mod cast_target_classification_proof {
         }
     }
 }
+
+/// The general property behind the two classifier proofs: not "is this type
+/// safe to widen" but "does the rewrite only ever widen types it decided
+/// were safe".
+///
+/// The classifiers are exhaustively proved above, and that closes the
+/// question they answer. It does not close the question the *rewrite* asks,
+/// which is a different one: the proofs say `f64` is refused, and say
+/// nothing about whether the code that emits `as i128` actually consults
+/// them at every place it emits one. A single arm reaching the "cast it
+/// anyway" fallback without asking would reopen the whole float defect with
+/// both proofs still green.
+///
+/// So this walks the real rewritten output for a corpus of contracts and
+/// fails on the first `as i128` wrapping something the classifier does not
+/// admit -- the same shape as `render`'s
+/// `every_painted_element_resolves_a_style_rule`, and for the same reason:
+/// one invariant over the actual artifact beats a pile of spot-checks,
+/// because a construct added later cannot quietly skip it.
+///
+/// What it covers, stated so it travels: every contract in the corpus
+/// below, over the parameter types those contracts use. It is not
+/// exhaustive over expressions -- no test can be, the grammar is open --
+/// and it is not a check that the rewritten expression *evaluates* the same
+/// as the original. It checks the one structural link between the rewrite
+/// and the two things that are proved.
+///
+/// **It is blind to a wrong classifier, deliberately, and that was measured
+/// rather than assumed.** Putting the floats back on the admitted list and
+/// re-running it: the walk still passes, because the walk asks the
+/// classifier whether each widened leaf is admissible and the classifier
+/// now says yes. That is the division of labour working as intended -- the
+/// classifiers' *correctness* is the exhaustive proofs' job, and this one's
+/// job is that the rewrite consults them. What catches the reintroduced
+/// float defect is the second test below, which asserts the observable
+/// outcome directly rather than through the thing under test. Both are
+/// needed; neither substitutes for the other.
+#[cfg(test)]
+mod rewrite_only_widens_what_the_classifier_admits {
+    use super::{is_provably_numeric, widen};
+    use crate::harness::{ContractFn, discover_fn};
+    use quote::ToTokens;
+    use syn::visit::Visit;
+
+    fn discover(src: &str, name: &str) -> ContractFn {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, src).unwrap();
+        discover_fn(&path, name).unwrap()
+    }
+
+    /// Contracts chosen to reach every arm of the rewrite: plain and mixed
+    /// comparisons, arithmetic on both sides, `&&`/`||` chains, a nested
+    /// comparison used as a value, an explicit cast the author wrote, and
+    /// several shapes that must *not* be widened at all -- floats, text,
+    /// a container, and a comparison whose sides are not both numeric.
+    const CORPUS: &[(&str, &str)] = &[
+        (
+            "#[ply::requires(a > 0)]\n#[ply::ensures(|result| *result == a)]\npub fn f(a: u32) -> u32 { a }",
+            "f",
+        ),
+        (
+            "#[ply::requires(a + b > 10)]\n#[ply::ensures(|result| *result >= a + b)]\npub fn g(a: u8, b: u8) -> u32 { a as u32 + b as u32 }",
+            "g",
+        ),
+        (
+            "#[ply::requires(a > 0 && b < 100)]\n#[ply::ensures(|result| *result > 0 || *result == 0)]\npub fn h(a: i64, b: i64) -> i64 { a + b }",
+            "h",
+        ),
+        (
+            "#[ply::ensures(|result| (*result > 0) == (n > 0))]\npub fn k(n: i32) -> i32 { n }",
+            "k",
+        ),
+        (
+            "#[ply::requires(n as u64 > 3)]\n#[ply::ensures(|result| *result == n)]\npub fn m(n: u32) -> u32 { n }",
+            "m",
+        ),
+        // Floats: the defect this whole area exists for. Nothing here may
+        // be widened, because the cast that compiles is the cast that lies.
+        (
+            "#[ply::ensures(|result| *result == x)]\npub fn fl(x: f64) -> f64 { x }",
+            "fl",
+        ),
+        (
+            "#[ply::requires(x > 0.5)]\n#[ply::ensures(|result| *result >= x)]\npub fn fs(x: f32) -> f32 { x }",
+            "fs",
+        ),
+        // Text and a container: `as i128` cannot reach through either.
+        (
+            "#[ply::ensures(|result| result.len() > 0)]\npub fn s(t: &str) -> String { t.to_string() }",
+            "s",
+        ),
+        (
+            "#[ply::ensures(|result| *result == xs.len())]\npub fn v(xs: Vec<u8>) -> usize { xs.len() }",
+            "v",
+        ),
+        // Booleans and chars: on the admitted list, and worth having in the
+        // corpus precisely because they are not integers.
+        (
+            "#[ply::ensures(|result| *result == b)]\npub fn bo(b: bool) -> bool { b }",
+            "bo",
+        ),
+        (
+            "#[ply::ensures(|result| *result == c)]\npub fn ch(c: char) -> char { c }",
+            "ch",
+        ),
+    ];
+
+    struct Casts<'a> {
+        offenders: Vec<String>,
+        cf: &'a ContractFn,
+    }
+
+    impl<'ast, 'a> Visit<'ast> for Casts<'a> {
+        fn visit_expr_cast(&mut self, node: &'ast syn::ExprCast) {
+            if node.ty.to_token_stream().to_string() == "i128"
+                && !is_provably_numeric(&node.expr, self.cf)
+            {
+                self.offenders.push(format!(
+                    "`{}` was cast to i128, and the classifier does not admit it",
+                    node.expr.to_token_stream()
+                ));
+            }
+            syn::visit::visit_expr_cast(self, node);
+        }
+    }
+
+    #[test]
+    fn no_rewrite_in_the_corpus_widens_a_leaf_the_classifier_refuses() {
+        let mut reached = 0usize;
+        for (src, name) in CORPUS {
+            let cf = discover(src, name);
+            for expr in [
+                cf.requires.as_ref().map(|(e, _)| e.clone()),
+                cf.ensures.as_ref().map(|(c, _)| (*c.body).clone()),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let rewritten = widen(&expr, &cf);
+                let parsed: syn::Expr = syn::parse2(rewritten.clone()).unwrap_or_else(|e| {
+                    panic!("the rewrite of `{name}` did not parse back as Rust: {e}\n{rewritten}")
+                });
+                let mut v = Casts {
+                    offenders: Vec::new(),
+                    cf: &cf,
+                };
+                v.visit_expr(&parsed);
+                assert!(
+                    v.offenders.is_empty(),
+                    "in `{name}`, the rewrite widened something the classifier refuses -- which \
+                     is how the float defect worked, and both classifier proofs would stay \
+                     green through it:\n  {}\nrewritten: {rewritten}",
+                    v.offenders.join("\n  ")
+                );
+                reached += 1;
+            }
+        }
+        assert_eq!(
+            reached, 16,
+            "the corpus is meant to contribute 16 contract expressions -- eleven \
+             postconditions and the five preconditions among them; if this moved, an \
+             entry was added or removed and the coverage claim above wants re-reading rather \
+             than this number being edited to match"
+        );
+    }
+
+    /// The float defect itself, asserted on the output rather than through
+    /// the classifier -- so this one *does* go red when the floats go back
+    /// on the admitted list, where the walking test above stays green for
+    /// the reason its own doc gives. Checked by doing exactly that.
+    #[test]
+    fn a_float_comparison_is_emitted_exactly_as_the_author_wrote_it() {
+        let cf = discover(CORPUS[5].0, CORPUS[5].1);
+        let (expr, _) = cf.ensures.as_ref().unwrap();
+        let rewritten = widen(&expr.body, &cf);
+        // With floats refused, the comparison is emitted verbatim: no cast
+        // at all. That absence is the property, so assert it directly --
+        // the walking test above passes vacuously here, and a vacuous pass
+        // is not evidence.
+        assert!(
+            !rewritten.to_string().contains("i128"),
+            "an `f64` comparison must be emitted exactly as written, never widened: {rewritten}"
+        );
+    }
+}

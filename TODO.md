@@ -31,6 +31,33 @@ independent oracle, and **every case**, not a chosen few.
   visible in the oracle: no arm inspects its payload. If that stops being true, this stops
   being a proof.
 
+- [x] **A cosmetic re-render can no longer reseed every check in silence** -- `HASH4`.
+      A contract's rendered text is a hashed fingerprint input *and* the case-generation
+      seed, so re-rendering an unchanged contract differently invalidates every recorded
+      result and makes every function draw different inputs. That happened on 2026-09-05 over
+      one pair of brackets, and what caught it was three end-to-end tests failing for
+      apparently unrelated reasons, hours later, in CI.
+
+      223 contracts across every fixture are now pinned byte for byte, rendered through the
+      real pipeline rather than a copy of it. Checked against the actual regression: putting
+      that bracket bug back makes it fail in seconds and print the pair. The file says a diff
+      here is not automatically a bug -- it means every affected recorded result is about to
+      stop matching -- and that the golden is updated in the same commit as the change that
+      caused it, having been read.
+
+- [x] **The rewrite is now checked to consult the classifiers it is proved against** --
+      `HASH4`. The two exhaustive proofs close the question "is this cast lossless". They say
+      nothing about whether the code emitting `as i128` asks them at every point it emits
+      one -- and one arm reaching the "cast it anyway" fallback would reopen the whole float
+      defect with both proofs still green. A walking invariant over the rewrite's real output
+      now fails on the first widened leaf the classifier refuses, across a corpus reaching
+      every arm.
+
+      Its honesty condition is measured rather than claimed: **it is blind to a wrong
+      classifier**, because it asks the classifier. Putting the floats back on the admitted
+      list leaves it green -- verified by doing it. A separate test asserts the output
+      directly and does go red. Both are needed and the module says so.
+
 - [ ] **KNOWN GAP: two `RustType` variants print identically under `Debug`.** Found by the
       enumeration above (30 strings, 32 variants) and not chased down. Harmless here, since
       the check now keys on `discriminant`, but any diagnostic that names a type by its
