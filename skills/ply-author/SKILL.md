@@ -5,18 +5,22 @@ description: Write or extend a ply.yaml — components, dependency rules, contra
 
 # Ply Author
 
-The document is the input to everything else Ply does. A wrong line here does not fail
-loudly; it produces a confident picture of a system that does not exist. So the rule that
-governs this whole skill is: **declare nothing you have not just seen Ply resolve.**
+The document is the input to everything else Ply does. A valid-looking but inaccurate
+declaration can produce a confident picture of a system that does not exist. For existing code, resolve each addition before treating it as
+implemented. For a design without code, label declarations as proposed intent; rendering
+them does not establish implementation or verification.
 
 Use `cargo ply check` after every addition. It runs no engines and takes about a second.
 
 ## Workflow
 
 1. **Find the root.** A `ply.yaml` resolves function claims against one crate's
-   `src/lib.rs`. A workspace root has none, so a document there can describe crates and
-   their dependencies but can never carry a function claim — put those in the crate's own
-   document instead. If the crate has only `src/main.rs`, say so: contracts need a library.
+   `src/lib.rs` in this implementation. A virtual workspace root has no library, so its
+   document can describe crates and dependencies but needs crate-local documents for
+   function claims. A workspace root that is also a package may have its own library;
+   inspect the manifest and source rather than assuming. If the crate has only
+   `src/main.rs` or a custom library path, report the resolver limitation before proposing
+   a layout change.
 
 2. **Start with components and stop.** Name the parts, anchor each one, and check:
 
@@ -29,15 +33,22 @@ Use `cargo ply check` after every addition. It runs no engines and takes about a
    the anchor is what makes the claims inside it resolve.
 
 3. **Add the dependency rules.** `edges:` says who may call whom; `deny:` says what is
-   forbidden. Check again. A component nothing may reach and that reaches nothing is a
-   rule you have not written yet, not a component that is finished.
+   forbidden. Check again. An isolated component can be intentional; add connections
+   only when the design calls for them. Distinguish crate dependency checks from
+   item-level call rules, and read any report that a declared rule was not checked.
 
 4. **Add contracts one at a time**, checking after each. A claim that does not resolve is
    reported by name, with the nearest name Ply can see — ready to paste over a typo. Read
    that suggestion rather than guessing at the fix. (`cargo ply verify` reports the same
    unresolved claim without the suggestion, which is one more reason to run `check` first.)
 
-5. **Only then run the engines**, and hand off to `$ply-verify` for that.
+5. **Verify the first useful slice before expanding the document.** Once a meaningful
+   contract resolves and its implementation compiles, hand off to `$ply-verify`. Run the
+   engines now; do not collect a feature's worth of unchecked claims first. Repeat for
+   each coherent addition using its [incremental verification workflow](../ply-verify/SKILL.md#verify-while-building).
+   `check` validates the declaration; it does not establish the contract. A design-only
+   document without code can stop at declaration checking and rendering, with no claim
+   that behavioral evidence was earned.
 
 ## Write a promise a run can be wrong about
 
@@ -63,14 +74,15 @@ promise.
 | Ask for | When |
 | --- | --- |
 | `test` | You have specific cases that matter. Write them under `examples:` |
-| `fuzz(n)` | Almost always the right first choice: it runs the real code, so it works on nearly anything |
-| `bounded(k)` | You want exhaustive search over the whole input space and the shape is simple enough for Ply to build |
+| `fuzz(n)` | A useful first check when the inputs are constructible and running the real code is appropriate |
+| `bounded(k)` | You need exhaustive checking within an explicit bound and the engine supports the code and inputs |
 | `mutate` | Beside `test` or `fuzz`, to find out whether they have teeth |
 | `prove` | Not built. Do not declare it and describe it as evidence |
 
-Declare `fuzz` first. Add `bounded` where it resolves, and read the refusal rather than
-fighting it when it does not: a shape Ply will not attempt is reported by name with the
-parameter and the reason, and that reason is usually a real fact about the type.
+Start with `fuzz` for suitable new claims. Add `bounded` when the task needs that
+evidence, not merely because a signature resolves. A refusal can reflect an engine
+limitation rather than a design defect; read its reason before changing an API. See
+[checkable code](../ply-checkable-code/SKILL.md) for input construction and side effects.
 
 ## Structure promises (`holds:`)
 
@@ -102,13 +114,18 @@ names it whatever you like. Two things to know before writing one:
 cargo ply render path/to/crate --text
 ```
 
-Every construct in the document, written out with its meaning inline. Read this before
-declaring the document done: it is the fastest way to see a component that promises
-nothing, an edge nobody uses, or a check that says less than you thought.
+The text form explains the YAML declarations. Read it before declaring the document
+done to find missing claims or checks that say less than intended. It does not read Rust
+contract attributes or establish whether a declared edge is used; inspect source and
+completed verification evidence for those questions.
 
 `cargo ply explain <CODE>` decodes any diagnostic code the checks report.
 
 ## Change authority
+
+The table states defaults when the task has not already authorized the change. Honor
+existing user authorization; do not ask again for work already approved. A request to
+review alone does not authorize changing requirements.
 
 | target | authority |
 | --- | --- |

@@ -1,11 +1,53 @@
 ---
 name: ply-verify
-description: Run and interpret Ply verification for an implementation change, repair implementation defects, and optionally publish a completed visual run without weakening declared intent.
+description: Verify early and after meaningful implementation changes, interpret Ply results, repair defects, and optionally publish a completed visual run without weakening declared intent.
 ---
 
 # Ply Verify
 
 Use Ply's public CLI as the authority. Do not reproduce its verifier, verdict rules, record format, or artifact writer.
+
+## Verify while building
+
+Use verification to guide implementation, not only to approve the finished feature.
+
+- **Establish a baseline before changing existing claimed behavior.** Run the affected
+  root's check and verification, or use a result already obtained in this task for the
+  same unchanged code. Record existing failures separately from failures your change
+  introduces. For new code, write a meaningful contract and a compiling first slice,
+  then verify it before building callers or further behavior on it.
+- **Repeat after each coherent change to claimed behavior.** Examples include a new
+  decision function, a changed state transition, or an edit to a helper a claim relies
+  on. Run the public workflow below for the affected roots, including callers in other
+  roots that depend on the changed behavior. Do not wait until the whole feature is
+  implemented. A workspace-level structural check does not replace crate-level
+  verification of function claims.
+- **Read the first result before expanding the implementation.** A violation, unsupported
+  shape, tool error, or narrowed input domain should inform the next step. Repair the
+  problem or explain the unresolved gap before building on that evidence. Independent
+  work can continue; do not treat the affected behavior as verified.
+- **Keep repairs cheap.** Once a counterexample has a regression test, use that test for
+  individual repair edits. When it passes, rerun verification against the unchanged
+  obligation. Ordinary tests still cover integration behavior and properties outside
+  Ply's reach. Do not run every engine after every keystroke or weaken the checks to
+  make iteration faster.
+- **Finish on the final code.** After the last meaningful edit, run relevant ordinary
+  tests and the declared verification for all affected roots. A passing run already
+  obtained for that final code need not be repeated. Report what passed and what remains
+  unresolved; a saved visual is evidence for its recorded run, not for later edits.
+
+Keep `ply.lock` and let the public verifier decide which recorded results it can reuse.
+Do not delete it routinely to force work, edit it to claim success, or decide that its
+presence makes a check unnecessary. Reuse is limited to the inputs this Ply version
+tracks. Start with `fuzz` for new suitable claims; retain existing evidence requirements,
+including bounded checks, when they are part of the task.
+
+## Before running real code
+
+Fuzz checks and regression tests execute the implementation, including its callees.
+Inspect the affected path for writes, network calls, and other side effects before a
+baseline or repair run. Use the project's isolated test setup or check the decision logic
+separately; a supported signature does not make live side effects safe to exercise.
 
 ## Workflow
 
@@ -36,8 +78,9 @@ cargo ply verify path/to/crate --json --publish-view
 
 ## Repair a broken promise
 
-A violation comes with a generated `#[test]` at `src/ply_generated_cex.rs`, holding the
-exact input that broke the promise. That file is the repair loop:
+When a function violation produces a generated `#[test]` at `src/ply_generated_cex.rs`,
+it holds the input that broke the promise. Confirm the diagnostic names that artifact
+before using it as the repair loop:
 
 ```bash
 cargo test        # from the crate root -- it fails the same way the run just did
@@ -46,9 +89,9 @@ cargo test        # from the crate root -- it fails the same way the run just di
 It is ordinary Rust and needs no engine, so iterate against it directly and only re-run
 `cargo ply verify` once it passes.
 
-Read the panic before changing anything. It prints what the promise's left and right sides
-each evaluated to for that input, which usually says immediately whether the body is wrong
-or the promise is.
+Read the diagnostic and test failure before changing anything. A failed comparison may
+show its two values; a panic in the body may happen before the postcondition is evaluated.
+Do not assume every violation has the same failure shape.
 
 | What you conclude | What to do |
 | --- | --- |
@@ -93,6 +136,10 @@ check that ran.
 For every `must-not-complete` result, say that verification remains unresolved. A published failure remains a useful review artifact, but it is not approval to finish.
 
 ## Change authority
+
+The table states defaults when the task has not already authorized the change. Honor
+existing user authorization; do not ask again for work already approved. A request to
+review alone does not authorize changing requirements.
 
 | target | authority |
 | --- | --- |

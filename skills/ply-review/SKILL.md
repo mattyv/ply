@@ -17,11 +17,11 @@ Read the text form instead:
 cargo ply render path/to/crate --text
 ```
 
-Roughly 95% of a drawing lives in hover text, so a model reading the picture reads about a
-twentieth of it. The text form carries every construct, each with its meaning inline, and
-a test walks the real document to keep it that way. Say plainly that you are describing
-declared intent and not evidence — a document full of promises must never be reported as a
-codebase full of results.
+A screenshot omits tooltip text. Use the text form to read YAML declarations and their
+meaning; it does not include Rust contract attributes. For a completed run, use the
+public envelope for those contracts and evidence. Say plainly that a declaration render
+is declared intent and not evidence. When the user requests a visual inspection, inspect
+the drawing too; text alone cannot establish that the layout is readable.
 
 ## Select the run
 
@@ -30,7 +30,9 @@ codebase full of results.
 3. Require the selected entry's path to be exactly `views/<run-id>/visual.json`, relative to `target/ply`, with the same ID as the entry. Reject absolute paths, traversal, unknown protocol versions, and mismatched IDs.
 4. Read that `visual.json` without modifying it. Confirm its `run.id` matches the selected entry and report `run.completedAt`, `run.root.path`, `run.tool`, and `run.outcome` so the developer knows exactly what was reviewed.
 
-If the index or envelope is incomplete or invalid, keep the last valid result if the host provides one and report the new artifact error. Do not guess at missing fields or silently switch runs.
+If the index or envelope is incomplete or invalid, keep the last valid result if the host provides one and report the new artifact error. Label that fallback with its original run and root; it is not the requested new result. Do not guess at missing fields or silently switch runs.
+
+A completed snapshot does not establish that the current source still matches it. When asked whether current code passes, hand off to `$ply-verify` if verification is within the task; otherwise state that only the saved run was reviewed. A source location is the range recorded for that run, and edits may have moved it.
 
 ## Review the evidence
 
@@ -57,7 +59,7 @@ Distinguish a clean outcome from an incomplete one in the first sentence. A fail
 | end | source.endLine:source.endColumn |
 | coordinate_base | zero-based |
 
-Resolve `source.file` beneath the Ply root and use the full range exactly. If `source` is absent, say that the artifact supplies no source link; do not search for a likely match and present it as exact.
+Resolve `source.file` beneath the selected run's Ply root, rejecting absolute paths, traversal, and links that escape that root. Convert the zero-based coordinates to one-based lines when presenting editor links. Use the recorded range, but do not claim it still identifies the same code if the file has changed. If `source` is absent, say that the artifact supplies no source link; do not search for a likely match and present it as exact.
 
 ## Data boundary
 
@@ -73,6 +75,10 @@ Do not read `ply.lock`, import internal artifact serializers, rewrite retention 
 
 ## Change authority
 
+The table states defaults when the task has not already authorized the change. Honor
+existing user authorization; do not ask again for work already approved. A request to
+review alone does not authorize changing requirements.
+
 | target | authority |
 | --- | --- |
 | contract | ask-first |
@@ -80,4 +86,4 @@ Do not read `ply.lock`, import internal artifact serializers, rewrite retention 
 | evidence_requirement | ask-first |
 | architecture_contract | ask-first |
 
-Ask the developer before recommending or applying any change that weakens or alters these protected targets. Present the artifact evidence first. Review explains what Ply recorded; it does not redefine what Ply should require.
+Recommendations need no approval: present the evidence and a concrete proposal. Applying a change to these protected targets needs developer authorization. Review explains what Ply recorded; it does not redefine what Ply should require.
