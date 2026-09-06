@@ -150,7 +150,7 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       commits a record or pins a fingerprint literal, so the identity change re-earns
       evidence rather than changing any input.
 
-- [x] **A check that never happened now reaches the top as a flag** -- `HASH`. Went
+- [x] **A check that never happened now reaches the top as a flag** -- `ec9cdb3`. Went
       looking for why `ply_core::kernel` -- the aggregation proved four ways -- is called
       from nowhere that produces a real verdict, and found the reason: the tool and the
       kernel disagree about what a verdict is.
