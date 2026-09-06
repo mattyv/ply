@@ -674,7 +674,7 @@ const DEPENDENCY_KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-
 /// The platform predicate can contain dots, quotes and parentheses
 /// (`target."cfg(any(unix, windows))".dependencies`), so the prefix is
 /// dropped by finding the kind rather than by splitting on `.`.
-fn dependency_table(header: &str) -> Option<Option<String>> {
+pub(crate) fn dependency_table(header: &str) -> Option<Option<String>> {
     let inner = header.strip_prefix('[')?.strip_suffix(']')?;
     let rest = match inner.strip_prefix("target.") {
         Some(after) => {

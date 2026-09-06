@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  reusetargetdep:
+    anchor: ply_fixture_reusetargetdep
+    fns:
+      doubled:
+        checks: [fuzz(64)]
