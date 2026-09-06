@@ -183,6 +183,52 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       twice says "the node's verdict is `tool_error`". Both cannot be right. `tool_error`
       is also absent from D6's status list entirely.
 
+- [x] **A correct function is no longer accused of breaking its promise** -- `HASH1`.
+      The worst defect of the day, reported by external review and reproduced exactly as
+      described: `#[ply::requires(x == 42)]` on a function that returns exactly what it
+      promises came back as "a real, reproduced violation, not a probabilistic one".
+
+      The guard added the day before was right about the gap it closed -- a precondition no
+      generated value satisfies used to earn `tested` on a function never called once -- but
+      it closed it by asserting inside a generated test, and a failing generated test is
+      precisely how `verify` recognises a broken contract. So the fix for "green with no
+      evidence" produced "red with no evidence", which is worse: the first misleads, the
+      second accuses.
+
+      It also gave advice that could not be followed. The message said to add a worked
+      example satisfying the precondition; the check counted only generated boundary values
+      and never looked at examples, so adding one changed nothing. Confirmed by doing it.
+
+      Now: that probe is recognised by name and never read as a contract test; a worked
+      example that passes counts as the body having been entered, because it is; and a
+      function nothing could reach reports `unclaimed` with the `inconclusive` status
+      (§0/D6's own word) and a warning that names the real cause. Warning severity, so
+      `--fail-on evidence` catches it and `--fail-on error` waves it through, exactly like a
+      refusal. Pinned by a fixture with two functions -- one with a satisfying example, one
+      without -- and the test was checked to bite both ways: without the fix the first goes
+      back to `violation`, and without the probe the second goes back to `tested` on a
+      function never called.
+
+- [x] **The second numeric classifier had the float bug too** -- `HASH1`. The exhaustive
+      check written on 2026-09-05 covers `is_numeric_rust_type`, and there is a second
+      classifier it never looks at: `is_numeric_cast_target`, which decides the same
+      question for a cast the author wrote by hand. `u128` was on its list -- admitted for
+      widening to `i128`, which is the same width, so the top half wraps to negative and a
+      promise about `x as u128` was checked after the wrap. The float defect exactly, one
+      classifier along. Closed the same way, with its own independent oracle over every
+      integer primitive Rust has.
+
+- [x] **A test claimed a guard it did not have** -- `HASH1`. External review, and it is
+      right: `the_enumeration_really_does_reach_every_variant` asserts its list has 32
+      entries, and the comment said a variant added later would be caught. It would not.
+      The oracle's wildcard-free `match` does force a new variant to be classified, but
+      nothing forces anyone to add it to the enumeration or to move the 32, so it would sail
+      through unchecked by the one test whose subject is that none are. Rust offers no fix
+      on stable -- `variant_count` is nightly and a derive macro is a dependency this crate
+      should not gain for one assertion -- so the comment now says what the number does and
+      does not do. A check believed stronger than it is, is the failure this file exists to
+      catch one level down.
+
 - [ ] **KNOWN GAP: the filesystem-effect scanner fails open** (the review's fourth). An
       unrecognised method call (`writer.flush()`) returns `Reach::None` rather than
       `Unknown`, contradicting its own module doc: "**It fails closed.** ... Anything this

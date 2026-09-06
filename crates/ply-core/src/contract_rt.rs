@@ -349,10 +349,17 @@ fn is_numeric_rust_type(ty: &RustType) -> bool {
 }
 
 /// Whether a `syn::Type` written as an explicit cast target (`x as <ty>`) is
-/// itself one of Rust's plain integer primitives -- decided directly from
-/// the cast's own spelling, not through `RustType`'s vocabulary (which has
-/// no `i128`/`u128` variant of its own, and would wrongly answer "not
-/// numeric" for a cast that is already exactly the width widen casts to).
+/// an integer `i128` can hold every value of -- decided directly from the
+/// cast's own spelling, not through `RustType`'s vocabulary, which has no
+/// 128-bit variant of its own and would wrongly answer "not numeric" for
+/// `x as i128`, a cast already exactly the width widen casts to.
+///
+/// `u128` was on this list until 2026-09-06 for that same reason, and it
+/// did not belong: `i128` is the same width, so the top half of `u128` has
+/// nowhere to go and wraps to negative. A promise about `x as u128` was
+/// then checked after the wrap -- the float defect exactly, one classifier
+/// along, and the exhaustive check written for that one never looked here.
+/// `cast_target_classification_proof` now does.
 fn is_numeric_cast_target(ty: &syn::Type) -> bool {
     let syn::Type::Path(tp) = ty else {
         return false;
@@ -362,17 +369,7 @@ fn is_numeric_cast_target(ty: &syn::Type) -> bool {
     };
     matches!(
         seg.ident.to_string().as_str(),
-        "u8" | "u16"
-            | "u32"
-            | "u64"
-            | "u128"
-            | "usize"
-            | "i8"
-            | "i16"
-            | "i32"
-            | "i64"
-            | "i128"
-            | "isize"
+        "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
     )
 }
 
@@ -1546,9 +1543,25 @@ mod numeric_classification_proof {
             all.len(),
             "two entries are the same variant, so one variant is unchecked"
         );
-        // Every variant `RustType` declares. If this number moves, a variant
-        // was added: the oracle above will already have refused to compile
-        // until it was classified, and this says the enumeration needs it too.
+        // Every variant `RustType` declares today.
+        //
+        // **This number is not a guard, and the comment here claimed it was
+        // until 2026-09-06** (external review, and it is right). Adding a
+        // variant forces two things and not a third: the oracle's
+        // wildcard-free `match` will not compile until the variant is
+        // classified, and a *duplicate* entry is caught by the discriminant
+        // check above. Nothing makes anyone add the variant to
+        // `every_rust_type_variant` -- leave both this number and that list
+        // alone and the new variant simply goes unchecked, quietly, by a
+        // test whose whole subject is that none do.
+        //
+        // Rust offers no way to close that on stable: `variant_count` is
+        // nightly, and the alternative is a derive macro this crate does not
+        // depend on and should not gain for one assertion. So the guard is
+        // a person reading this, which is worth exactly what it is worth --
+        // written down rather than dressed up as automatic, because a check
+        // believed stronger than it is, is the failure this file exists to
+        // catch one level down.
         assert_eq!(all.len(), 32, "RustType gained or lost a variant");
     }
 
@@ -1561,6 +1574,124 @@ mod numeric_classification_proof {
                 "`{ty:?}`: what the widening does and what the cast actually \
                  preserves disagree -- a comparison about this type would be \
                  checked after throwing information away"
+            );
+        }
+    }
+}
+
+/// The same proof for the *other* classifier, which the one above does not
+/// reach.
+///
+/// [`is_numeric_rust_type`] decides the question for a value whose type Ply
+/// worked out. [`is_numeric_cast_target`] decides it for a cast the author
+/// wrote by hand (`x as u64`), from the spelling alone -- a separate list,
+/// in a separate function, and the exhaustive check above never looks at
+/// it. So the float defect's exact shape was still live here: a spelling on
+/// the list whose values `i128` cannot hold.
+///
+/// One was. `u128` sat on the list because the paragraph above it explains
+/// that `RustType` has no 128-bit variant and would wrongly answer "not
+/// numeric" for a cast "already exactly the width widen casts to" -- true
+/// of `i128`, and false of `u128`, whose top half wraps to negative on the
+/// way to `i128`. A promise about `x as u128` was then checked after that
+/// wrap: the same defect as the floats, one classifier along.
+///
+/// Exhaustive over the spellings rather than over an enum, so the guard
+/// that a new variant cannot slip past has a different shape: the oracle
+/// lists every integer primitive Rust has, and the test requires the two
+/// lists to agree entry for entry *and* to be the same size, so a spelling
+/// added to one and not the other fails rather than passing unexamined.
+#[cfg(test)]
+mod cast_target_classification_proof {
+    use super::is_numeric_cast_target;
+
+    /// Every integer primitive Rust has, written from the language
+    /// reference rather than from the list under test.
+    const EVERY_RUST_INTEGER: [&str; 12] = [
+        "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
+    ];
+
+    /// Whether `(x as T) as i128` keeps every value `T` can hold.
+    ///
+    /// The question is not "does this cast compile" -- every one of them
+    /// does, which is precisely the mistake the float defect was -- but
+    /// "can `i128` hold every value of `T`". It can, for every integer Rust
+    /// has except `u128`: `i128` and `u128` are the same width, so the top
+    /// half of `u128` has nowhere to go and wraps to negative.
+    ///
+    /// `usize`/`isize` are at most 64 bits on every target Rust supports;
+    /// were a 128-bit target ever to exist, `usize` would join `u128` here.
+    fn i128_holds_every_value_of(spelling: &str) -> bool {
+        match spelling {
+            "u8" | "u16" | "u32" | "u64" | "usize" => true,
+            "i8" | "i16" | "i32" | "i64" | "isize" | "i128" => true,
+            "u128" => false,
+            other => panic!(
+                "`{other}` is not an integer primitive this oracle knows, so it cannot answer \
+                 for it. Add it to EVERY_RUST_INTEGER and classify it here."
+            ),
+        }
+    }
+
+    fn spelled(s: &str) -> syn::Type {
+        syn::parse_str(s).expect("every entry here is a legal type")
+    }
+
+    #[test]
+    fn a_cast_target_is_admitted_exactly_when_i128_can_hold_it() {
+        for spelling in EVERY_RUST_INTEGER {
+            assert_eq!(
+                is_numeric_cast_target(&spelled(spelling)),
+                i128_holds_every_value_of(spelling),
+                "`x as {spelling}` is admitted for widening exactly when `i128` holds every \
+                 value of `{spelling}`. Admitting one it cannot hold means the promise is \
+                 checked after the value has already wrapped -- the float defect, one \
+                 classifier along."
+            );
+        }
+    }
+
+    /// The guard that makes the list above exhaustive rather than merely
+    /// long: the classifier must admit exactly the integers the oracle
+    /// admits and nothing else, so a spelling added to one list and not the
+    /// other is a failure rather than an omission nobody sees.
+    #[test]
+    fn the_two_lists_of_integers_are_the_same_list() {
+        let admitted: Vec<&str> = EVERY_RUST_INTEGER
+            .into_iter()
+            .filter(|s| is_numeric_cast_target(&spelled(s)))
+            .collect();
+        let expected: Vec<&str> = EVERY_RUST_INTEGER
+            .into_iter()
+            .filter(|s| i128_holds_every_value_of(s))
+            .collect();
+        assert_eq!(
+            admitted, expected,
+            "the classifier and the oracle must admit the same integers"
+        );
+        // Eleven of Rust's twelve integer primitives fit in `i128`. Unlike
+        // the `RustType` enumeration next door, this list is closed by the
+        // language rather than by us -- Rust has not added an integer since
+        // 1.26 and adding one is a language change, not a refactor here --
+        // so "did someone forget to extend it" is not the live risk there
+        // it is there. If it ever moves, both lists want re-reading rather
+        // than this number being edited until it matches.
+        assert_eq!(expected.len(), 11, "Rust's set of integer primitives moved");
+    }
+
+    /// Nothing that is not an integer is admitted -- a `f64` cast target
+    /// least of all, since that is the exact shape of the defect the
+    /// neighbouring proof exists for.
+    #[test]
+    fn nothing_but_an_integer_is_admitted() {
+        for spelling in [
+            "f32", "f64", "bool", "char", "String", "Vec<u8>", "MyStruct",
+        ] {
+            assert!(
+                !is_numeric_cast_target(&spelled(spelling)),
+                "`x as {spelling}` must not be admitted for widening: it is not an integer, and \
+                 casting it to `i128` either does not compile or throws away the difference the \
+                 promise was about"
             );
         }
     }

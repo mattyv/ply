@@ -3339,6 +3339,15 @@ fn run_fn_checks(
                 if run.seeded && !statuses.iter().any(|s| s == "seeded") {
                     statuses.push("seeded".into());
                 }
+                // §0/D6's own word for a check that reached no conclusion.
+                // The verdict beside it is `unclaimed` -- no evidence --
+                // and this says which of the several ways of earning no
+                // evidence happened, so a reader is not left to guess
+                // between "nobody wrote a claim" and "every input Ply could
+                // build was turned away at the door".
+                if run.no_admissible_input && !statuses.iter().any(|s| s == "inconclusive") {
+                    statuses.push("inconclusive".into());
+                }
                 // The branch-decided measurement's own mark (CLAUDE.md,
                 // 2026-09-02): a top-level `||` promise whose split came
                 // back skewed -- one side deciding more than half of every
@@ -5145,6 +5154,20 @@ struct HarnessRun {
     /// travels with the verdict, propagates into the recorded result, and
     /// survives a reused verdict, never a warning about an incidental fact).
     seeded: bool,
+    /// Whether every input Ply could build for this fn was turned away by
+    /// the fn's own precondition, so the body was never entered and the
+    /// promise was checked on nothing at all.
+    ///
+    /// A fact about Ply's generator, never about the author's code, and it
+    /// took a defect to learn the difference. The guard that detects this
+    /// asserts inside a generated test, and a failing generated test is how
+    /// `verify` recognises a broken contract -- so from 2026-09-05 to
+    /// 2026-09-06 an obviously correct function came back as "a real,
+    /// reproduced violation". `run_fn_checks` turns this into the
+    /// `inconclusive` status (§0/D6's own word for a check that reached no
+    /// conclusion) beside an `unclaimed` verdict, which is what an absence
+    /// of evidence has always been.
+    no_admissible_input: bool,
     /// Whether this fn's postcondition is a top-level `||` chain whose
     /// branch-decided split (2026-09-02, CLAUDE.md: "record which branch of
     /// the promise actually decided each case") came back skewed -- one
@@ -5247,6 +5270,7 @@ fn run_fuzz_and_test_checks(
     let fuzz_test_name = harness_fuzz_test_name(cf);
     let mut fuzz_label = None;
     let mut test_label = None;
+    let mut no_admissible_input = false;
     let mut fuzz_cases_reached: Option<u32> = None;
     // Whether `fuzz` specifically produced evidence worth naming in §8's
     // `evidence` block -- distinct from "the harness ran at all", since a
@@ -5327,6 +5351,7 @@ fn run_fuzz_and_test_checks(
             fuzz_cases_reached: None,
             diagnostics,
             seeded: false,
+            no_admissible_input: false,
             promise_lopsided: false,
             route_used: false,
             route_collapsed: false,
@@ -5884,6 +5909,33 @@ fn run_fuzz_and_test_checks(
                     && (t.contains("::ply_example_") || t.contains("::ply_direct_"))
             })
             .collect();
+
+        // The admissibility probe is not a contract test and must never be
+        // read as one. It asserts that at least one *generated* case got
+        // past this fn's own precondition -- a fact about Ply's input
+        // builder. `ply_direct_{ident}_00` and friends assert the contract;
+        // this one asserts that they had anything to assert it on.
+        let admissibility_probe_failed = failing_test_checks
+            .iter()
+            .any(|t| t.ends_with(ply_core::fuzz_gen::ADMISSIBILITY_TEST_SUFFIX));
+        let real_contract_failures: Vec<&&String> = failing_test_checks
+            .iter()
+            .filter(|t| !t.ends_with(ply_core::fuzz_gen::ADMISSIBILITY_TEST_SUFFIX))
+            .collect();
+
+        // A worked example calls the real function with the author's own
+        // arguments, so one that passed *is* the body having been entered
+        // on a real input -- whatever the generator could not reach. The
+        // probe looks only at generated boundary values and cannot see
+        // this, which is why it must not have the last word: its own
+        // message tells the reader to add an example, and before this the
+        // advice changed nothing at all, because adding one still left the
+        // probe failing and the fn reported as a violation.
+        let reached_by_a_worked_example = has_examples
+            && !failing_test_checks
+                .iter()
+                .any(|t| t.contains("::ply_example_"));
+
         if !run.timed_out && test_tests_executed == 0 {
             // Same guard as `fuzz`'s own above, for the same reason: the
             // module-wide count above only proves *something* under this
@@ -5942,7 +5994,7 @@ fn run_fuzz_and_test_checks(
                 open_item: Some("timeout".into()),
             });
             test_label = Some("timeout".into());
-        } else if !failing_test_checks.is_empty() {
+        } else if !real_contract_failures.is_empty() {
             diagnostics.push(Diagnostic {
                 code: "R0502".into(),
                 severity: "error".into(),
@@ -5954,8 +6006,12 @@ fn run_fuzz_and_test_checks(
                     "`{fn_name}` failed {} of its own example/generated direct-contract test(s): {}. \
                      Each of these is a concrete input asserted directly against the contract, so this \
                      is a real, reproduced violation, not a probabilistic one.",
-                    failing_test_checks.len(),
-                    failing_test_checks.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                    real_contract_failures.len(),
+                    real_contract_failures
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 pointer: None,
                 primary_span: None,
@@ -5965,6 +6021,18 @@ fn run_fuzz_and_test_checks(
                 open_item: None,
             });
             test_label = Some("violation".into());
+        } else if admissibility_probe_failed && !reached_by_a_worked_example {
+            // Nothing ever entered the body. Not a pass, not a failure: an
+            // absence, and the evidence order already has a word for that.
+            //
+            // Never `violation`, which is what this was for one day. A
+            // violation is an accusation about the author's code, and there
+            // is nothing here to accuse: the promise may be perfectly true,
+            // and Ply simply could not build an input that gets past the
+            // author's own precondition.
+            diagnostics.push(no_admissible_input_diag(node_id, fn_name, cf));
+            no_admissible_input = true;
+            test_label = Some("unclaimed".into());
         } else {
             test_label = Some("tested".into());
         }
@@ -5989,6 +6057,7 @@ fn run_fuzz_and_test_checks(
         fuzz_cases_reached,
         diagnostics,
         seeded,
+        no_admissible_input,
         promise_lopsided,
         route_used,
         route_collapsed,
@@ -7360,6 +7429,61 @@ fn holds_violation_diag(
         ],
         assumptions: vec![],
         open_item: None,
+    }
+}
+
+/// What a reader is told when Ply could not build a single input that gets
+/// past a function's own precondition.
+///
+/// A warning, not an error, and the distinction is the whole point: nothing
+/// is broken. The promise may well be true. What is missing is any evidence
+/// either way, so this is an absence -- caught by `--fail-on evidence`,
+/// waved through by `--fail-on error`, exactly like a shape Ply refuses to
+/// check. Reporting it as a violation, which this did for one day, accuses
+/// the author's code of something Ply has no witness for.
+///
+/// Written to the newbie bar: what happened, why, and one thing to do that
+/// actually works -- the previous wording told the reader to add a worked
+/// example while the check that produced it could not see examples at all.
+fn no_admissible_input_diag(node_id: &str, fn_name: &str, cf: &ContractFn) -> Diagnostic {
+    let params = cf
+        .params
+        .iter()
+        .map(|p| format!("`{}: {}`", p.name, p.ty.display_name()))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let precondition = cf
+        .requires
+        .as_ref()
+        .map(|(_, src)| src.clone())
+        .unwrap_or_default();
+    Diagnostic {
+        code: "W0542".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "test".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` was never called, so its promise has not been checked on a single \
+             input. Ply builds test inputs by trying boundary values for each parameter -- for \
+             {params} that is 0, 1, small numbers and the maximum -- and its precondition \
+             `{precondition}` rejects every one of them. Nothing here is broken and nothing \
+             here is proven. Add an `examples:` entry that satisfies the precondition and the \
+             promise gets checked on that input. (W0542)"
+        ),
+        pointer: None,
+        primary_span: cf.source_span.clone(),
+        counterexample: None,
+        fixes: vec![Fix {
+            title: format!(
+                "add an `examples:` entry under `{fn_name}` in ply.yaml naming an input its \
+                 precondition accepts"
+            ),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: Some("inconclusive".into()),
     }
 }
 

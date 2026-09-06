@@ -1,0 +1,20 @@
+ply: 1
+
+# Both promises are true. Neither function may be reported as violating
+# anything, whatever the generator could and could not reach.
+components:
+  narrowprecond:
+    anchor: ply_fixture_narrowprecond
+    fns:
+      # No worked example: no generated boundary value satisfies `x == 42`,
+      # so nothing ever calls this. That earns no evidence, and saying so is
+      # the honest report.
+      only_at_42:
+        checks: [test]
+      # The same function with one worked example that does satisfy the
+      # precondition. A real input reaches the body, so the promise really
+      # was checked on a real input, and this earns `tested`.
+      only_at_42_with_example:
+        checks: [test]
+        examples:
+          - "only_at_42_with_example(42) == 42"
