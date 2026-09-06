@@ -391,6 +391,37 @@ root document: `cargo ply render` reports the `W0419` it draws. README gained a 
 asking a code what it means, with `W0419` as the worked example -- its quoted `explain`
 output is byte-for-byte what the tool prints, checked, not transcribed.
 
+- [ ] **KNOWN GAP, recorded not hidden**: inside a single crate, an `edges` or `deny` line
+      between two nested components is parsed, endpoint-resolved, drawn -- and never
+      evaluated against code. `arch.rs` implements the crate tier only, matching components
+      by the anchor's first `::` segment, so every box in `crates/ply-core/ply.yaml` maps to
+      the crate `ply_core` and no dependency pair ever has both ends in the document. The
+      item tier does not exist: no extractor, no `A0402` emitter.
+      Measured, not inferred: `* -> core.model except core.harness` is violated by five
+      declared components and reports "No problems found"; a `->` edge naming a pair that
+      does not communicate at all is equally silent. So a rule written here cannot fail,
+      which is worse than no rule -- and `check`'s own coverage line already says it
+      ("nothing to check"), where it is easy to read past.
+      There *is* a diagnostic one case away: `A0411` fires for a rule on a shadowed
+      component and its message says "every edge or `deny:` rule written for it never
+      fires". Nothing says that for a well-formed rule whose two endpoints share a crate.
+      Closing it needs a registry code and a spec line, so it is the maintainer's call:
+      warn when an edge/deny's endpoints resolve to one crate identity, or once per
+      document when every declared component claims the same crate.
+      Decided against, deliberately: declaring the 42 real module pairs as `edges`. A false
+      edge is indistinguishable from a true one here, so 42 true edges would be
+      indistinguishable from 42 stale ones. The drawing's silence is honest either way --
+      an arrow is a declared permission, and the transcript prints "none declared", which is
+      a true statement about the document rather than a claim that nothing communicates.
+      Also noted while measuring, neither a defect nor recorded as one elsewhere: four
+      top-level modules carry no component at all (`arch`, `contract_rt`, `effects`,
+      `promise`), and nine module pairs are mutually dependent (`model<->visual`,
+      `check<->visual`, `check<->config`, `config<->harness`, `config<->visual`,
+      `fuzz_gen<->harness`, `contract_rt<->fuzz_gen`, `harness<->promise`,
+      `callgraph<->reach`). The cycles cost Ply no evidence about itself: the scheduler's
+      cycle rule is function-level and applies to `bounded` claims, of which this document
+      declares none.
+
 - [ ] **KNOWN GAP, recorded not hidden**: a finding about an entry in `edges` or `deny` is
       carried **unanchored**, because those are drawn as lines the §8 envelope does not
       describe. Readable and explainable, but not clickable on the line itself. Anchoring
