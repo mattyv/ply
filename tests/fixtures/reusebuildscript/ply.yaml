@@ -1,0 +1,12 @@
+ply: 1
+
+components:
+  reusebuildscript:
+    anchor: ply_fixture_reusebuildscript
+    fns:
+      answer:
+        requires:
+          - "x <= 100"
+        ensures:
+          - "|result| *result <= 7"
+        checks: [fuzz(64)]

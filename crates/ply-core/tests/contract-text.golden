@@ -94,6 +94,8 @@ narrowprecond::broken_but_exampled ensures |result|*result == 0
 narrowprecond::broken_but_exampled requires x == 42
 narrowprecond::only_at_42 ensures |result|*result == x
 narrowprecond::only_at_42 requires x == 42
+narrowprecond::only_at_42_and_true ensures |result|*result == x
+narrowprecond::only_at_42_and_true requires x == 42 && flag
 narrowprecond::only_at_42_with_example ensures |result|*result == x
 narrowprecond::only_at_42_with_example requires x == 42
 nestedclaim::safe_increment ensures |result|*result == x + 1
@@ -160,6 +162,8 @@ reusewiden::bumped ensures |result|*result >= x
 reusewiden::bumped requires x <= 1_000
 reusewiden::halved ensures |result|*result <= x
 reusewiden::halved requires x <= 1_000
+reuseyamlcontract::bumped ensures |result|*result > x
+reuseyamlcontract::bumped requires x <= 1_000
 routehook::use_handle ensures |result|*result < 100
 routehook::use_many_handles ensures |result|*result >= 0
 routehook::use_stuck ensures |result|*result >= 0

@@ -26,6 +26,16 @@ pub fn only_at_42_with_example(x: u32) -> u32 {
     x
 }
 
+/// Two parameters, and the precondition needs a *specific pair*. The
+/// example supplies it; both values have to arrive in the same call for
+/// anything to reach the body at all (external review, 2026-09-06).
+#[ply::requires(x == 42 && flag)]
+#[ply::ensures(|result| *result == x)]
+pub fn only_at_42_and_true(x: u32, flag: bool) -> u32 {
+    let _ = flag;
+    x
+}
+
 /// The promise is **broken**: it says the result is zero and returns one.
 ///
 /// No generated boundary value satisfies `x == 42`, and the worked example

@@ -82,6 +82,37 @@ Spec amended in the same commit (§ the fingerprint's third input, and the resol
 path-dependency rule). The reach tests cover all seven table spellings in one loop rather
 than one test per spelling, so a spelling added later cannot quietly skip the rule.
 
+## Landed: five more ways a stored result outlived what it stood on — 2026-09-06
+
+External review, two rounds. Three of the five could serve a false green.
+
+- [x] **A contract written in `ply.yaml` is walked for the helpers it names.** The walk
+      read contract expressions off the function's own attributes, where an inline one
+      lives; a document-declared one is merged in later and appears nowhere there.
+      `tests/fixtures/reuseyamlcontract`.
+- [x] **A build script is first-party source.** The file set collected `src/` and nothing
+      else, so a script emitting `cargo:rustc-env` could be edited invisibly.
+      `tests/fixtures/reusebuildscript`. **KNOWN GAP:** the script is hashed, what the
+      script reads is not.
+- [x] **Compiler flags are a hashed input.** `RUSTFLAGS="--cfg broken"` compiles a
+      different body from the same source. `tests/fixtures/reuserustflags`. This moves the
+      pinned fingerprint, so **every `ply.lock` written before today is stale** -- and
+      should be. **KNOWN GAP:** flags from `.cargo/config.toml` (`[build] rustflags` or
+      `target.<triple>.rustflags`) are not read.
+- [x] **A worked example's arguments stay together.** Each parameter's set was extended
+      separately and cases drawn from them independently, so `f(42, true)` never produced
+      a call holding both. The admissibility probe derived the same cases a second time
+      and had to be pointed at the first.
+- [x] **A collection of `bool` generates Rust that compiles.** Boundaries were built by
+      splicing a type name after a digit, so `Vec<bool>` produced `vec![0bool]` and the
+      harness did not build.
+
+The lesson worth keeping: the first fixture written for the YAML-contract finding passed
+without the fix, because its claim re-ran for an unrelated reason. A reuse test whose
+claim re-runs for the wrong reason cannot see the bug it was written for.
+
+Spec amended: fingerprint inputs 3 and 9, and the resolver's first-party source rule.
+
 ## Landed: the same manifest blindness, in the reader that mattered — 2026-09-06
 
 An external reviewer re-sent the eight findings and said the top follow-up was

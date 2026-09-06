@@ -150,6 +150,17 @@ pub struct FingerprintInputs {
     /// The target triple, and the compiler that built for it.
     pub target: String,
     pub rustc: String,
+    /// The flags Cargo passes rustc from the environment, which are part of
+    /// the build without appearing anywhere in the source. `RUSTFLAGS`
+    /// carrying `--cfg broken` compiles a different function body out of the
+    /// same text, so a result recorded without it was reused across a build
+    /// that behaved differently (external review, 2026-09-06).
+    ///
+    /// KNOWN GAP, stated rather than left to be found: this reads the
+    /// environment Ply itself runs under. Flags reaching Cargo another way
+    /// -- a `[build] rustflags` table in `.cargo/config.toml`, or a
+    /// `target.<triple>.rustflags` -- are not read here and are not hashed.
+    pub rustflags: String,
     /// The crate's declared feature table. Ply passes no `--features`, so
     /// the active set is the default set this text defines.
     pub features: String,
@@ -268,6 +279,7 @@ impl FingerprintInputs {
             "the compiler and the build target" => {
                 put("target", &self.target);
                 put("rustc", &self.rustc);
+                put("rustflags", &self.rustflags);
             }
             "the crate's features" => put("features", &self.features),
             "the versions of everything outside this workspace" => put("deps", &self.deps),
@@ -626,6 +638,7 @@ mod tests {
             }],
             target: "x86_64-unknown-linux-gnu".into(),
             rustc: "rustc 1.94.1".into(),
+            rustflags: String::new(),
             features: "(none)".into(),
             ply_version: "0.1.0".into(),
         }
@@ -1008,9 +1021,11 @@ mod tests {
     fn the_fingerprint_of_the_reference_fixture_is_pinned() {
         assert_eq!(
             fingerprint(&inputs()),
-            "188fabb251f5cb7dbee50c0bf519c7a9f2099f4ac64da5bb21ad98aa67e53a17",
+            "6493b0e1b470dc213205618521c2585dd552b09f10f4051ae21085c0995ee54f",
             "the encoding did not change, so this must not move; if it moved on purpose, every \
-             ply.lock committed against the old encoding is now stale. Moved once deliberately, \
+             ply.lock committed against the old encoding is now stale. Moved deliberately on 2026-09-06, when the flags Cargo \
+             inherits became a hashed input (see `FingerprintInputs::rustflags`) -- every \
+             ply.lock written before that is stale, and should be. And once before, \
              2026-08-28: Ply's own build identity was split out of the claim-identity group into \
              a group of its own, which changes the canonical bytes. No input was added or \
              removed, and nothing invalidates now that did not invalidate before -- the split \
