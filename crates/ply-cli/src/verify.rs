@@ -5251,6 +5251,28 @@ struct HarnessRun {
     route_collapsed: bool,
 }
 
+/// The share word for the high-rejection warning's opening clause.
+///
+/// The warning only fires once the rejection rate clears one half
+/// (`fuzz_gen.rs`'s own `> 0.5` guard on `PLY_FUZZ_HIGH_REJECT`), and a
+/// rate that just clears that bar -- 51%, say -- is not what a reader would
+/// call "most" of anything, even though it is honestly "more than half".
+/// At 60% and above (the `highreject` fixture's own ~66% included) it reads
+/// as "most" without overclaiming. `detail` is the `rejected/total` pair the marker already carries
+/// (`"494/750"`); anything this cannot parse as two non-negative numbers
+/// with a positive total falls back to "most" rather than guessing wrong in
+/// the other direction, since every real caller here already passed the
+/// `> 0.5` guard before this is ever called.
+fn high_reject_share_word(detail: &str) -> &'static str {
+    let parsed = detail
+        .split_once('/')
+        .and_then(|(r, t)| Some((r.trim().parse::<f64>().ok()?, t.trim().parse::<f64>().ok()?)));
+    match parsed {
+        Some((rejected, total)) if total > 0.0 && rejected / total < 0.6 => "more than half",
+        _ => "most",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_fuzz_and_test_checks(
     cf: &ContractFn,
@@ -5587,6 +5609,7 @@ fn run_fuzz_and_test_checks(
             fuzz_cases_reached = Some(accepted);
         } else {
             if let Some((_, detail)) = fuzz_engine::parse_high_reject_marker(&run.combined_output) {
+                let share = high_reject_share_word(&detail);
                 diagnostics.push(Diagnostic {
                     code: "W0503".into(),
                     severity: "warning".into(),
@@ -5595,7 +5618,7 @@ fn run_fuzz_and_test_checks(
                     check: check_label.clone(),
                     node_id: node_id.into(),
                     title: format!(
-                        "most of the inputs generated for `{fn_name}` were thrown away by its own \
+                        "{share} of the inputs generated for `{fn_name}` were thrown away by its own \
                          `#[ply::requires]` precondition ({detail} draws rejected). proptest kept \
                          drawing until it had {n} accepted cases, so the count is honest -- but those \
                          cases all come from the narrow corner of the input space the precondition \
@@ -7571,6 +7594,26 @@ fn unused(_p: &PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The high-rejection warning's opening word must not overclaim near its
+    /// own threshold. The warning already fires only once the rejection
+    /// rate is above half (proptest_gen.rs's `> 0.5` guard), so a rate that
+    /// just clears that bar -- 67 of 131 draws, ~51% -- is not what a reader
+    /// would call "most" of anything; a rate clearly past half (the
+    /// `highreject` fixture's own ~66%) still is.
+    #[test]
+    fn the_high_rejection_share_word_does_not_overclaim_a_bare_majority() {
+        assert_eq!(high_reject_share_word("67/131"), "more than half");
+        assert_eq!(high_reject_share_word("66/131"), "more than half");
+        assert_eq!(high_reject_share_word("494/750"), "most");
+        assert_eq!(high_reject_share_word("2/3"), "most");
+        // Malformed or degenerate input never panics or divides by zero --
+        // it falls back to the stronger claim rather than guessing wrong in
+        // the other direction, since every real caller here already passed
+        // the `> 0.5` guard.
+        assert_eq!(high_reject_share_word("garbage"), "most");
+        assert_eq!(high_reject_share_word("0/0"), "most");
+    }
 
     /// The case that makes the merge worth having: a promise written in the
     /// document that the code does **not** keep.

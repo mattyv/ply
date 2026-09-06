@@ -310,6 +310,36 @@ mod tests {
         assert!(out.contains("The-Ply-Spec.md §8"), "{out}");
     }
 
+    /// `W0503` fires for two different outcomes at runtime (`verify.rs`):
+    /// a high-but-survivable rejection rate, where the run still reaches
+    /// the case count it was asked for and keeps its `fuzzed(n)` verdict,
+    /// and a run proptest abandons outright, which earns no fuzz evidence
+    /// at all. Before this test, `explain W0503` described only the second
+    /// -- a reader who saw the warning on a passing `fuzzed(64)` run would
+    /// read the explanation and conclude their run found nothing, which is
+    /// the opposite of what happened.
+    #[test]
+    fn explain_w0503_covers_both_outcomes_the_code_actually_emits() {
+        // The 88-column wrap can fold a newline into the middle of any of
+        // these phrases, so the check runs against the unwrapped text --
+        // wrapping is `wrap`'s own concern, not this test's.
+        let out = render(Some("W0503")).replace('\n', " ");
+        assert!(
+            out.contains(
+                "keeps drawing new values until it has as many passing cases as it \
+                          was asked for, so that count is real"
+            ),
+            "must describe the survivable case, where the verdict is still `fuzzed(n)`: {out}"
+        );
+        assert!(
+            out.contains(
+                "it never recovers: it gives up before reaching that count, so no case was \
+                 actually checked"
+            ),
+            "must still describe the abandoned case, where no evidence was earned at all: {out}"
+        );
+    }
+
     /// Lowercase, because a code retyped from a screenshot arrives however
     /// the reader typed it and refusing that would be a refusal about
     /// typing rather than about the code.

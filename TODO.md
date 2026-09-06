@@ -1,5 +1,31 @@
 # TODO
 
+## Landed: a braces-containing contract no longer breaks the generated cex test — 2026-09-06 (150e2e6, cc42099)
+
+- [x] `contract_rt.rs`'s `render_message` spliced a contract's own text straight into
+      the Rust string literal that becomes a generated `panic!()` call's format string in
+      `src/ply_generated_cex.rs`. A contract with `{`/`}` in it (an `if cond { .. } else
+      { .. }` expression -- the shape the `ply-book` lesson-2 fixture's `apply_failure`
+      actually uses) made rustc read a bare brace as a malformed format directive and
+      refuse to compile the generated file, turning a correct counterexample into a
+      broken `cargo test` run. Fixed by escaping backslash/quote/brace characters before
+      splicing contract text and the function's path into the message
+      (`escape_for_panic_literal`). Verified against a real copy of the `ply-book`
+      lesson-2 fixture: `cargo-ply verify` still reports the same `P0502` violation, and
+      the generated file now compiles and its counterexample test fails with the
+      intended "Broken promise" message (150e2e6).
+- [x] `cargo ply explain W0503` described only one of the two outcomes the warning
+      actually covers (verify.rs): a high-but-survivable rejection rate, where the
+      verdict stays `fuzzed(n)` with a weaker-evidence caveat, and a run proptest
+      abandons outright, which earns no evidence at all. The explained text described
+      only the second, so a reader on a passing `fuzzed(64)` run would be told their run
+      found nothing. Rewrote the gloss to describe both, matching §5.4c's own
+      distinction ("the ordinary W0503 case" is the survivable one). Also softened the
+      warning's opening word from "most of the inputs" to "more than half" when the
+      rejection rate has only just cleared the 50% threshold that triggers the warning
+      at all, since "most" overclaims a bare-majority rate; the `highreject` fixture's
+      own ~66% rate still reads "most", unchanged (cc42099).
+
 ## Ply Book — 2026-09-06
 
 - [x] Build a separate `ply-book` course: three worked chapters, Rust starter and

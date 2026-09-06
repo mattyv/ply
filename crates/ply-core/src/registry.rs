@@ -512,7 +512,7 @@ impl Code {
                 status: Enforced,
                 severity: Warning,
                 spec_anchor: "§5.4c",
-                gloss: "The random-sample check gave up generating inputs for this function before it reached the case count asked for, because too many generated values were rejected by the function's own precondition -- so no evidence was earned at all, not a smaller passing count.",
+                gloss: "The random-sample check's own precondition threw away an unusually large share of the values it generated for this function. Most of the time it recovers: it keeps drawing new values until it has as many passing cases as it was asked for, so that count is real, but every one of those cases comes from the narrow slice of inputs the precondition allows -- weaker evidence than the count alone suggests. When the rejection is severe enough, it never recovers: it gives up before reaching that count, so no case was actually checked, and the report says that rather than claiming a smaller pass.",
             },
             E0505 => RuleEntry {
                 code: self,
