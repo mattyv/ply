@@ -42,6 +42,46 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: two more ways a stored result outlived the code it stood on — 2026-09-06
+
+Both found by external review, both the same shape as the helper bug of 2026-08-25: the
+fingerprint hashed less code than the check actually ran, so an edit left the hash
+identical and the next run carried a pass forward over source that had changed.
+
+- [x] **A helper only a worked example calls is now hashed.** The walk started at the
+      claimed function and nowhere else, so `rate(x) == expected()` with `expected`
+      defined next door hashed `rate` and not `expected`. Editing `expected` changed what
+      the assertion demanded and moved nothing in the record. The walk is now seeded with
+      every path the examples name as well. An example Ply cannot parse, or one invoking a
+      macro, widens the scope to the whole crate rather than being skipped -- the same
+      fail-closed rule the body walk already had.
+- [x] **A path dependency is followed from every table Cargo declares one in.** Ply read
+      `[dependencies]` and `[dev-dependencies]`. `[build-dependencies]` and every
+      platform-specific form (`[target.'cfg(unix)'.dependencies]`) were read as tables of
+      nothing, so a crate reached only that way was hashed nowhere at all. The review named
+      the platform-specific case; the build-script one is the same hole and is closed with
+      it, because a build script's dependencies run during the build and can write the
+      source the crate then compiles.
+
+**KNOWN COST, for the maintainer to weigh.** Widening on a macro is the same fail-closed
+rule the body walk has always had, and it is not free: `matches!` in an example now costs
+that claim its fine-grained reuse. Two claims in Ply's own document are affected --
+`classify_probe` and `parse_output` in `crates/ply-core` -- because each asserts
+`matches!(f(..), SomeVariant)`. Their bodies contain no macros, so before this change they
+hashed the reached set exactly and now hash the whole crate: any edit anywhere in
+`ply-core` re-earns them. Three ways out, none taken here because the choice is the
+maintainer's: rewrite those two examples without `matches!` (cheapest, and they can be
+written as `==` against a constructed value); teach the walk to resolve a macro definition
+and read its expansion (real work, and the general case is undecidable for
+procedural macros); or accept the cost. Deliberately **not** fixed by listing
+`matches!` as a known-harmless macro -- that is the name-whitelist shape four review
+rounds in a row said to stop reaching for, since the invariant that has to hold is that
+the walk saw everything the example can call, and for a macro it did not.
+
+Spec amended in the same commit (§ the fingerprint's third input, and the resolver's
+path-dependency rule). The reach tests cover all seven table spellings in one loop rather
+than one test per spelling, so a spelling added later cannot quietly skip the rule.
+
 ## Landed: the e2e build-identity tests build again — 2026-09-06
 
 CI's `product-e2e (5/6)` shard was red: the private copy those tests make of Ply's own

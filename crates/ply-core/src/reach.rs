@@ -364,6 +364,7 @@ pub fn code_scope(
     resolver: &mut Resolver,
     first_party: &FirstParty,
     root_fn_path: &str,
+    examples: &[String],
     stubbed: &BTreeSet<String>,
 ) -> CodeScope {
     if let Some(reason) = &first_party.gate {
@@ -376,6 +377,44 @@ pub fn code_scope(
     // See `FirstParty::type_decls`.
     let mut units: Vec<(String, String)> = first_party.type_decls.clone();
     queue.push_back(root_fn_path.to_string());
+    // A worked example is code: a `test` check compiles it into an assertion
+    // and runs it. So anything it names is part of what the result stood on,
+    // exactly as a callee of the function itself is. Walking out of the
+    // claimed function alone missed a helper the example called and the
+    // function never mentioned -- `rate(x) == expected()` with `expected`
+    // defined next door. Editing that helper changed what the assertion
+    // demanded and left the fingerprint identical, so the run carried forward
+    // a pass over a check that had just changed meaning.
+    //
+    // Reported by external review, 2026-09-06.
+    for example in examples {
+        let Ok(expr) = syn::parse_str::<syn::Expr>(example) else {
+            // The harness refuses this text too, but that happens later, and
+            // a scope that quietly skips what it cannot read is the silence
+            // this module exists to end.
+            return widened(
+                first_party,
+                format!("Ply could not read the worked example `{example}` to walk out of it"),
+            );
+        };
+        let mut collector = MentionCollector {
+            paths: Vec::new(),
+            macro_invocation: None,
+        };
+        collector.visit_expr(&expr);
+        if let Some(mac) = collector.macro_invocation {
+            return widened(
+                first_party,
+                format!(
+                    "the worked example `{example}` invokes the macro `{mac}!`, whose expansion \
+                     is not in the tokens Ply's call walk reads"
+                ),
+            );
+        }
+        for path in collector.paths {
+            queue.push_back(path);
+        }
+    }
     while let Some(spelling) = queue.pop_front() {
         let is_root = seen.is_empty();
         let found = match resolver.lookup_fn(&spelling) {
@@ -618,6 +657,46 @@ fn collect_rs(dir: &Path, label: &str, out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
+/// The three tables Cargo builds a dependency graph from. `build-` counts
+/// because a build script's own dependencies compile and run during the
+/// build, and can write the source the crate then compiles.
+const DEPENDENCY_KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+
+/// Whether a `Cargo.toml` table header declares dependencies -- and, when it
+/// is the one-table-per-dependency form, which dependency it names.
+///
+/// Cargo spells the same table several ways, and Ply recognised two of them.
+/// `[target.'cfg(unix)'.dependencies]` and `[build-dependencies]` were read
+/// as ordinary tables of nothing, so a path dependency declared under either
+/// was never walked and none of its source was hashed. Editing a helper
+/// there and re-running carried a pass forward over code that had changed.
+///
+/// The platform predicate can contain dots, quotes and parentheses
+/// (`target."cfg(any(unix, windows))".dependencies`), so the prefix is
+/// dropped by finding the kind rather than by splitting on `.`.
+fn dependency_table(header: &str) -> Option<Option<String>> {
+    let inner = header.strip_prefix('[')?.strip_suffix(']')?;
+    let rest = match inner.strip_prefix("target.") {
+        Some(after) => {
+            let at = DEPENDENCY_KINDS
+                .iter()
+                .filter_map(|kind| after.rfind(&format!(".{kind}")))
+                .max()?;
+            &after[at + 1..]
+        }
+        None => inner,
+    };
+    for kind in DEPENDENCY_KINDS {
+        if rest == kind {
+            return Some(None);
+        }
+        if let Some(name) = rest.strip_prefix(&format!("{kind}.")) {
+            return Some(Some(name.to_string()));
+        }
+    }
+    None
+}
+
 /// `(dependency key, relative path)` for every `path = "..."` dependency in
 /// a manifest. The same deliberately narrow line scan the rest of Ply uses
 /// on `Cargo.toml`: this text is read for two keys, never interpreted.
@@ -628,14 +707,16 @@ pub fn path_dependencies(manifest: &str) -> Vec<(String, String)> {
     for line in manifest.lines() {
         let t = line.trim();
         if t.starts_with('[') {
-            in_deps = t == "[dependencies]"
-                || t == "[dev-dependencies]"
-                || t.starts_with("[dependencies.")
-                || t.starts_with("[dev-dependencies.");
-            pending = t
-                .strip_prefix("[dependencies.")
-                .or(t.strip_prefix("[dev-dependencies."))
-                .map(|rest| rest.trim_end_matches(']').to_string());
+            match dependency_table(t) {
+                Some(named) => {
+                    in_deps = true;
+                    pending = named;
+                }
+                None => {
+                    in_deps = false;
+                    pending = None;
+                }
+            }
             continue;
         }
         if !in_deps || t.is_empty() || t.starts_with('#') {
@@ -748,12 +829,16 @@ fn declared_dependency_count(manifest: &str) -> usize {
     for line in manifest.lines() {
         let t = line.trim();
         if t.starts_with('[') {
-            if t.starts_with("[dependencies.") || t.starts_with("[dev-dependencies.") {
-                count += 1;
-                in_deps = false;
-                continue;
+            match dependency_table(t) {
+                // `[dependencies.serde]` is one dependency spelled over
+                // several lines, not several dependencies.
+                Some(Some(_)) => {
+                    count += 1;
+                    in_deps = false;
+                }
+                Some(None) => in_deps = true,
+                None => in_deps = false,
             }
-            in_deps = t == "[dependencies]" || t == "[dev-dependencies]";
             continue;
         }
         if in_deps && !t.is_empty() && !t.starts_with('#') && t.contains('=') {
@@ -949,15 +1034,112 @@ mod tests {
     }
 
     fn scope_of(dir: &Path, root: &str, stubbed: &[&str]) -> CodeScope {
+        scope_of_with_examples(dir, root, &[], stubbed)
+    }
+
+    fn scope_of_with_examples(
+        dir: &Path,
+        root: &str,
+        examples: &[&str],
+        stubbed: &[&str],
+    ) -> CodeScope {
         let lib = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
         let mut resolver = Resolver::new(&lib, dir, Default::default()).unwrap();
         let first_party = scan_first_party(dir);
         let stubbed: BTreeSet<String> = stubbed.iter().map(|s| s.to_string()).collect();
-        code_scope(&mut resolver, &first_party, root, &stubbed)
+        let examples: Vec<String> = examples.iter().map(|s| s.to_string()).collect();
+        code_scope(&mut resolver, &first_party, root, &examples, &stubbed)
     }
 
     fn labels(scope: &CodeScope) -> Vec<String> {
         scope.units.iter().map(|(l, _)| l.clone()).collect()
+    }
+
+    /// Cargo spells a dependency table four ways, and Ply recognised two of
+    /// them. A path dependency under `[target.'cfg(unix)'.dependencies]` or
+    /// `[build-dependencies]` is code the build compiles exactly as one under
+    /// `[dependencies]` is, but the walk never entered its `src/`, so nothing
+    /// in it was hashed. Editing a helper there and re-running carried
+    /// forward a pass over source that had changed.
+    ///
+    /// Reported by external review, 2026-09-06 (which named the
+    /// platform-specific table; the build-script one is the same hole).
+    #[test]
+    fn a_path_dependency_in_any_dependency_table_is_hashed() {
+        for table in [
+            "[dependencies]",
+            "[dev-dependencies]",
+            "[build-dependencies]",
+            "[target.'cfg(unix)'.dependencies]",
+            "[target.\"cfg(windows)\".dev-dependencies]",
+            "[target.x86_64-unknown-linux-gnu.build-dependencies]",
+            "[target.'cfg(unix)'.dependencies.helper]",
+        ] {
+            let entry = if table.ends_with(".helper]") {
+                "path = \"helper\"\n".to_string()
+            } else {
+                "helper = { path = \"helper\" }\n".to_string()
+            };
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("Cargo.toml"),
+                format!("[package]\nname = \"c\"\nversion = \"0.0.0\"\n\n{table}\n{entry}"),
+            )
+            .unwrap();
+            std::fs::create_dir_all(dir.path().join("src")).unwrap();
+            std::fs::write(dir.path().join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+            std::fs::create_dir_all(dir.path().join("helper/src")).unwrap();
+            std::fs::write(
+                dir.path().join("helper/Cargo.toml"),
+                "[package]\nname = \"helper\"\nversion = \"0.0.0\"\n",
+            )
+            .unwrap();
+            std::fs::write(dir.path().join("helper/src/lib.rs"), "pub fn b() {}\n").unwrap();
+
+            let found = first_party_files(dir.path());
+            assert!(
+                found.iter().any(|(label, _)| label.contains("helper/")),
+                "{table} declares a path dependency whose source the build compiles, \
+                 and it was hashed nowhere: {:?}",
+                found.iter().map(|(l, _)| l).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// A worked example is code that runs, and it can call a helper the
+    /// claimed function never mentions. The walk started at the claimed
+    /// function only, so `fn expected() -> u32 { 6 }` -- named by the example
+    /// and by nothing else -- was hashed nowhere. Editing it to return a
+    /// different answer left the fingerprint identical, and the run carried
+    /// forward a pass over an assertion that had just changed meaning.
+    ///
+    /// Reported by external review, 2026-09-06.
+    #[test]
+    fn a_helper_only_a_worked_example_calls_is_in_scope() {
+        let dir = crate_with(&[(
+            "src/lib.rs",
+            "pub fn expected() -> u32 { 6 }\npub fn double(x: u32) -> u32 { x * 2 }\n",
+        )]);
+        let scope = scope_of_with_examples(dir.path(), "double", &["double(3) == expected()"], &[]);
+        assert_eq!(scope.scope, "reached", "{:?}", scope.widened_because);
+        assert!(
+            labels(&scope).contains(&"expected".to_string()),
+            "the example asserts against whatever this returns: {:?}",
+            labels(&scope)
+        );
+    }
+
+    /// And an example naming nothing but literals and the claimed function
+    /// must not widen the scope or add units -- the common case stays exact.
+    #[test]
+    fn an_example_of_plain_literals_leaves_the_scope_alone() {
+        let dir = crate_with(&[(
+            "src/lib.rs",
+            "pub fn scale(x: u32) -> u32 { x * 2 }\npub fn doubled(x: u32) -> u32 { scale(x) }\n",
+        )]);
+        let scope = scope_of_with_examples(dir.path(), "doubled", &["doubled(3) == 6"], &[]);
+        assert_eq!(scope.scope, "reached", "{:?}", scope.widened_because);
+        assert_eq!(labels(&scope), vec!["scale"]);
     }
 
     /// The defect this module exists for, at unit scale: the helper a check
@@ -1021,7 +1203,7 @@ mod tests {
         let mut resolver = Resolver::new(&lib, dir.path(), declared).unwrap();
         let first_party = scan_first_party(dir.path());
         let stubbed = BTreeSet::from(["legacy".to_string()]);
-        let scope = code_scope(&mut resolver, &first_party, "total", &stubbed);
+        let scope = code_scope(&mut resolver, &first_party, "total", &[], &stubbed);
         assert!(
             labels(&scope).is_empty(),
             "nothing but the claimed function itself is in reach: {:?}",
