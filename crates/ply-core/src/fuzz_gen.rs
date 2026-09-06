@@ -20,6 +20,18 @@
 //! no literal form this renderer can write, so the caller reports that case
 //! as a witness-only violation (`W0541`), never a fabricated input.
 
+/// The tail of the generated test that asks whether *any* generated case
+/// got past a fn's own precondition.
+///
+/// Public because `verify` has to recognise this one test by name and must
+/// never read it as a contract test: it asserts that the contract tests had
+/// anything to assert on, which is a fact about Ply's input builder rather
+/// than about the author's code. Reading it as a contract failure reported
+/// a correct function as "a real, reproduced violation" for one day in
+/// September 2026. Shared as a constant so the name the generator writes
+/// and the name the reader matches cannot drift apart.
+pub const ADMISSIBILITY_TEST_SUFFIX: &str = "_admissible";
+
 use std::collections::BTreeSet;
 
 use anyhow::{Result, bail};
@@ -2970,8 +2982,9 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
             ));
         }
         out.push_str(&format!(
-            "    #[test]\n             \x20\x20\x20\x20fn ply_direct_{ident}_admissible() {{\n             \x20\x20\x20\x20\x20\x20\x20\x20let mut __ply_accepted = 0usize;\n             {probes}             \x20\x20\x20\x20\x20\x20\x20\x20assert!(__ply_accepted > 0, \"none of the generated cases for `{label}` satisfy its own precondition, so its promise was never checked on a single input -- add a worked example that satisfies the precondition, or widen it\");\n             \x20\x20\x20\x20}}\n",
+            "    #[test]\n             \x20\x20\x20\x20fn ply_direct_{ident}{suffix}() {{\n             \x20\x20\x20\x20\x20\x20\x20\x20let mut __ply_accepted = 0usize;\n             {probes}             \x20\x20\x20\x20\x20\x20\x20\x20assert!(__ply_accepted > 0, \"none of the generated cases for `{label}` satisfy its own precondition, so its promise was never checked on a single input -- add a worked example that satisfies the precondition, or widen it\");\n             \x20\x20\x20\x20}}\n",
             ident = cf.ident(),
+            suffix = ADMISSIBILITY_TEST_SUFFIX,
             label = cf.path,
         ));
     }

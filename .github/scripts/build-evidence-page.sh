@@ -73,6 +73,22 @@ cat > "$out/index.html" <<HTML
   against it, or Ply declined to check it and said so rather than guessing.
 </p>
 <p>
+  <strong>What &ldquo;checked&rdquo; means here, exactly.</strong> Almost every
+  green chip on this page was checked by running the function on 256 generated
+  inputs and finding no input that broke its promise. That is real testing and
+  it is worth having &mdash; but it is not a proof, and it is not the same
+  claim as &ldquo;this function is correct&rdquo;. A promise that only breaks
+  on one value in a billion would sit here green. A handful of chips were
+  checked instead against worked examples the author wrote out by hand: fewer
+  inputs, chosen deliberately rather than at random.
+</p>
+<p>
+  Ply can also prove a promise outright, over every input rather than a sample.
+  Nothing on this page has earned that yet, and saying so is the point: a tool
+  about not overclaiming should not lead with its weakest evidence dressed as
+  its strongest.
+</p>
+<p>
   This page is replaced only by a build that passed, so a green chip here
   always stands for a check that really ran. When a build fails, its drawing
   is attached to that build instead and this page keeps showing the last

@@ -719,6 +719,21 @@ pub fn build_visual_envelope_at(
         &mut elements,
         &mut semantic_ids,
     )?;
+    // Everything the drawing will show that this run produced no node for.
+    //
+    // The walk above covers the *verdict tree*, which is what this run
+    // checked. The drawing below walks the *document, with its links
+    // followed*, which is more: verify a root document and it draws a linked
+    // crate's functions in place while the run itself descended into none of
+    // them. Collected from one and drawn from the other, the envelope listed
+    // nothing beside a picture full of things, and a viewer whose only input
+    // is that envelope addressed a different system from the one on screen.
+    //
+    // Matching metadata, never invented evidence: each entry added here
+    // carries `unclaimed` and no engine, seed or case count, because that is
+    // what is true of a function this run never checked.
+    add_elements_for_drawn_but_unchecked(document, links, &mut elements, &mut semantic_ids);
+
     let diagnostics = result
         .diagnostics
         .iter()
@@ -853,6 +868,107 @@ fn evidence_state(evidence: &ElementEvidence) -> &'static str {
         svg::DisplayState::Declared => "declared",
         svg::DisplayState::Unanswered | svg::DisplayState::Stale => "gap",
         svg::DisplayState::Earned { .. } => "earned",
+    }
+}
+
+/// Adds an element for every component and fn the drawing will show that
+/// `collect_elements` did not already produce one for.
+///
+/// Walks the document the same way the renderer does -- through
+/// `config::linked_body`, the one shared helper, so a linked component's
+/// interior is expanded here exactly as it is drawn there rather than by a
+/// second copy of that rule free to drift.
+fn add_elements_for_drawn_but_unchecked(
+    document: &Document,
+    links: Option<&crate::config::LinkIndex>,
+    out: &mut BTreeMap<String, VisualElement>,
+    semantic_ids: &mut BTreeMap<String, String>,
+) {
+    fn walk(
+        qualified: &str,
+        leaf: &str,
+        comp: &crate::model::Component,
+        parent_id: &str,
+        links: Option<&crate::config::LinkIndex>,
+        out: &mut BTreeMap<String, VisualElement>,
+        semantic_ids: &mut BTreeMap<String, String>,
+    ) {
+        let merged = crate::config::linked_body(qualified, comp, links);
+        let body: &crate::model::Component = merged.as_ref().unwrap_or(comp);
+
+        let comp_id = stable_element_id("component", qualified);
+        if !out.contains_key(&comp_id) {
+            semantic_ids.insert(qualified.to_string(), comp_id.clone());
+            out.insert(
+                comp_id.clone(),
+                unchecked_element(comp_id.clone(), "component", leaf, Some(parent_id)),
+            );
+        }
+        let comp_id = semantic_ids
+            .get(qualified)
+            .cloned()
+            .unwrap_or_else(|| stable_element_id("component", qualified));
+
+        for name in body.fns.keys() {
+            let key = format!("{qualified}::{name}");
+            let id = stable_element_id("fn", &key);
+            if out.contains_key(&id) {
+                continue;
+            }
+            semantic_ids.insert(key, id.clone());
+            out.insert(
+                id.clone(),
+                unchecked_element(id, "fn", name, Some(&comp_id)),
+            );
+        }
+        for (child_name, child) in &body.components {
+            walk(
+                &format!("{qualified}.{child_name}"),
+                child_name,
+                child,
+                &comp_id,
+                links,
+                out,
+                semantic_ids,
+            );
+        }
+    }
+
+    let workspace_id = semantic_ids
+        .get("workspace")
+        .cloned()
+        .unwrap_or_else(|| stable_element_id("workspace", "workspace"));
+    for (name, comp) in &document.components {
+        walk(name, name, comp, &workspace_id, links, out, semantic_ids);
+    }
+}
+
+/// One element for something the drawing shows and this run did not check.
+fn unchecked_element(
+    id: String,
+    kind: &str,
+    label: &str,
+    parent_id: Option<&str>,
+) -> VisualElement {
+    let mut evidence = ElementEvidence {
+        verdict: "unclaimed".into(),
+        statuses: Vec::new(),
+        reused: false,
+        engine: None,
+        seed: None,
+        cases: None,
+        state: String::new(),
+    };
+    evidence.state = evidence_state(&evidence).to_string();
+    VisualElement {
+        id,
+        kind: kind.to_string(),
+        label: label.to_string(),
+        parent_id: parent_id.map(ToOwned::to_owned),
+        declaration: None,
+        evidence,
+        source: None,
+        diagnostic_ids: Vec::new(),
     }
 }
 
@@ -1487,5 +1603,118 @@ mod tests {
     #[test]
     fn epoch_formats_as_rfc3339() {
         assert_eq!(rfc3339_utc(UNIX_EPOCH), "1970-01-01T00:00:00Z");
+    }
+
+    /// Everything the drawing shows must be addressable in the envelope
+    /// beside it.
+    ///
+    /// The drawing follows a link into another document and draws that
+    /// document's functions in place. The element list was collected from
+    /// the *verdict tree* instead -- which covers only what this run
+    /// checked, and a run of the root document checks nothing in a linked
+    /// crate. So `cargo ply verify --svg` on a root document published a
+    /// picture with functions in it and a metadata list with none of them,
+    /// and a viewer whose only input is that list could not reach, filter
+    /// or click a single thing it could see.
+    ///
+    /// The same class of defect as "9 elements beside 44 drawn chips",
+    /// fixed on the render path on 2026-09-05; this is the verification
+    /// path, which that fix did not touch. Reported by external review
+    /// 2026-09-06 and reproduced before being fixed.
+    ///
+    /// The entries added for unchecked items carry `unclaimed` and no
+    /// engine, seed or cases, because that is what is true of them. Giving a
+    /// drawn-but-unchecked function *matching metadata* is the property;
+    /// giving it evidence would be inventing some.
+    #[test]
+    fn every_item_the_drawing_shows_has_an_entry_in_the_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("sub/src")).unwrap();
+        std::fs::write(
+            root.join("ply.yaml"),
+            "ply: 1\ncomponents:\n  sub:\n    anchor: ply_linked_sub\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sub/ply.yaml"),
+            "ply: 1\ncomponents:\n  sub:\n    anchor: ply_linked_sub\n    fns:\n      \
+             bump:\n        checks: [fuzz(256)]\n      shrink:\n        checks: [fuzz(256)]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sub/Cargo.toml"),
+            "[package]\nname = \"ply-linked-sub\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n             [lib]\nname = \"ply_linked_sub\"\npath = \"src/lib.rs\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sub/src/lib.rs"),
+            "pub fn bump(x: u32) -> u32 { x }\npub fn shrink(x: u32) -> u32 { x }\n",
+        )
+        .unwrap();
+
+        let document =
+            crate::model::parse_document(&std::fs::read_to_string(root.join("ply.yaml")).unwrap())
+                .unwrap();
+        // What a run of the root document actually produces: nothing, since
+        // the root declares one hollow component and no claims of its own.
+        let result = crate::diag::Envelope {
+            command: "verify".into(),
+            ply_version: "test".into(),
+            root: crate::diag::Node {
+                id: "workspace".into(),
+                kind: "workspace".into(),
+                verdict: "unclaimed".into(),
+                ..Default::default()
+            },
+            diagnostics: Vec::new(),
+            coverage: None,
+            trust_surface: None,
+            open_items: None,
+            not_carried_forward: Vec::new(),
+        };
+        let visual = build_visual_envelope_at(
+            &document,
+            &result,
+            RunMetadata {
+                id: "test".into(),
+                completed_at: "1970-01-01T00:00:00Z".into(),
+                root: RootIdentity {
+                    path: "ply.yaml".into(),
+                },
+                tool: ToolIdentity {
+                    name: "ply".into(),
+                    version: "test".into(),
+                },
+                outcome: RunOutcome::MissingEvidence,
+            },
+            &BTreeMap::new(),
+            Some(root),
+        )
+        .expect("the envelope builds");
+
+        let labels: Vec<&str> = visual.elements.values().map(|e| e.label.as_str()).collect();
+        for drawn in ["sub", "bump", "shrink"] {
+            assert!(
+                labels.contains(&drawn),
+                "the drawing shows `{drawn}` and the envelope does not list it, so a viewer \
+                 reading only the envelope addresses a different system from the one on \
+                 screen. Listed: {labels:?}"
+            );
+        }
+        let bump = visual
+            .elements
+            .values()
+            .find(|e| e.label == "bump")
+            .unwrap();
+        assert_eq!(
+            bump.evidence.verdict, "unclaimed",
+            "this run checked nothing in the linked crate, and the entry must say so rather \
+             than borrow a verdict from the document's declaration"
+        );
+        assert!(
+            bump.evidence.engine.is_none() && bump.evidence.cases.is_none(),
+            "no engine ran against it, so naming one would be inventing evidence"
+        );
     }
 }

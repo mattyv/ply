@@ -97,6 +97,66 @@ independent oracle, and **every case**, not a chosen few.
   visible in the oracle: no arm inspects its payload. If that stops being true, this stops
   being a proof.
 
+- [x] **A cosmetic re-render can no longer reseed every check in silence** -- `dd6d1b7`.
+      A contract's rendered text is a hashed fingerprint input *and* the case-generation
+      seed, so re-rendering an unchanged contract differently invalidates every recorded
+      result and makes every function draw different inputs. That happened on 2026-09-05 over
+      one pair of brackets, and what caught it was three end-to-end tests failing for
+      apparently unrelated reasons, hours later, in CI.
+
+      223 contracts across every fixture are now pinned byte for byte, rendered through the
+      real pipeline rather than a copy of it. Checked against the actual regression: putting
+      that bracket bug back makes it fail in seconds and print the pair. The file says a diff
+      here is not automatically a bug -- it means every affected recorded result is about to
+      stop matching -- and that the golden is updated in the same commit as the change that
+      caused it, having been read.
+
+- [x] **The rewrite is now checked to consult the classifiers it is proved against** --
+      `dd6d1b7`. The two exhaustive proofs close the question "is this cast lossless". They say
+      nothing about whether the code emitting `as i128` asks them at every point it emits
+      one -- and one arm reaching the "cast it anyway" fallback would reopen the whole float
+      defect with both proofs still green. A walking invariant over the rewrite's real output
+      now fails on the first widened leaf the classifier refuses, across a corpus reaching
+      every arm.
+
+      Its honesty condition is measured rather than claimed: **it is blind to a wrong
+      classifier**, because it asks the classifier. Putting the floats back on the admitted
+      list leaves it green -- verified by doing it. A separate test asserts the output
+      directly and does go red. Both are needed and the module says so.
+
+- [x] **A verified drawing's contents are addressable again** -- `739ee92`. External review's
+      second finding, reproduced: `cargo ply verify --svg` on a document with links published
+      a picture containing a linked crate's functions and a metadata list containing **none of
+      them** -- measured on a minimal pair, 0 entries beside 3 drawn items. A viewer whose
+      only input is that envelope addressed a different system from the one on screen, and
+      could not filter or click a single thing it could see.
+
+      The same class as "9 elements beside 44 drawn chips", fixed on the render path the day
+      before; this is the verification path, which that fix did not touch. The element walk
+      covers the verdict tree -- what the run checked -- while the drawing walks the document
+      with its links followed, which is more.
+
+      The envelope is now completed from that same links-aware walk, through the one shared
+      `linked_body` helper rather than a second copy of the rule. Entries added for items the
+      run never checked carry `unclaimed`, no engine, no seed and no case count, because that
+      is what is true of them: matching metadata is the property, and giving them evidence
+      would be inventing some. 0 entries became 4, every one honest.
+
+- [x] **The checking pipeline is now mutation-tested too, nightly** -- `739ee92`. Every defect
+      found on 2026-09-05 and 2026-09-06 lived in four files -- the contract rewrite, the
+      reachability walk, the effect scan, the record -- and not one was caught by a test.
+      `kernel-mutants` measures whether the kernel's gate can see; nothing measured whether
+      these could. 274 planted bugs, sharded eight ways, on a schedule rather than on every
+      pull request, because it is about four hours of machine time and the wait was already
+      the complaint.
+
+      It reports rather than fails, deliberately and unlike the kernel job. That job's bar of
+      zero survivors with no excused list is right for proved code whose first run found three
+      real gaps; setting it here on day one would make this red from the start, and a job
+      always red is a job nobody reads. **Follow-up: triage the first run's survivors and then
+      turn it into a gate.** A survivor is a gap in the tests, dead code, or a change with no
+      observable effect -- never an ignore-list entry.
+
 - [ ] **KNOWN GAP: two `RustType` variants print identically under `Debug`.** Found by the
       enumeration above (30 strings, 32 variants) and not chased down. Harmless here, since
       the check now keys on `discriminant`, but any diagnostic that names a type by its
@@ -236,25 +296,120 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       verdict's own word rather than a translation, so what a reader sees is what the leaf
       was labelled.
 
-- [ ] **KNOWN GAP: the shipped evidence ladder still has nine rungs and the proved one has
-      six.** The flag now travels, which closes the information loss above, but those three
-      outcomes are *also* still ranked as rungs below `unclaimed` -- so `ply_core::kernel`
-      still cannot be dropped onto this path, and its four proved obligations still govern a
-      ladder the tool does not use. Closing it means those three verdicts becoming
-      `unclaimed` at the leaf with the reason carried only as a flag, which moves
-      user-visible output and wants its goldens reviewed one at a time.
+- [x] **The verdict a user sees now comes from the aggregation that was proved** --
+      `9b3b69b`. `ply_core::kernel::aggregate` carries the four standing obligations, proved
+      by exhaustive enumeration over 991,389 trees and again by induction in Verus, and none
+      of it governed a single verdict anyone ever saw: `verify` folded results with a private
+      worst-of over a ladder of integers written out by hand, and the two were free to drift
+      with nothing to notice.
 
-      One spec inconsistency to settle first, and it is what the code followed: D6 and
-      §5.4b call `timeout` a status "outside the evidence order", while §5.4's harness rule
-      twice says "the node's verdict is `tool_error`". Both cannot be right. `tool_error`
-      is also absent from D6's status list entirely.
+      Bound two ways now. The six rungs D6 defines are no longer restated here at all -- the
+      ladder carries `kernel::Evidence` itself, so their relative order *is* the proved one
+      by construction. And a bounded differential folds every tree of up to three leaves and
+      depth two both ways and requires the same answer. Both were checked to bite: swapping
+      two rungs makes them fail and name the pair.
 
-- [ ] **KNOWN GAP: the filesystem-effect scanner fails open** (the review's fourth). An
-      unrecognised method call (`writer.flush()`) returns `Reach::None` rather than
-      `Unknown`, contradicting its own module doc: "**It fails closed.** ... Anything this
-      scan cannot follow ... is `Unknown`". Confirmed to have **no callers outside its own
-      file**, so it is a latent defect rather than a live unsafe path -- fix before
-      integrating it.
+      The remaining three -- `tool_error`, `timeout`, `unsupported` -- are an extension this
+      tool makes to D6's order, and after examining it, an extension is what it is rather
+      than a defect. "The engine gave up" is more use at a glance than a bare `unclaimed`,
+      and since the flag fix earlier today nothing is lost by it: each also travels upward as
+      a flag, so a worst-of that hides one behind a `violation` no longer hides the fact. The
+      spec's D6 now records the extension and why the kernel cannot simply be called here.
+
+      One spec inconsistency was looked for and mostly was not there: D6 and §5.4b agree that
+      `timeout` is a status, and §5.4's "the node's verdict is `tool_error`" is about a word
+      D6's status list never contained. What was missing was any statement of where those
+      three sit, which is what the amendment adds.
+
+- [x] **The published page no longer lets "checked" sound like "proved"** -- `9b3b69b`. It
+      now says what checked means on it: 256 generated inputs for nearly every green chip, a
+      handful of hand-written examples for the rest, and nothing proved -- adding that a
+      promise failing on one value in a billion would sit there looking identical. The
+      2026-09-04 handoff carries the same correction against its own headline. The plan
+      document's own "56 claims earning 70 fuzzed(256)" was inflated too: those were node
+      counts, and the report has a node per component box as well as per function. Corrected
+      to the 56 claims actually declared.
+
+- [x] **A correct function is no longer accused of breaking its promise** -- `971d7fd`.
+      The worst defect of the day, reported by external review and reproduced exactly as
+      described: `#[ply::requires(x == 42)]` on a function that returns exactly what it
+      promises came back as "a real, reproduced violation, not a probabilistic one".
+
+      The guard added the day before was right about the gap it closed -- a precondition no
+      generated value satisfies used to earn `tested` on a function never called once -- but
+      it closed it by asserting inside a generated test, and a failing generated test is
+      precisely how `verify` recognises a broken contract. So the fix for "green with no
+      evidence" produced "red with no evidence", which is worse: the first misleads, the
+      second accuses.
+
+      It also gave advice that could not be followed. The message said to add a worked
+      example satisfying the precondition; the check counted only generated boundary values
+      and never looked at examples, so adding one changed nothing. Confirmed by doing it.
+
+      Now: that probe is recognised by name and never read as a contract test; a worked
+      example that passes counts as the body having been entered, because it is; and a
+      function nothing could reach reports `unclaimed` with the `inconclusive` status
+      (§0/D6's own word) and a warning that names the real cause. Warning severity, so
+      `--fail-on evidence` catches it and `--fail-on error` waves it through, exactly like a
+      refusal. Pinned by a fixture with two functions -- one with a satisfying example, one
+      without -- and the test was checked to bite both ways: without the fix the first goes
+      back to `violation`, and without the probe the second goes back to `tested` on a
+      function never called.
+
+- [x] **The second numeric classifier had the float bug too** -- `971d7fd`. The exhaustive
+      check written on 2026-09-05 covers `is_numeric_rust_type`, and there is a second
+      classifier it never looks at: `is_numeric_cast_target`, which decides the same
+      question for a cast the author wrote by hand. `u128` was on its list -- admitted for
+      widening to `i128`, which is the same width, so the top half wraps to negative and a
+      promise about `x as u128` was checked after the wrap. The float defect exactly, one
+      classifier along. Closed the same way, with its own independent oracle over every
+      integer primitive Rust has.
+
+- [x] **A test claimed a guard it did not have** -- `971d7fd`. External review, and it is
+      right: `the_enumeration_really_does_reach_every_variant` asserts its list has 32
+      entries, and the comment said a variant added later would be caught. It would not.
+      The oracle's wildcard-free `match` does force a new variant to be classified, but
+      nothing forces anyone to add it to the enumeration or to move the 32, so it would sail
+      through unchecked by the one test whose subject is that none are. Rust offers no fix
+      on stable -- `variant_count` is nightly and a derive macro is a dependency this crate
+      should not gain for one assertion -- so the comment now says what the number does and
+      does not do. A check believed stronger than it is, is the failure this file exists to
+      catch one level down.
+
+- [x] **The filesystem-effect scanner fails closed now, as it always said it did** --
+      `3269bc6`. Its opening promise -- "anything this scan cannot follow is `Unknown`" -- was
+      false for the commonest shape in real Rust. Every method call was skipped outright,
+      reasoning that the list of methods known to *write* had already had its say; but a
+      method that list has never heard of is not thereby known to be safe. `writer.flush()`,
+      the ordinary way a buffered writer commits bytes to a file, came back as a function
+      that touches nothing at all.
+
+      A method is now passed over only if it is on a spelled-out list of things that read or
+      reshape a value already in memory, and everything else is `Unknown`. The list is closed
+      and argued rather than blanket, exactly like the free-call list beside it: the bar for
+      adding one is "name a type whose implementation could touch a file", which `flush`,
+      `send`, `spawn` and `commit` all fail. Both directions are pinned -- an unrecognised
+      method is never safe, and `.len()`/`.trim()`/`.to_string()` still are, because a scan
+      that gives up on everything is worth no more than one that gives up on nothing.
+
+- [x] **The two type variants that print alike are not a defect** -- `3269bc6`. Named them
+      rather than leaving "two of them": `VecU8` and `Vec(U8)` both read `Vec<u8>`, and the
+      two user-type variants both read the type's bare name. `RustType`'s `Debug` is a
+      hand-written *user-facing* rendering -- three refusal messages interpolate it so a
+      reader sees `card_bps: [u32; 4]` instead of an internal variant name -- and to that
+      reader those pairs genuinely are the same type. So the rule is the narrow one: nothing
+      may use that rendering to tell two variants apart. Checked; nothing else does.
+
+- [x] **The four crates with no promises now say why** -- `3269bc6`. Asked directly, and the
+      answer is not "write four documents". `check` is one `main` of file reading and exit
+      codes; `e2e` is test scaffolding, and pointing Ply at the suite that judges Ply is the
+      circularity the plan exists to rule out; `attrs` takes compiler token streams Ply
+      cannot manufacture; `render`'s library is re-exports, and its one promisable function
+      lives in a binary no harness can reach. The last two could be claimed by making a
+      private function public and moving another out of a binary -- shaping the code to suit
+      the checker, which this repository refuses about its own kernel and refuses here for
+      the same reason. The root document now carries each reason, so a dashed box reads as an
+      answer rather than an omission.
 
   **The architectural point the review makes, which outranks its four findings:** a correct
   verdict aggregator still gives the wrong assurance if its inputs describe an earlier or
