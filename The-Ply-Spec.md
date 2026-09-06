@@ -556,7 +556,8 @@ calls, and a `bounded` proof reads those bodies. So the fingerprint takes the to
 stream of every first-party function the claim can reach — following calls *and* plain
 mentions of a function by name (`map(helper)` never writes `helper(..)` and still runs the
 body) *and* the functions named inside the claim's own contract expression, which run on
-every generated case — transitively, stopping at a callee replaced by a declared promise
+every generated case, *and* the functions named inside the claim's worked examples, which
+a `test` check compiles into assertions and runs — transitively, stopping at a callee replaced by a declared promise
 (whose promise is hashed instead, input 5) and at anything outside the workspace (covered
 by inputs 9 and 10). That walk is syntactic, and a syntactic walk cannot follow a method
 call, an operator that some `impl` defines, a macro expansion, or a trait method reached
@@ -1786,7 +1787,11 @@ therefore follows the crate's own structure: `use` declarations including rename
 (`as`), nested groups (`use a::{b, c::d}`) and globs; inline `mod`s; file modules
 (`mod foo;` → `foo.rs` or `foo/mod.rs`); re-exports at the entry of each file; and the
 same walk again inside the `src/lib.rs` of a **path dependency** declared in the crate's
-`Cargo.toml`.
+`Cargo.toml` — in any table that declares one, which is `[dependencies]`,
+`[dev-dependencies]`, `[build-dependencies]`, and each of those written under a
+platform predicate (`[target.'cfg(unix)'.dependencies]`). A build script's own
+dependencies count because they run during the build and can write the source the crate
+then compiles.
 
 Resolution has three outcomes, not two, and the third is what keeps the rule honest:
 

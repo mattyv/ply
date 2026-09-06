@@ -792,7 +792,13 @@ fn verify_loaded_crate(
             } else {
                 std::collections::BTreeSet::new()
             };
-            let code = reach::code_scope(&mut resolver, &first_party, &cf.path, &stubbed);
+            let code = reach::code_scope(
+                &mut resolver,
+                &first_party,
+                &cf.path,
+                &claim.examples,
+                &stubbed,
+            );
             // Taken before `code.units` is moved into the fingerprint below.
             let widened_because = code.widened_because.clone();
             let check_spellings: Vec<String> = checks.iter().map(check_spelling).collect();
