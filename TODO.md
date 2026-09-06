@@ -4,6 +4,45 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: a finding the drawing paints is now in the data beside it — 2026-09-06 (549e33e)
+
+`render`'s envelope hardcoded an empty diagnostics list while the renderer ran the checks
+itself and painted `W0419` onto the picture. The drawing said `W0419` twice; the envelope
+said there were zero findings. So in the interactive viewer a reader saw a red line with a
+code on it and had nothing to click -- the finding could not be selected, counted,
+filtered, or asked about. Reported from the VS Code viewer, where right-clicking the line
+produced no menu at all, because there was nothing to build one from.
+
+The checks now run for the declared envelope too and their findings travel in it, anchored
+to the element they are about (component, fn, external). Verified against this repo's own
+root document: `cargo ply render` reports the `W0419` it draws. README gained a section on
+asking a code what it means, with `W0419` as the worked example -- its quoted `explain`
+output is byte-for-byte what the tool prints, checked, not transcribed.
+
+- [ ] **KNOWN GAP, recorded not hidden**: a finding about an entry in `edges` or `deny` is
+      carried **unanchored**, because those are drawn as lines the §8 envelope does not
+      describe. Readable and explainable, but not clickable on the line itself. Anchoring
+      needs edges in the envelope -- their endpoints, kind and label -- which is a protocol
+      change and wants a §8/§7.1 amendment, not a quiet addition. ply-vis's own 3D spike
+      (`docs/spikes/3d-layouts/README.md`, its recommendation 1) reached the same
+      conclusion from the other direction: today arrows cannot be selected, tabbed to, or
+      inspected, so the interactive viewer is poorer than the static picture on that point.
+- [ ] The renderer still computes the checks a second time internally rather than being
+      handed the findings the envelope builder already ran. A second pass over a pure
+      function, taken deliberately to leave the renderer's signature alone. Worth folding
+      into one pass if that signature is being changed for another reason anyway.
+- [ ] **`W0419` cannot take yes for an answer.** It fires on Ply's own document -- a
+      top-level `check` component beside `ply-core`'s own `check` module -- where the
+      reading Ply took is the intended one and nothing needs changing. There is no way to
+      acknowledge a resolved ambiguity, so the document carries the warning permanently.
+      Note that the `check` clash may resolve itself: retiring one of the standalone
+      validator / `cargo ply check` is already recorded as pending (`ply.yaml` line ~163).
+- [ ] Proposed, not built: `cargo ply explain §8` -- resolve a section reference
+      (`§8`, `8`, `5.4b`, `5.1a`) against a copy of the spec embedded at build time, so the
+      `§` reference every diagnostic already prints is followable without leaving the
+      terminal. 221 KB embedded; the version in the binary then matches the behaviour it
+      implements rather than whatever is on disk. Awaiting the go-ahead.
+
 ## Landed: the last unchecked promise in Ply's own library now earns evidence — 2026-09-05
 
 `record::fingerprint` was the one claim in `crates/ply-core/ply.yaml` that earned nothing,
