@@ -1,14 +1,6 @@
-//! A recorded result is only as good as the hash beside it, and that hash
-//! has to cover everything the result depended on (The-Ply-Spec.md §5.2a).
-//!
-//! Compiler flags are part of the build and appear nowhere in the source.
-//! `RUSTFLAGS="--cfg broken"` compiles a different body out of the same
-//! text, and Cargo inherits it -- while the recorded source, the compiler
-//! version, the features and the target are all identical. So until
-//! 2026-09-06 a pass recorded under one set of flags was served under
-//! another, over code that behaves differently.
-//!
-//! Reported by external review, 2026-09-06.
+//! Fixture regression: compiler flags are part of the build and appear
+//! nowhere in the source, so they belong in what the fingerprint covers
+//! (The-Ply-Spec.md §5.2a). Reported by external review 2026-09-06.
 
 use ply_e2e::{build_cargo_ply, copy_fixture, run_verify, run_verify_with_env};
 

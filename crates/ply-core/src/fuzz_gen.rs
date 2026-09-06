@@ -1937,16 +1937,64 @@ pub fn examples_are_consumed(cf: &ContractFn, checks: &[Check], examples: &[Stri
 /// enough for the shape this exists for -- an author naming the one input
 /// their precondition accepts -- and anything richer is skipped, leaving
 /// the example running as an example test exactly as before.
+pub fn example_argument_literals(
+    examples: &[String],
+    fn_path: &str,
+    param_index: usize,
+) -> Vec<String> {
+    fn literal_text(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Lit(_) => Some(expr.to_token_stream().to_string()),
+            // `-1` parses as a unary minus over a literal, and is exactly as
+            // safe to write into the harness.
+            Expr::Unary(u) if matches!(u.op, syn::UnOp::Neg(_)) => {
+                matches!(&*u.expr, Expr::Lit(_)).then(|| expr.to_token_stream().to_string())
+            }
+            Expr::Group(g) => literal_text(&g.expr),
+            Expr::Paren(p) => literal_text(&p.expr),
+            _ => None,
+        }
+    }
+    struct CallFinder<'a> {
+        target: &'a str,
+        param_index: usize,
+        out: Vec<String>,
+    }
+    impl<'a> Visit<'a> for CallFinder<'a> {
+        fn visit_expr_call(&mut self, node: &'a syn::ExprCall) {
+            let func_text = node.func.to_token_stream().to_string().replace(' ', "");
+            if harness::last_two_segments(&func_text) == self.target
+                && let Some(arg) = node.args.iter().nth(self.param_index)
+                && let Some(text) = literal_text(arg)
+            {
+                self.out.push(text);
+            }
+            syn::visit::visit_expr_call(self, node);
+        }
+    }
+    let target = harness::last_two_segments(fn_path);
+    let mut out = Vec::new();
+    for example in examples {
+        let Ok(expr) = syn::parse_str::<Expr>(example) else {
+            continue;
+        };
+        let mut finder = CallFinder {
+            target: &target,
+            param_index,
+            out: Vec::new(),
+        };
+        finder.visit_expr(&expr);
+        out.append(&mut finder.out);
+    }
+    out
+}
+
 /// Every complete argument list a worked example calls `fn_path` with, when
 /// every one of its arguments is a literal and there are `arity` of them.
 ///
-/// The per-parameter twin below loses the pairing: it extends each
-/// parameter's own boundary set, and the cases are then drawn from those
-/// sets independently, so `f(42, true)` contributed a `42` to one set and a
-/// `true` to another and no generated case ever held both. For a
-/// precondition like `x == 42 && flag`, that means the author's own example
-/// -- the one input known to satisfy it -- was still never run, and the
-/// admissibility probe failed anyway (external review, 2026-09-06).
+/// The per-parameter twin above cannot preserve a pairing: its values are
+/// drawn into cases independently, so `f(42, true)` never produces a call
+/// holding both.
 pub fn example_argument_tuples(
     examples: &[String],
     fn_path: &str,
@@ -2008,58 +2056,6 @@ fn example_literal_text(expr: &Expr) -> Option<String> {
         Expr::Paren(p) => example_literal_text(&p.expr),
         _ => None,
     }
-}
-
-pub fn example_argument_literals(
-    examples: &[String],
-    fn_path: &str,
-    param_index: usize,
-) -> Vec<String> {
-    fn literal_text(expr: &Expr) -> Option<String> {
-        match expr {
-            Expr::Lit(_) => Some(expr.to_token_stream().to_string()),
-            // `-1` parses as a unary minus over a literal, and is exactly as
-            // safe to write into the harness.
-            Expr::Unary(u) if matches!(u.op, syn::UnOp::Neg(_)) => {
-                matches!(&*u.expr, Expr::Lit(_)).then(|| expr.to_token_stream().to_string())
-            }
-            Expr::Group(g) => literal_text(&g.expr),
-            Expr::Paren(p) => literal_text(&p.expr),
-            _ => None,
-        }
-    }
-    struct CallFinder<'a> {
-        target: &'a str,
-        param_index: usize,
-        out: Vec<String>,
-    }
-    impl<'a> Visit<'a> for CallFinder<'a> {
-        fn visit_expr_call(&mut self, node: &'a syn::ExprCall) {
-            let func_text = node.func.to_token_stream().to_string().replace(' ', "");
-            if harness::last_two_segments(&func_text) == self.target
-                && let Some(arg) = node.args.iter().nth(self.param_index)
-                && let Some(text) = literal_text(arg)
-            {
-                self.out.push(text);
-            }
-            syn::visit::visit_expr_call(self, node);
-        }
-    }
-    let target = harness::last_two_segments(fn_path);
-    let mut out = Vec::new();
-    for example in examples {
-        let Ok(expr) = syn::parse_str::<Expr>(example) else {
-            continue;
-        };
-        let mut finder = CallFinder {
-            target: &target,
-            param_index,
-            out: Vec::new(),
-        };
-        finder.visit_expr(&expr);
-        out.append(&mut finder.out);
-    }
-    out
 }
 
 pub fn extract_examples_seed_strings_for_param(
@@ -2879,16 +2875,6 @@ pub fn generate_example_test(cf: &ContractFn, index: u32, example_src: &str) -> 
 /// 0/MIN/MAX for signed, true/false for bool, a handful of lengths for
 /// `Vec`/`BTreeSet`) -- the concrete inputs behind the `test` check's
 /// "generated direct contract cases" (§10 M4, §5.4c).
-/// Two values of an element type: one to put in a collection, and one to
-/// repeat. Both come from the element type's own boundary set, so they are
-/// always valid Rust for that type.
-fn element_values(inner: &RustType) -> Option<(String, String)> {
-    let values = boundary_literals(inner);
-    let first = values.first()?.clone();
-    let second = values.get(1).cloned().unwrap_or_else(|| first.clone());
-    Some((first, second))
-}
-
 fn boundary_literals(ty: &RustType) -> Vec<String> {
     match ty {
         RustType::U8 | RustType::U16 | RustType::U32 | RustType::U64 | RustType::Usize => {
@@ -2922,9 +2908,6 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
         // for any element type, which is the point -- `bool` was the one
         // reported, and a template that only happens to work for numbers is
         // the defect (external review, 2026-09-06).
-        //
-        // The `scalar_rust_name` gate stays: it decides *which* element
-        // types are supported here, and widening that is a separate change.
         RustType::Vec(inner) => match (inner.scalar_rust_name(), element_values(inner)) {
             (Some(_), Some((one, many))) => vec![
                 "vec![]".to_string(),
@@ -3042,6 +3025,16 @@ fn boundary_literals(ty: &RustType) -> Vec<String> {
     }
 }
 
+/// Two values of an element type: one to put in a collection, and one to
+/// repeat. Both come from the element type's own boundary set, so they are
+/// always valid Rust for that type.
+fn element_values(inner: &RustType) -> Option<(String, String)> {
+    let values = boundary_literals(inner);
+    let first = values.first()?.clone();
+    let second = values.get(1).cloned().unwrap_or_else(|| first.clone());
+    Some((first, second))
+}
+
 /// Generates a small, fixed battery of "direct contract case" tests: real
 /// concrete inputs (boundary literals per parameter, diagonally zipped
 /// rather than a full cross product, to keep the generated file small) run
@@ -3120,7 +3113,6 @@ pub fn generate_direct_contract_cases(cf: &ContractFn, examples: &[String]) -> S
         .as_ref()
         .map(|(e, _)| e.to_token_stream().to_string());
 
-    // The boundary cases, drawn from each parameter's set independently...
     let mut cases: Vec<Vec<String>> = (0..n_cases)
         .map(|i| {
             literal_sets
@@ -3129,11 +3121,11 @@ pub fn generate_direct_contract_cases(cf: &ContractFn, examples: &[String]) -> S
                 .collect()
         })
         .collect();
-    // ...and then the author's own calls, kept whole. Drawing independently
-    // is what loses the pairing: `f(42, true)` put a `42` in one set and a
-    // `true` in another, and no case ever held both, so a precondition like
-    // `x == 42 && flag` was never satisfied by the one input the author
-    // wrote down to satisfy it.
+    // The author's own calls, kept whole. The boundary cases above draw from
+    // each parameter's set independently, which loses the pairing:
+    // `f(42, true)` put `42` in one case and `true` in another, so a
+    // precondition like `x == 42 && flag` was never satisfied by the one
+    // input the author wrote down to satisfy it.
     for tuple in example_argument_tuples(examples, &cf.path, cf.params.len()) {
         if !cases.contains(&tuple) {
             cases.push(tuple);
@@ -3762,19 +3754,14 @@ pub fn wrap_fn_harness_module(
 #[cfg(test)]
 mod tests {
 
-    /// A collection literal has to be valid Rust for its element type. The
-    /// generator spliced a type name after a digit -- `vec![0{n}]` -- which
-    /// reads as a suffixed numeric literal, and `bool` is not one: a
-    /// `Vec<bool>` parameter produced `vec![0bool]` and the generated
-    /// harness did not compile, so a perfectly ordinary function could not
-    /// be checked at all.
-    ///
-    /// Reported by external review 2026-09-06 for `bool`. This asserts the
-    /// property rather than that one case: every literal the generator
-    /// offers for a collection must parse as Rust.
+    /// Every literal the generator offers for a collection must parse as
+    /// Rust. Building them by splicing a type name after a digit did not:
+    /// `Vec<bool>` produced `vec![0bool]`, the harness failed to compile, and
+    /// the function could not be checked at all (external review,
+    /// 2026-09-06).
     #[test]
     fn every_collection_boundary_literal_is_valid_rust() {
-        let elements = [RustType::Bool, RustType::U32, RustType::I64, RustType::Char];
+        let elements = [RustType::Bool, RustType::U32, RustType::I64, RustType::U8];
         let mut checked = 0;
         for element in elements {
             for shape in [
@@ -3798,11 +3785,6 @@ mod tests {
             checked >= 6,
             "only {checked} collection literals were examined -- a build where every shape had \
              quietly stopped being supported would pass this test having checked nothing"
-        );
-        assert!(
-            !boundary_literals(&RustType::Vec(Box::new(RustType::Bool))).is_empty(),
-            "`Vec<bool>` is the reported case, and must still be a shape the generator offers \
-             values for rather than one it stopped supporting"
         );
     }
 

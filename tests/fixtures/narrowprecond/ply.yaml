@@ -19,8 +19,6 @@ components:
         examples:
           - "only_at_42_with_example(42) == 42"
       # The pair the precondition needs, supplied whole by the example.
-      # Both values have to arrive in the *same* call for anything to reach
-      # the body at all.
       only_at_42_and_true:
         checks: [test]
         examples:

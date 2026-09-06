@@ -544,10 +544,10 @@ fingerprint of what it was checked against" into a diff a reviewer reads.
    environment** (`RUSTFLAGS` and `CARGO_ENCODED_RUSTFLAGS`), and the crate's declared
    feature table — Ply passes no `--features`, so the set that is active is the default
    set that table defines. The flags are there because they compile a different body out
-   of the same text: `--cfg broken` changes what a `cfg!` selects while the source, the
-   compiler, the target and the features are all identical. **A stated gap:** flags
-   reaching Cargo another way — a `[build] rustflags` table in `.cargo/config.toml` — are
-   not read and not hashed;
+   of the same text: `--cfg broken` changes what is compiled while the source, the compiler,
+   the target and the features are all identical. **A stated gap:** flags reaching Cargo
+   another way — a `[build] rustflags` or `target.<triple>.rustflags` table in
+   `.cargo/config.toml` — are not read and not hashed;
 10. the resolved versions of every package outside this workspace that the crate depends
     on, as the lockfile pins them. A `bounded` proof descends into registry code and every
     `fuzz`/`test` run executes it, so `cargo update` changes what was checked. Where there
@@ -561,10 +561,8 @@ calls, and a `bounded` proof reads those bodies. So the fingerprint takes the to
 stream of every first-party function the claim can reach — following calls *and* plain
 mentions of a function by name (`map(helper)` never writes `helper(..)` and still runs the
 body) *and* the functions named inside the claim's own contract expression, which run on
-every generated case — **however that contract is written**, as a Rust attribute or in
-`ply.yaml`, since a contract merged in from the document runs exactly as an inline one
-does — *and* the functions named inside the claim's worked examples, which a `test` check
-compiles into assertions and runs — transitively, stopping at a callee replaced by a declared promise
+every generated case *and* the functions named inside the claim's worked examples, which
+a `test` check compiles into assertions and runs — transitively, stopping at a callee replaced by a declared promise
 (whose promise is hashed instead, input 5) and at anything outside the workspace (covered
 by inputs 9 and 10). That walk is syntactic, and a syntactic walk cannot follow a method
 call, an operator that some `impl` defines, a macro expansion, or a trait method reached
@@ -578,6 +576,11 @@ inside the hash. That is coarser — any
 edit anywhere in the crate re-earns every claim in it — and it is never wrong. The
 condition is an allowlist on purpose: an item kind nobody anticipated costs engine time,
 where a denylist would have cost a user a green verdict over code nobody checked.
+
+**The contract counts however it is written.** A contract declared in `ply.yaml` is
+asserted on every generated case exactly as an inline `#[ply::requires]` is, so the
+functions it names are walked the same way. They are merged into the claim after the
+function item is read, so nothing on the item itself reveals them.
 
 **The coarse mode explains itself, once.** Under it, "the code it runs changed" is true
 of an edit in a function the claim never calls, so a run that only announced the re-run

@@ -1,18 +1,6 @@
-//! A recorded result is only as good as the hash beside it, and that hash
-//! has to cover the code the check actually runs (The-Ply-Spec.md §5.2a).
-//!
-//! `reusereach` proves it for a helper the function calls, and
-//! `reuseexamplehelper` for one only a worked example calls. This file
-//! proves it for a helper named only in a contract **written in the
-//! document** rather than as a Rust attribute on the function.
-//!
-//! The walk reads contract expressions off the function item's attributes.
-//! A contract declared in `ply.yaml` is merged in later and never appears
-//! there, so until 2026-09-06 the helper it called was hashed nowhere:
-//! rewriting it changed what every generated case asserts and moved nothing
-//! in the record.
-//!
-//! Reported by external review, 2026-09-06.
+//! Fixture regression: a contract written in `ply.yaml` names helpers that
+//! run on every generated case, and they have to be in what the fingerprint
+//! covers (The-Ply-Spec.md §5.2a). Reported by external review 2026-09-06.
 
 use ply_e2e::{build_cargo_ply, copy_fixture, run_verify};
 
@@ -52,35 +40,16 @@ fn rewriting_a_helper_named_only_in_a_yaml_contract_re_earns_the_claim() {
         second.json
     );
     assert_eq!(
+        fns[1]["reused"], true,
+        "and the claim whose contract names no helper must still be carried forward -- this \
+         must not have bought soundness by re-earning everything: {}",
+        second.json
+    );
+    assert_eq!(
         fns[0]["verdict"], "violation",
         "and re-running must find the broken promise: `answer` returns its input up to 5 and the \
          postcondition now demands under 3, so a carried-forward green here is a verdict over a contract that \
          fails: {}",
-        second.json
-    );
-}
-
-/// Soundness bought by throwing per-claim reuse away would be a different
-/// feature. The claim whose contract names nothing keeps its result.
-#[test]
-fn the_claim_whose_contract_names_no_helper_is_still_carried_forward() {
-    let cargo_ply = build_cargo_ply();
-    let fixture = copy_fixture("reuseyamlcontract");
-
-    run_verify(&cargo_ply, fixture.path(), 120);
-    let src = fixture.read_lib_rs();
-    fixture.write_lib_rs(&src.replace(
-        "pub fn expected() -> u32 {\n    7\n}",
-        "pub fn expected() -> u32 {\n    9\n}",
-    ));
-
-    let second = run_verify(&cargo_ply, fixture.path(), 120);
-    let fns = &second.json["root"]["children"][0]["children"];
-    assert_eq!(fns[1]["id"], "bumped", "envelope: {}", second.json);
-    assert_eq!(
-        fns[1]["reused"], true,
-        "`bumped` cannot reach `expected` and its contract names nothing, so rewriting it must \
-         cost this claim nothing: {}",
         second.json
     );
 }

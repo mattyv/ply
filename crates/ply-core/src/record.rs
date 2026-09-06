@@ -1023,13 +1023,9 @@ mod tests {
             fingerprint(&inputs()),
             "6493b0e1b470dc213205618521c2585dd552b09f10f4051ae21085c0995ee54f",
             "the encoding did not change, so this must not move; if it moved on purpose, every \
-             ply.lock committed against the old encoding is now stale. Moved deliberately on \
-             2026-09-06, when the flags Cargo inherits from the environment became a hashed \
-             input: `RUSTFLAGS=\"--cfg broken\"` compiles a different body out of the same \
-             source while the recorded compiler, target, features and source are all identical, \
-             so a stored pass was served across a build that behaved differently. Every \
-             ply.lock written before that is stale and should be -- those results were earned \
-             with no account of the flags they were earned under. And once before, \
+             ply.lock committed against the old encoding is now stale. Moved deliberately on 2026-09-06, when the flags Cargo \
+             inherits became a hashed input (see `FingerprintInputs::rustflags`) -- every \
+             ply.lock written before that is stale, and should be. And once before, \
              2026-08-28: Ply's own build identity was split out of the claim-identity group into \
              a group of its own, which changes the canonical bytes. No input was added or \
              removed, and nothing invalidates now that did not invalidate before -- the split \

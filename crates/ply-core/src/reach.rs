@@ -377,21 +377,15 @@ pub fn code_scope(
     // See `FirstParty::type_decls`.
     let mut units: Vec<(String, String)> = first_party.type_decls.clone();
     queue.push_back(root_fn_path.to_string());
-    // A worked example is code: a `test` check compiles it into an assertion
-    // and runs it. So is a contract written in `ply.yaml` -- it is merged in
-    // after the function item is read, so it never appears among the
-    // attributes the walk above reads, and a helper it names was hashed
-    // nowhere at all. Both arrive here as expression text.
+    // Worked examples and contracts declared in `ply.yaml` both arrive here
+    // as expression text, and both are code the check runs: an example is
+    // compiled into an assertion, and a document-declared contract is
+    // asserted on every generated case. A contract written in the document
+    // is merged in after the function item is read, so it never appears
+    // among the attributes the body walk reads.
     //
-    // So anything either names is part of what the result stood on,
-    // exactly as a callee of the function itself is. Walking out of the
-    // claimed function alone missed a helper the example called and the
-    // function never mentioned -- `rate(x) == expected()` with `expected`
-    // defined next door. Editing that helper changed what the assertion
-    // demanded and left the fingerprint identical, so the run carried forward
-    // a pass over a check that had just changed meaning.
-    //
-    // Reported by external review, 2026-09-06.
+    // So a helper either names is a helper the check executes, and hashing
+    // the claimed function alone left it out (external review, 2026-09-06).
     for example in expressions {
         let Ok(expr) = syn::parse_str::<syn::Expr>(example) else {
             // The harness refuses this text too, but that happens later, and
@@ -399,7 +393,10 @@ pub fn code_scope(
             // this module exists to end.
             return widened(
                 first_party,
-                format!("Ply could not read the worked example `{example}` to walk out of it"),
+                format!(
+                    "Ply could not read `{example}` -- a worked example, or a contract \
+                     written in ply.yaml -- to walk out of it"
+                ),
             );
         };
         let mut collector = MentionCollector {
@@ -411,8 +408,9 @@ pub fn code_scope(
             return widened(
                 first_party,
                 format!(
-                    "the worked example `{example}` invokes the macro `{mac}!`, whose expansion \
-                     is not in the tokens Ply's call walk reads"
+                    "`{example}` -- a worked example, or a contract written in ply.yaml -- \
+                     invokes the macro `{mac}!`, whose expansion is not in the tokens Ply's \
+                     call walk reads"
                 ),
             );
         }
@@ -633,15 +631,12 @@ fn first_party_files(crate_dir: &Path) -> Vec<(String, PathBuf)> {
         }
         collect_rs(&dir.join("src"), &format!("{prefix}src"), &mut out);
         // A build script is code the build runs, and what it emits reaches
-        // the checked crate: `cargo:rustc-env=ANSWER=7` makes `env!("ANSWER")`
-        // compile to 7, so editing the script changes behaviour with every
-        // line under `src/` untouched. Collecting only `src/` left that edit
-        // invisible to the fingerprint, and a cached pass survived it.
+        // the compilation, so editing it changes behaviour with every line
+        // under `src/` untouched.
         //
-        // KNOWN GAP, stated rather than left to be found: this hashes the
-        // script, not what the script reads. A build script that opens a
-        // data file and emits what it finds there still changes behaviour
-        // without changing anything hashed here.
+        // KNOWN GAP: this hashes the script, not what the script reads. A
+        // build script that emits what it finds in a data file still changes
+        // behaviour without changing anything hashed here.
         let build_rs = dir.join("build.rs");
         if build_rs.is_file() {
             out.push((format!("{prefix}build.rs"), build_rs));

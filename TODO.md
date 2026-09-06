@@ -84,55 +84,34 @@ than one test per spelling, so a spelling added later cannot quietly skip the ru
 
 ## Landed: five more ways a stored result outlived what it stood on — 2026-09-06
 
-External review, two rounds, five findings. Three could serve a false green; all five are
-fixed, each with a test watched failing first and each checked non-vacuous by disabling
-the fix and watching the claim come back green.
+External review, two rounds. Three of the five could serve a false green.
 
-- [x] **A contract written in `ply.yaml` is now walked for the helpers it names.** The
-      walk read contract expressions off the function item's own attributes, which is
-      where an inline `#[ply::requires]` lives. A contract declared in the document is
-      merged in afterwards and never appears there, so a helper it called was hashed
-      nowhere: rewriting that helper changed what every generated case asserts and moved
-      nothing in the record. `tests/fixtures/reuseyamlcontract`.
+- [x] **A contract written in `ply.yaml` is walked for the helpers it names.** The walk
+      read contract expressions off the function's own attributes, where an inline one
+      lives; a document-declared one is merged in later and appears nowhere there.
+      `tests/fixtures/reuseyamlcontract`.
 - [x] **A build script is first-party source.** The file set collected `src/` and nothing
-      else, so `cargo:rustc-env=ANSWER=7` feeding `env!("ANSWER")` could be edited to 8
-      with every line under `src/` byte-identical. Detecting the macro did not help --
-      that widens to the whole crate, and the whole crate was the same incomplete set.
+      else, so a script emitting `cargo:rustc-env` could be edited invisibly.
       `tests/fixtures/reusebuildscript`. **KNOWN GAP:** the script is hashed, what the
       script reads is not.
 - [x] **Compiler flags are a hashed input.** `RUSTFLAGS="--cfg broken"` compiles a
-      different body out of the same text with the recorded source, compiler, target and
-      features all identical. `tests/fixtures/reuserustflags`. This moves the pinned
-      fingerprint, so **every `ply.lock` written before today is stale** -- and should be:
-      those results were earned with no account of the flags they were earned under.
-      **KNOWN GAP:** flags from a `.cargo/config.toml` `[build] rustflags` table are not
-      read and not hashed.
-- [x] **A worked example's arguments stay together.** Each parameter's boundary set was
-      extended with the example's values and the cases were then drawn from those sets
-      independently, so `f(42, true)` put `42` in one case and `true` in another and no
-      case ever held both. For `x == 42 && flag` the author's own example -- the one input
-      written down to satisfy the precondition -- was never run. Whole example calls are
-      now appended as their own cases. The admissibility probe was a **second** derivation
-      of the same cases and had to be pointed at the first, or it would have kept
-      reporting that nothing reached the body.
-- [x] **A collection of `bool` generates Rust that compiles.** Collection boundaries were
-      built by splicing a type name after a digit, which reads as a suffixed numeric
-      literal: `Vec<bool>` produced `vec![0bool]` and the generated harness did not build,
-      so an ordinary function could not be checked at all. They are built from the element
-      type's own values now, and the test asserts every collection literal parses rather
-      than pinning the one reported case.
+      different body from the same source. `tests/fixtures/reuserustflags`. This moves the
+      pinned fingerprint, so **every `ply.lock` written before today is stale** -- and
+      should be. **KNOWN GAP:** flags from `.cargo/config.toml` (`[build] rustflags` or
+      `target.<triple>.rustflags`) are not read.
+- [x] **A worked example's arguments stay together.** Each parameter's set was extended
+      separately and cases drawn from them independently, so `f(42, true)` never produced
+      a call holding both. The admissibility probe derived the same cases a second time
+      and had to be pointed at the first.
+- [x] **A collection of `bool` generates Rust that compiles.** Boundaries were built by
+      splicing a type name after a digit, so `Vec<bool>` produced `vec![0bool]` and the
+      harness did not build.
 
-Two lessons worth keeping. The first fixture written for the YAML-contract finding
-**passed without the fix**, because its claim declared `fuzz(64)` while a zero-argument
-function earns `tested`, and Ply's own guard against a doctored record then discarded the
-stored result on every run. A reuse test whose claim re-runs for an unrelated reason
-cannot see the bug it was written for. The second: the example-pairing fix looked complete
-and was not, because the admissibility probe derived the same cases a second time -- the
-same shape as the two manifest readers, one file apart.
+The lesson worth keeping: the first fixture written for the YAML-contract finding passed
+without the fix, because its claim re-ran for an unrelated reason. A reuse test whose
+claim re-runs for the wrong reason cannot see the bug it was written for.
 
-Spec amended in the same commit: the third fingerprint input now names contracts however
-they are written, the resolver's source rule now names `build.rs`, and the ninth input now
-names the inherited flags. Both stated gaps are written down there too.
+Spec amended: fingerprint inputs 3 and 9, and the resolver's first-party source rule.
 
 ## Landed: the same manifest blindness, in the reader that mattered — 2026-09-06
 

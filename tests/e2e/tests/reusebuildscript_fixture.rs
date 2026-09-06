@@ -1,18 +1,6 @@
-//! A recorded result is only as good as the hash beside it, and that hash
-//! has to cover the code the check actually runs (The-Ply-Spec.md §5.2a).
-//!
-//! The first-party source set collected everything under `src/` and nothing
-//! else. A build script is code the build runs, and what it emits reaches
-//! the checked crate: `cargo:rustc-env` makes `env!(..)` compile to whatever
-//! the script said. So rewriting `build.rs` changed what the checked
-//! function returns with every line under `src/` byte-identical -- the
-//! fingerprint did not move, and a stored pass was served over a function
-//! that now breaks its promise.
-//!
-//! Detecting the `env!` macro did not help: that widens the scope to the
-//! whole crate, and the whole crate was the same incomplete set of files.
-//!
-//! Reported by external review, 2026-09-06.
+//! Fixture regression: a build script is code the build runs, and what it
+//! emits reaches the compilation, so it belongs in what the fingerprint
+//! covers (The-Ply-Spec.md §5.2a). Reported by external review 2026-09-06.
 
 use ply_e2e::{build_cargo_ply, copy_fixture, run_verify};
 
