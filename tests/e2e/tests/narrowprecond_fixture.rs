@@ -104,6 +104,20 @@ fn a_correct_function_the_generator_cannot_reach_is_not_called_a_violation() {
         "the sentence a reader gets must name the cause and give advice that works (W0542)"
     );
 
+    // A precondition needing a specific *pair* is reached only if the
+    // example's arguments stay together. They did not: each parameter's
+    // values were drawn independently, so `42` and `true` never arrived in
+    // the same call and the claim earned nothing despite the author having
+    // written down exactly the input that satisfies it.
+    let paired = find_fn(&run.json["root"], "only_at_42_and_true")
+        .unwrap_or_else(|| panic!("no node for only_at_42_and_true in {}", run.json));
+    assert_eq!(
+        paired["verdict"], "tested",
+        "the example supplies the only input that satisfies `x == 42 && flag`, so it must \
+         reach the body and the promise must be checked on it: {}",
+        run.json
+    );
+
     // A passing example is not a contract check. `broken_but_exampled`
     // promises zero and returns one; its example asserts only that the call
     // returns one, which is true. Between the morning fix and the evening

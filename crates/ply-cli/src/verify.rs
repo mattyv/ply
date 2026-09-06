@@ -140,6 +140,10 @@ struct Toolchain {
     /// so the set that is active is the default set this text defines --
     /// and a change to the table is a change to what was built.
     features: String,
+    /// The rustc flags Cargo will inherit from this environment. They change
+    /// what gets compiled without changing a line of source, so a result
+    /// recorded under one set says nothing about a run under another.
+    rustflags: String,
     /// Probed on first use, not at startup: a crate of `fuzz` claims must
     /// not pay a `cargo kani --version` subprocess, and a machine with no
     /// Kani installed must not be slower for having none.
@@ -158,6 +162,7 @@ impl Toolchain {
         Toolchain {
             target,
             rustc,
+            rustflags: inherited_rustflags(),
             features: declared_features(crate_dir),
             kani: std::cell::OnceCell::new(),
             mutants: std::cell::OnceCell::new(),
@@ -259,6 +264,26 @@ fn kani_flags(has_stubs: bool) -> String {
 /// The fingerprint decides whether a recorded verdict may be carried
 /// forward. Recording a compiler that never compiled anything here is the
 /// kind of quiet wrongness that lets stale evidence look current.
+/// The rustc flags Cargo will inherit from this environment.
+///
+/// Cargo reads `CARGO_ENCODED_RUSTFLAGS` in preference to `RUSTFLAGS` and
+/// ignores the latter when the former is set, so both are recorded and which
+/// one is in force is left visible rather than resolved away -- a reader
+/// comparing two records should see exactly what differed.
+///
+/// This exists because flags are part of the build and appear nowhere in the
+/// source: `RUSTFLAGS="--cfg broken"` compiles a different body out of the
+/// same text, and a result recorded without it was carried forward across a
+/// build that behaved differently (external review, 2026-09-06).
+fn inherited_rustflags() -> String {
+    let read = |key: &str| std::env::var(key).unwrap_or_default();
+    format!(
+        "CARGO_ENCODED_RUSTFLAGS={}\nRUSTFLAGS={}",
+        read("CARGO_ENCODED_RUSTFLAGS"),
+        read("RUSTFLAGS"),
+    )
+}
+
 fn rustc_identity(crate_dir: &Path) -> (String, String) {
     let out = std::process::Command::new("rustc")
         .arg("-vV")
@@ -792,11 +817,24 @@ fn verify_loaded_crate(
             } else {
                 std::collections::BTreeSet::new()
             };
+            // Everything the check runs that is written as an expression
+            // rather than as code in the body: the worked examples, and the
+            // contract as the *document* declares it. An inline
+            // `#[ply::requires]` is already read off the function item; one
+            // written in `ply.yaml` is merged in afterwards and never
+            // appears there, so a helper it named was hashed nowhere.
+            let expressions: Vec<String> = claim
+                .examples
+                .iter()
+                .chain(claim.requires.iter())
+                .chain(claim.ensures.iter())
+                .cloned()
+                .collect();
             let code = reach::code_scope(
                 &mut resolver,
                 &first_party,
                 &cf.path,
-                &claim.examples,
+                &expressions,
                 &stubbed,
             );
             // Taken before `code.units` is moved into the fingerprint below.
@@ -852,6 +890,7 @@ fn verify_loaded_crate(
                 engines: toolchain.engines_for(&checks, !boundary.stubs.is_empty()),
                 target: toolchain.target.clone(),
                 rustc: toolchain.rustc.clone(),
+                rustflags: toolchain.rustflags.clone(),
                 features: toolchain.features.clone(),
                 ply_version: PLY_VERSION.to_string(),
             };

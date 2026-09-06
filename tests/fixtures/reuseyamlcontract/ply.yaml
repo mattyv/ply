@@ -1,0 +1,17 @@
+ply: 1
+
+# `answer`'s promise lives here rather than on the function, and it calls a
+# helper. That helper runs on every generated case exactly as one named in a
+# Rust attribute does.
+components:
+  reuseyamlcontract:
+    anchor: ply_fixture_reuseyamlcontract
+    fns:
+      answer:
+        requires:
+          - "x <= 5"
+        ensures:
+          - "|result| *result < expected()"
+        checks: [fuzz(64)]
+      bumped:
+        checks: [fuzz(64)]

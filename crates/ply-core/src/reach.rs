@@ -364,7 +364,7 @@ pub fn code_scope(
     resolver: &mut Resolver,
     first_party: &FirstParty,
     root_fn_path: &str,
-    examples: &[String],
+    expressions: &[String],
     stubbed: &BTreeSet<String>,
 ) -> CodeScope {
     if let Some(reason) = &first_party.gate {
@@ -378,7 +378,12 @@ pub fn code_scope(
     let mut units: Vec<(String, String)> = first_party.type_decls.clone();
     queue.push_back(root_fn_path.to_string());
     // A worked example is code: a `test` check compiles it into an assertion
-    // and runs it. So anything it names is part of what the result stood on,
+    // and runs it. So is a contract written in `ply.yaml` -- it is merged in
+    // after the function item is read, so it never appears among the
+    // attributes the walk above reads, and a helper it names was hashed
+    // nowhere at all. Both arrive here as expression text.
+    //
+    // So anything either names is part of what the result stood on,
     // exactly as a callee of the function itself is. Walking out of the
     // claimed function alone missed a helper the example called and the
     // function never mentioned -- `rate(x) == expected()` with `expected`
@@ -387,7 +392,7 @@ pub fn code_scope(
     // a pass over a check that had just changed meaning.
     //
     // Reported by external review, 2026-09-06.
-    for example in examples {
+    for example in expressions {
         let Ok(expr) = syn::parse_str::<syn::Expr>(example) else {
             // The harness refuses this text too, but that happens later, and
             // a scope that quietly skips what it cannot read is the silence
@@ -627,6 +632,20 @@ fn first_party_files(crate_dir: &Path) -> Vec<(String, PathBuf)> {
             continue;
         }
         collect_rs(&dir.join("src"), &format!("{prefix}src"), &mut out);
+        // A build script is code the build runs, and what it emits reaches
+        // the checked crate: `cargo:rustc-env=ANSWER=7` makes `env!("ANSWER")`
+        // compile to 7, so editing the script changes behaviour with every
+        // line under `src/` untouched. Collecting only `src/` left that edit
+        // invisible to the fingerprint, and a cached pass survived it.
+        //
+        // KNOWN GAP, stated rather than left to be found: this hashes the
+        // script, not what the script reads. A build script that opens a
+        // data file and emits what it finds there still changes behaviour
+        // without changing anything hashed here.
+        let build_rs = dir.join("build.rs");
+        if build_rs.is_file() {
+            out.push((format!("{prefix}build.rs"), build_rs));
+        }
         if let Ok(manifest) = std::fs::read_to_string(dir.join("Cargo.toml")) {
             for (name, rel) in path_dependencies(&manifest) {
                 queue.push_back((format!("{name}/"), dir.join(rel)));

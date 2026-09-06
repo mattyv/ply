@@ -540,9 +540,14 @@ fingerprint of what it was checked against" into a diff a reviewer reads.
 8. the engine behind each of those checks: name, version, and the flags that shape the
    obligation it discharged;
 9. the build target triple, the compiler that builds for it (D9's "an old success must
-   not bless ... a different toolchain"), and the crate's declared feature table — Ply
-   passes no `--features`, so the set that is active is the default set that table
-   defines;
+   not bless ... a different toolchain"), **the rustc flags Cargo inherits from the
+   environment** (`RUSTFLAGS` and `CARGO_ENCODED_RUSTFLAGS`), and the crate's declared
+   feature table — Ply passes no `--features`, so the set that is active is the default
+   set that table defines. The flags are there because they compile a different body out
+   of the same text: `--cfg broken` changes what a `cfg!` selects while the source, the
+   compiler, the target and the features are all identical. **A stated gap:** flags
+   reaching Cargo another way — a `[build] rustflags` table in `.cargo/config.toml` — are
+   not read and not hashed;
 10. the resolved versions of every package outside this workspace that the crate depends
     on, as the lockfile pins them. A `bounded` proof descends into registry code and every
     `fuzz`/`test` run executes it, so `cargo update` changes what was checked. Where there
@@ -556,8 +561,10 @@ calls, and a `bounded` proof reads those bodies. So the fingerprint takes the to
 stream of every first-party function the claim can reach — following calls *and* plain
 mentions of a function by name (`map(helper)` never writes `helper(..)` and still runs the
 body) *and* the functions named inside the claim's own contract expression, which run on
-every generated case, *and* the functions named inside the claim's worked examples, which
-a `test` check compiles into assertions and runs — transitively, stopping at a callee replaced by a declared promise
+every generated case — **however that contract is written**, as a Rust attribute or in
+`ply.yaml`, since a contract merged in from the document runs exactly as an inline one
+does — *and* the functions named inside the claim's worked examples, which a `test` check
+compiles into assertions and runs — transitively, stopping at a callee replaced by a declared promise
 (whose promise is hashed instead, input 5) and at anything outside the workspace (covered
 by inputs 9 and 10). That walk is syntactic, and a syntactic walk cannot follow a method
 call, an operator that some `impl` defines, a macro expansion, or a trait method reached
@@ -1792,6 +1799,12 @@ same walk again inside the `src/lib.rs` of a **path dependency** declared in the
 platform predicate (`[target.'cfg(unix)'.dependencies]`). A build script's own
 dependencies count because they run during the build and can write the source the crate
 then compiles.
+
+The crate's **own `build.rs`** is first-party source for the same reason: what it emits
+reaches the compilation (`cargo:rustc-env=X=7` makes `env!("X")` compile to 7), so an edit
+to it changes behaviour with every line under `src/` untouched. **A stated gap:** the
+script is hashed, what the script *reads* is not. A build script that opens a data file
+and emits what it finds there still changes behaviour without changing anything hashed.
 
 Resolution has three outcomes, not two, and the third is what keeps the rule honest:
 
