@@ -43,19 +43,40 @@
 //! not, so a chained call, a field, or a local is `Unknown` -- a real
 //! narrowing of what this can answer for, and the honest one.
 //!
-//! **And the second repair was unsound too**, caught by the same reviewer.
-//! It compared the *last path segment* of the declared type, so `my::String`
-//! counted as the standard library's `String` and a user's own `len` --
-//! which may write a file -- was passed over. A name is not an identity.
-//! A path now qualifies only when it is genuinely std's: bare, with nothing
-//! in the fn's own file having taken that name for a type of its own
-//! ([`names_the_crate_binds`], glob imports included), or written out from
-//! a real standard-library root ([`STD_CRATES`]).
+//! **The second repair was unsound too**, caught by the same reviewer: it
+//! compared the *last path segment* of the declared type, so `my::String`
+//! counted as the standard library's `String`. A name is not an identity.
+//! A path qualifies only when it is genuinely std's -- bare, with nothing
+//! in the fn's own file or its own type parameters having taken that name
+//! ([`names_the_crate_binds`]), or written out from a real standard-library
+//! root ([`STD_CRATES`]).
 //!
-//! Three repairs, three reviews, and each of the first two left the same
-//! false-safe answer reachable by a different route. All were latent --
-//! nothing outside this file calls into it yet, which is the only reason
-//! any of them cost nothing.
+//! **And the third was unsound as well**, the same way one level along:
+//! knowing the receiver's type is standard does not say *which method
+//! runs on it*. A trait is ordinary Rust and may be implemented for `u32`;
+//! once one is in scope, `x.next()` is that trait's `next` and may open a
+//! file.
+//!
+//! ## The rule, stated over the whole input space
+//!
+//! Four repairs in a day, each a patch on the example that had been
+//! reported, each leaving the same false-safe answer reachable by a route
+//! the patch had not considered: names instead of methods, names instead of
+//! types, then types instead of implementations. The reviewer who found all
+//! four named the invariant they were approximating, and it is this:
+//!
+//! > **A call is passed over only where every implementation its name could
+//! > resolve to is one this scan can read. Anything else is `Unknown`.**
+//!
+//! [`MethodScope`] is that rule for methods. A glob import can bring in an
+//! extension trait invisibly; a `use` rooted outside the standard library
+//! reaches code this scan is not reading; a trait declared here may name
+//! the method itself. Any of the three and the name means nothing reliable,
+//! whatever the receiver is. What survives is narrow and honest: a method
+//! on a genuinely standard type, in a file whose scope this can see whole.
+//!
+//! All four were latent -- nothing outside this file calls into it yet,
+//! which is the only reason any of them cost nothing.
 //!
 //! **What it is not.** It is not the capability tier §5.3 describes and it
 //! does not implement `pure`/`uses:` enforcement (`A0402`, `A0403`, `A0408`
@@ -304,7 +325,20 @@ fn walk(
     // file rather than the crate root: that is the scope its signature was
     // written in, and it is what `FoundFn` carries for exactly this kind of
     // question.
-    let shadowed = names_the_crate_binds(&found.file);
+    let mut shadowed = names_the_crate_binds(&found.file);
+    // The function's own type parameters. `fn n<String: HasLen>(s: &String)`
+    // binds `String` to whatever the caller passes, so the standard
+    // library's `String` is exactly what it is not -- and shadow detection
+    // walked the file's items and never looked here (external review,
+    // 2026-09-06).
+    for param in &found.item.sig.generics.params {
+        if let syn::GenericParam::Type(t) = param {
+            shadowed.insert(t.ident.to_string());
+        }
+    }
+    // Whether a method name can be trusted to mean the standard library's
+    // method at all -- see `MethodScope`.
+    let scope = MethodScope::of(&found.file);
 
     for call in &calls {
         if let Some(name) = writing_call_name(call) {
@@ -353,11 +387,14 @@ fn walk(
                 .then(|| params.get(receiver))
                 .flatten()
                 .is_some_and(|ty| is_transparently_std(ty, &shadowed));
-            if receiver_is_std && BENIGN_METHODS.contains(&method) {
+            let unresolvable = scope.cannot_resolve(method);
+            if receiver_is_std && BENIGN_METHODS.contains(&method) && unresolvable.is_none() {
                 continue;
             }
             if unknown.is_none() {
-                let because = if receiver.is_empty() {
+                let because = if let Some(why) = unresolvable {
+                    format!("`{fn_path}` calls `.{method}()`, and {why}")
+                } else if receiver.is_empty() {
                     format!(
                         "`{fn_path}` calls `.{method}()` on a value this scan cannot name, so \
                          whose method it is -- and what that method does -- is unknown"
@@ -647,6 +684,117 @@ fn names_the_crate_binds(file: &syn::File) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     walk(&file.items, &mut out);
     out
+}
+
+/// What this file lets the scan establish about *which implementation* a
+/// method call runs.
+///
+/// Knowing the receiver's type is standard does not answer that question,
+/// and the whitelist approach kept assuming it did. A trait is ordinary
+/// Rust and may be implemented for `u32`; once one is in scope, `x.next()`
+/// is that trait's `next` and may open a file. So the rule is no longer
+/// "is this name harmless" but **"can this scan see every implementation
+/// the name could resolve to"** -- and where it cannot, the answer is
+/// `Unknown`. That is the invariant the four name-shaped repairs were each
+/// an approximation of (external review, 2026-09-06).
+struct MethodScope {
+    /// Something in scope can define methods this scan cannot read, so no
+    /// method name can be trusted to mean what the standard library means
+    /// by it. A glob import can bring in an extension trait invisibly; a
+    /// `use` rooted anywhere but the standard library reaches code this
+    /// scan is not reading.
+    opaque: Option<String>,
+    /// Method names declared by traits this file *can* see. A trait
+    /// declaring `next` puts `x.next()` beyond the standard library's
+    /// `Iterator` whatever the receiver is.
+    trait_methods: BTreeSet<String>,
+}
+
+impl MethodScope {
+    /// Read from the file the checked function was declared in.
+    fn of(file: &syn::File) -> Self {
+        fn walk(items: &[syn::Item], scope: &mut MethodScope) {
+            for item in items {
+                match item {
+                    syn::Item::Trait(t) => {
+                        for i in &t.items {
+                            if let syn::TraitItem::Fn(f) = i {
+                                scope.trait_methods.insert(f.sig.ident.to_string());
+                            }
+                        }
+                    }
+                    syn::Item::Use(u) => note_use(&u.tree, true, scope),
+                    syn::Item::Mod(m) => {
+                        if let Some((_, inner)) = &m.content {
+                            walk(inner, scope);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        fn note_use(tree: &syn::UseTree, at_root: bool, scope: &mut MethodScope) {
+            match tree {
+                syn::UseTree::Path(p) => {
+                    if at_root && !STD_CRATES.contains(&p.ident.to_string().as_str()) {
+                        scope.opaque.get_or_insert(format!(
+                            "`use {}::...` reaches code this scan is not reading, and any of it \
+                             may be a trait adding methods to ordinary types",
+                            p.ident
+                        ));
+                    }
+                    note_use(&p.tree, false, scope);
+                }
+                syn::UseTree::Group(g) => {
+                    for t in &g.items {
+                        note_use(t, at_root, scope);
+                    }
+                }
+                syn::UseTree::Glob(_) => {
+                    scope.opaque.get_or_insert(
+                        "a glob import can bring in a trait that adds methods to ordinary types, \
+                         and nothing here can see what it brought"
+                            .to_string(),
+                    );
+                }
+                syn::UseTree::Name(n) => {
+                    if at_root && !STD_CRATES.contains(&n.ident.to_string().as_str()) {
+                        scope.opaque.get_or_insert(format!(
+                            "`use {}` may name a trait this scan cannot read",
+                            n.ident
+                        ));
+                    }
+                }
+                syn::UseTree::Rename(r) => {
+                    if at_root && !STD_CRATES.contains(&r.ident.to_string().as_str()) {
+                        scope.opaque.get_or_insert(format!(
+                            "`use {} as ...` may name a trait this scan cannot read",
+                            r.ident
+                        ));
+                    }
+                }
+            }
+        }
+        let mut scope = MethodScope {
+            opaque: None,
+            trait_methods: BTreeSet::new(),
+        };
+        walk(&file.items, &mut scope);
+        scope
+    }
+
+    /// Why this method's implementation cannot be established, if it cannot.
+    fn cannot_resolve(&self, method: &str) -> Option<String> {
+        if let Some(reason) = &self.opaque {
+            return Some(reason.clone());
+        }
+        self.trait_methods.contains(method).then(|| {
+            format!(
+                "a trait in this crate declares `{method}`, so which `{method}` runs here \
+                 depends on what is implemented for the receiver"
+            )
+        })
+    }
 }
 
 /// The crate roots a genuinely standard-library path starts at.
@@ -1095,6 +1243,107 @@ mod tests {
                 !reach.is_safe(),
                 "{label}: the receiver is not the standard library's type, so its `len` is not \
                  the standard library's either -- and this one writes a file:\n{body}\ngot \
+                 {reach:?}"
+            );
+        }
+    }
+
+    /// Knowing the receiver is a standard type does not establish which
+    /// method runs on it.
+    ///
+    /// A trait is ordinary Rust and may be implemented for `u32`. Once one
+    /// is in scope, `x.next()` is that trait's `next`, and that body can
+    /// open a file. The scan accepted the receiver (`u32` is std's),
+    /// accepted the name (`next` is on the harmless list) and skipped the
+    /// implementation entirely -- which is the same false-safe answer as
+    /// the three before it, reached a fourth way.
+    ///
+    /// Reported by external review 2026-09-06, with the observation that
+    /// ended the whitelist approach: every skipped call must resolve to a
+    /// known harmless implementation, or the answer is `Unknown`.
+    #[test]
+    fn a_local_trait_can_add_a_harmless_looking_method_to_a_standard_type() {
+        let dir = fixture(
+            "pub trait Counter {\n    fn next(&self) -> u32;\n}\n\n\
+             impl Counter for u32 {\n    fn next(&self) -> u32 {\n        \
+             std::fs::write(\"/tmp/x\", b\"\").unwrap();\n        *self + 1\n    }\n}\n\n\
+             pub fn step(x: u32) -> u32 {\n    x.next()\n}\n",
+        );
+        let reach = scan_fn(dir.path(), "step");
+        assert!(
+            !reach.is_safe(),
+            "`next` here is this crate's own trait method on `u32`, and it writes a file. The \
+             receiver being a standard type says nothing about whose method runs: {reach:?}"
+        );
+    }
+
+    /// A generic parameter may be *named* `String`, and then `String` in
+    /// that signature is the parameter, not the standard library's type.
+    ///
+    /// Shadow detection walked the file's items and never looked at the
+    /// function's own generics, so `fn n<String: HasLen>(s: &String)` read
+    /// as the standard type and the caller's `len` -- which can be
+    /// anything at all -- was skipped. Same review, same day.
+    #[test]
+    fn a_generic_parameter_wearing_a_std_types_name_is_not_that_type() {
+        let dir = fixture(
+            "pub trait HasLen {\n    fn len(&self) -> usize;\n}\n\n\
+             pub fn n<String: HasLen>(s: &String) -> usize {\n    s.len()\n}\n",
+        );
+        let reach = scan_fn(dir.path(), "n");
+        assert!(
+            !reach.is_safe(),
+            "`String` here is this function's own type parameter, so its `len` is whatever the \
+             caller's type does: {reach:?}"
+        );
+    }
+
+    /// The new rule's own boundaries, pinned rather than assumed.
+    ///
+    /// Four repairs to this scanner were each a patch on a reported
+    /// example, and each left the same false-safe answer reachable another
+    /// way. The rule now is a claim about the whole input space -- *a
+    /// method is passed over only where every implementation its name could
+    /// resolve to is one this scan can read* -- so the cases that make it
+    /// true are worth testing directly, not just the two examples that
+    /// prompted it.
+    ///
+    /// `p.len()` on a declared `&str` is the same call in all four, and the
+    /// answer changes with what else is in scope, because that is what
+    /// decides whose `len` runs.
+    #[test]
+    fn whether_a_method_can_be_skipped_depends_on_what_else_is_in_scope() {
+        let read = "pub fn n(p: &str) -> usize {\n    p.len()\n}\n";
+        for (label, prelude, safe) in [
+            ("nothing else in scope", "", true),
+            (
+                "a standard-library import, which cannot add methods std does not have",
+                "use std::fmt::Debug;\n\n",
+                true,
+            ),
+            (
+                "a glob import, which can bring in an extension trait invisibly",
+                "use crate::helpers::*;\n\npub mod helpers {}\n\n",
+                false,
+            ),
+            (
+                "an import from outside the standard library, which this scan is not reading",
+                "use serde::Serialize;\n\n",
+                false,
+            ),
+            (
+                "a trait in this crate declaring the same method name",
+                "pub trait Sized2 {\n    fn len(&self) -> usize;\n}\n\n",
+                false,
+            ),
+        ] {
+            let body = format!("{prelude}{read}");
+            let dir = fixture(&body);
+            let reach = scan_fn(dir.path(), "n");
+            assert_eq!(
+                reach.is_safe(),
+                safe,
+                "{label}: `p.len()` is unchanged, and whose `len` it is is not:\n{body}\ngot \
                  {reach:?}"
             );
         }
