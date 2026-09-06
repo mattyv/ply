@@ -4,7 +4,7 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 
 ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
 
-23 components · 57 functions · 0 promise nothing
+23 components · 56 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
 components:
@@ -170,12 +170,7 @@ components:
         statuses is a list, written `Vec<String>`
         inputs is a lookup table, written `BTreeMap<String, String>`
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
-      that level comes from its weakest part, fingerprint — nothing here counts as checked more strongly than the weakest thing inside it
-      fn fingerprint
-        fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
-        what this function promises — the last thing the document states before the code itself takes over:
-          ensures: result.len() == 64 (what the function guarantees coming out)
-          the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+      that level comes from its weakest part, verdict_is_earnable — nothing here counts as checked more strongly than the weakest thing inside it
       fn verdict_is_earnable
         fuzz(256) — tries 256 generated inputs that satisfy requires, then checks ensures
         test — runs the declared examples plus generated cases; each case must satisfy the function's requires and ensures

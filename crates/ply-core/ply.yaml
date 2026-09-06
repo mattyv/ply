@@ -214,11 +214,20 @@ components:
           result is only reused when every one of those inputs still hashes
           the same, which is what stops a stale green outliving the code that
           earned it.
+        # `fingerprint` is deliberately absent. It was claimed here from
+        # 2026-09-04 to 2026-09-06 with "returns 64 characters", and earned
+        # fuzzed(256) once the generator could build its twenty-field input.
+        # But that promise is a fact about the hash library, not about this
+        # function: a fingerprint that ignored every one of its inputs would
+        # pass it, and nothing that reads a fingerprint depends on its width
+        # (the record compares two for equality). The properties that matter
+        # -- every input the spec lists moves the hash, identical inputs hash
+        # identically -- are ordinary tests in `record.rs`, one per input,
+        # each naming the input that stopped counting. That is rule 8 of
+        # `skills/ply-checkable-code`, applied to the function it was written
+        # about: a claim whose only honest promise says nothing about the code
+        # is not declared at all.
         fns:
-          fingerprint:
-            ensures:
-              - "result.len() == 64"
-            checks: [fuzz(256)]
           verdict_is_earnable:
             # The guard against a hand-edited record. A verdict decorated as
             # spec-strong can only have been earned by a run that declared

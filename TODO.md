@@ -111,6 +111,37 @@ the bug and now pass, so they are the regression test.
       target sits inside what `copy_ply_source` copies, so a missing file fails fast and by
       name. Not done here because the PR was wanted merged.
 
+## `record::fingerprint` leaves Ply's own document — 2026-09-06
+
+The writing skill's rule 8 uses `record::fingerprint` as its example of a claim that should
+not be declared at all -- the only promise the wrapper can carry is "returns 64 characters"
+-- and `crates/ply-core/ply.yaml` declared exactly that claim, earning `fuzzed(256)` since
+2026-09-05. Review of #59 raised the contradiction; the maintainer asked for a decision.
+
+**The rule is right and the claim came out.** Checked rather than assumed: nothing that reads
+a fingerprint depends on its width (the record compares two for equality; the sixteen-character
+per-group digests are a separate hash), and a `fingerprint` that ignored every one of its
+twenty inputs would still pass the promise. So the green said nothing about the code. The
+properties that matter -- every spec-listed input moves the hash, identical inputs hash
+identically, no placeholder build identity ever matches a real one -- are ordinary tests in
+`record.rs`, one per input, each naming the input that stopped counting.
+
+Two things the removal does not change, stated so nobody re-adds the claim to get them back:
+the twenty-field, two-`Vec<Struct>`-field shape stays pinned by the generator's own tests
+(the resolver and codegen tests written for the 2026-09-05 fix, and the planted-bug e2e
+fixture), and the record module still earns `fuzzed(256)` through `verdict_is_earnable`.
+`ply-core` is at 56 claims, down from 57; the number did not get a vote.
+
+- [x] Claim removed; both drawings and both text forms regenerated and read (one chip gone,
+      the record box's weakest-part line now names `verdict_is_earnable`, 57 to 56 functions,
+      root drawing 36px shorter). `cargo ply verify crates/ply-core --fail-on evidence` still
+      exits clean.
+- [x] Rule 8's stated reason sharpened on `claude/skill-rule-4`: "a fact about the type" was
+      imprecise (`String` has no width) -- the promise is a fact about the hash library, and
+      the test is whether a body that ignored its inputs would pass. Rule 4's worked case,
+      which cited this claim as a live run, now says it was the case that proved the shape and
+      has since been withdrawn under rule 8.
+
 ## Two of Ply's own functions are deliberately left unclaimed — 2026-09-06
 
 `fuzz_gen::extract_examples_seed_strings` and its `_for_param` twin were claimed with
