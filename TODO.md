@@ -119,7 +119,7 @@ the bug and now pass, so they are the regression test.
       first time in five rounds that a fix here reached past the example it was given. Pinned
       too, and checked to bite by breaking the visitor and watching it go red.
 
-- [x] **A passing example no longer conceals a broken promise** -- `HASHE`. The worst
+- [x] **A passing example no longer conceals a broken promise** -- `9d06db0`. The worst
       defect of the day and it was mine, introduced that morning by the fix for the opposite
       one. `reached_by_a_worked_example` suppressed the no-evidence outcome whenever an
       example passed -- but an example asserts *its own expression*. `broken(42) == 1` is a
@@ -140,7 +140,7 @@ the bug and now pass, so they are the regression test.
       pinned in one fixture -- unreachable earns nothing, honest example earns `tested`, lying
       example is a violation.
 
-- [x] **A mutation sweep that never ran no longer reports success** -- `HASHE`. The summary
+- [x] **A mutation sweep that never ran no longer reports success** -- `9d06db0`. The summary
       read "no survivors listed" as "every planted bug was caught", ignoring the exit status
       it had carefully saved and never used. With no `mutants.out` at all it printed a clean
       result: a job that never ran claiming green, which is the green-nothing this repository
