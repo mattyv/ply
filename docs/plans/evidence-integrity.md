@@ -55,7 +55,7 @@ function it was checking.
 | P1 | Every declared clause is preserved, or explicitly rejected | L1 + L3 | **done** (repeated attributes conjoined; was keeping only the last) |
 | P2 | The generated check preserves the original expression's meaning | L2 + L3 | **partial** — floats closed by exhaustion over all 32 `RustType` variants; the general property is unproven |
 | P3 | Evidence requires at least one real check, not a passing wrapper | L1 + L3 | **done** (a precondition-rejected case no longer counts) |
-| P4 | Changing a relevant input prevents reuse | L2 + L3 | **partial** — module-scoped resolution and type-declaration hashing closed; dependency identity still discards git revisions |
+| P4 | Changing a relevant input prevents reuse | L2 + L3 | **done** — module-scoped resolution, type-declaration hashing, and dependency identity (git revisions kept; packages keyed by name *and* version) |
 | P5 | Every drawn component/function has matching metadata; no invented evidence | L2 | **done** (envelope 9 elements → 74) |
 | P6 | The rendered contract text is byte-stable for unchanged source | L2 | **open — new** |
 | P7 | A claim of exhaustiveness is only made where the domain is bounded | review rule | **open — new** |
@@ -96,8 +96,10 @@ the two where the invariant is still owed (P2 general, P4 dependency identity).
 Proposed sequence:
 
 1. **P6** — cheapest, and it closes a hole that has already cost a red CI run.
-2. **P4 remainder** — dependency identity: preserve Cargo's full package identities and
-   dependency edges, including source revisions.
+2. ~~**P4 remainder** — dependency identity~~ — **done**. Both halves: the `source =` line is
+   kept whole (appended only for non-crates.io sources, since a published crates.io version is
+   immutable and appending a constant would have reseeded the world), and packages are keyed by
+   name *and* version so two copies of one crate no longer overwrite each other.
 3. **P2 general** — a differential harness: evaluate the author's contract and Ply's
    generated assertion over the same inputs, compare outcomes including panics. This is the
    only one of these that would have caught the float bug *as a class* rather than as a case.

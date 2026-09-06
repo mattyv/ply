@@ -765,30 +765,57 @@ fn declared_dependency_count(manifest: &str) -> usize {
 
 /// `name version` for every package with a `source` (i.e. not in this
 /// workspace) reachable from `root` in a `Cargo.lock`.
+/// The one registry whose published versions are immutable by policy, so
+/// `name version` already names exact bytes.
+const CRATES_IO_REGISTRY: &str = "registry+https://github.com/rust-lang/crates.io-index";
+
 fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
     struct Pkg {
+        name: String,
         version: String,
-        external: bool,
+        /// The lockfile's own `source =` line, kept whole rather than
+        /// reduced to "is this external".
+        ///
+        /// It carries the revision for a git dependency
+        /// (`git+https://...?branch=main#<sha>`), and collapsing it to a
+        /// boolean meant two builds of the same package version from
+        /// different revisions produced one identity -- so updating a git
+        /// dependency without bumping its version left every fingerprint
+        /// unchanged and every recorded green reusable over code that had
+        /// moved underneath it.
+        source: Option<String>,
         deps: Vec<String>,
     }
     let mut packages: std::collections::BTreeMap<String, Pkg> = std::collections::BTreeMap::new();
+    let mut by_name: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     let mut name = String::new();
     let mut version = String::new();
-    let mut external = false;
+    let mut source: Option<String> = None;
     let mut deps: Vec<String> = Vec::new();
     let mut in_deps_list = false;
     let mut started = false;
     let flush = |name: &mut String,
                  version: &mut String,
-                 external: &mut bool,
+                 source: &mut Option<String>,
                  deps: &mut Vec<String>,
-                 packages: &mut std::collections::BTreeMap<String, Pkg>| {
+                 packages: &mut std::collections::BTreeMap<String, Pkg>,
+                 by_name: &mut std::collections::BTreeMap<String, Vec<String>>| {
         if !name.is_empty() {
+            // Keyed by name *and* version. A lockfile may legitimately hold
+            // two versions of one crate; keyed by name alone the second
+            // block overwrote the first, so the identity could name a
+            // version this crate never built with and would move when an
+            // unrelated crate bumped its own copy.
+            let n = std::mem::take(name);
+            let v = std::mem::take(version);
+            by_name.entry(n.clone()).or_default().push(format!("{n} {v}"));
             packages.insert(
-                std::mem::take(name),
+                format!("{n} {v}"),
                 Pkg {
-                    version: std::mem::take(version),
-                    external: std::mem::replace(external, false),
+                    name: n,
+                    version: v,
+                    source: source.take(),
                     deps: std::mem::take(deps),
                 },
             );
@@ -800,9 +827,10 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
             flush(
                 &mut name,
                 &mut version,
-                &mut external,
+                &mut source,
                 &mut deps,
                 &mut packages,
+                &mut by_name,
             );
             started = true;
             in_deps_list = false;
@@ -816,11 +844,13 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
                 in_deps_list = false;
                 continue;
             }
-            let entry = t.trim_matches(|c| c == '"' || c == ',');
-            if let Some(first) = entry.split_whitespace().next()
-                && !first.is_empty()
-            {
-                deps.push(first.trim_matches('"').to_string());
+            // The whole entry, not just its first word. Cargo writes
+            // `"dep 0.1.0"` exactly when the bare name would be ambiguous,
+            // so the version here is the only thing saying which of two
+            // copies this crate compiled against.
+            let entry = t.trim_matches(|c| c == '"' || c == ',').trim();
+            if !entry.is_empty() {
+                deps.push(entry.to_string());
             }
             continue;
         }
@@ -828,8 +858,8 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
             name = v.trim_matches('"').to_string();
         } else if let Some(v) = t.strip_prefix("version = ") {
             version = v.trim_matches('"').to_string();
-        } else if t.starts_with("source = ") {
-            external = true;
+        } else if let Some(v) = t.strip_prefix("source = ") {
+            source = Some(v.trim_matches('"').to_string());
         } else if t.starts_with("dependencies = [") {
             in_deps_list = !t.ends_with(']');
         }
@@ -837,15 +867,28 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
     flush(
         &mut name,
         &mut version,
-        &mut external,
+        &mut source,
         &mut deps,
         &mut packages,
+        &mut by_name,
     );
+
+    // A `dependencies` entry is either `"name"` or `"name version"`. The
+    // second form is already a key; the first is one only when the name is
+    // unambiguous. When it is not -- which a well-formed lockfile does not
+    // produce, but a hand-edited one might -- every candidate is walked, so
+    // the identity is coarser than necessary rather than silently wrong.
+    let resolve = |entry: &str| -> Vec<String> {
+        if packages.contains_key(entry) {
+            return vec![entry.to_string()];
+        }
+        by_name.get(entry).cloned().unwrap_or_default()
+    };
 
     let mut out: BTreeSet<String> = BTreeSet::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut queue: VecDeque<String> = VecDeque::new();
-    queue.push_back(root.to_string());
+    queue.extend(resolve(root));
     while let Some(next) = queue.pop_front() {
         if !seen.insert(next.clone()) {
             continue;
@@ -853,11 +896,30 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
         let Some(pkg) = packages.get(&next) else {
             continue;
         };
-        if pkg.external {
-            out.insert(format!("{next} {}", pkg.version));
+        if let Some(src) = &pkg.source {
+            // Name and version alone, for a crates.io package: a published
+            // version there is immutable by that registry's own policy, so
+            // the two together already name one exact set of bytes and the
+            // source line adds a constant.
+            //
+            // Everything else carries its source. A git dependency's version
+            // says nothing about which commit was built -- the revision is
+            // in this line and nowhere else -- and an alternative registry
+            // makes no immutability promise this code can rely on.
+            //
+            // Narrow on purpose. Appending the source unconditionally would
+            // have changed the identity of every dependency in the world and
+            // invalidated every recorded result, for no gain on the one case
+            // that needs nothing: the same reseed-everything mistake a
+            // contract-text re-render made earlier today.
+            if src == CRATES_IO_REGISTRY {
+                out.insert(format!("{} {}", pkg.name, pkg.version));
+            } else {
+                out.insert(format!("{} {} {src}", pkg.name, pkg.version));
+            }
         }
         for d in &pkg.deps {
-            queue.push_back(d.clone());
+            queue.extend(resolve(d));
         }
     }
     out.into_iter().collect()
@@ -1151,6 +1213,94 @@ pub fn f(x: u32) -> u32 { x }
         .unwrap();
         assert_eq!(without, dependency_identity(dir.path()));
         assert_eq!(without, NO_EXTERNAL_CODE);
+    }
+
+    /// Two builds of the same package version from different git revisions
+    /// are different code, and must not share an identity.
+    ///
+    /// The lockfile's `source =` line carries the revision (`...?branch=main#
+    /// <sha>`), and it was read only as a boolean -- "is this external" --
+    /// then discarded. Updating a git dependency without bumping its package
+    /// version therefore left every fingerprint identical and every recorded
+    /// green reusable over code that had changed underneath it. Reported by
+    /// external review 2026-09-05; this is the reproduction it could not run.
+    #[test]
+    fn a_git_dependency_that_moved_is_not_the_same_dependency() {
+        let lock = |rev: &str| {
+            let dir = crate_with(&[("src/lib.rs", "pub fn f() {}\n")]);
+            std::fs::write(
+                dir.path().join("Cargo.lock"),
+                format!(
+                    r#"version = 4
+
+[[package]]
+name = "c"
+version = "0.0.0"
+dependencies = [
+ "dep",
+]
+
+[[package]]
+name = "dep"
+version = "0.1.0"
+source = "git+https://example.invalid/dep?branch=main#{rev}"
+"#
+                ),
+            )
+            .unwrap();
+            dependency_identity(dir.path())
+        };
+        assert_ne!(
+            lock("1111111111111111111111111111111111111111"),
+            lock("2222222222222222222222222222222222222222"),
+            "the same version at two different revisions is two different \
+             dependencies, and a result earned against one must not be reused \
+             against the other"
+        );
+    }
+
+    /// When a lockfile holds two versions of one crate, the identity names
+    /// the one this crate actually compiled against.
+    ///
+    /// Cargo writes `"dep 0.1.0"` in a `dependencies` list precisely when the
+    /// bare name would be ambiguous. That version was being thrown away and
+    /// packages were stored under their name alone, so the last `[[package]]`
+    /// block in the file won and the fingerprint could name a version this
+    /// crate never built with -- and would change when an unrelated crate
+    /// bumped its own copy. Second half of the external review's third
+    /// finding, 2026-09-05.
+    #[test]
+    fn two_versions_of_one_crate_do_not_overwrite_each_other() {
+        let dir = crate_with(&[("src/lib.rs", "pub fn f() {}\n")]);
+        std::fs::write(
+            dir.path().join("Cargo.lock"),
+            r#"version = 4
+
+[[package]]
+name = "c"
+version = "0.0.0"
+dependencies = [
+ "dep 0.1.0",
+]
+
+[[package]]
+name = "dep"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "dep"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            dependency_identity(dir.path()),
+            "dep 0.1.0",
+            "the fingerprint must name the version this crate resolves to, not \
+             whichever copy appeared last in the lockfile"
+        );
     }
 
     /// The versions that are pinned are the ones this crate resolves to.

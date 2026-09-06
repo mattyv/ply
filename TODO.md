@@ -125,12 +125,30 @@ function's own source, the code it calls, ..." while being wrong about exactly t
   with an unrelated comment added. Ply's own 50 claims still pass under the stricter
   hashing.
 
-- [ ] **KNOWN GAP: dependency identity still loses information** (the review's third
-      finding, not fixed here). The lockfile reader reduces each external package to name
-      and version, discarding the git revision, and keys packages by name alone so two
-      versions of one crate overwrite each other. Updating a git dependency without bumping
-      its version therefore produces the same identity. Wants Cargo's full package
-      identities and dependency edges, including source revisions.
+- [x] **Dependency identity now survives a moved git revision and two versions of one
+      crate** (the review's third finding) -- `cd20b03`. Two defects, one reader:
+
+      The lockfile's `source =` line was read as a boolean ("is this external?") and then
+      thrown away, so a git dependency updated without a version bump produced a byte-identical
+      identity and every recorded green stayed reusable over code that had moved underneath it.
+      The line is now kept whole. It is appended only for sources that are *not* crates.io: a
+      published crates.io version is immutable by that registry's policy, so name and version
+      already name exact bytes, and appending a constant registry URL to every dependency in
+      the world would have invalidated every recorded result for no gain -- the same
+      reseed-everything mistake a contract-text re-render made the day before.
+
+      Packages were also stored under their name alone, so the last `[[package]]` block for a
+      duplicated name won. Ply's own lockfile has two `syn`s; anything reaching `syn 2.0.119`
+      was fingerprinted as having reached `syn 3.0.4`. Packages are now keyed by name *and*
+      version, and a `dependencies` entry keeps the version Cargo writes into it precisely
+      when the bare name would be ambiguous. An entry that is still ambiguous walks every
+      candidate -- coarser than necessary, never wrong.
+
+      Both are pinned by tests that go red without the fix
+      (`a_git_dependency_that_moved_is_not_the_same_dependency`,
+      `two_versions_of_one_crate_do_not_overwrite_each_other`). Nothing in the repository
+      commits a record or pins a fingerprint literal, so the identity change re-earns
+      evidence rather than changing any input.
 
 - [ ] **KNOWN GAP: the filesystem-effect scanner fails open** (the review's fourth). An
       unrecognised method call (`writer.flush()`) returns `Reach::None` rather than
