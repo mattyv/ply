@@ -230,7 +230,7 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       catch one level down.
 
 - [x] **The filesystem-effect scanner fails closed now, as it always said it did** --
-      `HASH2`. Its opening promise -- "anything this scan cannot follow is `Unknown`" -- was
+      `3269bc6`. Its opening promise -- "anything this scan cannot follow is `Unknown`" -- was
       false for the commonest shape in real Rust. Every method call was skipped outright,
       reasoning that the list of methods known to *write* had already had its say; but a
       method that list has never heard of is not thereby known to be safe. `writer.flush()`,
@@ -245,7 +245,7 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       method is never safe, and `.len()`/`.trim()`/`.to_string()` still are, because a scan
       that gives up on everything is worth no more than one that gives up on nothing.
 
-- [x] **The two type variants that print alike are not a defect** -- `HASH2`. Named them
+- [x] **The two type variants that print alike are not a defect** -- `3269bc6`. Named them
       rather than leaving "two of them": `VecU8` and `Vec(U8)` both read `Vec<u8>`, and the
       two user-type variants both read the type's bare name. `RustType`'s `Debug` is a
       hand-written *user-facing* rendering -- three refusal messages interpolate it so a
@@ -253,7 +253,7 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       reader those pairs genuinely are the same type. So the rule is the narrow one: nothing
       may use that rendering to tell two variants apart. Checked; nothing else does.
 
-- [x] **The four crates with no promises now say why** -- `HASH2`. Asked directly, and the
+- [x] **The four crates with no promises now say why** -- `3269bc6`. Asked directly, and the
       answer is not "write four documents". `check` is one `main` of file reading and exit
       codes; `e2e` is test scaffolding, and pointing Ply at the suite that judges Ply is the
       circularity the plan exists to rule out; `attrs` takes compiler token streams Ply
