@@ -25,12 +25,26 @@
 //! that the list of methods known to *write* had already had its say -- but
 //! a method that list has never heard of is not thereby known to be safe.
 //! `writer.flush()`, the ordinary way a buffered writer commits bytes to a
-//! file, came back as a function that touches nothing at all. A method is
-//! now passed over only if it is on a spelled-out list of things that read
-//! or reshape a value already in memory ([`BENIGN_METHODS`]), and anything
-//! else is `Unknown`. Found by external review; latent rather than live,
-//! since nothing outside this file calls into it yet, which is the only
-//! reason it cost nothing.
+//! file, came back as a function that touches nothing at all.
+//!
+//! **The first repair was itself unsound, and the same review caught it.**
+//! Passing over any method on a spelled-out list of harmless *names* reads
+//! a name as a method, and it is not one: `.clone()` runs the receiver's
+//! own `Clone`, which is ordinary Rust and may open a file, and so may
+//! `Display` behind `.to_string()` and `Iterator::next` behind `.next()`.
+//! The hole simply moved one name along.
+//!
+//! Two things must now hold before a method is passed over: the name is on
+//! [`BENIGN_METHODS`], **and** the receiver is a parameter whose declared
+//! type has no user code anywhere inside it ([`STD_TRANSPARENT_TYPES`],
+//! applied through type arguments, so `Vec<u8>` qualifies and
+//! `Vec<Logger>` does not). A bare parameter name is the only receiver
+//! whose type this scan can look up without being the type checker it is
+//! not, so a chained call, a field, or a local is `Unknown` -- a real
+//! narrowing of what this can answer for, and the honest one.
+//!
+//! Both were latent rather than live: nothing outside this file calls into
+//! it yet, which is the only reason either cost nothing.
 //!
 //! **What it is not.** It is not the capability tier §5.3 describes and it
 //! does not implement `pure`/`uses:` enforcement (`A0402`, `A0403`, `A0408`
@@ -273,6 +287,7 @@ fn walk(
     let mut unknown: Option<Reach> = None;
     let mut calls = Vec::new();
     collect(&found.item, &mut calls);
+    let params = parameter_types(&found.item);
 
     for call in &calls {
         if let Some(name) = writing_call_name(call) {
@@ -297,25 +312,46 @@ fn walk(
         if is_benign(call) {
             continue;
         }
-        // A method call this scan does not recognise. There is no body to
-        // follow -- the receiver's type is not known here -- so the walk
-        // cannot answer, and the module's own promise says what to do about
-        // that: report `Unknown`, never `None`.
+        // A method call. Two things have to hold before the walk may pass
+        // over one, and for a day only the first of them did.
         //
-        // It used to `continue` past every method with the note that "the
-        // writing-method list above already had its say". That list only
-        // recognises methods known to *write*; one it has never heard of is
-        // not thereby known to be safe. `writer.flush()` -- the ordinary way
-        // a buffered writer commits bytes to a file -- came back as touching
-        // nothing at all.
-        if let Some(method) = call.strip_prefix('.') {
+        // The name must be on the harmless list -- that much was already
+        // true, and it is what stopped `writer.flush()` reading as "touches
+        // no file".
+        //
+        // And the receiver's type must contain no user code, because a
+        // method name is not a method: `.clone()` runs the receiver's own
+        // `Clone`, which is ordinary Rust and may open a file, and so may
+        // `Display` behind `.to_string()` and `Iterator::next` behind
+        // `.next()`. Whitelisting by name alone reintroduced the same hole
+        // one name along (external review, 2026-09-06).
+        //
+        // The only receiver whose type this scan can look up without being
+        // a type checker is a bare parameter name. Anything else -- a
+        // chained call, a field, a local -- is `Unknown`, which is the
+        // honest answer and the safe one.
+        if let Some(rest) = call.strip_prefix('.') {
+            let (method, receiver) = rest.split_once('@').unwrap_or((rest, ""));
+            let receiver_is_std = (!receiver.is_empty())
+                .then(|| params.get(receiver))
+                .flatten()
+                .is_some_and(is_transparently_std);
+            if receiver_is_std && BENIGN_METHODS.contains(&method) {
+                continue;
+            }
             if unknown.is_none() {
-                unknown = Some(Reach::Unknown {
-                    because: format!(
-                        "`{fn_path}` calls `.{method}()` on a value whose type this scan cannot \
-                         see, so what that method does is unknown"
-                    ),
-                });
+                let because = if receiver.is_empty() {
+                    format!(
+                        "`{fn_path}` calls `.{method}()` on a value this scan cannot name, so \
+                         whose method it is -- and what that method does -- is unknown"
+                    )
+                } else {
+                    format!(
+                        "`{fn_path}` calls `.{method}()` on `{receiver}`, whose type is not one \
+                         this scan can see inside, so what that method does is unknown"
+                    )
+                };
+                unknown = Some(Reach::Unknown { because });
             }
             continue;
         }
@@ -509,6 +545,74 @@ const BENIGN_METHODS: &[&str] = &[
     "wrapping_add",
 ];
 
+/// Standard-library types whose own implementations are the only ones a
+/// method on them can reach.
+///
+/// The point is *not* "these are std types". It is that a value of one of
+/// these has no user code inside it to run. `Vec<u8>::clone` clones bytes;
+/// `Vec<Logger>::clone` calls `Logger::clone`, which is ordinary Rust and
+/// may open a file. So this list is applied recursively through type
+/// arguments, and a container of anything not on it is not on it either.
+///
+/// Coherence is what makes this sound for the trait methods in
+/// [`BENIGN_METHODS`]: nobody outside `std` can implement `Display for str`
+/// or `Clone for u32`, so `.to_string()` on a `&str` really is std's, and
+/// an inherent method such as `len` wins over any trait in scope regardless.
+const STD_TRANSPARENT_TYPES: &[&str] = &[
+    "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32",
+    "f64", "bool", "char", "str", "String", "Path", "PathBuf", "OsStr", "OsString", "Vec",
+    "VecDeque", "BTreeMap", "BTreeSet", "HashMap", "HashSet", "Option", "Result", "Duration",
+];
+
+/// Whether a declared parameter type contains no user code at all -- see
+/// [`STD_TRANSPARENT_TYPES`] for why that is the question rather than "is
+/// this a std type".
+fn is_transparently_std(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Reference(r) => is_transparently_std(&r.elem),
+        syn::Type::Paren(p) => is_transparently_std(&p.elem),
+        syn::Type::Group(g) => is_transparently_std(&g.elem),
+        syn::Type::Slice(s) => is_transparently_std(&s.elem),
+        syn::Type::Array(a) => is_transparently_std(&a.elem),
+        syn::Type::Tuple(t) => t.elems.iter().all(is_transparently_std),
+        syn::Type::Path(p) => {
+            let Some(seg) = p.path.segments.last() else {
+                return false;
+            };
+            if !STD_TRANSPARENT_TYPES.contains(&seg.ident.to_string().as_str()) {
+                return false;
+            }
+            match &seg.arguments {
+                syn::PathArguments::None => true,
+                syn::PathArguments::AngleBracketed(args) => args.args.iter().all(|a| match a {
+                    syn::GenericArgument::Type(t) => is_transparently_std(t),
+                    syn::GenericArgument::Lifetime(_) => true,
+                    _ => false,
+                }),
+                syn::PathArguments::Parenthesized(_) => false,
+            }
+        }
+        // A generic parameter, `impl Trait`, a trait object, a raw pointer,
+        // a function pointer: every one of them is a promise that the real
+        // type arrives from somewhere this scan cannot see.
+        _ => false,
+    }
+}
+
+/// The declared type of each named parameter, for the one lookup this scan
+/// can do without being a type checker.
+fn parameter_types(f: &syn::ItemFn) -> std::collections::BTreeMap<String, syn::Type> {
+    let mut out = std::collections::BTreeMap::new();
+    for input in &f.sig.inputs {
+        if let syn::FnArg::Typed(pt) = input
+            && let syn::Pat::Ident(ident) = &*pt.pat
+        {
+            out.insert(ident.ident.to_string(), (*pt.ty).clone());
+        }
+    }
+    out
+}
+
 /// Whether this call is one the scan can pass over without following.
 fn is_benign(call: &str) -> bool {
     let last_two = call
@@ -519,12 +623,10 @@ fn is_benign(call: &str) -> bool {
         .rev()
         .collect::<Vec<_>>()
         .join("::");
-    // A method call, recorded by `collect` with a leading `.`: benign only
-    // if it is on the spelled-out list. Anything else is a call this scan
-    // cannot follow, and this module's promise is that such a call is
-    // `Unknown`.
-    if let Some(method) = call.strip_prefix('.') {
-        return BENIGN_METHODS.contains(&method);
+    // A method call is not decided here: whether it is harmless depends on
+    // the receiver's type, which `is_benign` cannot see. `walk` decides it.
+    if call.starts_with('.') {
+        return false;
     }
     BENIGN_CALLS.contains(&call)
         || BENIGN_STD_ASSOC.contains(&last_two.as_str())
@@ -543,7 +645,16 @@ fn writing_call_name(call: &str) -> Option<String> {
         return Some(call.to_string());
     }
     let last = call.rsplit("::").next().unwrap_or(call);
-    let method = call.rsplit('.').next().unwrap_or(call);
+    // A method call is recorded as `.name@receiver`; the name is what the
+    // writing list is written in terms of, and it is suspicious whatever
+    // the receiver turns out to be.
+    let method = call
+        .rsplit('.')
+        .next()
+        .unwrap_or(call)
+        .split('@')
+        .next()
+        .unwrap_or(call);
     if WRITING_METHODS.contains(&last) || WRITING_METHODS.contains(&method) {
         return Some(call.to_string());
     }
@@ -571,7 +682,26 @@ fn collect(f: &syn::ItemFn, out: &mut Vec<String>) {
             syn::visit::visit_expr_call(self, node);
         }
         fn visit_expr_method_call(&mut self, node: &'a syn::ExprMethodCall) {
-            self.out.push(format!(".{}", node.method));
+            // The receiver, when it is a plain name. That is the only shape
+            // whose type this scan can look up without being a type
+            // checker: a bare identifier that a parameter declares. A
+            // method on the result of another call, on a field, or on a
+            // local whose type is inferred records no receiver, and no
+            // receiver means no way to know whose method this is.
+            let receiver = match &*node.receiver {
+                syn::Expr::Path(p) => p.path.get_ident().map(ToString::to_string),
+                syn::Expr::Unary(u) if matches!(u.op, syn::UnOp::Deref(_)) => match &*u.expr {
+                    syn::Expr::Path(p) => p.path.get_ident().map(ToString::to_string),
+                    _ => None,
+                },
+                syn::Expr::Reference(r) => match &*r.expr {
+                    syn::Expr::Path(p) => p.path.get_ident().map(ToString::to_string),
+                    _ => None,
+                },
+                _ => None,
+            };
+            self.out
+                .push(format!(".{}@{}", node.method, receiver.unwrap_or_default()));
             syn::visit::visit_expr_method_call(self, node);
         }
     }
@@ -716,17 +846,72 @@ mod tests {
         );
     }
 
-    /// The other half, and the reason the fix is a spelled-out list rather
-    /// than "every method is unknown": a scan that gives up on `.len()`
-    /// gives up on everything, and an answer nobody can ever get is worth
-    /// no more than a wrong one.
+    /// A method name is not a method. `clone` on a user type runs that
+    /// type's own `Clone`, and that body can do anything at all.
+    ///
+    /// The list of harmless method names added on 2026-09-06 was written as
+    /// though every `.clone()` were `str`'s. It is not: a `Clone` impl is
+    /// ordinary Rust and may open a file, and so may `Display` behind
+    /// `.to_string()`, and `Iterator::next` behind `.next()`. So the
+    /// whitelist reintroduced exactly the hole it was added to close -- one
+    /// name further along -- and this scan's opening promise, that anything
+    /// it cannot follow is `Unknown`, was false again for the commonest
+    /// receiver in real code: a value of the user's own type.
+    ///
+    /// Reported by external review 2026-09-06, after the `flush` fix.
     #[test]
-    fn the_ordinary_methods_a_body_uses_to_read_its_arguments_stay_safe() {
+    fn a_harmless_looking_method_on_a_type_this_scan_cannot_see_is_unknown() {
+        for body in [
+            // `Clone` for a user type: the impl is right there in the file,
+            // and it writes.
+            "pub struct Logger;\n\nimpl Clone for Logger {\n    fn clone(&self) -> Logger {\n        \
+             std::fs::write(\"/tmp/x\", b\"\").unwrap();\n        Logger\n    }\n}\n\n\
+             pub fn copy_it(l: &Logger) -> Logger {\n    l.clone()\n}\n",
+            // A generic receiver: the impl is not even in this crate.
+            "pub fn describe<T: std::fmt::Display>(t: &T) -> String {\n    t.to_string()\n}\n",
+            // A method on the result of another call: nothing names the
+            // receiver's type at all.
+            "pub fn first_word(s: &str) -> String {\n    s.split(' ').next().unwrap().to_string()\n}\n",
+        ] {
+            let dir = fixture(body);
+            let name = body
+                .split("pub fn ")
+                .nth(1)
+                .unwrap()
+                .split(['(', '<'])
+                .next()
+                .unwrap();
+            let reach = scan_fn(dir.path(), name);
+            assert!(
+                !reach.is_safe(),
+                "the receiver's type is not knowable here, so what its method does is not \
+                 knowable either, and answering `safe` is the one direction this must never be \
+                 wrong in:\n{body}\ngot {reach:?}"
+            );
+        }
+    }
+
+    /// The other half, and the reason the fix is not "every method is
+    /// unknown": a scan that gives up on `.len()` gives up on everything,
+    /// and an answer nobody can ever get is worth no more than a wrong one.
+    ///
+    /// The line this draws is exactly what the scan can establish without
+    /// being a type checker: **a named parameter whose declared type has no
+    /// user code anywhere inside it.** `p: &str` qualifies, so `p.len()` is
+    /// `str::len` and nothing else. `Vec<u8>` qualifies; `Vec<Logger>` does
+    /// not, because cloning one clones `Logger`s. And a chained call has no
+    /// name to look up at all -- `p.trim().to_owned()` is `Unknown`, tested
+    /// next door, and that is a real narrowing of what this can answer for,
+    /// not an oversight.
+    #[test]
+    fn a_std_method_on_a_declared_std_parameter_stays_safe() {
         for body in [
             "pub fn n(p: &str) -> usize {\n    p.len()\n}\n",
             "pub fn e(p: &str) -> bool {\n    p.is_empty()\n}\n",
             "pub fn c(p: &str) -> String {\n    p.to_string()\n}\n",
-            "pub fn t(p: &str) -> String {\n    p.trim().to_owned()\n}\n",
+            "pub fn s(p: &String) -> String {\n    p.clone()\n}\n",
+            "pub fn v(xs: &Vec<u8>) -> usize {\n    xs.len()\n}\n",
+            "pub fn o(x: Option<u32>) -> u32 {\n    x.unwrap_or_default()\n}\n",
         ] {
             let dir = fixture(body);
             let name = body.split_whitespace().nth(2).unwrap();
@@ -735,10 +920,29 @@ mod tests {
             assert_eq!(
                 reach,
                 Reach::None,
-                "reading a string cannot touch a file, and a scan that says otherwise is \
-                 useless rather than careful: {body}"
+                "the receiver is a parameter declared as a type with no user code inside it, so \
+                 this method is the standard library's own and cannot touch a file: {body}"
             );
         }
+    }
+
+    /// The same shape one step over the line: a container of a *user* type.
+    /// `Vec<Logger>::clone` clones `Logger`s, and `Logger::clone` is
+    /// ordinary Rust that may open a file -- so the element type has to be
+    /// looked through, not just the container.
+    #[test]
+    fn a_std_container_of_a_user_type_is_not_transparent() {
+        let dir = fixture(
+            "pub struct Logger;\n\nimpl Clone for Logger {\n    fn clone(&self) -> Logger {\n        \
+             std::fs::write(\"/tmp/x\", b\"\").unwrap();\n        Logger\n    }\n}\n\n\
+             pub fn dup(xs: &Vec<Logger>) -> Vec<Logger> {\n    xs.clone()\n}\n",
+        );
+        let reach = scan_fn(dir.path(), "dup");
+        assert!(
+            !reach.is_safe(),
+            "cloning a `Vec<Logger>` runs `Logger::clone` once per element, and that body \
+             writes a file: {reach:?}"
+        );
     }
 
     /// A write through an already-open handle, which no `fs::` path names.

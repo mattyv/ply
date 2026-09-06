@@ -31,6 +31,29 @@ file `include_str!`-embedded relative to a crate manifest, so it has to sit at t
 depth in the copy). No test needed writing -- the two failing e2e tests already reproduced
 the bug and now pass, so they are the regression test.
 
+- [x] **The effect scanner's first repair was itself unsound** -- `c371b04`. The same review
+      that found it failing open found the fix failing open too, one name along, and it is
+      right: a whitelist of harmless *method names* reads a name as a method, and it is not
+      one. `.clone()` runs the receiver's own `Clone`, which is ordinary Rust and may open a
+      file; so may `Display` behind `.to_string()` and `Iterator::next` behind `.next()`.
+      Reproduced with a `Clone` impl that writes a file -- reported safe.
+
+      Two things must hold now before a method is passed over: the name is on the harmless
+      list, **and** the receiver is a parameter whose declared type has no user code anywhere
+      inside it. Applied through type arguments, so `Vec<u8>` qualifies and `Vec<Logger>` does
+      not -- cloning that one runs `Logger::clone` per element. Sound for the trait methods on
+      the list because coherence forbids anyone outside `std` implementing `Display for str`.
+
+      A bare parameter name is the only receiver whose type this can look up without being the
+      type checker it is not, so a chained call, a field or a local is `Unknown`. That is a
+      real narrowing of what this can answer for and it is stated as one: `p.trim().to_owned()`
+      used to read safe and now does not. Both directions pinned, and the container case too.
+
+      **The lesson, for the second time in two days: a repair is a change like any other and
+      wants its own adversarial read.** Yesterday's zero-case guard turned "green with no
+      evidence" into a false accusation; this one turned "fails open on flush" into "fails
+      open on clone". Neither was caught here.
+
 - [ ] **KNOWN GAP, recorded not hidden**: that copy list is maintained by hand. The next
       `include_str!` of a path outside a crate directory will break the same two unrelated
       build-identity tests, 150 seconds into an e2e shard, with an error naming neither the
