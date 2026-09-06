@@ -14,8 +14,21 @@ each one from a refusal after the code is written.
 style preferences.
 
 Two words used throughout. A *document* is the `ply.yaml` that names what is checked. A
-claim Ply will not attempt comes back **unclaimed** — a verdict meaning "no evidence was
-gathered", which is not the same as "this code is wrong".
+claim without earned evidence may be reported as **unclaimed**, **unsupported**, or another
+specific outcome. Read that outcome and its reason; a refusal is not a counterexample
+showing that the code is wrong.
+
+## Verify the first useful piece
+
+Before changing existing claimed behavior, establish its baseline. For new code, write
+one meaningful contract and a compiling implementation, then run `cargo ply check` and
+`cargo ply verify` on that crate before building further behavior on it. This finds an
+unsupported signature or ineffective claim while it is still cheap to address.
+
+Repeat after coherent behavior changes, including changes to helpers that claims depend
+on. Follow [Ply Verify's incremental workflow](../ply-verify/SKILL.md#verify-while-building)
+for affected roots, counterexample repair, reuse, and the final checks. A passing ordinary
+test or declaration check does not substitute for verification of the contract.
 
 ## 1. Separate deciding from writing
 
@@ -49,7 +62,7 @@ pub fn report_body(rows: &[Row]) -> String { /* the logic */ }
 
 pub fn write_report(dir: &Path, rows: &[Row]) -> Result<PathBuf> {
     let path = dir.join("report.txt");
-    fs::write(&path, report_body(rows))?;   // three lines nobody needs to check
+    fs::write(&path, report_body(rows))?;   // test I/O behavior separately
     Ok(path)
 }
 ```
@@ -57,9 +70,10 @@ pub fn write_report(dir: &Path, rows: &[Row]) -> Result<PathBuf> {
 **The shell is meant to stay unclaimed.** Not everything should be checked, and a function
 that only opens a file and hands off is one to leave alone deliberately. Splitting it
 further into wrappers that do nothing is worse than leaving it. What matters is that the
-logic is not trapped inside it.
+logic is not trapped inside it. Leaving the shell outside Ply does not remove the need
+for ordinary tests of error handling and integration behavior.
 
-## 2. A lookup keyed by another argument must be total
+## 2. Consider a total lookup for related inputs
 
 ```rust
 pub fn order(
@@ -108,8 +122,11 @@ What Ply actually needs to build a struct directly:
 - **not `#[non_exhaustive]`** — that attribute exists precisely to forbid the literal Ply
   would write
 
-A container of a plain type is fine (`Vec<String>`, `Option<u32>`), and so is a container of
-*your own* struct (`Vec<Inner>`), at any depth. Ply's own `FingerprintInputs` was the case
+For `fuzz`, containers such as `Vec<String>` and `Option<u32>` are supported, as are
+nested public-field types such as `Vec<Inner>` when every field is constructible. This
+does not extend to nested types whose constructors reject inputs through `requires` or
+return `Result`: those need top-level case rejection, which is unavailable inside a
+container. Bounded checking has a narrower supported set. Ply's own `FingerprintInputs` was the case
 that proved it (2026-09-05): twenty public fields, two of them lists of another struct, built
 in full and run through the real function 256 times. That claim has since come out of Ply's
 document under rule 8 — buildable and worth claiming are different questions — and the shape
@@ -191,9 +208,12 @@ function on purpose and reports whether anything noticed.
 
 ## 7. Prefer types the engines can build
 
-Numbers, booleans, strings, `Vec`, slices (`&[T]`), tuples, `BTreeSet`, `BTreeMap`,
-`Option` and `Box` of them compose freely. Your own structs and enums work when Ply can
-reach a public constructor, or when every field is public **and named**.
+For `fuzz`, supported shapes include numbers, booleans, strings, `Vec`, slices (`&[T]`),
+tuples, `BTreeSet`, `BTreeMap`, `Option`, and `Box`, subject to the nesting limits in
+rule 4. Your own structs and enums need a supported public constructor or public named
+fields with constructible types. These are not general guarantees for every engine: in
+this build, `bounded` refuses `Vec`, `BTreeSet`, `BTreeMap`, and user types built through
+constructors or fields. Inspect the selected engine's report before promising coverage.
 
 Refused, and worth knowing before you write the signature:
 
@@ -276,10 +296,16 @@ parameter and the reason. In order:
 4. Is the property somewhere you cannot claim it, so an ordinary test is the answer?
    (rule 8)
 
-Only after those, treat it as a Ply limitation and say so — with the parameter and reason
-quoted, so the refusal can be judged rather than taken on trust.
+A refusal may simply be a Ply limitation. Consider these alternatives without changing
+required behavior or widening public APIs just to suit the tool. Report the parameter
+and reason when leaving verification unresolved; ordinary tests may be the right way
+to check the property.
 
 ## Change authority
+
+The table states defaults when the task has not already authorized the change. Honor
+existing user authorization; do not ask again for work already approved. A request to
+review alone does not authorize changing requirements.
 
 | target | authority |
 | --- | --- |
