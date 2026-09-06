@@ -46,7 +46,12 @@ use crate::shared::{
     Loaded, empty_workspace, is_local, load_document, local_anchor_names, workspace_node, wrap,
 };
 
-const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
+// The build identity, not the hand-edited package version. One shared
+// constant rather than a fourth copy: a per-command copy is how three
+// commands kept stamping `0.1.0` while only `verify`'s own copy was
+// guarded, and the hand-edited constant is what let fourteen fixes go
+// unnoticed by every stored result (docs/review-silent-narrowing.md §6).
+use crate::verify::PLY_VERSION;
 
 /// What `check` could not look at, in the words a user needs to know what
 /// their green run did not cover. Exact strings: they are the whole point of
@@ -126,8 +131,20 @@ pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
         }
     };
 
+    // §7.1's derive-links brief: a component links to another document
+    // when that document's own top-level anchor sits under this one's,
+    // discovered from real crate directories rather than a declared key.
+    // No engine and no `cargo metadata` call, so this runs whether or not
+    // the architecture tier below could.
+    //
+    // Resolved before the document rules rather than after, because one of
+    // them needs it: a name arriving from a linked document can shadow a
+    // local one, and the rule that says so (`W0419`) can only see that if
+    // it knows those names exist.
+    let link_set = ply_core::config::derive_links(&doc, crate_dir);
+
     // Tier 1b: every document-local rule, in document order.
-    for d in ply_core::check::run_checks(&doc) {
+    for d in ply_core::check::run_checks_with_links(&doc, Some(&link_set.links)) {
         diagnostics.push(document_diag(&d));
     }
 
@@ -138,6 +155,10 @@ pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
     // crate dependency graph from `cargo metadata`, checked against
     // declared components and `edges:`/`deny:`.
     let arch_outcome = run_architecture_tier(crate_dir, &doc, &mut diagnostics);
+
+    for f in &link_set.findings {
+        diagnostics.push(link_diag(f));
+    }
 
     let root = workspace_node(&doc);
     Ok(CheckReport {
@@ -473,6 +494,31 @@ fn arch_diag(f: &ArchFinding) -> Diagnostic {
         engine: "ply".into(),
         check: "architecture".into(),
         node_id: f.node_id.clone(),
+        title: f.message.clone(),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
+/// A derived cross-document link's finding (§7.1's derive-links brief:
+/// `A0417` target missing/unparseable, `W0532` anchor drift, `W0533`
+/// duplicate claim, `W0534` a chain that leads back into itself),
+/// attached to the *including* component -- `ply_core::config::LinkFinding`
+/// already carries its own severity, since three of the four are advisory
+/// (the link simply does not form) and one is a real defect in the target
+/// document.
+fn link_diag(f: &ply_core::config::LinkFinding) -> Diagnostic {
+    Diagnostic {
+        code: f.code.into(),
+        severity: f.severity.into(),
+        phase: "check".into(),
+        engine: "ply".into(),
+        check: "architecture".into(),
+        node_id: f.component_path.clone(),
         title: f.message.clone(),
         primary_span: None,
         pointer: None,
@@ -2154,7 +2200,8 @@ pub struct OrderBook {
             .find(|d| d.code == "E0301")
             .unwrap_or_else(|| panic!("{:#?}", report.envelope.diagnostics));
         assert!(
-            d.title.contains("There is a function of that name at `svg::examples_prose`"),
+            d.title
+                .contains("There is a function of that name at `svg::examples_prose`"),
             "the reader has to be told where the function actually is, relative to \
              the anchor they wrote -- and that nothing was renamed:\n{}",
             d.title

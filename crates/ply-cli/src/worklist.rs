@@ -37,7 +37,12 @@ use crate::shared::{
     workspace_node, wrap,
 };
 
-const PLY_VERSION: &str = env!("CARGO_PKG_VERSION");
+// The build identity, not the hand-edited package version. One shared
+// constant rather than a fourth copy: a per-command copy is how three
+// commands kept stamping `0.1.0` while only `verify`'s own copy was
+// guarded, and the hand-edited constant is what let fourteen fixes go
+// unnoticed by every stored result (docs/review-silent-narrowing.md §6).
+use crate::verify::PLY_VERSION;
 
 /// The tiers §6 promises and this build cannot deliver, in the words a user
 /// needs to know what a short list is not telling them. Exact strings.

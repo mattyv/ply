@@ -21,3 +21,4 @@ exclude = ["tests/spike", "tests/fixtures"]
 [workspace.package]
 edition = "2024"
 publish = false
+license = "MIT OR Apache-2.0"

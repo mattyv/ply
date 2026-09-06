@@ -47,10 +47,11 @@
 //! because a stale one would do the exact opposite of what it is for.
 
 use super::svg::{
-    ceiling_tooltip_line, check_prose, component_ceiling, contract_close_prose,
+    ceiling_tooltip_line, check_prose, component_ceiling, contract_close_prose, count_subtree,
     declared_not_checked, deny_rule_prose, document_counts, examples_prose, format_version_line,
-    profile_rules_prose, tame, unresolved_fn_pin_prose, weakest_declaration,
+    linked_explanation, profile_rules_prose, tame, unresolved_fn_pin_prose, weakest_declaration,
 };
+use crate::config::LinkIndex;
 use crate::model::{
     Component, Document, EdgeKind, FnClaim, InheritedChecks, Mode, component_default_checks,
     effective_checks, parse_deny, parse_edge,
@@ -93,6 +94,18 @@ pub fn render_transcript_with_state(
     doc: &Document,
     state_fields: Option<&crate::harness::StateFieldIndex>,
 ) -> String {
+    render_transcript_with_state_and_links(doc, state_fields, None)
+}
+
+/// [`render_transcript_with_state`], plus every derived cross-document
+/// link (`crate::config::derive_links`) — the text form's contract is
+/// that it states everything the drawing shows, and a linked box is now
+/// part of what the drawing shows.
+pub fn render_transcript_with_state_and_links(
+    doc: &Document,
+    state_fields: Option<&crate::harness::StateFieldIndex>,
+    links: Option<&LinkIndex>,
+) -> String {
     let mut out = String::new();
 
     // The header earns its three lines: what this is, that editing it does
@@ -134,7 +147,7 @@ pub fn render_transcript_with_state(
 
     out.push_str(&format!("{}\n\n", format_version_line(doc.ply)));
 
-    let (components, functions, unclaimed) = document_counts(doc);
+    let (components, functions, unclaimed) = document_counts(doc, links);
     out.push_str(&format!(
         "{components} {} · {functions} {} · {unclaimed} {} nothing\n",
         plural(components, "component", "components"),
@@ -163,6 +176,12 @@ pub fn render_transcript_with_state(
             1,
             &doc.profiles,
             state_fields,
+            // Same gate the drawing applies: a link only ever stands in
+            // for an interior nobody declared here (`super::is_hollow`),
+            // never overrides one the document actually wrote.
+            super::is_hollow(comp)
+                .then(|| links.and_then(|links| links.get(name)))
+                .flatten(),
         );
     }
 
@@ -334,6 +353,10 @@ fn write_component(
     level: usize,
     profiles: &IndexMap<String, Vec<String>>,
     state_fields: Option<&crate::harness::StateFieldIndex>,
+    // A derived cross-document link (§7.1's derive-links brief), for a
+    // top-level component only -- nested components are never candidates,
+    // so every recursive call below passes `None`.
+    link: Option<&crate::config::ResolvedLink>,
 ) {
     let p = pad(level);
     let q = pad(level + 1);
@@ -538,7 +561,17 @@ fn write_component(
     }
 
     let default = component_default_checks(name, comp, inherited);
-    if super::is_hollow(comp) {
+    if let Some(link) = link {
+        // A link overrides the hollow/ceiling report entirely, the same
+        // ordering the drawing enforces: an empty declared interior plus a
+        // resolved link is "plenty inside, folded into a different file",
+        // never "nothing to zoom into yet".
+        let (n_components, n_fns) = count_subtree(&link.target);
+        out.push_str(&format!(
+            "{q}{}\n",
+            linked_explanation(n_components, n_fns, &link.target_path)
+        ));
+    } else if super::is_hollow(comp) {
         out.push_str(&format!(
             "{q}hollow — promises nothing yet: no functions, no nested components. Saying \
              what it holds is not a promise about how it behaves. A sketch waiting for \
@@ -569,13 +602,26 @@ fn write_component(
         }
     }
 
+    // A linked box's functions and components are written down in another
+    // file and drawn here as if they were part of this one, so the text
+    // form states them here too. This returned early until 2026-09-05,
+    // back when the drawing folded a linked box into a pointer; once the
+    // drawing started showing that interior, an early return here would
+    // have made the transcript quietly say less than the picture -- the
+    // one thing this module's own contract forbids.
+    //
+    // `comp` itself is hollow by construction whenever a link resolved
+    // (that is what made it eligible), so this substitution adds content
+    // rather than replacing any.
+    let body: &Component = link.map_or(comp, |l| &l.target);
+
     // Functions before child components, always: the two are separate maps in
     // the document and their relative order is not observable after parsing,
     // so the grammar fixes it rather than leaving it to the parser.
-    for (fname, fc) in &comp.fns {
+    for (fname, fc) in &body.fns {
         write_fn(out, fname, fc, default, level + 1);
     }
-    for (cname, child) in &comp.components {
+    for (cname, child) in &body.components {
         write_component(
             out,
             cname,
@@ -585,6 +631,7 @@ fn write_component(
             level + 1,
             profiles,
             state_fields,
+            None,
         );
     }
 }

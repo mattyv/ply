@@ -51,6 +51,12 @@ components:
     state:
       of: VerifyRun
       show: [json, exit_code]
+    # Also carries no promises, and here the reason is a rule rather than an
+    # absence (2026-09-06). Its three hundred-odd lines are test scaffolding:
+    # copy a fixture, run the binary, read what came back -- filesystem work
+    # with no promise in it. And pointing Ply at its own test harness is the
+    # circularity `docs/plans/evidence-integrity.md` exists to rule out: the
+    # suite that judges Ply must not be judged by Ply.
     note: >-
       Drives the built binary the way a user does, and depends on nothing.
       A suite that links the library instead stops testing what ships. It
@@ -58,6 +64,17 @@ components:
       rather than widen the rule.
   attrs:
     anchor: ply_attrs
+    # Draws with no promises on it, and that is the honest picture rather
+    # than an oversight (asked about 2026-09-06; this is the answer). There
+    # is no `crates/ply-attrs/ply.yaml`, because there is nothing here Ply
+    # can check. All three public entry points take a stream of compiler
+    # tokens and hand one back, and Ply builds inputs by choosing values --
+    # it cannot manufacture a token stream, and a proc-macro crate's
+    # functions cannot be called from an ordinary test at all. One private
+    # helper underneath is an ordinary function, and making it public so Ply
+    # could see it would be shaping the code to suit the checker, which this
+    # repository refuses about its own kernel and refuses here for the same
+    # reason.
     note: >-
       Stands alone. It is a proc-macro crate, compiled for the machine doing
       the building rather than the machine the program will run on, so a
@@ -66,70 +83,33 @@ components:
       exists to annotate.
   core:
     anchor: ply_core
-    # What this crate holds. The type and every field named here are resolved
-    # against `crates/ply-core`'s real source -- this document sits at the
-    # workspace root and has no library of its own, so each component's state
-    # is read from the crate its anchor points at. A field nobody declared is
-    # refused by name (A0415); the shape drawn beside each one is read from
-    # the code rather than written here.
-    state:
-      of: Envelope
-      show: [command, root, diagnostics, coverage]
-    # Added 2026-09-02, and this is the first detail below crate level this
-    # document has ever carried. Each of these is a real module, named so
-    # that a reader can go one level in rather than being told "core does
-    # everything". No promises are declared here yet: what each part is
-    # allowed to do is one question, what it promises is the next.
-    components:
-      kernel:
-        anchor: ply_core::kernel
-        state:
-          of: VerdictNode
-          show: [kind, statuses, conditional, children]
-        note: >-
-          Decides what a pile of results adds up to: the order that ranks one
-          kind of evidence above another, the rule that a parent is never
-          reported as stronger than its weakest part, and the flags that
-          travel upward beside a verdict without being confused for one. It
-          is kept deliberately small and free of special cases, and its rules
-          are checked by trying every shape of result tree up to a size.
-      engines:
-        anchor: ply_core::engines
-        state:
-          of: TimedOutput
-          show: [stdout, stderr, status]
-        note: >-
-          The adapters that drive each outside checking tool as a separate
-          program and read back what it said. Ply never re-implements a
-          checker; everything here is translation, in both directions.
-      harness:
-        anchor: ply_core::harness
-        state:
-          of: ContractFn
-          show: [name, params, requires, ensures]
-        note: >-
-          Works out what a function's inputs are and whether Ply can make one
-          of each. This is the part that decides whether a function can be
-          checked at all, and it is where a refusal gets its reason.
-      visual:
-        anchor: ply_core::visual
-        state:
-          of: VisualEnvelope
-          show: [svg, elements, diagnostics]
-        note: >-
-          The drawing, the prose form of the same facts, and the portable
-          package an editor reads. Nothing here decides anything; it only
-          shows what was decided.
-      record:
-        anchor: ply_core::record
-        state:
-          of: RecordEntry
-          show: [verdict, statuses, inputs]
-        note: >-
-          What was checked, and everything a result depended on. A stored
-          result is only reused when every one of those inputs still hashes
-          the same, which is what stops a stale green outliving the code
-          that earned it.
+    # Deliberately no `state:` and no `components:` here (removed
+    # 2026-09-04, the derive-document-links change). This document used to
+    # hand-declare five nested modules and an `Envelope` state block as a
+    # copy of what `crates/ply-core/ply.yaml` says about itself -- two
+    # descriptions of one thing, and they had already drifted: this file
+    # said five modules, the real document said twenty-one.
+    #
+    # There is no `include:` key. A component links to another document
+    # when that document's own top-level anchor equals, or sits under, this
+    # component's anchor (The-Ply-Spec.md §7.1) -- derived from the real
+    # crate directory `ply_core` names, not declared here. `crates/ply-core/
+    # ply.yaml` is the one description of what `core` holds, and its whole
+    # interior is drawn here in place, as though written below: twenty-one
+    # components and forty-four promises, none of them repeated in this
+    # file. The box names that file on its anchor line, so a reader who
+    # wants to change any of it knows where to go.
+    #
+    # It drew collapsed -- one box saying "look in that file" -- until
+    # 2026-09-05, and folding is now the reader's choice (`--depth`,
+    # `--focus`, the viewer's own control) rather than the only option.
+    #
+    # Do not restore a `state:` or `components:` block here: the moment
+    # either exists again, it is a second copy the two files can drift
+    # apart on, and the derived link stops being consulted for this box (a
+    # component that already declares real content never looks at a link --
+    # see `render_component_dispatch` in
+    # `crates/ply-core/src/visual/svg.rs`).
     note: >-
       Everything Ply knows how to do, with no terminal attached. It must
       never reach up into the command-line layer: that constraint is what
@@ -138,31 +118,12 @@ components:
       be tested together.
   cli:
     anchor: ply_cli
-    # What the command line itself holds before dispatching to a
-    # subcommand: `clap`'s own parsed struct, resolved at the crate root
-    # since that is where `main.rs` declares it. `command` is the chosen
-    # subcommand (a shape of its own -- `Commands` is an enum); `json`
-    # is the one global flag every subcommand shares.
-    state:
-      of: Cli
-      show: [command, json]
-    components:
-      verify:
-        anchor: ply_cli::verify
-        state:
-          of: VerificationResult
-          show: [document, envelope, source_map]
-        note: >-
-          Runs the checks and assembles what comes back. The one command that
-          produces evidence rather than describing intent.
-      report:
-        anchor: ply_cli::audit
-        state:
-          of: AuditReport
-          show: [envelope, document]
-        note: >-
-          Says what this codebase's evidence rests on that Ply never checks --
-          the promises taken on trust, listed rather than assumed.
+    # Deliberately no `state:` and no `components:` -- moved into
+    # `crates/ply-cli/ply.yaml` on 2026-09-06, for the reason recorded on
+    # `core` below. Declaring an interior here makes this component
+    # non-hollow, and a component that declares its own interior never
+    # consults a link, so this box read "2 components, 0 fns" while that
+    # file's six promises all sat green. Do not restore either key.
 
   # The spec-validation tooling, which lived in a second cargo workspace
   # until 2026-08-30 and so was absent from this document entirely -- Ply's
@@ -181,6 +142,13 @@ components:
   # corrected -- which is the check this document exists to be subject to.
   render:
     anchor: ply_render
+    # No promises here either, for a different reason (2026-09-06): this
+    # crate's library is re-exports and nothing else -- every function it
+    # appears to offer belongs to `core` and is claimed there, where the code
+    # is. The one genuinely promisable function of its own turns a `--depth`
+    # argument into a number, and it lives in the binary, where no harness
+    # can reach it. Moving it into the library purely so Ply could claim it
+    # is the same refusal as `attrs` above.
     # No `state:` here, deliberately. This library is a facade over
     # `ply_core::visual` (see `tools/render/src/lib.rs`) and owns no struct
     # of its own, so the only type at this anchor is the binary's own parsed
@@ -197,6 +165,11 @@ components:
       why its wording is tested by exact string rather than by shape.
   check:
     anchor: ply_check
+    # Forty-six lines, one `main`, and every one of them reading a file,
+    # printing a diagnostic or choosing an exit code (2026-09-06). There is
+    # no function here with a promise in it, so there is nothing to write
+    # down. A document declaring nothing would draw the same empty box while
+    # implying somebody had looked -- worse than the empty box.
     note: >-
       The standalone spec validator, which predates the installed `cargo ply
       check` command and overlaps it. Retiring one of the two is recorded

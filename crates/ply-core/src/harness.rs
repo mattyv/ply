@@ -2029,8 +2029,20 @@ pub fn build_contract_fn(
         });
     }
 
-    let mut requires = None;
-    let mut ensures = None;
+    // Every clause, not the last one. A function may carry more than one
+    // `#[ply::requires]` or `#[ply::ensures]`, and each is a separate
+    // promise its author made: they combine with AND, exactly as the
+    // document's own `requires:`/`ensures:` lists already do (see
+    // `conjoin_exprs`/`conjoin_ensures`, which this reuses rather than
+    // repeating).
+    //
+    // Assigning into one slot per kind kept only the last and dropped the
+    // rest in silence. Two contradictory `ensures` attributes -- `*result
+    // == 1` and `*result == 2` -- then reported `tested` on a body that
+    // satisfies only the second, and a dropped `requires` silently widens
+    // which inputs count as valid (external review, reproduced 2026-09-05).
+    let mut requires_all: Vec<Expr> = Vec::new();
+    let mut ensures_all: Vec<ExprClosure> = Vec::new();
     for attr in &f.attrs {
         let segs: Vec<String> = attr
             .path()
@@ -2039,19 +2051,50 @@ pub fn build_contract_fn(
             .map(|s| s.ident.to_string())
             .collect();
         if segs == ["ply", "requires"] {
-            let expr: Expr = attr
-                .parse_args()
-                .context("E0501: could not parse #[ply::requires] as an expression")?;
-            let text = tidy_contract_text(&expr.to_token_stream().to_string());
-            requires = Some((expr, text));
+            requires_all.push(
+                attr.parse_args()
+                    .context("E0501: could not parse #[ply::requires] as an expression")?,
+            );
         } else if segs == ["ply", "ensures"] {
-            let closure: ExprClosure = attr
-                .parse_args()
-                .context("E0501: could not parse #[ply::ensures] as a `|result| expr` closure")?;
-            let text = tidy_contract_text(&closure.to_token_stream().to_string());
-            ensures = Some((closure, text));
+            ensures_all.push(
+                attr.parse_args().context(
+                    "E0501: could not parse #[ply::ensures] as a `|result| expr` closure",
+                )?,
+            );
         }
     }
+    // Exactly one clause is rendered exactly as it was written. Only a
+    // genuine repeat is combined.
+    //
+    // This is not tidiness. The contract's *text* is a hashed fingerprint
+    // input and it seeds case generation, so re-rendering an unchanged
+    // single clause changes the seed for every function in the world:
+    // `|result| *result >= 0` became `|result|(*result >= 0)`, every
+    // recorded result stopped matching, and different inputs were drawn.
+    // Caught by CI on 2026-09-05 when the new inputs hit a real overflow in
+    // a fixture the old ones happened to miss.
+    let requires = match requires_all.len() {
+        0 => None,
+        1 => {
+            let e = requires_all.remove(0);
+            let text = tidy_contract_text(&e.to_token_stream().to_string());
+            Some((e, text))
+        }
+        _ => {
+            let joined = conjoin_exprs(requires_all);
+            let text = tidy_contract_text(&joined.to_token_stream().to_string());
+            Some((joined, text))
+        }
+    };
+    let ensures = match ensures_all.len() {
+        0 => None,
+        1 => {
+            let c = ensures_all.remove(0);
+            let text = tidy_contract_text(&c.to_token_stream().to_string());
+            Some((c, text))
+        }
+        _ => Some(conjoin_ensures(ensures_all)),
+    };
 
     let return_type = return_rust_type_from_syn(&f.sig.output, aliases);
 
@@ -3524,7 +3567,6 @@ pub fn discover_method_with_receiver(
 /// alias chain.
 const MAX_USER_TYPE_DEPTH: usize = 6;
 
-
 /// Where Ply found a bare struct/enum name declared, scanning every `.rs`
 /// file under a crate's `src/` directory (recursing into subdirectories,
 /// following Ply's own file-per-module convention) -- keyed by bare name.
@@ -4209,13 +4251,70 @@ fn resolve_param_type(
     ty: &RustType,
     depth: usize,
 ) -> std::result::Result<RustType, UserTypeError> {
-    let RustType::Unsupported(src) = ty else {
-        return Ok(ty.clone());
-    };
-    if !is_bare_ident(src) {
-        return Err(UserTypeError::NotFound);
+    // Recurse into every container shape before falling through to the
+    // bare-identifier case below. Before this, a field/constructor
+    // argument/variant field/route argument whose type *was* a bare user
+    // type name resolved fine, but the identical name one container deep
+    // (`Vec<Inner>`, `Option<Inner>`, a tuple element, a map's key or
+    // value) never reached this function's own bare-name arm at all --
+    // `enrich_rust_type` already walked containers for a *top-level*
+    // parameter, which is why the same shape worked there and nowhere
+    // else. `depth` is passed through unchanged for a container wrapper:
+    // it counts how many structs are nested inside one another, not how
+    // many containers wrap a leaf, and every call site above already
+    // passes `depth + 1` at the point a field's type turns out to be
+    // another struct to recurse into (found 2026-09-05, `record::
+    // fingerprint`'s own `Vec<AssumedPromise>` field).
+    match ty {
+        RustType::Option(inner) => Ok(RustType::Option(Box::new(resolve_param_type(
+            crate_dir, locations, routes, inner, depth,
+        )?))),
+        RustType::Array(inner, n) => Ok(RustType::Array(
+            Box::new(resolve_param_type(
+                crate_dir, locations, routes, inner, depth,
+            )?),
+            *n,
+        )),
+        RustType::Vec(inner) => Ok(RustType::Vec(Box::new(resolve_param_type(
+            crate_dir, locations, routes, inner, depth,
+        )?))),
+        RustType::BTreeSet(inner) => Ok(RustType::BTreeSet(Box::new(resolve_param_type(
+            crate_dir, locations, routes, inner, depth,
+        )?))),
+        RustType::Slice(inner) => Ok(RustType::Slice(Box::new(resolve_param_type(
+            crate_dir, locations, routes, inner, depth,
+        )?))),
+        RustType::BoxT(inner) => Ok(RustType::BoxT(Box::new(resolve_param_type(
+            crate_dir, locations, routes, inner, depth,
+        )?))),
+        RustType::Result(ok, err) => Ok(RustType::Result(
+            Box::new(resolve_param_type(crate_dir, locations, routes, ok, depth)?),
+            Box::new(resolve_param_type(
+                crate_dir, locations, routes, err, depth,
+            )?),
+        )),
+        RustType::Tuple(items) => Ok(RustType::Tuple(
+            items
+                .iter()
+                .map(|item| resolve_param_type(crate_dir, locations, routes, item, depth))
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        )),
+        RustType::BTreeMap(key, value) => Ok(RustType::BTreeMap(
+            Box::new(resolve_param_type(
+                crate_dir, locations, routes, key, depth,
+            )?),
+            Box::new(resolve_param_type(
+                crate_dir, locations, routes, value, depth,
+            )?),
+        )),
+        RustType::Unsupported(src) => {
+            if !is_bare_ident(src) {
+                return Err(UserTypeError::NotFound);
+            }
+            resolve_user_type(crate_dir, locations, routes, src, depth)
+        }
+        other => Ok(other.clone()),
     }
-    resolve_user_type(crate_dir, locations, routes, src, depth)
 }
 
 /// The resolver at the centre of this section: try to build `RustType`
@@ -6155,6 +6254,46 @@ pub fn resolve_state_fields(root: &Path, doc: &crate::model::Document) -> StateF
     out
 }
 
+/// [`resolve_state_fields`], for a document whose components may draw their
+/// interior from another one (§7.1).
+///
+/// Without this, a linked component's declared state resolved to nothing
+/// and the drawing said so *in a sentence that was false*: "there is no
+/// code here to read one from either", about a type whose own crate's
+/// drawing measures four of its eight fields. The code was there; only this
+/// walk never looked (Fable review, 2026-09-05).
+pub fn resolve_state_fields_with_links(
+    root: &Path,
+    doc: &crate::model::Document,
+    links: Option<&crate::config::LinkIndex>,
+) -> StateFieldIndex {
+    let Some(links) = links else {
+        return resolve_state_fields(root, doc);
+    };
+    // Exactly the tree the renderer draws, so a field it shows and a field
+    // this resolves can never be two different questions.
+    let merged: indexmap::IndexMap<String, crate::model::Component> = doc
+        .components
+        .iter()
+        .map(|(name, comp)| {
+            let body = crate::config::linked_body(name, comp, Some(links));
+            (name.clone(), body.unwrap_or_else(|| comp.clone()))
+        })
+        .collect();
+    if !any_state(&merged) {
+        return StateFieldIndex::new();
+    }
+    let root = if root.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        root
+    };
+    let crates = workspace_library_crates(root);
+    let mut out = StateFieldIndex::new();
+    walk_state(&merged, "", root, &crates, &mut out);
+    out
+}
+
 /// Whether any component anywhere in the tree declares a `state:`.
 fn any_state(components: &indexmap::IndexMap<String, crate::model::Component>) -> bool {
     components
@@ -6305,7 +6444,11 @@ mod tests {
             type_name: "Ok".into(),
             import_path: "Ok".into(),
             shape: UserTypeShape::Struct(vec![
-                Param { name: "n".into(), ty: RustType::U32, by_ref: false },
+                Param {
+                    name: "n".into(),
+                    ty: RustType::U32,
+                    by_ref: false,
+                },
                 Param {
                     name: "names".into(),
                     ty: RustType::Vec(Box::new(RustType::String)),
@@ -7448,6 +7591,90 @@ pub fn clamp(x: u32) -> u32 {
         assert_eq!(cf.params[0].ty, RustType::U32);
         assert!(cf.ensures.is_some());
         assert!(cf.is_bounded_supported());
+    }
+
+    /// The shape `record::fingerprint`'s own parameter has, and the reason
+    /// it stayed refused a day after the twelve-field ceiling that first
+    /// hid it was lifted: a field whose type is `Vec<UserStruct>` never
+    /// reached the resolver that turns a bare user-type name into a real
+    /// one. Fields, constructor arguments, variant fields and route
+    /// arguments all go through `resolve_param_type`, which only ever
+    /// handled a field whose type *is* a bare user-type name directly --
+    /// never one buried inside a `Vec`/`Option`/tuple/etc. Top-level
+    /// parameters never had this gap (`enrich_rust_type` already walks
+    /// containers), which is why a `Vec<UserStruct>` parameter worked
+    /// while the identical shape as a *field* did not. Found 2026-09-05
+    /// finishing yesterday's crash fix, which stopped this shape from
+    /// taking the whole run down but never made it actually resolve.
+    /// Every contract attribute is a promise its author made. Keeping only
+    /// the last one silently discards the others.
+    ///
+    /// Reproduced end to end on 2026-09-05: a function carrying
+    /// `#[ply::ensures(|result| *result == 1)]` and
+    /// `#[ply::ensures(|result| *result == 2)]` with a body returning `2`
+    /// reported `tested`. Only the second promise was ever checked, and the
+    /// two cannot both hold -- so a green said the function honoured a pair
+    /// of promises it demonstrably could not.
+    #[test]
+    fn every_contract_attribute_is_kept_not_only_the_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+#[ply::requires(x > 0)]
+#[ply::requires(x < 10)]
+#[ply::ensures(|result| *result == 1)]
+#[ply::ensures(|result| *result == 2)]
+pub fn f(x: u8) -> u8 { let _ = x; 2 }
+"#,
+            )],
+        );
+        let cf = discover_fn(&lib, "f").unwrap();
+        let ensures = cf.ensures.as_ref().expect("an ensures").1.clone();
+        assert!(
+            ensures.contains("== 1") && ensures.contains("== 2"),
+            "both promises must survive, combined: {ensures}"
+        );
+        let requires = cf.requires.as_ref().expect("a requires").1.clone();
+        assert!(
+            requires.contains("> 0") && requires.contains("< 10"),
+            "both preconditions must survive, combined: {requires}"
+        );
+    }
+
+    #[test]
+    fn a_struct_field_holding_a_vec_of_another_struct_still_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = write_crate(
+            dir.path(),
+            &[(
+                "lib.rs",
+                r#"
+#[derive(Debug, Clone)]
+pub struct Inner { pub callee: String, pub requires: Vec<String> }
+
+#[derive(Debug, Clone, Default)]
+pub struct Wide {
+    pub node_id: String,
+    pub assumed: Vec<Inner>,
+    pub verified_bounds: Vec<(String, u32)>,
+}
+
+#[ply::ensures(|result| *result >= 0)]
+pub fn count(w: &Wide) -> i64 { w.assumed.len() as i64 }
+"#,
+            )],
+        );
+        let mut cf = discover_fn(&lib, "count").unwrap();
+        let refused = enrich_contract_fn_user_types(&mut cf, dir.path(), &RouteTable::new());
+        assert!(
+            cf.is_fuzz_supported(),
+            "a Vec<Inner> field should not make the whole struct unbuildable once \
+             Inner is itself a buildable type -- refused: {refused:?}, ty: {:#?}",
+            cf.params[0].ty
+        );
     }
 
     #[test]

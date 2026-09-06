@@ -1,0 +1,223 @@
+arraycard::carded_fee_cents ensures |result|*result <= amount_cents
+arraycard::carded_fee_cents requires amount_cents <= 100_000_000 && tier < 4
+badexample::add_small ensures |result|*result == x + y
+badexample::add_small requires x < 1000 && y < 1000
+boundarycontract::tiered_fee ensures |result|*result <= amount_cents
+boundarycontract::tiered_fee requires amount_cents <= 100_000_000
+btreeset::count_unique ensures |result|*result == xs.len() as u32
+btreesetbug::count_unique ensures |result|*result == xs.len() as u32
+clamp::clamp ensures |result|*result == x
+componentdefault::nested_takes_the_default ensures |result|*result == x + 1
+componentdefault::nested_takes_the_default requires x < u32 :: MAX
+componentdefault::takes_the_default ensures |result|*result == x + 1
+componentdefault::takes_the_default requires x < u32 :: MAX
+componentdefault::writes_its_own ensures |result|*result == x + 1
+componentdefault::writes_its_own requires x < u32 :: MAX
+compositionbites::longest_len ensures |result|*result <= 10
+compositionbites::sum_slice ensures |result|*result <= 100
+compositionbites::total_n ensures |result|*result <= 10
+compositiongrammar::array_option_u32 ensures |result|*result >= 0
+compositiongrammar::array_string ensures |result|*result >= 0
+compositiongrammar::array_u32 ensures |result|*result >= 0
+compositiongrammar::box_leaf ensures |result|*result >= 0
+compositiongrammar::box_string ensures |result|*result >= 0
+compositiongrammar::box_u32 ensures |result|*result >= 0
+compositiongrammar::box_vec_u32 ensures |result|*result >= 0
+compositiongrammar::btreemap_string_u32 ensures |result|*result >= 0
+compositiongrammar::btreemap_u32_string ensures |result|*result >= 0
+compositiongrammar::btreeset_string ensures |result|*result >= 0
+compositiongrammar::btreeset_u32 ensures |result|*result >= 0
+compositiongrammar::option_leaf ensures |result|*result >= 0
+compositiongrammar::option_option_u32 ensures |result|*result >= 0
+compositiongrammar::option_string ensures |result|*result >= 0
+compositiongrammar::option_u32 ensures |result|*result >= 0
+compositiongrammar::option_vec_u32 ensures |result|*result >= 0
+compositiongrammar::result_string_u32 ensures |result|*result >= 0
+compositiongrammar::result_u32_string ensures |result|*result >= 0
+compositiongrammar::slice_option_u32 ensures |result|*result >= 0
+compositiongrammar::slice_string ensures |result|*result >= 0
+compositiongrammar::slice_u32 ensures |result|*result >= 0
+compositiongrammar::tuple_leaf_u32 ensures |result|*result >= 0
+compositiongrammar::tuple_u32_string ensures |result|*result >= 0
+compositiongrammar::tuple_u32_string_option ensures |result|*result >= 0
+compositiongrammar::vec_leaf ensures |result|*result >= 0
+compositiongrammar::vec_option_u32 ensures |result|*result >= 0
+compositiongrammar::vec_string ensures |result|*result >= 0
+compositiongrammar::vec_u32 ensures |result|*result >= 0
+compositiongrammar::vec_vec_u32 ensures |result|*result >= 0
+durationnonzero::bump_len ensures |result|*result == len + 1
+durationnonzero::bump_len requires len < 1_000
+durationnonzero::double_delta ensures |result|*result == delta *2
+durationnonzero::double_delta requires delta > - 1_000 && delta < 1_000
+durationnonzero::from_whole_seconds ensures |result|result.as_secs() == secs
+durationnonzero::from_whole_seconds requires secs < 1_000_000
+durationnonzero::round_trip ensures |result|result.subsec_nanos() < 1_000_000_000
+durationnonzero::shard_count ensures |result|*result > 0
+durationnonzero::tokens_requested ensures |result|*result > 0
+emptychecks::declared_unchecked ensures |result|*result == x + 1
+emptychecks::declared_unchecked requires x < u32 :: MAX
+emptychecks::left_to_the_default ensures |result|*result == x + 1
+emptychecks::left_to_the_default requires x < u32 :: MAX
+emptypromise::havoc_fee ensures |result|*result <= amount_cents
+emptypromise::havoc_fee requires amount_cents <= 100_000
+emptypromise::vacuous_fee ensures |result|*result == 0
+emptypromise::vacuous_fee requires amount_cents <= 100_000
+ensuresimport::is_le ensures |result|*result == (a.cmp (& b) != Ordering :: Greater)
+envelopecontract::add ensures |result|*result >= a
+examplesnotrun::increment ensures |result|*result == x + 1
+existingworkspace::seeded_bug ensures |result|*result == x
+fiveshapes::normal_fn ensures |result|*result > 0
+fiveshapes::uses_big13 ensures |result|*result
+fiveshapes::uses_hidden ensures |result|*result
+fiveshapes::uses_privctor ensures |result|*result
+fiveshapes::uses_quota ensures |result|*result
+fiveshapes::uses_status ensures |result|*result
+floatsample::increment ensures |result|*result >= x
+floatsample::mirror32_bounded ensures |result|*result == x
+floatsample::mirror32_fuzzed ensures |result|*result == x
+fuzzbug::seeded_bug ensures |result|*result == x
+fuzzbugtwo::seeded_bug_a ensures |result|*result == x
+fuzzbugtwo::seeded_bug_b ensures |result|*result == y
+highreject::mostly_rejected ensures |result|*result == x
+highreject::mostly_rejected requires x > 14
+implmethod::capacity ensures |result|*result == 7
+modanchor::tiered_fee ensures |result|*result <= amount_cents
+modanchor::tiered_fee requires amount_cents <= 100_000_000
+movedparam::scalar ensures |result|*result >= x
+movedparam::scalar requires x <= 1_000
+movedparam::vector ensures |result|*result as usize >= v.len()
+movedparam::vector requires v.len() <= 4
+mutatetier::lonely ensures |result|*result == x
+nameoverlap::parse ensures |result|*result >= x
+nameoverlap::parse ensures |result|*result >= x
+narrowprecond::only_at_42 ensures |result|*result == x
+narrowprecond::only_at_42 requires x == 42
+narrowprecond::only_at_42_with_example ensures |result|*result == x
+narrowprecond::only_at_42_with_example requires x == 42
+nestedclaim::safe_increment ensures |result|*result == x + 1
+nestedclaim::safe_increment requires x < u32 :: MAX
+nestedcomparison::bigger ensures |result|*result >= a && *result >= b
+nestedcomparison::both_eq ensures |result|*result == (a == b && c == d)
+nestedcomparison::bumped_eq ensures |result|*result == (a + 1 == b)
+nestedcomparison::bumped_eq requires a < u64 :: MAX
+nestedcomparison::either ensures |result|*result == a||*result == b
+nestedcomparison::either_eq ensures |result|*result == (a == b||c == d)
+nestedcomparison::halves_eq ensures |result|*result == (a / 2 == b / 2)
+nestedcomparison::same ensures |result|*result == (a == b)
+nonnumericcompare::always_none ensures |result|*result == v
+nonnumericcompare::always_pos ensures |result|*result == Sign :: Pos
+nonnumericcompare::good_fn ensures |result|*result >= x
+nonnumericcompare::good_fn requires x <= 1_000
+nonnumericcompare::identity_opt ensures |result|*result == v
+nonnumericcompare::maybe_pos ensures |result|*result == Sign :: Pos
+nonnumericcompare::saturating_bump ensures |result|*result == x + 1
+oldvalue::bump ensures |result|*result == old(x) + 1
+oldvalue::bump requires x < u32 :: MAX
+oldvalue::bump_in_place ensures |result|*counter == old(*counter) + 1
+orbalanced::thirds ensures |result|x % 3 == 0||x % 3 == 1||x % 3 == 2
+orderingreturn::compare ensures |result|*result != Ordering :: Greater||a > b
+ordinaryspellings::alpha_inline_mod ensures |result|*result >= 1
+ordinaryspellings::beta_qualified ensures |result|*result >= 1
+ordinaryspellings::foreign_shaped_name ensures |result|*result >= 0
+ordinaryspellings::gauge_reading ensures |result|*result >= 1
+orskewed::maybe_pass_through ensures |result|x < 100||result.unwrap() == x
+panicbug::halves ensures |result|*result *2 == x
+paramseeded::width ensures |result|*result >= 0
+paramseedopaque::always_true ensures |result|*result
+passing::safe_increment ensures |result|*result == x + 1
+passing::safe_increment requires x < u32 :: MAX
+plain::seeded_bug ensures |result|*result == x
+plainmutate::strong_target ensures |result|*result == x + y
+plainmutate::strong_target requires x < 1000 && y < 1000
+qualifiedctor::refill_per_second ensures |result|*result >= 1
+receiverresultctor::read_it ensures |result|*result >= 0
+rejectabort::narrow_window ensures |result|*result == x
+rejectabort::narrow_window requires x > 20 && x < 24
+resultctor::well_formed ensures |result|*result
+resultreuse::safe_increment ensures |result|*result == x + 1
+resultreuse::safe_increment requires x < u32 :: MAX
+resultreuse::total ensures |result|*result <= 11_000
+resultreuse::total requires amount <= 1_000
+resultreuse::widen ensures |result|*result >= x
+resultreuse::widen requires x <= 1_000
+reusehelper::bumped ensures |result|*result > x
+reusehelper::bumped requires x <= 1_000
+reusehelper::doubled ensures |result|*result >= x
+reusehelper::doubled requires x <= 1_000
+reuseproof::inner ensures |result|*result <= 200
+reuseproof::inner requires x <= 50
+reuseproof::outer ensures |result|*result <= 200
+reuseproof::outer requires x <= 50
+reusewiden::bumped ensures |result|*result >= x
+reusewiden::bumped requires x <= 1_000
+reusewiden::halved ensures |result|*result <= x
+reusewiden::halved requires x <= 1_000
+routehook::use_handle ensures |result|*result < 100
+routehook::use_many_handles ensures |result|*result >= 0
+routehook::use_stuck ensures |result|*result >= 0
+routehook::use_token ensures |result|*result >= 0
+sharedharness::bad_examples_fn ensures |result|*result == x + y
+sharedharness::bad_examples_fn requires x < 1000 && y < 1000
+sharedharness::good_fn ensures |result|*result >= x
+sharedharness::good_fn requires x <= 1_000
+sharedtypeparam::both_same ensures |result|(! *result||a.a == b.a) && (*result||a.a != b.a)
+skippedctor::always_nonneg ensures |result|*result
+slowfailingexample::slow_identity ensures |result|*result <= 255
+splitimplctor::well_formed ensures |result|*result
+stringsample::byte_len ensures |result|*result == old(s).len()
+stringsample::byte_len_bounded ensures |result|*result == old(s).len()
+stringsample::char_count_wrong ensures |result|*result == old(s).chars().count()
+stringsample::preview ensures |result|result.chars().count() <= 3
+strongspec::add_small ensures |result|*result == x + y
+strongspec::add_small requires x < 1000 && y < 1000
+structenumparam::broken_doubled_capacity ensures |result|*result == 999999
+structenumparam::bump_mut ensures |result|*result >= 0
+structenumparam::doubled_capacity ensures |result|*result % 2 == 0
+structenumparam::manhattan_norm ensures |result|*result >= 0
+structenumparam::read_secret ensures |result|*result >= 0
+structenumparam::shape_area_upper_bound ensures |result|*result >= 0
+structenumparam::tokens_never_exceed_capacity ensures |result|*result
+structparamcrash::width ensures |result|*result >= 0
+stubverified::f ensures |result|*result == x + 2
+stubverified::f requires x < 999
+stubverified::g ensures |result|*result == x + 1
+stubverified::g requires x < 1000
+stubverifiedcycle::f ensures |result|*result == x + 1
+stubverifiedcycle::f requires x < 1000
+stubverifiedcycle::g ensures |result|*result == x + 1
+stubverifiedcycle::g requires x < 1000
+stubverifiedfuzzedcallee::f ensures |result|*result == x + 2
+stubverifiedfuzzedcallee::f requires x < 999
+stubverifiedfuzzedcallee::g ensures |result|*result == x + 1
+stubverifiedfuzzedcallee::g requires x < 1000
+stubverifiedinlineaudit::f ensures |result|*result <= 10
+stubverifiedinlineaudit::g ensures |result|*result == x + 1
+stubverifiedinlineaudit::g requires x < 1000
+stubverifiedminbound::f ensures |result|*result == x + 2
+stubverifiedminbound::f requires x < 999
+stubverifiedminbound::g ensures |result|*result == x + 1
+stubverifiedminbound::g requires x < 1000
+stubverifiedstalebound::f ensures |result|*result == x + 2
+stubverifiedstalebound::f requires x < 999
+stubverifiedstalebound::g ensures |result|*result == x + 1
+stubverifiedstalebound::g requires x < 1000
+stubverifiedtuparg::f ensures |result|*result <= 10
+stubverifiedveclen::f ensures |result|*result <= 10
+stubverifiedveclen::g ensures |result|*result <= 10
+timeout::vec_iter_sum ensures |result|*result <= 255u32 *v.len() as u32
+toolchainprobe::safe_increment ensures |result|*result == x + 1
+toolchainprobe::safe_increment requires x < u32 :: MAX
+twogood::add_small ensures |result|*result >= x && *result >= y
+twogood::increment ensures |result|*result >= x
+twogood::increment requires x <= 1_000
+unclaimedcallee::tiered_fee ensures |result|*result <= amount_cents
+unclaimedcallee::tiered_fee requires amount_cents <= 100_000
+unparseableexample::add_small ensures |result|*result == a + b
+unparseableexample::add_small requires a < 100 && b < 100
+useimport::tiered_fee ensures |result|*result <= amount_cents
+useimport::tiered_fee requires amount_cents <= 100_000
+vecbound::vec_sum ensures |result|*result <= 255u32 *v.len() as u32
+vecscalar::count ensures |result|*result == xs.len() as u32
+vecscalar::count_bounded ensures |result|*result == xs.len() as u32
+vecscalar::sum_moved ensures |result|*result <= 255u32 *8
+weakspec::vacuous ensures |_result|true

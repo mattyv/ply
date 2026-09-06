@@ -2857,10 +2857,47 @@ fn cex_test_display_path(src_dir: &Path) -> String {
         .to_string()
 }
 
+/// The three outcomes this file reports as verdicts that The-Ply-Spec.md
+/// D6 calls *facts beside* a verdict rather than rungs of the evidence
+/// ladder: "a timeout is not a weaker proof, it is a different kind of
+/// fact."
+///
+/// They earn no evidence -- nothing was checked -- so on the ladder they
+/// can only mean `unclaimed`, and the reason has to travel as a flag or it
+/// travels not at all. It used to travel not at all: `leaf_node` sets no
+/// status, so the reason lived only in the verdict string, and a verdict
+/// string survives worst-of only by winning it. A function nobody could
+/// check, sitting beside a function whose promise was broken, therefore
+/// vanished from the report entirely -- and fixing the broken one turned
+/// the whole component green over a function still nobody had examined.
+///
+/// Returned as the verdict's own word rather than a translation, so the
+/// flag a reader sees is the one the leaf was labelled with.
+fn verdict_carries_its_own_reason(verdict: &str) -> Option<&'static str> {
+    if verdict.starts_with("unsupported") {
+        Some("unsupported")
+    } else if verdict.starts_with("timeout") {
+        Some("timeout")
+    } else if verdict.starts_with("tool_error") {
+        Some("tool_error")
+    } else {
+        None
+    }
+}
+
+/// D6: statuses propagate upward as flags beside the verdict. Every child's
+/// own flags, plus the flag implied by any child whose verdict is one of
+/// the three that name a check that never happened -- see
+/// [`verdict_carries_its_own_reason`] for why the second half is needed.
 fn union_statuses(children: &[Node]) -> Vec<String> {
     let mut out: Vec<String> = children
         .iter()
-        .flat_map(|c| c.statuses.iter().cloned())
+        .flat_map(|c| {
+            c.statuses
+                .iter()
+                .cloned()
+                .chain(verdict_carries_its_own_reason(&c.verdict).map(str::to_string))
+        })
         .collect();
     out.sort();
     out.dedup();
@@ -2912,28 +2949,82 @@ fn unreadable_declared_contract_diag(
     }
 }
 
-fn rank(v: &str) -> i32 {
+/// One position on the ladder this tool aggregates over.
+///
+/// Six of these are The-Ply-Spec.md D6's evidence order, and their relative
+/// order is not written here: [`Rung::Shared`] carries
+/// [`ply_core::kernel::Evidence`], whose own declaration order *is* that
+/// order, and whose aggregation is the part of this program proved four
+/// ways. Before 2026-09-06 this function restated that order as a second
+/// ladder of integers, so the rule governing every verdict a user sees was
+/// a copy of the proved rule rather than the proved rule.
+///
+/// The other three are an extension, and calling it that is the honest
+/// description rather than a defect. D6 says statuses "do not sit in that
+/// order", and `timeout`, `unsupported` and `tool_error` are statuses; this
+/// tool also reports them as verdicts, ranked between `violation` and
+/// `unclaimed`, because "the engine gave up" is more use at a glance than a
+/// bare "no evidence". Nothing is lost by that: since 2026-09-06 each also
+/// travels upward as a flag (`verdict_carries_its_own_reason`), so a
+/// worst-of that hides one behind a `violation` no longer hides the fact.
+///
+/// What the extension does cost is that `kernel::aggregate` cannot simply
+/// be called here -- it has no representation for these three. The six that
+/// *are* shared are bound to it instead, by construction above and by
+/// `kernel_agreement` below, which folds every small tree both ways and
+/// requires the same answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Rung {
+    /// A broken promise, with a witness. Below everything, including the
+    /// three extension rungs: a reproduced failure is the worst thing a run
+    /// can find, and it is never merely an absence.
+    Violation,
+    ToolError,
+    Timeout,
+    Unsupported,
+    /// D6's remaining five, in the kernel's own order.
+    Shared(ply_core::kernel::Evidence),
+}
+
+/// Where a verdict string sits on the ladder.
+///
+/// `unclaimed` for anything unrecognised, which is what the integer version
+/// did too: an unknown word promises nothing, and reading it as evidence is
+/// the one direction this must not be wrong in.
+fn rung(v: &str) -> Rung {
+    use ply_core::kernel::Evidence;
     if v == "violation" {
-        0
+        Rung::Violation
     } else if v.starts_with("tool_error") {
-        1
+        Rung::ToolError
     } else if v == "timeout" {
-        2
+        Rung::Timeout
     } else if v.starts_with("unsupported") {
-        3
-    } else if v == "unclaimed" {
-        4
+        Rung::Unsupported
     } else if v == "tested" {
-        5
+        Rung::Shared(Evidence::Tested)
     } else if v.starts_with("fuzzed") {
-        6
+        Rung::Shared(Evidence::Fuzzed)
     } else if v.starts_with("bounded") {
-        7
+        Rung::Shared(Evidence::Bounded)
     } else if v == "proved" {
-        8
+        Rung::Shared(Evidence::Proved)
     } else {
-        4
+        Rung::Shared(Evidence::Unclaimed)
     }
+}
+
+/// Whether this verdict earned any evidence at all -- strictly above
+/// `unclaimed`, D6's own line between "something was checked" and
+/// "nothing was".
+///
+/// A named predicate rather than the `rank(v) > 4` it replaced: the four
+/// was the integer position of `unclaimed` in a ladder written out by hand,
+/// so every call site had to know that ladder by heart, and moving a rung
+/// would have silently changed what "has evidence" meant at three
+/// unrelated call sites.
+fn verdict_carries_evidence(v: &str) -> bool {
+    rung(v) > Rung::Shared(ply_core::kernel::Evidence::Unclaimed)
 }
 
 /// Worst-of over the evidence order (D6) for aggregating *across* fns and
@@ -2942,7 +3033,7 @@ fn rank(v: &str) -> i32 {
 fn worst_of(children: &[Node]) -> String {
     children
         .iter()
-        .min_by_key(|n| rank(&n.verdict))
+        .min_by_key(|n| rung(&n.verdict))
         .map(|n| n.verdict.clone())
         .unwrap_or_else(|| "unclaimed".into())
 }
@@ -2955,14 +3046,14 @@ fn worst_of(children: &[Node]) -> String {
 fn combine_fn_check_verdicts(labels: &[String]) -> String {
     let worst = labels
         .iter()
-        .filter(|l| rank(l) <= 4)
-        .min_by_key(|l| rank(l));
+        .filter(|l| !verdict_carries_evidence(l))
+        .min_by_key(|l| rung(l));
     if let Some(w) = worst {
         return w.clone();
     }
     labels
         .iter()
-        .max_by_key(|l| rank(l.as_str()))
+        .max_by_key(|l| rung(l.as_str()))
         .cloned()
         .unwrap_or_else(|| "unclaimed".into())
 }
@@ -3302,6 +3393,15 @@ fn run_fn_checks(
                 if run.seeded && !statuses.iter().any(|s| s == "seeded") {
                     statuses.push("seeded".into());
                 }
+                // §0/D6's own word for a check that reached no conclusion.
+                // The verdict beside it is `unclaimed` -- no evidence --
+                // and this says which of the several ways of earning no
+                // evidence happened, so a reader is not left to guess
+                // between "nobody wrote a claim" and "every input Ply could
+                // build was turned away at the door".
+                if run.no_admissible_input && !statuses.iter().any(|s| s == "inconclusive") {
+                    statuses.push("inconclusive".into());
+                }
                 // The branch-decided measurement's own mark (CLAUDE.md,
                 // 2026-09-02): a top-level `||` promise whose split came
                 // back skewed -- one side deciding more than half of every
@@ -3477,7 +3577,7 @@ fn run_fn_checks(
     // baseline to mutate from, and cargo-mutants itself refuses to proceed
     // past a failing baseline.
     if checks.iter().any(|c| matches!(c, Check::Mutate)) {
-        if rank(&verdict) > 4 {
+        if verdict_carries_evidence(&verdict) {
             if let Some(info) = harness_info {
                 let (outcome, mut d) = run_mutate_check(
                     crate_dir,
@@ -5108,6 +5208,20 @@ struct HarnessRun {
     /// travels with the verdict, propagates into the recorded result, and
     /// survives a reused verdict, never a warning about an incidental fact).
     seeded: bool,
+    /// Whether every input Ply could build for this fn was turned away by
+    /// the fn's own precondition, so the body was never entered and the
+    /// promise was checked on nothing at all.
+    ///
+    /// A fact about Ply's generator, never about the author's code, and it
+    /// took a defect to learn the difference. The guard that detects this
+    /// asserts inside a generated test, and a failing generated test is how
+    /// `verify` recognises a broken contract -- so from 2026-09-05 to
+    /// 2026-09-06 an obviously correct function came back as "a real,
+    /// reproduced violation". `run_fn_checks` turns this into the
+    /// `inconclusive` status (§0/D6's own word for a check that reached no
+    /// conclusion) beside an `unclaimed` verdict, which is what an absence
+    /// of evidence has always been.
+    no_admissible_input: bool,
     /// Whether this fn's postcondition is a top-level `||` chain whose
     /// branch-decided split (2026-09-02, CLAUDE.md: "record which branch of
     /// the promise actually decided each case") came back skewed -- one
@@ -5210,6 +5324,7 @@ fn run_fuzz_and_test_checks(
     let fuzz_test_name = harness_fuzz_test_name(cf);
     let mut fuzz_label = None;
     let mut test_label = None;
+    let mut no_admissible_input = false;
     let mut fuzz_cases_reached: Option<u32> = None;
     // Whether `fuzz` specifically produced evidence worth naming in §8's
     // `evidence` block -- distinct from "the harness ran at all", since a
@@ -5290,6 +5405,7 @@ fn run_fuzz_and_test_checks(
             fuzz_cases_reached: None,
             diagnostics,
             seeded: false,
+            no_admissible_input: false,
             promise_lopsided: false,
             route_used: false,
             route_collapsed: false,
@@ -5847,6 +5963,33 @@ fn run_fuzz_and_test_checks(
                     && (t.contains("::ply_example_") || t.contains("::ply_direct_"))
             })
             .collect();
+
+        // The admissibility probe is not a contract test and must never be
+        // read as one. It asserts that at least one *generated* case got
+        // past this fn's own precondition -- a fact about Ply's input
+        // builder. `ply_direct_{ident}_00` and friends assert the contract;
+        // this one asserts that they had anything to assert it on.
+        let admissibility_probe_failed = failing_test_checks
+            .iter()
+            .any(|t| t.ends_with(ply_core::fuzz_gen::ADMISSIBILITY_TEST_SUFFIX));
+        let real_contract_failures: Vec<&&String> = failing_test_checks
+            .iter()
+            .filter(|t| !t.ends_with(ply_core::fuzz_gen::ADMISSIBILITY_TEST_SUFFIX))
+            .collect();
+
+        // A worked example calls the real function with the author's own
+        // arguments, so one that passed *is* the body having been entered
+        // on a real input -- whatever the generator could not reach. The
+        // probe looks only at generated boundary values and cannot see
+        // this, which is why it must not have the last word: its own
+        // message tells the reader to add an example, and before this the
+        // advice changed nothing at all, because adding one still left the
+        // probe failing and the fn reported as a violation.
+        let reached_by_a_worked_example = has_examples
+            && !failing_test_checks
+                .iter()
+                .any(|t| t.contains("::ply_example_"));
+
         if !run.timed_out && test_tests_executed == 0 {
             // Same guard as `fuzz`'s own above, for the same reason: the
             // module-wide count above only proves *something* under this
@@ -5905,7 +6048,7 @@ fn run_fuzz_and_test_checks(
                 open_item: Some("timeout".into()),
             });
             test_label = Some("timeout".into());
-        } else if !failing_test_checks.is_empty() {
+        } else if !real_contract_failures.is_empty() {
             diagnostics.push(Diagnostic {
                 code: "R0502".into(),
                 severity: "error".into(),
@@ -5917,8 +6060,12 @@ fn run_fuzz_and_test_checks(
                     "`{fn_name}` failed {} of its own example/generated direct-contract test(s): {}. \
                      Each of these is a concrete input asserted directly against the contract, so this \
                      is a real, reproduced violation, not a probabilistic one.",
-                    failing_test_checks.len(),
-                    failing_test_checks.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                    real_contract_failures.len(),
+                    real_contract_failures
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 pointer: None,
                 primary_span: None,
@@ -5928,6 +6075,18 @@ fn run_fuzz_and_test_checks(
                 open_item: None,
             });
             test_label = Some("violation".into());
+        } else if admissibility_probe_failed && !reached_by_a_worked_example {
+            // Nothing ever entered the body. Not a pass, not a failure: an
+            // absence, and the evidence order already has a word for that.
+            //
+            // Never `violation`, which is what this was for one day. A
+            // violation is an accusation about the author's code, and there
+            // is nothing here to accuse: the promise may be perfectly true,
+            // and Ply simply could not build an input that gets past the
+            // author's own precondition.
+            diagnostics.push(no_admissible_input_diag(node_id, fn_name, cf));
+            no_admissible_input = true;
+            test_label = Some("unclaimed".into());
         } else {
             test_label = Some("tested".into());
         }
@@ -5952,6 +6111,7 @@ fn run_fuzz_and_test_checks(
         fuzz_cases_reached,
         diagnostics,
         seeded,
+        no_admissible_input,
         promise_lopsided,
         route_used,
         route_collapsed,
@@ -7326,6 +7486,61 @@ fn holds_violation_diag(
     }
 }
 
+/// What a reader is told when Ply could not build a single input that gets
+/// past a function's own precondition.
+///
+/// A warning, not an error, and the distinction is the whole point: nothing
+/// is broken. The promise may well be true. What is missing is any evidence
+/// either way, so this is an absence -- caught by `--fail-on evidence`,
+/// waved through by `--fail-on error`, exactly like a shape Ply refuses to
+/// check. Reporting it as a violation, which this did for one day, accuses
+/// the author's code of something Ply has no witness for.
+///
+/// Written to the newbie bar: what happened, why, and one thing to do that
+/// actually works -- the previous wording told the reader to add a worked
+/// example while the check that produced it could not see examples at all.
+fn no_admissible_input_diag(node_id: &str, fn_name: &str, cf: &ContractFn) -> Diagnostic {
+    let params = cf
+        .params
+        .iter()
+        .map(|p| format!("`{}: {}`", p.name, p.ty.display_name()))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let precondition = cf
+        .requires
+        .as_ref()
+        .map(|(_, src)| src.clone())
+        .unwrap_or_default();
+    Diagnostic {
+        code: "W0542".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "test".into(),
+        node_id: node_id.into(),
+        title: format!(
+            "`{fn_name}` was never called, so its promise has not been checked on a single \
+             input. Ply builds test inputs by trying boundary values for each parameter -- for \
+             {params} that is 0, 1, small numbers and the maximum -- and its precondition \
+             `{precondition}` rejects every one of them. Nothing here is broken and nothing \
+             here is proven. Add an `examples:` entry that satisfies the precondition and the \
+             promise gets checked on that input. (W0542)"
+        ),
+        pointer: None,
+        primary_span: cf.source_span.clone(),
+        counterexample: None,
+        fixes: vec![Fix {
+            title: format!(
+                "add an `examples:` entry under `{fn_name}` in ply.yaml naming an input its \
+                 precondition accepts"
+            ),
+            edits: vec![],
+        }],
+        assumptions: vec![],
+        open_item: Some("inconclusive".into()),
+    }
+}
+
 fn leaf_node(fn_name: &str, verdict: &str) -> Node {
     Node {
         id: fn_name.to_string(),
@@ -8445,15 +8660,17 @@ mod tests {
     #[test]
     fn fuzz_success_label_is_past_tense_not_the_declared_check_spelling() {
         // Regression test: the earned verdict must read `fuzzed(256)`, never
-        // `fuzz(256)` (the check's own declared spelling) -- `rank()` keys
+        // `fuzz(256)` (the check's own declared spelling) -- the ladder keys
         // off the `fuzzed` prefix, and this was wrong once already (see
         // docs/m4-findings.md).
-        assert_eq!(rank("fuzzed(256)"), 6);
+        use ply_core::kernel::Evidence;
+        assert_eq!(rung("fuzzed(256)"), Rung::Shared(Evidence::Fuzzed));
         assert_eq!(
-            rank("fuzz(256)"),
-            4,
-            "an unrecognized label falls back to the neutral rank, not a passing one"
+            rung("fuzz(256)"),
+            Rung::Shared(Evidence::Unclaimed),
+            "an unrecognised label promises nothing, and must never be read as evidence"
         );
+        assert!(!verdict_carries_evidence("fuzz(256)"));
     }
 
     #[test]
@@ -8571,6 +8788,173 @@ mod tests {
         );
     }
 
+    /// The tool's own fold, checked against the one that is proved.
+    ///
+    /// `ply_core::kernel::aggregate` carries CLAUDE.md's four standing
+    /// obligations, proved by exhaustive enumeration over 991,389 trees and
+    /// again by structural induction in Verus. None of that governed a
+    /// single verdict a user ever saw: this file folded results with a
+    /// private worst-of over a ladder of its own, and the two were free to
+    /// disagree with nothing to notice.
+    ///
+    /// They are bound two ways now. `Rung::Shared` carries the kernel's own
+    /// `Evidence`, so the relative order of D6's six rungs is not restated
+    /// here at all -- it is the proved one, by construction. And this test
+    /// folds every tree shape up to a small bound both ways and requires the
+    /// same answer, so the *fold* cannot drift either even though the
+    /// aggregate is still computed locally.
+    ///
+    /// Bounded, and the bound is stated rather than implied: every tree of
+    /// up to three nodes and depth two, over all six shared verdicts. That
+    /// is exhaustive over the shapes this file can produce -- a workspace of
+    /// components of fns -- and representative over the verdict strings,
+    /// since the fold reads a verdict only through `rung`.
+    #[test]
+    fn the_fold_here_agrees_with_the_kernel_that_was_proved() {
+        use ply_core::kernel::{self, Evidence, NodeKind, StatusSet, VerdictNode};
+
+        const SHARED: [(&str, Evidence); 6] = [
+            ("violation", Evidence::Violation),
+            ("unclaimed", Evidence::Unclaimed),
+            ("tested", Evidence::Tested),
+            ("fuzzed(256)", Evidence::Fuzzed),
+            ("bounded(2)", Evidence::Bounded),
+            ("proved", Evidence::Proved),
+        ];
+
+        let leaf = |v: &str| Node {
+            id: "f".into(),
+            kind: "fn".into(),
+            verdict: v.into(),
+            ..Default::default()
+        };
+        // Where a kernel answer sits on this file's ladder. `Violation` is
+        // its own rung here rather than a `Shared` one -- it has to be, or
+        // it would sort *above* the three extension rungs and a reproduced
+        // broken promise would stop being the worst thing a run can find.
+        let as_rung = |e: Evidence| match e {
+            Evidence::Violation => Rung::Violation,
+            other => Rung::Shared(other),
+        };
+        let kernel_leaf = |e: Evidence| VerdictNode {
+            kind: NodeKind::Claimable(e),
+            statuses: StatusSet::new(),
+            conditional: None,
+            children: Vec::new(),
+        };
+
+        let mut checked = 0usize;
+        // Every flat parent of one, two or three leaves.
+        for a in SHARED {
+            for b in SHARED {
+                for c in SHARED {
+                    for width in 1..=3usize {
+                        let picked = [a, b, c];
+                        let picked = &picked[..width];
+
+                        let ours =
+                            worst_of(&picked.iter().map(|(v, _)| leaf(v)).collect::<Vec<_>>());
+                        let theirs = kernel::aggregate(&VerdictNode {
+                            kind: NodeKind::Container,
+                            statuses: StatusSet::new(),
+                            conditional: None,
+                            children: picked.iter().map(|(_, e)| kernel_leaf(*e)).collect(),
+                        });
+                        assert_eq!(
+                            rung(&ours),
+                            as_rung(theirs.evidence),
+                            "worst-of over {picked:?} disagrees with the proved kernel"
+                        );
+
+                        // And one level deeper: the same children under a
+                        // component, under a workspace. Nesting must not
+                        // change the answer, which is the obligation "a
+                        // violation anywhere always reaches the root" in the
+                        // shape this file actually builds.
+                        let inner = Node {
+                            id: "c".into(),
+                            kind: "component".into(),
+                            verdict: ours.clone(),
+                            children: picked.iter().map(|(v, _)| leaf(v)).collect(),
+                            ..Default::default()
+                        };
+                        let nested_ours = worst_of(&[inner]);
+                        let nested_theirs = kernel::aggregate(&VerdictNode {
+                            kind: NodeKind::Container,
+                            statuses: StatusSet::new(),
+                            conditional: None,
+                            children: vec![VerdictNode {
+                                kind: NodeKind::Container,
+                                statuses: StatusSet::new(),
+                                conditional: None,
+                                children: picked.iter().map(|(_, e)| kernel_leaf(*e)).collect(),
+                            }],
+                        });
+                        assert_eq!(
+                            rung(&nested_ours),
+                            as_rung(nested_theirs.evidence),
+                            "nesting {picked:?} one level deeper changed the answer"
+                        );
+                        checked += 2;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            checked, 1296,
+            "the bound this test claims to cover is 6^3 x 3 widths x 2 depths; if this moved, \
+             the loop did, and the claim above wants re-reading rather than this number \
+             being edited to match"
+        );
+    }
+
+    /// The order the six shared rungs sit in is the kernel's, not a copy.
+    /// Checked over every pair, so a reordering here that the kernel did not
+    /// make fails rather than quietly changing what drags a parent down.
+    #[test]
+    fn the_shared_rungs_sit_in_the_kernels_own_order() {
+        use ply_core::kernel::Evidence;
+        const SHARED: [(&str, Evidence); 6] = [
+            ("violation", Evidence::Violation),
+            ("unclaimed", Evidence::Unclaimed),
+            ("tested", Evidence::Tested),
+            ("fuzzed(256)", Evidence::Fuzzed),
+            ("bounded(2)", Evidence::Bounded),
+            ("proved", Evidence::Proved),
+        ];
+        for (av, ae) in SHARED {
+            for (bv, be) in SHARED {
+                assert_eq!(
+                    rung(av).cmp(&rung(bv)),
+                    ae.cmp(&be),
+                    "`{av}` against `{bv}` is ordered differently here than in the kernel"
+                );
+            }
+        }
+    }
+
+    /// The three rungs that are *not* the kernel's sit exactly where this
+    /// file says they do: below every rung that carries evidence, and above
+    /// a reproduced violation, which is never merely an absence.
+    #[test]
+    fn the_three_extension_rungs_sit_between_a_violation_and_no_evidence() {
+        for v in ["tool_error", "timeout", "unsupported"] {
+            assert!(
+                rung("violation") < rung(v),
+                "a reproduced broken promise is worse than `{v}`, which found nothing at all"
+            );
+            assert!(
+                rung(v) < rung("unclaimed"),
+                "`{v}` says a check was attempted and gave up, which is more than `unclaimed` \
+                 says, so it must drag a parent down further"
+            );
+            assert!(
+                !verdict_carries_evidence(v),
+                "`{v}` earned no evidence and must never read as though it had"
+            );
+        }
+    }
+
     #[test]
     fn worst_of_picks_the_weakest_child_not_the_strongest() {
         let children = vec![
@@ -8600,6 +8984,48 @@ mod tests {
             "tested",
             "D6: a weak leaf drags its parent down"
         );
+    }
+
+    /// A function nothing could check must still be visible from the top,
+    /// even when a *worse* sibling wins the headline.
+    ///
+    /// The-Ply-Spec.md D6 is explicit that `unsupported` and `timeout` are
+    /// statuses, and that statuses "do not sit in that [evidence] order;
+    /// they propagate upward as flags". This code put them *in* the order
+    /// instead -- ranked 2 and 3, below `unclaimed` -- and set no flag
+    /// alongside. So they survived only by winning the worst-of. Put a
+    /// broken promise next to a function Ply could not check at all, and
+    /// the component reports the broken promise and nothing else: a reader
+    /// is told one function failed and never told a second was never
+    /// examined. Fixing the first and re-running then turns the component
+    /// green over a function still nobody has checked.
+    ///
+    /// This is also why `ply_core::kernel` -- the aggregation rule proved
+    /// four ways -- is not on this path: it models D6's six-rung ladder,
+    /// and this file was aggregating over a nine-rung one of its own.
+    #[test]
+    fn a_function_nobody_could_check_is_still_reported_when_a_sibling_fails() {
+        let leaf = |id: &str, verdict: &str| Node {
+            id: id.into(),
+            kind: "fn".into(),
+            verdict: verdict.into(),
+            ..Default::default()
+        };
+        for never_checked in ["unsupported", "timeout", "tool_error"] {
+            let children = vec![leaf("broken", "violation"), leaf("skipped", never_checked)];
+            let parent_statuses = union_statuses(&children);
+            assert_eq!(
+                worst_of(&children),
+                "violation",
+                "a broken promise is still the headline"
+            );
+            assert!(
+                parent_statuses.iter().any(|s| s == never_checked),
+                "`{never_checked}` must reach the parent as a flag beside the verdict \
+                 (D6), or the only function nobody checked vanishes from the report \
+                 the moment a sibling fails. Parent statuses were {parent_statuses:?}"
+            );
+        }
     }
 
     // -- the sampling/proving split (task, 2026-08-27): `bounded` on a

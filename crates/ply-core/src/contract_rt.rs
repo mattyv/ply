@@ -308,9 +308,20 @@ fn widen_leaf(expr: &Expr, cf: &ContractFn) -> proc_macro2::TokenStream {
 }
 
 /// The plain integer scalars widen may safely cast to `i128`, plus
-/// `bool`/`char`/`f32`/`f64` -- every `RustType` shape Rust's own `as`
-/// operator can cast to `i128` without a compile error (verified
-/// directly against `rustc`, not assumed: a bare fieldless enum can *also*
+/// `bool`/`char`.
+///
+/// **Not floats**, though `f32 as i128` compiles perfectly well. That the
+/// cast compiles was the test until 2026-09-05, and it is the wrong one: a
+/// cast that compiles is not a cast that preserves what the comparison was
+/// asking. `*result == x` on `f64` became `(*result as i128) == (x as
+/// i128)`, so a function returning `x.trunc()` satisfied `*result == x` at
+/// every input whose fractional part was the entire difference -- earning
+/// `fuzzed(256)` against a promise false almost everywhere. Floats never
+/// needed the widening either: it exists so an assertion cannot overflow
+/// while checking a contract, and float arithmetic saturates to infinity
+/// rather than overflowing.
+///
+/// (verified directly against `rustc`, not assumed: a bare fieldless enum can *also*
 /// take this cast, but only until it gains a `Drop` impl, so enums are
 /// deliberately not on this list -- see the `tests` module's own
 /// `an_enum_variant_comparison_is_rendered_verbatim_never_cast_to_i128`).
@@ -334,16 +345,21 @@ fn is_numeric_rust_type(ty: &RustType) -> bool {
             | RustType::Isize
             | RustType::Bool
             | RustType::Char
-            | RustType::F32
-            | RustType::F64
     )
 }
 
 /// Whether a `syn::Type` written as an explicit cast target (`x as <ty>`) is
-/// itself one of Rust's plain integer primitives -- decided directly from
-/// the cast's own spelling, not through `RustType`'s vocabulary (which has
-/// no `i128`/`u128` variant of its own, and would wrongly answer "not
-/// numeric" for a cast that is already exactly the width widen casts to).
+/// an integer `i128` can hold every value of -- decided directly from the
+/// cast's own spelling, not through `RustType`'s vocabulary, which has no
+/// 128-bit variant of its own and would wrongly answer "not numeric" for
+/// `x as i128`, a cast already exactly the width widen casts to.
+///
+/// `u128` was on this list until 2026-09-06 for that same reason, and it
+/// did not belong: `i128` is the same width, so the top half of `u128` has
+/// nowhere to go and wraps to negative. A promise about `x as u128` was
+/// then checked after the wrap -- the float defect exactly, one classifier
+/// along, and the exhaustive check written for that one never looked here.
+/// `cast_target_classification_proof` now does.
 fn is_numeric_cast_target(ty: &syn::Type) -> bool {
     let syn::Type::Path(tp) = ty else {
         return false;
@@ -353,17 +369,7 @@ fn is_numeric_cast_target(ty: &syn::Type) -> bool {
     };
     matches!(
         seg.ident.to_string().as_str(),
-        "u8" | "u16"
-            | "u32"
-            | "u64"
-            | "u128"
-            | "usize"
-            | "i8"
-            | "i16"
-            | "i32"
-            | "i64"
-            | "i128"
-            | "isize"
+        "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
     )
 }
 
@@ -478,7 +484,10 @@ pub fn contract_use_paths(cf: &ContractFn) -> Vec<Vec<String>> {
         .into_iter()
         .filter_map(|ident| cf.use_aliases.get(&ident))
         .filter(|segments| {
-            !matches!(segments.first().map(String::as_str), Some("self") | Some("super"))
+            !matches!(
+                segments.first().map(String::as_str),
+                Some("self") | Some("super")
+            )
         })
         .cloned()
         .collect()
@@ -637,18 +646,18 @@ pub fn render_cex_test(
     // Reusing it is what keeps this from being a second, disagreeing copy
     // of the same split (2026-09-04 review, which caught exactly that).
     let module_import = match cf.import_path().rsplit_once("::") {
-        Some((module, _)) if cf.is_method => format!(
-            "    #[allow(unused_imports)]\n    use crate::{module}::*;\n"
-        ),
+        Some((module, _)) if cf.is_method => {
+            format!("    #[allow(unused_imports)]\n    use crate::{module}::*;\n")
+        }
         _ if cf.is_method => String::new(),
         // The allow is not optional: most promises name no sibling at all,
         // so without it every nested replay carries an unused-import
         // warning -- and a warning in a file the user never wrote is a
         // broken build in any crate that denies them.
         _ => match cf.path.rsplit_once("::") {
-            Some((module, _)) => format!(
-                "    #[allow(unused_imports)]\n    use crate::{module}::*;\n"
-            ),
+            Some((module, _)) => {
+                format!("    #[allow(unused_imports)]\n    use crate::{module}::*;\n")
+            }
             None => String::new(),
         },
     };
@@ -874,7 +883,9 @@ pub fn head(s: &str) -> String { s.chars().take(1).collect() }
         )
         .unwrap();
         assert!(
-            rendered.source.contains("let s: String = \"\".to_string();"),
+            rendered
+                .source
+                .contains("let s: String = \"\".to_string();"),
             "the failing string has to be written back out as a Rust literal:\n{}",
             rendered.source
         );
@@ -968,9 +979,15 @@ impl Bucket {
         std::fs::write(&lib, src).unwrap();
 
         let mut tests = Vec::new();
-        for (i, name) in ["clamp", "helpers::double", "helpers::shrink", "helpers::compare", "Bucket::new"]
-            .iter()
-            .enumerate()
+        for (i, name) in [
+            "clamp",
+            "helpers::double",
+            "helpers::shrink",
+            "helpers::compare",
+            "Bucket::new",
+        ]
+        .iter()
+        .enumerate()
         {
             let cf = discover_fn(&lib, name).unwrap();
             tests.push(
@@ -1318,6 +1335,40 @@ pub fn always_pos(x: i32) -> Sign { let _ = x; Sign::Pos }
         );
     }
 
+    /// Casting a float to `i128` compiles, and throws away everything that
+    /// makes it a float. `*result == x` on `f64` became
+    /// `(*result as i128) == (x as i128)`, so a function returning
+    /// `x.trunc()` satisfied a promise of `*result == x` for every input
+    /// whose fractional part was the whole difference.
+    ///
+    /// Reproduced end to end on 2026-09-05, before this test existed:
+    /// `identity(x: f64) -> f64 { x.trunc() }` earned `fuzzed(256)` against
+    /// `|result| *result == x`, which is false at 0.5 and at almost every
+    /// other input. Two hundred and fifty-six random doubles found nothing,
+    /// because the check could not see the difference it was asked about.
+    ///
+    /// The widening exists so an assertion cannot overflow while checking a
+    /// contract. Float arithmetic does not overflow -- it saturates to
+    /// infinity -- so floats never needed it in the first place.
+    #[test]
+    fn a_float_comparison_is_rendered_verbatim_never_cast_to_i128() {
+        for ty in ["f64", "f32"] {
+            let cf = discover(
+                &format!(
+                    "#[ply::ensures(|result| *result == x)]\npub fn identity(x: {ty}) -> {ty} {{ \
+                     x.trunc() }}\n"
+                ),
+                "identity",
+            );
+            let widened = widen(&cf.ensures.as_ref().unwrap().0.body, &cf).to_string();
+            assert!(
+                !widened.replace(' ', "").contains("asi128"),
+                "a {ty} comparison cast to i128 compares two truncated integers, so \
+                 every fractional difference the promise is about disappears:\n{widened}"
+            );
+        }
+    }
+
     #[test]
     fn a_duration_witness_renders_through_duration_new() {
         let cf = discover(
@@ -1337,6 +1388,507 @@ pub fn identity(d: Duration) -> Duration { d }
             "a Duration witness must render through `Duration::new(secs, nanos)`, the same public \
              constructor the harness itself uses to build one:\n{}",
             rendered.source
+        );
+    }
+}
+
+/// The float bug, closed by exhaustion rather than by a spot-check.
+///
+/// `is_numeric_rust_type` decides whether a comparison's leaves may be cast
+/// to `i128` before being checked. It answered "yes" for `f32`/`f64`
+/// because that cast *compiles*, and the cast then threw away exactly the
+/// difference the promise was about: `x.trunc()` satisfied `*result == x`.
+///
+/// One wrong entry in a classification is not the kind of defect a sample
+/// finds -- 256 random doubles did not -- so this closes it the way this
+/// repository closes the verdict kernel: an **independent oracle**, and
+/// **every case**, not a chosen few.
+///
+/// Two things make "every case" true rather than aspirational:
+///
+/// 1. [`cast_to_i128_is_lossless`] is a wildcard-free `match`. A variant
+///    added to `RustType` later stops this file compiling until somebody
+///    says which side it falls on. That is the part a list of examples
+///    cannot give.
+/// 2. `every_rust_type_variant` builds one value per variant, and the test
+///    checks it really does cover every discriminant the oracle can see.
+///
+/// The honesty condition, stated so it travels with the claim: this is
+/// exhaustive over the *variants*, and representative over what a variant
+/// carries -- `Vec<u8>` stands for every `Vec<T>`. That is sound only
+/// because the property under test reads the outermost constructor and
+/// nothing inside it, which is visible in the oracle: no arm inspects its
+/// payload. If that ever stops being true, this stops being a proof.
+#[cfg(test)]
+mod numeric_classification_proof {
+    use super::is_numeric_rust_type;
+    use crate::harness::{CtorReturn, ReceiverPlan, RustType, UserTypeFieldsPlan, UserTypeShape};
+
+    /// Whether `x as i128` keeps everything a comparison could ask about,
+    /// written from Rust's own semantics rather than from the function
+    /// under test -- so the two can disagree, which is the point.
+    ///
+    /// Deliberately no `_` arm.
+    fn cast_to_i128_is_lossless(ty: &RustType) -> bool {
+        match ty {
+            // Every integer here is at most 64 bits, so `i128` holds every
+            // value of it exactly. `bool` casts to 0/1 and `char` to its
+            // scalar value: both injective, both order-preserving.
+            RustType::U8
+            | RustType::U16
+            | RustType::U32
+            | RustType::U64
+            | RustType::I8
+            | RustType::I16
+            | RustType::I32
+            | RustType::I64
+            | RustType::Usize
+            | RustType::Isize
+            | RustType::Bool
+            | RustType::Char => true,
+            // The bug. `f64 as i128` compiles and truncates toward zero, so
+            // 0.5 and 0.0 become the same value and every promise about the
+            // fractional part is answered about a number that no longer has
+            // one.
+            RustType::F32 | RustType::F64 => false,
+            // Containers, wrappers and opaque types: `as i128` does not
+            // compile at all, so there is nothing to preserve.
+            RustType::Option(_)
+            | RustType::Result(_, _)
+            | RustType::Array(_, _)
+            | RustType::VecU8
+            | RustType::Vec(_)
+            | RustType::BTreeSet(_)
+            | RustType::NonZero(_)
+            | RustType::Duration
+            | RustType::String
+            | RustType::SelfType
+            | RustType::Unit
+            | RustType::UserTypeCtor(_)
+            | RustType::UserTypeFields(_)
+            | RustType::Slice(_)
+            | RustType::Tuple(_)
+            | RustType::BTreeMap(_, _)
+            | RustType::BoxT(_)
+            | RustType::Unsupported(_) => false,
+        }
+    }
+
+    fn every_rust_type_variant() -> Vec<RustType> {
+        let inner = || Box::new(RustType::U8);
+        vec![
+            RustType::U8,
+            RustType::U16,
+            RustType::U32,
+            RustType::U64,
+            RustType::I8,
+            RustType::I16,
+            RustType::I32,
+            RustType::I64,
+            RustType::Usize,
+            RustType::Isize,
+            RustType::Bool,
+            RustType::Char,
+            RustType::F32,
+            RustType::F64,
+            RustType::Option(inner()),
+            RustType::Result(inner(), inner()),
+            RustType::Array(inner(), 3),
+            RustType::VecU8,
+            RustType::Vec(inner()),
+            RustType::BTreeSet(inner()),
+            RustType::NonZero(inner()),
+            RustType::Duration,
+            RustType::String,
+            RustType::SelfType,
+            RustType::Unit,
+            RustType::Slice(inner()),
+            RustType::Tuple(vec![RustType::U8]),
+            RustType::BTreeMap(inner(), inner()),
+            RustType::BoxT(inner()),
+            RustType::Unsupported("Whatever".into()),
+            RustType::UserTypeCtor(Box::new(ReceiverPlan {
+                type_name: "T".into(),
+                import_path: "c::T".into(),
+                constructor: "new".into(),
+                ctor_params: Vec::new(),
+                ctor_requires: None,
+                ctor_return: CtorReturn::Bare,
+                operations: Vec::new(),
+                excluded_operations: Vec::new(),
+                other_constructors: Vec::new(),
+                max_sequence_len: 0,
+                route: None,
+            })),
+            RustType::UserTypeFields(Box::new(UserTypeFieldsPlan {
+                type_name: "T".into(),
+                import_path: "c::T".into(),
+                shape: UserTypeShape::Struct(Vec::new()),
+                skipped_constructor: None,
+            })),
+        ]
+    }
+
+    #[test]
+    fn the_enumeration_really_does_reach_every_variant() {
+        let all = every_rust_type_variant();
+        // `discriminant`, not the `Debug` rendering: two different variants
+        // can print the same and did (30 distinct strings for 32 entries),
+        // which would have quietly left two variants unchecked by a test
+        // whose whole job is to say none are.
+        //
+        // Which two, measured rather than left as "two of them": `VecU8`
+        // and `Vec(U8)` both read `Vec<u8>`, and `UserType`/`UserTypeFields`
+        // both read the type's bare name. That is not a defect to fix --
+        // `RustType`'s `Debug` is a hand-written user-facing rendering, and
+        // to the reader of a refusal those pairs genuinely *are* the same
+        // type; the difference is only in how Ply builds a value of it. So
+        // the rule is the narrow one: nothing may use that rendering to
+        // tell two variants apart. Checked 2026-09-06 -- nothing else in
+        // the tree does.
+        let distinct: std::collections::HashSet<std::mem::Discriminant<RustType>> =
+            all.iter().map(std::mem::discriminant).collect();
+        assert_eq!(
+            distinct.len(),
+            all.len(),
+            "two entries are the same variant, so one variant is unchecked"
+        );
+        // Every variant `RustType` declares today.
+        //
+        // **This number is not a guard, and the comment here claimed it was
+        // until 2026-09-06** (external review, and it is right). Adding a
+        // variant forces two things and not a third: the oracle's
+        // wildcard-free `match` will not compile until the variant is
+        // classified, and a *duplicate* entry is caught by the discriminant
+        // check above. Nothing makes anyone add the variant to
+        // `every_rust_type_variant` -- leave both this number and that list
+        // alone and the new variant simply goes unchecked, quietly, by a
+        // test whose whole subject is that none do.
+        //
+        // Rust offers no way to close that on stable: `variant_count` is
+        // nightly, and the alternative is a derive macro this crate does not
+        // depend on and should not gain for one assertion. So the guard is
+        // a person reading this, which is worth exactly what it is worth --
+        // written down rather than dressed up as automatic, because a check
+        // believed stronger than it is, is the failure this file exists to
+        // catch one level down.
+        assert_eq!(all.len(), 32, "RustType gained or lost a variant");
+    }
+
+    #[test]
+    fn no_type_is_widened_to_i128_unless_that_cast_loses_nothing() {
+        for ty in every_rust_type_variant() {
+            assert_eq!(
+                is_numeric_rust_type(&ty),
+                cast_to_i128_is_lossless(&ty),
+                "`{ty:?}`: what the widening does and what the cast actually \
+                 preserves disagree -- a comparison about this type would be \
+                 checked after throwing information away"
+            );
+        }
+    }
+}
+
+/// The same proof for the *other* classifier, which the one above does not
+/// reach.
+///
+/// [`is_numeric_rust_type`] decides the question for a value whose type Ply
+/// worked out. [`is_numeric_cast_target`] decides it for a cast the author
+/// wrote by hand (`x as u64`), from the spelling alone -- a separate list,
+/// in a separate function, and the exhaustive check above never looks at
+/// it. So the float defect's exact shape was still live here: a spelling on
+/// the list whose values `i128` cannot hold.
+///
+/// One was. `u128` sat on the list because the paragraph above it explains
+/// that `RustType` has no 128-bit variant and would wrongly answer "not
+/// numeric" for a cast "already exactly the width widen casts to" -- true
+/// of `i128`, and false of `u128`, whose top half wraps to negative on the
+/// way to `i128`. A promise about `x as u128` was then checked after that
+/// wrap: the same defect as the floats, one classifier along.
+///
+/// Exhaustive over the spellings rather than over an enum, so the guard
+/// that a new variant cannot slip past has a different shape: the oracle
+/// lists every integer primitive Rust has, and the test requires the two
+/// lists to agree entry for entry *and* to be the same size, so a spelling
+/// added to one and not the other fails rather than passing unexamined.
+#[cfg(test)]
+mod cast_target_classification_proof {
+    use super::is_numeric_cast_target;
+
+    /// Every integer primitive Rust has, written from the language
+    /// reference rather than from the list under test.
+    const EVERY_RUST_INTEGER: [&str; 12] = [
+        "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
+    ];
+
+    /// Whether `(x as T) as i128` keeps every value `T` can hold.
+    ///
+    /// The question is not "does this cast compile" -- every one of them
+    /// does, which is precisely the mistake the float defect was -- but
+    /// "can `i128` hold every value of `T`". It can, for every integer Rust
+    /// has except `u128`: `i128` and `u128` are the same width, so the top
+    /// half of `u128` has nowhere to go and wraps to negative.
+    ///
+    /// `usize`/`isize` are at most 64 bits on every target Rust supports;
+    /// were a 128-bit target ever to exist, `usize` would join `u128` here.
+    fn i128_holds_every_value_of(spelling: &str) -> bool {
+        match spelling {
+            "u8" | "u16" | "u32" | "u64" | "usize" => true,
+            "i8" | "i16" | "i32" | "i64" | "isize" | "i128" => true,
+            "u128" => false,
+            other => panic!(
+                "`{other}` is not an integer primitive this oracle knows, so it cannot answer \
+                 for it. Add it to EVERY_RUST_INTEGER and classify it here."
+            ),
+        }
+    }
+
+    fn spelled(s: &str) -> syn::Type {
+        syn::parse_str(s).expect("every entry here is a legal type")
+    }
+
+    #[test]
+    fn a_cast_target_is_admitted_exactly_when_i128_can_hold_it() {
+        for spelling in EVERY_RUST_INTEGER {
+            assert_eq!(
+                is_numeric_cast_target(&spelled(spelling)),
+                i128_holds_every_value_of(spelling),
+                "`x as {spelling}` is admitted for widening exactly when `i128` holds every \
+                 value of `{spelling}`. Admitting one it cannot hold means the promise is \
+                 checked after the value has already wrapped -- the float defect, one \
+                 classifier along."
+            );
+        }
+    }
+
+    /// The guard that makes the list above exhaustive rather than merely
+    /// long: the classifier must admit exactly the integers the oracle
+    /// admits and nothing else, so a spelling added to one list and not the
+    /// other is a failure rather than an omission nobody sees.
+    #[test]
+    fn the_two_lists_of_integers_are_the_same_list() {
+        let admitted: Vec<&str> = EVERY_RUST_INTEGER
+            .into_iter()
+            .filter(|s| is_numeric_cast_target(&spelled(s)))
+            .collect();
+        let expected: Vec<&str> = EVERY_RUST_INTEGER
+            .into_iter()
+            .filter(|s| i128_holds_every_value_of(s))
+            .collect();
+        assert_eq!(
+            admitted, expected,
+            "the classifier and the oracle must admit the same integers"
+        );
+        // Eleven of Rust's twelve integer primitives fit in `i128`. Unlike
+        // the `RustType` enumeration next door, this list is closed by the
+        // language rather than by us -- Rust has not added an integer since
+        // 1.26 and adding one is a language change, not a refactor here --
+        // so "did someone forget to extend it" is not the live risk there
+        // it is there. If it ever moves, both lists want re-reading rather
+        // than this number being edited until it matches.
+        assert_eq!(expected.len(), 11, "Rust's set of integer primitives moved");
+    }
+
+    /// Nothing that is not an integer is admitted -- a `f64` cast target
+    /// least of all, since that is the exact shape of the defect the
+    /// neighbouring proof exists for.
+    #[test]
+    fn nothing_but_an_integer_is_admitted() {
+        for spelling in [
+            "f32", "f64", "bool", "char", "String", "Vec<u8>", "MyStruct",
+        ] {
+            assert!(
+                !is_numeric_cast_target(&spelled(spelling)),
+                "`x as {spelling}` must not be admitted for widening: it is not an integer, and \
+                 casting it to `i128` either does not compile or throws away the difference the \
+                 promise was about"
+            );
+        }
+    }
+}
+
+/// The general property behind the two classifier proofs: not "is this type
+/// safe to widen" but "does the rewrite only ever widen types it decided
+/// were safe".
+///
+/// The classifiers are exhaustively proved above, and that closes the
+/// question they answer. It does not close the question the *rewrite* asks,
+/// which is a different one: the proofs say `f64` is refused, and say
+/// nothing about whether the code that emits `as i128` actually consults
+/// them at every place it emits one. A single arm reaching the "cast it
+/// anyway" fallback without asking would reopen the whole float defect with
+/// both proofs still green.
+///
+/// So this walks the real rewritten output for a corpus of contracts and
+/// fails on the first `as i128` wrapping something the classifier does not
+/// admit -- the same shape as `render`'s
+/// `every_painted_element_resolves_a_style_rule`, and for the same reason:
+/// one invariant over the actual artifact beats a pile of spot-checks,
+/// because a construct added later cannot quietly skip it.
+///
+/// What it covers, stated so it travels: every contract in the corpus
+/// below, over the parameter types those contracts use. It is not
+/// exhaustive over expressions -- no test can be, the grammar is open --
+/// and it is not a check that the rewritten expression *evaluates* the same
+/// as the original. It checks the one structural link between the rewrite
+/// and the two things that are proved.
+///
+/// **It is blind to a wrong classifier, deliberately, and that was measured
+/// rather than assumed.** Putting the floats back on the admitted list and
+/// re-running it: the walk still passes, because the walk asks the
+/// classifier whether each widened leaf is admissible and the classifier
+/// now says yes. That is the division of labour working as intended -- the
+/// classifiers' *correctness* is the exhaustive proofs' job, and this one's
+/// job is that the rewrite consults them. What catches the reintroduced
+/// float defect is the second test below, which asserts the observable
+/// outcome directly rather than through the thing under test. Both are
+/// needed; neither substitutes for the other.
+#[cfg(test)]
+mod rewrite_only_widens_what_the_classifier_admits {
+    use super::{is_provably_numeric, widen};
+    use crate::harness::{ContractFn, discover_fn};
+    use quote::ToTokens;
+    use syn::visit::Visit;
+
+    fn discover(src: &str, name: &str) -> ContractFn {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, src).unwrap();
+        discover_fn(&path, name).unwrap()
+    }
+
+    /// Contracts chosen to reach every arm of the rewrite: plain and mixed
+    /// comparisons, arithmetic on both sides, `&&`/`||` chains, a nested
+    /// comparison used as a value, an explicit cast the author wrote, and
+    /// several shapes that must *not* be widened at all -- floats, text,
+    /// a container, and a comparison whose sides are not both numeric.
+    const CORPUS: &[(&str, &str)] = &[
+        (
+            "#[ply::requires(a > 0)]\n#[ply::ensures(|result| *result == a)]\npub fn f(a: u32) -> u32 { a }",
+            "f",
+        ),
+        (
+            "#[ply::requires(a + b > 10)]\n#[ply::ensures(|result| *result >= a + b)]\npub fn g(a: u8, b: u8) -> u32 { a as u32 + b as u32 }",
+            "g",
+        ),
+        (
+            "#[ply::requires(a > 0 && b < 100)]\n#[ply::ensures(|result| *result > 0 || *result == 0)]\npub fn h(a: i64, b: i64) -> i64 { a + b }",
+            "h",
+        ),
+        (
+            "#[ply::ensures(|result| (*result > 0) == (n > 0))]\npub fn k(n: i32) -> i32 { n }",
+            "k",
+        ),
+        (
+            "#[ply::requires(n as u64 > 3)]\n#[ply::ensures(|result| *result == n)]\npub fn m(n: u32) -> u32 { n }",
+            "m",
+        ),
+        // Floats: the defect this whole area exists for. Nothing here may
+        // be widened, because the cast that compiles is the cast that lies.
+        (
+            "#[ply::ensures(|result| *result == x)]\npub fn fl(x: f64) -> f64 { x }",
+            "fl",
+        ),
+        (
+            "#[ply::requires(x > 0.5)]\n#[ply::ensures(|result| *result >= x)]\npub fn fs(x: f32) -> f32 { x }",
+            "fs",
+        ),
+        // Text and a container: `as i128` cannot reach through either.
+        (
+            "#[ply::ensures(|result| result.len() > 0)]\npub fn s(t: &str) -> String { t.to_string() }",
+            "s",
+        ),
+        (
+            "#[ply::ensures(|result| *result == xs.len())]\npub fn v(xs: Vec<u8>) -> usize { xs.len() }",
+            "v",
+        ),
+        // Booleans and chars: on the admitted list, and worth having in the
+        // corpus precisely because they are not integers.
+        (
+            "#[ply::ensures(|result| *result == b)]\npub fn bo(b: bool) -> bool { b }",
+            "bo",
+        ),
+        (
+            "#[ply::ensures(|result| *result == c)]\npub fn ch(c: char) -> char { c }",
+            "ch",
+        ),
+    ];
+
+    struct Casts<'a> {
+        offenders: Vec<String>,
+        cf: &'a ContractFn,
+    }
+
+    impl<'ast, 'a> Visit<'ast> for Casts<'a> {
+        fn visit_expr_cast(&mut self, node: &'ast syn::ExprCast) {
+            if node.ty.to_token_stream().to_string() == "i128"
+                && !is_provably_numeric(&node.expr, self.cf)
+            {
+                self.offenders.push(format!(
+                    "`{}` was cast to i128, and the classifier does not admit it",
+                    node.expr.to_token_stream()
+                ));
+            }
+            syn::visit::visit_expr_cast(self, node);
+        }
+    }
+
+    #[test]
+    fn no_rewrite_in_the_corpus_widens_a_leaf_the_classifier_refuses() {
+        let mut reached = 0usize;
+        for (src, name) in CORPUS {
+            let cf = discover(src, name);
+            for expr in [
+                cf.requires.as_ref().map(|(e, _)| e.clone()),
+                cf.ensures.as_ref().map(|(c, _)| (*c.body).clone()),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let rewritten = widen(&expr, &cf);
+                let parsed: syn::Expr = syn::parse2(rewritten.clone()).unwrap_or_else(|e| {
+                    panic!("the rewrite of `{name}` did not parse back as Rust: {e}\n{rewritten}")
+                });
+                let mut v = Casts {
+                    offenders: Vec::new(),
+                    cf: &cf,
+                };
+                v.visit_expr(&parsed);
+                assert!(
+                    v.offenders.is_empty(),
+                    "in `{name}`, the rewrite widened something the classifier refuses -- which \
+                     is how the float defect worked, and both classifier proofs would stay \
+                     green through it:\n  {}\nrewritten: {rewritten}",
+                    v.offenders.join("\n  ")
+                );
+                reached += 1;
+            }
+        }
+        assert_eq!(
+            reached, 16,
+            "the corpus is meant to contribute 16 contract expressions -- eleven \
+             postconditions and the five preconditions among them; if this moved, an \
+             entry was added or removed and the coverage claim above wants re-reading rather \
+             than this number being edited to match"
+        );
+    }
+
+    /// The float defect itself, asserted on the output rather than through
+    /// the classifier -- so this one *does* go red when the floats go back
+    /// on the admitted list, where the walking test above stays green for
+    /// the reason its own doc gives. Checked by doing exactly that.
+    #[test]
+    fn a_float_comparison_is_emitted_exactly_as_the_author_wrote_it() {
+        let cf = discover(CORPUS[5].0, CORPUS[5].1);
+        let (expr, _) = cf.ensures.as_ref().unwrap();
+        let rewritten = widen(&expr.body, &cf);
+        // With floats refused, the comparison is emitted verbatim: no cast
+        // at all. That absence is the property, so assert it directly --
+        // the walking test above passes vacuously here, and a vacuous pass
+        // is not evidence.
+        assert!(
+            !rewritten.to_string().contains("i128"),
+            "an `f64` comparison must be emitted exactly as written, never widened: {rewritten}"
         );
     }
 }
