@@ -111,6 +111,32 @@ the bug and now pass, so they are the regression test.
       target sits inside what `copy_ply_source` copies, so a missing file fails fast and by
       name. Not done here because the PR was wanted merged.
 
+## Two of Ply's own functions are deliberately left unclaimed — 2026-09-06
+
+`fuzz_gen::extract_examples_seed_strings` and its `_for_param` twin were claimed with
+"every seed returned appears verbatim in some example". Review reproduced that promise
+failing on legitimate input: the function returns the *unescaped* value of a string
+literal while the example holds the *source* spelling, so an example containing an escape
+breaks it.
+
+    extract_examples_seed_strings(["Order::new(\"a\\\"b\\n\")"], "Order::new")
+      -> seeds=["a\"b\n"]   promise holds: false
+
+The function is right; the promise was wrong. And random text almost never parses as a
+call, so sampling would have reported `fuzzed(256)` forever without ever reaching the
+case -- a green chip on a false promise, inside Ply's own document, which is the exact
+failure this project exists to refuse.
+
+Both claims were removed rather than reworded.
+
+- [ ] **KNOWN GAP, recorded not hidden**: these two functions carry no promise. The honest
+      property -- "every seed is the value of a literal written in an example" -- cannot be
+      stated in the contract grammar without re-parsing the example, and the obvious
+      approximations are wrong: `e.contains(&format!("{s:?}"))` fails on raw strings and on
+      unicode escapes. So the options are to state a weaker true property, extend the
+      grammar, or leave them unclaimed. Left unclaimed on purpose, which is a state worth
+      recording rather than a hole to be quietly filled.
+
 ## Landed: one field, one meaning — the build identity — 2026-09-06
 
 `verify --publish-view` stamped the build identity (the fingerprint of the source that

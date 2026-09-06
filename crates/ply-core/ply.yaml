@@ -538,31 +538,6 @@ components:
               - "classify_seedable_wrap(\"Option<String>\") == Some(ply_core::fuzz_gen::SeedableWrap::OptionString)"
               - "classify_seedable_wrap(\"Vec<String>\") == Some(ply_core::fuzz_gen::SeedableWrap::VecString)"
               - "classify_seedable_wrap(\"Option<u32>\").is_none()"
-          extract_examples_seed_strings:
-            # Every seed this hands to the sampling engine has to be text
-            # the author actually wrote in an `examples:` entry -- an
-            # invented one would grow a corpus from a value nobody wrote
-            # down and report cases that were never really seeded.
-            ensures:
-              - "|result| result.iter().all(|s| examples.iter().any(|e| e.contains(s.as_str())))"
-            # Random text almost never parses as a call to `ctor_path` at
-            # all, so fuzzing alone only ever shows the empty miss -- the
-            # worked cases are what exercise a real extraction.
-            checks: [fuzz(256), test]
-            examples:
-              - 'extract_examples_seed_strings(&["Order::new(\"abc\")".to_string()], "Order::new") == vec!["abc".to_string()]'
-              - 'extract_examples_seed_strings(&["other_fn(\"x\")".to_string()], "Order::new").is_empty()'
-          extract_examples_seed_strings_for_param:
-            # Same promise as the constructor-call extractor, at the
-            # positional-argument shape a plain parameter uses: nothing
-            # comes back that the author did not write into an `examples:`
-            # entry.
-            ensures:
-              - "|result| result.iter().all(|s| examples.iter().any(|e| e.contains(s.as_str())))"
-            checks: [fuzz(256), test]
-            examples:
-              - 'extract_examples_seed_strings_for_param(&["handle(0, \"seed1\")".to_string()], "handle", 1) == vec!["seed1".to_string()]'
-              - 'extract_examples_seed_strings_for_param(&["handle(0, \"seed1\")".to_string()], "handle", 0).is_empty()'
       harness_crate:
         anchor: ply_core::harness_crate
         state:
