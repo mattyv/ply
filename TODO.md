@@ -1356,7 +1356,7 @@ raw compiler output.
       parameters already did, and the generated code that builds one now constructs real
       values instead of leaving a raw tuple in a field that expects a struct.
 - [x] Rewrite `skills/ply-checkable-code` rule 4: wide structs are fine, and the real
-      constraints are public, named, and not `#[non_exhaustive]` (`d849fb6`). The review
+      constraints are public, named, and not `#[non_exhaustive]` (`fb7434e`). The review
       of that rewrite also retracted rule 9's claim that a `Result<Self, _>` constructor
       is not recognised (it has been since 2026-08-28) and the refusal checklist's "too
       wide", and added slices and tuples to rule 7's buildable list.
