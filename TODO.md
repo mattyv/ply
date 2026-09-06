@@ -183,7 +183,7 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       twice says "the node's verdict is `tool_error`". Both cannot be right. `tool_error`
       is also absent from D6's status list entirely.
 
-- [x] **A correct function is no longer accused of breaking its promise** -- `HASH1`.
+- [x] **A correct function is no longer accused of breaking its promise** -- `971d7fd`.
       The worst defect of the day, reported by external review and reproduced exactly as
       described: `#[ply::requires(x == 42)]` on a function that returns exactly what it
       promises came back as "a real, reproduced violation, not a probabilistic one".
@@ -209,7 +209,7 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       back to `violation`, and without the probe the second goes back to `tested` on a
       function never called.
 
-- [x] **The second numeric classifier had the float bug too** -- `HASH1`. The exhaustive
+- [x] **The second numeric classifier had the float bug too** -- `971d7fd`. The exhaustive
       check written on 2026-09-05 covers `is_numeric_rust_type`, and there is a second
       classifier it never looks at: `is_numeric_cast_target`, which decides the same
       question for a cast the author wrote by hand. `u128` was on its list -- admitted for
@@ -218,7 +218,7 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       classifier along. Closed the same way, with its own independent oracle over every
       integer primitive Rust has.
 
-- [x] **A test claimed a guard it did not have** -- `HASH1`. External review, and it is
+- [x] **A test claimed a guard it did not have** -- `971d7fd`. External review, and it is
       right: `the_enumeration_really_does_reach_every_variant` asserts its list has 32
       entries, and the comment said a variant added later would be caught. It would not.
       The oracle's wildcard-free `match` does force a new variant to be classified, but
