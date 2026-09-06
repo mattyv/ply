@@ -150,6 +150,39 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       commits a record or pins a fingerprint literal, so the identity change re-earns
       evidence rather than changing any input.
 
+- [x] **A check that never happened now reaches the top as a flag** -- `HASH`. Went
+      looking for why `ply_core::kernel` -- the aggregation proved four ways -- is called
+      from nowhere that produces a real verdict, and found the reason: the tool and the
+      kernel disagree about what a verdict is.
+
+      The-Ply-Spec.md D6 says `unsupported`, `timeout` and their neighbours are statuses,
+      not rungs: "a timeout is not a weaker proof, it is a different kind of fact." The
+      kernel models that -- six rungs, flags to one side. `verify` instead put three of
+      them *into* its ladder as rungs 1-3, below `unclaimed`, and `leaf_node` sets no
+      status at all. So the reason a function went unchecked lived only in its verdict
+      string, and a verdict string survives worst-of only by winning it.
+
+      The observable defect: a function whose promise is broken, beside a function Ply
+      could not check at all, reported the broken promise **and nothing else**. Fix the
+      broken one, re-run, and the component goes green over a function still nobody has
+      examined. Pinned by `a_function_nobody_could_check_is_still_reported_when_a_sibling_fails`,
+      which walks all three of `unsupported`, `timeout`, `tool_error`. The flag is the
+      verdict's own word rather than a translation, so what a reader sees is what the leaf
+      was labelled.
+
+- [ ] **KNOWN GAP: the shipped evidence ladder still has nine rungs and the proved one has
+      six.** The flag now travels, which closes the information loss above, but those three
+      outcomes are *also* still ranked as rungs below `unclaimed` -- so `ply_core::kernel`
+      still cannot be dropped onto this path, and its four proved obligations still govern a
+      ladder the tool does not use. Closing it means those three verdicts becoming
+      `unclaimed` at the leaf with the reason carried only as a flag, which moves
+      user-visible output and wants its goldens reviewed one at a time.
+
+      One spec inconsistency to settle first, and it is what the code followed: D6 and
+      §5.4b call `timeout` a status "outside the evidence order", while §5.4's harness rule
+      twice says "the node's verdict is `tool_error`". Both cannot be right. `tool_error`
+      is also absent from D6's status list entirely.
+
 - [ ] **KNOWN GAP: the filesystem-effect scanner fails open** (the review's fourth). An
       unrecognised method call (`writer.flush()`) returns `Reach::None` rather than
       `Unknown`, contradicting its own module doc: "**It fails closed.** ... Anything this
