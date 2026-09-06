@@ -1052,7 +1052,10 @@ fn verify_loaded_crate(
                         bodies.push(body);
                     }
                 }
-                let direct = ply_core::fuzz_gen::generate_direct_contract_cases(&plan.cf);
+                let direct = ply_core::fuzz_gen::generate_direct_contract_cases(
+                    &plan.cf,
+                    &plan.claim.examples,
+                );
                 if !direct.is_empty() {
                     bodies.push(direct);
                 }
@@ -5977,18 +5980,26 @@ fn run_fuzz_and_test_checks(
             .filter(|t| !t.ends_with(ply_core::fuzz_gen::ADMISSIBILITY_TEST_SUFFIX))
             .collect();
 
-        // A worked example calls the real function with the author's own
-        // arguments, so one that passed *is* the body having been entered
-        // on a real input -- whatever the generator could not reach. The
-        // probe looks only at generated boundary values and cannot see
-        // this, which is why it must not have the last word: its own
-        // message tells the reader to add an example, and before this the
-        // advice changed nothing at all, because adding one still left the
-        // probe failing and the fn reported as a violation.
-        let reached_by_a_worked_example = has_examples
-            && !failing_test_checks
-                .iter()
-                .any(|t| t.contains("::ply_example_"));
+        // **A passing example is not a contract check, and treating it as
+        // one let a broken promise report green.**
+        //
+        // This used to suppress the no-admissible-input outcome whenever a
+        // worked example passed. An example asserts *its own expression*:
+        // `broken(42) == 1` says the call returns 1 and says nothing about
+        // the contract. So a function promising `result == 0` while
+        // returning 1 came back `tested`, exit 0 -- and `1 == 1` earned it
+        // too, without calling the function at all. Reproduced from an
+        // external review, 2026-09-06; it was introduced that morning by the
+        // fix for the opposite defect, and is the one thing this tool must
+        // never do.
+        //
+        // What replaces it is not a weaker rule but a real one: the author's
+        // example *inputs* now feed the generated contract cases
+        // (`generate_direct_contract_cases`), so the promise is asserted on
+        // the value the author named. The probe then sees a genuinely
+        // admissible input, and its message's advice is true because the
+        // example does the checking -- rather than because a passing
+        // example was waved through as though it had.
 
         if !run.timed_out && test_tests_executed == 0 {
             // Same guard as `fuzz`'s own above, for the same reason: the
@@ -6075,7 +6086,7 @@ fn run_fuzz_and_test_checks(
                 open_item: None,
             });
             test_label = Some("violation".into());
-        } else if admissibility_probe_failed && !reached_by_a_worked_example {
+        } else if admissibility_probe_failed {
             // Nothing ever entered the body. Not a pass, not a failure: an
             // absence, and the evidence order already has a word for that.
             //

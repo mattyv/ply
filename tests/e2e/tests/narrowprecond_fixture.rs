@@ -68,12 +68,16 @@ fn a_correct_function_the_generator_cannot_reach_is_not_called_a_violation() {
         run.json
     );
 
-    // No error-severity diagnostic: nothing is broken here.
+    // No error-severity diagnostic *about the two correct functions*. The
+    // third one in this fixture promises something false on purpose and
+    // must produce exactly such a diagnostic, so this is scoped by node
+    // rather than counting the whole run.
     let errors: Vec<&serde_json::Value> = run.json["diagnostics"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|d| d["severity"] == "error")
+        .filter(|d| d["node_id"] != "narrowprecond::broken_but_exampled")
         .collect();
     assert!(
         errors.is_empty(),
@@ -98,6 +102,22 @@ fn a_correct_function_the_generator_cannot_reach_is_not_called_a_violation() {
          `examples:` entry that satisfies the precondition and the promise gets checked on \
          that input. (W0542)",
         "the sentence a reader gets must name the cause and give advice that works (W0542)"
+    );
+
+    // A passing example is not a contract check. `broken_but_exampled`
+    // promises zero and returns one; its example asserts only that the call
+    // returns one, which is true. Between the morning fix and the evening
+    // one this reported `tested`, exit 0 -- evidence that lies, and the one
+    // thing this tool exists not to do. The example's input now feeds the
+    // generated contract cases, so the promise is asserted at 42 and fails.
+    let lying = find_fn(&run.json["root"], "broken_but_exampled")
+        .unwrap_or_else(|| panic!("no node for broken_but_exampled in {}", run.json));
+    assert_eq!(
+        lying["verdict"], "violation",
+        "the promise is broken at the only input anything reaches, and a passing example \
+         says nothing about the promise -- reporting anything but a violation here is \
+         evidence that lies: {}",
+        run.json
     );
 
     // The advice the message gives has to be advice that works: the same

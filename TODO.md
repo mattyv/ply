@@ -110,16 +110,43 @@ the bug and now pass, so they are the regression test.
       entirely. An extension trait imported in the body that uses it, the most natural place to
       put one, went straight past the check written to catch extension traits.
 
-      Both walks are `syn` visitors now, reaching every node by construction. Completeness
-      becomes the compiler's job rather than a person's memory -- the same move as the
-      wildcard-free matches elsewhere in this codebase. The reported case is pinned, and so are
-      four more positions of the same import: top of file, function body, nested block, inline
-      module, another function.
+      Both walks are `syn` visitors now, reaching every node by construction. Five positions
+      of the same import are pinned: top of file, function body, nested block, inline module,
+      another function.
 
       `names_the_crate_binds` had the identical weakness and is fixed the same way. **Not
       reported** -- found by asking what else in this file walked items by hand, which is the
       first time in five rounds that a fix here reached past the example it was given. Pinned
       too, and checked to bite by breaking the visitor and watching it go red.
+
+- [x] **A passing example no longer conceals a broken promise** -- `HASHE`. The worst
+      defect of the day and it was mine, introduced that morning by the fix for the opposite
+      one. `reached_by_a_worked_example` suppressed the no-evidence outcome whenever an
+      example passed -- but an example asserts *its own expression*. `broken(42) == 1` is a
+      true statement about a function whose contract says the result is zero. Reproduced:
+      **`tested`, exit 0, on a broken promise.** `1 == 1` earned it too, without calling the
+      function at all. Evidence that lies is the one thing this tool exists not to do.
+
+      The suppression is gone, and what replaces it is not a weaker rule but a real one: the
+      author's example *inputs* now feed the generated contract cases, so the promise is
+      asserted at the value the author named. That same fixture is a reported `violation`
+      now, which is what it always should have been -- and the message's advice ("add an
+      example that satisfies the precondition") is true because the example does the checking,
+      not because a passing example was waved through as though it had.
+
+      Literal arguments only, stated as a bound: the value is written into the generated
+      harness verbatim, so anything needing a name this scan cannot guarantee is in scope
+      would break the whole crate's harness rather than one case. All three outcomes are
+      pinned in one fixture -- unreachable earns nothing, honest example earns `tested`, lying
+      example is a violation.
+
+- [x] **A mutation sweep that never ran no longer reports success** -- `HASHE`. The summary
+      read "no survivors listed" as "every planted bug was caught", ignoring the exit status
+      it had carefully saved and never used. With no `mutants.out` at all it printed a clean
+      result: a job that never ran claiming green, which is the green-nothing this repository
+      refuses, in its own CI. Three outcomes now, and all three were checked by running the
+      real script: no results and a failure exit, results with survivors, and results with a
+      non-zero exit but nothing listed.
 
 - [ ] **KNOWN GAP, recorded not hidden**: that copy list is maintained by hand. The next
       `include_str!` of a path outside a crate directory will break the same two unrelated

@@ -86,13 +86,33 @@ jobs:
           echo "exit=$?" >> "$GITHUB_OUTPUT"
           set -e
 
+      # Three outcomes, not two. "No survivors listed" is only good news if
+      # the sweep actually ran: with no `mutants.out` at all this printed
+      # "Every planted bug in this shard was caught", which is a job that
+      # never ran reporting a clean result -- exactly the green-nothing this
+      # repository exists to refuse, in its own CI. The saved exit status was
+      # captured and then never read. Reported by external review 2026-09-06,
+      # who ran this script with no `mutants.out` and watched it claim
+      # success.
+      #
+      # cargo-mutants exits 0 when every planted bug was caught, and non-zero
+      # when some survived *or* when the run itself failed. The results
+      # directory is what tells those two apart.
       - name: Say what survived
         if: always()
+        env:
+          SWEEP_EXIT: ${{ steps.sweep.outputs.exit }}
         run: |
           {
             echo "## Shard ${{ matrix.shard }} of 8"
             echo
-            if [ -s mutants.out/missed.txt ]; then
+            if [ ! -d mutants.out ]; then
+              echo "**No result. This sweep did not run to completion** (exit"
+              echo "\`${SWEEP_EXIT:-unknown}\`, and no \`mutants.out\` was written)."
+              echo
+              echo 'That is not the same as "every planted bug was caught", and'
+              echo 'this step used to say so anyway. Nothing was measured here.'
+            elif [ -s mutants.out/missed.txt ]; then
               echo "**$(wc -l < mutants.out/missed.txt) planted bugs were not noticed.**"
               echo
               echo 'Each is one of three things, and all three are worth knowing:'
@@ -102,6 +122,11 @@ jobs:
               echo '```'
               cat mutants.out/missed.txt
               echo '```'
+            elif [ "${SWEEP_EXIT:-1}" != "0" ]; then
+              echo "**No survivors listed, but the sweep exited \`${SWEEP_EXIT}\`.**"
+              echo
+              echo 'Something went wrong that is not a surviving mutant. Read the'
+              echo 'step log before reading this shard as clean.'
             else
               echo "Every planted bug in this shard was caught."
             fi
