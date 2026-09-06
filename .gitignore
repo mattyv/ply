@@ -28,3 +28,18 @@ demos/verified-green/src/ply_generated.rs
 # its verdicts. (D14 still holds for real downstream projects -- they should
 # commit theirs.)
 crates/ply-core/ply.lock
+crates/ply-cli/ply.lock
+
+# The evidence record Ply writes about *itself* when the self-check is run
+# by hand (`cargo ply verify crates/ply-core`). Anchored to the product
+# crates on purpose: a `ply.lock` under `tests/fixtures/` is a deliberate
+# test input and stays tracked.
+#
+# The-Ply-Spec.md D14 says a project's `ply.lock` is committed, and for a
+# project using Ply that is right -- it is what stops CI re-proving what is
+# already proven. This repository is the exception for the same reason its
+# evidence page is published only from CI: a record committed from a
+# contributor's machine would let CI reuse results earned on hardware,
+# toolchains and engine versions nobody reviewing the pull request can see.
+# Ply's evidence about Ply has to be earned by the run that reports it.
+/crates/*/ply.lock

@@ -101,27 +101,54 @@ fn a_genuinely_broken_string_function_is_caught_with_a_false_promise() {
         run.json
     );
 
+    // This asserted a `W0541` witness-only violation until 2026-09-04: a
+    // String failure could be found but not replayed as an ordinary Rust
+    // test, and W0541 is the code that says so. String replay works now, so
+    // the same failure arrives as an ordinary violation *with* a replay file,
+    // and W0541 correctly no longer fires. What the test was really guarding
+    // -- that the failing value is visible and is the real string -- is
+    // asserted here on the code that does fire.
     let diags = run.json["diagnostics"].as_array().unwrap();
-    let w0541 = diags
+    let violation = diags
         .iter()
-        .find(|d| d["code"] == "W0541" && d["node_id"].as_str().unwrap().ends_with("preview"))
-        .unwrap_or_else(|| panic!("expected a W0541 witness-only violation: {}", run.json));
-    assert_eq!(w0541["severity"], "error");
+        .find(|d| d["code"] == "P0502" && d["node_id"].as_str().unwrap().ends_with("preview"))
+        .unwrap_or_else(|| panic!("expected a P0502 violation for `preview`: {}", run.json));
+    assert_eq!(violation["severity"], "error");
     assert!(
-        w0541["title"].as_str().unwrap().contains("s: String"),
-        "must name the actual blocked parameter: {w0541}"
+        !diags
+            .iter()
+            .any(|d| d["code"] == "W0541" && d["node_id"].as_str().unwrap().ends_with("preview")),
+        "a String failure is replayable now, so the witness-only excuse must \
+         not still be reported alongside the replay: {}",
+        run.json
     );
+    assert_eq!(
+        violation["counterexample"]["cargo_test"], "src/ply_generated_cex.rs",
+        "the reader must be handed a test that fails the same way: {violation}"
+    );
+
     // The real failing string value must be visible, not just "a violation
-    // happened" -- and it must be the *decoded* value (no stray backslash
-    // escaping artefacts from the marker wire format leaking through).
-    let inputs = &w0541["counterexample"]["inputs"];
+    // happened" -- and it must be the *decoded* value, with no artefacts of
+    // how it travelled: neither the marker wire form's backslashes nor the
+    // quotes and `\u{...}` escapes proptest's `Debug` adds on the panic path.
+    let inputs = &violation["counterexample"]["inputs"];
+    let s = inputs["s"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the failing input must be shown: {violation}"));
     assert!(
-        inputs["s"].is_string(),
-        "the failing input must be shown: {w0541}"
+        !s.contains("\\\\"),
+        "the reported value must be the real string, not the escaped wire form: {inputs}"
     );
     assert!(
-        !inputs["s"].as_str().unwrap().contains("\\\\"),
-        "the reported value must be the real string, not the escaped wire form: {inputs}"
+        !s.starts_with('"') && !s.ends_with('"'),
+        "the reported value must be the string itself, not the Rust literal \
+         `Debug` prints -- a reader told the input was `\"a\"` will look for a \
+         three-character value with quotes in it: {inputs}"
+    );
+    assert!(
+        !s.contains("\\u{"),
+        "a non-ASCII character must be reported as itself, not as the escape \
+         `Debug` prints for it: {inputs}"
     );
 }
 
@@ -154,15 +181,27 @@ fn a_non_panicking_wrong_value_string_bug_is_also_caught_with_a_clean_reported_v
         run.json
     );
 
+    // Was a `W0541` witness-only violation until 2026-09-04; String replay
+    // works now, so the failure comes back as an ordinary violation with a
+    // replay file. The value assertions below are the point of this test and
+    // are unchanged.
     let diags = run.json["diagnostics"].as_array().unwrap();
-    let w0541 = diags
+    let violation = diags
         .iter()
         .find(|d| {
-            d["code"] == "W0541" && d["node_id"].as_str().unwrap().ends_with("char_count_wrong")
+            d["code"] == "P0502" && d["node_id"].as_str().unwrap().ends_with("char_count_wrong")
         })
-        .unwrap_or_else(|| panic!("expected a W0541 witness-only violation: {}", run.json));
-    let s = w0541["counterexample"]["inputs"]["s"].as_str().unwrap();
-    assert!(!s.is_empty(), "the failing string must be shown: {w0541}");
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a P0502 violation for `char_count_wrong`: {}",
+                run.json
+            )
+        });
+    let s = violation["counterexample"]["inputs"]["s"].as_str().unwrap();
+    assert!(
+        !s.is_empty(),
+        "the failing string must be shown: {violation}"
+    );
     assert!(
         !s.contains('\\'),
         "the reported value must be the real, decoded string -- no wire-escaping artefacts: {s:?}"

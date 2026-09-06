@@ -6314,3 +6314,25 @@ fn a_declaration_the_code_disagrees_with_loses_the_drawing_to_the_source() {
          list the document declared -- got classes {glyph_classes:?} in row:\n{row}"
     );
 }
+
+#[test]
+fn a_bare_name_that_is_itself_a_top_level_component_is_not_ambiguous() {
+    // §5.1a rule 6 searches leaf names, and that search is only meaningful
+    // for a token that is not already a complete path. `check` here names a
+    // top-level component outright -- there is nothing to search for and
+    // nothing to be ambiguous about, even though `core.check` also exists.
+    //
+    // Ply's own workspace hit exactly this on 2026-09-05: the root document
+    // has a `check` crate, `crates/ply-core/ply.yaml` has a `check` module,
+    // and the moment the root drawing started showing core's real interior
+    // rather than a hand-copied summary, the edge `check -> core` stopped
+    // resolving and the whole drawing failed. Reading it as ambiguous also
+    // made the advice unfollowable: the suggested "dotted form" of a
+    // top-level component is the bare name that was just rejected.
+    let svg = render_fixture("tests/fixtures/toplevel_shadows_nested.ply.yaml");
+    assert_eq!(
+        svg.matches("class=\"edge-call\"").count(),
+        1,
+        "`check -> core` must resolve to the top-level `check`: {svg}"
+    );
+}

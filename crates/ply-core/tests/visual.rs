@@ -1124,3 +1124,50 @@ fn svg_height(svg: &str) -> f64 {
     let rest = &svg[start..];
     rest[..rest.find('"').unwrap()].parse().unwrap()
 }
+
+/// A finding the drawing shows must also be in the data the drawing travels
+/// with. It was drawn and dropped: `render`'s envelope hardcoded an empty
+/// diagnostics list while the renderer ran the checks itself and painted
+/// `W0419` onto the picture. A viewer reading only the envelope therefore had
+/// no way to select the finding, count it, filter it, or ask what its code
+/// means -- the reader could see a red line and had nothing to click
+/// (reported from the VS Code viewer, 2026-09-06).
+#[test]
+fn a_finding_the_drawing_paints_is_also_in_the_envelope_it_travels_with() {
+    // `ledger` is a top-level component, and `intake.ledger` a nested one of
+    // the same short name: the edge names `ledger`, which resolves to the
+    // top-level one and cannot reach the nested one. That is W0419.
+    let document = parse_document(
+        "ply: 1\ncomponents:\n  ledger:\n    anchor: app::ledger\n  intake:\n    anchor: app::intake\n    components:\n      ledger:\n        anchor: app::intake::ledger\nedges:\n  - \"intake -> ledger\"\n",
+    )
+    .unwrap();
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "finding-view".into(),
+            completed_at: "2026-09-06T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "render".into(),
+            },
+            outcome: RunOutcome::MissingEvidence,
+        },
+        &RenderOptions::default(),
+        None,
+    )
+    .unwrap();
+
+    assert!(
+        visual.svg.contains("W0419"),
+        "the drawing is expected to paint this finding -- if it stopped, this \
+         test is now proving nothing:\n{}",
+        visual.svg
+    );
+    let codes: Vec<&str> = visual.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    assert!(
+        codes.contains(&"W0419"),
+        "the drawing paints W0419, so the envelope must carry it too -- \
+         otherwise a viewer shows a finding it cannot name: {codes:?}"
+    );
+}

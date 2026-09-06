@@ -57,7 +57,7 @@ pub(crate) fn local_anchor_names(crate_dir: &Path) -> Vec<String> {
 /// it checks. A component anchored at a *module* of this crate is not that
 /// -- its code is right here -- so it is local, and its claims resolve
 /// through [`local_module_path`].
-pub(crate) fn is_local(local_anchors: &[String], anchor: &str) -> bool {
+pub fn is_local(local_anchors: &[String], anchor: &str) -> bool {
     local_module_path(local_anchors, anchor).is_some()
 }
 
@@ -73,7 +73,7 @@ pub(crate) fn is_local(local_anchors: &[String], anchor: &str) -> bool {
 /// was read from the crate root, so a key written relative to the module
 /// resolved to nothing and the claim was declined by name. Ply's own
 /// workspace document is written that way throughout.
-pub(crate) fn local_module_path(local_anchors: &[String], anchor: &str) -> Option<String> {
+pub fn local_module_path(local_anchors: &[String], anchor: &str) -> Option<String> {
     // No readable manifest: every component is treated as local and every
     // key read from the crate root, which is what happened before this
     // function existed. A missing manifest degrades rather than mis-reports.
@@ -92,7 +92,7 @@ pub(crate) fn local_module_path(local_anchors: &[String], anchor: &str) -> Optio
 /// A fn key as the document writes it, resolved to the path from the crate
 /// root that names the same function -- which is the only spelling the
 /// resolver and the generated harness can use.
-pub(crate) fn crate_root_fn_key(module: &str, fn_key: &str) -> String {
+pub fn crate_root_fn_key(module: &str, fn_key: &str) -> String {
     if module.is_empty() {
         fn_key.to_string()
     } else {
@@ -563,7 +563,7 @@ pub(crate) fn assumed_contracts(
 }
 
 /// One contract, as a reader would say it out loud.
-pub(crate) fn contract_text(requires: &[String], ensures: &[String]) -> String {
+pub fn contract_text(requires: &[String], ensures: &[String]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for r in requires {
         parts.push(format!("requires {r}"));
@@ -618,7 +618,17 @@ fn callee_entry(
 }
 
 /// Reflow a sentence to ~92 columns, indenting continuations to `indent`.
-pub(crate) fn wrap(text: &str, indent: usize) -> String {
+pub fn wrap(text: &str, indent: usize) -> String {
+    // An indent at or past the line width makes wrapping meaningless --
+    // nothing would ever fit under it, so every word would fall on its own
+    // line regardless of where exactly `indent` sits above the width.
+    // Clamping here is a fact about what the width already means, not an
+    // invented answer: every real call site passes a small literal (0, 4,
+    // 6, 14 ...), but before this an `indent` near `usize::MAX` made
+    // `" ".repeat(indent)` try to allocate that many bytes and abort the
+    // whole process. Found 2026-09-05 by Ply's own fuzzing of this
+    // function, pointed at its own CLI crate.
+    let indent = indent.min(91);
     let mut out = String::new();
     let mut col = indent;
     for word in text.split_whitespace() {
@@ -634,4 +644,38 @@ pub(crate) fn wrap(text: &str, indent: usize) -> String {
         col += word.len();
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every real call site passes a small literal indent (0, 4, 6, 14,
+    /// 16 ...), so this never crashed in practice -- but Ply's own fuzzing
+    /// of `wrap` found it in seconds: an `indent` anywhere near
+    /// `usize::MAX` makes `" ".repeat(indent)` try to allocate that many
+    /// bytes, which aborts the whole process rather than returning an
+    /// error. A caller that later computes `indent` from data (rather than
+    /// writing a literal) would take the CLI down. Found 2026-09-05
+    /// pointing Ply's own fuzzing at its own CLI crate.
+    #[test]
+    fn an_indent_near_the_wrap_width_or_beyond_does_not_abort() {
+        let _ = wrap("a b c", usize::MAX / 2);
+    }
+
+    /// An indent at or past the wrap width makes wrapping meaningless
+    /// anyway -- nothing would ever fit, so every word falls on its own
+    /// line regardless. Clamping there is a real fact about what the
+    /// function's own wrap width allows, not an invented answer for an
+    /// input nobody meant (§ the rule this project holds itself to:
+    /// "do not make it total by inventing an answer").
+    #[test]
+    fn an_indent_past_the_wrap_width_still_returns_something_bounded() {
+        let out = wrap("hello world", 1_000_000);
+        assert!(
+            out.len() < 1_000,
+            "an oversized indent must not make the output scale with it: {} bytes",
+            out.len()
+        );
+    }
 }

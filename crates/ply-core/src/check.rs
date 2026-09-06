@@ -313,6 +313,18 @@ fn join_or(items: &[String]) -> String {
     }
 }
 
+/// The same list where the sentence states what *is* rather than offering
+/// a choice: "A and B also exist". `join_or` there reads as though only one
+/// of them might be real.
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [a, b] => format!("{a} and {b}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
 fn check_token_ambiguity(
     token: &str,
     leaf_index: &HashMap<String, Vec<String>>,
@@ -322,22 +334,81 @@ fn check_token_ambiguity(
     if token == "*" || token.contains('.') {
         return;
     }
-    if let Some(paths) = leaf_index.get(token)
-        && paths.len() > 1
-    {
-        let mut candidates = paths.clone();
-        candidates.sort();
+    let Some(paths) = leaf_index.get(token) else {
+        return;
+    };
+    if paths.len() <= 1 {
+        return;
+    }
+    let mut candidates = paths.clone();
+    candidates.sort();
+
+    // A token that already names a top-level component outright is not
+    // ambiguous, however many nested components share its leaf name: a
+    // top-level component's full path *is* its bare name, so the token is
+    // already as specific as it can be. Calling that ambiguous gave advice
+    // nobody could follow -- the suggested "dotted form" of a top-level
+    // component is the bare name just rejected.
+    //
+    // But resolving it silently is its own trap, and a worse one: an author
+    // who meant the nested component gets the other one, the drawing looks
+    // reasonable, and every check passes. So the reading is stated. It is a
+    // warning rather than an error because the name does resolve, to exactly
+    // one thing, by a rule that does not depend on what else exists -- there
+    // is nothing here Ply had to guess.
+    //
+    // Newly reachable when a component draws another document's interior in
+    // place: names arrive from a file the author of this one never edited,
+    // and can shadow theirs without either file changing. Ply's own
+    // workspace has the pair (`check` the crate, `core.check` the module).
+    if paths.iter().any(|p| p == token) {
+        // Backticked, like every other path this tool prints: these are
+        // things to type, and a reader copying one needs to see where it
+        // starts and ends.
+        let shadowed: Vec<String> = candidates.iter().filter(|p| *p != token).cloned().collect();
+        let quoted: Vec<String> = shadowed.iter().map(|p| format!("`{p}`")).collect();
         out.push(diag(
-            "E0206",
+            "W0419",
             format!(
-                "ambiguous component reference {token:?}: it could mean {} — write the dotted \
-                 form (e.g. {}) to say which",
-                join_or(&candidates),
-                candidates[0]
+                "{token:?} here means the top-level component `{token}`, but {} also \
+                 {} and this name does not reach {}. If you meant {}, write {}.",
+                join_and(&quoted),
+                if shadowed.len() == 1 {
+                    "exists"
+                } else {
+                    "exist"
+                },
+                if shadowed.len() == 1 { "it" } else { "them" },
+                if shadowed.len() == 1 {
+                    "that one"
+                } else {
+                    "one of those"
+                },
+                // One candidate: name it, there is nothing to choose
+                // between. Several: naming the first would be choosing for
+                // the reader, which is the mistake `E0206`'s own wording is
+                // careful to avoid.
+                if shadowed.len() == 1 {
+                    format!("`{}`", shadowed[0])
+                } else {
+                    format!("its dotted path (e.g. `{}`)", shadowed[0])
+                },
             ),
             target.clone(),
         ));
+        return;
     }
+
+    out.push(diag(
+        "E0206",
+        format!(
+            "ambiguous component reference {token:?}: it could mean {} — write the dotted \
+             form (e.g. {}) to say which",
+            join_or(&candidates),
+            candidates[0]
+        ),
+        target.clone(),
+    ));
 }
 
 /// §5.3 "containment implies permission": resolves an edge endpoint token
@@ -357,6 +428,12 @@ fn resolve_component_ref(
     }
     if token.contains('.') {
         return all_qualified.contains(token).then(|| token.to_string());
+    }
+    // Exactly as in `check_token_ambiguity` and the renderer's own
+    // `resolve`: a token that already names a component outright is that
+    // component, and the leaf search never runs for it.
+    if all_qualified.contains(token) {
+        return Some(token.to_string());
     }
     match leaf_index.get(token) {
         Some(paths) if paths.len() == 1 => Some(paths[0].clone()),
@@ -459,6 +536,44 @@ fn unreferenced_external_message(name: &str) -> String {
 }
 
 pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
+    run_checks_with_links(doc, None)
+}
+
+/// Every leaf name in `comp`'s subtree, with the qualified path it sits at,
+/// collected without running a single rule.
+///
+/// Deliberately not `walk_component`: a linked document's own rules are that
+/// document's business, and running them here would report the same problem
+/// twice, against a file whose author may not even be able to edit this one.
+/// The only thing this document needs from over there is which names exist,
+/// because those names are drawn on *this* picture and can shadow the ones
+/// written here.
+fn collect_leaf_names(
+    qualified: &str,
+    comp: &Component,
+    leaf_index: &mut HashMap<String, Vec<String>>,
+) {
+    for (name, child) in &comp.components {
+        let path = format!("{qualified}.{name}");
+        leaf_index
+            .entry(name.clone())
+            .or_default()
+            .push(path.clone());
+        collect_leaf_names(&path, child, leaf_index);
+    }
+}
+
+/// [`run_checks`], told about every component whose interior is drawn from
+/// another document (§7.1). Only the name index is widened by those: see
+/// [`collect_leaf_names`] for why the linked document's own rules stay over
+/// there. Without this, a name arriving from a linked file could shadow a
+/// local one on the picture with nothing said about it -- which is the
+/// situation the whole `W0419` rule exists for, so it has to be the
+/// situation it can actually see.
+pub fn run_checks_with_links(
+    doc: &Document,
+    links: Option<&crate::config::LinkIndex>,
+) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mut unresolved_ids: Vec<(u64, String)> = Vec::new();
     let mut leaf_index: HashMap<String, Vec<String>> = HashMap::new();
@@ -483,6 +598,18 @@ pub fn run_checks(doc: &Document) -> Vec<Diagnostic> {
             &external_names,
             &mut used_externals,
         );
+    }
+
+    // Names arriving from another document, for the shadowing rule only.
+    if let Some(links) = links {
+        for (name, comp) in &doc.components {
+            if let Some(link) = crate::visual::is_hollow(comp)
+                .then(|| links.get(name))
+                .flatten()
+            {
+                collect_leaf_names(name, &link.target, &mut leaf_index);
+            }
+        }
     }
 
     // §3: "a name collision with any component ... is the existing

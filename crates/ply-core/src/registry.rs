@@ -67,10 +67,11 @@ macro_rules! codes {
 codes!(
     // --- Tier::Schema: document-local ply.yaml validation (§5.1/§5.1a),
     // no anchored source needed. ---
-    E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0208, E0209, E0504, W0409, W0410,
+    E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0208, E0209, E0504, W0409, W0410, W0419,
     // --- Tier::Anchor: resolving a claim to real code (§5.2). ---
     E0301, E0304, E0306, // --- Tier::Crate: architecture, exact and sound (§5.3). ---
-    A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, A0416, W0413,
+    A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, A0416, A0417, W0413, W0532,
+    W0533, W0534,
     // --- Tier::Item: architecture, approximate (§5.3) -- none of these
     // are built yet; see each row's status. ---
     A0402, A0403, A0404, A0406, A0407, A0408, W0411, W0412,
@@ -78,9 +79,9 @@ codes!(
     // (§5.4). ---
     E0501, E0502, E0503, E0505, W0502, W0503, W0511, W0512, W0513, W0514, W0515, W0516, W0517,
     V0505, V0506, V0507, V0508, V0509, V0510, W0518, W0519, W0520, W0521, W0522, W0523, W0524,
-    W0525, W0526, W0527, W0528, W0529, W0541, W0110, W0111, W0303, W0531, K0502, K0601, M0601,
-    P0502, P0601, R0502, R0601, X0901, X0902, X0903, W0414, W0415, W0416, W0417, W0418, E0506,
-    V0511,
+    W0525, W0526, W0527, W0528, W0529, W0541, W0542, W0110, W0111, W0303, W0531, K0502, K0601,
+    M0601, P0502, P0601, R0502, R0601, X0901, X0902, X0903, W0414, W0415, W0416, W0417, W0418,
+    E0506, V0511,
 );
 
 /// The stage of Ply's own pipeline a code belongs to. See the module doc
@@ -200,6 +201,14 @@ impl Code {
                 severity: Error,
                 spec_anchor: "§5.1a",
                 gloss: "A name in an edge, a deny rule, or a reference could mean more than one thing -- for example it matches both a declared external and a same-named component -- and Ply lists every candidate rather than guess which one you meant.",
+            },
+            W0419 => RuleEntry {
+                code: self,
+                tier: Schema,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.1a",
+                gloss: "A name used in an edge, a deny rule, or a reference matches a top-level component outright, so that is what it means -- but something nested somewhere else shares the same short name, and this name cannot reach it. Ply says which one it took rather than letting you find out from a picture, because the two readings look identical in the file and mean different things.",
             },
             E0207 => RuleEntry {
                 code: self,
@@ -332,6 +341,38 @@ impl Code {
                 severity: Error,
                 spec_anchor: "§5.1",
                 gloss: "A `show:` entry declares a field's shape, and once that field resolves against real code the shape disagrees with what the code really is. Only reachable where the field resolved at all -- with no code there is nothing to disagree with -- and naming both the declared shape and the real one, so the fix is always one edit: change the declaration, or treat the mismatch as the regression it is.",
+            },
+            A0417 => RuleEntry {
+                code: self,
+                tier: Crate,
+                status: Enforced,
+                severity: Error,
+                spec_anchor: "§7.1",
+                gloss: "A component's crate has its own ply.yaml, so this box would link to it, but that file could not be read or does not parse as a valid ply.yaml document. The box draws its own declared interior instead of the link, and the run continues rather than aborting.",
+            },
+            W0532 => RuleEntry {
+                code: self,
+                tier: Crate,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§7.1",
+                gloss: "A component's crate has its own ply.yaml, and it parses fine, but that document's own top-level anchor no longer sits under this component's anchor -- so the link does not form. Realign one of the two anchors to relink them.",
+            },
+            W0533 => RuleEntry {
+                code: self,
+                tier: Crate,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§7.1",
+                gloss: "Two components in the same document would both link to the same other document. A document links to another at most once, so only the first (in declaration order) actually does, and this is the second.",
+            },
+            W0534 => RuleEntry {
+                code: self,
+                tier: Crate,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§7.1",
+                gloss: "Following a chain of cross-document links from this component would eventually revisit a document already on that chain. The link does not form, so the drawing never has to walk a loop to find out.",
             },
             A0410 => RuleEntry {
                 code: self,
@@ -701,6 +742,14 @@ impl Code {
                 severity: Error,
                 spec_anchor: "§8 (D7)",
                 gloss: "A failing input was found, but Ply could not also render it as an ordinary Rust test that fails the same way -- often because the failure only exists thanks to a stubbed-out assumption about another function -- so the raw evidence is kept and Ply says why the friendly replay test is missing.",
+            },
+            W0542 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.4c",
+                gloss: "Every input Ply could build for this function was turned away by the function's own precondition, so the body was never entered and the promise has not been checked on a single value. Nothing here is broken -- the promise may well be true -- and nothing here is proven either, which is why this is an absence of evidence rather than a violation. A worked example naming an input the precondition accepts is what gets it checked.",
             },
             W0110 => RuleEntry {
                 code: self,

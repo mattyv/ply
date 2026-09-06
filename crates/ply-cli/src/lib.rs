@@ -20,6 +20,8 @@ pub mod worklist;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
+
 use clap::{Parser, Subcommand, ValueEnum};
 // The absence vocabulary (§1: "an absence is a name, not a slot") lives in
 // ply-core, because a second consumer now reads it -- the rule that decides
@@ -27,12 +29,13 @@ use clap::{Parser, Subcommand, ValueEnum};
 // results that earned evidence). Two copies of one vocabulary is how the
 // next absence gets missed by one of them, which is the exact shape of the
 // defect that put this rule here.
+use ply_core::config::derive_links;
 use ply_core::diag::is_absence;
 use ply_core::model::parse_document;
-use ply_core::visual::svg::{RenderOptions, render_svg_with_state};
+use ply_core::visual::svg::{RenderOptions, render_svg_with_state_and_links};
 use ply_core::visual::{
-    DEFAULT_RETAINED_RUNS, RunOutcome, VisualPublisher, build_declared_visual_envelope,
-    build_visual_envelope_with_sources, completed_run_metadata, outcome_of,
+    DEFAULT_RETAINED_RUNS, RunOutcome, VisualPublisher, build_declared_visual_envelope_with_links,
+    build_visual_envelope_at, completed_run_metadata, outcome_of,
 };
 use verify::VerifyOptions;
 
@@ -145,12 +148,24 @@ enum Commands {
         /// Number of completed visual runs to retain for this Ply root.
         #[arg(long, default_value_t = DEFAULT_RETAINED_RUNS)]
         retain_views: usize,
+        /// Write the real, evidence-coloured drawing from this run to this
+        /// path -- the same picture `cargo ply render` draws from the
+        /// document alone, except every box and chip is filled by what this
+        /// run actually found, not by what was declared. Independent of
+        /// `--publish-view`: that publishes a JSON envelope for an editor to
+        /// poll, this writes a plain `.svg` file, and either or both may be
+        /// requested in one run.
+        #[arg(long)]
+        svg: Option<PathBuf>,
     },
     /// Explain a diagnostic code -- what it means, who reports it, and
-    /// whether a run carrying it passed. With no code, lists every one this
-    /// build can produce.
+    /// whether a run carrying it passed. Also explains a spec section by
+    /// number, which is what every message's trailing reference points at.
+    /// With nothing after it, lists every code this build can produce.
     Explain {
-        /// A code as Ply prints it, like `K0502`. Case does not matter.
+        /// A code as Ply prints it, like `K0502` -- or a spec section by
+        /// number, like `8` or `5.4b`. Case does not matter, and the section
+        /// sign is never needed.
         code: Option<String>,
     },
     /// Remove older published visual runs without deleting the current run.
@@ -243,6 +258,7 @@ pub fn run() -> anyhow::Result<()> {
             seed,
             publish_view,
             retain_views,
+            svg,
         } => {
             let seed = match seed {
                 Some(text) => match ply_core::fuzz_gen::seed_from_hex(&text) {
@@ -265,17 +281,35 @@ pub fn run() -> anyhow::Result<()> {
             };
             let verification = verify::verify_crate_result(&path, &opts)?;
             let envelope = verification.envelope;
-            if publish_view {
+            // Both `--publish-view` and `--svg` need the same real,
+            // evidence-coloured drawing -- built once, used by whichever (or
+            // both) of the two was actually asked for, so a run that wants
+            // only the file on disk does not pay for a JSON publication it
+            // never reads, and the two can never draw two different pictures
+            // of the same run.
+            if publish_view || svg.is_some() {
                 let run = completed_run_metadata(&path, verify::PLY_VERSION, outcome_of(&envelope));
-                let visual = build_visual_envelope_with_sources(
+                // With the crate directory, so a verified drawing reads the
+                // same code and the same linked documents `cargo ply render`
+                // does. Without it, one file drew two different pictures
+                // depending on which command asked.
+                let visual = build_visual_envelope_at(
                     &verification.document,
                     &envelope,
                     run,
                     &verification.source_map,
+                    Some(Path::new(&path)),
                 )?;
-                let publication = VisualPublisher::new(&path).publish(&visual, retain_views)?;
-                if let Some(warning) = publication.warning {
-                    eprintln!("warning: {warning}");
+                if publish_view {
+                    let publication = VisualPublisher::new(&path).publish(&visual, retain_views)?;
+                    if let Some(warning) = publication.warning {
+                        eprintln!("warning: {warning}");
+                    }
+                }
+                if let Some(svg_path) = &svg {
+                    std::fs::write(svg_path, &visual.svg).with_context(|| {
+                        format!("writing the verified drawing to {}", svg_path.display())
+                    })?;
                 }
             }
             if cli.json {
@@ -437,14 +471,32 @@ fn render_command_with_format(
     // ahead of every drawn form below (JSON envelope, transcript, plain SVG)
     // so none of them can disagree about what a component's state holds.
     let source_root = input.parent().unwrap_or(Path::new("."));
-    let state_fields = ply_core::harness::resolve_state_fields(source_root, &document);
+    // §7.1's derive-links brief: a component links to another document when
+    // that document's own top-level anchor sits under this one's -- resolved
+    // here, next to `state_fields`, for the same reason: it reads real crate
+    // directories off disk, which nothing below this line does again.
+    //
+    // Before `state_fields`, because that read needs it: a linked
+    // component's declared state lives in the other crate, and a walk that
+    // does not follow the link reports it as unresolvable rather than
+    // reading it.
+    let link_set = derive_links(&document, source_root);
+    let state_fields = ply_core::harness::resolve_state_fields_with_links(
+        source_root,
+        &document,
+        Some(&link_set.links),
+    );
 
     if json {
-        let visual = build_declared_visual_envelope(
+        let visual = build_declared_visual_envelope_with_links(
             &document,
             completed_run_metadata(
                 input.parent().unwrap_or_else(|| Path::new(".")),
-                env!("CARGO_PKG_VERSION"),
+                // The build identity, the same value `verify` records -- not
+                // `CARGO_PKG_VERSION`, which is hand-edited and told a client
+                // comparing this field to a published run that a different
+                // Ply made it, every time, for the same binary.
+                verify::PLY_VERSION,
                 // Placeholder only: the builder replaces this with the outcome
                 // it derives from the tree it constructs. Nothing has been
                 // checked here, so what comes out says the evidence is missing.
@@ -452,6 +504,7 @@ fn render_command_with_format(
             ),
             options,
             Some(&state_fields),
+            Some(&link_set.links),
         )?;
         let json = visual.to_json_pretty();
         return match output {
@@ -465,9 +518,10 @@ fn render_command_with_format(
     if text {
         // Same read the drawing does, for the same reason: the text form's
         // contract is that it states everything the drawing shows.
-        let transcript = ply_core::visual::transcript::render_transcript_with_state(
+        let transcript = ply_core::visual::transcript::render_transcript_with_state_and_links(
             &document,
             Some(&state_fields),
+            Some(&link_set.links),
         );
         return match output {
             Some(path) => std::fs::write(path, transcript)
@@ -478,7 +532,7 @@ fn render_command_with_format(
         };
     }
 
-    let svg = render_svg_with_state(&document, options, &state_fields)
+    let svg = render_svg_with_state_and_links(&document, options, &state_fields, &link_set.links)
         .map_err(|error| anyhow::anyhow!("could not render {}: {error}", input.display()))?;
 
     // A selection that selects nothing is worth saying out loud. On a flat
@@ -490,7 +544,12 @@ fn render_command_with_format(
     // layout pass and cannot disagree with what was actually drawn. The
     // note goes to stderr, so it can never contaminate an SVG on stdout.
     if options.depth.is_some() || options.focus.is_some() || !options.collapse.is_empty() {
-        let plain = render_svg_with_state(&document, &RenderOptions::default(), &state_fields);
+        let plain = render_svg_with_state_and_links(
+            &document,
+            &RenderOptions::default(),
+            &state_fields,
+            &link_set.links,
+        );
         if plain.as_deref().ok() == Some(svg.as_str()) {
             eprintln!(
                 "note: this drawing is identical to the one with no --depth/--focus/--collapse \
@@ -664,7 +723,7 @@ const MARK_GLOSS: [(&str, &str); 8] = [
 ];
 
 /// `a`, `a and b`, `a, b and c` — a list a person reads, not a debug print.
-pub(crate) fn join_plainly(items: &[String]) -> String {
+pub fn join_plainly(items: &[String]) -> String {
     match items {
         [] => String::new(),
         [one] => one.clone(),
@@ -1324,6 +1383,45 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_svg_flag_is_independent_of_publish_view() {
+        let cli = Cli::try_parse_from(["cargo-ply", "verify", ".", "--svg", "out.svg"]).unwrap();
+        match cli.command {
+            Commands::Verify {
+                publish_view, svg, ..
+            } => {
+                assert!(
+                    !publish_view,
+                    "asking for the file must not also publish a view"
+                );
+                assert_eq!(svg, Some(PathBuf::from("out.svg")));
+            }
+            _ => panic!("verify should parse as verify"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "cargo-ply",
+            "verify",
+            ".",
+            "--svg",
+            "out.svg",
+            "--publish-view",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Verify {
+                publish_view, svg, ..
+            } => {
+                assert!(publish_view, "both flags together must both take effect");
+                assert_eq!(svg, Some(PathBuf::from("out.svg")));
+            }
+            _ => panic!("verify should parse as verify"),
+        }
+
+        let cli = Cli::try_parse_from(["cargo-ply", "verify", "."]).unwrap();
+        assert!(matches!(cli.command, Commands::Verify { svg: None, .. }));
     }
 
     fn envelope(verdicts: &[&str]) -> Envelope {

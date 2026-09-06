@@ -1,8 +1,940 @@
 # TODO
 
+## Ply Book — 2026-09-06
+
+- [x] Build a separate `ply-book` course: three worked chapters, Rust starter and
+      solution exercises, short assessments, and an independent scheduler challenge.
+      Published source in `mattyv/ply-book` at `c7200ba`; all four solutions and
+      intended failures checked locally against pinned Ply.
+- [x] Verify the exercises against a pinned Ply revision and publish with mdBook
+      on the separate `mattyv/ply-book` GitHub Pages site. Course commit `c7200ba`;
+      GitHub build and deployment `34009951278` both passed. Local checkout:
+      `/Users/matthew/Code/ply-book`.
+
+
 **Picking this up fresh?** `docs/handoff-2026-09-04.md` is the narrative and the traps; this
 file is the state. Read that one first, then this.
 
+
+## Landed: the e2e build-identity tests build again — 2026-09-06
+
+CI's `product-e2e (5/6)` shard was red: the private copy those tests make of Ply's own
+source (`tests/e2e/src/lib.rs::copy_ply_source`) never listed `The-Ply-Spec.md`, so once
+`cargo ply explain`'s `include_str!("../../../The-Ply-Spec.md")` landed (below, same day),
+the copy's build failed with "No such file or directory" and both build-identity tests
+panicked on "cargo build (Ply source copy) failed" -- a merge interaction between two
+same-day changes, not a defect in the diagnostics-in-the-envelope work this PR shipped.
+
+Fixed by copying `The-Ply-Spec.md` alongside `Cargo.toml`/`Cargo.lock`, and updating the
+copy function's doc comment to say why (it mirrors the existing `schema/` case: another
+file `include_str!`-embedded relative to a crate manifest, so it has to sit at the same
+depth in the copy). No test needed writing -- the two failing e2e tests already reproduced
+the bug and now pass, so they are the regression test.
+
+- [x] **The effect scanner's first repair was itself unsound** -- `c371b04`. The same review
+      that found it failing open found the fix failing open too, one name along, and it is
+      right: a whitelist of harmless *method names* reads a name as a method, and it is not
+      one. `.clone()` runs the receiver's own `Clone`, which is ordinary Rust and may open a
+      file; so may `Display` behind `.to_string()` and `Iterator::next` behind `.next()`.
+      Reproduced with a `Clone` impl that writes a file -- reported safe.
+
+      Two things must hold now before a method is passed over: the name is on the harmless
+      list, **and** the receiver is a parameter whose declared type has no user code anywhere
+      inside it. Applied through type arguments, so `Vec<u8>` qualifies and `Vec<Logger>` does
+      not -- cloning that one runs `Logger::clone` per element. Sound for the trait methods on
+      the list because coherence forbids anyone outside `std` implementing `Display for str`.
+
+      A bare parameter name is the only receiver whose type this can look up without being the
+      type checker it is not, so a chained call, a field or a local is `Unknown`. That is a
+      real narrowing of what this can answer for and it is stated as one: `p.trim().to_owned()`
+      used to read safe and now does not. Both directions pinned, and the container case too.
+
+      **The lesson, for the second time in two days: a repair is a change like any other and
+      wants its own adversarial read.** Yesterday's zero-case guard turned "green with no
+      evidence" into a false accusation; this one turned "fails open on flush" into "fails
+      open on clone". Neither was caught here.
+
+- [x] **The receiver check compared a type's name, not its identity** -- `14c5fa6`. Third
+      review, third repair of the same scanner, and the same false-safe answer reached a
+      third way: `is_transparently_std` read only the last path segment, so `my::String`
+      counted as the standard library's `String` and a user's own `len` -- writing a file --
+      was passed over.
+
+      A path qualifies now only when it is genuinely std's: bare, with nothing in the fn's own
+      file having taken that name for a type of its own (declaration, import, or a glob
+      import, which could bring in anything), or written out from a real `std`/`core`/`alloc`
+      root. Three shapes pinned: the qualified impostor, the locally-declared one, and the
+      imported one.
+
+      **Recorded because it is now a pattern, not an incident.** Three fixes to this file in
+      one day, each landing while the hole it was closing stayed reachable by a route the fix
+      did not consider -- names instead of methods, then names instead of types. Every one was
+      found by a reviewer reading the diff, none by a test here. The general lesson holds
+      beyond this file: a repair aimed at a reported example closes the example, and the class
+      only closes when the invariant is stated over the whole input space. That is the same
+      thing `docs/plans/evidence-integrity.md` says about defects in the product, applied to
+      the tool's own source.
+
+- [ ] **KNOWN GAP, recorded not hidden**: that copy list is maintained by hand. The next
+      `include_str!` of a path outside a crate directory will break the same two unrelated
+      build-identity tests, 150 seconds into an e2e shard, with an error naming neither the
+      embedded file nor the copy list -- which is exactly how this one was found. A sweep
+      would close it: resolve every `include_str!` in the copied crates and assert each
+      target sits inside what `copy_ply_source` copies, so a missing file fails fast and by
+      name. Not done here because the PR was wanted merged.
+
+## Landed: one field, one meaning — the build identity — 2026-09-06
+
+`verify --publish-view` stamped the build identity (the fingerprint of the source that
+decides what a verdict means). `render`, `check`, `audit` and `worklist` stamped
+`CARGO_PKG_VERSION` -- the hand-edited `0.1.0` -- so one field carried two different kinds
+of value depending on which command wrote it, and nothing said which.
+
+Not cosmetic. A client asking "was this run made by the Ply I have installed" compares
+that field, so comparing a rendered or checked envelope against a published run would have
+reported a different Ply **every time, for the same binary**. Found while designing exactly
+that comparison for the interactive viewer, which cannot tell a reader whether a run is
+still current.
+
+The project had already been burned by this constant: `verify`'s own unit test says the
+hand-edited version "is what let fourteen fixes go unnoticed by every stored result"
+(docs/review-silent-narrowing.md §6). That guard only ever covered `verify`, which is why
+three commands kept a private copy of the constant it warns about. There is now one shared
+constant and a sweep across the commands that write an envelope, rather than a guard on one
+of them.
+
+- [ ] The viewer still cannot say whether a run is current. Two facts, not one verdict, and
+      not the word "stale" (§D14: "there is no `stale` state ... the hash is the
+      confirmation"). (a) *A different build of Ply made this run* -- now decidable, one
+      string comparison, since this fix. (b) *The document has been edited since the run* --
+      needs a document identity in the envelope, which is a **§8 amendment and the
+      maintainer's to write**. Wall-clock age and a non-clean outcome are neither: show the
+      date, draw no conclusion. Design reviewed 2026-09-06; wording, list treatment and
+      failure modes worked through, including that a run from a *newer* build must read as
+      "a different build" and never "older", and that a viewer which cannot find the binary
+      must render nothing rather than a match.
+
+## Landed: a finding the drawing paints is now in the data beside it — 2026-09-06 (549e33e)
+
+`render`'s envelope hardcoded an empty diagnostics list while the renderer ran the checks
+itself and painted `W0419` onto the picture. The drawing said `W0419` twice; the envelope
+said there were zero findings. So in the interactive viewer a reader saw a red line with a
+code on it and had nothing to click -- the finding could not be selected, counted,
+filtered, or asked about. Reported from the VS Code viewer, where right-clicking the line
+produced no menu at all, because there was nothing to build one from.
+
+The checks now run for the declared envelope too and their findings travel in it, anchored
+to the element they are about (component, fn, external). Verified against this repo's own
+root document: `cargo ply render` reports the `W0419` it draws. README gained a section on
+asking a code what it means, with `W0419` as the worked example -- its quoted `explain`
+output is byte-for-byte what the tool prints, checked, not transcribed.
+
+- [ ] **KNOWN GAP, recorded not hidden**: a finding about an entry in `edges` or `deny` is
+      carried **unanchored**, because those are drawn as lines the §8 envelope does not
+      describe. Readable and explainable, but not clickable on the line itself. Anchoring
+      needs edges in the envelope -- their endpoints, kind and label -- which is a protocol
+      change and wants a §8/§7.1 amendment, not a quiet addition. ply-vis's own 3D spike
+      (`docs/spikes/3d-layouts/README.md`, its recommendation 1) reached the same
+      conclusion from the other direction: today arrows cannot be selected, tabbed to, or
+      inspected, so the interactive viewer is poorer than the static picture on that point.
+- [ ] The renderer still computes the checks a second time internally rather than being
+      handed the findings the envelope builder already ran. A second pass over a pure
+      function, taken deliberately to leave the renderer's signature alone. Worth folding
+      into one pass if that signature is being changed for another reason anyway.
+- [ ] **`W0419` cannot take yes for an answer.** It fires on Ply's own document -- a
+      top-level `check` component beside `ply-core`'s own `check` module -- where the
+      reading Ply took is the intended one and nothing needs changing. There is no way to
+      acknowledge a resolved ambiguity, so the document carries the warning permanently.
+      Note that the `check` clash may resolve itself: retiring one of the standalone
+      validator / `cargo ply check` is already recorded as pending (`ply.yaml` line ~163).
+- [x] `cargo ply explain 8` reads a spec section out loud -- landed 2026-09-06. Resolves
+      `8`, `5.4b`, `§5.4b`, `s5.4b`, `sec 5.4b`, `section 5.4b` alike, because the section
+      sign needs a key most keyboards do not have and requiring it would be a refusal
+      about typing. The spec is embedded with `include_str!`, so an installed binary
+      explains the rules it implements rather than whatever file sits beside it. Codes and
+      sections cannot collide (one letter + four digits vs digits and dots), and a bad
+      section reference is never reported as a bad code. Swept, not spot-checked: an
+      invariant test walks every numbered heading in the spec and fails if one cannot be
+      reached by its own number.
+
+## Landed: the float bug closed by exhaustion, not by a spot-check — 2026-09-05
+
+"Plug bugs with proofs." The float defect is the one of today's eight whose domain is small
+enough to exhaust, so it is closed the way this repository closes the verdict kernel: an
+independent oracle, and **every case**, not a chosen few.
+
+- [x] **Every `RustType` variant is checked against an independently written oracle** for
+      whether `x as i128` keeps what a comparison could ask about. 32 variants, no sampling.
+      The oracle is written from Rust's semantics rather than from the function under test,
+      so the two can disagree -- which is the entire point.
+
+      Two things make "every case" true rather than aspirational. The oracle is a
+      **wildcard-free match**, so a variant added later stops the file compiling until
+      somebody classifies it -- verified by adding one and watching three `E0004`s. And the
+      enumeration is checked to reach every variant by `discriminant`, not by the `Debug`
+      rendering: the first draft used `Debug` and reported 30 distinct strings for 32
+      entries, which would have left two variants silently unchecked by a test whose whole
+      job is to say none are.
+
+      Proved to bite: putting `F32`/`F64` back on the numeric list fails it by name.
+
+  **The honesty condition, which travels with the claim:** exhaustive over the *variants*,
+  representative over what a variant carries -- `Vec<u8>` stands for every `Vec<T>`. Sound
+  only because the property reads the outermost constructor and nothing inside it, which is
+  visible in the oracle: no arm inspects its payload. If that stops being true, this stops
+  being a proof.
+
+- [x] **A cosmetic re-render can no longer reseed every check in silence** -- `dd6d1b7`.
+      A contract's rendered text is a hashed fingerprint input *and* the case-generation
+      seed, so re-rendering an unchanged contract differently invalidates every recorded
+      result and makes every function draw different inputs. That happened on 2026-09-05 over
+      one pair of brackets, and what caught it was three end-to-end tests failing for
+      apparently unrelated reasons, hours later, in CI.
+
+      223 contracts across every fixture are now pinned byte for byte, rendered through the
+      real pipeline rather than a copy of it. Checked against the actual regression: putting
+      that bracket bug back makes it fail in seconds and print the pair. The file says a diff
+      here is not automatically a bug -- it means every affected recorded result is about to
+      stop matching -- and that the golden is updated in the same commit as the change that
+      caused it, having been read.
+
+- [x] **The rewrite is now checked to consult the classifiers it is proved against** --
+      `dd6d1b7`. The two exhaustive proofs close the question "is this cast lossless". They say
+      nothing about whether the code emitting `as i128` asks them at every point it emits
+      one -- and one arm reaching the "cast it anyway" fallback would reopen the whole float
+      defect with both proofs still green. A walking invariant over the rewrite's real output
+      now fails on the first widened leaf the classifier refuses, across a corpus reaching
+      every arm.
+
+      Its honesty condition is measured rather than claimed: **it is blind to a wrong
+      classifier**, because it asks the classifier. Putting the floats back on the admitted
+      list leaves it green -- verified by doing it. A separate test asserts the output
+      directly and does go red. Both are needed and the module says so.
+
+- [x] **A verified drawing's contents are addressable again** -- `739ee92`. External review's
+      second finding, reproduced: `cargo ply verify --svg` on a document with links published
+      a picture containing a linked crate's functions and a metadata list containing **none of
+      them** -- measured on a minimal pair, 0 entries beside 3 drawn items. A viewer whose
+      only input is that envelope addressed a different system from the one on screen, and
+      could not filter or click a single thing it could see.
+
+      The same class as "9 elements beside 44 drawn chips", fixed on the render path the day
+      before; this is the verification path, which that fix did not touch. The element walk
+      covers the verdict tree -- what the run checked -- while the drawing walks the document
+      with its links followed, which is more.
+
+      The envelope is now completed from that same links-aware walk, through the one shared
+      `linked_body` helper rather than a second copy of the rule. Entries added for items the
+      run never checked carry `unclaimed`, no engine, no seed and no case count, because that
+      is what is true of them: matching metadata is the property, and giving them evidence
+      would be inventing some. 0 entries became 4, every one honest.
+
+- [x] **The checking pipeline is now mutation-tested too, nightly** -- `739ee92`. Every defect
+      found on 2026-09-05 and 2026-09-06 lived in four files -- the contract rewrite, the
+      reachability walk, the effect scan, the record -- and not one was caught by a test.
+      `kernel-mutants` measures whether the kernel's gate can see; nothing measured whether
+      these could. 274 planted bugs, sharded eight ways, on a schedule rather than on every
+      pull request, because it is about four hours of machine time and the wait was already
+      the complaint.
+
+      It reports rather than fails, deliberately and unlike the kernel job. That job's bar of
+      zero survivors with no excused list is right for proved code whose first run found three
+      real gaps; setting it here on day one would make this red from the start, and a job
+      always red is a job nobody reads. **Follow-up: triage the first run's survivors and then
+      turn it into a gate.** A survivor is a gap in the tests, dead code, or a change with no
+      observable effect -- never an ignore-list entry.
+
+- [ ] **KNOWN GAP: two `RustType` variants print identically under `Debug`.** Found by the
+      enumeration above (30 strings, 32 variants) and not chased down. Harmless here, since
+      the check now keys on `discriminant`, but any diagnostic that names a type by its
+      `Debug` rendering is telling two different types apart by a name they share.
+
+  **Why the other seven were not closed this way.** They are not classifications over a
+  bounded domain: they live in a call walk over arbitrary source, in attribute parsing, in
+  generated-code shape, and in a fingerprint over whole files. Those need the differential
+  and negative-case checks recorded above, not enumeration. Reaching for a proof where the
+  domain does not support one produces a proof of the wrong thing, which is the failure this
+  very bug was: the old rule proved `as i128` compiles, and what mattered was whether it
+  preserved the question.
+
+## Landed: three ways a *fresh* run overstated what it checked — 2026-09-05
+
+A second review round, again explicitly not executed by its author. **All three reproduce.**
+Worse than the cache findings: these do not need a stale record. A cold run reports them.
+
+| the case | before | after |
+|---|---|---|
+| `identity(x: f64) = x.trunc()` promising `*result == x` | `fuzzed(256)` | `violation`, fractional witness |
+| two contradictory `ensures` attributes | `tested` (only the last checked) | `violation`, both ANDed |
+| `requires(x == 42)`, body returns `0`, `checks: [test]` | `tested`, **no disclosure** | `violation` |
+
+- [x] **Floats are no longer widened to `i128`.** The rule was "Rust's `as` can cast it
+      without a compile error", which is the wrong test: a cast that compiles is not a cast
+      that preserves what the comparison asked. `*result == x` became `(*result as i128) ==
+      (x as i128)`, so truncating the input satisfied a promise it obviously breaks. The
+      widening exists so an assertion cannot overflow; float arithmetic saturates rather
+      than overflowing, so floats never needed it.
+
+      **This is why a higher rung would not have helped.** `contract_rt` is shared with the
+      Kani path -- its own comment says so -- so `bounded` on that function would have
+      exhaustively proved the *rewritten integer* comparison and reported a stronger,
+      more confident wrong answer.
+
+- [x] **Every contract attribute is kept, not the last one.** Repeated `requires`/`ensures`
+      assigned into one slot each and dropped the rest in silence. Reuses the existing
+      `conjoin_exprs`/`conjoin_ensures` the document's own list form already uses.
+
+- [x] **A generated `test` case that its precondition rejects no longer counts as a check.**
+      Each case returned early on rejection, Rust reported the early return as a *passing*
+      test, and Ply counted passing tests as executed cases. One extra generated test now
+      asserts at least one case actually reaches the function. Checked both ways: an
+      unsatisfiable precondition goes red, a satisfiable one still earns `tested`.
+
+- [ ] **KNOWN GAP: the admissibility failure reads as a plain broken example.** It reports
+      `failed 1 of its own ... direct-contract test(s): ..._admissible`. The assertion's own
+      sentence -- "none of the generated cases satisfy its own precondition, so its promise
+      was never checked on a single input" -- is written and correct, but the engine surfaces
+      the failing test's *name*, not its message. Right verdict, wrong explanation.
+
+  **What this round says about the self-proof**, which is the maintainer's question and
+  matters more than the three fixes: all 56 of Ply's own claims earn **70 `fuzzed(256)` and
+  4 `tested`. Zero `bounded`. Zero `proved`.** Every declaration is `fuzz(256)` or
+  `fuzz(256), test`; `bounded` and `prove` appear nowhere. The one genuinely proved thing
+  here -- the kernel, exhaustive over 991,389 trees plus the Verus induction proof -- is not
+  a `ply.yaml` claim at all. So the part that is proved is not counted, and the part counted
+  is not proved. "All 50 claims earn evidence" has been the standing headline, including on
+  the published page, and it reads as proved while meaning sampled.
+
+## Landed: two ways a change could escape cache invalidation — 2026-09-05
+
+An external review of `32f8469` reported three ways an edit to the checked program could
+keep a cached green, and said plainly that it had not run them ("source-level findings, not
+locally executed reproductions"). **Two reproduce exactly.** Both are the worst thing this
+tool can do: report evidence it did not earn.
+
+Reproduced before fixing, each as the same source giving two answers:
+
+| change | with the cache | fresh |
+|---|---|---|
+| `type Input = u8` → `u16` | `fuzzed(256) [reused]` | `violation`, `x = 256` |
+| edit only `maths::helper`'s body | `fuzzed(256) [reused]` | `violation`, `x = 0` |
+
+Ply did not fail quietly: it printed "every input Ply hashes still hashes the same -- the
+function's own source, the code it calls, ..." while being wrong about exactly that.
+
+- [x] **A name is resolved from its own module first, then the crate root** -- the way Rust
+      reads it. A bare `helper(x)` written inside `mod maths` resolved to nothing, and
+      "nothing" fell into the arm whose comment reads "out of the workspace: `std`, or a
+      registry crate". It was the function on the next line.
+
+- [x] **Type declarations are hashed, though no walk of bodies reaches one.** Aliases,
+      structs and enums are on the walk's allowlist and were then hashed nowhere, so
+      changing one left every function byte-identical while changing what they mean.
+      Hashed as one set rather than per-reached-type: working out which declarations a body
+      depends on needs the type checker Ply is not, so an unused struct changing re-earns
+      the crate's claims. Coarser, never wrong -- this module's own stated trade.
+
+  Reuse was checked to still work, not assumed: an untouched crate reuses, and so does one
+  with an unrelated comment added. Ply's own 50 claims still pass under the stricter
+  hashing.
+
+- [x] **Dependency identity now survives a moved git revision and two versions of one
+      crate** (the review's third finding) -- `70246e6`. Two defects, one reader:
+
+      The lockfile's `source =` line was read as a boolean ("is this external?") and then
+      thrown away, so a git dependency updated without a version bump produced a byte-identical
+      identity and every recorded green stayed reusable over code that had moved underneath it.
+      The line is now kept whole. It is appended only for sources that are *not* crates.io: a
+      published crates.io version is immutable by that registry's policy, so name and version
+      already name exact bytes, and appending a constant registry URL to every dependency in
+      the world would have invalidated every recorded result for no gain -- the same
+      reseed-everything mistake a contract-text re-render made the day before.
+
+      Packages were also stored under their name alone, so the last `[[package]]` block for a
+      duplicated name won. Ply's own lockfile has two `syn`s; anything reaching `syn 2.0.119`
+      was fingerprinted as having reached `syn 3.0.4`. Packages are now keyed by name *and*
+      version, and a `dependencies` entry keeps the version Cargo writes into it precisely
+      when the bare name would be ambiguous. An entry that is still ambiguous walks every
+      candidate -- coarser than necessary, never wrong.
+
+      Both are pinned by tests that go red without the fix
+      (`a_git_dependency_that_moved_is_not_the_same_dependency`,
+      `two_versions_of_one_crate_do_not_overwrite_each_other`). Nothing in the repository
+      commits a record or pins a fingerprint literal, so the identity change re-earns
+      evidence rather than changing any input.
+
+- [x] **A check that never happened now reaches the top as a flag** -- `ec9cdb3`. Went
+      looking for why `ply_core::kernel` -- the aggregation proved four ways -- is called
+      from nowhere that produces a real verdict, and found the reason: the tool and the
+      kernel disagree about what a verdict is.
+
+      The-Ply-Spec.md D6 says `unsupported`, `timeout` and their neighbours are statuses,
+      not rungs: "a timeout is not a weaker proof, it is a different kind of fact." The
+      kernel models that -- six rungs, flags to one side. `verify` instead put three of
+      them *into* its ladder as rungs 1-3, below `unclaimed`, and `leaf_node` sets no
+      status at all. So the reason a function went unchecked lived only in its verdict
+      string, and a verdict string survives worst-of only by winning it.
+
+      The observable defect: a function whose promise is broken, beside a function Ply
+      could not check at all, reported the broken promise **and nothing else**. Fix the
+      broken one, re-run, and the component goes green over a function still nobody has
+      examined. Pinned by `a_function_nobody_could_check_is_still_reported_when_a_sibling_fails`,
+      which walks all three of `unsupported`, `timeout`, `tool_error`. The flag is the
+      verdict's own word rather than a translation, so what a reader sees is what the leaf
+      was labelled.
+
+- [x] **The verdict a user sees now comes from the aggregation that was proved** --
+      `9b3b69b`. `ply_core::kernel::aggregate` carries the four standing obligations, proved
+      by exhaustive enumeration over 991,389 trees and again by induction in Verus, and none
+      of it governed a single verdict anyone ever saw: `verify` folded results with a private
+      worst-of over a ladder of integers written out by hand, and the two were free to drift
+      with nothing to notice.
+
+      Bound two ways now. The six rungs D6 defines are no longer restated here at all -- the
+      ladder carries `kernel::Evidence` itself, so their relative order *is* the proved one
+      by construction. And a bounded differential folds every tree of up to three leaves and
+      depth two both ways and requires the same answer. Both were checked to bite: swapping
+      two rungs makes them fail and name the pair.
+
+      The remaining three -- `tool_error`, `timeout`, `unsupported` -- are an extension this
+      tool makes to D6's order, and after examining it, an extension is what it is rather
+      than a defect. "The engine gave up" is more use at a glance than a bare `unclaimed`,
+      and since the flag fix earlier today nothing is lost by it: each also travels upward as
+      a flag, so a worst-of that hides one behind a `violation` no longer hides the fact. The
+      spec's D6 now records the extension and why the kernel cannot simply be called here.
+
+      One spec inconsistency was looked for and mostly was not there: D6 and §5.4b agree that
+      `timeout` is a status, and §5.4's "the node's verdict is `tool_error`" is about a word
+      D6's status list never contained. What was missing was any statement of where those
+      three sit, which is what the amendment adds.
+
+- [x] **The published page no longer lets "checked" sound like "proved"** -- `9b3b69b`. It
+      now says what checked means on it: 256 generated inputs for nearly every green chip, a
+      handful of hand-written examples for the rest, and nothing proved -- adding that a
+      promise failing on one value in a billion would sit there looking identical. The
+      2026-09-04 handoff carries the same correction against its own headline. The plan
+      document's own "56 claims earning 70 fuzzed(256)" was inflated too: those were node
+      counts, and the report has a node per component box as well as per function. Corrected
+      to the 56 claims actually declared.
+
+- [x] **A correct function is no longer accused of breaking its promise** -- `971d7fd`.
+      The worst defect of the day, reported by external review and reproduced exactly as
+      described: `#[ply::requires(x == 42)]` on a function that returns exactly what it
+      promises came back as "a real, reproduced violation, not a probabilistic one".
+
+      The guard added the day before was right about the gap it closed -- a precondition no
+      generated value satisfies used to earn `tested` on a function never called once -- but
+      it closed it by asserting inside a generated test, and a failing generated test is
+      precisely how `verify` recognises a broken contract. So the fix for "green with no
+      evidence" produced "red with no evidence", which is worse: the first misleads, the
+      second accuses.
+
+      It also gave advice that could not be followed. The message said to add a worked
+      example satisfying the precondition; the check counted only generated boundary values
+      and never looked at examples, so adding one changed nothing. Confirmed by doing it.
+
+      Now: that probe is recognised by name and never read as a contract test; a worked
+      example that passes counts as the body having been entered, because it is; and a
+      function nothing could reach reports `unclaimed` with the `inconclusive` status
+      (§0/D6's own word) and a warning that names the real cause. Warning severity, so
+      `--fail-on evidence` catches it and `--fail-on error` waves it through, exactly like a
+      refusal. Pinned by a fixture with two functions -- one with a satisfying example, one
+      without -- and the test was checked to bite both ways: without the fix the first goes
+      back to `violation`, and without the probe the second goes back to `tested` on a
+      function never called.
+
+- [x] **The second numeric classifier had the float bug too** -- `971d7fd`. The exhaustive
+      check written on 2026-09-05 covers `is_numeric_rust_type`, and there is a second
+      classifier it never looks at: `is_numeric_cast_target`, which decides the same
+      question for a cast the author wrote by hand. `u128` was on its list -- admitted for
+      widening to `i128`, which is the same width, so the top half wraps to negative and a
+      promise about `x as u128` was checked after the wrap. The float defect exactly, one
+      classifier along. Closed the same way, with its own independent oracle over every
+      integer primitive Rust has.
+
+- [x] **A test claimed a guard it did not have** -- `971d7fd`. External review, and it is
+      right: `the_enumeration_really_does_reach_every_variant` asserts its list has 32
+      entries, and the comment said a variant added later would be caught. It would not.
+      The oracle's wildcard-free `match` does force a new variant to be classified, but
+      nothing forces anyone to add it to the enumeration or to move the 32, so it would sail
+      through unchecked by the one test whose subject is that none are. Rust offers no fix
+      on stable -- `variant_count` is nightly and a derive macro is a dependency this crate
+      should not gain for one assertion -- so the comment now says what the number does and
+      does not do. A check believed stronger than it is, is the failure this file exists to
+      catch one level down.
+
+- [x] **The filesystem-effect scanner fails closed now, as it always said it did** --
+      `3269bc6`. Its opening promise -- "anything this scan cannot follow is `Unknown`" -- was
+      false for the commonest shape in real Rust. Every method call was skipped outright,
+      reasoning that the list of methods known to *write* had already had its say; but a
+      method that list has never heard of is not thereby known to be safe. `writer.flush()`,
+      the ordinary way a buffered writer commits bytes to a file, came back as a function
+      that touches nothing at all.
+
+      A method is now passed over only if it is on a spelled-out list of things that read or
+      reshape a value already in memory, and everything else is `Unknown`. The list is closed
+      and argued rather than blanket, exactly like the free-call list beside it: the bar for
+      adding one is "name a type whose implementation could touch a file", which `flush`,
+      `send`, `spawn` and `commit` all fail. Both directions are pinned -- an unrecognised
+      method is never safe, and `.len()`/`.trim()`/`.to_string()` still are, because a scan
+      that gives up on everything is worth no more than one that gives up on nothing.
+
+- [x] **The two type variants that print alike are not a defect** -- `3269bc6`. Named them
+      rather than leaving "two of them": `VecU8` and `Vec(U8)` both read `Vec<u8>`, and the
+      two user-type variants both read the type's bare name. `RustType`'s `Debug` is a
+      hand-written *user-facing* rendering -- three refusal messages interpolate it so a
+      reader sees `card_bps: [u32; 4]` instead of an internal variant name -- and to that
+      reader those pairs genuinely are the same type. So the rule is the narrow one: nothing
+      may use that rendering to tell two variants apart. Checked; nothing else does.
+
+- [x] **The four crates with no promises now say why** -- `3269bc6`. Asked directly, and the
+      answer is not "write four documents". `check` is one `main` of file reading and exit
+      codes; `e2e` is test scaffolding, and pointing Ply at the suite that judges Ply is the
+      circularity the plan exists to rule out; `attrs` takes compiler token streams Ply
+      cannot manufacture; `render`'s library is re-exports, and its one promisable function
+      lives in a binary no harness can reach. The last two could be claimed by making a
+      private function public and moving another out of a binary -- shaping the code to suit
+      the checker, which this repository refuses about its own kernel and refuses here for
+      the same reason. The root document now carries each reason, so a dashed box reads as an
+      answer rather than an omission.
+
+  **The architectural point the review makes, which outranks its four findings:** a correct
+  verdict aggregator still gives the wrong assurance if its inputs describe an earlier or
+  different program. The kernel has been proved four ways; none of that helps when the
+  fingerprint says a stale result still applies. Note `--fail-on evidence` does not catch
+  any of this -- the verdict is `fuzzed(256)`, not an absence.
+
+## Landed: the last unchecked promise in Ply's own library now earns evidence — 2026-09-05
+
+`record::fingerprint` was the one claim in `crates/ply-core/ply.yaml` that earned nothing,
+refused because its parameter has two fields that are lists of another struct
+(`assumed: Vec<AssumedPromise>`, `engines: Vec<EngineId>`). All 44 claims in the library now
+earn real evidence -- confirmed by running, not by reading: `cargo ply verify crates/ply-core`
+exits clean with zero refusals of any kind, and the same is still true of `crates/ply-cli`.
+
+Two separate, real bugs, not one -- found by tracing exactly why a shape that should have
+worked (once yesterday's crash fix made it stop being refused outright) still would not
+actually build:
+
+- [x] **A struct's own field, one container deep, was never resolved at all.** The function
+      that turns a bare type name into a real, buildable one only ever handled a field
+      whose type *is* that bare name directly -- never one sitting inside a `Vec`, `Option`,
+      a tuple, or a map. A top-level *parameter* of the same shape already worked, because
+      the code path for parameters walks containers and the code path for fields did not;
+      two implementations of the same idea, one of them incomplete. Fixed by making the
+      field path recurse through every container shape the parameter path already knows,
+      reusing the exact same per-leaf resolution either way so the two cannot drift apart
+      again.
+
+- [x] **Once resolved, the generated code still built the wrong value.** A field whose type
+      is `Vec<AnotherStruct>` fell into the generic "just bind whatever proptest drew" path,
+      so it ended up holding a list of raw tuples where the real field expects a list of
+      real struct values -- "mismatched types" in the generated file, not a refusal. The
+      exact conversion already existed for a *parameter* of this shape; applying the same
+      conversion to a field's own generated code, which previously skipped it, was the whole
+      fix.
+
+  Both proved rather than assumed. A focused test for each: one asserting the resolver
+  accepts the shape at all, a second asserting the *generated code itself* -- not just
+  whether the function was accepted -- actually constructs real values, because
+  accepted-but-uncompilable is exactly the failure that slipped through before. Both
+  confirmed red without their respective fix. And the real case, not just a synthetic one:
+  `record::fingerprint`'s own promise was broken on purpose (truncating the hash it
+  returns) and the check caught it as a genuine violation, naming both struct-typed fields
+  in the failing input it reported, before being restored.
+
+## Landed: CI now runs Ply against its own two documents — 2026-09-05
+
+Until now, every claim built up over the last two days -- 44 promises about ply-core, 6
+about ply-cli, all earning real evidence -- had only ever been checked by hand, on one
+machine, never by CI. Nothing stopped either document quietly drifting out of truth the
+next time the code under it changed; the whole "Ply proves itself" story rested on someone
+remembering to run it.
+
+- [x] **`cargo ply verify` can now write the real, evidence-coloured drawing to a file.**
+      New `--svg <path>` flag. The colouring code already existed (`render_svg_with_evidence`)
+      and was already computed on every `--publish-view` run, but only ever wrapped in a
+      JSON envelope for an editor to poll -- nobody could get a plain `.svg` file out of a
+      real run at all before this. `cargo ply render` still only ever draws from the
+      document, deliberately grey, never green; this is the other half.
+
+      Proved with a real end-to-end test, not a shape check: the promise is that the
+      written file carries the `fn-chip-box-earned` class (a real green fill, applied only
+      when a chip has actual `DisplayState::Earned` evidence attached) and the plain
+      declared render never does. Confirmed red without the flag (clap rejects it) and red
+      again on a first draft that asserted the wrong signal (the check-kind label like
+      "fuzz: 64 cases" turned out to be part of the *declared* chip too, present whether or
+      not anything ever ran -- an assumption worth recording since it looked right at a
+      glance and was not).
+
+- [x] **A new required CI job, `ply-self-check`**, added to the one gate `main` actually
+      requires. It builds the tool, runs it against both of Ply's own documents with
+      `--fail-on error` (the looser mode: only a real regression -- a broken promise, a
+      harness that stops compiling -- fails the build), and uploads both verified drawings
+      as a downloadable build artifact on every run, pass or fail.
+
+      `--fail-on error` was chosen by checking, not assumed: `cargo ply explain` confirms a
+      real violation and a real tool error are both error-severity, and the fingerprint
+      gap's own diagnostic is warning-severity, so this is strict where it needs to be and
+      tolerant only of the one gap already written down elsewhere in this file.
+
+      **Retracted the same day, by the section above this one.** `--fail-on error` was
+      picked to tolerate exactly one gap -- `record::fingerprint`'s refusal -- and that gap
+      was closed hours later. The setting is now looser than anything justifies it being.
+      Tightening it is carried as an open item below rather than left implied here.
+
+      Simulated the exact commands CI will run before committing: both crates verify clean
+      at exit 0, and the two drawings were opened and read, not just size-checked -- every
+      chip in both is genuinely filled and checkmarked, with the header line itself now
+      reading "6 earned" rather than the declared form's plain function count.
+
+## Landed: the evidence is published where a person can look at it — 2026-09-05
+
+The job above proved both documents on every change and then put the result somewhere
+almost nobody would ever go: a zip attached to a build, which expires after 90 days, which
+the forge will not render an SVG out of, and which costs a download and an unzip to read.
+Evidence that expensive to look at is evidence nobody looks at, and "Ply proves itself" was
+still, in practice, a sentence in a commit message.
+
+- [x] **A small published page, written by the build and only by a build that passed.**
+      New `publish-evidence` job and `.github/scripts/build-evidence-page.sh`. Both
+      drawings, plus three short paragraphs telling a stranger how to read them, at a
+      permanent address rather than an expiring one. Linked from the top of the README.
+
+      From CI and only from CI, on the same reasoning that already keeps `ply.lock` out of
+      commits: Ply's evidence about itself must never be something one developer's machine
+      can put in front of a reader. A drawing committed to the repository could be
+      regenerated and committed by hand; a page only a passing run can write cannot.
+
+      Deliberately not added to `ci-gate`. Publishing is not checking, and a page that
+      cannot deploy should not turn `main` red. The risk that buys -- a publish quietly
+      breaking, leaving a stale page under an address people trust as current -- is handled
+      where it can actually be seen: the page prints the commit it was built from and when,
+      so staleness is visible to the reader rather than silent.
+
+      The page generation is a script, not inline YAML, specifically so it can be built and
+      *looked at* before deploying. That is not decoration -- it was used: the page was
+      generated locally from the real drawings CI produced (downloaded from the actual run,
+      not regenerated), rasterised at its true full height of 4,638px after a first capture
+      at 4,400px silently cut the second drawing in half, and read. Both drawings render,
+      all 50 chips are filled and checkmarked, and the header lines read "44 earned" and
+      "6 earned". The truncated first capture is exactly the failure CLAUDE.md warns about
+      one level up, and it happened here on the first try.
+
+- [x] **The self-check now fails on a refusal, not just on a broken promise** — 2026-09-05.
+      It ran `--fail-on error`, chosen to tolerate `record::fingerprint`'s refusal, which
+      was fixed hours later; the looser setting then had nothing justifying it.
+
+      Answered by running, which is what the open item asked for. Both documents were
+      verified under `--fail-on evidence` first: **both exit 0**, so the stricter setting
+      costs nothing today. The worry that prompted the delay -- that `evidence` would also
+      reject the evidence-quality disclosures -- turned out to be wrong, and measurably so:
+      ply-core's run reports 74 "generated text excludes control characters" and 32 "one
+      side of this either/or decided every case" disclosures and still exits clean. Those
+      describe what a *passing* check did and did not cover; they are not absences.
+      `--fail-on warn` is the setting that rejects them, and it is not wanted.
+
+      What the tightening actually buys, confirmed with `cargo ply explain`: a function Ply
+      refuses to check reports at **warning** severity, so `error` waved it through. That is
+      precisely how `record::fingerprint` sat unchecked for days while every build stayed
+      green. The next such refusal now fails the build instead of being discovered by
+      someone reading a report.
+
+- [x] **The build's actions moved off a runtime that is being removed** — 2026-09-05.
+      GitHub removes Node 20 entirely on 2026-09-16 and had already started force-running
+      these actions on Node 24, which is a warning today and a broken build shortly.
+
+      Version numbers picked by reading each action's declared runtime rather than its
+      release notes, which was not paranoia: `upload-artifact@v5`'s notes announce Node 24
+      support, and its manifest still says `node20` -- "preliminary support" that a reader
+      would reasonably take for the fix. Each action moved to the lowest major that
+      actually declares `node24`: checkout v4→v5, upload-artifact v4→v6, download-artifact
+      v4→v7, deploy-pages v4→v5. Deliberately not "latest of everything": `download-artifact`
+      v8 changes when it unzips a download, and that is the exact hand-off `publish-evidence`
+      depends on and the one path a pull request cannot exercise.
+
+      `upload-pages-artifact@v3` and `actions/cache@v4` are untouched and were never in the
+      warning -- the first is a composite action with no Node runtime at all.
+
+## Landed: the CLI's own library gets its first six claims — 2026-09-05
+
+`crates/ply-cli/ply.yaml` is new: 6 claims, all in `shared.rs` plus one in `lib.rs`, all
+earning evidence. This is 6 of roughly 180 public functions in the crate -- the fast
+first cut of pure helpers, not the whole crate. `verify.rs` (9,100 lines, the code that
+decides every verdict) is entirely unclaimed still; that is the next, much bigger step.
+
+Three real defects found and fixed along the way, all confirmed by running rather than
+by reading:
+
+- [x] **`wrap` could abort the whole process.** Every real call site passes a small
+      literal indent (0, 4, 6, 14 ...); nothing stopped a pathological one, and Ply's own
+      first fuzz run against its own CLI crate found it in seconds -- an indent near
+      `usize::MAX` makes `" ".repeat(indent)` try to allocate that many bytes. Fixed by
+      clamping the indent to just under the line width, since an indent at or past the
+      width already makes wrapping meaningless -- a fact about what the width means, not
+      an invented answer for an input nobody meant.
+
+- [x] **The fuzz harness never imported the checked function's own containing module.**
+      A promise may call a sibling function defined right next to it in the same file --
+      no `use` statement needed, since same-module items need none. That compiled fine in
+      the real crate and failed in the generated check with "cannot find function", because
+      the harness only ever imported the checked function's own bare path plus a
+      crate-root glob, never the specific module it actually lives in. This is a second,
+      independent instance of the class of bug fixed 2026-09-04 for the counterexample
+      replay test (`contract_rt::render_cex_test`'s `module_import`) -- that fix covered
+      only the reactive replay path; the *initial* check, which is what actually finds a
+      violation in the first place, still had the gap. Fixed the same way, in
+      `fuzz_gen::wrap_fn_harness_module`, reusing the same `import_path()` split so the two
+      fixes cannot again disagree about how many segments to drop.
+
+- [ ] **OPEN, recorded rather than fixed: `check` accepts a function that `verify` can
+      never actually check.** `bounded(k)` (Kani) runs inside the target crate's own
+      source, where `pub(crate)` is visible; `fuzz`/`test`/`mutate` run in a genuinely
+      separate crate that depends on the target as an external dependency, where
+      `pub(crate)` is invisible. Ply's own resolver only distinguishes "private to its
+      module" from everything else, so `check` reports a `pub(crate)` function as
+      perfectly resolvable and `verify` then fails opaquely with a raw compiler error
+      naming some unrelated function first in line -- never explaining that the real
+      cause is visibility crossing a crate boundary. Worked around here by promoting the
+      six claimed helpers to full `pub`, which is a safe, reversible visibility widening
+      and not new API surface. The underlying disagreement between `check` and `verify`
+      is untouched and worth its own session: `check` would need to know which checks a
+      claim declares before it can say whether `pub(crate)` is actually sufficient.
+
+- [x] Rendered and reviewed (`docs/ply-cli-self.svg`/`.txt`), added to ARCHITECTURE.md.
+      **Note for future review, not a Ply defect:** the first rasterisation clipped the
+      bottom chip even though the window size exactly matched the SVG's own declared
+      width and height -- CLAUDE.md's own prescribed check. Headless Chrome's rendering
+      of a bare SVG file can carry a few pixels of margin the declared size doesn't
+      account for. Re-rendering with ~40-60px of headroom beyond the declared size, then
+      confirming the content doesn't reach that margin, is the more reliable check.
+
+## Open: the CLI crate is claimed 6 of ~180 — 2026-09-05
+
+The obvious next batch is `shared.rs`'s remaining pure surface (`declared_contracts`,
+`assumed_contracts`, `FnClaimRef`'s methods) and `verify.rs`'s standalone helpers
+(`default_engine_timeout_secs` is a clean, already-pure candidate: real properties like
+"a stubbed harness never gets less than the stubbed floor" and "the vec-param cost grows
+with the bound"). Both take `Document`/`ContractFn`/`FnClaimRef` as parameters in several
+cases, which are not Ply-buildable types -- those functions stay unclaimed until routed
+around or reduced to their buildable inputs, same as everywhere else in this codebase.
+
+
+## Landed: six more of Ply's own rendering proved by Ply — 2026-09-05
+
+Rendering was the least self-proved part of the tool and the part every other result is
+judged through: 3 promises across 8,749 lines. Today made the case -- every defect found
+was in rendering, and not one was caught by a test. Now 9, and ply-core is at **50 claims**.
+
+- [x] **The sentences a linked box depends on**: `linked_source_line`, `linked_explanation`,
+      `linked_contents_line`. Each must carry the file path and the counts, because a reader
+      told content lives elsewhere without being told *where* has been given a worse answer
+      than silence. These are the exact lines today's expansion change rests on.
+- [x] **`tame`** -- author text on its way into both views. Two promises: no control
+      character survives except a newline, **and the character count is unchanged**. The
+      second is the one that matters: a "fix" that drops characters instead of replacing
+      them silently loses a word from a note, which is the quieter bug.
+- [x] **`format_version_line`**, **`unresolved_fn_pin_prose`** -- the version a document is
+      read under, and an open decision's own number and question. Losing either turns a
+      specific thing into a vague one.
+
+  **The disclosure did its job, and so did the worked examples.** Ply reports that it never
+  generates control characters, so sampling can *never* reach the case `tame` exists for --
+  it says so itself in the run's own output. Three worked examples cover it instead, which
+  is what CLAUDE.md's guidance asks for where the interesting case is rare. Proved by
+  breaking it: replacing the replacement character with a space keeps the count promise true
+  and still gets caught, `tame — violation`, naming the failing example.
+
+  Two mistakes worth recording, both caught by Ply rather than by review. A `\n` inside a
+  double-quoted YAML scalar becomes a real newline, and the spliced Rust then reads
+  `'<newline>'` -- the harness would not compile, and Ply refused to blame any one function
+  for it. And a `&str` parameter arrives in the harness as an owned `String`, so
+  `result.contains(param)` needs `&*param`. Neither is obvious from the document.
+
+## Landed: seven defects Fable's review found in the expansion change — 2026-09-05
+
+Every one was in rendering, and **not one was caught by a test** -- the suites stayed green
+through all of them. Three were the tool stating something false, which is the failure this
+project exists to refuse.
+
+- [x] **The drawing overwrote this document's own words.** A linked component was taken
+      wholesale, so its note, capability badges, purity seal and declared checks came from
+      the other file. "Hollow" is only the narrow claim that a component declares no
+      interior. Ply's own root note appeared in the text form and **zero times** in the
+      drawing. The target now supplies the interior and nothing else.
+
+- [x] **A false sentence about state.** The field walk never followed a link, so a linked
+      component's state resolved to nothing and the drawing explained it with "there is no
+      code here to read one from either" -- about a type whose own crate's drawing measures
+      4 of its 8 fields. Both now read `4 of 8 shown`.
+
+- [x] **The golden test rendered link-blind**, so it compared the committed drawing against
+      a render nothing produces. Exposed by the fix above. It now makes the binary's call.
+
+- [x] **The envelope contradicted its own picture:** 9 elements listed beside an SVG drawing
+      44 chips, so a viewer addressed a different system from the one it displayed. Now
+      29 + 44 + workspace = 74, and the pre-folded drawings went 1 to 2.
+
+- [x] **`verify` drew a different picture from `render` for one file.** It got no source
+      root at all, so it drew linked components dashed and "promises nothing yet". Both
+      commands now draw 29 boxes and the same 6 genuinely-hollow ones.
+
+- [x] **`--focus`/`--collapse` could not reach a linked interior**, while a tooltip on that
+      very box promised they would. They were a fourth copy of the reference rule nobody
+      updated -- and it lacked the exact-match-wins rule the other three had.
+
+- [x] **The shadowing warning's plural branch** read "`a` or `b` also exist" and then said
+      to write `a`, choosing one candidate for the reader.
+
+  Also consolidated the link substitution, which had **four copies** free to drift, into one
+  function. The drawing's copy had already drifted -- that is the first item above.
+
+  **The honest note on process:** the golden carrying the false state sentence was reviewed
+  and accepted. The picture was rasterised and read; its hover text was not, and about 95%
+  of a drawing is hover text. Reading the *text form* beside the picture is what would have
+  caught it, and is what CLAUDE.md's own guidance already implies.
+
+## Landed: a name shadowed across documents is reported, not silently preferred — 2026-09-05
+
+Expanding a linked document made a new kind of collision reachable: names arrive from a
+file the author of this one never edited, and can shadow theirs without either file
+changing. The fix that unblocked the drawing resolved a top-level name in favour of the
+top-level component -- correctly, but *silently*, which is its own trap.
+
+- [x] **`W0419`, a warning: "this name means the top-level component, and something nested
+      shares its short name."** Names the reading Ply took and the path that would reach the
+      other one. A warning rather than an error because the name does resolve, to exactly
+      one thing, by a rule that does not depend on what else exists -- there is nothing here
+      Ply had to guess. Genuine ambiguity between two *nested* components is still the hard
+      error it was.
+
+      It fires on this repository: `check` the crate against `core.check` the module. That
+      warning is correct and is staying -- the edge really does mean the crate, and the
+      shadow really does exist.
+
+- [x] **The rule can see the case it exists for.** `run_checks` only ever saw this
+      document's own tree, so the shadow -- which arrives from the *linked* file -- was
+      invisible to it. It now takes the resolved links and widens its name index with them.
+
+      Only the name index: a linked document's own rules stay that document's business, and
+      running them here would report the same problem twice against a file whose author may
+      not be able to edit this one.
+
+## Landed: a linked component draws the other document's interior, not a pointer to it — 2026-09-05
+
+Follows the section below, which stopped the root document *copying* `core`'s interior but
+replaced the copy with a single folded box reading "look in that file". The maintainer's
+report was that the root drawing still showed a subset of `core` -- and it did: five parts
+before, then none at all, against a real twenty-one.
+
+- [x] **A linked box now draws the linked document's whole interior, in place.** The root
+      drawing goes from one folded box to twenty-nine boxes and forty-four promises, none of
+      them written down twice. Folding is a reader's choice again (`--depth`, `--focus`, the
+      viewer's own control) rather than the only thing on offer.
+
+      The box keeps its provenance on the anchor line -- `ply_core — crates/ply-core/ply.yaml`
+      -- because a reader looking at forty-four promises that are declared in a different
+      file needs to know which file to open, and without it the drawing would silently
+      present another document's content as this one's.
+
+- [x] **Three things that would have quietly disagreed with the picture, fixed with it.**
+      Each was found by looking at the output rather than by a failing test:
+
+      - The *text form* still said "they live in a different file" while the drawing showed
+        them. Its own contract is that it states everything the drawing shows, so it now
+        walks the linked interior too: 70 lines to 494.
+      - The *summary strip* counted only what this file spells out -- "8 components ·
+        0 functions" above a drawing of twenty-nine boxes and forty-four chips. Both views
+        now read `29 components · 44 functions`, byte-identical, from the one shared walk.
+      - That shared walk is `document_counts`, whose own comment records what a second
+        independent walk cost the last time one existed. A first draft of this change added
+        exactly that second walk; it was removed rather than left to rot.
+
+- [x] **A real resolution bug, surfaced by expanding.** The root document has a top-level
+      `check` (the standalone validator crate) and `core` has a `check` module. The moment
+      core's interior was drawn, the edge `check -> core` was reported ambiguous and the
+      whole drawing failed to render -- and the advice attached to it could not be followed,
+      because the "dotted form" of a top-level component is the bare name just rejected.
+
+      A token that already names a component outright is now that component, and the
+      leaf-name search never runs for it; the search exists to turn a short name into a
+      path, and there is nothing to search for when the token *is* the path. Fixed in all
+      three copies of the rule (the renderer, and both halves of `check.rs`). Genuine
+      ambiguity between two nested components is still a hard error -- the test that pins
+      that was checked, not assumed.
+
+      Covered by a test written before the fix, confirmed red for the right reason.
+
+- [x] **The link invariant tightened from "the counts match" to "everything is drawn."**
+      The sweep re-opens every file a drawing says it took content from and asserts each
+      declared component and promise actually appears. A count can match while the wrong
+      things are drawn, and a box quietly showing *some* of a file is precisely the failure
+      this change exists to fix. Both rewritten tests confirmed red when the expansion is
+      reverted, green when restored.
+
+## Landed: a component links to another document instead of copying its interior by hand — 2026-09-04 (`cf2fc2e`, branch `claude/derive-document-links`)
+
+`ply.yaml` at the repository root used to hand-declare `core`'s five modules and a
+`state:` block as a copy of what `crates/ply-core/ply.yaml` says about itself, and the
+two had already drifted (five modules here, twenty-one there) before either file noticed.
+No `include:` key was added — a component now links to another document when that
+document's own top-level anchor equals, or sits under, the linking component's anchor,
+derived from real crate directories the same way anchor resolution already works
+(`ply_core::config::derive_links`, `crates/ply-core/src/config.rs`). The linked box draws
+with the existing collapsed-component stack (no new glyph), with the target file's path
+riding in the text tier after the usual `N components · M fns` count.
+
+- [x] **Four named ways a candidate fails to link, each tested**: the target exists but
+      cannot be read or does not parse (`A0417`, error); its top-level anchor no longer
+      sits under the linking anchor (`W0532`, "drifted", warning); a chain of documents
+      would lead back into itself (`W0534`, warning — real in this repo only as the
+      two-file fixture the unit tests build directly, since discovery is a real crate
+      directory per hop and today's two documents are one hop apart); another component
+      in the same document already claimed the same target (`W0533`, warning). A crate
+      with no `ply.yaml` of its own produces neither a link nor a finding — the ordinary
+      case for four of `core`'s five siblings. All four codes registered in
+      `crates/ply-core/src/registry.rs`. `cargo ply check` reports all four; both real
+      `check` runs (`.` and `crates/ply-core`) stay clean, since the one real link
+      resolves cleanly and the self-reference `crates/ply-core/ply.yaml`'s own top
+      component would otherwise "link to itself" (a document naming its own crate, not a
+      link to "another" document) is refused silently rather than as a finding.
+- [x] **The ordering trap held**: a derived-link box with no declared interior of its own
+      ranks above the hollow rule (checked first in `render_component_dispatch`), so it
+      draws the collapsed stack rather than a dashed hollow box — verified by temporarily
+      swapping the check order and watching the regression tests fail for the right
+      reason, then restoring it. Gated the other way too: a component that already
+      declares a real fn or nested component never consults a link at all, even a
+      resolvable one — a link stands in for an interior nobody wrote, never overrides one
+      the document did write.
+- [x] **The invariant the design pass asked for**: every cross-document link's drawn
+      counts match the target document, checked as a sweep over the real rendered SVG
+      markup against an independent from-scratch recount of the target file
+      (`tools/render/tests/derive_links.rs`), not a spot-check on one pair.
+- [x] **A real bug caught along the way, not by the docs regeneration itself but by
+      updating `self_architecture.rs`'s comparison to resolve links the same way**:
+      `target_path` was stripping a literal `"./"` prefix rather than the actual root path
+      handed to `derive_links`, so a caller that resolved an absolute root first (as a
+      test comparing against a fixed checkout must) would have leaked that host's own
+      filesystem layout into a committed drawing. Fixed by stripping `root` as a real path
+      prefix; pinned by a regression test asserting the exact relative string with an
+      absolute tempdir root.
+- [x] Deleted `core`'s hand-declared interior from the root `ply.yaml`, with a comment
+      explaining why so nobody restores it. Regenerated `docs/ply-self.svg`/`.txt` (now
+      roughly a quarter of the former height — five drawn boxes became one stacked card);
+      `docs/ply-core-self.*` unchanged. Updated `ARCHITECTURE.md`'s alt text, component
+      table, and "why a second file" paragraph.
+
+**KNOWN GAP, left open on purpose.** Link derivation only ever considers a document's
+**top-level** components, and only ever resolves **one hop**: a linked box's drawn counts
+come from the target's own file taken at face value, never further expanded through any
+link *that* document might itself declare. Both restrictions are deliberate (a nested
+component's anchor almost always shares its crate with the document it already lives in,
+which would make every module "discover" its own document; and nothing in this
+repository's two real documents needs more than one hop), not something a future chain of
+three or more real documents is guaranteed to want. The cycle guard (`would_cycle` in
+`config.rs`) is already written generically over an arbitrary chain, so extending
+resolution past one hop would not need a new safety mechanism, only a decision about what
+"the target's counts" should mean once the target itself links onward.
 
 ## Landed: a timed-out engine run now kills the whole process tree, not just cargo — 2026-09-04 (`9037b83`)
 
@@ -268,11 +1200,11 @@ raw compiler output.
 
       Mutation-checked: keeping only the first chunk (fields past 12 never drawn) turns the
       e2e test red.
-- [ ] **`record::fingerprint` is still refused, now for the other reason.** With the ceiling
-      gone it is no longer a field count -- it has two `Vec<UserStruct>` fields, and a
-      container of a user type below the top level is the shape whose crash was turned into
-      an honest refusal earlier today. Closing it needs the rest of that fix (walk containers
-      when resolving a field's type), not more work here.
+- [x] **`record::fingerprint` is fixed** -- see "Landed: the last unchecked promise in
+      Ply's own library now earns evidence" (2026-09-05). The rest of the container fix
+      this note asked for is done: fields resolve through the same container-walking path
+      parameters already did, and the generated code that builds one now constructs real
+      values instead of leaving a raw tuple in a field that expects a struct.
 - [ ] Rewrite `skills/ply-checkable-code` rule 4: wide structs are fine, and the real
       constraints are public, named, and not `#[non_exhaustive]`. Still open -- the skill
       currently tells authors to design around a limit that no longer exists.
@@ -317,9 +1249,13 @@ same defect the 2026-09-04 review found in the generics rule, introduced while f
       It also closes rule 6's loop, which stopped one step short: the fix for a promise that
       cannot fail is sometimes to delete the claim, not reword the promise.
 
-      OPEN, for the maintainer: by that rule `record::fingerprint`'s own claim should
-      probably go. Its promise (`result.len() == 64`) is a type-level fact, and deleting a
-      declaration is the developer's call, so it is left in place and raised here.
+      OPEN, for the maintainer, and the facts underneath it changed 2026-09-05: this was
+      written when the claim was permanently refused, so its only honest content really was
+      a type-level fact nothing could disprove. It now runs 256 real generated cases against
+      the real implementation and earns real evidence -- breaking the function on purpose
+      (truncating the hash) was caught as a genuine violation, so the promise is not vacuous
+      any more. Whether that changes the answer is still the developer's call; the question
+      is left open rather than resolved either way.
 
 - [x] Three tests for the new material, each confirmed red under a deliberate breakage:
       restoring the invented function name, deleting rule 8, and softening the

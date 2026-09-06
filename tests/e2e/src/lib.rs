@@ -268,10 +268,12 @@ pub fn run_cargo_build(crate_dir: &Path) -> CargoTestRun {
 ///
 /// Copies everything a workspace build of `ply-cli` reads: the root
 /// manifest and lockfile, every crate the root manifest declares as a
-/// workspace member, and `schema/` (`ply_core::schema` embeds
+/// workspace member, `schema/` (`ply_core::schema` embeds
 /// `schema/ply.schema.json` via `include_str!` at a path relative to
 /// `ply-core`'s own manifest, so it must exist at the same relative depth
-/// in the copy). `target/` lives *inside* the copy too,
+/// in the copy), and `The-Ply-Spec.md` (`ply_cli::explain` embeds it the
+/// same way, relative to `ply-cli`'s manifest, so it too must sit at the
+/// repo root of the copy). `target/` lives *inside* the copy too,
 /// deliberately -- not shared with this repo's own `target/` -- so the
 /// whole thing, source and every build artifact alike, is one tempdir that
 /// vanishes on drop and never touches this checkout's build state.
@@ -335,7 +337,7 @@ pub fn copy_ply_source() -> PlySourceCopy {
         std::fs::create_dir_all(&dst).unwrap();
         copy_dir_recursive(&root.join(&name), &dst);
     }
-    for name in ["Cargo.toml", "Cargo.lock"] {
+    for name in ["Cargo.toml", "Cargo.lock", "The-Ply-Spec.md"] {
         std::fs::copy(root.join(name), dir.path().join(name)).unwrap();
     }
     PlySourceCopy { dir }
