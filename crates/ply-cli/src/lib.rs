@@ -492,7 +492,11 @@ fn render_command_with_format(
             &document,
             completed_run_metadata(
                 input.parent().unwrap_or_else(|| Path::new(".")),
-                env!("CARGO_PKG_VERSION"),
+                // The build identity, the same value `verify` records -- not
+                // `CARGO_PKG_VERSION`, which is hand-edited and told a client
+                // comparing this field to a published run that a different
+                // Ply made it, every time, for the same binary.
+                verify::PLY_VERSION,
                 // Placeholder only: the builder replaces this with the outcome
                 // it derives from the tree it constructs. Nothing has been
                 // checked here, so what comes out says the evidence is missing.

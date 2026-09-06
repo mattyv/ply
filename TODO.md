@@ -62,6 +62,37 @@ the bug and now pass, so they are the regression test.
       target sits inside what `copy_ply_source` copies, so a missing file fails fast and by
       name. Not done here because the PR was wanted merged.
 
+## Landed: one field, one meaning — the build identity — 2026-09-06
+
+`verify --publish-view` stamped the build identity (the fingerprint of the source that
+decides what a verdict means). `render`, `check`, `audit` and `worklist` stamped
+`CARGO_PKG_VERSION` -- the hand-edited `0.1.0` -- so one field carried two different kinds
+of value depending on which command wrote it, and nothing said which.
+
+Not cosmetic. A client asking "was this run made by the Ply I have installed" compares
+that field, so comparing a rendered or checked envelope against a published run would have
+reported a different Ply **every time, for the same binary**. Found while designing exactly
+that comparison for the interactive viewer, which cannot tell a reader whether a run is
+still current.
+
+The project had already been burned by this constant: `verify`'s own unit test says the
+hand-edited version "is what let fourteen fixes go unnoticed by every stored result"
+(docs/review-silent-narrowing.md §6). That guard only ever covered `verify`, which is why
+three commands kept a private copy of the constant it warns about. There is now one shared
+constant and a sweep across the commands that write an envelope, rather than a guard on one
+of them.
+
+- [ ] The viewer still cannot say whether a run is current. Two facts, not one verdict, and
+      not the word "stale" (§D14: "there is no `stale` state ... the hash is the
+      confirmation"). (a) *A different build of Ply made this run* -- now decidable, one
+      string comparison, since this fix. (b) *The document has been edited since the run* --
+      needs a document identity in the envelope, which is a **§8 amendment and the
+      maintainer's to write**. Wall-clock age and a non-clean outcome are neither: show the
+      date, draw no conclusion. Design reviewed 2026-09-06; wording, list treatment and
+      failure modes worked through, including that a run from a *newer* build must read as
+      "a different build" and never "older", and that a viewer which cannot find the binary
+      must render nothing rather than a match.
+
 ## Landed: a finding the drawing paints is now in the data beside it — 2026-09-06 (549e33e)
 
 `render`'s envelope hardcoded an empty diagnostics list while the renderer ran the checks
