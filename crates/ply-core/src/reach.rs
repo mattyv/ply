@@ -809,7 +809,10 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
             // unrelated crate bumped its own copy.
             let n = std::mem::take(name);
             let v = std::mem::take(version);
-            by_name.entry(n.clone()).or_default().push(format!("{n} {v}"));
+            by_name
+                .entry(n.clone())
+                .or_default()
+                .push(format!("{n} {v}"));
             packages.insert(
                 format!("{n} {v}"),
                 Pkg {
