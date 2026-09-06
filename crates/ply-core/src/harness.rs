@@ -2063,12 +2063,38 @@ pub fn build_contract_fn(
             );
         }
     }
-    let requires = (!requires_all.is_empty()).then(|| {
-        let joined = conjoin_exprs(requires_all);
-        let text = tidy_contract_text(&joined.to_token_stream().to_string());
-        (joined, text)
-    });
-    let ensures = (!ensures_all.is_empty()).then(|| conjoin_ensures(ensures_all));
+    // Exactly one clause is rendered exactly as it was written. Only a
+    // genuine repeat is combined.
+    //
+    // This is not tidiness. The contract's *text* is a hashed fingerprint
+    // input and it seeds case generation, so re-rendering an unchanged
+    // single clause changes the seed for every function in the world:
+    // `|result| *result >= 0` became `|result|(*result >= 0)`, every
+    // recorded result stopped matching, and different inputs were drawn.
+    // Caught by CI on 2026-09-05 when the new inputs hit a real overflow in
+    // a fixture the old ones happened to miss.
+    let requires = match requires_all.len() {
+        0 => None,
+        1 => {
+            let e = requires_all.remove(0);
+            let text = tidy_contract_text(&e.to_token_stream().to_string());
+            Some((e, text))
+        }
+        _ => {
+            let joined = conjoin_exprs(requires_all);
+            let text = tidy_contract_text(&joined.to_token_stream().to_string());
+            Some((joined, text))
+        }
+    };
+    let ensures = match ensures_all.len() {
+        0 => None,
+        1 => {
+            let c = ensures_all.remove(0);
+            let text = tidy_contract_text(&c.to_token_stream().to_string());
+            Some((c, text))
+        }
+        _ => Some(conjoin_ensures(ensures_all)),
+    };
 
     let return_type = return_rust_type_from_syn(&f.sig.output, aliases);
 
