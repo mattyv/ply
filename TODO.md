@@ -58,7 +58,7 @@ independent oracle, and **every case**, not a chosen few.
       list leaves it green -- verified by doing it. A separate test asserts the output
       directly and does go red. Both are needed and the module says so.
 
-- [x] **A verified drawing's contents are addressable again** -- `HASH5`. External review's
+- [x] **A verified drawing's contents are addressable again** -- `739ee92`. External review's
       second finding, reproduced: `cargo ply verify --svg` on a document with links published
       a picture containing a linked crate's functions and a metadata list containing **none of
       them** -- measured on a minimal pair, 0 entries beside 3 drawn items. A viewer whose
@@ -76,7 +76,7 @@ independent oracle, and **every case**, not a chosen few.
       is what is true of them: matching metadata is the property, and giving them evidence
       would be inventing some. 0 entries became 4, every one honest.
 
-- [x] **The checking pipeline is now mutation-tested too, nightly** -- `HASH5`. Every defect
+- [x] **The checking pipeline is now mutation-tested too, nightly** -- `739ee92`. Every defect
       found on 2026-09-05 and 2026-09-06 lived in four files -- the contract rewrite, the
       reachability walk, the effect scan, the record -- and not one was caught by a test.
       `kernel-mutants` measures whether the kernel's gate can see; nothing measured whether
