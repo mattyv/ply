@@ -54,7 +54,7 @@ the bug and now pass, so they are the regression test.
       evidence" into a false accusation; this one turned "fails open on flush" into "fails
       open on clone". Neither was caught here.
 
-- [x] **The receiver check compared a type's name, not its identity** -- `HASHB`. Third
+- [x] **The receiver check compared a type's name, not its identity** -- `14c5fa6`. Third
       review, third repair of the same scanner, and the same false-safe answer reached a
       third way: `is_transparently_std` read only the last path segment, so `my::String`
       counted as the standard library's `String` and a user's own `len` -- writing a file --
