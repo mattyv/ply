@@ -31,7 +31,7 @@ independent oracle, and **every case**, not a chosen few.
   visible in the oracle: no arm inspects its payload. If that stops being true, this stops
   being a proof.
 
-- [x] **A cosmetic re-render can no longer reseed every check in silence** -- `HASH4`.
+- [x] **A cosmetic re-render can no longer reseed every check in silence** -- `dd6d1b7`.
       A contract's rendered text is a hashed fingerprint input *and* the case-generation
       seed, so re-rendering an unchanged contract differently invalidates every recorded
       result and makes every function draw different inputs. That happened on 2026-09-05 over
@@ -46,7 +46,7 @@ independent oracle, and **every case**, not a chosen few.
       caused it, having been read.
 
 - [x] **The rewrite is now checked to consult the classifiers it is proved against** --
-      `HASH4`. The two exhaustive proofs close the question "is this cast lossless". They say
+      `dd6d1b7`. The two exhaustive proofs close the question "is this cast lossless". They say
       nothing about whether the code emitting `as i128` asks them at every point it emits
       one -- and one arm reaching the "cast it anyway" fallback would reopen the whole float
       defect with both proofs still green. A walking invariant over the rewrite's real output
