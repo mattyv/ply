@@ -75,6 +75,34 @@ the bug and now pass, so they are the regression test.
       thing `docs/plans/evidence-integrity.md` says about defects in the product, applied to
       the tool's own source.
 
+- [x] **The scanner asks whether it can resolve the implementation, not whether the name
+      looks harmless** -- `HASHC`. Fourth review of this file in a day, two more false-safe
+      paths, and the reviewer named the invariant the four repairs had each been
+      approximating rather than reporting a fifth example:
+
+      > A call is passed over only where every implementation its name could resolve to is
+      > one this scan can read. Anything else is `Unknown`.
+
+      Both reported paths were real. A trait is ordinary Rust and may be implemented for
+      `u32`, so `x.next()` can be this crate's own `next` writing a file while the scan
+      accepts the receiver as standard and the name as harmless. And a function's own type
+      parameters were never in shadow detection, so `fn n<String: HasLen>(s: &String)` read
+      as the standard library's `String`.
+
+      The rule is now a property of scope rather than a list of names. A glob import can
+      bring in an extension trait invisibly; a `use` rooted outside the standard library
+      reaches code this scan is not reading; a trait declared here may name the method
+      itself. Any of the three, and the name means nothing reliable whatever the receiver is.
+
+      The new rule's own boundaries are pinned rather than assumed -- the *same* `p.len()`
+      call, five times, safe or unknown according only to what else is in scope.
+
+      **The pattern this closes is worth more than the defects.** Four fixes, four rounds,
+      each closing the reported example and leaving the class open. Nothing here caught any
+      of them; a reviewer reading the diff caught all four. Fixing an example closes an
+      example. A class closes when the invariant is stated over the whole input space, and
+      it took being told that plainly.
+
 - [ ] **KNOWN GAP, recorded not hidden**: that copy list is maintained by hand. The next
       `include_str!` of a path outside a crate directory will break the same two unrelated
       build-identity tests, 150 seconds into an e2e shard, with an error naming neither the
