@@ -82,6 +82,39 @@ Spec amended in the same commit (§ the fingerprint's third input, and the resol
 path-dependency rule). The reach tests cover all seven table spellings in one loop rather
 than one test per spelling, so a spelling added later cannot quietly skip the rule.
 
+## Landed: the same manifest blindness, in the reader that mattered — 2026-09-06
+
+An external reviewer re-sent the eight findings and said the top follow-up was
+fresh-versus-cached tests for the first three, because they had no Rust toolchain to run
+one. Writing those tests found that one of the three fixes **did not work end to end**.
+
+- [x] **A path dependency under a platform predicate is now genuinely re-checked.** The
+      earlier fix taught `reach::path_dependencies` every table Cargo declares a
+      dependency in, and its unit test passed. But a *second* line scanner,
+      `callgraph::path_dependency`, carried its own copy of the same two-entry list --
+      and that is the one deciding whether the walk can descend into the crate at all.
+      So the file walk could see the dependency while the record still carried a green
+      verdict forward over a body that had been rewritten. Both readers now share one
+      rule. Caught only by the end-to-end test: the unit test on the first reader was
+      green the whole time.
+- [x] **Fresh-versus-cached e2e for a helper only a worked example calls**
+      (`tests/fixtures/reuseexamplehelper`). Rewrite the helper the example asserts
+      against, and the claim must be re-earned and go red. Checked non-vacuous by
+      disabling the fix: the claim comes back `reused: true` with a green verdict, which
+      is the reported bug exactly. A control claim with no example stays carried
+      forward, so the fix did not buy soundness by widening everything.
+- [x] **Fresh-versus-cached e2e for a platform-gated path dependency**
+      (`tests/fixtures/reusetargetdep`). This is the one that went red against the
+      shipped fix and found the second reader.
+- [x] Finding 1 (a passing example concealing a broken promise) already had this
+      coverage: `narrowprecond`'s `broken_but_exampled` asserts `violation` end to end.
+      Nothing added.
+
+The lesson, which this file has now recorded three times in three different words: a fix
+aimed at the reported call site closes the call site. **A unit test on the function named
+in the report cannot tell you the class is closed** -- only running the promise can. The
+reviewer asked for exactly the test that would show it, and was right to.
+
 ## Landed: the e2e build-identity tests build again — 2026-09-06
 
 CI's `product-e2e (5/6)` shard was red: the private copy those tests make of Ply's own

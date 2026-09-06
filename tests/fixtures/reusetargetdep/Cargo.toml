@@ -1,0 +1,28 @@
+[workspace]
+# Empty table: this fixture is its own workspace root, per tests/spike's
+# convention -- it must never be swept into the product workspace (each
+# fixture is its own cargo project, per The-Ply-Spec.md §4) or into tools/.
+
+[package]
+name = "ply-fixture-reusetargetdep"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ply_fixture_reusetargetdep"
+path = "src/lib.rs"
+
+[dependencies]
+ply = { package = "ply-attrs", path = "../../../crates/ply-attrs" }
+
+# The whole point of the fixture. This declares a path dependency exactly as
+# `[dependencies]` does, and Ply used to read the header as an ordinary table
+# of nothing -- so none of `platform/`'s source was hashed, and editing it
+# left every fingerprint here unchanged. Both CI and every developer machine
+# this runs on are unix, so the dependency is always active.
+[target.'cfg(unix)'.dependencies]
+platform = { package = "ply-fixture-reusetargetdep-platform", path = "platform" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

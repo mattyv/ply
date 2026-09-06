@@ -1,0 +1,15 @@
+ply: 1
+
+# `tripled` carries a `test` check, so its example is compiled into a real
+# assertion and run. The example calls `expected()`, which `tripled` itself
+# never mentions -- the whole point of the fixture.
+components:
+  reuseexamplehelper:
+    anchor: ply_fixture_reuseexamplehelper
+    fns:
+      tripled:
+        checks: [fuzz(64), test]
+        examples:
+          - "tripled(2) == expected()"
+      bumped:
+        checks: [fuzz(64)]

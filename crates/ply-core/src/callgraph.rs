@@ -1464,15 +1464,35 @@ fn expand_imports(imports: &BTreeMap<String, Vec<String>>, segments: &[String]) 
 /// (`name = { package = "...", path = "..." }`), single or multi-line.
 pub fn path_dependency(cargo_toml: &str, dep_name: &str) -> Option<String> {
     let mut in_deps = false;
+    // Set when the header is the one-table-per-dependency form and names the
+    // dependency being looked for -- `[dependencies.ledger]`, under a
+    // platform predicate or not. Every `path` inside such a table is that
+    // dependency's.
+    let mut table_is_this_dep = false;
     let mut pending = false;
     for line in cargo_toml.lines() {
         let t = line.trim();
         if t.starts_with('[') {
-            in_deps = t == "[dependencies]" || t == "[dev-dependencies]";
+            // Which tables count is decided in one place, shared with
+            // `reach::path_dependencies`. Both readers used to carry their
+            // own two-entry list, so teaching one of them about
+            // `[build-dependencies]` and `[target.'cfg(unix)'.dependencies]`
+            // left the other blind -- and this is the reader that decides
+            // whether the walk can descend into the crate at all, so the
+            // dependency stayed unhashed anyway.
+            let table = crate::reach::dependency_table(t);
+            in_deps = table.is_some();
+            table_is_this_dep = matches!(&table, Some(Some(name)) if name == dep_name);
             pending = false;
             continue;
         }
         if !in_deps {
+            continue;
+        }
+        if table_is_this_dep {
+            if let Some(p) = extract_quoted_value(t, "path") {
+                return Some(p);
+            }
             continue;
         }
         if let Some(rest) = t.strip_prefix(dep_name) {
@@ -1882,6 +1902,58 @@ ledger = { package = "ply-vetting-004-ledger", path = "../legacy" }
 "#;
         assert_eq!(path_dependency(toml, "ledger").unwrap(), "../legacy");
         assert_eq!(path_dependency(toml, "nope"), None);
+    }
+
+    /// The second reader with the same blindness. `reach::path_dependencies`
+    /// was taught every table Cargo declares a dependency in; this one was
+    /// not, and this is the one that decides whether the walk can descend
+    /// into the crate at all -- so a dependency under a platform predicate
+    /// stayed unhashed even after the other reader could see it. Caught by
+    /// the fresh-versus-cached e2e an external reviewer asked for, which
+    /// went red where the unit test on the other reader was green.
+    ///
+    /// The lesson is the one this repository keeps relearning: a fix aimed
+    /// at the reported call site closes the call site. The class closes when
+    /// every reader of the same text shares one rule.
+    #[test]
+    fn reads_a_path_dependency_from_every_table_cargo_declares_one_in() {
+        for header in [
+            "[dependencies]",
+            "[dev-dependencies]",
+            "[build-dependencies]",
+            "[target.'cfg(unix)'.dependencies]",
+            "[target.\"cfg(windows)\".dev-dependencies]",
+            "[target.x86_64-unknown-linux-gnu.build-dependencies]",
+        ] {
+            let toml = format!("{header}\nledger = {{ path = \"../legacy\" }}\n");
+            assert_eq!(
+                path_dependency(&toml, "ledger").as_deref(),
+                Some("../legacy"),
+                "{header} declares a path dependency the build compiles"
+            );
+        }
+    }
+
+    /// And the one-table-per-dependency form, under a predicate or not.
+    #[test]
+    fn reads_a_path_dependency_from_its_own_table() {
+        assert_eq!(
+            path_dependency("[dependencies.ledger]\npath = \"../legacy\"\n", "ledger").as_deref(),
+            Some("../legacy")
+        );
+        assert_eq!(
+            path_dependency(
+                "[target.'cfg(unix)'.dependencies.ledger]\npath = \"../legacy\"\n",
+                "ledger"
+            )
+            .as_deref(),
+            Some("../legacy")
+        );
+        assert_eq!(
+            path_dependency("[dependencies.other]\npath = \"../legacy\"\n", "ledger"),
+            None,
+            "a table for a different dependency must not answer for this one"
+        );
     }
 
     #[test]
