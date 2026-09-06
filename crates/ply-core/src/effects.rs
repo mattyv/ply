@@ -68,6 +68,22 @@
 //! > **A call is passed over only where every implementation its name could
 //! > resolve to is one this scan can read. Anything else is `Unknown`.**
 //!
+//! [`MethodScope`] is that rule for methods, and **the fifth round found
+//! that the rule was right and the walk implementing it was not**: it
+//! enumerated the places a `use` could appear -- file items, then inline
+//! modules -- and Rust allows one in a function body, a nested block, an
+//! `impl`, or another function entirely. An extension trait imported in the
+//! body that uses it, which is the most natural place to put one, went
+//! straight past the check written to catch extension traits.
+//!
+//! Both scope walks are `syn` visitors now, which reach every node by
+//! construction, so neither depends on anyone having enumerated the
+//! positions correctly. That is the same move as the wildcard-free matches
+//! elsewhere in this codebase: completeness becomes the compiler's job
+//! rather than a person's memory. [`names_the_crate_binds`] had the
+//! identical weakness and is fixed the same way -- found by asking what
+//! else here walked items by hand, not by waiting for it to be reported.
+//!
 //! [`MethodScope`] is that rule for methods. A glob import can bring in an
 //! extension trait invisibly; a `use` rooted outside the standard library
 //! reaches code this scan is not reading; a trait declared here may name
@@ -627,36 +643,41 @@ const STD_TRANSPARENT_TYPES: &[&str] = &[
 /// wearing a standard-library name was read as the standard library's, and
 /// its own inherent `len` -- which may write a file -- was passed over.
 fn names_the_crate_binds(file: &syn::File) -> BTreeSet<String> {
-    fn walk(items: &[syn::Item], out: &mut BTreeSet<String>) {
-        for item in items {
-            match item {
-                syn::Item::Struct(i) => {
-                    out.insert(i.ident.to_string());
-                }
-                syn::Item::Enum(i) => {
-                    out.insert(i.ident.to_string());
-                }
-                syn::Item::Union(i) => {
-                    out.insert(i.ident.to_string());
-                }
-                syn::Item::Type(i) => {
-                    out.insert(i.ident.to_string());
-                }
-                syn::Item::Trait(i) => {
-                    out.insert(i.ident.to_string());
-                }
-                syn::Item::Use(i) => collect_use(&i.tree, out),
-                syn::Item::Mod(m) => {
-                    // A name bound inside a module is not in scope at the
-                    // crate root, but this scan cannot tell which module a
-                    // signature was written in. Coarser, never wrong: the
-                    // same trade this module makes everywhere else.
-                    if let Some((_, inner)) = &m.content {
-                        walk(inner, out);
-                    }
-                }
-                _ => {}
-            }
+    // Through `syn`'s visitor, for the reason `MethodScope::of` uses one: a
+    // hand-written walk covers the positions somebody thought of, and Rust
+    // allows a type declaration or a `use` in a function body, a nested
+    // block, an `impl`, or another function entirely. Missing one is how the
+    // method-scope check was got round on 2026-09-06; the same weakness was
+    // here and is closed the same way rather than waiting to be reported.
+    //
+    // A name bound inside a module or a body is not in scope at the crate
+    // root, so this is coarser than Rust's own rules. Coarser, never wrong:
+    // the trade this module makes everywhere else.
+    struct V<'a>(&'a mut BTreeSet<String>);
+    impl<'ast> syn::visit::Visit<'ast> for V<'_> {
+        fn visit_item_struct(&mut self, i: &'ast syn::ItemStruct) {
+            self.0.insert(i.ident.to_string());
+            syn::visit::visit_item_struct(self, i);
+        }
+        fn visit_item_enum(&mut self, i: &'ast syn::ItemEnum) {
+            self.0.insert(i.ident.to_string());
+            syn::visit::visit_item_enum(self, i);
+        }
+        fn visit_item_union(&mut self, i: &'ast syn::ItemUnion) {
+            self.0.insert(i.ident.to_string());
+            syn::visit::visit_item_union(self, i);
+        }
+        fn visit_item_type(&mut self, i: &'ast syn::ItemType) {
+            self.0.insert(i.ident.to_string());
+            syn::visit::visit_item_type(self, i);
+        }
+        fn visit_item_trait(&mut self, i: &'ast syn::ItemTrait) {
+            self.0.insert(i.ident.to_string());
+            syn::visit::visit_item_trait(self, i);
+        }
+        fn visit_item_use(&mut self, i: &'ast syn::ItemUse) {
+            collect_use(&i.tree, self.0);
+            syn::visit::visit_item_use(self, i);
         }
     }
     fn collect_use(tree: &syn::UseTree, out: &mut BTreeSet<String>) {
@@ -682,7 +703,7 @@ fn names_the_crate_binds(file: &syn::File) -> BTreeSet<String> {
         }
     }
     let mut out = BTreeSet::new();
-    walk(&file.items, &mut out);
+    syn::visit::Visit::visit_file(&mut V(&mut out), file);
     out
 }
 
@@ -712,25 +733,35 @@ struct MethodScope {
 
 impl MethodScope {
     /// Read from the file the checked function was declared in.
+    ///
+    /// Through `syn`'s own visitor, which is the point rather than a
+    /// detail. The first version was a hand-written walk over the positions
+    /// somebody had thought of -- file items, then inline modules -- and
+    /// Rust allows a `use` in a function body, in a nested block, in an
+    /// `impl`, inside another function entirely. An extension trait
+    /// imported in the body that uses it, which is the most natural place
+    /// to put one, walked straight past the check written to catch
+    /// extension traits (external review, 2026-09-06, fifth round).
+    ///
+    /// A visitor reaches every node by construction, so this no longer
+    /// depends on anyone having enumerated the positions correctly. That is
+    /// the same move as `walk`'s wildcard-free matches elsewhere in this
+    /// codebase: make the compiler, not a person's memory, responsible for
+    /// completeness.
     fn of(file: &syn::File) -> Self {
-        fn walk(items: &[syn::Item], scope: &mut MethodScope) {
-            for item in items {
-                match item {
-                    syn::Item::Trait(t) => {
-                        for i in &t.items {
-                            if let syn::TraitItem::Fn(f) = i {
-                                scope.trait_methods.insert(f.sig.ident.to_string());
-                            }
-                        }
+        struct V<'a>(&'a mut MethodScope);
+        impl<'ast> syn::visit::Visit<'ast> for V<'_> {
+            fn visit_item_trait(&mut self, t: &'ast syn::ItemTrait) {
+                for i in &t.items {
+                    if let syn::TraitItem::Fn(f) = i {
+                        self.0.trait_methods.insert(f.sig.ident.to_string());
                     }
-                    syn::Item::Use(u) => note_use(&u.tree, true, scope),
-                    syn::Item::Mod(m) => {
-                        if let Some((_, inner)) = &m.content {
-                            walk(inner, scope);
-                        }
-                    }
-                    _ => {}
                 }
+                syn::visit::visit_item_trait(self, t);
+            }
+            fn visit_item_use(&mut self, u: &'ast syn::ItemUse) {
+                note_use(&u.tree, true, self.0);
+                syn::visit::visit_item_use(self, u);
             }
         }
         fn note_use(tree: &syn::UseTree, at_root: bool, scope: &mut MethodScope) {
@@ -779,7 +810,7 @@ impl MethodScope {
             opaque: None,
             trait_methods: BTreeSet::new(),
         };
-        walk(&file.items, &mut scope);
+        syn::visit::Visit::visit_file(&mut V(&mut scope), file);
         scope
     }
 
@@ -1004,6 +1035,16 @@ pub fn scan_fn(crate_dir: &Path, fn_path: &str) -> Reach {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fixture with more than one source file, for the cases where "the
+    /// trait is somewhere this file cannot see" is the whole point.
+    fn fixture_with(src: &str, extra: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = fixture(src);
+        for (name, body) in extra {
+            std::fs::write(dir.path().join("src").join(name), body).unwrap();
+        }
+        dir
+    }
 
     fn fixture(src: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -1345,6 +1386,125 @@ mod tests {
                 safe,
                 "{label}: `p.len()` is unchanged, and whose `len` it is is not:\n{body}\ngot \
                  {reach:?}"
+            );
+        }
+    }
+
+    /// An import inside a function body is an import.
+    ///
+    /// The scope walk enumerated the places a `use` could appear -- file
+    /// items, then inline modules -- and a function body was simply not on
+    /// the list. So the one shape that puts an extension trait exactly where
+    /// it is used, and nowhere else, walked straight past the check written
+    /// to catch extension traits.
+    ///
+    /// The trait lives in another file on purpose: with it in this one, the
+    /// declared-methods half of the scope would catch `next` regardless, and
+    /// the test would pass while the defect stayed. Reported by external
+    /// review 2026-09-06, fifth round on this scanner.
+    #[test]
+    fn a_trait_imported_inside_the_function_body_is_still_in_scope() {
+        let dir = fixture_with(
+            "pub mod extensions;\n\npub fn step(x: u32) -> u32 {\n    \
+             use crate::extensions::Counter;\n    x.next()\n}\n",
+            &[(
+                "extensions.rs",
+                "pub trait Counter {\n    fn next(&self) -> u32;\n}\n\n\
+                 impl Counter for u32 {\n    fn next(&self) -> u32 {\n        \
+                 std::fs::write(\"/tmp/x\", b\"\").unwrap();\n        *self + 1\n    }\n}\n",
+            )],
+        );
+        let reach = scan_fn(dir.path(), "step");
+        assert!(
+            !reach.is_safe(),
+            "the `use` is inside the body, which is where an extension trait is most naturally \
+             put, and `Counter::next` writes a file: {reach:?}"
+        );
+    }
+
+    /// The general form of the defect above, and the reason the fix is a
+    /// visitor rather than one more place added to a list.
+    ///
+    /// Five rounds of review on this scanner, and the shape repeated: a
+    /// hand-written walk over the positions somebody thought of, and a
+    /// position nobody thought of. So the walk is now `syn`'s own visitor,
+    /// which reaches every node by construction, and this checks that --
+    /// the same import, buried somewhere new each time.
+    #[test]
+    fn an_import_is_found_wherever_rust_allows_one() {
+        let trait_file = (
+            "extensions.rs",
+            "pub trait Counter {\n    fn next(&self) -> u32;\n}\n\n\
+             impl Counter for u32 {\n    fn next(&self) -> u32 {\n        \
+             std::fs::write(\"/tmp/x\", b\"\").unwrap();\n        *self + 1\n    }\n}\n",
+        );
+        for (label, body) in [
+            (
+                "at the top of the file",
+                "pub mod extensions;\nuse crate::extensions::Counter;\n\n\
+                 pub fn step(x: u32) -> u32 {\n    x.next()\n}\n",
+            ),
+            (
+                "inside the function body",
+                "pub mod extensions;\n\npub fn step(x: u32) -> u32 {\n    \
+                 use crate::extensions::Counter;\n    x.next()\n}\n",
+            ),
+            (
+                "inside a nested block within the body",
+                "pub mod extensions;\n\npub fn step(x: u32) -> u32 {\n    {\n        \
+                 use crate::extensions::Counter;\n        x.next()\n    }\n}\n",
+            ),
+            (
+                "inside an inline module beside the function",
+                "pub mod extensions;\nmod inner {\n    use crate::extensions::Counter;\n}\n\n\
+                 pub fn step(x: u32) -> u32 {\n    x.next()\n}\n",
+            ),
+            (
+                "inside another function entirely",
+                "pub mod extensions;\n\nfn elsewhere() {\n    \
+                 use crate::extensions::Counter;\n}\n\n\
+                 pub fn step(x: u32) -> u32 {\n    x.next()\n}\n",
+            ),
+        ] {
+            let dir = fixture_with(body, &[trait_file]);
+            let reach = scan_fn(dir.path(), "step");
+            assert!(
+                !reach.is_safe(),
+                "{label}: an import is an import wherever Rust allows one, and this scan must \
+                 not depend on somebody having thought of the position:\n{body}\ngot {reach:?}"
+            );
+        }
+    }
+
+    /// The shadow check had the same hand-written shape, and the same hole.
+    ///
+    /// A type declared inside a function body is legal Rust and shadows the
+    /// standard library's name for the rest of that body. Nothing had
+    /// reported it; it was found by asking what *else* in this file walked
+    /// items by hand after the method-scope walk was got round. Fixed the
+    /// same way, and pinned here so the answer does not depend on the
+    /// position again.
+    #[test]
+    fn a_type_declared_inside_the_body_shadows_the_std_name_too() {
+        for (label, body) in [
+            (
+                "declared in the function body",
+                "pub fn n(s: &String) -> usize {\n    struct String;\n    impl String {\n        \
+                 fn len(&self) -> usize { std::fs::write(\"/tmp/x\", b\"\").unwrap(); 0 }\n    \
+                 }\n    s.len()\n}\n",
+            ),
+            (
+                "declared in another function entirely",
+                "fn elsewhere() {\n    struct String;\n}\n\n\
+                 pub fn n(s: &String) -> usize {\n    s.len()\n}\n",
+            ),
+        ] {
+            let dir = fixture(body);
+            let reach = scan_fn(dir.path(), "n");
+            assert!(
+                !reach.is_safe(),
+                "{label}: a name this crate binds anywhere is a name this scan cannot read as \
+                 the standard library's:\n{body}\ngot {reach:?}"
             );
         }
     }

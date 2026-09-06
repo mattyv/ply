@@ -103,6 +103,24 @@ the bug and now pass, so they are the regression test.
       example. A class closes when the invariant is stated over the whole input space, and
       it took being told that plainly.
 
+- [x] **Both scope walks reach every node instead of the ones somebody listed** -- `HASHD`.
+      Fifth round on this scanner. The rule from round four was right; the walk implementing it
+      was not. It enumerated where a `use` could appear -- file items, then inline modules --
+      and Rust allows one in a function body, a nested block, an `impl`, or another function
+      entirely. An extension trait imported in the body that uses it, the most natural place to
+      put one, went straight past the check written to catch extension traits.
+
+      Both walks are `syn` visitors now, reaching every node by construction. Completeness
+      becomes the compiler's job rather than a person's memory -- the same move as the
+      wildcard-free matches elsewhere in this codebase. The reported case is pinned, and so are
+      four more positions of the same import: top of file, function body, nested block, inline
+      module, another function.
+
+      `names_the_crate_binds` had the identical weakness and is fixed the same way. **Not
+      reported** -- found by asking what else in this file walked items by hand, which is the
+      first time in five rounds that a fix here reached past the example it was given. Pinned
+      too, and checked to bite by breaking the visitor and watching it go red.
+
 - [ ] **KNOWN GAP, recorded not hidden**: that copy list is maintained by hand. The next
       `include_str!` of a path outside a crate directory will break the same two unrelated
       build-identity tests, 150 seconds into an e2e shard, with an error naming neither the
