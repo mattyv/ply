@@ -16,12 +16,115 @@ use std::io::Write;
 
 use ply_core::registry::{self, Severity, Status, Tier};
 
-/// Prints one code's entry, or — with no code — the whole table.
+/// The spec, as of this build. Embedded rather than read from disk so an
+/// installed binary explains the rules it actually implements, instead of
+/// whatever happens to be in the working tree beside it.
+const SPEC: &str = include_str!("../../../The-Ply-Spec.md");
+
+/// Prints one code's entry, one spec section, or — with nothing asked for —
+/// the whole code table.
 pub fn explain_command(code: Option<&str>, out: &mut impl Write) -> anyhow::Result<()> {
     match code {
-        Some(code) => one(code, out),
+        // Two namespaces, and they cannot collide: a code is one letter and
+        // four digits, a section is digits and dots. Checked before the code
+        // table so a section reference is never reported as a bad code.
+        Some(asked) => match section_reference(asked) {
+            Some(section) => explain_section(&section, asked, out),
+            None => one(asked, out),
+        },
         None => list(out),
     }
+}
+
+/// The section number in what the reader typed, if that is what it is.
+///
+/// `§` needs a key most keyboards do not have, so it is never required —
+/// only tolerated. `8`, `5.4b`, `§5.4b`, `s5.4b`, `sec 5.4b` and
+/// `section 5.4b` are all the same request, because a reader should not have
+/// to discover which spelling this command prefers.
+fn section_reference(asked: &str) -> Option<String> {
+    let mut rest = asked.trim().trim_start_matches('\u{a7}').trim();
+    for prefix in ["section", "sec", "s"] {
+        if let Some(stripped) = rest
+            .strip_prefix(prefix)
+            .or_else(|| rest.strip_prefix(&prefix.to_ascii_uppercase()))
+        {
+            // Only when a number follows: bare `s` is not a section, and
+            // `sec` must not eat the `s` of something else.
+            if stripped
+                .trim_start()
+                .starts_with(|c: char| c.is_ascii_digit())
+            {
+                rest = stripped.trim_start();
+                break;
+            }
+        }
+    }
+    let number = rest.trim();
+    // `5`, `5.1`, `5.1a`, `5.4b` — digits and dots, optionally one trailing
+    // letter. Never one letter followed by four digits, which is a code.
+    let mut chars = number.chars();
+    if !chars.next().is_some_and(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut seen_letter = false;
+    for c in chars {
+        if c.is_ascii_digit() || c == '.' {
+            if seen_letter {
+                return None;
+            }
+        } else if c.is_ascii_alphabetic() && !seen_letter {
+            seen_letter = true;
+        } else {
+            return None;
+        }
+    }
+    Some(number.to_ascii_lowercase())
+}
+
+/// One section of the spec, from its own heading up to the next heading at
+/// the same level or shallower — so asking for one rule does not hand back
+/// the rest of the document.
+fn explain_section(number: &str, asked: &str, out: &mut impl Write) -> anyhow::Result<()> {
+    let lines: Vec<&str> = SPEC.lines().collect();
+    let heading_of = |line: &str| -> Option<(usize, String)> {
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        if hashes == 0 {
+            return None;
+        }
+        let label = line[hashes..]
+            .split_whitespace()
+            .next()?
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        Some((hashes, label))
+    };
+    let start = lines
+        .iter()
+        .position(|line| heading_of(line).is_some_and(|(_, label)| label == number));
+    let Some(start) = start else {
+        writeln!(
+            out,
+            "There is no section {} in the spec this build of Ply carries.\n\n\
+             Sections are numbered like `5.1a` or `8`, and every message Ply prints ends \
+             with the one behind it. The `\u{a7}` sign is never needed: `cargo ply explain 8` \
+             and `cargo ply explain \u{a7}8` are the same request.",
+            asked.trim()
+        )?;
+        return Ok(());
+    };
+    let (level, _) = heading_of(lines[start]).expect("the line matched as a heading");
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| heading_of(line).is_some_and(|(depth, _)| depth <= level))
+        .map(|offset| start + 1 + offset)
+        .unwrap_or(lines.len());
+
+    writeln!(out, "The-Ply-Spec.md \u{a7}{number}\n")?;
+    for line in &lines[start..end] {
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
 }
 
 fn one(code: &str, out: &mut impl Write) -> anyhow::Result<()> {
@@ -258,5 +361,110 @@ mod tests {
                 "`{name}` is a code this build can produce and the listing has to carry it"
             );
         }
+    }
+    // A reader who sees "§5.1a" in a diagnostic should be able to read §5.1a
+    // without leaving the terminal, and without typing `§` -- which needs a
+    // key most keyboards do not have. So the section is addressed by its
+    // number, and the glyph is merely tolerated.
+    #[test]
+    fn a_section_is_explained_when_asked_for_by_bare_number() {
+        let out = render(Some("8"));
+        assert!(
+            out.starts_with("The-Ply-Spec.md \u{a7}8"),
+            "the answer must name what it is showing: {out}"
+        );
+        assert!(
+            out.len() > 400,
+            "a section's own prose is the body of the answer, not just its title: {out}"
+        );
+    }
+
+    #[test]
+    fn every_spelling_of_a_section_reference_reaches_the_same_section() {
+        let canonical = render(Some("5.1a"));
+        for typed in [
+            "\u{a7}5.1a",
+            "5.1A",
+            " 5.1a ",
+            "s5.1a",
+            "sec5.1a",
+            "section 5.1a",
+        ] {
+            assert_eq!(
+                render(Some(typed)),
+                canonical,
+                "{typed:?} is the same request as `5.1a` -- a reader should not have to \
+                 discover which spelling this command prefers"
+            );
+        }
+    }
+
+    /// A section stops where the next one starts. Printing past it would
+    /// hand a reader who asked for one rule the whole rest of the document.
+    #[test]
+    fn a_section_stops_before_the_next_one_begins() {
+        let out = render(Some("5.1a"));
+        assert!(
+            out.contains("Strictness"),
+            "expected \u{a7}5.1a's own heading in its answer: {out}"
+        );
+        assert!(
+            !out.contains("## 6."),
+            "the answer ran past the end of the section into a later one: {out}"
+        );
+    }
+
+    /// The two namespaces cannot collide -- a code is a letter and four
+    /// digits, a section is digits and dots -- but the failure has to be
+    /// legible either way, and must not silently answer the wrong question.
+    #[test]
+    fn a_section_that_does_not_exist_says_so_and_does_not_fall_back_to_a_code() {
+        let out = render(Some("99.7"));
+        assert!(
+            out.contains("no section") && out.contains("99.7"),
+            "expected a refusal naming what was asked for: {out}"
+        );
+        assert!(
+            !out.contains("one letter, then four digits"),
+            "a section reference must not be reported as a bad diagnostic code: {out}"
+        );
+    }
+
+    /// Codes still win their own namespace: `W0419` is not a section.
+    #[test]
+    fn a_code_is_still_a_code_and_not_read_as_a_section() {
+        assert!(render(Some("W0419")).starts_with("W0419  ("));
+    }
+    /// The sweep, rather than a handful of spot-checks: every numbered
+    /// heading in the spec this build carries must be reachable by its own
+    /// number. A section added later with a heading this parser cannot read
+    /// fails here rather than being discovered by a reader who asked for it.
+    #[test]
+    fn every_numbered_section_in_the_spec_can_be_asked_for_by_its_number() {
+        let mut checked = 0usize;
+        for line in SPEC.lines() {
+            let hashes = line.chars().take_while(|c| *c == '#').count();
+            if hashes == 0 {
+                continue;
+            }
+            let Some(label) = line[hashes..].split_whitespace().next() else {
+                continue;
+            };
+            let label = label.trim_end_matches('.');
+            if !label.starts_with(|c: char| c.is_ascii_digit()) {
+                continue;
+            }
+            let out = render(Some(label));
+            assert!(
+                !out.contains("There is no section"),
+                "the spec has a section {label:?} and this command cannot reach it: {out}"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 20,
+            "expected the spec's numbered sections to be found and swept; got {checked}, \
+             which means this test is now proving nothing"
+        );
     }
 }

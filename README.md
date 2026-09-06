@@ -274,6 +274,60 @@ engine reported it; what you do not get is step 2, the runnable test. Ply says s
 (`W0541`) rather than writing a test with a guessed value in it, because a test built on a
 guess can pass while the promise is still broken.
 
+### When something carries a code, ask it what it means
+
+Every diagnostic, warning, and finding Ply reports is named — `W0419`, `P0502`, `E0203` —
+and every one of them can explain itself:
+
+```console
+$ cargo ply explain W0419
+W0419  (a warning — worth reading, does not fail a run on its own)
+
+A name used in an edge, a deny rule, or a reference matches a top-level component
+outright, so that is what it means -- but something nested somewhere else shares the
+same short name, and this name cannot reach it. Ply says which one it took rather than
+letting you find out from a picture, because the two readings look identical in the file
+and mean different things.
+
+Who reports it: any part of Ply, as a warning rather than a stop.
+When: reading your ply.yaml, before any code is looked at.
+
+The reasoning behind this rule is in The-Ply-Spec.md §5.1a.
+```
+
+With no code, it lists every one this build can produce. In the interactive viewer, the
+same answer is a right-click away: any item offers **Explain \<code\>** for each code
+reported on it, and **Explain a code…** to ask about one you have seen elsewhere.
+
+**The spec reference at the end is followable too.** Every message points at the section
+behind it, and the same command reads that section out of the spec this build carries:
+
+```console
+$ cargo ply explain 5.1a          # the section named above
+$ cargo ply explain 8             # the JSON envelope
+$ cargo ply explain 5.4b          # which signatures each engine supports
+```
+
+You never need to type `§`. `8`, `§8`, `s8`, `sec 8` and `section 8` are one request. The
+spec is embedded at build time, so an installed Ply explains the rules it actually
+implements rather than whatever file happens to sit beside it.
+
+**A warning is not automatically a defect.** `W0419` is the clearest example, and it fires
+on Ply's own document. This repository declares a top-level `check` component, and
+`ply-core` separately contains a module called `check`. So the edge `check -> core` is
+ambiguous on sight, and Ply says which reading it used:
+
+> `"check"` here means the top-level component `check`, but `core.check` also exists and
+> this name does not reach it. If you meant that one, write `core.check`.
+
+The reading it took is the intended one, and nothing here needs changing — writing
+`core.check` would claim that a module inside `core` depends on `core`. The warning is
+doing its job: two spellings mean different things and look identical, so the one that was
+chosen is stated out loud rather than left to be inferred from a drawing.
+
+What the warning cannot yet do is take yes for an answer. There is no way to acknowledge a
+resolved ambiguity, so a document like this one carries the warning permanently.
+
 ## What a contract is: `requires` and `ensures`
 
 Two halves of one statement — **what must be true going in, and what must be true coming
@@ -710,7 +764,7 @@ Six commands exist:
 | `cargo ply verify <dir>` | Run declared checks and report the evidence each function earned. |
 | `cargo ply audit <dir>` | List the trust surface: assumptions and declarations Ply does not verify. |
 | `cargo ply worklist <dir>` | List unresolved decisions and evidence still owed. |
-| `cargo ply explain <CODE>` | Say what one diagnostic code means, who reports it, and whether a run carrying it passed. No code lists every one this build can produce. |
+| `cargo ply explain <CODE>` | Say what one diagnostic code means, who reports it, and whether a run carrying it passed. Also reads out a spec section by number (`8`, `5.4b`) -- no `§` needed. No argument lists every code this build can produce. |
 | `cargo ply clean-views <dir>` | Remove older published visual runs while preserving the current run. |
 
 The render, inspection, and verification commands support `--json`. Published visual envelopes

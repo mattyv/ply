@@ -4,6 +4,72 @@
 file is the state. Read that one first, then this.
 
 
+## Landed: the e2e build-identity tests build again — 2026-09-06
+
+CI's `product-e2e (5/6)` shard was red: the private copy those tests make of Ply's own
+source (`tests/e2e/src/lib.rs::copy_ply_source`) never listed `The-Ply-Spec.md`, so once
+`cargo ply explain`'s `include_str!("../../../The-Ply-Spec.md")` landed (below, same day),
+the copy's build failed with "No such file or directory" and both build-identity tests
+panicked on "cargo build (Ply source copy) failed" -- a merge interaction between two
+same-day changes, not a defect in the diagnostics-in-the-envelope work this PR shipped.
+
+Fixed by copying `The-Ply-Spec.md` alongside `Cargo.toml`/`Cargo.lock`, and updating the
+copy function's doc comment to say why (it mirrors the existing `schema/` case: another
+file `include_str!`-embedded relative to a crate manifest, so it has to sit at the same
+depth in the copy). No test needed writing -- the two failing e2e tests already reproduced
+the bug and now pass, so they are the regression test.
+
+- [ ] **KNOWN GAP, recorded not hidden**: that copy list is maintained by hand. The next
+      `include_str!` of a path outside a crate directory will break the same two unrelated
+      build-identity tests, 150 seconds into an e2e shard, with an error naming neither the
+      embedded file nor the copy list -- which is exactly how this one was found. A sweep
+      would close it: resolve every `include_str!` in the copied crates and assert each
+      target sits inside what `copy_ply_source` copies, so a missing file fails fast and by
+      name. Not done here because the PR was wanted merged.
+
+## Landed: a finding the drawing paints is now in the data beside it — 2026-09-06 (549e33e)
+
+`render`'s envelope hardcoded an empty diagnostics list while the renderer ran the checks
+itself and painted `W0419` onto the picture. The drawing said `W0419` twice; the envelope
+said there were zero findings. So in the interactive viewer a reader saw a red line with a
+code on it and had nothing to click -- the finding could not be selected, counted,
+filtered, or asked about. Reported from the VS Code viewer, where right-clicking the line
+produced no menu at all, because there was nothing to build one from.
+
+The checks now run for the declared envelope too and their findings travel in it, anchored
+to the element they are about (component, fn, external). Verified against this repo's own
+root document: `cargo ply render` reports the `W0419` it draws. README gained a section on
+asking a code what it means, with `W0419` as the worked example -- its quoted `explain`
+output is byte-for-byte what the tool prints, checked, not transcribed.
+
+- [ ] **KNOWN GAP, recorded not hidden**: a finding about an entry in `edges` or `deny` is
+      carried **unanchored**, because those are drawn as lines the §8 envelope does not
+      describe. Readable and explainable, but not clickable on the line itself. Anchoring
+      needs edges in the envelope -- their endpoints, kind and label -- which is a protocol
+      change and wants a §8/§7.1 amendment, not a quiet addition. ply-vis's own 3D spike
+      (`docs/spikes/3d-layouts/README.md`, its recommendation 1) reached the same
+      conclusion from the other direction: today arrows cannot be selected, tabbed to, or
+      inspected, so the interactive viewer is poorer than the static picture on that point.
+- [ ] The renderer still computes the checks a second time internally rather than being
+      handed the findings the envelope builder already ran. A second pass over a pure
+      function, taken deliberately to leave the renderer's signature alone. Worth folding
+      into one pass if that signature is being changed for another reason anyway.
+- [ ] **`W0419` cannot take yes for an answer.** It fires on Ply's own document -- a
+      top-level `check` component beside `ply-core`'s own `check` module -- where the
+      reading Ply took is the intended one and nothing needs changing. There is no way to
+      acknowledge a resolved ambiguity, so the document carries the warning permanently.
+      Note that the `check` clash may resolve itself: retiring one of the standalone
+      validator / `cargo ply check` is already recorded as pending (`ply.yaml` line ~163).
+- [x] `cargo ply explain 8` reads a spec section out loud -- landed 2026-09-06. Resolves
+      `8`, `5.4b`, `§5.4b`, `s5.4b`, `sec 5.4b`, `section 5.4b` alike, because the section
+      sign needs a key most keyboards do not have and requiring it would be a refusal
+      about typing. The spec is embedded with `include_str!`, so an installed binary
+      explains the rules it implements rather than whatever file sits beside it. Codes and
+      sections cannot collide (one letter + four digits vs digits and dots), and a bad
+      section reference is never reported as a bad code. Swept, not spot-checked: an
+      invariant test walks every numbered heading in the spec and fails if one cannot be
+      reached by its own number.
+
 ## Landed: the float bug closed by exhaustion, not by a spot-check — 2026-09-05
 
 "Plug bugs with proofs." The float defect is the one of today's eight whose domain is small

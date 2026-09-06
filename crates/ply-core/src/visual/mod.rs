@@ -492,6 +492,60 @@ pub fn build_visual_envelope(
 /// component that declares `state:` draws honestly as unresolved even when
 /// the code sits right there, which is the one thing this function cannot
 /// tell on its own: it only ever sees the document.
+/// The checks' own findings (`W0419` and its kind), shaped for the envelope.
+///
+/// A finding names what it is about: a component, one of its fns, an
+/// external, or an entry in `edges`/`deny` by position. The first three are
+/// drawn as elements, so those anchor to one and a viewer can put the finding
+/// on the shape. `edges` and `deny` are drawn as lines that the §8 envelope
+/// does not describe yet, so those findings are carried unanchored rather
+/// than dropped: a reader can still read them and ask what the code means,
+/// which is strictly more than the empty list they replaced. Anchoring them
+/// needs edges in the envelope first (docs/spikes/3d-layouts/README.md
+/// reached the same conclusion from the other direction).
+fn declared_findings(
+    document: &Document,
+    links: Option<&crate::config::LinkIndex>,
+    elements: &BTreeMap<String, VisualElement>,
+) -> Vec<VisualDiagnostic> {
+    crate::check::run_checks_with_links(document, links)
+        .into_iter()
+        .enumerate()
+        .map(|(index, finding)| {
+            let element_id = match &finding.target {
+                crate::check::Target::Component(path) => Some(stable_element_id("component", path)),
+                crate::check::Target::External(name) => Some(stable_element_id("external", name)),
+                crate::check::Target::Fn {
+                    component_path,
+                    fn_name,
+                } => Some(stable_element_id(
+                    "fn",
+                    &format!("{component_path}::{fn_name}"),
+                )),
+                _ => None,
+            }
+            // An id computed for a shape this drawing does not contain is
+            // worse than none: it would point a viewer at nothing.
+            .filter(|id| elements.contains_key(id));
+            VisualDiagnostic {
+                id: format!("finding-{index}"),
+                code: finding.code.to_string(),
+                severity: match crate::registry::lookup(finding.code).map(|entry| entry.severity) {
+                    Some(crate::registry::Severity::Error) => "error",
+                    Some(crate::registry::Severity::Info) => "info",
+                    // A code with no registry row is a bug, but reporting it
+                    // as a warning still tells the reader more than silence.
+                    _ => "warning",
+                }
+                .to_string(),
+                message: finding.message.clone(),
+                element_id,
+                source: None,
+            }
+        })
+        .collect()
+}
+
 pub fn build_declared_visual_envelope(
     document: &Document,
     run: RunMetadata,
@@ -583,6 +637,21 @@ pub fn build_declared_visual_envelope_with_links(
         ..run
     };
     let mut visual = build_visual_envelope(document, &result, run)?;
+    // The drawing paints these; the envelope used to hardcode an empty list,
+    // so a viewer reading only the envelope saw a red line it could not
+    // select, count, filter, or ask about. Same checks the renderer runs, on
+    // the same inputs -- it computes them again internally rather than being
+    // handed them, which costs a second pass over a pure function but keeps
+    // this from changing the renderer's signature.
+    visual.diagnostics = declared_findings(document, links, &visual.elements);
+    for diagnostic in &visual.diagnostics {
+        let Some(element_id) = diagnostic.element_id.as_deref() else {
+            continue;
+        };
+        if let Some(element) = visual.elements.get_mut(element_id) {
+            element.diagnostic_ids.push(diagnostic.id.clone());
+        }
+    }
     visual.svg = svg::render_svg_with_evidence_state_options_and_links(
         document,
         &visual.elements,

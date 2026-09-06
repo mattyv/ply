@@ -159,10 +159,13 @@ enum Commands {
         svg: Option<PathBuf>,
     },
     /// Explain a diagnostic code -- what it means, who reports it, and
-    /// whether a run carrying it passed. With no code, lists every one this
-    /// build can produce.
+    /// whether a run carrying it passed. Also explains a spec section by
+    /// number, which is what every message's trailing reference points at.
+    /// With nothing after it, lists every code this build can produce.
     Explain {
-        /// A code as Ply prints it, like `K0502`. Case does not matter.
+        /// A code as Ply prints it, like `K0502` -- or a spec section by
+        /// number, like `8` or `5.4b`. Case does not matter, and the section
+        /// sign is never needed.
         code: Option<String>,
     },
     /// Remove older published visual runs without deleting the current run.
