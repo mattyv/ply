@@ -734,7 +734,21 @@ fn closure_result_ident(closure: &ExprClosure) -> Result<String> {
 /// exactly what breaks compilation for a non-numeric comparison -- so this
 /// message must decline the same cases `widen` does, for the same reason.
 fn render_message(cf: &ContractFn, body: &Expr, contract_text: &str, code: &str) -> Result<String> {
-    let fname = &cf.path;
+    // `fname` and `contract_text` both land, verbatim, inside a double-
+    // quoted Rust string literal that this function hands back as source
+    // text for `panic!({message})` in the generated file -- and because it
+    // is the first argument of `panic!`, rustc parses that literal as a
+    // *format string*, not plain text. A contract is never written with
+    // rustc's own format-string escaping in mind (`attempts + 1` has a
+    // `+`, not a `{{`), so any `{`/`}` a contract's real Rust syntax
+    // contains (an `if cond { .. } else { .. }`, a struct-literal postcondition)
+    // reads as a malformed format directive and the generated file refuses
+    // to compile -- the exact failure this escaping exists to prevent.
+    // `fname` is a discovered item path, never author-editable free text,
+    // but it costs nothing to run it through the same guard rather than
+    // assume no path will ever need it.
+    let fname = escape_for_panic_literal(&cf.path);
+    let contract_text = escape_for_panic_literal(contract_text);
     if let Expr::Binary(bin) = body
         && matches!(
             bin.op,
@@ -753,6 +767,22 @@ fn render_message(cf: &ContractFn, body: &Expr, contract_text: &str, code: &str)
     Ok(format!(
         "\"Broken promise in `{fname}`: the function declares the postcondition `{contract_text}` \\\n         -- a postcondition is the guarantee a function makes about its return value. For \\\n         this input, that expression evaluated to false. Fix the body or fix the \\\n         `#[ply::ensures]` line, and this test will pass. ({code})\""
     ))
+}
+
+/// Escapes `text` so it can be spliced into a Rust string literal that
+/// itself becomes the format-string argument of a generated `panic!` call:
+/// backslash and `"` first (a literal one of either would otherwise end, or
+/// corrupt, the generated string literal early), then `{`/`}` last (doubled,
+/// so rustc's format-string parser reads them back as the literal character
+/// rather than the start of a directive). Backslash/quote have to come
+/// first: escaping them can only ever *add* a backslash before a `"`, never
+/// a brace, so doing braces last is always operating on the text's own
+/// braces, never one this function just introduced.
+fn escape_for_panic_literal(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('{', "{{")
+        .replace('}', "}}")
 }
 
 // -- 2026-09-02: the branch-decided measurement (CLAUDE.md, "record which
@@ -1067,6 +1097,139 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
         assert!(rendered.source.contains("postcondition"));
         assert!(rendered.source.contains("result == x"));
         assert!(rendered.source.contains("255u32"));
+    }
+
+    /// A contract whose text contains `{`/`}` (an `if { .. } else { .. }`
+    /// expression, the shape found breaking a real lesson fixture) must not
+    /// land those braces unescaped in the generated file's `panic!` message,
+    /// because that message is itself a Rust format-string literal there --
+    /// rustc reads a bare `{ attempts` inside it as a malformed format
+    /// argument and refuses to compile the file at all
+    /// ("invalid format string: expected `}`, found `a`"). The contract
+    /// text must still be legible, just with every brace doubled so rustc
+    /// prints it back as a literal `{`/`}` rather than parsing it.
+    #[test]
+    fn a_contract_containing_braces_is_escaped_in_the_generated_panic_message() {
+        let cf = discover(
+            r#"
+#[ply::requires(attempts < 10)]
+#[ply::ensures(|result| *result == if attempts < max_attempts { attempts + 1 } else { max_attempts })]
+pub fn apply_failure(attempts: u32, max_attempts: u32) -> u32 {
+    if attempts < max_attempts { attempts } else { max_attempts }
+}
+"#,
+            "apply_failure",
+        );
+        let values = vec![WitnessValue::UInt(0), WitnessValue::UInt(1)];
+        let rendered = render_cex_test(&cf, &values, "bounded(2)", "K0502", 1).unwrap();
+
+        // The `// Contract under test:` comment quotes the contract back
+        // unescaped on purpose (it is a plain comment, never a format
+        // string) -- so the assertions below look only at the `panic!(...)`
+        // call itself, the one place doubling actually matters.
+        let panic_at = rendered
+            .source
+            .find("panic!(\"Broken promise")
+            .expect("a fallible contract renders a Broken-promise panic");
+        let panic_call_end = rendered.source[panic_at..]
+            .find("),\n")
+            .map(|i| panic_at + i)
+            .expect("the panic! call ends before the next match arm");
+        let panic_call = &rendered.source[panic_at..panic_call_end];
+
+        assert!(
+            panic_call
+                .contains("attempts < max_attempts {{ attempts + 1 }} else {{ max_attempts }}"),
+            "the contract's braces must be doubled so the generated panic! format string reads \
+             them as literal braces, not a directive:\n{panic_call}"
+        );
+        // Every `{`/`}` in the panic! literal must belong to a doubled
+        // pair -- an odd one out is exactly what rustc's format-string
+        // parser cannot read.
+        let mut chars = panic_call.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '{' || c == '}' {
+                assert_eq!(
+                    chars.peek().copied(),
+                    Some(c),
+                    "found a single, un-doubled `{c}` in the panic! literal -- rustc's \
+                     format-string parser reads that as a directive, not a literal brace:\n{panic_call}"
+                );
+                chars.next();
+            }
+        }
+    }
+
+    /// The strongest form of the check above: the generated file must
+    /// actually compile under `cargo test`, and fail with the Broken-promise
+    /// message, not merely look right when grepped. Models the real
+    /// `ply-book` lesson-2 fixture (`apply_failure`) that first found this.
+    #[test]
+    fn a_braces_containing_contract_compiles_and_fails_with_broken_promise() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+
+        let src = r#"
+pub fn apply_failure(attempts: u32, max_attempts: u32) -> u32 {
+    if attempts < max_attempts { attempts } else { max_attempts }
+}
+"#;
+        let annotated = r#"
+#[ply::requires(attempts < 10)]
+#[ply::ensures(|result| *result == if attempts < max_attempts { attempts + 1 } else { max_attempts })]
+pub fn apply_failure(attempts: u32, max_attempts: u32) -> u32 {
+    if attempts < max_attempts { attempts } else { max_attempts }
+}
+"#;
+        let lib = root.join("src/lib.rs");
+        std::fs::write(&lib, annotated).unwrap();
+        let cf = discover_fn(&lib, "apply_failure").unwrap();
+        let rendered = render_cex_test(
+            &cf,
+            &[WitnessValue::UInt(0), WitnessValue::UInt(1)],
+            "bounded(2)",
+            "K0502",
+            1,
+        )
+        .unwrap();
+
+        std::fs::write(
+            &lib,
+            format!("{src}\n\n// Ply-generated\nmod ply_generated_cex;\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/ply_generated_cex.rs"),
+            wrap_test_module(&[rendered]),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"plybraces\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        )
+        .unwrap();
+
+        let out = std::process::Command::new(env!("CARGO"))
+            .args(["test", "--lib"])
+            .env("RUSTFLAGS", "-D warnings")
+            .current_dir(root)
+            .output()
+            .expect("cargo test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        assert!(
+            !combined.contains("could not compile"),
+            "a contract containing braces must still compile into a runnable test:\n{combined}"
+        );
+        assert!(
+            combined.contains("Broken promise"),
+            "the generated test must run and fail on the broken promise, not merely compile:\n{combined}"
+        );
     }
 
     /// The replay test Ply writes when a check finds a failing input has
