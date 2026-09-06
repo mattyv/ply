@@ -2893,11 +2893,10 @@ fn union_statuses(children: &[Node]) -> Vec<String> {
     let mut out: Vec<String> = children
         .iter()
         .flat_map(|c| {
-            c.statuses.iter().cloned().chain(
-                verdict_carries_its_own_reason(&c.verdict)
-                    .map(str::to_string)
-                    .into_iter(),
-            )
+            c.statuses
+                .iter()
+                .cloned()
+                .chain(verdict_carries_its_own_reason(&c.verdict).map(str::to_string))
         })
         .collect();
     out.sort();
