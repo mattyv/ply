@@ -171,7 +171,7 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       was labelled.
 
 - [x] **The verdict a user sees now comes from the aggregation that was proved** --
-      `HASH3`. `ply_core::kernel::aggregate` carries the four standing obligations, proved
+      `9b3b69b`. `ply_core::kernel::aggregate` carries the four standing obligations, proved
       by exhaustive enumeration over 991,389 trees and again by induction in Verus, and none
       of it governed a single verdict anyone ever saw: `verify` folded results with a private
       worst-of over a ladder of integers written out by hand, and the two were free to drift
@@ -195,7 +195,7 @@ function's own source, the code it calls, ..." while being wrong about exactly t
       D6's status list never contained. What was missing was any statement of where those
       three sit, which is what the amendment adds.
 
-- [x] **The published page no longer lets "checked" sound like "proved"** -- `HASH3`. It
+- [x] **The published page no longer lets "checked" sound like "proved"** -- `9b3b69b`. It
       now says what checked means on it: 256 generated inputs for nearly every green chip, a
       handful of hand-written examples for the rest, and nothing proved -- adding that a
       promise failing on one value in a billion would sit there looking identical. The
