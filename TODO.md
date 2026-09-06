@@ -76,7 +76,7 @@ the bug and now pass, so they are the regression test.
       the tool's own source.
 
 - [x] **The scanner asks whether it can resolve the implementation, not whether the name
-      looks harmless** -- `HASHC`. Fourth review of this file in a day, two more false-safe
+      looks harmless** -- `ca4fadf`. Fourth review of this file in a day, two more false-safe
       paths, and the reviewer named the invariant the four repairs had each been
       approximating rather than reporting a fifth example:
 
