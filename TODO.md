@@ -54,6 +54,27 @@ the bug and now pass, so they are the regression test.
       evidence" into a false accusation; this one turned "fails open on flush" into "fails
       open on clone". Neither was caught here.
 
+- [x] **The receiver check compared a type's name, not its identity** -- `14c5fa6`. Third
+      review, third repair of the same scanner, and the same false-safe answer reached a
+      third way: `is_transparently_std` read only the last path segment, so `my::String`
+      counted as the standard library's `String` and a user's own `len` -- writing a file --
+      was passed over.
+
+      A path qualifies now only when it is genuinely std's: bare, with nothing in the fn's own
+      file having taken that name for a type of its own (declaration, import, or a glob
+      import, which could bring in anything), or written out from a real `std`/`core`/`alloc`
+      root. Three shapes pinned: the qualified impostor, the locally-declared one, and the
+      imported one.
+
+      **Recorded because it is now a pattern, not an incident.** Three fixes to this file in
+      one day, each landing while the hole it was closing stayed reachable by a route the fix
+      did not consider -- names instead of methods, then names instead of types. Every one was
+      found by a reviewer reading the diff, none by a test here. The general lesson holds
+      beyond this file: a repair aimed at a reported example closes the example, and the class
+      only closes when the invariant is stated over the whole input space. That is the same
+      thing `docs/plans/evidence-integrity.md` says about defects in the product, applied to
+      the tool's own source.
+
 - [ ] **KNOWN GAP, recorded not hidden**: that copy list is maintained by hand. The next
       `include_str!` of a path outside a crate directory will break the same two unrelated
       build-identity tests, 150 seconds into an e2e shard, with an error naming neither the

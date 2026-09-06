@@ -43,8 +43,19 @@
 //! not, so a chained call, a field, or a local is `Unknown` -- a real
 //! narrowing of what this can answer for, and the honest one.
 //!
-//! Both were latent rather than live: nothing outside this file calls into
-//! it yet, which is the only reason either cost nothing.
+//! **And the second repair was unsound too**, caught by the same reviewer.
+//! It compared the *last path segment* of the declared type, so `my::String`
+//! counted as the standard library's `String` and a user's own `len` --
+//! which may write a file -- was passed over. A name is not an identity.
+//! A path now qualifies only when it is genuinely std's: bare, with nothing
+//! in the fn's own file having taken that name for a type of its own
+//! ([`names_the_crate_binds`], glob imports included), or written out from
+//! a real standard-library root ([`STD_CRATES`]).
+//!
+//! Three repairs, three reviews, and each of the first two left the same
+//! false-safe answer reachable by a different route. All were latent --
+//! nothing outside this file calls into it yet, which is the only reason
+//! any of them cost nothing.
 //!
 //! **What it is not.** It is not the capability tier §5.3 describes and it
 //! does not implement `pure`/`uses:` enforcement (`A0402`, `A0403`, `A0408`
@@ -288,6 +299,12 @@ fn walk(
     let mut calls = Vec::new();
     collect(&found.item, &mut calls);
     let params = parameter_types(&found.item);
+    // What the file this fn was declared in binds for itself, so a `String`
+    // that is not the standard library's is not read as one. The fn's own
+    // file rather than the crate root: that is the scope its signature was
+    // written in, and it is what `FoundFn` carries for exactly this kind of
+    // question.
+    let shadowed = names_the_crate_binds(&found.file);
 
     for call in &calls {
         if let Some(name) = writing_call_name(call) {
@@ -335,7 +352,7 @@ fn walk(
             let receiver_is_std = (!receiver.is_empty())
                 .then(|| params.get(receiver))
                 .flatten()
-                .is_some_and(is_transparently_std);
+                .is_some_and(|ty| is_transparently_std(ty, &shadowed));
             if receiver_is_std && BENIGN_METHODS.contains(&method) {
                 continue;
             }
@@ -564,28 +581,132 @@ const STD_TRANSPARENT_TYPES: &[&str] = &[
     "VecDeque", "BTreeMap", "BTreeSet", "HashMap", "HashSet", "Option", "Result", "Duration",
 ];
 
+/// Every name this crate binds to a type of its own -- declared here, or
+/// imported from somewhere else under that name.
+///
+/// A bare `String` in a signature means the standard library's only if
+/// nothing in the crate has taken that name, and taking it is ordinary
+/// Rust: `struct String;` or `use my::String;`. Without this, a user type
+/// wearing a standard-library name was read as the standard library's, and
+/// its own inherent `len` -- which may write a file -- was passed over.
+fn names_the_crate_binds(file: &syn::File) -> BTreeSet<String> {
+    fn walk(items: &[syn::Item], out: &mut BTreeSet<String>) {
+        for item in items {
+            match item {
+                syn::Item::Struct(i) => {
+                    out.insert(i.ident.to_string());
+                }
+                syn::Item::Enum(i) => {
+                    out.insert(i.ident.to_string());
+                }
+                syn::Item::Union(i) => {
+                    out.insert(i.ident.to_string());
+                }
+                syn::Item::Type(i) => {
+                    out.insert(i.ident.to_string());
+                }
+                syn::Item::Trait(i) => {
+                    out.insert(i.ident.to_string());
+                }
+                syn::Item::Use(i) => collect_use(&i.tree, out),
+                syn::Item::Mod(m) => {
+                    // A name bound inside a module is not in scope at the
+                    // crate root, but this scan cannot tell which module a
+                    // signature was written in. Coarser, never wrong: the
+                    // same trade this module makes everywhere else.
+                    if let Some((_, inner)) = &m.content {
+                        walk(inner, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn collect_use(tree: &syn::UseTree, out: &mut BTreeSet<String>) {
+        match tree {
+            syn::UseTree::Path(p) => collect_use(&p.tree, out),
+            syn::UseTree::Name(n) => {
+                out.insert(n.ident.to_string());
+            }
+            syn::UseTree::Rename(r) => {
+                out.insert(r.rename.to_string());
+            }
+            syn::UseTree::Group(g) => {
+                for t in &g.items {
+                    collect_use(t, out);
+                }
+            }
+            // `use foo::*;` can bring in anything at all, including a type
+            // wearing a standard-library name. Nothing here can see what,
+            // so nothing after it can be trusted to be std's.
+            syn::UseTree::Glob(_) => {
+                out.insert("*".to_string());
+            }
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk(&file.items, &mut out);
+    out
+}
+
+/// The crate roots a genuinely standard-library path starts at.
+const STD_CRATES: &[&str] = &["std", "core", "alloc"];
+
 /// Whether a declared parameter type contains no user code at all -- see
 /// [`STD_TRANSPARENT_TYPES`] for why that is the question rather than "is
 /// this a std type".
-fn is_transparently_std(ty: &syn::Type) -> bool {
+///
+/// `shadowed` is what the crate binds for itself ([`names_the_crate_binds`]).
+/// A name in it is not the standard library's, whatever it spells.
+fn is_transparently_std(ty: &syn::Type, shadowed: &BTreeSet<String>) -> bool {
     match ty {
-        syn::Type::Reference(r) => is_transparently_std(&r.elem),
-        syn::Type::Paren(p) => is_transparently_std(&p.elem),
-        syn::Type::Group(g) => is_transparently_std(&g.elem),
-        syn::Type::Slice(s) => is_transparently_std(&s.elem),
-        syn::Type::Array(a) => is_transparently_std(&a.elem),
-        syn::Type::Tuple(t) => t.elems.iter().all(is_transparently_std),
+        syn::Type::Reference(r) => is_transparently_std(&r.elem, shadowed),
+        syn::Type::Paren(p) => is_transparently_std(&p.elem, shadowed),
+        syn::Type::Group(g) => is_transparently_std(&g.elem, shadowed),
+        syn::Type::Slice(s) => is_transparently_std(&s.elem, shadowed),
+        syn::Type::Array(a) => is_transparently_std(&a.elem, shadowed),
+        syn::Type::Tuple(t) => t.elems.iter().all(|e| is_transparently_std(e, shadowed)),
         syn::Type::Path(p) => {
+            // A qualified `<T as Trait>::Assoc`: the real type comes from an
+            // impl this scan is not reading.
+            if p.qself.is_some() {
+                return false;
+            }
+            let segments: Vec<String> = p
+                .path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect();
             let Some(seg) = p.path.segments.last() else {
                 return false;
             };
-            if !STD_TRANSPARENT_TYPES.contains(&seg.ident.to_string().as_str()) {
+            let name = seg.ident.to_string();
+            if !STD_TRANSPARENT_TYPES.contains(&name.as_str()) {
+                return false;
+            }
+            // Reading only the last segment is what let `my::String` count
+            // as `String` (external review, 2026-09-06). A name is the
+            // standard library's under exactly two spellings, and `my::`
+            // anything is neither.
+            let is_std_path = match segments.len() {
+                // Bare, and only if nothing in this crate has taken the
+                // name for a type of its own. A glob import means anything
+                // could have.
+                1 => !shadowed.contains(&name) && !shadowed.contains("*"),
+                // Qualified, and only from a real standard-library root --
+                // `std::string::String`, never `my::String`. A leading `::`
+                // parses with the same segments, which is still correct:
+                // `::std::string::String` is std's.
+                _ => STD_CRATES.contains(&segments[0].as_str()),
+            };
+            if !is_std_path {
                 return false;
             }
             match &seg.arguments {
                 syn::PathArguments::None => true,
                 syn::PathArguments::AngleBracketed(args) => args.args.iter().all(|a| match a {
-                    syn::GenericArgument::Type(t) => is_transparently_std(t),
+                    syn::GenericArgument::Type(t) => is_transparently_std(t, shadowed),
                     syn::GenericArgument::Lifetime(_) => true,
                     _ => false,
                 }),
@@ -922,6 +1043,59 @@ mod tests {
                 Reach::None,
                 "the receiver is a parameter declared as a type with no user code inside it, so \
                  this method is the standard library's own and cannot touch a file: {body}"
+            );
+        }
+    }
+
+    /// A type's *name* is not a type's identity, and the receiver check was
+    /// reading only the last path segment.
+    ///
+    /// So `my::String` counted as the standard library's `String`, and
+    /// `x.len()` on one was passed over -- even where that `len` is the
+    /// user's own inherent method and writes a file. The `Logger::clone`
+    /// case was closed and this one, the same false-safe answer reached a
+    /// different way, was not. Reported by external review 2026-09-06, on
+    /// the fix for the whitelist that preceded it.
+    ///
+    /// Three shapes, and none of them may read as safe: a qualified path
+    /// whose tail merely spells a std name, a bare name the crate shadows
+    /// with a type of its own, and a bare name the crate imports from
+    /// somewhere else.
+    #[test]
+    fn a_type_that_merely_shares_a_std_types_name_is_not_that_type() {
+        const WRITES: &str = "std::fs::write(\"/tmp/x\", b\"\").unwrap();";
+        for (label, body) in [
+            (
+                "a qualified path whose last segment spells a std name",
+                format!(
+                    "pub mod my {{\n    pub struct String;\n    impl String {{\n        \
+                     pub fn len(&self) -> usize {{ {WRITES} 0 }}\n    }}\n}}\n\n\
+                     pub fn n(s: &my::String) -> usize {{\n    s.len()\n}}\n"
+                ),
+            ),
+            (
+                "a bare name the crate declares a type for",
+                format!(
+                    "pub struct String;\nimpl String {{\n    pub fn len(&self) -> usize {{ \
+                     {WRITES} 0 }}\n}}\n\npub fn n(s: &String) -> usize {{\n    s.len()\n}}\n"
+                ),
+            ),
+            (
+                "a bare name the crate imports from elsewhere",
+                format!(
+                    "pub mod my {{\n    pub struct String;\n    impl String {{\n        \
+                     pub fn len(&self) -> usize {{ {WRITES} 0 }}\n    }}\n}}\n\n\
+                     use my::String;\n\npub fn n(s: &String) -> usize {{\n    s.len()\n}}\n"
+                ),
+            ),
+        ] {
+            let dir = fixture(&body);
+            let reach = scan_fn(dir.path(), "n");
+            assert!(
+                !reach.is_safe(),
+                "{label}: the receiver is not the standard library's type, so its `len` is not \
+                 the standard library's either -- and this one writes a file:\n{body}\ngot \
+                 {reach:?}"
             );
         }
     }
