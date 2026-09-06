@@ -402,7 +402,7 @@ components:
         anchor: ply_core::reach
         state:
           of: FirstParty
-          show: [units, gate]
+          show: [units, gate, type_decls]
         fns:
           path_dependencies:
             # Never reports a dependency the manifest does not name.

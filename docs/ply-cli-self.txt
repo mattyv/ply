@@ -4,13 +4,16 @@ No result reaches this page. Every line below is a declaration or a promise, nev
 
 ply: 1 — the format version every rule below is read under; a version this build does not speak is refused, never guessed at
 
-2 components · 6 functions · 0 promise nothing
+4 components · 6 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
 components:
 
   component cli — maps to Rust module ply_cli
     note: The library behind `cargo-ply`. Its shell -- argument parsing, file I/O, subprocess calls -- is deliberately unclaimed; what is claimed is the logic those commands share.
+    state Cli — the structure this component holds. 2 of 2 of its fields shown
+      command is a structure of your own, written `Commands` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      json is a single value, written `bool`
     declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result
     that level comes from its weakest part, join_plainly — nothing here counts as checked more strongly than the weakest thing inside it
     fn join_plainly
@@ -24,6 +27,19 @@ components:
         join_plainly(&["a".to_string()]) == "a"
         join_plainly(&["a".to_string(), "b".to_string()]) == "a and b"
         join_plainly(&["a".to_string(), "b".to_string(), "c".to_string()]) == "a, b and c"
+    component verify — maps to Rust module ply_cli::verify
+      note: Runs the checks and assembles what comes back. The one command that produces evidence rather than describing intent.
+      state VerificationResult — the structure this component holds. 3 of 3 of its fields shown
+        document is a structure of your own, written `Document` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        envelope is a structure of your own, written `Envelope` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        source_map is a lookup table, written `BTreeMap<String, Span>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
+    component report — maps to Rust module ply_cli::audit
+      note: Says what this codebase's evidence rests on that Ply never checks -- the promises taken on trust, listed rather than assumed.
+      state AuditReport — the structure this component holds. 2 of 2 of its fields shown
+        envelope is a structure of your own, written `Envelope` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
+        document is text, written `String`
+      hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
     component shared — maps to Rust module ply_cli::shared
       note: What `check`, `audit` and `worklist` all need from a document before any engine runs. One copy, so the three commands cannot quietly disagree about what they read.
       declares checks up to fuzzed — checked against many random inputs — the strongest verdict this could earn if every declared check ran and passed; a promise, never a result

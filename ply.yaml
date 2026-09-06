@@ -101,31 +101,12 @@ components:
       be tested together.
   cli:
     anchor: ply_cli
-    # What the command line itself holds before dispatching to a
-    # subcommand: `clap`'s own parsed struct, resolved at the crate root
-    # since that is where `main.rs` declares it. `command` is the chosen
-    # subcommand (a shape of its own -- `Commands` is an enum); `json`
-    # is the one global flag every subcommand shares.
-    state:
-      of: Cli
-      show: [command, json]
-    components:
-      verify:
-        anchor: ply_cli::verify
-        state:
-          of: VerificationResult
-          show: [document, envelope, source_map]
-        note: >-
-          Runs the checks and assembles what comes back. The one command that
-          produces evidence rather than describing intent.
-      report:
-        anchor: ply_cli::audit
-        state:
-          of: AuditReport
-          show: [envelope, document]
-        note: >-
-          Says what this codebase's evidence rests on that Ply never checks --
-          the promises taken on trust, listed rather than assumed.
+    # Deliberately no `state:` and no `components:` -- moved into
+    # `crates/ply-cli/ply.yaml` on 2026-09-06, for the reason recorded on
+    # `core` below. Declaring an interior here makes this component
+    # non-hollow, and a component that declares its own interior never
+    # consults a link, so this box read "2 components, 0 fns" while that
+    # file's six promises all sat green. Do not restore either key.
 
   # The spec-validation tooling, which lived in a second cargo workspace
   # until 2026-08-30 and so was absent from this document entirely -- Ply's

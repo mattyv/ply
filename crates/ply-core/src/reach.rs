@@ -82,6 +82,22 @@ pub struct FirstParty {
     /// `Some(reason)` when first-party source contains something a
     /// syntactic call walk cannot bound -- see the module comment.
     gate: Option<String>,
+    /// `(label, token text)` for every type declaration in first-party
+    /// source: the aliases, structs and enums the gate lets through.
+    ///
+    /// A walk of *bodies* can never reach these, and they were therefore
+    /// not hashed at all -- while changing one changes what every body
+    /// around it means. `type Input = u8;` widened to `u16` left every
+    /// function byte-identical and made `|result| *result <= 255` false,
+    /// and the record matched, so Ply reported a green it had earned over
+    /// a strictly smaller input space (reproduced end to end, 2026-09-05:
+    /// cached `fuzzed(256) [reused]`, fresh `violation` at `x = 256`).
+    ///
+    /// Hashed as one set rather than per-reached-type on purpose: working
+    /// out which declarations a body depends on needs the type checker Ply
+    /// is not, so an unused struct changing re-earns the crate's claims.
+    /// That is this module's stated trade -- coarser, never wrong.
+    type_decls: Vec<(String, String)>,
 }
 
 impl FirstParty {
@@ -267,6 +283,7 @@ fn is_ply_generated(name: &str) -> bool {
 /// can be trusted over this crate at all.
 pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
     let mut units: Vec<(String, String)> = Vec::new();
+    let mut type_decls: Vec<(String, String)> = Vec::new();
     let mut gate: Option<String> = None;
     for (label, path) in first_party_files(crate_dir) {
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -290,12 +307,49 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
             if let Err(reason) = item_is_walkable(item, &label) {
                 gate.get_or_insert(reason);
             }
+            collect_type_decls(item, &label, &mut type_decls);
             item.to_tokens(&mut tokens);
         }
         units.push((label, tokens.to_string()));
     }
     units.sort();
-    FirstParty { units, gate }
+    type_decls.sort();
+    FirstParty {
+        units,
+        gate,
+        type_decls,
+    }
+}
+
+/// Every type declaration in one item, including inside modules, as
+/// `(label, token text)`.
+///
+/// Only the kinds `item_is_walkable` lets past its gate reach this: an
+/// alias, a struct, an enum. Anything else has already widened the scope to
+/// the whole crate, where the file's own tokens are hashed regardless.
+fn collect_type_decls(item: &syn::Item, label: &str, out: &mut Vec<(String, String)>) {
+    match item {
+        syn::Item::Type(t) => out.push((
+            format!("{label}::{}", t.ident),
+            t.to_token_stream().to_string(),
+        )),
+        syn::Item::Struct(t) => out.push((
+            format!("{label}::{}", t.ident),
+            t.to_token_stream().to_string(),
+        )),
+        syn::Item::Enum(t) => out.push((
+            format!("{label}::{}", t.ident),
+            t.to_token_stream().to_string(),
+        )),
+        syn::Item::Mod(m) => {
+            if let Some((_, items)) = &m.content {
+                for inner in items {
+                    collect_type_decls(inner, &format!("{label}::{}", m.ident), out);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The code one claim's checks can reach, as the fingerprint records it.
@@ -317,7 +371,10 @@ pub fn code_scope(
     }
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut queue: VecDeque<String> = VecDeque::new();
-    let mut units: Vec<(String, String)> = Vec::new();
+    // Seeded with every first-party type declaration, because no walk of
+    // bodies can reach one and changing one changes what the bodies mean.
+    // See `FirstParty::type_decls`.
+    let mut units: Vec<(String, String)> = first_party.type_decls.clone();
     queue.push_back(root_fn_path.to_string());
     while let Some(spelling) = queue.pop_front() {
         let is_root = seen.is_empty();
@@ -376,7 +433,39 @@ pub fn code_scope(
                 ),
             );
         }
+        // A name written inside a module is resolved from that module
+        // first, then from the crate root -- the way Rust reads it. Without
+        // this, a bare `helper(x)` inside `mod maths` resolved to nothing,
+        // and "nothing" fell into the `Unresolved` arm below, whose comment
+        // says "out of the workspace: `std`, or a registry crate". It was
+        // neither: it was the function on the next line. Editing it left
+        // the caller's fingerprint unchanged and Ply carried a green
+        // forward over code a cold run reports as a violation
+        // (reproduced end to end, 2026-09-05).
+        let module_prefix = found
+            .canonical
+            .rsplit_once("::")
+            .map(|(module, _)| module.to_string());
         for path in mentions.paths {
+            // Module-qualified first, bare second. The first spelling that
+            // resolves to anything at all is the one Rust would have run;
+            // only if neither resolves is this genuinely outside.
+            let qualified = module_prefix
+                .as_ref()
+                .map(|m| format!("{m}::{path}"))
+                .filter(|q| {
+                    !matches!(
+                        resolver
+                            .classify(&CallSite {
+                                path: q.clone(),
+                                line: 0,
+                                col: 0,
+                            })
+                            .status,
+                        CalleeStatus::Unresolved
+                    )
+                });
+            let path = qualified.unwrap_or(path);
             let site = CallSite {
                 path: path.clone(),
                 line: 0,
@@ -676,30 +765,60 @@ fn declared_dependency_count(manifest: &str) -> usize {
 
 /// `name version` for every package with a `source` (i.e. not in this
 /// workspace) reachable from `root` in a `Cargo.lock`.
+/// The one registry whose published versions are immutable by policy, so
+/// `name version` already names exact bytes.
+const CRATES_IO_REGISTRY: &str = "registry+https://github.com/rust-lang/crates.io-index";
+
 fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
     struct Pkg {
+        name: String,
         version: String,
-        external: bool,
+        /// The lockfile's own `source =` line, kept whole rather than
+        /// reduced to "is this external".
+        ///
+        /// It carries the revision for a git dependency
+        /// (`git+https://...?branch=main#<sha>`), and collapsing it to a
+        /// boolean meant two builds of the same package version from
+        /// different revisions produced one identity -- so updating a git
+        /// dependency without bumping its version left every fingerprint
+        /// unchanged and every recorded green reusable over code that had
+        /// moved underneath it.
+        source: Option<String>,
         deps: Vec<String>,
     }
     let mut packages: std::collections::BTreeMap<String, Pkg> = std::collections::BTreeMap::new();
+    let mut by_name: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     let mut name = String::new();
     let mut version = String::new();
-    let mut external = false;
+    let mut source: Option<String> = None;
     let mut deps: Vec<String> = Vec::new();
     let mut in_deps_list = false;
     let mut started = false;
     let flush = |name: &mut String,
                  version: &mut String,
-                 external: &mut bool,
+                 source: &mut Option<String>,
                  deps: &mut Vec<String>,
-                 packages: &mut std::collections::BTreeMap<String, Pkg>| {
+                 packages: &mut std::collections::BTreeMap<String, Pkg>,
+                 by_name: &mut std::collections::BTreeMap<String, Vec<String>>| {
         if !name.is_empty() {
+            // Keyed by name *and* version. A lockfile may legitimately hold
+            // two versions of one crate; keyed by name alone the second
+            // block overwrote the first, so the identity could name a
+            // version this crate never built with and would move when an
+            // unrelated crate bumped its own copy.
+            let n = std::mem::take(name);
+            let v = std::mem::take(version);
+            by_name
+                .entry(n.clone())
+                .or_default()
+                .push(format!("{n} {v}"));
             packages.insert(
-                std::mem::take(name),
+                format!("{n} {v}"),
                 Pkg {
-                    version: std::mem::take(version),
-                    external: std::mem::replace(external, false),
+                    name: n,
+                    version: v,
+                    source: source.take(),
                     deps: std::mem::take(deps),
                 },
             );
@@ -711,9 +830,10 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
             flush(
                 &mut name,
                 &mut version,
-                &mut external,
+                &mut source,
                 &mut deps,
                 &mut packages,
+                &mut by_name,
             );
             started = true;
             in_deps_list = false;
@@ -727,11 +847,13 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
                 in_deps_list = false;
                 continue;
             }
-            let entry = t.trim_matches(|c| c == '"' || c == ',');
-            if let Some(first) = entry.split_whitespace().next()
-                && !first.is_empty()
-            {
-                deps.push(first.trim_matches('"').to_string());
+            // The whole entry, not just its first word. Cargo writes
+            // `"dep 0.1.0"` exactly when the bare name would be ambiguous,
+            // so the version here is the only thing saying which of two
+            // copies this crate compiled against.
+            let entry = t.trim_matches(|c| c == '"' || c == ',').trim();
+            if !entry.is_empty() {
+                deps.push(entry.to_string());
             }
             continue;
         }
@@ -739,8 +861,8 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
             name = v.trim_matches('"').to_string();
         } else if let Some(v) = t.strip_prefix("version = ") {
             version = v.trim_matches('"').to_string();
-        } else if t.starts_with("source = ") {
-            external = true;
+        } else if let Some(v) = t.strip_prefix("source = ") {
+            source = Some(v.trim_matches('"').to_string());
         } else if t.starts_with("dependencies = [") {
             in_deps_list = !t.ends_with(']');
         }
@@ -748,15 +870,28 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
     flush(
         &mut name,
         &mut version,
-        &mut external,
+        &mut source,
         &mut deps,
         &mut packages,
+        &mut by_name,
     );
+
+    // A `dependencies` entry is either `"name"` or `"name version"`. The
+    // second form is already a key; the first is one only when the name is
+    // unambiguous. When it is not -- which a well-formed lockfile does not
+    // produce, but a hand-edited one might -- every candidate is walked, so
+    // the identity is coarser than necessary rather than silently wrong.
+    let resolve = |entry: &str| -> Vec<String> {
+        if packages.contains_key(entry) {
+            return vec![entry.to_string()];
+        }
+        by_name.get(entry).cloned().unwrap_or_default()
+    };
 
     let mut out: BTreeSet<String> = BTreeSet::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut queue: VecDeque<String> = VecDeque::new();
-    queue.push_back(root.to_string());
+    queue.extend(resolve(root));
     while let Some(next) = queue.pop_front() {
         if !seen.insert(next.clone()) {
             continue;
@@ -764,11 +899,30 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
         let Some(pkg) = packages.get(&next) else {
             continue;
         };
-        if pkg.external {
-            out.insert(format!("{next} {}", pkg.version));
+        if let Some(src) = &pkg.source {
+            // Name and version alone, for a crates.io package: a published
+            // version there is immutable by that registry's own policy, so
+            // the two together already name one exact set of bytes and the
+            // source line adds a constant.
+            //
+            // Everything else carries its source. A git dependency's version
+            // says nothing about which commit was built -- the revision is
+            // in this line and nowhere else -- and an alternative registry
+            // makes no immutability promise this code can rely on.
+            //
+            // Narrow on purpose. Appending the source unconditionally would
+            // have changed the identity of every dependency in the world and
+            // invalidated every recorded result, for no gain on the one case
+            // that needs nothing: the same reseed-everything mistake a
+            // contract-text re-render made earlier today.
+            if src == CRATES_IO_REGISTRY {
+                out.insert(format!("{} {}", pkg.name, pkg.version));
+            } else {
+                out.insert(format!("{} {} {src}", pkg.name, pkg.version));
+            }
         }
         for d in &pkg.deps {
-            queue.push_back(d.clone());
+            queue.extend(resolve(d));
         }
     }
     out.into_iter().collect()
@@ -921,6 +1075,66 @@ pub fn twice(x: u32) -> u32 { x + x }
         );
     }
 
+    /// A helper in the *same module* as the claimed function is code the
+    /// check runs, and editing it must re-earn the result.
+    ///
+    /// It did not. Resolution ran from the crate root, so a bare `helper(x)`
+    /// written inside `mod maths` resolved to nothing, and "nothing" was
+    /// read as "outside this workspace -- covered by the dependency
+    /// versions instead". Editing `maths::helper` then left the caller's
+    /// fingerprint identical and Ply carried a green forward over code a
+    /// cold run reports as a violation. Reproduced end to end on
+    /// 2026-09-05 before this test existed: cached `fuzzed(256) [reused]`,
+    /// fresh `violation` at `x = 0`, same source.
+    #[test]
+    fn a_helper_in_the_claimed_functions_own_module_is_in_scope() {
+        let dir = crate_with(&[(
+            "src/lib.rs",
+            "pub mod maths {
+    pub fn helper(x: u32) -> u32 { x }
+    pub fn call(x: u32) -> u32 { helper(x) }
+}
+",
+        )]);
+        let scope = scope_of(dir.path(), "maths::call", &[]);
+        assert_eq!(scope.scope, "reached", "{:?}", scope.widened_because);
+        assert!(
+            labels(&scope).iter().any(|l| l.ends_with("helper")),
+            "the helper this function calls must be hashed, or editing it \
+             leaves the caller's fingerprint unchanged: {:?}",
+            labels(&scope)
+        );
+    }
+
+    /// A type declaration is not a body, so no walk of bodies reaches it --
+    /// but changing one changes what the bodies mean.
+    ///
+    /// `type Input = u8;` widened to `u16` leaves every function's tokens
+    /// byte-identical while making `|result| *result <= 255` false. The
+    /// walk allowed type aliases through its gate and then hashed only
+    /// function bodies, so the change was invisible. Reproduced end to end
+    /// on 2026-09-05: cached `fuzzed(256) [reused]`, fresh `violation` at
+    /// `x = 256`, same source.
+    #[test]
+    fn a_type_declaration_is_hashed_even_though_no_body_reaches_it() {
+        let alias = |ty: &str| {
+            let dir = crate_with(&[(
+                "src/lib.rs",
+                &format!("pub type Input = {ty};\npub fn widen(x: Input) -> u32 {{ x as u32 }}\n"),
+            )]);
+            let scope = scope_of(dir.path(), "widen", &[]);
+            assert_eq!(scope.scope, "reached", "{:?}", scope.widened_because);
+            scope.units.clone()
+        };
+        assert_ne!(
+            alias("u8"),
+            alias("u16"),
+            "widening the alias changes what `widen` accepts, so it must change \
+             what the record hashes -- otherwise a green earned over `u8` is \
+             carried forward onto `u16`"
+        );
+    }
+
     /// An attribute Ply does not recognise may be a macro that rewrites the
     /// body into something else entirely, and a walk of the tokens as
     /// written would be a walk of code that never runs.
@@ -1002,6 +1216,94 @@ pub fn f(x: u32) -> u32 { x }
         .unwrap();
         assert_eq!(without, dependency_identity(dir.path()));
         assert_eq!(without, NO_EXTERNAL_CODE);
+    }
+
+    /// Two builds of the same package version from different git revisions
+    /// are different code, and must not share an identity.
+    ///
+    /// The lockfile's `source =` line carries the revision (`...?branch=main#
+    /// <sha>`), and it was read only as a boolean -- "is this external" --
+    /// then discarded. Updating a git dependency without bumping its package
+    /// version therefore left every fingerprint identical and every recorded
+    /// green reusable over code that had changed underneath it. Reported by
+    /// external review 2026-09-05; this is the reproduction it could not run.
+    #[test]
+    fn a_git_dependency_that_moved_is_not_the_same_dependency() {
+        let lock = |rev: &str| {
+            let dir = crate_with(&[("src/lib.rs", "pub fn f() {}\n")]);
+            std::fs::write(
+                dir.path().join("Cargo.lock"),
+                format!(
+                    r#"version = 4
+
+[[package]]
+name = "c"
+version = "0.0.0"
+dependencies = [
+ "dep",
+]
+
+[[package]]
+name = "dep"
+version = "0.1.0"
+source = "git+https://example.invalid/dep?branch=main#{rev}"
+"#
+                ),
+            )
+            .unwrap();
+            dependency_identity(dir.path())
+        };
+        assert_ne!(
+            lock("1111111111111111111111111111111111111111"),
+            lock("2222222222222222222222222222222222222222"),
+            "the same version at two different revisions is two different \
+             dependencies, and a result earned against one must not be reused \
+             against the other"
+        );
+    }
+
+    /// When a lockfile holds two versions of one crate, the identity names
+    /// the one this crate actually compiled against.
+    ///
+    /// Cargo writes `"dep 0.1.0"` in a `dependencies` list precisely when the
+    /// bare name would be ambiguous. That version was being thrown away and
+    /// packages were stored under their name alone, so the last `[[package]]`
+    /// block in the file won and the fingerprint could name a version this
+    /// crate never built with -- and would change when an unrelated crate
+    /// bumped its own copy. Second half of the external review's third
+    /// finding, 2026-09-05.
+    #[test]
+    fn two_versions_of_one_crate_do_not_overwrite_each_other() {
+        let dir = crate_with(&[("src/lib.rs", "pub fn f() {}\n")]);
+        std::fs::write(
+            dir.path().join("Cargo.lock"),
+            r#"version = 4
+
+[[package]]
+name = "c"
+version = "0.0.0"
+dependencies = [
+ "dep 0.1.0",
+]
+
+[[package]]
+name = "dep"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "dep"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            dependency_identity(dir.path()),
+            "dep 0.1.0",
+            "the fingerprint must name the version this crate resolves to, not \
+             whichever copy appeared last in the lockfile"
+        );
     }
 
     /// The versions that are pinned are the ones this crate resolves to.
