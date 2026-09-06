@@ -1,5 +1,17 @@
 # TODO
 
+## Ply Book — 2026-09-06
+
+- [x] Build a separate `ply-book` course: three worked chapters, Rust starter and
+      solution exercises, short assessments, and an independent scheduler challenge.
+      Published source in `mattyv/ply-book` at `c7200ba`; all four solutions and
+      intended failures checked locally against pinned Ply.
+- [x] Verify the exercises against a pinned Ply revision and publish with mdBook
+      on the separate `mattyv/ply-book` GitHub Pages site. Course commit `c7200ba`;
+      GitHub build and deployment `34009951278` both passed. Local checkout:
+      `/Users/matthew/Code/ply-book`.
+
+
 **Picking this up fresh?** `docs/handoff-2026-09-04.md` is the narrative and the traps; this
 file is the state. Read that one first, then this.
 

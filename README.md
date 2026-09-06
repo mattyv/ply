@@ -23,6 +23,10 @@ build that passed, so nothing on it is a claim made by hand.
 
 ## Install
 
+New to Ply? [The Ply Book](https://mattyv.github.io/ply-book/) teaches contracts,
+counterexamples, and evidence limits through a Rust job scheduler, with runnable
+exercises, hints, and short assessments.
+
 Two things go in: the command, and one dependency in the crate you want checked.
 
 **The command.** Installs as a `cargo` subcommand:
