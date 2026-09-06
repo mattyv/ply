@@ -1,5 +1,13 @@
 # TODO
 
+## General review of Ply agent skills
+
+- [x] Implemented in `20c3cd9`: corrected static audit/evidence confusion, conditionality claims, engine and nesting limits, declaration/render scope, snapshot navigation, and redundant approval stops across all five skills. All 30 skill contract tests, five skill validators, and Terra's three-scenario follow-up review pass.
+
+## Incremental verification in agent skills
+
+- [x] Implemented in `20c3cd9`: early verification and checks after meaningful implementation changes are explicit in the authoring, coding, and verification skills. All 30 skill contract tests and all three skill validators pass.
+
 ## Landed: a braces-containing contract no longer breaks the generated cex test — 2026-09-06 (150e2e6, cc42099)
 
 - [x] `contract_rt.rs`'s `render_message` spliced a contract's own text straight into
