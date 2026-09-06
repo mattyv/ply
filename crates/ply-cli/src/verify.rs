@@ -2857,10 +2857,47 @@ fn cex_test_display_path(src_dir: &Path) -> String {
         .to_string()
 }
 
+/// The three outcomes this file reports as verdicts that The-Ply-Spec.md
+/// D6 calls *facts beside* a verdict rather than rungs of the evidence
+/// ladder: "a timeout is not a weaker proof, it is a different kind of
+/// fact."
+///
+/// They earn no evidence -- nothing was checked -- so on the ladder they
+/// can only mean `unclaimed`, and the reason has to travel as a flag or it
+/// travels not at all. It used to travel not at all: `leaf_node` sets no
+/// status, so the reason lived only in the verdict string, and a verdict
+/// string survives worst-of only by winning it. A function nobody could
+/// check, sitting beside a function whose promise was broken, therefore
+/// vanished from the report entirely -- and fixing the broken one turned
+/// the whole component green over a function still nobody had examined.
+///
+/// Returned as the verdict's own word rather than a translation, so the
+/// flag a reader sees is the one the leaf was labelled with.
+fn verdict_carries_its_own_reason(verdict: &str) -> Option<&'static str> {
+    if verdict.starts_with("unsupported") {
+        Some("unsupported")
+    } else if verdict.starts_with("timeout") {
+        Some("timeout")
+    } else if verdict.starts_with("tool_error") {
+        Some("tool_error")
+    } else {
+        None
+    }
+}
+
+/// D6: statuses propagate upward as flags beside the verdict. Every child's
+/// own flags, plus the flag implied by any child whose verdict is one of
+/// the three that name a check that never happened -- see
+/// [`verdict_carries_its_own_reason`] for why the second half is needed.
 fn union_statuses(children: &[Node]) -> Vec<String> {
     let mut out: Vec<String> = children
         .iter()
-        .flat_map(|c| c.statuses.iter().cloned())
+        .flat_map(|c| {
+            c.statuses
+                .iter()
+                .cloned()
+                .chain(verdict_carries_its_own_reason(&c.verdict).map(str::to_string))
+        })
         .collect();
     out.sort();
     out.dedup();
@@ -8600,6 +8637,48 @@ mod tests {
             "tested",
             "D6: a weak leaf drags its parent down"
         );
+    }
+
+    /// A function nothing could check must still be visible from the top,
+    /// even when a *worse* sibling wins the headline.
+    ///
+    /// The-Ply-Spec.md D6 is explicit that `unsupported` and `timeout` are
+    /// statuses, and that statuses "do not sit in that [evidence] order;
+    /// they propagate upward as flags". This code put them *in* the order
+    /// instead -- ranked 2 and 3, below `unclaimed` -- and set no flag
+    /// alongside. So they survived only by winning the worst-of. Put a
+    /// broken promise next to a function Ply could not check at all, and
+    /// the component reports the broken promise and nothing else: a reader
+    /// is told one function failed and never told a second was never
+    /// examined. Fixing the first and re-running then turns the component
+    /// green over a function still nobody has checked.
+    ///
+    /// This is also why `ply_core::kernel` -- the aggregation rule proved
+    /// four ways -- is not on this path: it models D6's six-rung ladder,
+    /// and this file was aggregating over a nine-rung one of its own.
+    #[test]
+    fn a_function_nobody_could_check_is_still_reported_when_a_sibling_fails() {
+        let leaf = |id: &str, verdict: &str| Node {
+            id: id.into(),
+            kind: "fn".into(),
+            verdict: verdict.into(),
+            ..Default::default()
+        };
+        for never_checked in ["unsupported", "timeout", "tool_error"] {
+            let children = vec![leaf("broken", "violation"), leaf("skipped", never_checked)];
+            let parent_statuses = union_statuses(&children);
+            assert_eq!(
+                worst_of(&children),
+                "violation",
+                "a broken promise is still the headline"
+            );
+            assert!(
+                parent_statuses.iter().any(|s| s == never_checked),
+                "`{never_checked}` must reach the parent as a flag beside the verdict \
+                 (D6), or the only function nobody checked vanishes from the report \
+                 the moment a sibling fails. Parent statuses were {parent_statuses:?}"
+            );
+        }
     }
 
     // -- the sampling/proving split (task, 2026-08-27): `bounded` on a

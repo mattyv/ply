@@ -111,9 +111,14 @@ pub fn btreemap_string_u32(x: std::collections::BTreeMap<String, u32>) -> i64 {
     x.len() as i64
 }
 
+// Widened before summing, not after. `sum::<u32>()` overflows and panics on
+// three large values, which has nothing to do with the array shape this
+// entry exists to demonstrate -- and a panic breaks the promise as surely
+// as a wrong answer. The old generated inputs happened never to reach it;
+// a seed change on 2026-09-05 did, and Ply reported it correctly.
 #[ply::ensures(|result| *result >= 0)]
 pub fn array_u32(x: [u32; 3]) -> i64 {
-    x.iter().sum::<u32>() as i64
+    x.iter().map(|v| i64::from(*v)).sum::<i64>()
 }
 
 #[ply::ensures(|result| *result >= 0)]

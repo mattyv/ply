@@ -2943,6 +2943,38 @@ pub fn generate_direct_contract_cases(cf: &ContractFn) -> String {
             entry_lets = entry_lets,
         ));
     }
+    // One more test, whenever a precondition exists: at least one of these
+    // cases has to actually reach the function.
+    //
+    // Each case above returns early when the precondition rejects it, and
+    // Rust reports an early return as a *passing* test. Ply counts passing
+    // tests as executed cases, so a precondition no boundary value can
+    // satisfy earned `tested` on a function that was never called once --
+    // green for a promise nothing checked. Reproduced end to end on
+    // 2026-09-05: `#[ply::requires(x == 42)]` over boundary values 0, 1 and
+    // 255, a body returning the wrong answer, and a clean `tested`.
+    //
+    // A separate test rather than a counter threaded through the others,
+    // because each generated test is its own function and none of them can
+    // see what the others did.
+    if let Some(cond) = &requires_cond {
+        let mut probes = String::new();
+        for case_idx in 0..n_cases {
+            let mut lets = String::new();
+            for (p, set) in cf.params.iter().zip(literal_sets.iter()) {
+                let lit = &set[case_idx % set.len()];
+                lets.push_str(&format!("            let {name} = {lit};\n", name = p.name));
+            }
+            probes.push_str(&format!(
+                "        {{\n{lets}            if {cond} {{ __ply_accepted += 1; }}\n        }}\n"
+            ));
+        }
+        out.push_str(&format!(
+            "    #[test]\n             \x20\x20\x20\x20fn ply_direct_{ident}_admissible() {{\n             \x20\x20\x20\x20\x20\x20\x20\x20let mut __ply_accepted = 0usize;\n             {probes}             \x20\x20\x20\x20\x20\x20\x20\x20assert!(__ply_accepted > 0, \"none of the generated cases for `{label}` satisfy its own precondition, so its promise was never checked on a single input -- add a worked example that satisfies the precondition, or widen it\");\n             \x20\x20\x20\x20}}\n",
+            ident = cf.ident(),
+            label = cf.path,
+        ));
+    }
     out
 }
 
