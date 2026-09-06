@@ -103,7 +103,7 @@ the bug and now pass, so they are the regression test.
       example. A class closes when the invariant is stated over the whole input space, and
       it took being told that plainly.
 
-- [x] **Both scope walks reach every node instead of the ones somebody listed** -- `HASHD`.
+- [x] **Both scope walks reach every node instead of the ones somebody listed** -- `a48de5b`.
       Fifth round on this scanner. The rule from round four was right; the walk implementing it
       was not. It enumerated where a `use` could appear -- file items, then inline modules --
       and Rust allows one in a function body, a nested block, an `impl`, or another function
