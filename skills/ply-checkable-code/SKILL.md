@@ -111,10 +111,12 @@ What Ply actually needs to build a struct:
 - **not `#[non_exhaustive]`** — that attribute exists precisely to forbid the literal Ply
   would write
 
-A container of a plain type is fine (`Vec<String>`, `Option<u32>`). A container of *your own*
-struct — `Vec<Inner>` — is the one shape still refused as of this writing; Ply reports it
-rather than guessing. Ply's own `FingerprintInputs` is the example: twenty public fields, and
-refused for that reason alone, not for its width.
+A container of a plain type is fine (`Vec<String>`, `Option<u32>`), and so is a container of
+*your own* struct — `Vec<Inner>`. **That was refused until 2026-09-05**, and this section
+said so; the resolver now walks into a container wherever it appears rather than only at the
+top level. Ply's own `FingerprintInputs` was the example of the refusal: twenty public
+fields, two of them lists of another struct. It earns `fuzzed(256)` today, so if you have
+read older advice here about designing around that shape, ignore it too.
 
 When a type has real invariants or private fields, give it a public constructor taking fewer
 arguments, or declare a route naming a public function that returns one — **a route needs a
@@ -125,9 +127,15 @@ routes: { Handle: open_handle }        # open_handle must be a real public fn
 ```
 
 When no such function exists, adding one whose only caller is Ply is adding public API for
-the tool's benefit, and that is the developer's call, not yours. Ply's own twenty-field
-`FingerprintInputs` is in exactly this position and is left refused on purpose. Rule 9 is
-what to do instead.
+the tool's benefit, and that is the developer's call, not yours. Rule 9 is what to do
+instead.
+
+What Ply cannot do for you is know whether those public fields have a relationship between
+them that nothing in the type enforces. On `FingerprintInputs` it says so out loud rather
+than assuming: the run reports that its evidence rests on there being no hidden invariant
+among the fields, and that this is assumed, not proved. A type whose methods quietly keep
+two fields in step is one where that assumption is wrong, and a value Ply builds may be one
+your program never produces.
 
 ## 5. Watch what a precondition throws away
 
