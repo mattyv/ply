@@ -96,27 +96,22 @@ return it.
 
 ## 4. Keep a struct's fields public and named
 
-Width is not a problem. **It was until 2026-09-04** — Ply folded every field into one flat
-tuple and the sampling library's tuple trait stops at twelve, so a thirteen-field struct was
-refused outright. That ceiling is gone: the leaves are composed in nested chunks now, so a
-twenty-field struct builds exactly as a five-field one does. If you have read older advice
-here telling you to design around a dozen fields, ignore it — this section said that, and it
-was a limit in the tool rather than anything about your code.
+Width is not a problem: a twenty-field struct builds exactly as a five-field one does. (An
+earlier version of this rule said to stay under a dozen fields. That was a ceiling in Ply's
+own generator, since lifted, and never anything about your code.)
 
-What Ply actually needs to build a struct:
+What Ply actually needs to build a struct directly:
 
 - **every field public** — it constructs the value with a struct literal, so a private field
-  it cannot name means it cannot build one at all
+  it cannot name means it needs a constructor instead (below)
 - **fields named** — a tuple struct has no field names to build against
 - **not `#[non_exhaustive]`** — that attribute exists precisely to forbid the literal Ply
   would write
 
 A container of a plain type is fine (`Vec<String>`, `Option<u32>`), and so is a container of
-*your own* struct — `Vec<Inner>`. **That was refused until 2026-09-05**, and this section
-said so; the resolver now walks into a container wherever it appears rather than only at the
-top level. Ply's own `FingerprintInputs` was the example of the refusal: twenty public
-fields, two of them lists of another struct. It earns `fuzzed(256)` today, so if you have
-read older advice here about designing around that shape, ignore it too.
+*your own* struct (`Vec<Inner>`), at any depth. Ply's own `FingerprintInputs` is the worked
+case: twenty public fields, two of them lists of another struct, built and checked in full —
+256 generated values, every one run through the real function.
 
 When a type has real invariants or private fields, give it a public constructor taking fewer
 arguments, or declare a route naming a public function that returns one — **a route needs a
@@ -194,9 +189,9 @@ function on purpose and reports whether anything noticed.
 
 ## 7. Prefer types the engines can build
 
-Numbers, booleans, strings, `Vec`, `BTreeSet`, `BTreeMap`, `Option` and `Box` of them
-compose freely. Your own structs and enums work when Ply can reach a public constructor,
-or when every field is public **and named**.
+Numbers, booleans, strings, `Vec`, slices (`&[T]`), tuples, `BTreeSet`, `BTreeMap`,
+`Option` and `Box` of them compose freely. Your own structs and enums work when Ply can
+reach a public constructor, or when every field is public **and named**.
 
 Refused, and worth knowing before you write the signature:
 
@@ -246,8 +241,10 @@ the claim rather than to reword it.
 ## 9. Methods, and how a type's own state gets checked
 
 A method taking `&self` is checkable like any function. `&mut self` and methods that
-consume `self` are not, and a constructor that returns `Result<Self, _>` is not recognised
-as a way to build one.
+consume `self` are not. A constructor that returns `Result<Self, _>` is recognised: Ply calls
+it and discards any generated arguments it rejects, so every value checked is one the
+constructor accepted — but a type built that way cannot sit inside a container
+(`Vec<Inner>`), because a rejection partway through a list has nowhere to go.
 
 The way to check a type that changes is not to claim its mutating methods one by one. It is
 to state what must always be true of the value, under the component's `state:`; Ply then
@@ -263,8 +260,9 @@ parameter and the reason. In order:
 
 1. Can the logic be lifted out of a shell? (rule 1)
 2. Is the signature admitting states no caller produces? (rule 2)
-3. Is a type too wide, or unbuildable, and is there an existing public function a route
-   could name? (rules 4, 7)
+3. Is a type unbuildable — private or positional fields, `#[non_exhaustive]`, a shape from
+   the rule 7 table — and is there an existing public function a route could name?
+   (rules 4, 7)
 4. Is the property somewhere you cannot claim it, so an ordinary test is the answer?
    (rule 8)
 
