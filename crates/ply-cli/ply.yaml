@@ -35,7 +35,32 @@ components:
           - "join_plainly(&[\"a\".to_string()]) == \"a\""
           - "join_plainly(&[\"a\".to_string(), \"b\".to_string()]) == \"a and b\""
           - "join_plainly(&[\"a\".to_string(), \"b\".to_string(), \"c\".to_string()]) == \"a, b and c\""
+    # State and these two module boxes moved here from the workspace root on
+    # 2026-09-06. The root had hand-declared them, which made its `cli`
+    # component non-hollow -- and a component that declares its own interior
+    # never consults a link, so the root drawing reported `cli` as "2
+    # components, 0 fns" while this file's six promises all sat green. Two
+    # descriptions of one component, and the reader saw the emptier one.
+    state:
+      of: Cli
+      show: [command, json]
     components:
+      verify:
+        anchor: ply_cli::verify
+        state:
+          of: VerificationResult
+          show: [document, envelope, source_map]
+        note: >-
+          Runs the checks and assembles what comes back. The one command that
+          produces evidence rather than describing intent.
+      report:
+        anchor: ply_cli::audit
+        state:
+          of: AuditReport
+          show: [envelope, document]
+        note: >-
+          Says what this codebase's evidence rests on that Ply never checks --
+          the promises taken on trust, listed rather than assumed.
       shared:
         anchor: ply_cli::shared
         note: >-
