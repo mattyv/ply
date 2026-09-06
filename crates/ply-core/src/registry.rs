@@ -79,9 +79,9 @@ codes!(
     // (§5.4). ---
     E0501, E0502, E0503, E0505, W0502, W0503, W0511, W0512, W0513, W0514, W0515, W0516, W0517,
     V0505, V0506, V0507, V0508, V0509, V0510, W0518, W0519, W0520, W0521, W0522, W0523, W0524,
-    W0525, W0526, W0527, W0528, W0529, W0541, W0110, W0111, W0303, W0531, K0502, K0601, M0601,
-    P0502, P0601, R0502, R0601, X0901, X0902, X0903, W0414, W0415, W0416, W0417, W0418, E0506,
-    V0511,
+    W0525, W0526, W0527, W0528, W0529, W0541, W0542, W0110, W0111, W0303, W0531, K0502, K0601,
+    M0601, P0502, P0601, R0502, R0601, X0901, X0902, X0903, W0414, W0415, W0416, W0417, W0418,
+    E0506, V0511,
 );
 
 /// The stage of Ply's own pipeline a code belongs to. See the module doc
@@ -742,6 +742,14 @@ impl Code {
                 severity: Error,
                 spec_anchor: "§8 (D7)",
                 gloss: "A failing input was found, but Ply could not also render it as an ordinary Rust test that fails the same way -- often because the failure only exists thanks to a stubbed-out assumption about another function -- so the raw evidence is kept and Ply says why the friendly replay test is missing.",
+            },
+            W0542 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.4c",
+                gloss: "Every input Ply could build for this function was turned away by the function's own precondition, so the body was never entered and the promise has not been checked on a single value. Nothing here is broken -- the promise may well be true -- and nothing here is proven either, which is why this is an absence of evidence rather than a violation. A worked example naming an input the precondition accepts is what gets it checked.",
             },
             W0110 => RuleEntry {
                 code: self,

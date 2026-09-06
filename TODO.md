@@ -58,6 +58,39 @@ independent oracle, and **every case**, not a chosen few.
       list leaves it green -- verified by doing it. A separate test asserts the output
       directly and does go red. Both are needed and the module says so.
 
+- [x] **A verified drawing's contents are addressable again** -- `HASH5`. External review's
+      second finding, reproduced: `cargo ply verify --svg` on a document with links published
+      a picture containing a linked crate's functions and a metadata list containing **none of
+      them** -- measured on a minimal pair, 0 entries beside 3 drawn items. A viewer whose
+      only input is that envelope addressed a different system from the one on screen, and
+      could not filter or click a single thing it could see.
+
+      The same class as "9 elements beside 44 drawn chips", fixed on the render path the day
+      before; this is the verification path, which that fix did not touch. The element walk
+      covers the verdict tree -- what the run checked -- while the drawing walks the document
+      with its links followed, which is more.
+
+      The envelope is now completed from that same links-aware walk, through the one shared
+      `linked_body` helper rather than a second copy of the rule. Entries added for items the
+      run never checked carry `unclaimed`, no engine, no seed and no case count, because that
+      is what is true of them: matching metadata is the property, and giving them evidence
+      would be inventing some. 0 entries became 4, every one honest.
+
+- [x] **The checking pipeline is now mutation-tested too, nightly** -- `HASH5`. Every defect
+      found on 2026-09-05 and 2026-09-06 lived in four files -- the contract rewrite, the
+      reachability walk, the effect scan, the record -- and not one was caught by a test.
+      `kernel-mutants` measures whether the kernel's gate can see; nothing measured whether
+      these could. 274 planted bugs, sharded eight ways, on a schedule rather than on every
+      pull request, because it is about four hours of machine time and the wait was already
+      the complaint.
+
+      It reports rather than fails, deliberately and unlike the kernel job. That job's bar of
+      zero survivors with no excused list is right for proved code whose first run found three
+      real gaps; setting it here on day one would make this red from the start, and a job
+      always red is a job nobody reads. **Follow-up: triage the first run's survivors and then
+      turn it into a gate.** A survivor is a gap in the tests, dead code, or a change with no
+      observable effect -- never an ignore-list entry.
+
 - [ ] **KNOWN GAP: two `RustType` variants print identically under `Debug`.** Found by the
       enumeration above (30 strings, 32 variants) and not chased down. Harmless here, since
       the check now keys on `discriminant`, but any diagnostic that names a type by its

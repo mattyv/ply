@@ -1,0 +1,123 @@
+name: Pipeline mutants
+
+# Plants bugs in the machinery *between a promise and its check* -- the
+# rewrite that turns a contract into an assertion, the walk that decides
+# which code a result depends on, the effect scan, the record -- and reports
+# how many the test suite fails to notice.
+#
+# Every defect found on 2026-09-05 and 2026-09-06 lived in exactly these four
+# files, and not one was caught by a test. `kernel-mutants` already measures
+# whether the *kernel's* gate can see; nothing measured whether these could.
+# This is that measurement.
+#
+# **Deliberately not on pull requests, and deliberately not a gate.** Two
+# separate reasons, both worth stating:
+#
+#   Not on pull requests, because it is 274 planted bugs each paying its own
+#   optimised rebuild -- about four hours of machine time. The CI on this
+#   repository was already the thing people waited on; adding four hours to
+#   every push would be a worse tool for a better number.
+#
+#   Not a gate, because it has never been run and nobody knows what it will
+#   say. `kernel-mutants` sets the bar at zero survivors with no excused
+#   list, and it can: the kernel is proved, and the first run there found
+#   three real gaps and they were fixed. Setting the same bar here on day one
+#   would make this red from its first run, and a job that is always red is a
+#   job people stop reading -- which is how a check that costs four hours
+#   ends up worth nothing. So this reports, and the survivors are triaged;
+#   turning it into a gate is recorded work, once the number is known and the
+#   real gaps among it are closed.
+#
+# A survivor is not automatically a defect. It is one of three things: a real
+# gap in the tests, real dead code, or a mutation that genuinely changes
+# nothing observable. The first two are work; the third is worth deleting the
+# code for. None of them is worth an ignore list -- that is where genuine
+# gaps go to be forgotten.
+
+on:
+  schedule:
+    # 03:00 UTC daily. Nothing here depends on the hour; it is simply a time
+    # this repository's humans are not waiting on a build.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  pipeline-mutants:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Eight ways, so a nightly run finishes inside the hour rather than
+        # inside the morning. Same reasoning, and the same `--shard`
+        # mechanism, as the kernel job in ci.yml.
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    name: pipeline-mutants (${{ matrix.shard }}/8)
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pipeline-mutants
+
+      - name: Install cargo-mutants
+        run: cargo install --locked --version 27.1.0 cargo-mutants
+
+      # The four files the machinery between a promise and its check
+      # actually lives in. Named one by one rather than "all of ply-core":
+      # a sweep over the whole crate would spend most of its four hours on
+      # rendering and diagnostics, which have their own invariants, and
+      # would bury the files this exists to measure.
+      #
+      # --in-place for the same reason the kernel job uses it: the default
+      # copy pulls in gigabytes of unrelated fixture build output.
+      - name: Plant bugs in the checking pipeline and count what survives
+        id: sweep
+        run: |
+          set +e
+          cargo mutants --in-place --profile release \
+            --shard ${{ matrix.shard }}/8 \
+            --file crates/ply-core/src/contract_rt.rs \
+            --file crates/ply-core/src/reach.rs \
+            --file crates/ply-core/src/effects.rs \
+            --file crates/ply-core/src/record.rs \
+            --test-package ply-core
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Say what survived
+        if: always()
+        run: |
+          {
+            echo "## Shard ${{ matrix.shard }} of 8"
+            echo
+            if [ -s mutants.out/missed.txt ]; then
+              echo "**$(wc -l < mutants.out/missed.txt) planted bugs were not noticed.**"
+              echo
+              echo 'Each is one of three things, and all three are worth knowing:'
+              echo 'a real gap in the tests, real dead code, or a change with no'
+              echo 'observable effect. Triage them; do not add them to an ignore list.'
+              echo
+              echo '```'
+              cat mutants.out/missed.txt
+              echo '```'
+            else
+              echo "Every planted bug in this shard was caught."
+            fi
+            if [ -s mutants.out/timeout.txt ]; then
+              echo
+              echo "### Timed out (no verdict either way)"
+              echo '```'
+              cat mutants.out/timeout.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the full result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pipeline-mutants-${{ matrix.shard }}
+          path: mutants.out
+          if-no-files-found: ignore

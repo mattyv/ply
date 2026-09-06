@@ -71,16 +71,19 @@ function it was checking.
 **Four columns, not one, because the review was right that they were being conflated.**
 "Defect fixed" is not "regression added", and neither is "general property tested", and none
 of the three is "mutation resistance measured". A single **done** hid which of the four had
-actually happened. `cargo mutants` in CI still targets only the verdict kernel, so the last
-column is empty everywhere below and will stay empty until the sweep in step 4 runs.
+actually happened. `cargo mutants` on the pull-request path still targets only the verdict kernel. The sweep in
+step 4 now runs nightly over the four files this plan is about, so the last column stops
+being structurally empty the first night it runs — but it is empty *today*, because it has
+not run yet, and writing anything else in it would be the exact thing this table was rebuilt
+to stop.
 
 | # | Property | Defect fixed | Regression pinned | General property tested | Mutation-measured |
 |---|---|---|---|---|---|
-| P1 | Every declared clause is preserved, or explicitly rejected | yes — was keeping only the last of repeated attributes | yes | no — "every clause survives, for every contract shape" is untested | no |
+| P1 | Every declared clause is preserved, or explicitly rejected | yes — was keeping only the last of repeated attributes | yes | no — "every clause survives, for every contract shape" is untested | nightly, unmeasured until it first runs |
 | P2 | The generated check preserves the original expression's meaning | yes, twice — floats, then `u128` in the *second* classifier the first proof never looked at | yes | yes, in the reachable form — both classifiers exhaustive over their own domains, plus a walking invariant that the rewrite never widens a leaf a classifier refuses. Not evaluated-equivalence; see step 3 | no |
 | P3 | Evidence requires at least one real check, not a passing wrapper | yes — and the first fix was itself a defect, reporting a correct function as a violation; fixed 2026-09-06 | yes — a fixture with both cases, checked to bite both ways | no | no |
 | P4 | Changing a relevant input prevents reuse | yes — module-scoped resolution, type declarations hashed, git revisions kept, two versions of one crate no longer collapsed | yes | no — "every relevant input is in the hash" is not tested as a property | no |
-| P5 | Every drawn component/function has matching metadata; no invented evidence | partial — the declaration-only path (9 elements → 74); the verification publisher still collects metadata from the unexpanded tree | partial | no | no |
+| P5 | Every drawn component/function has matching metadata; no invented evidence | yes — the declaration path (9 elements → 74) and, on 2026-09-06, the verification path, which that fix had not touched | yes — a linked pair where the run checks nothing and the drawing shows three items | yes — the envelope is completed from the same links-aware walk the renderer draws from, not a second copy | no |
 | P6 | The rendered contract text is byte-stable for unchanged source | n/a — a hole, not a defect | yes — 223 contracts pinned, checked to catch the exact 2026-09-05 reseed | yes — every fixture contract, not a chosen few | no |
 | P7 | A claim of exhaustiveness is only made where the domain is bounded | n/a — a review rule | n/a | n/a | n/a |
 | P8 | The aggregation a user's verdict comes from is the one that was proved | yes — the shared six rungs now carry `kernel::Evidence` itself instead of a second ladder | yes — a bounded differential folds every small tree both ways | partial — bounded to trees of ≤3 leaves and depth 2, stated inline | no |
@@ -118,9 +121,15 @@ the new `RustType` proof both do.
 
 Per review: **a regression that exposes the wrong observable result, then the fix, then a
 general invariant that covers the class.** A regression catches yesterday's example; the
-invariant is what catches tomorrow's variation. All eight fixes so far followed this except
-the two where the invariant was still owed (P2 general, P4 dependency identity). Both landed
-on 2026-09-06.
+invariant is what catches tomorrow's variation.
+
+An earlier draft said all eight fixes followed this. Review pointed out that they did not,
+and it was right. Two owed their invariant when that was written (P2 general, P4 dependency
+identity) — both landed on 2026-09-06. Two more were *not* fixed at all when the draft called
+them done: the filesystem-effect scanner still failed open, and P5's verification path still
+collects metadata from the unexpanded tree. Both were fixed on 2026-09-06. The lesson is the one the four-column table exists for: a
+plan that grades itself is a claim like any other, and this one was overclaiming in exactly
+the way the tool it plans for refuses.
 
 Proposed sequence:
 
@@ -156,8 +165,21 @@ second fix). So:
    leaves it green. What catches that is a separate test asserting the output directly. The
    two together close the class; neither alone does, and the module says so where a reader
    will find it.
-4. **L3 sweep** — the mutation job over the checking pipeline, which makes 1–3 measured
-   rather than assumed.
+4. **L3 sweep** — **standing, as a nightly rather than a gate.** 274 planted bugs across
+   the four files the machinery actually lives in — the contract rewrite, the reachability
+   walk, the effect scan, the record — sharded eight ways so a run finishes inside the hour.
+   Off the pull-request path entirely: it is about four hours of machine time, and CI wait
+   was already the thing people complained about.
+
+   It **reports** rather than fails, and that is a deliberate difference from
+   `kernel-mutants`, which sets the bar at zero survivors with no excused list. That bar is
+   right there and would be wrong here: the kernel is proved and its first run found three
+   real gaps that were fixed, whereas this has never run and nobody knows what it will say.
+   A job red from its first day is a job people stop reading, which is how four hours of
+   machine time ends up worth nothing. Turning it into a gate is the follow-up, once the
+   number is known and the real gaps among it are closed — and a survivor is never an
+   ignore-list entry: it is a gap in the tests, dead code, or a change with no observable
+   effect, and all three are worth acting on.
 
 ## Terminology
 
