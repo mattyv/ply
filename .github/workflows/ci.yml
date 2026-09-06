@@ -120,10 +120,29 @@ jobs:
   # unrelated fixture build output and filled a 250GB disk mid-run.
   # --profile release because the exhaustive check walks 991,389 trees --
   # 2.3s optimised, far longer unoptimised, once per planted bug.
+  #
+  # Split across runners for the same reason the end-to-end suite is, and it
+  # matters more here: on 2026-09-06 this one job took 32m38s of a 33-minute
+  # run -- every other job finished inside 18 minutes and then waited for it.
+  # Caching was not the problem and never had been; every install in this
+  # file is a cache hit costing thirteen seconds. There are 35 planted bugs
+  # and each pays a fresh optimised rebuild of `ply-core`, so the cost is 35
+  # sequential builds, and the only thing that shortens that is doing them at
+  # the same time.
+  #
+  # The shards are cut by `cargo mutants` itself (`--shard k/n`, 0-indexed,
+  # round-robin) rather than by a list here, so a bug it learns to plant
+  # later lands in whichever shard its position falls in and cannot be left
+  # out of all of them -- the same reasoning as the e2e split below.
   kernel-mutants:
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.kind == 'code'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    name: kernel-mutants (${{ matrix.shard }}/4)
     steps:
       - uses: actions/checkout@v5
 
@@ -139,6 +158,7 @@ jobs:
       - name: Plant bugs in the kernel and require the check to catch every one
         run: |
           cargo mutants --in-place --profile release \
+            --shard ${{ matrix.shard }}/4 \
             --file crates/ply-core/src/kernel.rs \
             --test-package ply-core
 
@@ -156,7 +176,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.kind == 'code'
-    # The suite is 82 independent test binaries and it ran as one job for
+    # The suite is 115 independent test binaries and it ran as one job for
     # over an hour, which is most of the wait on every pull request. They
     # have nothing to say to each other, so they are split across parallel
     # runners: wall clock becomes roughly the slowest shard rather than the
@@ -172,12 +192,17 @@ jobs:
     # different shards instead of all in one.
     #
     # The honest cost: every shard pays the engine install, which the cache
-    # makes cheap but not free, so the real figure is above total/4.
+    # makes cheap but not free, so the real figure is above total/n.
+    #
+    # Four until 2026-09-06, when the four came back at 17.3, 11.8, 11.6 and
+    # 17.0 minutes -- round-robin spreads the slow Kani tests but does not
+    # make them equal, and the run waits on the slowest. Six brings the
+    # ceiling down without touching what is checked.
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
-    name: product-e2e (${{ matrix.shard }}/4)
+        shard: [0, 1, 2, 3, 4, 5]
+    name: product-e2e (${{ matrix.shard }}/6)
     steps:
       - uses: actions/checkout@v5
 
@@ -204,13 +229,13 @@ jobs:
           cargo kani --version
           cargo mutants --version
 
-      - name: cargo test -p ply-e2e (shard ${{ matrix.shard }} of 4)
+      - name: cargo test -p ply-e2e (shard ${{ matrix.shard }} of 6)
         run: |
           set -euo pipefail
           targets=$(ls tests/e2e/tests/*.rs \
             | sed 's|.*/||; s|\.rs$||' \
             | sort \
-            | awk -v s=${{ matrix.shard }} -v n=4 '(NR-1) % n == s')
+            | awk -v s=${{ matrix.shard }} -v n=6 '(NR-1) % n == s')
           if [ -z "$targets" ]; then
             echo "shard ${{ matrix.shard }} has no test targets -- there are fewer test files"
             echo "than shards, which means this matrix is wider than it needs to be."
