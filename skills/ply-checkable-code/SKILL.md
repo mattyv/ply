@@ -96,27 +96,24 @@ return it.
 
 ## 4. Keep a struct's fields public and named
 
-Width is not a problem. **It was until 2026-09-04** — Ply folded every field into one flat
-tuple and the sampling library's tuple trait stops at twelve, so a thirteen-field struct was
-refused outright. That ceiling is gone: the leaves are composed in nested chunks now, so a
-twenty-field struct builds exactly as a five-field one does. If you have read older advice
-here telling you to design around a dozen fields, ignore it — this section said that, and it
-was a limit in the tool rather than anything about your code.
+Width is not a problem: a twenty-field struct builds exactly as a five-field one does. (An
+earlier version of this rule said to stay under a dozen fields. That was a ceiling in Ply's
+own generator, since lifted, and never anything about your code.)
 
-What Ply actually needs to build a struct:
+What Ply actually needs to build a struct directly:
 
 - **every field public** — it constructs the value with a struct literal, so a private field
-  it cannot name means it cannot build one at all
+  it cannot name means it needs a constructor instead (below)
 - **fields named** — a tuple struct has no field names to build against
 - **not `#[non_exhaustive]`** — that attribute exists precisely to forbid the literal Ply
   would write
 
 A container of a plain type is fine (`Vec<String>`, `Option<u32>`), and so is a container of
-*your own* struct — `Vec<Inner>`. **That was refused until 2026-09-05**, and this section
-said so; the resolver now walks into a container wherever it appears rather than only at the
-top level. Ply's own `FingerprintInputs` was the example of the refusal: twenty public
-fields, two of them lists of another struct. It earns `fuzzed(256)` today, so if you have
-read older advice here about designing around that shape, ignore it too.
+*your own* struct (`Vec<Inner>`), at any depth. Ply's own `FingerprintInputs` was the case
+that proved it (2026-09-05): twenty public fields, two of them lists of another struct, built
+in full and run through the real function 256 times. That claim has since come out of Ply's
+document under rule 8 — buildable and worth claiming are different questions — and the shape
+stays pinned by the generator's own tests, not by the claim.
 
 When a type has real invariants or private fields, give it a public constructor taking fewer
 arguments, or declare a route naming a public function that returns one — **a route needs a
@@ -131,11 +128,11 @@ the tool's benefit, and that is the developer's call, not yours. Rule 9 is what 
 instead.
 
 What Ply cannot do for you is know whether those public fields have a relationship between
-them that nothing in the type enforces. On `FingerprintInputs` it says so out loud rather
-than assuming: the run reports that its evidence rests on there being no hidden invariant
-among the fields, and that this is assumed, not proved. A type whose methods quietly keep
-two fields in step is one where that assumption is wrong, and a value Ply builds may be one
-your program never produces.
+them that nothing in the type enforces. It says so out loud rather than assuming: the run
+reports that its evidence rests on there being no hidden invariant among the fields, and
+that this is assumed, not proved. A type whose methods quietly keep two fields in step is
+one where that assumption is wrong, and a value Ply builds may be one your program never
+produces.
 
 ## 5. Watch what a precondition throws away
 
@@ -194,9 +191,9 @@ function on purpose and reports whether anything noticed.
 
 ## 7. Prefer types the engines can build
 
-Numbers, booleans, strings, `Vec`, `BTreeSet`, `BTreeMap`, `Option` and `Box` of them
-compose freely. Your own structs and enums work when Ply can reach a public constructor,
-or when every field is public **and named**.
+Numbers, booleans, strings, `Vec`, slices (`&[T]`), tuples, `BTreeSet`, `BTreeMap`,
+`Option` and `Box` of them compose freely. Your own structs and enums work when Ply can
+reach a public constructor, or when every field is public **and named**.
 
 Refused, and worth knowing before you write the signature:
 
@@ -222,8 +219,10 @@ Ply's own `fingerprint` is one line: it hashes a canonical byte encoding of a tw
 struct. The encoding is the part worth checking — it length-prefixes every value so that a
 contract containing a newline cannot be arranged to hash the same as two different fields.
 That encoding is a **private** helper. So the claim sits on the wrapper, where the only
-statement you can make is "returns 64 characters", which is a fact about the type rather
-than about the code.
+statement you can make is "returns 64 characters" — a fact about the hash library, not about
+the code. The test that settles it: a `fingerprint` that ignored every one of its inputs
+would pass that promise. Nothing that reads a fingerprint depends on its width either; the
+record compares two for equality.
 
 The honest answer is not to widen the API until the checker can reach it. It is a plain
 Rust test. Ply's has one: it mutates each of the twenty inputs in turn and asserts the hash
@@ -238,16 +237,24 @@ So, before contorting a signature to make a claim possible, ask which of these i
 | in a private helper it calls | Write an ordinary test; leave the wrapper unclaimed |
 | in a public helper it calls | Claim the helper instead |
 
-**A claim whose only honest promise is a type-level fact should not be declared at all** —
-it takes up a row in the document, earns a verdict, and tells the reader nothing. That is
-rule 6 applied one level up: the fix for a promise that cannot fail is sometimes to delete
-the claim rather than to reword it.
+**A claim whose only honest promise says nothing about the function's job — a fact about
+the type, or about a library it calls — should not be declared at all.** It takes up a row in
+the document, earns a verdict, and tells the reader nothing. That is rule 6 applied one level
+up: the fix for a promise that cannot fail is sometimes to delete the claim rather than to
+reword it.
+
+Ply's own document carried exactly that claim for two days. It earned a green verdict the
+moment the generator could build the input, and it came out anyway (2026-09-06): a green
+that a do-nothing body would also have earned is the thing this rule is about, not evidence
+against it.
 
 ## 9. Methods, and how a type's own state gets checked
 
 A method taking `&self` is checkable like any function. `&mut self` and methods that
-consume `self` are not, and a constructor that returns `Result<Self, _>` is not recognised
-as a way to build one.
+consume `self` are not. A constructor that returns `Result<Self, _>` is recognised: Ply calls
+it and discards any generated arguments it rejects, so every value checked is one the
+constructor accepted — but a type built that way cannot sit inside a container
+(`Vec<Inner>`), because a rejection partway through a list has nowhere to go.
 
 The way to check a type that changes is not to claim its mutating methods one by one. It is
 to state what must always be true of the value, under the component's `state:`; Ply then
@@ -263,8 +270,9 @@ parameter and the reason. In order:
 
 1. Can the logic be lifted out of a shell? (rule 1)
 2. Is the signature admitting states no caller produces? (rule 2)
-3. Is a type too wide, or unbuildable, and is there an existing public function a route
-   could name? (rules 4, 7)
+3. Is a type unbuildable — private or positional fields, `#[non_exhaustive]`, a shape from
+   the rule 7 table — and is there an existing public function a route could name?
+   (rules 4, 7)
 4. Is the property somewhere you cannot claim it, so an ordinary test is the answer?
    (rule 8)
 
