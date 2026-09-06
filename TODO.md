@@ -31,7 +31,7 @@ file `include_str!`-embedded relative to a crate manifest, so it has to sit at t
 depth in the copy). No test needed writing -- the two failing e2e tests already reproduced
 the bug and now pass, so they are the regression test.
 
-- [x] **The effect scanner's first repair was itself unsound** -- `HASHA`. The same review
+- [x] **The effect scanner's first repair was itself unsound** -- `c371b04`. The same review
       that found it failing open found the fix failing open too, one name along, and it is
       right: a whitelist of harmless *method names* reads a name as a method, and it is not
       one. `.clone()` runs the receiver's own `Clone`, which is ordinary Rust and may open a
