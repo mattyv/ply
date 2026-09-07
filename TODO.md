@@ -27,7 +27,7 @@ property (below).
 own implementation, watched a test fail, put it back. The control arm partly
 reinvented the thing the tool automates, unprompted, in both scenarios.
 
-- [ ] **A size invariant on a bounded container is close to unfalsifiable.**
+- [x] **A size invariant on a bounded container is close to unfalsifiable.** Fixed the same day.
       Arm B declared exactly the right rule -- the cache never holds more
       entries than its capacity -- and Ply reported it clean over 256 cases
       with an off-by-one that lets the cache hold one too many. Measured
@@ -36,9 +36,21 @@ reinvented the thing the tool automates, unprompted, in both scenarios.
       are insertions, so a cache big enough to be interesting can never be
       filled. Replaying Ply's own generated strategy over 12 seeds x 256
       cases, **2 of 3,072 cases could even reach the bug**. A run comes back
-      clean about five times in six, and catching it is luck. Fix has to
-      relate the constructor's size argument to the sequence length rather
-      than drawing them independently.
+      clean about five times in six, and catching it is luck.
+      **Fixed:** the generated sequence bound goes from three operations to
+      twelve, which takes the same replay from 2 of 3,072 cases and 2 of 12
+      runs to 106 of 3,072 and **12 of 12**. Twelve is the smallest bound
+      measured to catch it on every seed, not the largest that helps -- the
+      cost is linear per case but it is still a slower run for every claim
+      with a receiver. Two further dials were measured and deliberately not
+      taken, because this one alone closes the gap: favouring the operations
+      that can actually change the state, and drawing a constructor's size
+      argument within reach of the sequence (all three together reach 651 of
+      3,072). New fixture `tests/fixtures/boundedcache` is the gate: break
+      the fullness test by one and the run must report a violation. Watched
+      failing first -- it came back `fuzzed(256)` clean on a cache holding
+      capacity+1. §5.3 amended with the rule that this bound is a measured
+      number, not an argued one.
 - [x] **One `vec!` undoes the planting-scope fix.** Fixed the same day. Any macro Ply cannot
       expand makes the reach walk widen to the whole crate, which empties the
       list of reached function names, which drops the planting back to the

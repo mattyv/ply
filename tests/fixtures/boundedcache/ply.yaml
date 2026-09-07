@@ -1,0 +1,17 @@
+ply: 1
+
+# No function claims on purpose. What is under test here is whether the
+# structural rule alone can see a structure that overfills -- adding a
+# contract to `put` would give the run a second way to notice, and this
+# fixture would pass without the sequences ever being long enough.
+components:
+  boundedcache:
+    anchor: ply_fixture_boundedcache
+    state:
+      of: Cache
+      holds:
+        - "state.len() <= state.capacity()"
+    note: >-
+      A cache with a fixed number of slots: when a new key arrives and there
+      is no room, the entry that has gone longest without being touched is
+      dropped to make space.

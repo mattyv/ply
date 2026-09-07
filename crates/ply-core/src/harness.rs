@@ -2187,7 +2187,32 @@ pub fn build_contract_fn(
 /// enumerate every one), which is why this task defaults it above zero on
 /// the tier it is scoped to -- see the module doc for why the exhaustive
 /// tier is left out of this pass entirely.
-pub const MAX_RECEIVER_SEQUENCE_LEN: u32 = 3;
+///
+/// **Three was too small, and the number is a measured one now (2026-09-07).**
+/// A rule about a structure is only checked as far as the sequences can drive
+/// that structure, and three calls cannot fill anything: an off-by-one that
+/// let a bounded cache hold one entry too many came back clean over 256 cases
+/// against `state.len() <= state.capacity()`, because the capacity was drawn
+/// from 0..=16 while at most three operations ran, roughly a quarter of them
+/// insertions. Replaying the generated strategy over twelve seeds x 256 cases:
+///
+/// | sequence bound | cases that could reach the bug | runs that catch it |
+/// |---|---|---|
+/// | 0..=3 (was) | 2 of 3,072 | 2 of 12 |
+/// | 0..=12 (is) | 106 of 3,072 | 12 of 12 |
+/// | 0..=24 | ~1,257 of 3,072 with the other dials moved too | 12 of 12 |
+///
+/// Twelve is the smallest bound measured to catch it on every seed rather
+/// than the largest that helps: the cost is linear per case (one random
+/// sequence per case, not an enumeration), so it is affordable, but a longer
+/// sequence is still a slower run for every claim with a receiver and this
+/// is not a dial to turn on a hunch. Two further dials were measured and
+/// **not** taken, because this one alone closes the gap: favouring
+/// `&mut self` operations over `&self` ones (the only kind that can change
+/// what an invariant is about), and drawing a constructor's own integer
+/// argument small enough for the sequence to reach. Together those three
+/// reach 651 of 3,072. `tests/fixtures/boundedcache` is the gate.
+pub const MAX_RECEIVER_SEQUENCE_LEN: u32 = 12;
 
 /// One other operation Ply may splice into the bounded sequence before the
 /// checked call -- an inherent, non-generic, `&self`- or `&mut self`-taking

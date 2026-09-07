@@ -879,6 +879,18 @@ clause after the constructor and again after **every single operation**. A claus
 holds when a value is made and breaks three operations later is the whole reason this is
 a sequence rather than one call, and the diagnostic says how many operations in.
 
+**The sequence bound is a reachability budget, and it is measured (MUST).** "Checked
+across the states this run could reach" is only worth anything if those states include the
+ones a clause can be false in. A rule about a bounded structure is false only once the
+structure is over-filled, so a bound too small to fill anything makes such a rule
+unfalsifiable rather than true: at a bound of three operations, an off-by-one letting a
+cache hold one entry too many came back clean over 256 cases against
+`state.len() <= state.capacity()`, because the capacity was drawn from 0..=16 while at most
+three calls ran. Replaying the generated strategy over twelve seeds, 2 of 3,072 cases could
+reach it. The bound is now twelve — the smallest measured to catch it on every seed —
+and any future change to it is a number to re-measure, not to reason about
+(`harness::MAX_RECEIVER_SEQUENCE_LEN`, gated by `tests/fixtures/boundedcache`).
+
 Every honesty condition the receiver path already carries applies unchanged: an operation
 whose argument cannot be built is named rather than silently dropped, and a second
 constructor this run never starts from is named too — so "checked" here means checked
