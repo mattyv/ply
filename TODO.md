@@ -1,5 +1,74 @@
 # TODO
 
+## A/B round 4: the tool's best result, and three new gaps — 2026-09-07
+
+Two scenarios picked to reach ground the first three rounds could not. An
+order state machine over three fieldless enums -- a *pure* function, so
+none of it is blocked at `&mut self` the way every earlier stateful
+scenario was -- and a path normaliser, the wrapper-plus-helper shape the
+writing guide teaches. Three pre-registered bugs each, every one confirmed
+by an independent oracle first (all 25 pairs; 5,616 generated paths).
+
+**Score: every arm 3 of 3, and Ply 3 of 3 on both.** The score is not the
+result. These are:
+
+**The strongest evidence for the tool in four rounds.** On the path
+normaliser, the agent's first contract was a *shape* check -- output starts
+with `/`, no trailing slash, no leftover `.` or `..`. Mutation testing
+showed it was nearly empty: **18 planted bugs survived**, because a correct
+function's output satisfies a shape rule no matter how the checking code is
+broken. So the agent discarded it and wrote a second, independent
+implementation (a functional fold against an imperative stack walk) and made
+the promise "these two must agree exactly". **Survivors went to zero.** The
+tool did not find a bug in the code; it proved the *specification* was empty
+and forced a real one. No TDD-only arm in four rounds produced anything like
+that, and neither did any earlier Ply arm.
+
+- [ ] **Exhaustive checking is refused on a fieldless enum.** The state
+      machine has 25 possible inputs -- two `Copy` enums, five variants each,
+      the cheapest exhaustive domain there is -- and `bounded` is declined
+      with `V0508`, calling the type "real, substantial work" to reason about
+      every value of. Verified directly, not taken from the agent's report.
+      The refusal is honest (it says unsupported, not unchecked) but the gap
+      is real: this is the one shape where "every input" is nearly free.
+      Consequence measured in the round: random sampling alone let a deleted
+      transition survive as a planted bug -- 25 discrete pairs, 64 random
+      draws -- so the agent had to write out all 25 cases by hand.
+- [ ] **A constant in a `#[cfg(test)]` module widens the walk to the whole
+      crate.** Found because `W0530`, added this morning, fired on clean code
+      and said the planting scope was partial when there was nothing else to
+      plant in. Reproduced with two crates differing by one line -- a
+      `const CASES: [u32; 3]` inside `#[cfg(test)] mod tests`. Two costs:
+      result reuse can never hit for that crate, and the new warning cries
+      wolf. Nearly every Rust crate has a test module and they very often
+      declare constants. **The fix looks sound but touches §5.2a:** Ply's
+      checks only ever run its own generated tests, in a sibling crate
+      (`harness_test_filter` selects `<generated module>::` and nothing
+      else), so a `#[cfg(test)]` item is definitionally not something a check
+      can execute and should not gate the walk. Skipping them also removes
+      them from the hash, which is a change to what a reused result depends
+      on -- worth a deliberate decision rather than a quiet one.
+- [ ] **A counterexample over an enum is unreadable.** A failing promise
+      reports `state = __ply_leaf_p_state_variant=2, event =
+      __ply_leaf_p_event_variant=0`. The reader has to count variants by hand
+      to learn that means `Approved` and `Submit`. Ply generated that
+      strategy and holds the variant names; it just does not use them. The
+      `W0541` wording is honest that this is the engine's raw output, but the
+      whole value of a counterexample is naming the input that broke it.
+- [ ] **The sibling-crate harness pushed a helper into the public API.** To
+      let the generated harness see the differential oracle, the agent made
+      it `pub` -- widening a public API to suit the tool, which
+      `ply-checkable-code`'s own "What to do when Ply refuses" section warns
+      against in as many words. Not a defect, but a real cost, and the guide
+      currently gives no alternative for this shape.
+
+Working as intended, worth recording: `W0530` named the helper correctly on
+the path normaliser ("its own body and `normalise_via_fold`, the one other
+function its checks run"), which is the fix from cb8e3cd doing its job on
+code written without knowledge of it. Counterexamples for text are clean and
+minimal (`path = "."`, `path = "0/"`) with runnable regression tests written
+to disk.
+
 ## A/B round 3: where the sampling actually earns its keep — 2026-09-07
 
 Same protocol again. Two scenarios chosen to probe known-weak ground rather
