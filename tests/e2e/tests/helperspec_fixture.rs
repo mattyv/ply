@@ -29,6 +29,24 @@ fn a_bug_in_the_helper_the_check_runs_is_not_reported_as_spec_strong() {
     fixture.write_lib_rs(&broken);
 
     let run = run_verify(&cargo_ply, fixture.path(), 300);
+
+    // The planting has to reach the helper, and the report has to say so --
+    // a survivor count that includes the helper under the words "its own
+    // body" sends a reader to the one body the survivors are least likely
+    // to be in.
+    let weak = run.json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"] == "W0502")
+        .unwrap_or_else(|| panic!("no weak-spec diagnostic in {}", run.json));
+    let title = weak["title"].as_str().unwrap_or("");
+    assert!(
+        title.contains("doubled_then_capped"),
+        "the logic this claim runs lives in `doubled_then_capped`, so that is where the \
+         deliberate bugs have to be planted and what the report has to name: {title}"
+    );
+
     let verdict = run.json["root"]["verdict"].as_str().unwrap_or("");
     assert!(
         !verdict.contains("spec-strong"),

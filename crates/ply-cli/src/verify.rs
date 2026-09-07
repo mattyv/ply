@@ -686,6 +686,10 @@ fn verify_loaded_crate(
         /// hashing it would only make a reworded sentence invalidate every
         /// stored result.
         widened_because: Option<String>,
+        /// The bodies this claim's checks run, from the same walk. Handed to
+        /// `mutate` so bugs are planted where the logic is, not only in the
+        /// claimed function.
+        reached_fns: Vec<String>,
         /// The checks as `ply.yaml` spells them, which is what a recorded
         /// verdict is checked against for possibility before it is trusted.
         check_spellings: Vec<String>,
@@ -1135,6 +1139,7 @@ fn verify_loaded_crate(
             );
             // Taken before `code.units` is moved into the fingerprint below.
             let widened_because = code.widened_because.clone();
+            let reached_fns = code.reached_fns.clone();
             let check_spellings: Vec<String> = checks.iter().map(check_spelling).collect();
 
             let inputs = FingerprintInputs {
@@ -1230,6 +1235,7 @@ fn verify_loaded_crate(
                 seed,
                 inputs,
                 widened_because,
+                reached_fns,
                 check_spellings,
             });
         }
@@ -1757,6 +1763,7 @@ fn verify_loaded_crate(
             &plans[idx].boundary,
             &plans[idx].seed,
             harness_info.as_ref(),
+            &plans[idx].reached_fns,
             !plans[idx].claim.examples.is_empty(),
             opts,
             &mut all_cex_tests,
@@ -3448,6 +3455,9 @@ fn run_fn_checks(
     boundary: &BoundaryPlan,
     seed: &[u8; 32],
     harness_info: Option<&HarnessInfo>,
+    // The bodies this claim's checks run, claimed one first; empty when the
+    // reach walk widened to the whole crate.
+    reached_fns: &[String],
     has_examples: bool,
     opts: &VerifyOptions,
     // Every rendered cex test earned by any fn in this whole run, so far --
@@ -3928,9 +3938,12 @@ fn run_fn_checks(
                     crate_dir,
                     &info.package,
                     info.standalone,
-                    node_id,
-                    fn_name,
-                    &harness_test_filter(cf),
+                    MutateTarget {
+                        node_id,
+                        fn_name,
+                        test_filter: &harness_test_filter(cf),
+                        reached_fns,
+                    },
                     checks,
                     opts,
                 )?;
@@ -7195,16 +7208,55 @@ fn apply_mutate_outcome(verdict: &mut String, statuses: &mut Vec<String>, outcom
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Where the deliberate bugs were planted, in words a reader can act on.
+///
+/// The old wording said "its own body" whatever was mutated. Once the
+/// planting follows the check into the helpers -- which is where the logic
+/// lives, because Ply's own writing guide tells authors to put it there --
+/// that sentence sends a reader to the one body the survivors are least
+/// likely to be in.
+fn mutate_scope_prose(scope: &[String]) -> String {
+    match scope.len() {
+        0 | 1 => "its own body".to_string(),
+        2 => format!(
+            "its own body and `{}`, the one other function its checks run",
+            scope[1]
+        ),
+        n => format!(
+            "its own body and the {} other functions its checks run (`{}`)",
+            n - 1,
+            scope[1..].join("`, `")
+        ),
+    }
+}
+
+/// What one claim hands the mutation planter: where to plant the deliberate
+/// bugs, and which tests are the kill signal.
+struct MutateTarget<'a> {
+    node_id: &'a str,
+    fn_name: &'a str,
+    test_filter: &'a str,
+    /// The bodies this claim's checks run, claimed one first, from the same
+    /// walk the fingerprint uses. Empty when that walk widened to the whole
+    /// crate: there is no bounded set then, so the planting stays on the
+    /// claimed function and the report says so rather than implying more.
+    reached_fns: &'a [String],
+}
+
 fn run_mutate_check(
     crate_dir: &Path,
     harness_pkg: &str,
     standalone: bool,
-    node_id: &str,
-    fn_name: &str,
-    test_filter: &str,
+    target: MutateTarget<'_>,
     checks: &[Check],
     opts: &VerifyOptions,
 ) -> Result<(MutateOutcome, Vec<Diagnostic>)> {
+    let MutateTarget {
+        node_id,
+        fn_name,
+        test_filter,
+        reached_fns,
+    } = target;
     let _ = checks;
     if standalone {
         // docs/review-caveats.md N1: `cargo mutants -p <target> --test-package
@@ -7298,6 +7350,15 @@ fn run_mutate_check(
         .engine_timeout_secs
         .unwrap_or_else(default_secondary_engine_timeout_secs);
     let wall_clock = mutate_wall_clock_secs(timeout);
+    // Claimed function first, then every other body the checks run. Empty
+    // walk (widened scope) falls back to the claimed function alone.
+    let mut mutate_scope: Vec<String> = vec![fn_name.to_string()];
+    for name in reached_fns {
+        let leaf = name.rsplit("::").next().unwrap_or(name).to_string();
+        if !mutate_scope.contains(&leaf) {
+            mutate_scope.push(leaf);
+        }
+    }
     let cfg = MutantsRunConfig {
         workspace_root: crate_dir.to_path_buf(),
         mutated_package: target_names.package_name,
@@ -7307,7 +7368,7 @@ fn run_mutate_check(
         // u32 with 0"), not the bare fn name, so `^{fn}$` matches nothing --
         // confirmed against a real run (docs/m4-findings.md) and matching
         // the spike's own usage (`--re strong_target`, no anchors).
-        fn_regex: fn_name.to_string(),
+        fn_regexes: mutate_scope.clone(),
         // `test_filter` is the caller's `harness_test_filter(cf)`, never
         // built from `fn_name` here: the generated harness names its
         // module from `cf.ident()` (`path.replace("::", "_")`), and a
@@ -7378,12 +7439,13 @@ fn run_mutate_check(
                         node_id: node_id.into(),
                         title: format!(
                             "weak spec ({} surviving mutants): `{fn_name}`'s `test`/`fuzz` checks did \
-                             not catch every deliberately-broken version of its own body -- caught {}, \
+                             not catch every deliberately-broken version of {} -- caught {}, \
                              missed {}. Note: this count is an upper bound on spec weakness, not an exact \
                              one -- a survivor whose change cannot alter the function's observable output \
                              (an equivalent mutant) survives any spec, however strong, so not every entry \
                              below is necessarily a gap to close. Surviving: {}",
                             o.missed.len(),
+                            mutate_scope_prose(&mutate_scope),
                             o.caught,
                             o.missed.len(),
                             o.missed.join("; ")

@@ -86,7 +86,12 @@ pub struct MutantsRunConfig {
     /// `^fn$` matched zero mutants in a real run (docs/m4-findings.md
     /// finding 4). Known limitation recorded there: an unanchored name can
     /// over-match a fn whose name is a substring of another's.
-    pub fn_regex: String,
+    /// Every function the check runs, claimed one first -- not just the
+    /// claimed one. `spec-strong` says deliberate bugs were planted and the
+    /// checks caught them all; planting only in the claimed function reports
+    /// that over a thin wrapper whose helpers were never touched, which is
+    /// the shape Ply's own writing guide teaches authors to write.
+    pub fn_regexes: Vec<String>,
     /// The cargo-test name filter appended after `--` -- narrows the
     /// harness package's test run to this fn's own generated tests, so a
     /// harness crate covering many functions never lets one fn's mutants
@@ -150,15 +155,13 @@ pub enum MutantsRunOutcome {
 /// build uncapped) is enforced separately and in-process, by
 /// [`wall_clock_budget`] passed to `engines::run_with_timeout`.
 pub fn mutants_argv(cfg: &MutantsRunConfig) -> Vec<String> {
-    vec![
+    let mut out = vec![
         "cargo".to_string(),
         "mutants".to_string(),
         "-p".to_string(),
         cfg.mutated_package.clone(),
         "--test-package".to_string(),
         cfg.harness_package.clone(),
-        "--re".to_string(),
-        cfg.fn_regex.clone(),
         "--copy-target".to_string(),
         "true".to_string(),
         "--no-times".to_string(),
@@ -166,7 +169,16 @@ pub fn mutants_argv(cfg: &MutantsRunConfig) -> Vec<String> {
         cfg.timeout_secs.to_string(),
         "--".to_string(),
         cfg.test_filter.clone(),
-    ]
+    ];
+    // One `--re` per body the check runs; cargo-mutants ORs them. Inserted
+    // before the `--` so they reach cargo-mutants rather than the test
+    // binary.
+    let at = out.len() - 2;
+    for name in cfg.fn_regexes.iter().rev() {
+        out.insert(at, name.clone());
+        out.insert(at, "--re".to_string());
+    }
+    out
 }
 
 /// The whole-invocation wall-clock budget `run` enforces via
@@ -311,10 +323,43 @@ mod tests {
             workspace_root: std::path::PathBuf::from("/tmp/x"),
             mutated_package: "target-pkg".into(),
             harness_package: "harness-pkg".into(),
-            fn_regex: "add_small".into(),
+            fn_regexes: vec!["add_small".into()],
             test_filter: "add_small_harness::".into(),
             timeout_secs: 60,
             wall_clock_secs: 600,
+        }
+    }
+
+    /// `spec-strong` says deliberate bugs were planted and the checks caught
+    /// them all. Planting only in the claimed function reports that over a
+    /// thin wrapper whose helpers were never touched -- and a thin wrapper
+    /// over helpers is the shape Ply's own writing guide teaches. Every body
+    /// the check runs has to reach cargo-mutants, and the flags have to land
+    /// before the `--` or they go to the test binary instead.
+    #[test]
+    fn every_body_the_check_runs_is_offered_to_the_planter() {
+        let mut c = cfg();
+        c.fn_regexes = vec!["scaled".into(), "doubled_then_capped".into()];
+        let argv = mutants_argv(&c);
+        let dashdash = argv
+            .iter()
+            .position(|a| a == "--")
+            .expect("a `--` separator");
+        for name in ["scaled", "doubled_then_capped"] {
+            let at = argv
+                .iter()
+                .position(|a| a == name)
+                .unwrap_or_else(|| panic!("`{name}` never reached cargo-mutants: {argv:?}"));
+            assert_eq!(
+                argv[at - 1],
+                "--re",
+                "`{name}` must arrive as a `--re` value: {argv:?}"
+            );
+            assert!(
+                at < dashdash,
+                "`{name}` landed after the `--`, so cargo-mutants never saw it -- it went to \
+                 the test binary as a filter: {argv:?}"
+            );
         }
     }
 
