@@ -150,16 +150,11 @@ pub struct FingerprintInputs {
     /// The target triple, and the compiler that built for it.
     pub target: String,
     pub rustc: String,
-    /// The flags Cargo passes rustc from the environment, which are part of
-    /// the build without appearing anywhere in the source. `RUSTFLAGS`
-    /// carrying `--cfg broken` compiles a different function body out of the
-    /// same text, so a result recorded without it was reused across a build
-    /// that behaved differently (external review, 2026-09-06).
-    ///
-    /// KNOWN GAP, stated rather than left to be found: this reads the
-    /// environment Ply itself runs under. Flags reaching Cargo another way
-    /// -- a `[build] rustflags` table in `.cargo/config.toml`, or a
-    /// `target.<triple>.rustflags` -- are not read here and are not hashed.
+    /// The flags Cargo receives from the environment and the complete Cargo
+    /// configuration files it discovers for this crate. Either can compile
+    /// a different function body out of identical source. The whole config
+    /// file is retained rather than a parsed subset: an unknown setting may
+    /// cost an unnecessary re-run, but can never preserve stale evidence.
     pub rustflags: String,
     /// The crate's declared feature table. Ply passes no `--features`, so
     /// the active set is the default set this text defines.
@@ -753,6 +748,12 @@ mod tests {
             (
                 "the compiler",
                 Box::new(|i: &mut FingerprintInputs| i.rustc = "rustc 1.95.0".into()),
+            ),
+            (
+                "the compiler configuration",
+                Box::new(|i: &mut FingerprintInputs| {
+                    i.rustflags = "crate/.cargo/config.toml\n[build]\nrustflags=[]".into()
+                }),
             ),
             (
                 "the crate's features",

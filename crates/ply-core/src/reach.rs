@@ -104,7 +104,23 @@ impl FirstParty {
     pub fn gate(&self) -> Option<&str> {
         self.gate.as_deref()
     }
+
+    /// Whether a stored result can describe a later build of this
+    /// first-party closure. Build-script closures always re-run instead.
+    pub fn result_reuse_is_sound(&self) -> bool {
+        !self
+            .units
+            .iter()
+            .any(|(label, _)| label == BUILD_SCRIPT_REUSE_MARKER)
+    }
 }
+
+/// An internal unit carried beside first-party source when Cargo will run a
+/// build script. Keeping the marker in the existing source set avoids adding
+/// a second model of the closure that could drift from it. It is never a
+/// user-visible source label: reuse is disabled before a fingerprint using
+/// it can be recorded or compared.
+const BUILD_SCRIPT_REUSE_MARKER: &str = "(build-script inputs cannot be enumerated)";
 
 /// The item kinds a call walk can bound. Anything else -- an `impl`, a
 /// `trait`, a `const`, a `static`, a `macro_rules!`, an `extern` block --
@@ -285,7 +301,8 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
     let mut units: Vec<(String, String)> = Vec::new();
     let mut type_decls: Vec<(String, String)> = Vec::new();
     let mut gate: Option<String> = None;
-    for (label, path) in first_party_files(crate_dir) {
+    let files = first_party_file_set(crate_dir);
+    for (label, path) in files.files {
         let Ok(text) = std::fs::read_to_string(&path) else {
             gate.get_or_insert(format!("Ply could not read {label}"));
             continue;
@@ -311,6 +328,12 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
             item.to_tokens(&mut tokens);
         }
         units.push((label, tokens.to_string()));
+    }
+    if !files.build_scripts.is_empty() {
+        units.push((
+            BUILD_SCRIPT_REUSE_MARKER.to_string(),
+            files.build_scripts.join("\n"),
+        ));
     }
     units.sort();
     type_decls.sort();
@@ -619,8 +642,14 @@ fn mentioned_paths(f: &syn::ItemFn) -> Mentions {
 /// `(label, path)` for every `.rs` file under this crate's `src/` and under
 /// each path dependency's, transitively. Labels are relative to the
 /// workspace, so the same code hashes the same in a different checkout.
-fn first_party_files(crate_dir: &Path) -> Vec<(String, PathBuf)> {
+struct FirstPartyFileSet {
+    files: Vec<(String, PathBuf)>,
+    build_scripts: Vec<String>,
+}
+
+fn first_party_file_set(crate_dir: &Path) -> FirstPartyFileSet {
     let mut out = Vec::new();
+    let mut build_scripts = Vec::new();
     let mut seen_crates: BTreeSet<PathBuf> = BTreeSet::new();
     let mut queue: VecDeque<(String, PathBuf)> = VecDeque::new();
     queue.push_back((String::new(), crate_dir.to_path_buf()));
@@ -630,25 +659,95 @@ fn first_party_files(crate_dir: &Path) -> Vec<(String, PathBuf)> {
             continue;
         }
         collect_rs(&dir.join("src"), &format!("{prefix}src"), &mut out);
-        // A build script is code the build runs, and what it emits reaches
-        // the compilation, so editing it changes behaviour with every line
-        // under `src/` untouched.
-        //
-        // KNOWN GAP: this hashes the script, not what the script reads. A
-        // build script that emits what it finds in a data file still changes
-        // behaviour without changing anything hashed here.
-        let build_rs = dir.join("build.rs");
-        if build_rs.is_file() {
-            out.push((format!("{prefix}build.rs"), build_rs));
-        }
         if let Ok(manifest) = std::fs::read_to_string(dir.join("Cargo.toml")) {
+            // A build script is code the build runs, and what it emits
+            // reaches compilation. Its source is collected where possible,
+            // but source alone cannot make reuse sound: the separate marker
+            // disables record lookup and storage for this whole closure.
+            if let Some(script) = package_build_script(&manifest, &dir) {
+                let label = script
+                    .strip_prefix(&dir)
+                    .ok()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .filter(|p| !p.is_empty())
+                    .unwrap_or_else(|| "(declared build script)".to_string());
+                let label = format!("{prefix}{label}");
+                build_scripts.push(label.clone());
+                if script.is_file() && !out.iter().any(|(_, path)| path == &script) {
+                    out.push((label, script));
+                }
+            }
             for (name, rel) in path_dependencies(&manifest) {
                 queue.push_back((format!("{name}/"), dir.join(rel)));
             }
         }
     }
     out.sort();
-    out
+    build_scripts.sort();
+    FirstPartyFileSet {
+        files: out,
+        build_scripts,
+    }
+}
+
+/// Kept as the narrow file-list helper its tests exercise. Production uses
+/// `first_party_file_set` so it also retains the build-script safety marker.
+#[cfg(test)]
+fn first_party_files(crate_dir: &Path) -> Vec<(String, PathBuf)> {
+    first_party_file_set(crate_dir).files
+}
+
+/// Cargo's package-level build-script setting. `None` means Cargo has no
+/// build script: either `build = false`, or no explicit path and no default
+/// `build.rs`. Any explicit value we cannot parse still returns a marker so
+/// reuse fails closed; Cargo itself will report the malformed manifest when
+/// the fresh check runs.
+fn package_build_script(manifest: &str, crate_dir: &Path) -> Option<PathBuf> {
+    enum Setting {
+        Default,
+        Disabled,
+        Path(String),
+        Declared,
+    }
+
+    let mut setting = Setting::Default;
+    let mut in_package = false;
+    for line in manifest.lines() {
+        let text = line.trim();
+        if text.starts_with('[') {
+            in_package = text == "[package]";
+            continue;
+        }
+        let Some((key, value)) = text.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if !(in_package && key == "build") && key != "package.build" {
+            continue;
+        }
+        let value = value.trim();
+        setting = if value == "false" || value.starts_with("false #") {
+            Setting::Disabled
+        } else if let Some(rest) = value.strip_prefix('"') {
+            match rest.find('"') {
+                Some(end) => Setting::Path(rest[..end].to_string()),
+                None => Setting::Declared,
+            }
+        } else {
+            Setting::Declared
+        };
+        break;
+    }
+
+    match setting {
+        Setting::Disabled => None,
+        Setting::Path(path) => Some(crate_dir.join(path)),
+        Setting::Declared => Some(crate_dir.join("(declared build script)")),
+        Setting::Default => crate_dir
+            .join("build.rs")
+            .is_file()
+            .then(|| crate_dir.join("build.rs")),
+    }
 }
 
 fn collect_rs(dir: &Path, label: &str, out: &mut Vec<(String, PathBuf)>) {
@@ -1067,6 +1166,60 @@ mod tests {
 
     fn labels(scope: &CodeScope) -> Vec<String> {
         scope.units.iter().map(|(l, _)| l.clone()).collect()
+    }
+
+    #[test]
+    fn default_custom_and_path_dependency_build_scripts_disable_reuse() {
+        let default = crate_with(&[
+            ("src/lib.rs", "pub fn f() {}\n"),
+            ("build.rs", "fn main() {}\n"),
+        ]);
+        assert!(!scan_first_party(default.path()).result_reuse_is_sound());
+
+        let custom = crate_with(&[
+            ("src/lib.rs", "pub fn f() {}\n"),
+            ("tools/generate.rs", "fn main() {}\n"),
+        ]);
+        std::fs::write(
+            custom.path().join("Cargo.toml"),
+            "[package]\nname = \"c\"\nversion = \"0.0.0\"\nbuild = \"tools/generate.rs\"\n",
+        )
+        .unwrap();
+        assert!(!scan_first_party(custom.path()).result_reuse_is_sound());
+
+        let dependency = crate_with(&[("src/lib.rs", "pub fn f() {}\n")]);
+        std::fs::write(
+            dependency.path().join("Cargo.toml"),
+            "[package]\nname = \"c\"\nversion = \"0.0.0\"\n\n[dependencies]\nhelper = { path = \"helper\" }\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dependency.path().join("helper/src")).unwrap();
+        std::fs::write(
+            dependency.path().join("helper/Cargo.toml"),
+            "[package]\nname = \"helper\"\nversion = \"0.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dependency.path().join("helper/src/lib.rs"),
+            "pub fn g() {}\n",
+        )
+        .unwrap();
+        std::fs::write(dependency.path().join("helper/build.rs"), "fn main() {}\n").unwrap();
+        assert!(!scan_first_party(dependency.path()).result_reuse_is_sound());
+    }
+
+    #[test]
+    fn build_false_keeps_a_default_build_rs_from_disabling_reuse() {
+        let dir = crate_with(&[
+            ("src/lib.rs", "pub fn f() {}\n"),
+            ("build.rs", "compile_error!(\"Cargo must ignore this\");\n"),
+        ]);
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"c\"\nversion = \"0.0.0\"\nbuild = false\n",
+        )
+        .unwrap();
+        assert!(scan_first_party(dir.path()).result_reuse_is_sound());
     }
 
     /// Cargo spells a dependency table four ways, and Ply recognised two of

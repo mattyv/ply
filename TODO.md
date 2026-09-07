@@ -83,6 +83,26 @@ make this codebase provable.
 file is the state. Read that one first, then this.
 
 
+## Landed: close the remaining false-reuse paths — 2026-09-07
+
+Both were confirmed by external review after the eight narrower reuse defects landed.
+They can each carry a green result over a build that now compiles different behaviour.
+
+- [x] **Hash every Cargo configuration file Cargo discovers for the crate.** Include
+      `.cargo/config.toml` and legacy `.cargo/config` from the crate directory through
+      its ancestors and Cargo home. Hash the whole file, not a guessed subset of keys, so
+      an unrecognised compiler setting costs reuse rather than correctness. (`118a165`)
+- [x] **Do not reuse or record results when the first-party closure has a build script.**
+      A build script can consume undeclared files, environment, time, or external state;
+      `cargo:rerun-if-*` declarations cannot prove that the list is complete. Detect the
+      default `build.rs` and a custom `package.build` path in the crate and transitive
+      path dependencies. (`118a165`)
+- [x] **Pin the stale passes end to end.** Change compiler flags through
+      `.cargo/config.toml`, then change a file and an environment value consumed by an
+      unchanged build script. Each second verify must run fresh and expose the broken
+      promise. (`118a165`)
+
+
 ## Landed: two more ways a stored result outlived the code it stood on — 2026-09-06
 
 Both found by external review, both the same shape as the helper bug of 2026-08-25: the

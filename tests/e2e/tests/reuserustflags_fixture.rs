@@ -40,3 +40,35 @@ fn a_run_under_different_compiler_flags_does_not_reuse_the_old_pass() {
         second.json
     );
 }
+
+#[test]
+fn compiler_flags_from_cargo_config_do_not_reuse_the_old_pass() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("reuserustflags");
+
+    let first = run_verify(&cargo_ply, fixture.path(), 120);
+    let claim = &first.json["root"]["children"][0]["children"][0];
+    assert_eq!(claim["verdict"], "fuzzed(64)", "envelope: {}", first.json);
+
+    let cargo_dir = fixture.path().join(".cargo");
+    std::fs::create_dir_all(&cargo_dir).unwrap();
+    std::fs::write(
+        cargo_dir.join("config.toml"),
+        "[build]\nrustflags = [\"--cfg\", \"broken\"]\n",
+    )
+    .unwrap();
+
+    let second = run_verify(&cargo_ply, fixture.path(), 120);
+    let claim = &second.json["root"]["children"][0]["children"][0];
+    assert_eq!(
+        claim["reused"],
+        serde_json::Value::Null,
+        "Cargo now compiles a different body, so the old result must not be reused: {}",
+        second.json
+    );
+    assert_eq!(
+        claim["verdict"], "violation",
+        "a fresh run must expose the promise broken by Cargo's configured flags: {}",
+        second.json
+    );
+}
