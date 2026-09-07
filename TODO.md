@@ -1,5 +1,38 @@
 # TODO
 
+## Measured: what stops `bounded` on Ply's own claims — 2026-09-07
+
+Asked before building component-level proof, and it changed the answer. `docs/reach-measurement-3.md`.
+
+**Zero of Ply's 56 claims earn `bounded`.** 50 are refused at the parameter gate, 4 reach
+Kani and produce no verdict line, 2 earn `tested` from the `test` check beside them. Run
+rather than reasoned about: every declaration flipped to `bounded(2)` and Ply asked to name
+its own blockers.
+
+- **`String` parameters block 42 and are the sole blocker on 39.** The first of the three
+  measurements where any single capability unblocks anything alone -- `semver`'s chained two
+  to four deep, Ply's are depth 1 for 44 of 50, because this is a text processor whose
+  functions take one or two strings and nothing else.
+- **Not worth shipping anyway, and that is the finding.** A Kani-buildable `String` is a
+  length-bounded one, so those 42 claims would earn "holds for every string up to four
+  bytes" under a word that sounds stronger than the `fuzzed(256)` it replaced. Same failure
+  as the float/`i128` bug: a stronger, more confident, narrower answer.
+- **The four that passed the gate confirm it independently.** All four return a heap string
+  built with `format!` and produced no verdict. Kani is healthy here (0.67.0, symbolic `u32`
+  arithmetic in 0.70s); the same crate with a one-line `format!` over a symbolic `u32` was
+  killed at 900s. The bodies, not the adapter.
+- [ ] **OPEN: why those four report `X0901` is not established.** "Could not interpret
+      Kani's output" reads as an adapter defect. The first write-up asserted it was really an
+      unfinished engine being mislabelled; that was asserted without checking and is **wrong**
+      -- two minimal fixtures, one returning `String` from `format!` and one returning
+      `Vec<&'static str>`, both report a clean `timeout` with `K0601`. The timeout path works.
+      The untested hypothesis is that Kani cannot build a harness crate against `ply-core`'s
+      dependency set at all, which would also yield no verdict line. Verify before fixing.
+
+**What it says about component proof:** the same wall one level up. A component-invariant
+proof is honest for components written to be provable and refuses otherwise; it does not
+make this codebase provable.
+
 ## General review of Ply agent skills
 
 - [x] Implemented in `20c3cd9`: corrected static audit/evidence confusion, conditionality claims, engine and nesting limits, declaration/render scope, snapshot navigation, and redundant approval stops across all five skills. All 30 skill contract tests, five skill validators, and Terra's three-scenario follow-up review pass.
