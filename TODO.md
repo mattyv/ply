@@ -117,6 +117,7 @@ to disk.
 ## Outside-workspace findings — 2026-09-07
 
 - [x] Preserve each real parameter type in the generated precondition-admissibility test (`799332c`).
+- [x] Convert borrowed string examples into the owned locals used by typed direct cases (`2b21578`).
 - [x] Report Kani's exit status and compiler output when no verification marker appears (`799332c`).
 - [x] Run mutation checks for crates that belong to a virtual Cargo workspace (`799332c`).
 - [x] Treat omitted linked-component booleans as undeclared, not as explicit `false` (`799332c`).
