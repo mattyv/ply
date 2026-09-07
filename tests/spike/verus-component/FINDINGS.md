@@ -34,7 +34,46 @@ breaks it, and before that work, 2 of 3,072.
 fixture's own off-by-one (`>=` becomes `>` in the fullness test) makes Verus
 report `postcondition not satisfied` and name `put`. 7 verified, 1 error.
 
-## The finding that decides the design: coverage is not free
+## RETRACTED: "coverage is not free"
+
+**The section below is wrong, and an adversarial review found it the same
+day. Kept rather than deleted, because how it was wrong is the useful part.**
+
+It concluded that Verus discharges init and preservation while boundary and
+coverage fall to Ply "or nobody". That was an artefact of how this shadow was
+written -- the invariant as per-method pre/postconditions, which only ever
+answers about the methods you list. Verus has a purpose-built feature for
+this, `#[verifier::type_invariant]`, and with it:
+
+- the uncontracted `force_push` **is** rejected, and so is a free function in
+  the same module that reaches into the struct -- both with "value may fail
+  to meet its declared type invariant after mutation";
+- a struct with public fields is refused outright, which *is* obligation 3
+  enforced by the verifier;
+- the honest code still proves, same 8 verified, 0 errors.
+
+Re-run independently before retracting: `ti_ok2.rs` 8 verified 0 errors,
+`ti2.rs` 8 verified **2 errors**. So the table below is wrong: **all four
+obligations are the verifier's**, and the load-bearing question is not "can
+the receiver scan enumerate the mutators" but "is every function that can
+touch this type's fields inside the translated unit" -- a
+translation-completeness question, and a different problem.
+
+Two costs come with the feature and belong in any plan that uses it. Every
+std call that mutates a field must be marked `no_unwind`, and vstd's
+`Vec::push`/`remove`/`pop` are not, so trusted wrappers have to be written --
+a real trust surface, since `push` genuinely can unwind. And the invariant is
+checked at the end of *every* call that mutates a field, so a method that
+breaks and restores it internally is refused, which is stricter than `holds:`
+and will reject code the sampler accepts.
+
+**A second error in this spike, same review:** this shadow's fields are
+`pub`, where the fixture's are private. Private fields *are* the fixture's
+boundary, so the shadow discarded the very obligation the section below then
+declared unreachable -- and the measurement was taken on that weaker shadow.
+Closed spec accessors are the fix and they work.
+
+## The original section, as written and now retracted: coverage is not free
 
 `docs/component-proof-design.md` called obligations 3 (boundary) and 4
 (coverage) load-bearing and easy to skip. That is now measured, not argued.

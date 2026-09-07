@@ -69,6 +69,42 @@ tool for "every value, every sequence", which is exactly what obligations
   already exists and is the right home. The current model enforces this, and
   the design should not fight it.
 
+## Corrections from review, 2026-09-07
+
+Two, both changing the plan.
+
+**The obligations split differently than this document says.** Verus's
+`#[verifier::type_invariant]` closes boundary and coverage as well as init
+and preservation -- see the retraction at the top of
+`tests/spike/verus-component/FINDINGS.md`. The "Ply, or nobody" framing came
+from an encoding choice in the spike, not from the instrument.
+
+**Worse: proving the `holds:` clause does not close the gap this document
+opens with.** Of the six pre-registered bugs behind the 1-in-6, four were
+transition bugs no invariant expresses, and the one that *was* an invariant
+violation is the one the sequence-bound work already catches on every seed.
+So a proof of the declared clause scores what the improved sampler scores.
+The measured loss is in properties that cannot be *stated* today, because
+`&mut self` methods cannot be claimed at all (rule 9).
+
+That makes this a fork, not a detail:
+
+- **"Prove the invariant"** -- cheap, real, and adds coverage, boundary and
+  panic-freedom, which sampling structurally cannot reach. But it is a
+  certainty upgrade for the one property already covered, and citing the
+  1-in-6 as its motivation is not honest.
+- **"Claim transitions"** -- contracts on mutating methods, which is where
+  the misses actually are. It changes rule 9, and Verus's two-state specs
+  (`old`/`final`) are the natural engine for the proved tier.
+
+A third thing this document has no rule for: a proof that does not
+*discharge* on correct code. An idiomatic `HashMap` + `VecDeque` cache fails
+its proof with no counterexample, because the invariant is not inductive on
+its own. "Refuse rather than downgrade" covers types Verus cannot translate;
+it says nothing here. The outcome must be "not proved, fell back to
+sampling", never "violated" -- and any invariant relating two containers kept
+in sync has this shape.
+
 ## What to do first
 
 **One measurement, before any adapter work.** Take
