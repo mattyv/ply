@@ -225,6 +225,7 @@ pub fn run() -> anyhow::Result<()> {
             }
         }
         Commands::Check { path } => {
+            crate_dir_or_explain(&path)?;
             let report = check::check_crate(&path)?;
             if cli.json {
                 println!("{}", report.envelope.to_json_pretty());
@@ -234,6 +235,7 @@ pub fn run() -> anyhow::Result<()> {
             std::process::exit(report.exit_code());
         }
         Commands::Audit { path } => {
+            crate_dir_or_explain(&path)?;
             let report = audit::audit_crate(&path)?;
             if cli.json {
                 println!("{}", report.envelope.to_json_pretty());
@@ -243,6 +245,7 @@ pub fn run() -> anyhow::Result<()> {
             std::process::exit(report.exit_code());
         }
         Commands::Worklist { path } => {
+            crate_dir_or_explain(&path)?;
             let report = worklist::worklist_crate(&path)?;
             if cli.json {
                 println!("{}", report.envelope.to_json_pretty());
@@ -260,6 +263,7 @@ pub fn run() -> anyhow::Result<()> {
             retain_views,
             svg,
         } => {
+            crate_dir_or_explain(&path)?;
             let seed = match seed {
                 Some(text) => match ply_core::fuzz_gen::seed_from_hex(&text) {
                     Some(bytes) => Some(bytes),
@@ -953,8 +957,117 @@ fn exit_code_for(envelope: &ply_core::diag::Envelope, fail_on: FailOn) -> i32 {
     1
 }
 
+/// Refuse a path that is a file, in words that say what to type instead.
+///
+/// Every command below takes the *folder* of the crate to check and reads
+/// `ply.yaml` out of it. Handed the document itself -- the obvious first
+/// guess -- the loader appended `ply.yaml` to it and reported the operating
+/// system's own "Not a directory" under a Rust backtrace, which tells a
+/// newcomer nothing about what to do (A/B round 2, 2026-09-07). A path that
+/// does not exist is left alone: the loader's own message for a missing
+/// document is already the better one.
+fn crate_dir_or_explain(path: &Path) -> anyhow::Result<()> {
+    crate_dir_or_explain_at(path, path.is_file())
+}
+
+/// The wording, with the filesystem question already answered -- so the
+/// bare-filename case can be tested without one on disk.
+fn crate_dir_or_explain_at(path: &Path, is_file: bool) -> anyhow::Result<()> {
+    if !is_file {
+        return Ok(());
+    }
+    let named_ply_yaml = path
+        .file_name()
+        .map(|n| n == "ply.yaml" || n == "ply.yml")
+        .unwrap_or(false);
+    if named_ply_yaml {
+        // `Path::parent` of a bare `ply.yaml` is `""`, not `None`, and
+        // pointing a reader at an empty path is worse than the backtrace
+        // this replaced.
+        let folder = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        anyhow::bail!(
+            "`{}` is the declaration file itself. Ply's commands take the folder that holds \
+             it and read `ply.yaml` from there, so run this against `{}` instead.",
+            path.display(),
+            folder.display()
+        );
+    }
+    anyhow::bail!(
+        "`{}` is a file. Ply's commands take the folder of the crate to check -- the one \
+         holding its `Cargo.toml` and `ply.yaml`.",
+        path.display()
+    );
+}
+
 #[cfg(test)]
 mod tests {
+    /// Pointing Ply at `ply.yaml` rather than the folder holding it is the
+    /// first thing a newcomer gets wrong, and until 2026-09-07 it produced
+    /// a raw Rust backtrace -- "Not a directory (os error 20)" under twelve
+    /// stack frames -- with nothing saying what to type instead.
+    #[test]
+    fn pointing_at_the_declaration_file_says_to_point_at_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = dir.path().join("ply.yaml");
+        std::fs::write(&doc, "ply: 1\n").unwrap();
+        let err = super::crate_dir_or_explain(&doc).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!(
+                "`{}` is the declaration file itself. Ply's commands take the folder that \
+                 holds it and read `ply.yaml` from there, so run this against `{}` instead.",
+                doc.display(),
+                dir.path().display()
+            )
+        );
+    }
+
+    /// `cargo ply verify ply.yaml`, typed from inside the crate, is the way
+    /// this actually gets typed -- and `Path::parent` of a bare filename is
+    /// `""`, not `None`, so the first version of this message told the
+    /// reader to run it against nothing at all. Caught by running it.
+    #[test]
+    fn a_bare_filename_names_the_current_folder_rather_than_nothing() {
+        let err = super::crate_dir_or_explain_at(std::path::Path::new("ply.yaml"), true)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "`ply.yaml` is the declaration file itself. Ply's commands take the folder that \
+             holds it and read `ply.yaml` from there, so run this against `.` instead."
+        );
+    }
+
+    /// Any other file gets the same steer without pretending to know what
+    /// the reader meant by it.
+    #[test]
+    fn pointing_at_some_other_file_still_names_what_the_command_wants() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = dir.path().join("src");
+        std::fs::write(&other, "").unwrap();
+        let err = super::crate_dir_or_explain(&other).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!(
+                "`{}` is a file. Ply's commands take the folder of the crate to check -- the \
+                 one holding its `Cargo.toml` and `ply.yaml`.",
+                other.display()
+            )
+        );
+    }
+
+    /// A directory, or a path that does not exist yet, is left alone: the
+    /// commands downstream have their own, better words for those.
+    #[test]
+    fn a_folder_is_handed_straight_through() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(super::crate_dir_or_explain(dir.path()).is_ok());
+        assert!(super::crate_dir_or_explain(&dir.path().join("nope")).is_ok());
+    }
+
     use super::*;
     use ply_core::diag::{Envelope, Node};
 

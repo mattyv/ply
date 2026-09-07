@@ -746,6 +746,10 @@ fn verify_loaded_crate(
         /// hashing it would only make a reworded sentence invalidate every
         /// stored result.
         widened_because: Option<String>,
+        /// The bodies this claim's checks run, from the same walk. Handed to
+        /// `mutate` so bugs are planted where the logic is, not only in the
+        /// claimed function.
+        reached_fns: Vec<String>,
         /// The checks as `ply.yaml` spells them, which is what a recorded
         /// verdict is checked against for possibility before it is trusted.
         check_spellings: Vec<String>,
@@ -1200,6 +1204,7 @@ fn verify_loaded_crate(
             );
             // Taken before `code.units` is moved into the fingerprint below.
             let widened_because = code.widened_because.clone();
+            let reached_fns = code.reached_fns.clone();
             let check_spellings: Vec<String> = checks.iter().map(check_spelling).collect();
 
             let inputs = FingerprintInputs {
@@ -1295,6 +1300,7 @@ fn verify_loaded_crate(
                 seed,
                 inputs,
                 widened_because,
+                reached_fns,
                 check_spellings,
             });
         }
@@ -1826,6 +1832,8 @@ fn verify_loaded_crate(
             &plans[idx].boundary,
             &plans[idx].seed,
             harness_info.as_ref(),
+            &plans[idx].reached_fns,
+            plans[idx].widened_because.as_deref(),
             !plans[idx].claim.examples.is_empty(),
             opts,
             &mut all_cex_tests,
@@ -3517,6 +3525,14 @@ fn run_fn_checks(
     boundary: &BoundaryPlan,
     seed: &[u8; 32],
     harness_info: Option<&HarnessInfo>,
+    // The bodies this claim's checks run, claimed one first. Not the whole
+    // list when `scope_incomplete` is set: the walk stopped early and kept
+    // what it had.
+    reached_fns: &[String],
+    // Why the reach walk could not bound what this claim's checks run, when
+    // it could not. Set means the planting below is over a partial list and
+    // the report has to say so.
+    scope_incomplete: Option<&str>,
     has_examples: bool,
     opts: &VerifyOptions,
     // Every rendered cex test earned by any fn in this whole run, so far --
@@ -3997,9 +4013,13 @@ fn run_fn_checks(
                     crate_dir,
                     &info.package,
                     info.standalone,
-                    node_id,
-                    fn_name,
-                    &harness_test_filter(cf),
+                    MutateTarget {
+                        node_id,
+                        fn_name,
+                        test_filter: &harness_test_filter(cf),
+                        reached_fns,
+                        scope_incomplete,
+                    },
                     checks,
                     opts,
                 )?;
@@ -7264,16 +7284,80 @@ fn apply_mutate_outcome(verdict: &mut String, statuses: &mut Vec<String>, outcom
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Where the deliberate bugs were planted, in words a reader can act on.
+///
+/// The old wording said "its own body" whatever was mutated. Once the
+/// planting follows the check into the helpers -- which is where the logic
+/// lives, because Ply's own writing guide tells authors to put it there --
+/// that sentence sends a reader to the one body the survivors are least
+/// likely to be in.
+fn mutate_scope_prose(scope: &[String]) -> String {
+    match scope.len() {
+        0 | 1 => "its own body".to_string(),
+        2 => format!(
+            "its own body and `{}`, the one other function its checks run",
+            scope[1]
+        ),
+        n => format!(
+            "its own body and the {} other functions its checks run (`{}`)",
+            n - 1,
+            scope[1..].join("`, `")
+        ),
+    }
+}
+
+/// The sentence a reader gets when the deliberate bugs went into a list Ply
+/// knows is incomplete.
+///
+/// "Every planted bug was caught" is only as strong as the set they were
+/// planted in. When the reach walk cannot bound that set -- a macro whose
+/// expansion Ply does not read, a body it could not resolve, an attribute
+/// that may rewrite a function -- the planting still happens, over whatever
+/// the walk did identify, and the result reads exactly like a complete one.
+/// It is not, and this says which part was missing and why.
+fn incomplete_scope_note(fn_name: &str, scope: &[String], reason: &str) -> String {
+    format!(
+        "Ply could not work out the full list of functions `{fn_name}`'s checks run, so it \
+         planted its deliberate bugs in {}, and nowhere else. Anything reached only through \
+         the part Ply could not read was never broken, so a clean result here covers less \
+         code than it does when the list is complete. What Ply could not read: {}.",
+        mutate_scope_prose(scope),
+        reason.trim_end().trim_end_matches('.')
+    )
+}
+
+/// What one claim hands the mutation planter: where to plant the deliberate
+/// bugs, and which tests are the kill signal.
+struct MutateTarget<'a> {
+    node_id: &'a str,
+    fn_name: &'a str,
+    test_filter: &'a str,
+    /// The bodies this claim's checks run, claimed one first, from the same
+    /// walk the fingerprint uses. When `scope_incomplete` is set this is
+    /// what the walk had identified before it stopped, not the whole list.
+    reached_fns: &'a [String],
+    /// Why the walk could not bound that list, when it could not. Set means
+    /// the deliberate bugs went into a partial set, and `W0530` says so --
+    /// silence there is how "every planted bug was caught" came to cover a
+    /// wrapper's two lines and none of its helper (A/B round 2, 2026-09-07).
+    scope_incomplete: Option<&'a str>,
+}
+
 fn run_mutate_check(
     crate_dir: &Path,
     harness_pkg: &str,
     standalone: bool,
-    node_id: &str,
-    fn_name: &str,
-    test_filter: &str,
+    target: MutateTarget<'_>,
     checks: &[Check],
     opts: &VerifyOptions,
 ) -> Result<(MutateOutcome, Vec<Diagnostic>)> {
+    let MutateTarget {
+        node_id,
+        fn_name,
+        test_filter,
+        reached_fns,
+        scope_incomplete,
+    } = target;
     let _ = checks;
     if standalone {
         // docs/review-caveats.md N1: `cargo mutants -p <target> --test-package
@@ -7367,6 +7451,16 @@ fn run_mutate_check(
         .engine_timeout_secs
         .unwrap_or_else(default_secondary_engine_timeout_secs);
     let wall_clock = mutate_wall_clock_secs(timeout);
+    // Claimed function first, then every other body the walk identified as
+    // run. When the walk could not be bounded this is what it had before it
+    // stopped, not the whole list, and `W0530` below says so.
+    let mut mutate_scope: Vec<String> = vec![fn_name.to_string()];
+    for name in reached_fns {
+        let leaf = name.rsplit("::").next().unwrap_or(name).to_string();
+        if !mutate_scope.contains(&leaf) {
+            mutate_scope.push(leaf);
+        }
+    }
     let cfg = MutantsRunConfig {
         workspace_root: crate_dir.to_path_buf(),
         mutated_package: target_names.package_name,
@@ -7376,7 +7470,7 @@ fn run_mutate_check(
         // u32 with 0"), not the bare fn name, so `^{fn}$` matches nothing --
         // confirmed against a real run (docs/m4-findings.md) and matching
         // the spike's own usage (`--re strong_target`, no anchors).
-        fn_regex: fn_name.to_string(),
+        fn_regexes: mutate_scope.clone(),
         // `test_filter` is the caller's `harness_test_filter(cf)`, never
         // built from `fn_name` here: the generated harness names its
         // module from `cf.ident()` (`path.replace("::", "_")`), and a
@@ -7395,7 +7489,7 @@ fn run_mutate_check(
     let outcome = mutants::run(&cfg)?;
 
     let check_label = "mutate".to_string();
-    match outcome {
+    let mut result = match outcome {
         MutantsRunOutcome::Completed(o) => {
             if o.all_caught() {
                 Ok((MutateOutcome::SpecStrong, vec![]))
@@ -7447,12 +7541,13 @@ fn run_mutate_check(
                         node_id: node_id.into(),
                         title: format!(
                             "weak spec ({} surviving mutants): `{fn_name}`'s `test`/`fuzz` checks did \
-                             not catch every deliberately-broken version of its own body -- caught {}, \
+                             not catch every deliberately-broken version of {} -- caught {}, \
                              missed {}. Note: this count is an upper bound on spec weakness, not an exact \
                              one -- a survivor whose change cannot alter the function's observable output \
                              (an equivalent mutant) survives any spec, however strong, so not every entry \
                              below is necessarily a gap to close. Surviving: {}",
                             o.missed.len(),
+                            mutate_scope_prose(&mutate_scope),
                             o.caught,
                             o.missed.len(),
                             o.missed.join("; ")
@@ -7538,7 +7633,28 @@ fn run_mutate_check(
                 }],
             ))
         }
+    };
+    // The planting happened over a list Ply knows is partial. Every outcome
+    // above reads as though it were complete, so the note goes on all of
+    // them rather than only on the clean one.
+    if let (Ok((_, diags)), Some(reason)) = (&mut result, scope_incomplete) {
+        diags.push(Diagnostic {
+            code: "W0530".into(),
+            severity: "warning".into(),
+            phase: "verify".into(),
+            engine: "cargo-mutants".into(),
+            check: "mutate".into(),
+            node_id: node_id.into(),
+            title: incomplete_scope_note(fn_name, &mutate_scope, reason),
+            pointer: None,
+            primary_span: None,
+            counterexample: None,
+            fixes: vec![],
+            assumptions: vec![],
+            open_item: Some("partial_mutate_scope".into()),
+        });
     }
+    result
 }
 
 fn format_value(v: &kani::WitnessValue) -> String {
@@ -8004,6 +8120,33 @@ fn unused(_p: &PathBuf) {}
 
 #[cfg(test)]
 mod tests {
+    /// A clean mutation result means "deliberate bugs were planted and the
+    /// checks caught every one". When Ply could not work out the whole list
+    /// of bodies a claim's checks run, that sentence covers less code than
+    /// a reader will assume, and until 2026-09-07 nothing said so -- the
+    /// report printed "its own body" whether the list was complete or a
+    /// fragment (A/B round 2: one `vec!` in a wrapper took the planting
+    /// from nine deliberate bugs down to two).
+    #[test]
+    fn an_incomplete_planting_scope_says_so_and_names_what_it_could_not_read() {
+        let note = super::incomplete_scope_note(
+            "scaled",
+            &["scaled".to_string(), "doubled_then_capped".to_string()],
+            "`scaled` invokes the macro `vec!`, whose expansion is not in the tokens Ply's \
+             call walk reads",
+        );
+        assert_eq!(
+            note,
+            "Ply could not work out the full list of functions `scaled`'s checks run, so it \
+             planted its deliberate bugs in its own body and `doubled_then_capped`, the one \
+             other function its checks run, and nowhere else. Anything reached only through \
+             the part Ply could not read was never broken, so a clean result here covers \
+             less code than it does when the list is complete. What Ply could not read: \
+             `scaled` invokes the macro `vec!`, whose expansion is not in the tokens Ply's \
+             call walk reads."
+        );
+    }
+
     use super::*;
 
     #[test]

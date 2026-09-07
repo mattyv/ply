@@ -884,6 +884,18 @@ clause after the constructor and again after **every single operation**. A claus
 holds when a value is made and breaks three operations later is the whole reason this is
 a sequence rather than one call, and the diagnostic says how many operations in.
 
+**The sequence bound is a reachability budget, and it is measured (MUST).** "Checked
+across the states this run could reach" is only worth anything if those states include the
+ones a clause can be false in. A rule about a bounded structure is false only once the
+structure is over-filled, so a bound too small to fill anything makes such a rule
+unfalsifiable rather than true: at a bound of three operations, an off-by-one letting a
+cache hold one entry too many came back clean over 256 cases against
+`state.len() <= state.capacity()`, because the capacity was drawn from 0..=16 while at most
+three calls ran. Replaying the generated strategy over twelve seeds, 2 of 3,072 cases could
+reach it. The bound is now twelve — the smallest measured to catch it on every seed —
+and any future change to it is a number to re-measure, not to reason about
+(`harness::MAX_RECEIVER_SEQUENCE_LEN`, gated by `tests/fixtures/boundedcache`).
+
 Every honesty condition the receiver path already carries applies unchanged: an operation
 whose argument cannot be built is named rather than silently dropped, and a second
 constructor this run never starts from is named too — so "checked" here means checked
@@ -1367,7 +1379,7 @@ mistakes evidence about one instantiation for evidence about all.
 | fuzz(n) | proptest harness, n cases (default 256), shrinking on; `requires` as a rejection filter, with a warning when the rejection rate is high | `fuzzed(n)` |
 | bounded(k) | Kani contract proof (`proof_for_contract`), loop bound k (default 2) | `bounded(k)` |
 | prove | Verus translation (M7, optional) | `proved` |
-| mutate | cargo-mutants scoped `--re <fn>`; kill signal = the `test`/`fuzz` checks in the same list (D12) | appends `·spec-strong`, or flags `W0502 weak spec (N surviving mutants)` |
+| mutate | cargo-mutants scoped with one `--re` per body the reach walk (§5.2a) says this claim's checks run, the claimed one first; kill signal = the `test`/`fuzz` checks in the same list (D12) | appends `·spec-strong`, or flags `W0502 weak spec (N surviving mutants)`; adds `W0530` when the walk could not bound that list |
 
 cargo-mutants runs the workspace test suite by default, which would never execute the
 generated fuzz harnesses under `target/ply/fuzz/`. Earlier drafts of this section said the
@@ -1423,6 +1435,21 @@ The one gap, stated rather than left to be found: a run killed outright (`SIGKIL
 crashed container) runs no guard, so the `members` entry survives it. The next run removes
 it — the restore target is always the original *minus* the harness entry, and no human
 hand-writes a member path under `target/ply/fuzz/`.
+
+**The planting scope is the reach walk's, not the claimed function's (MUST).** Scoping
+`--re` to the claimed function alone measures `·spec-strong` over whichever lines that one
+body happens to hold, and §7's own writing guidance tells authors to lift logic into
+helpers and keep the claimed function thin -- so on the shape Ply teaches, the badge was
+earned by planting bugs in a body with nothing in it. Measured on `tests/fixtures/helperspec`:
+two planted bugs before, nine after (2026-09-07).
+
+When that walk cannot be bounded -- a macro whose expansion Ply does not read, a body it
+cannot resolve, an attribute that may rewrite a function -- the walk keeps the bodies it
+had already identified rather than discarding them, and the run reports `W0530`: the
+deliberate bugs went into a list Ply knows is partial, so a clean result covers less code
+than a complete one. Discarding them instead is how a single `vec!` in a wrapper took the
+planting from nine bugs back down to two while the report still said "its own body"
+(A/B round 2, 2026-09-07).
 
 `W0502`'s surviving-mutant count is not a pure weak-spec measure: an *equivalent* mutant —
 one whose change cannot alter observable behaviour — survives any spec, however strong.

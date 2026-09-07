@@ -78,6 +78,8 @@ floatsample::mirror32_fuzzed ensures |result|*result == x
 fuzzbug::seeded_bug ensures |result|*result == x
 fuzzbugtwo::seeded_bug_a ensures |result|*result == x
 fuzzbugtwo::seeded_bug_b ensures |result|*result == y
+helperspec::scaled ensures |result|*result <= 100
+helperspec::scaled requires x < 1000
 highreject::mostly_rejected ensures |result|*result == x
 highreject::mostly_rejected requires x > 14
 implmethod::capacity ensures |result|*result == 7

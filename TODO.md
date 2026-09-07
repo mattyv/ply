@@ -1,5 +1,193 @@
 # TODO
 
+## A/B round 3: where the sampling actually earns its keep — 2026-09-07
+
+Same protocol again. Two scenarios chosen to probe known-weak ground rather
+than to find new bugs: a duration parser (`&str`, the shape Ply's own
+measurement says blocks exhaustive checking entirely) and a token bucket
+(a second, independent stateful type). Three bugs each, pre-registered,
+every one confirmed by an oracle before scoring. **No new defects found** --
+this round measured coverage rather than correctness.
+
+**Duration parser.** Both arms' own tests: 3 of 3. Ply: 3 of 3 -- but the
+split matters. Random generation found **one** of the three (`text = "0h!"`,
+shrunk); the other two were caught by the concrete `examples:` the agent
+wrote into the declaration. Ply also named its own blind spot without being
+asked: `W0526` reported that of 256 cases where the promise held, the
+`result.is_none()` side decided it 256 times and the other side 0 -- random
+text is essentially never a valid duration, so the branch that matters was
+never exercised. That is the tool telling a user its own number is thinner
+than it looks, which is what it is for.
+
+**Token bucket.** Both arms' own tests: 3 of 3. Ply: 1 of 3, and the two
+misses are correct -- neither bug violates the one rule that could be
+declared. The bucket's over-refill was caught cleanly (`V0511`, "false for a
+value Ply built after 1 of the type's own operations had run on it").
+
+- [ ] **Measured ceiling on stateful types: 1 of 6 across two rounds.** Over
+      the cache (round 2) and the bucket (round 3), Ply caught one of six
+      pre-registered bugs, and **four of the five misses were correctly
+      outside what could be declared at all**. The cause is structural, not a
+      defect: `&mut self` methods cannot be claimed (`ply-checkable-code`
+      rule 9 says so plainly), so for a type that changes, the only
+      expressible promise is a standing rule over the whole value -- and the
+      bugs live in the transitions. Two agents, working independently and
+      without seeing each other, reached that same conclusion from the guide
+      and fell back on ordinary tests for the mutating methods. The guide is
+      honest and the tool matches it; what is now measured is how much that
+      leaves uncovered. This is the gap the parked component-proof brief was
+      aimed at, and it is the strongest argument yet for taking it up.
+- [ ] **`bounded` was correctly declined, not silently skipped.** Arm B
+      reasoned that `&str` is sampled and never proved in this build, so it
+      did not declare `bounded` -- reaching the same conclusion the
+      measurement in `docs/reach-measurement-3.md` did, from the docs alone.
+
+Method note, recorded because it nearly cost a wrong score: **the oracle was
+wrong first.** It refused a duration written with twenty-four leading zeros,
+where the arm under test was right -- a number with leading zeros is still a
+number. Caught by running the clean implementation through the oracle before
+planting anything, which is why that step exists.
+
+Correction to the round-3 plan as written: the bucket's over-refill was
+described as a regression test for the sequence-length change. It is not --
+a bucket starts *full*, so one `refill` breaks the rule immediately, at
+depth 1. `tests/fixtures/boundedcache` remains the only real gate for that
+change, which is where it belongs.
+
+## A/B round 2: two more scenarios, and two false cleans — 2026-09-07
+
+Same protocol as round 1: two sonnet agents per scenario, both told to do TDD,
+arm B also given Ply and its two skills. Three bugs per scenario written down
+before either agent started, in a file the agents were told not to read, and
+each bug confirmed to be a real bug by an independent oracle before scoring
+(exhaustive small grid for the split; exhaustive operation sequences to length
+6 against a differently-written model for the cache).
+
+**Splitting a charge across line items.** Arm A's own tests caught 3 of 3. Arm
+B's own tests caught 1 of 3; Ply caught 3 of 3, with a minimal failing input
+for each (`total_cents = 1, weights = [1,1]` for the drifting sum). Ply also
+made arm B rewrite its promises mid-task: its first contract was "the output
+length matches the input length", the bug-planting reported 12 of 19 caught,
+and the agent added four real promises to reach 19 of 19.
+
+**A bounded cache with eviction.** Arm A's own tests caught 2 of 3 -- it missed
+the update path, because its map-based design turns "put does not recognise a
+key it already holds" into a silently evicted innocent entry rather than a
+length change, and no test looked. Arm B's own tests caught 3 of 3. Ply caught
+**0 of 3**, and one of those is a genuine miss rather than an undeclared
+property (below).
+
+**Both control-arm agents mutation-tested themselves by hand** -- broke their
+own implementation, watched a test fail, put it back. The control arm partly
+reinvented the thing the tool automates, unprompted, in both scenarios.
+
+- [x] **A size invariant on a bounded container is close to unfalsifiable.** Fixed the same day.
+      Arm B declared exactly the right rule -- the cache never holds more
+      entries than its capacity -- and Ply reported it clean over 256 cases
+      with an off-by-one that lets the cache hold one too many. Measured
+      cause, not guessed: the generated capacity is drawn from 0..=16 while
+      the operation sequence is at most 3 calls of which roughly a quarter
+      are insertions, so a cache big enough to be interesting can never be
+      filled. Replaying Ply's own generated strategy over 12 seeds x 256
+      cases, **2 of 3,072 cases could even reach the bug**. A run comes back
+      clean about five times in six, and catching it is luck.
+      **Fixed:** the generated sequence bound goes from three operations to
+      twelve, which takes the same replay from 2 of 3,072 cases and 2 of 12
+      runs to 106 of 3,072 and **12 of 12**. Twelve is the smallest bound
+      measured to catch it on every seed, not the largest that helps -- the
+      cost is linear per case but it is still a slower run for every claim
+      with a receiver. Two further dials were measured and deliberately not
+      taken, because this one alone closes the gap: favouring the operations
+      that can actually change the state, and drawing a constructor's size
+      argument within reach of the sequence (all three together reach 651 of
+      3,072). New fixture `tests/fixtures/boundedcache` is the gate: break
+      the fullness test by one and the run must report a violation. Watched
+      failing first -- it came back `fuzzed(256)` clean on a cache holding
+      capacity+1. §5.3 amended with the rule that this bound is a measured
+      number, not an argued one.
+- [x] **One `vec!` undoes the planting-scope fix.** Fixed the same day. Any macro Ply cannot
+      expand makes the reach walk widen to the whole crate, which empties the
+      list of reached function names, which drops the planting back to the
+      claimed function alone -- the exact defect fixed in 2fa2d0e, by another
+      road. Measured on the `helperspec` fixture: **9 planted bugs spanning
+      the helper, down to 2 in the wrapper alone**, from adding `let batch =
+      vec![x];` to the wrapper. The message still says "its own body" and
+      gives no hint the helper was skipped, and `MutateTarget`'s own doc
+      comment claimed "the report says so", which was false. `vec!` is not a
+      corner case.
+      **Fixed:** the walk now records why it had to widen and keeps walking,
+      so the bodies it did resolve still reach the planter, and a new
+      `W0530` says the list was partial and names what stopped it -- rather
+      than printing "its own body" as though the list were complete. Three
+      tests, each watched failing first: the walk test failed with an empty
+      list of names, the wording test on the exact sentence, and the
+      end-to-end fixture (helper broken, `vec!` added to the wrapper) which
+      was re-run with only the walk change reverted to confirm it goes red
+      for that reason and nothing else. §5.4c amended; the stale doc comment
+      retracted.
+- [x] **Pointing Ply at `ply.yaml` instead of the crate folder said nothing
+      useful.** It reported `reading ply.yaml at ply.yaml/ply.yaml` and the
+      operating system's own `Not a directory (os error 20)`. **Correction to
+      the first write-up of this:** that said "and twelve stack frames", which
+      was wrong -- the backtrace came from `RUST_BACKTRACE=1` being set in the
+      session that found it, not from Ply. The defect was the message, not a
+      backtrace. Fixed: every command taking a path now refuses a file with a
+      sentence naming the folder to use instead. Three tests. One of them
+      exists because running the fix caught what the first test missed: the
+      test used an absolute path, `Path::parent` of a bare `ply.yaml` is `""`
+      rather than `None`, and the first version of the message told the reader
+      to run it against nothing at all.
+
+Not defects: Ply missing the cache's other two bugs is correct -- neither
+violates the one rule that was declared. And the unrunnable counterexample for
+a slice argument is the documented `W0541` witness-only path, already known.
+
+## A/B vetting: two agents, same task, one with Ply — 2026-09-07
+
+Scenario 1 (retry-with-backoff scheduling). Both arms sonnet, both told to do TDD; arm B
+also had Ply. Scored mechanically against three bugs planted before either arm started.
+**2-1 to arm B**, but the mechanisms mattered more than the score:
+
+- Arm A wrote a defensive `clamp` into the implementation, which made its own best test
+  unfalsifiable -- the test could no longer distinguish a correct function from a broken
+  one, because the clamp swallowed the difference.
+- Arm B wrote `requires(attempt >= 1)`, which excluded the boundary case from the contract,
+  from fuzzing, and from its own tests at once. A precondition narrows three things
+  simultaneously and the agent only reasoned about one of them.
+- [ ] **Fable item 2: print the precondition and name the boundary values it excludes.**
+      Direct consequence of arm B's failure. Not started.
+- [ ] **Fable item 3: power-of-two neighbours in integer generators.** Not started.
+- [ ] **Fable item 4: skill guidance that bounds are not the job, and read `derive(Copy)`.**
+      Not started.
+- [ ] **Fable item 5: reject `prove` at check time rather than at run time.** Not started.
+- [ ] **More scenarios, TDD for every fix.** Next two agreed: splitting a charge across
+      line items (independent rounding drifts the sum; unbounded remainder to the first
+      item; a zero-weight item gets a cent) and a bounded cache with eviction (capacity
+      checked before insertion allows N+1; re-inserting an existing key appends a second
+      entry; eviction picks the most-recently-used when exactly full).
+
+## Landed: deliberate bugs are planted where the logic is — 2026-09-07 (2fa2d0e, 76f5844, PR #75)
+
+- [x] **The `spec-strong` badge was measured over the claimed function's own lines only.**
+      Systemic, because the writing guide teaches thin wrappers over helpers: under that
+      shape the wrapper's body has almost nothing to break, every planted bug dies
+      trivially, and the badge is awarded on a near-empty test. Found by Fable review of
+      the A/B round -- an agent followed the guide, put the arithmetic in a helper, broke
+      the helper, and the claim still came back with the strongest badge Ply offers.
+      Fixed by recording the first-party bodies the reach walk visits (`reached_fns`) and
+      handing every one of them to cargo-mutants as a separate `--re`. Measured on the
+      reproduction fixture: **2 planted bugs before, 9 after.** The weak-promise message
+      now names the helper as well as the claimed function. Whole-crate widening is
+      unchanged. Three tests, each watched failing first -- the command-line unit test went
+      red because the names landed *after* the `--` separator where cargo-mutants never
+      sees them, which is the non-vacuity check that matters. 482 library tests and the 5
+      mutation e2e fixtures green.
+- [ ] **KNOWN GAP: the fixture pins planting scope, not the knife-edge.** `helperspec`'s
+      promise is weak enough that the wrapper's own mutants survive too, so it cannot reach
+      `spec-strong` at all. It proves the helper is offered to the planter; it does not
+      prove the badge flips on a strong promise. A fixture with a promise tight enough to
+      kill the wrapper's mutants but not the helper's would close this.
+
 ## Glyph documentation swept — 2026-09-07
 
 Asked whether the shield and the numbered pin are documented anywhere; three of the four
