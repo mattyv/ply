@@ -1024,14 +1024,23 @@ substitute the snapshot (implemented 2026-08-25 — before that the clause reach
 generated harness verbatim and the harness crate did not build). `old()` in `requires`
 is meaningless and rejected (`E0501`).
 
-**Honest limit as of 2026-08-25.** The mutating shape `old()` was introduced for cannot
-be checked at all, because §5.4b's supported signatures stop at a shared `&T`: a
-parameter the function writes back through is not a value either engine can construct
-and observe, so such a function is `unsupported`/`V0505` naming the parameter and its
-type. `old()` is therefore usable today only over values the function *reads* — the
-distinction v1 supports is "the entry value of an argument", not "the state before and
-after a mutation". Lifting that needs `&mut` in the supported set, which for Kani also
-needs `modifies` clauses; it is not in this build.
+**Honest limit as of 2026-08-25, half of it retracted 2026-09-07.** A `&mut`
+*parameter* still cannot be checked: §5.4b's supported signatures stop at a shared `&T`,
+a parameter the function writes back through is not a value either engine can construct
+and observe, and such a function is `unsupported`/`V0505` naming the parameter and its
+type. That part stands.
+
+**The receiver is different, and the claim that it was not is withdrawn.** A `&mut self`
+method is claimable on the sampling tier: Ply builds the value through its own
+constructor, runs a generated sequence of its own operations on it, and the promise says
+what the call changed in terms of the value's *own readings* — `old(self.available())`
+against `self.available()`. That needs no new vocabulary and no `modifies` clause,
+because nothing is snapshotted except what a public reading reports. Measured on
+`tests/fixtures/tokenbucket`: of three bugs planted in that type, two leave the
+whole-value rule perfectly true and only a promise about the transition sees them
+(§5.3's `holds:` remains what is *always* true of the value; a method promise is what
+one operation *does*). An owned `self` is still refused, as a second codegen shape
+rather than a gap in what can be said, and `bounded` still refuses any receiver.
 Full two-state/model-based specs (sequence histories, FIFO ordering) remain out of
 scope — `old()` is the single two-state primitive.
 

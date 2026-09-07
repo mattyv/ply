@@ -2139,7 +2139,9 @@ pub fn build_contract_fn(
 // **Deliberately narrow, honestly so:**
 // - only `&self` methods are attempted -- a `&mut self`/owned-`self` target
 //   is refused exactly as before (`ReceiverError::MutableOrOwnedReceiver`):
-//   Ply still has no way to state what such a call is supposed to change
+//   (retracted 2026-09-07: a `&mut self` method IS claimable now -- what it
+//   changes is said in terms of the value's own readings before and after --
+//   and only an owned `self` is still refused, as a second codegen shape)
 //   about the receiver, which is a separate gap this task does not close;
 // - only one module segment deep (`module::Type::method`, not
 //   `a::b::Type::method`) -- deeper nesting is `ReceiverError::UnsupportedModulePath`,
@@ -2274,7 +2276,8 @@ pub struct Operation {
     /// than `&self` (false) -- codegen borrows `__ply_receiver` accordingly
     /// (`&mut __ply_receiver` vs `&__ply_receiver`) and declares the
     /// receiver binding itself `mut` whenever any pooled operation needs it.
-    /// The checked method itself (operation zero) is always `&self` --
+    /// Operation zero is the checked method itself and carries *its* own
+    /// mutability (2026-09-07); before that it was always `&self` --
     /// enforced before a `ReceiverPlan` is ever built (`MutableOrOwnedReceiver`)
     /// -- so this is `false` for `operations[0]` unconditionally.
     pub takes_mut_self: bool,
@@ -2483,7 +2486,11 @@ impl std::fmt::Display for ReceiverError {
         match self {
             ReceiverError::MethodNotFound => write!(f, "the method was not found by this scan"),
             ReceiverError::MutableOrOwnedReceiver => {
-                write!(f, "the method does not take a shared `&self` receiver")
+                write!(
+                    f,
+                    "the method takes `self` by value, so it consumes the value it was called \
+                     on rather than one Ply can build and call into"
+                )
             }
             ReceiverError::UnsupportedModulePath => {
                 write!(

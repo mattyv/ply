@@ -82,6 +82,26 @@ Verified by an adversarial review that ran it: a 23-line lift of the same
 gate found **5 of 5** planted bugs across two fixtures, including the two no
 invariant can see, and the bug-planting tier scored them without change.
 
+- [x] **A vacuous test, found by review and fixed.** The take-one-token-short
+      test planted `available + 1 >= tokens`, which underflows on the very
+      next line: the run went red on the *panic*, not the promise. Proved
+      vacuous by replacing `try_take`'s promise with `|result| true` and
+      watching the test still pass. That is the same mis-crediting the Verus
+      spike nearly made, landed. Now the planted bug is panic-free
+      (saturating arithmetic), the promise itself is written as an addition
+      so it cannot overflow while being evaluated, and the test asserts on
+      *which* diagnostic and *which* node rather than on the root verdict --
+      plus that the untouched sibling is not blamed. Re-checked
+      non-vacuous: with the promise gutted the run comes back clean and the
+      test fails naming why.
+- [x] **The retraction was incomplete.** The same false sentence survived in
+      `harness.rs`'s module comment and in `Operation::takes_mut_self`'s doc,
+      the `MutableOrOwnedReceiver` display text still described the rule as
+      "does not take a shared `&self` receiver" when it now fires only for an
+      owned `self`, and §5.4a's honest-limit paragraph still said two-state
+      specs are "not in this build". All four corrected; the `&mut`
+      *parameter* half of §5.4a stands and is marked as standing.
+
 - [ ] **NOT DONE, and the honesty gap that has to close next.** When a
       promise about a transition fails, the report names the failing call's
       arguments and says nothing about the sequence of operations that put
@@ -104,6 +124,33 @@ invariant can see, and the bug-planting tier scored them without change.
       comment, `docs/old-and-misleading-advice.md`. Nobody who followed the
       old advice is stranded -- `state:` and `&self` claims are unchanged --
       but the advice is now wrong and says "cannot", not "should not".
+- [ ] **NOT DONE, and now the highest-priority one: a snapshot that
+      silently mutates is a live false clean.** Verified in the shipped
+      binary, not merely in a fork: a `&mut self` observer inside `old(...)`
+      -- e.g. a `get` that touches recency, or a `level_and_reset` -- is
+      evaluated as a plain read on the mutable receiver, so it alters the
+      very state being snapshotted and the bug becomes unreachable. Run with
+      the refill-of-nothing bug present and such an observer: `fuzzed(256)`,
+      clean, no warning. The mechanism predates this slice, but before it
+      nobody would write `old(self.x)` on a read-only method; now it is the
+      point of the feature, so the exposure went from theoretical to
+      expected. Each mention is snapshotted separately, so a mutating
+      observer named three times runs three times. **Do not land another
+      slice before this.**
+- [ ] **NOT DONE: a panic inside the generated sequence is blamed on the
+      checked method.** One buggy mutator now produces a "this method
+      panicked" report for every sibling that pools it, naming correct code.
+      Predates the slice; the slice makes it routine, because every claimed
+      mutator is now in every sibling's pool.
+- [ ] **KNOWN LIMIT, recorded rather than hidden: transition promises are
+      purely relative.** They say what an operation *changed*, so they cannot
+      see a wrong constructor or a wrong observer -- the readings they are
+      written in terms of are their trust base. Verified: breaking `new` to
+      start one token short leaves the fixture clean. The bug-planting tier
+      plants in the claimed body only, so neither the constructor nor the
+      observers are ever mutated. "5 of 5 planted bugs" must be read with
+      that caveat.
+
 - [ ] **OPEN DECISION for the maintainer:** is a getter added purely so a
       promise can read a private field acceptable? The cache needed a
       `contains`/`peek` to state its promise; those are ordinary cache API,

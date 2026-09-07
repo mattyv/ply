@@ -43,7 +43,13 @@ impl TokenBucket {
     /// exactly that many, a failure changes nothing at all, and neither
     /// moves the capacity.
     #[ply::ensures(|result| *result == (old(self.available()) >= tokens))]
-    #[ply::ensures(|result| !*result || self.available() == old(self.available()) - tokens)]
+    // Written as an addition rather than a subtraction on purpose: a promise
+    // that can itself overflow turns a broken promise into a panic, and a
+    // panic is reported as "it never returned" rather than as the promise
+    // being false. The `u64` widening is for the same reason on the other
+    // side (2026-09-07 review).
+    #[ply::ensures(|result| !*result
+        || self.available() as u64 + tokens as u64 == old(self.available()) as u64)]
     #[ply::ensures(|result| *result || self.available() == old(self.available()))]
     #[ply::ensures(|result| self.capacity() == old(self.capacity()))]
     pub fn try_take(&mut self, tokens: u32) -> bool {
