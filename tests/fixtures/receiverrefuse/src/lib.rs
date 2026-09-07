@@ -50,10 +50,15 @@ impl Labelled {
     }
 }
 
-/// Constructible (`Counter::new` needs nothing Ply cannot build), but
-/// `bump` takes `&mut self` -- still refused, unchanged by this task: Ply
-/// has no way yet to state what a `&mut self` call is supposed to change
-/// about the receiver, so a built receiver would not be enough on its own.
+/// Constructible, and `bump` takes `&mut self`. This used to be refused,
+/// and the reason given was that Ply "has no way yet to state what a
+/// `&mut self` call is supposed to change about the receiver". **That was
+/// wrong and is retracted (2026-09-07):** a promise says it in terms of the
+/// value's own readings before and after. `bump` is kept here, carrying no
+/// promise of its own, so this fixture pins that the receiver is no longer
+/// what stops it -- a test that pins an absence has to be re-checked every
+/// time the absence might have ended, which is exactly what the `Tag`
+/// comment above says and exactly what nearly went unnoticed here.
 pub struct Counter {
     n: u32,
 }
@@ -65,5 +70,26 @@ impl Counter {
 
     pub fn bump(&mut self) {
         self.n += 1;
+    }
+}
+
+/// Constructible, but `into_total` takes `self` **by value**: calling it
+/// consumes the value, so a receiver Ply built cannot be called into again.
+/// This is the one receiver shape still refused, and it is refused as a
+/// second piece of codegen that does not exist rather than as something
+/// that cannot be said -- so it is pinned here, end to end, now that the
+/// `&mut self` refusal it used to share this fixture with has gone.
+pub struct Ledger {
+    total: u32,
+}
+
+impl Ledger {
+    pub fn new() -> Self {
+        Ledger { total: 0 }
+    }
+
+    #[ply::ensures(|result| *result == *result)]
+    pub fn into_total(self) -> u32 {
+        self.total
     }
 }

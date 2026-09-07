@@ -13,6 +13,10 @@ components:
       # itself can never be called.
       Labelled::tag_value:
         checks: [fuzz(32)]
-      # `Counter` is constructible, but `bump` takes `&mut self` -- must
-      # stay refused unchanged (this task never widens past `&self`).
+      # `Counter` is constructible and `bump` takes `&mut self` -- no
+      # longer refused for that (2026-09-07). It carries no promise, so it
+      # reports as making no claims rather than as a shape Ply cannot check.
       Counter::bump: {}
+      # Owned `self`: the one receiver shape still refused.
+      Ledger::into_total:
+        checks: [fuzz(32)]
