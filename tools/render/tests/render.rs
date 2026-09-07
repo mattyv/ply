@@ -492,9 +492,9 @@ fn trusted_claim_renders_hollow_shield_badge() {
 #[test]
 fn shield_tooltip_names_the_shape_it_is_attached_to() {
     let svg = render_fixture("tests/fixtures/full.ply.yaml");
-    assert!(svg.contains(
-        "Hollow shield: a human vouches for the claims below; no machine checks them"
-    ));
+    assert!(
+        svg.contains("Hollow shield: a human vouches for the claims below; no machine checks them")
+    );
 }
 
 #[test]
