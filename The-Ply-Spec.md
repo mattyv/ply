@@ -240,9 +240,10 @@ ADRs to write as their milestones start:
 ---
 ## 5. The `ply.yaml` format
 
-Files named `ply.yaml` (or `*.ply.yaml`) are discovered from the workspace root downward
-(lexicographic path order; `target/` and gitignored paths excluded). A command has one
-root document. A hollow top-level component in that document may derive a one-hop link
+Each command loads one root document. A directory selects the `ply.yaml` immediately
+inside it; commands that accept a file may instead select an explicitly named
+`*.ply.yaml`. Ply does not recursively discover and merge documents. A hollow top-level
+component in the selected document may derive a one-hop link
 from its crate anchor to that crate's own `ply.yaml`; the linked component supplies the
 hollow component's interior, while the outer component keeps its name and other identity.
 Names need only be unique within one document's component namespace. Two documents may
@@ -2022,11 +2023,17 @@ in the same invocation, using that child crate's own directory, configuration, a
 `ply.lock`. It follows links one level only. The child result is grafted under the outer
 component's name before verdict aggregation, JSON output, SVG generation, or view
 publication, so all those surfaces describe one run and a child failure weakens the root.
+The selected child uses the same effective component body the drawing uses: an outer
+`checks:` default governs the linked functions when the child declares no default.
 Paths and node ids in the grafted result are rebased to the command's root. A present but
-unreadable, cyclic, conflicting, multiply owned, or otherwise ambiguous link is a named error
-(`E0211` when no narrower error already names it);
-Ply never guesses which evidence belongs in the root. `--seed` and engine timeouts apply
-to every check run by the composed invocation.
+unreadable, cyclic, conflicting, multiply owned, or otherwise ambiguous link becomes an
+error diagnostic on the affected outer component (`E0211` when no narrower error already
+names it). That component admits no linked evidence, while independent root evidence and
+the complete diagnostics envelope are still returned; `--json` and `--fail-on` therefore
+behave exactly as they do for every other diagnostic. A child document whose anchor has
+merely drifted away is advisory: no link forms and verification continues. Ply never
+guesses which evidence belongs in the root. `--seed` and engine timeouts apply to every
+check run by the composed invocation.
 
 **`render` is the pre-code command.** It accepts a `ply.yaml` file or a directory that
 contains one, and defaults to the current directory. It parses the same document model

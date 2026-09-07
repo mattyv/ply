@@ -508,9 +508,9 @@ fn arch_diag(f: &ArchFinding) -> Diagnostic {
 /// `A0417` target missing/unparseable, `W0532` anchor drift, `W0533`
 /// duplicate claim, `W0534` a chain that leads back into itself),
 /// attached to the *including* component -- `ply_core::config::LinkFinding`
-/// already carries its own severity, since three of the four are advisory
-/// (the link simply does not form) and one is a real defect in the target
-/// document.
+/// already carries its own severity: anchor drift is advisory, while an
+/// unreadable target, a cycle, duplicate ownership, or conflicting
+/// declarations is an error that admits no link.
 fn link_diag(f: &ply_core::config::LinkFinding) -> Diagnostic {
     Diagnostic {
         code: f.code.into(),

@@ -249,8 +249,11 @@ pub struct LinkSet {
 /// than vanishing with no trace); resolving it would eventually revisit a
 /// document already on this chain (`W0534`, a cycle); or another component
 /// in this same document already claimed it (`W0533`, at most one link per
-/// target). A crate that simply has no `ply.yaml` of its own is the
-/// ordinary case and produces neither a link nor a finding.
+/// target). The latter two are error-severity ambiguities and admit no
+/// link. A crate that simply has no `ply.yaml` of its own is the ordinary
+/// case and produces neither a link nor a finding. A non-hollow component
+/// is not a candidate at all: its own interior is the one every command
+/// uses.
 pub fn derive_links(doc: &Document, root: &Path) -> LinkSet {
     let root = if root.as_os_str().is_empty() {
         Path::new(".")
@@ -307,6 +310,9 @@ fn resolve_one(
     claimed: &mut BTreeMap<PathBuf, String>,
     set: &mut LinkSet,
 ) {
+    if !crate::visual::is_hollow(comp) {
+        return;
+    }
     let Some(candidate) = candidate_path(comp, crates) else {
         return;
     };
@@ -336,8 +342,8 @@ fn resolve_one(
                     message: format!(
                         "component `{component_path}` is anchored at `{}`, whose crate has \
                          its own `{}`, but it does not read as a valid ply.yaml document: {e}. \
-                         This box draws its own declared interior instead of the link, and the \
-                         run continues.",
+                         This box keeps its own declared interior, and the command returns this \
+                         finding with any independent results.",
                         comp.anchor,
                         candidate.display()
                     ),
@@ -352,8 +358,9 @@ fn resolve_one(
                 component_path: component_path.to_string(),
                 message: format!(
                     "component `{component_path}` is anchored at `{}`, whose crate has its \
-                     own `{}`, but it could not be read: {e}. This box draws its own declared \
-                     interior instead of the link, and the run continues.",
+                     own `{}`, but it could not be read: {e}. This box keeps its own declared \
+                     interior, and the command returns this finding with any independent \
+                     results.",
                     comp.anchor,
                     candidate.display()
                 ),
@@ -391,26 +398,28 @@ fn resolve_one(
     if would_cycle(&target_doc, crates, &chain) {
         set.findings.push(LinkFinding {
             code: "W0534",
-            severity: "warning",
+            severity: "error",
             component_path: component_path.to_string(),
             message: format!(
                 "component `{component_path}` would link to `{}`, but following that \
                  document's own further links eventually leads back to a document already in \
-                 this chain -- not linked, so the drawing never has to walk a loop to find out.",
+                 this chain. The link is ambiguous and does not form, so no command guesses where \
+                 the chain should stop.",
                 candidate.display()
             ),
         });
         return;
     }
     if let Some(owner) = claimed.get(&canonical) {
+        set.links.remove(owner);
         set.findings.push(LinkFinding {
             code: "W0533",
-            severity: "warning",
+            severity: "error",
             component_path: component_path.to_string(),
             message: format!(
                 "component `{component_path}` would also link to `{}`, but component `{owner}` \
-                 already claimed it -- a document links to another at most once, so this box \
-                 draws its own declared interior instead.",
+                 already claimed it. Choosing either by declaration order would guess which \
+                 evidence belongs here, so neither component links.",
                 candidate.display()
             ),
         });
@@ -755,6 +764,27 @@ components:
         }
 
         #[test]
+        fn a_component_with_its_own_interior_never_derives_a_link() {
+            let dir = tempfile::tempdir().unwrap();
+            write_crate(
+                dir.path(),
+                "inner_lib",
+                Some(
+                    "ply: 1\ncomponents:\n  inner:\n    anchor: inner_lib\n    fns:\n      child_only: {}\n",
+                ),
+            );
+            let outer = outer_doc(
+                dir.path(),
+                "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    fns:\n      local_only: {}\n",
+            );
+
+            let set = derive_links(&outer, dir.path());
+
+            assert!(set.links.is_empty());
+            assert!(set.findings.is_empty());
+        }
+
+        #[test]
         fn a_crate_with_no_ply_yaml_of_its_own_is_silent() {
             let dir = tempfile::tempdir().unwrap();
             write_crate(dir.path(), "bare_lib", None);
@@ -840,10 +870,9 @@ components:
         }
 
         /// Rule 3: two components in the same document would both claim
-        /// the same target. Only the first (declaration order) links; the
-        /// second is a diagnostic, not a second copy of the same box.
+        /// the same target. Neither may win by declaration order.
         #[test]
-        fn two_components_claiming_the_same_target_link_only_the_first() {
+        fn two_components_claiming_the_same_target_link_neither() {
             let dir = tempfile::tempdir().unwrap();
             write_crate(
                 dir.path(),
@@ -857,11 +886,13 @@ components:
 
             let set = derive_links(&outer, dir.path());
 
-            assert!(set.links.contains_key("first"));
+            assert!(!set.links.contains_key("first"));
             assert!(!set.links.contains_key("second"));
             assert_eq!(set.findings.len(), 1);
             assert_eq!(set.findings[0].code, "W0533");
+            assert_eq!(set.findings[0].severity, "error");
             assert_eq!(set.findings[0].component_path, "second");
+            assert!(set.findings[0].message.contains("neither component links"));
         }
 
         /// Rule 2: a real, two-file cycle -- `crate_a`'s document links
@@ -895,6 +926,7 @@ components:
             assert!(set.links.is_empty(), "{:?}", set.links);
             assert_eq!(set.findings.len(), 1);
             assert_eq!(set.findings[0].code, "W0534");
+            assert_eq!(set.findings[0].severity, "error");
             assert_eq!(set.findings[0].component_path, "root_link");
         }
 
