@@ -5,6 +5,11 @@ edition = "2021"
 publish = false
 
 [dependencies]
+# For `harness::MAX_RECEIVER_SEQUENCE_LEN`. The disclosure this suite reads
+# quotes that number, and a test that hard-codes it goes stale silently the
+# next time the bound is measured again -- which is exactly what happened on
+# 2026-09-07 when it moved from 3 to 12.
+ply-core = { path = "../../crates/ply-core" }
 tempfile = "3"
 serde_json = "1"
 syn = { version = "2", features = ["full", "extra-traits", "visit"] }

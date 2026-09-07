@@ -10,7 +10,7 @@
 //! `harness::MAX_RECEIVER_SEQUENCE_LEN` forced to 0 (constructor-only), five
 //! independent seeded runs of 256 cases each against this exact fixture all
 //! came back a clean `fuzzed(256)` -- the bug was never found. At the real
-//! default (3), the same fixture reliably reports `violation`. That
+//! default, the same fixture reliably reports `violation`. That
 //! comparison is not re-run by this suite (it requires rebuilding `ply-core`
 //! with the constant patched), but it is what this test's own existence
 //! rests on, and it is recorded here rather than only in the session's own
@@ -57,9 +57,17 @@ fn a_bug_reachable_only_after_a_second_call_is_found_never_by_a_single_fresh_cal
         .unwrap_or_else(|| panic!("no W0520 sequence-length disclosure: {}", run.json));
     assert_eq!(disclosure["severity"], "info");
     let title = disclosure["title"].as_str().unwrap();
+    // Read from the constant, never spelled out here. This assertion was
+    // written as `contains('3')` and went red the day the bound was
+    // re-measured and moved to 12 -- a test pinned to a number that is
+    // deliberately subject to measurement pins the wrong thing. It was also
+    // vacuous-adjacent: a bare `'3'` matches any `3` anywhere in the
+    // sentence.
+    let bound = ply_core::harness::MAX_RECEIVER_SEQUENCE_LEN;
     assert!(
-        title.contains("Meter::new") && title.contains('3'),
-        "the disclosure must name the constructor Ply called and the sequence bound (3), \
-         visibly, the same way a `bounded(k)` verdict already names its own loop bound: {title}"
+        title.contains("Meter::new") && title.contains(&format!("up to {bound} calls")),
+        "the disclosure must name the constructor Ply called and the sequence bound \
+         ({bound}), visibly, the same way a `bounded(k)` verdict already names its own loop \
+         bound: {title}"
     );
 }
