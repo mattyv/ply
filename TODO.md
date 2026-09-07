@@ -1,5 +1,59 @@
 # TODO
 
+## A/B round 3: where the sampling actually earns its keep — 2026-09-07
+
+Same protocol again. Two scenarios chosen to probe known-weak ground rather
+than to find new bugs: a duration parser (`&str`, the shape Ply's own
+measurement says blocks exhaustive checking entirely) and a token bucket
+(a second, independent stateful type). Three bugs each, pre-registered,
+every one confirmed by an oracle before scoring. **No new defects found** --
+this round measured coverage rather than correctness.
+
+**Duration parser.** Both arms' own tests: 3 of 3. Ply: 3 of 3 -- but the
+split matters. Random generation found **one** of the three (`text = "0h!"`,
+shrunk); the other two were caught by the concrete `examples:` the agent
+wrote into the declaration. Ply also named its own blind spot without being
+asked: `W0526` reported that of 256 cases where the promise held, the
+`result.is_none()` side decided it 256 times and the other side 0 -- random
+text is essentially never a valid duration, so the branch that matters was
+never exercised. That is the tool telling a user its own number is thinner
+than it looks, which is what it is for.
+
+**Token bucket.** Both arms' own tests: 3 of 3. Ply: 1 of 3, and the two
+misses are correct -- neither bug violates the one rule that could be
+declared. The bucket's over-refill was caught cleanly (`V0511`, "false for a
+value Ply built after 1 of the type's own operations had run on it").
+
+- [ ] **Measured ceiling on stateful types: 1 of 6 across two rounds.** Over
+      the cache (round 2) and the bucket (round 3), Ply caught one of six
+      pre-registered bugs, and **four of the five misses were correctly
+      outside what could be declared at all**. The cause is structural, not a
+      defect: `&mut self` methods cannot be claimed (`ply-checkable-code`
+      rule 9 says so plainly), so for a type that changes, the only
+      expressible promise is a standing rule over the whole value -- and the
+      bugs live in the transitions. Two agents, working independently and
+      without seeing each other, reached that same conclusion from the guide
+      and fell back on ordinary tests for the mutating methods. The guide is
+      honest and the tool matches it; what is now measured is how much that
+      leaves uncovered. This is the gap the parked component-proof brief was
+      aimed at, and it is the strongest argument yet for taking it up.
+- [ ] **`bounded` was correctly declined, not silently skipped.** Arm B
+      reasoned that `&str` is sampled and never proved in this build, so it
+      did not declare `bounded` -- reaching the same conclusion the
+      measurement in `docs/reach-measurement-3.md` did, from the docs alone.
+
+Method note, recorded because it nearly cost a wrong score: **the oracle was
+wrong first.** It refused a duration written with twenty-four leading zeros,
+where the arm under test was right -- a number with leading zeros is still a
+number. Caught by running the clean implementation through the oracle before
+planting anything, which is why that step exists.
+
+Correction to the round-3 plan as written: the bucket's over-refill was
+described as a regression test for the sequence-length change. It is not --
+a bucket starts *full*, so one `refill` breaks the rule immediately, at
+depth 1. `tests/fixtures/boundedcache` remains the only real gate for that
+change, which is where it belongs.
+
 ## A/B round 2: two more scenarios, and two false cleans — 2026-09-07
 
 Same protocol as round 1: two sonnet agents per scenario, both told to do TDD,
