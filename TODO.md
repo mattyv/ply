@@ -1,5 +1,51 @@
 # TODO
 
+## A/B vetting: two agents, same task, one with Ply — 2026-09-07
+
+Scenario 1 (retry-with-backoff scheduling). Both arms sonnet, both told to do TDD; arm B
+also had Ply. Scored mechanically against three bugs planted before either arm started.
+**2-1 to arm B**, but the mechanisms mattered more than the score:
+
+- Arm A wrote a defensive `clamp` into the implementation, which made its own best test
+  unfalsifiable -- the test could no longer distinguish a correct function from a broken
+  one, because the clamp swallowed the difference.
+- Arm B wrote `requires(attempt >= 1)`, which excluded the boundary case from the contract,
+  from fuzzing, and from its own tests at once. A precondition narrows three things
+  simultaneously and the agent only reasoned about one of them.
+- [ ] **Fable item 2: print the precondition and name the boundary values it excludes.**
+      Direct consequence of arm B's failure. Not started.
+- [ ] **Fable item 3: power-of-two neighbours in integer generators.** Not started.
+- [ ] **Fable item 4: skill guidance that bounds are not the job, and read `derive(Copy)`.**
+      Not started.
+- [ ] **Fable item 5: reject `prove` at check time rather than at run time.** Not started.
+- [ ] **More scenarios, TDD for every fix.** Next two agreed: splitting a charge across
+      line items (independent rounding drifts the sum; unbounded remainder to the first
+      item; a zero-weight item gets a cent) and a bounded cache with eviction (capacity
+      checked before insertion allows N+1; re-inserting an existing key appends a second
+      entry; eviction picks the most-recently-used when exactly full).
+
+## Landed: deliberate bugs are planted where the logic is — 2026-09-07 (2fa2d0e, 76f5844, PR #75)
+
+- [x] **The `spec-strong` badge was measured over the claimed function's own lines only.**
+      Systemic, because the writing guide teaches thin wrappers over helpers: under that
+      shape the wrapper's body has almost nothing to break, every planted bug dies
+      trivially, and the badge is awarded on a near-empty test. Found by Fable review of
+      the A/B round -- an agent followed the guide, put the arithmetic in a helper, broke
+      the helper, and the claim still came back with the strongest badge Ply offers.
+      Fixed by recording the first-party bodies the reach walk visits (`reached_fns`) and
+      handing every one of them to cargo-mutants as a separate `--re`. Measured on the
+      reproduction fixture: **2 planted bugs before, 9 after.** The weak-promise message
+      now names the helper as well as the claimed function. Whole-crate widening is
+      unchanged. Three tests, each watched failing first -- the command-line unit test went
+      red because the names landed *after* the `--` separator where cargo-mutants never
+      sees them, which is the non-vacuity check that matters. 482 library tests and the 5
+      mutation e2e fixtures green.
+- [ ] **KNOWN GAP: the fixture pins planting scope, not the knife-edge.** `helperspec`'s
+      promise is weak enough that the wrapper's own mutants survive too, so it cannot reach
+      `spec-strong` at all. It proves the helper is offered to the planter; it does not
+      prove the badge flips on a strong promise. A fixture with a promise tight enough to
+      kill the wrapper's mutants but not the helper's would close this.
+
 ## Measured: what stops `bounded` on Ply's own claims — 2026-09-07
 
 Asked before building component-level proof, and it changed the answer. `docs/reach-measurement-3.md`.
