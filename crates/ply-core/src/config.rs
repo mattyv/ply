@@ -105,6 +105,14 @@ pub struct ResolvedLink {
     /// built with `root: "."` reads `crates/ply-core/ply.yaml`, never
     /// `./crates/ply-core/ply.yaml`.
     pub target_path: String,
+    /// The selected top-level component's name inside the linked document.
+    /// Kept explicitly because a function key may contain `::`; callers
+    /// must never recover this mapping by splitting an arbitrary node id.
+    pub target_name: String,
+    /// The exact child snapshot read while the link was resolved. Verify
+    /// and publication consume this value rather than re-reading the file
+    /// at different phases of one invocation.
+    pub document: Document,
     pub target: Component,
 }
 
@@ -119,10 +127,12 @@ pub type LinkIndex = BTreeMap<String, ResolvedLink>;
 ///
 /// Interior means fns, nested components, and the `state:` that goes with
 /// them. Everything else stays this document's: its note, capability
-/// badges, purity seal, strictness notch and declared checks are statements
-/// this file makes about the component, and another file cannot make them
-/// on its behalf. "Hollow" is only the narrow claim that a component
-/// declares no interior.
+/// badges, purity seal and strictness notch are statements this file makes
+/// about the component, and another file cannot make them on its behalf.
+/// A child default `checks:` list governs the child claims when the outer
+/// component declares no default; equal defaults are harmless, while two
+/// different defaults are an `E0210` conflict. "Hollow" is only the narrow
+/// claim that a component declares no interior.
 ///
 /// `None` when no link applies, so a caller can keep using its own
 /// reference and allocate nothing on the overwhelmingly common path.
@@ -141,6 +151,7 @@ pub fn linked_body(name: &str, comp: &Component, links: Option<&LinkIndex>) -> O
         fns: link.target.fns.clone(),
         components: link.target.components.clone(),
         state: comp.state.clone().or_else(|| link.target.state.clone()),
+        checks: comp.checks.clone().or_else(|| link.target.checks.clone()),
         ..comp.clone()
     })
 }
@@ -350,7 +361,7 @@ fn resolve_one(
             return;
         }
     };
-    let Some((_, top)) = target_doc
+    let Some((target_name, top)) = target_doc
         .components
         .iter()
         .find(|(_, c)| anchor_under(&c.anchor, &comp.anchor))
@@ -412,7 +423,8 @@ fn resolve_one(
     // left for a person or an agent to reconcile: there is no rule that
     // could say which of two descriptions of the same thing is right, and
     // choosing one silently discards the other.
-    for (field, mine, theirs) in conflicting_fields(comp, top) {
+    let conflicts = conflicting_fields(comp, top);
+    for (field, mine, theirs) in &conflicts {
         set.findings.push(LinkFinding {
             code: "E0210",
             severity: "error",
@@ -426,12 +438,19 @@ fn resolve_one(
             ),
         });
     }
+    if !conflicts.is_empty() {
+        return;
+    }
+    let target_name = target_name.clone();
+    let target = top.clone();
     claimed.insert(canonical, component_path.to_string());
     set.links.insert(
         component_path.to_string(),
         ResolvedLink {
             target_path: display_path(root, &candidate),
-            target: top.clone(),
+            target_name,
+            document: target_doc,
+            target,
         },
     );
 }
@@ -729,6 +748,8 @@ components:
             // `tools/render/tests/self_architecture.rs` does) would leak
             // that host's own filesystem layout into the picture.
             assert_eq!(link.target_path, "inner_lib/ply.yaml");
+            assert_eq!(link.target_name, "inner");
+            assert_eq!(link.document.components.len(), 1);
             assert_eq!(link.target.anchor, "inner_lib");
             assert!(link.target.fns.contains_key("go"));
         }
@@ -962,6 +983,10 @@ mod conflict_tests {
             .unwrap_or_else(|| panic!("expected a conflict error, got {:?}", set.findings));
 
         assert_eq!(conflict.severity, "error");
+        assert!(
+            !set.links.contains_key("core"),
+            "conflicting descriptions must refuse the link, not report an error and still borrow evidence"
+        );
         assert!(
             conflict.message.contains("note"),
             "the message must name the field that disagrees: {}",

@@ -2262,21 +2262,19 @@ fn render_collapsed_component(
     // evidence view built from a since-edited document must not be allowed
     // to claim more earned than this box's own contents hold.
     //
-    // A linked box never gets this split at all: this document's own
-    // verify run has no evidence about *another file's* functions, and
-    // "0 of 44 earned" would read as a real answer about work nobody
-    // checked rather than the true "not this document's to say".
-    let earned_of_promised = if link.is_some() {
-        None
-    } else {
-        resolved
-            .zip(evidence_parent)
-            .and_then(|((element, _), (ev, _))| {
-                (n_fns > 0).then(|| ev.fn_state_counts(&element.id).earned.min(n_fns))
-            })
-    };
+    let earned_of_promised = resolved
+        .zip(evidence_parent)
+        .and_then(|((element, _), (ev, _))| {
+            (n_fns > 0).then(|| ev.fn_state_counts(&element.id).earned.min(n_fns))
+        });
     let contents_line = match link {
-        Some(link) => linked_contents_line(n_components, n_fns, &link.target_path),
+        Some(link) => format!(
+            "{}{}",
+            linked_contents_line(n_components, n_fns, &link.target_path),
+            earned_of_promised
+                .map(|earned| format!(" \u{b7} {earned} of {n_fns} earned"))
+                .unwrap_or_default(),
+        ),
         None => format!(
             "{n_components} component{} \u{b7} {n_fns} fn{}{}",
             if n_components == 1 { "" } else { "s" },

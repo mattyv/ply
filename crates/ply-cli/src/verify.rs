@@ -337,6 +337,13 @@ pub struct VerificationResult {
     pub envelope: Envelope,
     /// Qualified claim id (`component.path::function-key`) to exact source.
     pub source_map: BTreeMap<String, Span>,
+    /// The links frozen before any engine ran. Publication must use these
+    /// snapshots, never derive the links again after verification.
+    pub links: config::LinkIndex,
+}
+
+fn linked_verification_diag(code: &str, detail: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!("{code}: {detail}")
 }
 
 /// Verifies one config snapshot and returns that same parsed document for
@@ -344,7 +351,230 @@ pub struct VerificationResult {
 pub fn verify_crate_result(crate_dir: &Path, opts: &VerifyOptions) -> Result<VerificationResult> {
     let yaml_path = crate_dir.join("ply.yaml");
     let file = config::load(&yaml_path)?;
-    verify_loaded_crate(crate_dir, opts, file)
+    let link_set = config::derive_links(&file, crate_dir);
+    if !link_set.findings.is_empty() {
+        let details = link_set
+            .findings
+            .iter()
+            .map(|finding| {
+                format!(
+                    "{} on component `{}`: {}",
+                    finding.code, finding.component_path, finding.message
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(linked_verification_diag(
+            "E0211",
+            format!(
+                "linked verification is ambiguous or unresolved; no linked evidence was admitted: {details}"
+            ),
+        ));
+    }
+    validate_link_ownership(&link_set.links)?;
+
+    let mut result = verify_loaded_crate(crate_dir, opts, file)?;
+    for (outer_name, link) in &link_set.links {
+        let child_yaml = crate_dir.join(&link.target_path);
+        let child_dir = child_yaml.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "E0211: linked document `{}` has no parent directory",
+                link.target_path
+            )
+        })?;
+        let mut selected_document = link.document.clone();
+        selected_document
+            .components
+            .retain(|name, _| name == &link.target_name);
+        let child = verify_loaded_crate(child_dir, opts, selected_document)?;
+        graft_linked_result(
+            &mut result,
+            child,
+            outer_name,
+            &link.target_name,
+            child_dir.strip_prefix(crate_dir).unwrap_or(child_dir),
+        )?;
+    }
+    result.links = link_set.links;
+    Ok(result)
+}
+
+fn component_has_claims(component: &Component) -> bool {
+    !component.fns.is_empty()
+        || component
+            .state
+            .as_ref()
+            .is_some_and(|state| !state.holds.is_empty())
+        || component.components.values().any(component_has_claims)
+}
+
+/// A local verification writes one crate-local record. Selecting one owner
+/// from a child document that also has claims elsewhere would either erase
+/// those other records or verify and then hide their failures. Refuse that
+/// shape until the record format can represent a filtered run honestly.
+fn validate_link_ownership(links: &config::LinkIndex) -> Result<()> {
+    for (outer_name, link) in links {
+        let extras = link
+            .document
+            .components
+            .iter()
+            .filter(|(name, component)| {
+                name.as_str() != link.target_name && component_has_claims(component)
+            })
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>();
+        if !extras.is_empty() {
+            anyhow::bail!(
+                "E0211: component `{outer_name}` selects `{}` from `{}`, but that linked document also owns claims under {}; Ply cannot verify only one owner without making the discarded evidence ambiguous",
+                link.target_name,
+                link.target_path,
+                extras
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn mapped_prefix(id: &str, child: &str, outer: &str, separator: &str) -> Option<String> {
+    if id == child {
+        return Some(outer.to_string());
+    }
+    id.strip_prefix(&format!("{child}{separator}"))
+        .map(|suffix| format!("{outer}{separator}{suffix}"))
+}
+
+/// Map a qualified claim id whose component portion may itself be nested:
+/// `child::fn` or `child.nested::fn`. This is prefix substitution against
+/// the selected component identity, not parsing the function key (which may
+/// itself contain `::`).
+fn mapped_claim_id(id: &str, child: &str, outer: &str) -> Option<String> {
+    if id == child {
+        return Some(outer.to_string());
+    }
+    if let Some(suffix) = id.strip_prefix(&format!("{child}::")) {
+        return Some(format!("{outer}::{suffix}"));
+    }
+    id.strip_prefix(&format!("{child}."))
+        .map(|suffix| format!("{outer}.{suffix}"))
+}
+
+fn rebase_relative_path(path: &str, child_prefix: &Path) -> String {
+    let path = Path::new(path);
+    if path.is_absolute() || child_prefix.as_os_str().is_empty() {
+        return path.to_string_lossy().into_owned();
+    }
+    child_prefix.join(path).to_string_lossy().into_owned()
+}
+
+fn rebase_edit_span(span: &str, child_prefix: &Path) -> String {
+    let Some((file, position)) = span.split_once(':') else {
+        return span.to_string();
+    };
+    format!("{}:{position}", rebase_relative_path(file, child_prefix))
+}
+
+fn rebase_node(node: &mut Node, child: &str, outer: &str) {
+    if node.kind == "component"
+        && let Some(mapped) = mapped_prefix(&node.id, child, outer, ".")
+    {
+        node.id = mapped;
+    }
+    for nested in &mut node.children {
+        rebase_node(nested, child, outer);
+    }
+}
+
+fn graft_linked_result(
+    root: &mut VerificationResult,
+    mut child: VerificationResult,
+    outer_name: &str,
+    child_name: &str,
+    child_prefix: &Path,
+) -> Result<()> {
+    let selected = child
+        .envelope
+        .root
+        .children
+        .iter()
+        .position(|node| node.id == child_name);
+    if let Some(index) = selected {
+        let mut node = child.envelope.root.children.remove(index);
+        rebase_node(&mut node, child_name, outer_name);
+        if root
+            .envelope
+            .root
+            .children
+            .iter()
+            .any(|existing| existing.id == outer_name)
+        {
+            anyhow::bail!(
+                "E0211: linked component `{outer_name}` collides with a local verification node; no evidence was admitted"
+            );
+        }
+        root.envelope.root.children.push(node);
+        root.envelope.root.children.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+
+    for mut diagnostic in child.envelope.diagnostics {
+        if let Some(mapped) = mapped_claim_id(&diagnostic.node_id, child_name, outer_name) {
+            diagnostic.node_id = mapped;
+        } else if diagnostic.node_id != "workspace" {
+            anyhow::bail!(
+                "E0211: diagnostic `{}` from linked component `{child_name}` cannot be mapped beneath `{outer_name}`",
+                diagnostic.node_id
+            );
+        }
+        if let Some(span) = &mut diagnostic.primary_span {
+            span.file = rebase_relative_path(&span.file, child_prefix);
+        }
+        if let Some(counterexample) = &mut diagnostic.counterexample {
+            if let Some(path) = &mut counterexample.kani_witness {
+                *path = rebase_relative_path(path, child_prefix);
+            }
+            if let Some(path) = &mut counterexample.cargo_test {
+                *path = rebase_relative_path(path, child_prefix);
+            }
+        }
+        for fix in &mut diagnostic.fixes {
+            for edit in &mut fix.edits {
+                edit.span = rebase_edit_span(&edit.span, child_prefix);
+            }
+        }
+        root.envelope.diagnostics.push(diagnostic);
+    }
+
+    for (id, mut span) in child.source_map {
+        let Some(mapped) = mapped_claim_id(&id, child_name, outer_name) else {
+            anyhow::bail!(
+                "E0211: source id `{id}` from linked component `{child_name}` cannot be mapped beneath `{outer_name}`"
+            );
+        };
+        span.file = rebase_relative_path(&span.file, child_prefix);
+        if root.source_map.insert(mapped.clone(), span).is_some() {
+            anyhow::bail!(
+                "E0211: linked source id `{mapped}` collides with an existing claim; no last-writer-wins mapping is allowed"
+            );
+        }
+    }
+
+    for mut item in child.envelope.not_carried_forward {
+        let Some(mapped) = mapped_claim_id(&item.node_id, child_name, outer_name) else {
+            anyhow::bail!(
+                "E0211: carried-forward id `{}` from linked component `{child_name}` cannot be mapped beneath `{outer_name}`",
+                item.node_id
+            );
+        };
+        item.node_id = mapped;
+        root.envelope.not_carried_forward.push(item);
+    }
+
+    root.envelope.root.verdict = worst_of(&root.envelope.root.children);
+    root.envelope.root.statuses = union_statuses(&root.envelope.root.children);
+    Ok(())
 }
 
 fn verify_loaded_crate(
@@ -1599,6 +1829,7 @@ fn verify_loaded_crate(
         document: file,
         envelope,
         source_map,
+        links: BTreeMap::new(),
     })
 }
 
@@ -9650,5 +9881,107 @@ mod tests {
         // match, so that variant matched none of the harness crate's real
         // tests at all.
         assert!(!harness_test_filter(&cf).contains("Root::five"));
+    }
+
+    fn linked_workspace(child_yaml: &str, lib_rs: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("inner_lib");
+        std::fs::create_dir_all(child.join("src")).unwrap();
+        std::fs::write(
+            child.join("Cargo.toml"),
+            "[package]\nname = \"inner_lib\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(child.join("src/lib.rs"), lib_rs).unwrap();
+        std::fs::write(child.join("ply.yaml"), child_yaml).unwrap();
+        std::fs::write(
+            dir.path().join("ply.yaml"),
+            "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn root_verification_grafts_linked_result_and_rebases_sources() {
+        let dir = linked_workspace(
+            "ply: 1\ncomponents:\n  implementation:\n    anchor: inner_lib\n    fns:\n      seven:\n        checks: []\n",
+            "pub fn seven() -> u32 { 7 }\n",
+        );
+
+        let result = verify_crate_result(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: Some(120),
+                seed: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.envelope.root.verdict, "unclaimed");
+        assert_eq!(result.envelope.root.children[0].id, "core");
+        assert_eq!(result.envelope.root.children[0].children[0].id, "seven");
+        assert_eq!(
+            result
+                .source_map
+                .get("core::seven")
+                .map(|s| s.file.as_str()),
+            Some("inner_lib/src/lib.rs")
+        );
+    }
+
+    #[test]
+    fn ambiguous_linked_document_is_an_error_before_any_evidence_is_borrowed() {
+        let dir = linked_workspace(
+            "ply: 1\ncomponents:\n  selected:\n    anchor: inner_lib\n    fns:\n      seven: {checks: []}\n  unrelated:\n    anchor: inner_lib::other\n    fns:\n      eight: {checks: []}\n",
+            "pub fn seven() -> u32 { 7 }\npub fn eight() -> u32 { 8 }\n",
+        );
+
+        let error = verify_crate_result(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: None,
+                seed: None,
+            },
+        )
+        .expect_err("a child with claims outside the selected component is ambiguous");
+
+        assert!(
+            error.to_string().contains("E0211") && error.to_string().contains("unrelated"),
+            "the refusal must be named and identify the extra owner: {error:#}"
+        );
+    }
+
+    #[test]
+    fn a_linked_childs_non_result_weakens_the_root() {
+        let dir = linked_workspace(
+            "ply: 1\ncomponents:\n  implementation:\n    anchor: inner_lib\n    fns:\n      blocked:\n        checks: [bounded(2)]\n",
+            "pub fn blocked(_lock: std::sync::Mutex<u8>) {}\n",
+        );
+
+        let result = verify_crate_result(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: None,
+                seed: None,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            result.envelope.root.verdict.starts_with("unsupported"),
+            "a linked refusal must reach the composed root: {:#?}",
+            result.envelope.root
+        );
+        assert!(
+            result
+                .envelope
+                .root
+                .statuses
+                .iter()
+                .any(|status| status == "unsupported"),
+            "the non-result status must propagate too: {:#?}",
+            result.envelope.root
+        );
     }
 }
