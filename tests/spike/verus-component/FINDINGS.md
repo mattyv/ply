@@ -133,3 +133,86 @@ coverage and boundary can be settled for types more open than this one; that
 anything holds for interior mutability, trait objects, or generics. One
 fixture, hand-translated, is one data point -- a decisive one for the
 go/no-go question that was asked, and nothing more.
+
+
+---
+
+# Follow-up: the three steps the review asked for — 2026-09-07
+
+## 1. The shadow, rewritten with private fields and a type invariant
+
+`proof/cache.rs` is now that version. **8 verified, 0 errors**, same speed.
+It rejects the uncontracted mutator *and* a free function in the same module
+reaching into the struct (2 errors), and a struct with crate-public fields is
+refused outright. All four obligations are the verifier's.
+
+**The cost, recorded because it is a trust surface and not a formality.**
+A type invariant may not be left broken across a call that can unwind, and
+vstd's `Vec::push`/`remove`/`pop` are not marked `no_unwind`, so each needs a
+trusted `external_body` wrapper. `push` genuinely can unwind on capacity
+overflow. An adapter would have to generate these, and every one is a place
+where the proof rests on an assertion nobody checked.
+
+Second cost: the invariant is checked at the end of **every** call that
+mutates a field, so a private helper that breaks and restores it is refused.
+That is stricter than `holds:`, which only looks after each public
+operation, and it will reject code the sampler accepts.
+
+## 2. The token bucket — and this is what decides the fork
+
+`proof/bucket.rs` shadows round 3's token bucket twice over: as a type
+invariant (`available <= capacity`, all `state:` can say today) and as
+two-state contracts on the mutators (what `try_take` and `refill` actually
+promise). **6 verified, 0 errors, ~4s.**
+
+Then the round-3 bugs, planted one at a time:
+
+| bug | invariant only | with transition contracts |
+|---|---|---|
+| refill can exceed capacity | caught | caught |
+| take succeeds with too few tokens | caught, as **arithmetic underflow** | caught |
+| `refill(0)` resets the bucket to full | **6 verified, 0 errors** | caught, postcondition |
+
+The third row is the measurement. `refill(0)` silently refilling the bucket
+preserves `available <= capacity` perfectly, so the invariant proof passes
+and the bug is invisible. The transition contract names it immediately.
+
+Note the second row honestly: the invariant-only proof *does* catch that one,
+but not because of the invariant -- the off-by-one guard makes
+`available - tokens` underflow, and panic-freedom comes free with the type
+invariant machinery. Crediting that to the invariant would be wrong.
+
+**So the fork is settled on evidence.** Proving the `holds:` clause is real
+but cannot reach transition bugs by construction, and transition bugs are
+what the A/B rounds measured as the loss. Two-state contracts reach them, and
+they discharge in seconds on the same shadow.
+
+## 3. The rule for a proof that does not discharge
+
+An idiomatic `HashMap` + `VecDeque` cache is *correct* and its proof
+**fails**, with no counterexample, because the invariant is not inductive on
+its own. Any invariant relating two containers kept in sync has this shape.
+
+The rule, for the spec:
+
+- A proof that does not discharge is **`not proved`**, never `violation`.
+  A `violation` says Ply found an input where the promise is false. Verus
+  failing to discharge says only that this proof, with these facts, did not
+  close -- which is also what happens to correct code missing a lemma.
+- It **falls back to the sampled tier** and reports what that earned, so the
+  claim is not left with less evidence than it had before the proof was
+  attempted.
+- It says which obligation did not close and that no counterexample exists,
+  because a reader who sees "not proved" with nothing else will assume the
+  code is wrong. `V0508`'s wording is the model: unsupported, not unchecked.
+
+Arithmetic is the same shape one level down: a bucket's `tokens + n` fails
+"possible arithmetic overflow" where `saturating_add` proves. Real in the
+strict sense, and a user whose code is fine in practice will read it as the
+tool being wrong unless the wording carries its weight.
+
+## Timing, corrected
+
+This document said 0.93s. That is the verifier's own clock. Wall clock over
+several runs: 1.5s to 4.4s. Both numbers are fine; saying which one is meant
+is the point.

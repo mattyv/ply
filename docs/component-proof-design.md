@@ -105,6 +105,26 @@ it says nothing here. The outcome must be "not proved, fell back to
 sampling", never "violated" -- and any invariant relating two containers kept
 in sync has this shape.
 
+## The fork, settled — 2026-09-07
+
+Measured, not argued (`tests/spike/verus-component/FINDINGS.md`, follow-up 2).
+Round 3's token bucket, shadowed both ways, with its three pre-registered
+bugs planted one at a time:
+
+**A refill of zero that silently tops the bucket back up passes an invariant
+proof — 6 verified, 0 errors — and fails a transition contract immediately.**
+
+It preserves `available <= capacity` perfectly. No invariant over a single
+state can see it, and four of the six bugs behind the 1-in-6 are that shape.
+
+So: **claim transitions.** Contracts on mutating methods, which is where the
+misses are, sampled first and proved where the shape allows. That changes
+`ply-checkable-code` rule 9, which is the real cost and should be taken
+deliberately. Proving the `holds:` clause stays worth having -- it brings
+coverage, boundary and panic-freedom, which sampling structurally cannot --
+but it is a certainty upgrade for a property already covered, and this
+document should stop citing the 1-in-6 as its reason.
+
 ## What to do first
 
 **One measurement, before any adapter work.** Take
