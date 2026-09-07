@@ -49,7 +49,7 @@ components:
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component harness — maps to Rust module ply_core::harness
       note: Works out what a function's inputs are and whether Ply can make one of each. This is the part that decides whether a function can be checked at all, and it is where a refusal gets its reason.
-      state ContractFn — the structure this component holds. 4 of 12 of its fields shown
+      state ContractFn — the structure this component holds. 4 of 13 of its fields shown
         name is text, written `String`
         params is a list, written `Vec<Param>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
         requires is something that might not be there, written `Option<(Expr, String)>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
