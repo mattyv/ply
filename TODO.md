@@ -71,10 +71,18 @@ reinvented the thing the tool automates, unprompted, in both scenarios.
       was re-run with only the walk change reverted to confirm it goes red
       for that reason and nothing else. §5.4c amended; the stale doc comment
       retracted.
-- [ ] **Pointing Ply at `ply.yaml` instead of the crate directory prints a
-      raw Rust backtrace** -- `Not a directory (os error 20)` and twelve
-      stack frames -- rather than a sentence saying to pass the directory.
-      First thing a new user gets wrong, and it fails the newbie bar.
+- [x] **Pointing Ply at `ply.yaml` instead of the crate folder said nothing
+      useful.** It reported `reading ply.yaml at ply.yaml/ply.yaml` and the
+      operating system's own `Not a directory (os error 20)`. **Correction to
+      the first write-up of this:** that said "and twelve stack frames", which
+      was wrong -- the backtrace came from `RUST_BACKTRACE=1` being set in the
+      session that found it, not from Ply. The defect was the message, not a
+      backtrace. Fixed: every command taking a path now refuses a file with a
+      sentence naming the folder to use instead. Three tests. One of them
+      exists because running the fix caught what the first test missed: the
+      test used an absolute path, `Path::parent` of a bare `ply.yaml` is `""`
+      rather than `None`, and the first version of the message told the reader
+      to run it against nothing at all.
 
 Not defects: Ply missing the cache's other two bugs is correct -- neither
 violates the one rule that was declared. And the unrunnable counterexample for
