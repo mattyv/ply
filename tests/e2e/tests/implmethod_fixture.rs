@@ -80,11 +80,15 @@ fn a_self_method_on_a_constructible_type_now_earns_a_real_verdict_with_its_seque
         title.contains("Bucket::new"),
         "the disclosure must name the constructor Ply actually called: {title}"
     );
+    // From the constant, never spelled out: this assertion was `contains('3')`
+    // and went red the day the bound was re-measured and moved to 12. A bare
+    // digit is also close to vacuous -- it matches any `3` in the sentence.
+    let bound = ply_core::harness::MAX_RECEIVER_SEQUENCE_LEN;
     assert!(
-        title.contains('3'),
-        "the disclosure must name the sequence bound (MAX_RECEIVER_SEQUENCE_LEN = 3) so a \
-         reader can see what this run does and does not cover, the same way a loop bound \
-         already is named in a `bounded(k)` verdict: {title}"
+        title.contains(&format!("up to {bound} calls")),
+        "the disclosure must name the sequence bound ({bound}) so a reader can see what this \
+         run does and does not cover, the same way a loop bound already is named in a \
+         `bounded(k)` verdict: {title}"
     );
 }
 
