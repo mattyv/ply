@@ -82,8 +82,16 @@ pub struct Component {
     pub note: Option<String>,
     #[serde(default)]
     pub pure: bool,
+    /// Whether `pure:` appeared in this document. Kept separately from its
+    /// defaulted value so cross-document linking can distinguish silence
+    /// from an explicit `pure: false` declaration.
+    #[serde(skip)]
+    pub pure_declared: bool,
     #[serde(default)]
     pub strict: bool,
+    /// Whether `strict:` appeared in this document; see `pure_declared`.
+    #[serde(skip)]
+    pub strict_declared: bool,
     #[serde(default)]
     pub uses: Vec<String>,
     #[serde(default)]
@@ -437,7 +445,37 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 pub fn parse_document(yaml: &str) -> Result<Document, ParseError> {
-    serde_yaml_ng::from_str(yaml).map_err(|e| ParseError(e.to_string()))
+    let mut document: Document =
+        serde_yaml_ng::from_str(yaml).map_err(|e| ParseError(e.to_string()))?;
+    let raw: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(yaml).map_err(|e| ParseError(e.to_string()))?;
+    mark_declared_component_fields(&mut document.components, raw.get("components"));
+    Ok(document)
+}
+
+/// Restores field presence that serde's defaulted `bool` necessarily loses.
+/// The public value remains a plain boolean for every existing consumer;
+/// only linked-document conflict detection needs to know whether the author
+/// wrote the field or inherited its default.
+fn mark_declared_component_fields(
+    components: &mut IndexMap<String, Component>,
+    raw_components: Option<&serde_yaml_ng::Value>,
+) {
+    let Some(raw_components) = raw_components.and_then(serde_yaml_ng::Value::as_mapping) else {
+        return;
+    };
+    for (name, component) in components {
+        let key = serde_yaml_ng::Value::String(name.clone());
+        let Some(raw) = raw_components
+            .get(&key)
+            .and_then(serde_yaml_ng::Value::as_mapping)
+        else {
+            continue;
+        };
+        component.pure_declared = raw.contains_key(serde_yaml_ng::Value::String("pure".into()));
+        component.strict_declared = raw.contains_key(serde_yaml_ng::Value::String("strict".into()));
+        mark_declared_component_fields(&mut component.components, raw.get("components"));
+    }
 }
 
 impl FnClaim {

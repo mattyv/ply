@@ -129,7 +129,7 @@ proof search has gone off-spec — stop.
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | Plain stable Rust is the only executable artifact. Specs never compile to code, except Ply-generated harnesses, proof modules, and tests. | Zero migration cost; everything works with bare cargo. |
-| D2 | Contracts are written as **`#[ply::requires(...)]` / `#[ply::ensures(...)]`** attributes on the function. The `ply-attrs` macro re-emits the original function unchanged, adding `#[cfg_attr(kani, kani::requires(...))]` (and the ensures equivalent). Under plain cargo the attributes vanish; under `cargo kani` they instrument **the real function** — never a copy. Proof harnesses are generated into a `cfg(kani)`-gated module inside the target crate so they see private items. Pre-existing `#[cfg_attr(kani, kani::requires(...))]` attributes are harvested and merged by conjunction. | Kani's `proof_for_contract` verifies the function the attributes annotate; contracts on a generated copy would verify a different symbol. `cfg_attr` keeps bare `cargo build` working (D1) but not *warning-clean* on its own: every `#[cfg_attr(kani, ...)]`/`#[cfg(kani)]` triggers `unexpected_cfgs` under bare cargo unless the instrumented crate also carries `[lints.rust] unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }` (M0 finding, confirmed again by the M3 slice's fixtures, each of which carries this line by hand). Automating that one-line insertion into a consuming crate's `Cargo.toml` the first time `cargo ply verify` instruments it is a natural near-term enhancement, not yet built: this M3 slice's fixtures all set it manually and `verify` does not currently check for or offer it. The in-crate module mechanism (generated file + one module declaration, or an equivalent include) is settled by the M0 spike; the fallback is verifying `pub` items only from a sibling harness crate — with reduced coverage for private-field invariant types (what smart constructors produce): a sibling crate can never supply `kani::Arbitrary` for them (field visibility, and the orphan rule), so witnesses must come from `pub` constructors plus `kani::assume` — verified to work (ADR-0003, item 3b), but capped at pub-reachable states and hand-written per type; only a type with no `pub` construction path is walled off entirely. |
+| D2 | Contracts may be written as **`#[ply::requires(...)]` / `#[ply::ensures(...)]`** attributes on the function and as `requires:` / `ensures:` clauses in `ply.yaml`; both sources are merged by conjunction. The `ply-attrs` macro re-emits the original function unchanged, adding `#[cfg_attr(kani, kani::requires(...))]` (and the ensures equivalent). Under plain cargo the attributes vanish; under `cargo kani` they instrument the real function. When any clause comes from YAML, Ply materialises the effective merged contract on a generated `cfg(kani)` wrapper with the same signature; source types retain the qualification generated code needs, and a constructor's `Self` return is resolved to its enclosing `module::Type` because the wrapper is outside the original `impl`. The wrapper delegates directly to the real function, and `proof_for_contract` targets that wrapper. Proof modules live inside the target crate so they see private items. | Kani's `proof_for_contract` can verify only a contract attached to a Rust function; Ply's in-memory YAML model alone is invisible to it. The generated wrapper supplies that attachment without copying or replacing the application body: proving the wrapper executes the real function against the merged promise. `cfg_attr` keeps bare `cargo build` working (D1) but not *warning-clean* on its own: every `#[cfg_attr(kani, ...)]`/`#[cfg(kani)]` triggers `unexpected_cfgs` under bare cargo unless the instrumented crate also carries `[lints.rust] unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }` (M0 finding, confirmed again by the M3 slice's fixtures, each of which carries this line by hand). Automating that one-line insertion into a consuming crate's `Cargo.toml` the first time `cargo ply verify` instruments it is a natural near-term enhancement, not yet built: this M3 slice's fixtures all set it manually and `verify` does not currently check for or offer it. The in-crate module mechanism (generated file + one module declaration, or an equivalent include) is settled by the M0 spike; the fallback is verifying `pub` items only from a sibling harness crate — with reduced coverage for private-field invariant types (what smart constructors produce): a sibling crate can never supply `kani::Arbitrary` for them (field visibility, and the orphan rule), so witnesses must come from `pub` constructors plus `kani::assume` — verified to work (ADR-0003, item 3b), but capped at pub-reachable states and hand-written per type; only a type with no `pub` construction path is walled off entirely. |
 | D3 | Architecture claims, checks, capabilities, ownership, profiles, and the unresolved registry live in **`ply.yaml`**, validated against a normative JSON Schema (§5). | These claims are cross-cutting and have no natural attribute location. YAML plus a schema needs no parser of our own, and agents emit YAML reliably. The schema, not prose, is the formal definition. |
 | D4 | Architecture enforcement has two tiers. **Crate-level dependency rules** (from `cargo metadata`, which is exact) are errors and default-deny between declared components. **Item-level rules** (calls, capabilities, ownership — from syn, which is approximate) are warnings by default; a component opts into item-level errors with `strict: true`. | Default-deny is only honest over facts that are sound. Crate dependency data is sound today; syn-derived call data is not (no name resolution, no macro expansion). Advisory-until-strict gives teeth without theater. |
 | D5 | Verification is modular and evidence-honest. Kani's `stub_verified(g)` is used only when `g` itself passed a Kani contract proof this run — in the same crate, or via the caller-local re-proof below. **Kani does not enforce this and cannot: it checks only that a `#[proof_for_contract]` harness *exists* for the stub target, never that it ran or passed (ADR-0003, item 4 — a caller reported clean SUCCESS while assuming a deliberately falsified callee contract; Kani's RFC-0009 promises pass-gating, but 0.67.0 observably runs harnesses in arbitrary order and never retracts a caller's verdict when its callee's harness fails in the same invocation). Ply's scheduler — callees proved first, the caller credited only if those proofs passed — is therefore the entire soundness guarantee; an implementation that relaxes it is unsound and nothing downstream will notice.** Cross-crate callees are supported after all, by declaring a caller-local `proof_for_contract` for the remote `pub` item (ADR-0003, item 5; verified against the real linked body — a mutated callee body fails the caller-local proof); there is no cross-crate proof caching, so each consumer re-proves. Any weaker case — callee merely fuzzed or tested, a cross-crate callee that cannot be re-proved caller-locally (not `pub`, or its witnesses unconstructible per D2), cycle in the call graph — verifies the caller against an *assumed* contract and marks the verdict **`conditional`**, listing the assumptions. A conditional verdict never reads as plain `bounded`. **A callee with no declared contract at all — the case every unannotated legacy module falls into — is a third branch, added 2026-08-25 after vetting 004: Ply refuses to descend into it, the caller's `bounded` check earns no evidence, and the diagnostic names the callee (§5.5).** | Stubbing is a soundness claim; fuzzing does not license it. Kani proof harnesses are crate-local, so cross-crate means caller-local re-verification of the real linked body, never reuse of the callee crate's proof. Never inline a contracted callee's body. |
@@ -249,8 +249,11 @@ hollow component's interior, while the outer component keeps its name and other 
 Names need only be unique within one document's component namespace. Two documents may
 therefore use different top-level names for the same anchored component without a
 duplicate-name error. Merge order still cannot decide meaning: conflicting declarations
-of the same linked component are errors, and a link never imports unrelated top-level
-components or architecture rules from the child document. **The JSON Schema
+of the same linked component are errors. Only fields actually written in both documents
+can conflict: omitting `pure:` or `strict:` in a hollow outer component says nothing,
+while writing `false` explicitly can still disagree with a linked child's `true`. A link
+never imports unrelated top-level components or architecture rules from the child
+document. **The JSON Schema
 at `schema/ply.schema.json` is the normative definition of the format**; this section is
 its prose rendering, and any divergence is a bug in this section. The schema is embedded
 in the binary, shipped in the repo, versioned by the top-level `ply: 1` field, and
@@ -1400,6 +1403,13 @@ mistakes evidence about one instantiation for evidence about all.
 | prove | Verus translation (M7, optional) | `proved` |
 | mutate | cargo-mutants scoped with one `--re` per body the reach walk (§5.2a) says this claim's checks run, the claimed one first; kill signal = the `test`/`fuzz` checks in the same list (D12) | appends `·spec-strong`, or flags `W0502 weak spec (N surviving mutants)`; adds `W0530` when the walk could not bound that list |
 
+The generated direct cases and their precondition-admissibility check bind every literal
+with the parameter type resolved from the real function signature. A borrowed slice is
+stored in an owned `Vec<T>` and borrowed only at the call. The admissibility check must
+not leave an integer to default to `i32` or an empty collection without an element type:
+that check exists to establish that at least one case reached the body, and an untyped
+copy can fail the shared harness or count a different condition from the one Rust checks.
+
 cargo-mutants runs the workspace test suite by default, which would never execute the
 generated fuzz harnesses under `target/ply/fuzz/`. Earlier drafts of this section said the
 adapter passes a "custom test command" and called the mechanism confirmed; **both were
@@ -1407,7 +1417,17 @@ wrong** — no such flag exists (cargo-mutants 27.1.0: `--test-tool` accepts onl
 `cargo`/`nextest`), and the M0 spike had never exercised it. The mechanism, verified end
 to end in `tests/spike/mutants/`, is package targeting plus a name filter:
 
-    cargo mutants -p <mutated-crate> --test-package <harness-crate> --re <fn> --copy-target true -- <test-name-filter>
+    cargo mutants -p <mutated-crate> --test-package <harness-crate> --re <fn> --exclude '**/ply_generated*.rs' --copy-target true -- <test-name-filter>
+
+The exclusion is semantic, not cosmetic: generated proof and counterexample modules are
+Ply's checking machinery, not application code. Mutating a generated proof wrapper can
+create a survivor that says nothing about the user's specification and must never become
+a `W0502` weak-spec finding. Each `<fn>` is also expanded to the positions where
+cargo-mutants' description identifies the containing function (`replace <fn> -> ...` or
+`... in <fn>`), not used as a bare substring. A function name appearing in another
+body's string literal is not permission to mutate that other body. `<fn>` is the canonical
+owner name, including inline-module or enclosing-type qualification (`maths::helper`,
+`Widget::adjust`); reducing it to the leaf silently selects no mutant for those bodies.
 
 **M4 correction: it is `--copy-target true`, not `--gitignore false`.** The earlier
 mutants spike's own recommendation ("pin `--gitignore false` explicitly") is falsified by
@@ -1433,13 +1453,22 @@ in this session's `weakspec` fixture; a real, size-dependent cost, not a free fi
 open item for M5 (moving the harness crate to a location outside `target/` entirely would
 remove the need for this flag, at the cost of its own git-ignore entry).
 
-**Ply borrows the user's `Cargo.toml`; it does not keep it.** Package targeting above
-only resolves if the generated harness is a member of the same workspace `cargo metadata`
-sees, so on a crate that declares its own `[workspace]` table Ply adds the harness to that
-table's `members` list before running any engine. That is an edit to a file the user owns
-and did not ask to have changed, so it lasts exactly as long as the run that needs it: the
-registration is held by a guard whose release — including on the error paths — writes the
-original manifest back byte-for-byte. A run therefore leaves nothing in `git status`.
+**Ply borrows the user's workspace `Cargo.toml`; it does not keep it.** Package targeting
+above only resolves if the generated harness is a member of the same workspace `cargo
+metadata` sees. Ply reads `workspace_root` from Cargo: for a member of a virtual
+workspace, it registers the harness in that virtual root; for a package that declares its
+own `[workspace]`, it registers there. The member path is relative to the real workspace
+root, even though the generated harness remains under the target package's `target/ply/`.
+That is an edit to a file the user owns and did not ask to have changed, so it lasts
+exactly as long as the run that needs it: the registration is held by a guard whose
+release — including on the error paths — writes the original manifest back byte-for-byte.
+A run therefore leaves nothing in `git status`.
+
+An ordinary package that is not an explicit workspace keeps its generated harness in an
+isolated workspace for `test` and `fuzz`; mutation testing remains unsupported there. Ply
+does not add a new `[workspace]` table to a package merely to run one check, because that
+can change Cargo's package discovery. This is distinct from a virtual-workspace member:
+that package already has a real shared root, and mutation testing uses it.
 
 Two conditions keep the undo honest. It never restores over a manifest whose bytes changed
 while the run was in flight; a file that moved under the guard is not the guard's to
@@ -1566,6 +1595,12 @@ overstated number. The `n` in `fuzzed(n)` is the count the engine was asked for 
 reached; a high-but-survivable rejection rate (the ordinary `W0503` case) does keep
 `fuzzed(n)`, because proptest draws until it has *n* accepted cases — what is weak there
 is their spread, not their count.
+
+The global-reject limit scales with the requested case count: four rejects per requested
+accepted case, with Proptest's traditional 1,024-reject floor. A fixed 1,024 limit makes
+a large run abandon even a broad precondition simply because the requested evidence is
+large; scaling preserves the honest-abort behavior for narrow small runs while allowing
+large healthy runs to reach the count their verdict names.
 
 **A `fuzz(n)` verdict can be honest about its count and still overstate what was tested,
 when the promise itself is an "either this, or that" (2026-09-02).** A high rejection rate
@@ -2702,7 +2737,10 @@ Diagnostic codes live in one exhaustive enum: `E02xx` config/schema, `E03xx/W03x
 anchoring, `A04xx/W04xx` architecture and resolution, `E05xx/V05xx/W05xx` contracts and
 verification, prefixes `K/P/M/R` reserved for engine-specific codes, `W01xx` environment,
 `X09xx` internal errors. Adapters never pass engine stderr/stdout through raw: they parse
-it, or fail with `X0901` attaching the raw output for debugging.
+it, or fail with `X0901` attaching the useful end of the raw output and the subprocess
+exit status for debugging. A compiler or setup failure that happens before Kani prints a
+verification marker is reported as that earlier process failure, not as an output-format
+interpretation problem.
 
 ## 9. Testing strategy
 

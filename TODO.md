@@ -1,5 +1,10 @@
 # TODO
 
+## Landed: namespaced mutation and YAML proof return types — `ffa7fb4` — 2026-09-07
+
+- [x] Keep inline-module and method qualification when selecting every function whose mutants a claim must catch.
+- [x] Render YAML proof-wrapper return types as valid Rust, resolving `Self` and preserving standard-library qualification.
+
 ## Landed: four review findings on cb8e3cd, plus the test-module widening — 2026-09-07
 
 - [x] **A `#[cfg(test)]` item no longer widens the walk.** The usual `mod tests`
@@ -235,6 +240,18 @@ function its checks run"), which is the fix from cb8e3cd doing its job on
 code written without knowledge of it. Counterexamples for text are clean and
 minimal (`path = "."`, `path = "0/"`) with runnable regression tests written
 to disk.
+
+## Outside-workspace findings — 2026-09-07
+
+- [x] Preserve each real parameter type in the generated precondition-admissibility test (`1d70808`).
+- [x] Convert borrowed string examples into the owned locals used by typed direct cases (`62b1efd`).
+- [x] Refresh the checked-in self-architecture artifacts after `ContractFn` gained verification metadata (`97ffb0e`).
+- [x] Report Kani's exit status and compiler output when no verification marker appears (`1d70808`).
+- [x] Run mutation checks for crates that belong to a virtual Cargo workspace (`1d70808`).
+- [x] Treat omitted linked-component booleans as undeclared, not as explicit `false` (`1d70808`).
+- [x] Document the hollow-root plus crate-local-document layout for multi-crate projects (`1d70808`).
+- [x] Materialise merged YAML contracts on the function Kani proves (`1d70808`).
+- [x] Scale Proptest's rejection budget and keep generated or name-collision matches out of mutation targets (`1d70808`).
 
 ## Landed: focused folding no longer leaves full-size empty boxes — 2026-09-07
 

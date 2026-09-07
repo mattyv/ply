@@ -44,6 +44,7 @@ fn usize_isize_nonzero_and_duration_are_accepted_on_both_engines() {
         "bump_len",
         "double_delta",
         "tokens_requested",
+        "round_trip_nonzero",
         "shard_count",
         "round_trip",
         "from_whole_seconds",

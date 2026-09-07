@@ -113,10 +113,12 @@ pub enum RustType {
     ///
     /// **Measured, not assumed, whether this needs its own bound (task
     /// brief, 2026-08-27):** it does not. `tests/fixtures/durationnonzero`
-    /// carries six functions over these new shapes (`Duration`, `NonZeroU32`,
-    /// `NonZeroUsize`, `usize`, `isize`), each checked with both `bounded(2)`
-    /// and `fuzz(64)` — twelve real engine invocations, no two functions
-    /// sharing a cached result. A cold run (`ply.lock` cleared) completed
+    /// originally carried six functions over these new shapes (`Duration`,
+    /// `NonZeroU32`, `NonZeroUsize`, `usize`, `isize`), each checked with
+    /// both `bounded(2)` and `fuzz(64)` — twelve real engine invocations, no
+    /// two functions sharing a cached result. (A later seventh function
+    /// covers YAML-wrapper type rendering and is not part of this timing.)
+    /// A cold run (`ply.lock` cleared) completed
     /// in 1m26s wall-clock with every one earning a clean `bounded(2)` and
     /// zero diagnostics — about 7s/harness on average, the ordinary
     /// per-invocation cost of a trivial Kani harness of any shape, not a
@@ -1609,6 +1611,11 @@ pub struct ContractFn {
     /// parameter is conventionally named `result`, matching Kani's own
     /// `kani::ensures` shape) plus its source text for diagnostics.
     pub ensures: Option<(ExprClosure, String)>,
+    /// Whether at least one effective clause came from `ply.yaml` rather
+    /// than an inline `#[ply::requires]`/`#[ply::ensures]` attribute. Kani
+    /// can instrument only Rust functions, so this decides whether proof
+    /// codegen must materialise the merged contract on a wrapper function.
+    pub has_declared_contract: bool,
     /// Every free-function call in the body, in source order (§5.5's D5
     /// split is decided from these, before any engine runs).
     pub calls: Vec<crate::callgraph::CallSite>,
@@ -2104,6 +2111,7 @@ pub fn build_contract_fn(
         params,
         requires,
         ensures,
+        has_declared_contract: false,
         calls: crate::callgraph::call_sites(f),
         source: f.to_token_stream().to_string(),
         source_span: None,
@@ -5840,6 +5848,10 @@ pub struct GeneratedHarness {
 /// measured (not inferred) for exactly this manual-indexed-loop-consumption
 /// shape in docs/m3-slice-findings.md. Without it, Kani's default unwind
 /// inference times out at every length, including 1.
+/// If any effective clause came from `ply.yaml`, also emits a same-signature
+/// wrapper carrying the merged Kani attributes and targets that wrapper. Kani
+/// cannot see an in-memory YAML contract; the wrapper calls the real body and
+/// is the Rust item that makes the merged promise provable.
 /// Builds `kani::any()` (or `kani::vec::any_vec`) bindings for `params` at
 /// `bound_k`, plus the call-site arguments (`&x` for a by-ref param) --
 /// the one place this shape is built, shared between a claimed fn's own
@@ -5983,24 +5995,87 @@ pub fn generate_proof_module(
     }
 
     let proof_fn_name = format!("ply_proof_{}", cf.ident());
+    let contract_fn_name = format!("ply_contract_{}", cf.ident());
+    let (proof_target, contract_wrapper) = if cf.has_declared_contract {
+        let requires_attr = cf
+            .requires
+            .as_ref()
+            .map(|(_, text)| format!("#[kani::requires({text})]\n"))
+            .unwrap_or_default();
+        let ensures_attr = cf
+            .ensures
+            .as_ref()
+            .map(|(_, text)| format!("#[kani::ensures({text})]\n"))
+            .unwrap_or_default();
+        let params = cf
+            .params
+            .iter()
+            .map(|p| {
+                let ty = p.ty.rust_name().unwrap_or_else(|| p.ty.display_name());
+                if p.by_ref {
+                    format!("{}: &{ty}", p.name)
+                } else {
+                    format!("{}: {ty}", p.name)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let wrapper_args = cf
+            .params
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let return_ty = match &cf.return_type {
+            RustType::SelfType => cf
+                .path
+                .rsplit_once("::")
+                .map(|(owner, _)| owner.to_string())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Ply cannot generate a free contract wrapper returning `Self` for `{}`: \
+                         its enclosing type is not present in the resolved function path",
+                        cf.path
+                    )
+                })?,
+            ty => ty.rust_name().unwrap_or_else(|| ty.display_name()),
+        };
+        (
+            contract_fn_name.clone(),
+            format!(
+                "#[cfg(kani)]\n\
+                 {requires_attr}\
+                 {ensures_attr}\
+                 fn {contract_fn_name}({params}) -> {return_ty} {{\n\
+                 \x20\x20\x20\x20{path}({wrapper_args})\n\
+                 }}\n\n",
+                path = cf.path,
+            ),
+        )
+    } else {
+        (cf.path.clone(), String::new())
+    };
     let module_source = format!(
         "//! Generated by Ply -- do not edit. Kani proof harness for `{fname}`\n\
          //! (check bounded({k})). See The-Ply-Spec.md D2 and §5.4b.\n\
          #[cfg(kani)]\n\
          use super::*;\n\n\
+         {contract_wrapper}\
          {stub_defs}\
          #[cfg(kani)]\n\
-         #[kani::proof_for_contract({fname})]\n\
+         #[kani::proof_for_contract({proof_target})]\n\
          {stub_attrs}\
          {unwind_attr}\
          fn {proof_fn_name}() {{\n\
          {lets}\
-         \x20\x20\x20\x20{fname}({args});\n\
+         \x20\x20\x20\x20{proof_target}({args});\n\
          }}\n\
          {promise_defs}",
         fname = cf.path,
         k = bound_k,
         stub_defs = stub_defs,
+        contract_wrapper = contract_wrapper,
+        proof_target = proof_target,
         stub_attrs = stub_attrs,
         unwind_attr = unwind_attr,
         proof_fn_name = proof_fn_name,
@@ -6160,6 +6235,7 @@ pub fn merge_declared_contract(
         all.extend(ens_closures);
         cf.ensures = Some(conjoin_ensures(all));
     }
+    cf.has_declared_contract = !declared_requires.is_empty() || !declared_ensures.is_empty();
     Ok(())
 }
 
@@ -6724,6 +6800,7 @@ pub struct OrderBook {
             params: Vec::new(),
             requires: None,
             ensures: None,
+            has_declared_contract: false,
             calls: Vec::new(),
             source: String::new(),
             source_span: None,
@@ -6756,6 +6833,126 @@ pub struct OrderBook {
             cf.has_contract(),
             "and the function now has a contract to check"
         );
+    }
+
+    /// Kani's `proof_for_contract` does not consume Ply's in-memory merged
+    /// contract. A clause that exists only in `ply.yaml` therefore needs a
+    /// real generated function carrying Kani's attributes; pointing the
+    /// harness back at the unannotated application function makes Kani say
+    /// it has no contract and turns a valid document into a tool error.
+    #[test]
+    fn a_document_only_contract_is_attached_to_the_function_kani_proves() {
+        let mut cf = contract_fn_named("balance");
+        cf.params = vec![
+            Param {
+                name: "free".into(),
+                ty: RustType::I64,
+                by_ref: false,
+            },
+            Param {
+                name: "locked".into(),
+                ty: RustType::I64,
+                by_ref: false,
+            },
+        ];
+        merge_declared_contract(
+            &mut cf,
+            &["free <= 4611686018427387903".into()],
+            &["result.total == free + locked".into()],
+        )
+        .unwrap();
+
+        let generated = generate_proof_module(&cf, 4, &[]).unwrap();
+        assert!(
+            generated
+                .module_source
+                .contains("#[kani::requires(free <= 4611686018427387903)]"),
+            "the document precondition must be attached to a Kani contract:\n{}",
+            generated.module_source
+        );
+        assert!(
+            generated.module_source.contains("#[kani::ensures("),
+            "the document postcondition must be attached to a Kani contract:\n{}",
+            generated.module_source
+        );
+        assert!(
+            generated
+                .module_source
+                .contains("#[kani::proof_for_contract(ply_contract_balance)]"),
+            "the proof must target the generated merged-contract wrapper:\n{}",
+            generated.module_source
+        );
+        assert!(
+            generated
+                .module_source
+                .contains("fn ply_contract_balance(free: i64, locked: i64) -> u32"),
+            "the wrapper must preserve the checked function's signature:\n{}",
+            generated.module_source
+        );
+    }
+
+    /// A YAML contract is materialised on a free wrapper. `Self` is only
+    /// legal inside its original impl, so the wrapper must name the
+    /// constructor's enclosing type, including its module path.
+    #[test]
+    fn a_document_contract_wrapper_resolves_self_to_its_enclosing_type() {
+        let mut cf = contract_fn_named("new");
+        cf.path = "clock::Timer::new".into();
+        cf.is_method = true;
+        cf.return_type = RustType::SelfType;
+        merge_declared_contract(&mut cf, &[], &["|result| true".into()]).unwrap();
+
+        let generated = generate_proof_module(&cf, 2, &[]).unwrap();
+        assert!(
+            generated
+                .module_source
+                .contains("fn ply_contract_clock_Timer_new() -> clock::Timer"),
+            "a free wrapper cannot return `Self`:\n{}",
+            generated.module_source
+        );
+    }
+
+    #[test]
+    fn a_self_return_without_an_enclosing_type_is_refused_before_codegen() {
+        let mut cf = contract_fn_named("new");
+        cf.return_type = RustType::SelfType;
+        merge_declared_contract(&mut cf, &[], &["|result| true".into()]).unwrap();
+
+        let err = match generate_proof_module(&cf, 2, &[]) {
+            Ok(_) => panic!("a free wrapper must not emit an unresolved `Self`"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("enclosing type"),
+            "an ambiguous `Self` must be an explicit error: {err:#}"
+        );
+    }
+
+    /// Generated source cannot rely on imports that happened to be in the
+    /// checked function's file. Standard-library return types therefore use
+    /// the same fully-qualified Rust spelling as generated parameters.
+    #[test]
+    fn a_document_contract_wrapper_qualifies_standard_library_return_types() {
+        for (ty, expected) in [
+            (RustType::Duration, "std::time::Duration"),
+            (
+                RustType::NonZero(Box::new(RustType::U32)),
+                "std::num::NonZeroU32",
+            ),
+        ] {
+            let mut cf = contract_fn_named("identity");
+            cf.return_type = ty;
+            merge_declared_contract(&mut cf, &[], &["|result| true".into()]).unwrap();
+
+            let generated = generate_proof_module(&cf, 2, &[]).unwrap();
+            assert!(
+                generated
+                    .module_source
+                    .contains(&format!("fn ply_contract_identity() -> {expected}")),
+                "the wrapper must contain a source-valid return type:\n{}",
+                generated.module_source
+            );
+        }
     }
 
     /// `ensures:` is written two ways in real documents, and both have to

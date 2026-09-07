@@ -777,6 +777,14 @@ Six commands exist:
 The render, inspection, and verification commands support `--json`. Published visual envelopes
 are the stable integration surface for editor extensions and other visual clients.
 
+For a multi-crate workspace, put the crate graph in a hollow root `ply.yaml` and put
+function claims in one `ply.yaml` beside each member crate's `Cargo.toml`. A root entry
+such as `handlers: { anchor: handlers }` links to the member document automatically;
+run `cargo ply verify crates/handlers` to execute that crate's checks. Mutation checks on
+workspace members use Cargo's real virtual-workspace root, so member manifests do not
+need—and should not gain—their own `[workspace]` table. The full layout and an example
+are in [`docs/SCHEMA.md`](docs/SCHEMA.md#where-the-file-goes).
+
 ## Skills, for agents working with Ply
 
 [`skills/`](skills/) holds five skills — four for the stages of the loop, and one for
