@@ -1,5 +1,63 @@
 # TODO
 
+## A/B round 2: two more scenarios, and two false cleans — 2026-09-07
+
+Same protocol as round 1: two sonnet agents per scenario, both told to do TDD,
+arm B also given Ply and its two skills. Three bugs per scenario written down
+before either agent started, in a file the agents were told not to read, and
+each bug confirmed to be a real bug by an independent oracle before scoring
+(exhaustive small grid for the split; exhaustive operation sequences to length
+6 against a differently-written model for the cache).
+
+**Splitting a charge across line items.** Arm A's own tests caught 3 of 3. Arm
+B's own tests caught 1 of 3; Ply caught 3 of 3, with a minimal failing input
+for each (`total_cents = 1, weights = [1,1]` for the drifting sum). Ply also
+made arm B rewrite its promises mid-task: its first contract was "the output
+length matches the input length", the bug-planting reported 12 of 19 caught,
+and the agent added four real promises to reach 19 of 19.
+
+**A bounded cache with eviction.** Arm A's own tests caught 2 of 3 -- it missed
+the update path, because its map-based design turns "put does not recognise a
+key it already holds" into a silently evicted innocent entry rather than a
+length change, and no test looked. Arm B's own tests caught 3 of 3. Ply caught
+**0 of 3**, and one of those is a genuine miss rather than an undeclared
+property (below).
+
+**Both control-arm agents mutation-tested themselves by hand** -- broke their
+own implementation, watched a test fail, put it back. The control arm partly
+reinvented the thing the tool automates, unprompted, in both scenarios.
+
+- [ ] **A size invariant on a bounded container is close to unfalsifiable.**
+      Arm B declared exactly the right rule -- the cache never holds more
+      entries than its capacity -- and Ply reported it clean over 256 cases
+      with an off-by-one that lets the cache hold one too many. Measured
+      cause, not guessed: the generated capacity is drawn from 0..=16 while
+      the operation sequence is at most 3 calls of which roughly a quarter
+      are insertions, so a cache big enough to be interesting can never be
+      filled. Replaying Ply's own generated strategy over 12 seeds x 256
+      cases, **2 of 3,072 cases could even reach the bug**. A run comes back
+      clean about five times in six, and catching it is luck. Fix has to
+      relate the constructor's size argument to the sequence length rather
+      than drawing them independently.
+- [ ] **One `vec!` undoes the planting-scope fix.** Any macro Ply cannot
+      expand makes the reach walk widen to the whole crate, which empties the
+      list of reached function names, which drops the planting back to the
+      claimed function alone -- the exact defect fixed in 2fa2d0e, by another
+      road. Measured on the `helperspec` fixture: **9 planted bugs spanning
+      the helper, down to 2 in the wrapper alone**, from adding `let batch =
+      vec![x];` to the wrapper. The message still says "its own body" and
+      gives no hint the helper was skipped, and `MutateTarget`'s own doc
+      comment claims "the report says so", which is false. `vec!` is not a
+      corner case.
+- [ ] **Pointing Ply at `ply.yaml` instead of the crate directory prints a
+      raw Rust backtrace** -- `Not a directory (os error 20)` and twelve
+      stack frames -- rather than a sentence saying to pass the directory.
+      First thing a new user gets wrong, and it fails the newbie bar.
+
+Not defects: Ply missing the cache's other two bugs is correct -- neither
+violates the one rule that was declared. And the unrunnable counterexample for
+a slice argument is the documented `W0541` witness-only path, already known.
+
 ## A/B vetting: two agents, same task, one with Ply — 2026-09-07
 
 Scenario 1 (retry-with-backoff scheduling). Both arms sonnet, both told to do TDD; arm B
