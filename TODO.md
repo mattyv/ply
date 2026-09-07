@@ -116,13 +116,13 @@ to disk.
 
 ## Outside-workspace findings — 2026-09-07
 
-- [ ] Preserve each real parameter type in the generated precondition-admissibility test.
-- [ ] Report Kani's exit status and compiler output when no verification marker appears.
-- [ ] Run mutation checks for crates that belong to a virtual Cargo workspace.
-- [ ] Treat omitted linked-component booleans as undeclared, not as explicit `false`.
-- [ ] Document the hollow-root plus crate-local-document layout for multi-crate projects.
-- [ ] Materialise merged YAML contracts on the function Kani proves.
-- [ ] Scale Proptest's rejection budget and keep generated or name-collision matches out of mutation targets.
+- [x] Preserve each real parameter type in the generated precondition-admissibility test (`799332c`).
+- [x] Report Kani's exit status and compiler output when no verification marker appears (`799332c`).
+- [x] Run mutation checks for crates that belong to a virtual Cargo workspace (`799332c`).
+- [x] Treat omitted linked-component booleans as undeclared, not as explicit `false` (`799332c`).
+- [x] Document the hollow-root plus crate-local-document layout for multi-crate projects (`799332c`).
+- [x] Materialise merged YAML contracts on the function Kani proves (`799332c`).
+- [x] Scale Proptest's rejection budget and keep generated or name-collision matches out of mutation targets (`799332c`).
 
 ## Landed: focused folding no longer leaves full-size empty boxes — 2026-09-07
 
