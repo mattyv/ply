@@ -46,10 +46,40 @@ takes that directory as its argument:
 cargo ply check .
 ```
 
-One directory, one file. The design specification describes discovering many
-`ply.yaml` and `*.ply.yaml` files across a workspace and merging them; **that is not
-built** — Ply reads exactly the one file at the path you give it, and checks exactly
-that one crate.
+One selected directory, one root file. Ply does not recursively merge every declaration
+it finds. In a multi-crate workspace, use a hollow root document for the crate graph and
+one `ply.yaml` beside each member crate's `Cargo.toml` for that crate's function claims.
+A hollow top-level component contains only its outer identity and architecture rules;
+its crate anchor lets Ply link in that crate's local document.
+
+```yaml
+# workspace-root/ply.yaml
+ply: 1
+components:
+  mapping:
+    anchor: mapping
+  handlers:
+    anchor: handlers
+edges:
+  - handlers -> mapping
+```
+
+```yaml
+# workspace-root/crates/handlers/ply.yaml
+ply: 1
+components:
+  implementation:
+    anchor: handlers
+    fns:
+      handle:
+        checks: [test, mutate]
+```
+
+Run `cargo ply check` or `cargo ply render` at the workspace root to see the composed
+system. Run `cargo ply verify crates/handlers` to execute that member's function checks.
+The outer and inner component names may differ; the crate anchor joins them. Fields
+written in both files must agree, but an omitted `pure:` or `strict:` in the hollow root
+does not conflict with a value declared in the crate-local file.
 
 ### The smallest useful file
 

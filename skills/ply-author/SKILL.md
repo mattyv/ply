@@ -15,12 +15,16 @@ Use `cargo ply check` after every addition. It runs no engines and takes about a
 ## Workflow
 
 1. **Find the root.** A `ply.yaml` resolves function claims against one crate's
-   `src/lib.rs` in this implementation. A virtual workspace root has no library, so its
-   document can describe crates and dependencies but needs crate-local documents for
-   function claims. A workspace root that is also a package may have its own library;
-   inspect the manifest and source rather than assuming. If the crate has only
-   `src/main.rs` or a custom library path, report the resolver limitation before proposing
-   a layout change.
+   `src/lib.rs` in this implementation. A virtual workspace root has no library, so use a
+   hollow root document for its crate graph and one crate-local document for each member's
+   function claims. A hollow root component names the member with `anchor:` but declares
+   no `fns:`, nested `components:`, or `state:`; that absence is what lets Ply link the
+   member's own `ply.yaml` into the composed root view. The outer and inner component names
+   may differ. Fields explicitly written in both documents must agree, while omitted
+   `pure:` and `strict:` values say nothing and do not conflict. A workspace root that is
+   also a package may have its own library; inspect the manifest and source rather than
+   assuming. If the crate has only `src/main.rs` or a custom library path, report the
+   resolver limitation before proposing a layout change.
 
 2. **Start with components and stop.** Name the parts, anchor each one, and check:
 

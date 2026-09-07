@@ -5737,7 +5737,7 @@
           "workspace-manifest": [
             {
               "id": "n-cp-manifest-1",
-              "text": "The Cargo.toml belonging to the crate being checked, not to Ply. Ply temporarily adds the generated harness to this file's list of workspace members for the whole verify run so cargo can find and build it, then writes the original file back once the run ends (the `ManifestRegistration` guard, crates/ply-core/src/harness_crate.rs:239-312). Every tool Ply spawns needs this edit in place to resolve the harness package at all -- it is genuinely shared, mutated state, not just a read-only input.",
+              "text": "The Cargo.toml at the workspace root Cargo reports for the crate being checked, not necessarily the member crate's own manifest and never Ply's. Ply temporarily adds the generated harness to this root's workspace members so Cargo can resolve both packages, then writes the original file back byte-for-byte when the run ends (`ManifestRegistration`, crates/ply-core/src/harness_crate.rs). This is genuinely shared, temporarily mutated state. A plain package with no explicit workspace instead gives the generated harness its own isolated workspace; fuzz and test still run there, while mutation testing is reported as unsupported.",
               "ts": 1788307200000
             }
           ],

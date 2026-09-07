@@ -134,14 +134,25 @@ pub fn version(crate_dir: &std::path::Path) -> Option<String> {
 /// print`) -- cheap on success (nothing to print) and the only source of a
 /// witness on failure.
 pub fn run(cfg: &KaniRunConfig) -> Result<KaniOutcome> {
-    Ok(parse_output(&invoke(cfg)?))
+    let invocation = invoke(cfg)?;
+    Ok(parse_output_with_status(
+        &invocation.combined,
+        invocation.exit_code,
+    ))
 }
 
-/// Runs one harness and returns its combined stdout+stderr. The flag set is
+struct InvocationOutput {
+    combined: String,
+    /// `None` means the process ended by signal rather than returning a
+    /// conventional exit code.
+    exit_code: Option<i32>,
+}
+
+/// Runs one harness and returns its combined stdout+stderr and exit status. The flag set is
 /// identical for every harness in a crate on purpose: Kani's `-Z` flags are
 /// compilation inputs, so varying them between the proof and the
 /// promise-content probes beside it would rebuild the crate for each.
-fn invoke(cfg: &KaniRunConfig) -> Result<String> {
+fn invoke(cfg: &KaniRunConfig) -> Result<InvocationOutput> {
     let timeout_arg = format!("{}s", cfg.engine_timeout_secs);
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cfg.crate_dir).arg("kani");
@@ -159,11 +170,14 @@ fn invoke(cfg: &KaniRunConfig) -> Result<String> {
         .output()
         .with_context(|| format!("spawning `cargo kani` in {}", cfg.crate_dir.display()))?;
 
-    Ok(super::strip_ansi(&format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )))
+    Ok(InvocationOutput {
+        combined: super::strip_ansi(&format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )),
+        exit_code: output.status.code(),
+    })
 }
 
 /// Runs one **probe**: a harness asked a yes/no question about an assertion,
@@ -173,7 +187,16 @@ fn invoke(cfg: &KaniRunConfig) -> Result<String> {
 /// without evidence; a probe's failing assertion is not a verdict about
 /// anyone's code, it is the benign answer "a value exists".
 pub fn run_probe(cfg: &KaniRunConfig) -> Result<ProbeOutcome> {
-    Ok(classify_probe(&invoke(cfg)?))
+    let invocation = invoke(cfg)?;
+    let mut outcome = classify_probe(&invocation.combined);
+    if let ProbeOutcome::Undecided(reason) = &mut outcome {
+        let status = invocation
+            .exit_code
+            .map(|code| format!("Kani exited with status {code}"))
+            .unwrap_or_else(|| "Kani was terminated by a signal".to_string());
+        *reason = format!("{status}: {reason}");
+    }
+    Ok(outcome)
 }
 
 /// What one promise-content probe said.
@@ -214,13 +237,27 @@ pub fn classify_probe(combined: &str) -> ProbeOutcome {
 /// this is the module's invariant surface: never emit `Violation` without a
 /// witness, never conflate timeout with violation.
 pub fn parse_output(combined: &str) -> KaniOutcome {
+    parse_output_with_status(combined, None)
+}
+
+/// [`parse_output`] with the subprocess status retained. A missing Kani
+/// marker is most often a compile/setup failure, so the status belongs in
+/// the explanation rather than being discarded before classification.
+pub fn parse_output_with_status(combined: &str, exit_code: Option<i32>) -> KaniOutcome {
     if combined.contains("VERIFICATION:- SUCCESSFUL") {
         return KaniOutcome::Verified;
     }
     if !combined.contains("VERIFICATION:- FAILED") {
+        let process = match exit_code {
+            Some(0) => "Kani exited successfully".to_string(),
+            Some(code) => format!("Kani exited with status {code}"),
+            None => "Kani was terminated by a signal, or its status was unavailable".to_string(),
+        };
         return KaniOutcome::ToolError {
             raw_output: combined.to_string(),
-            reason: "neither VERIFICATION:- SUCCESSFUL nor VERIFICATION:- FAILED appeared in Kani's output".into(),
+            reason: format!(
+                "{process} before reporting either VERIFICATION:- SUCCESSFUL or VERIFICATION:- FAILED"
+            ),
         };
     }
     // Read PAST the shared "VERIFICATION:- FAILED" line to the real reason,
@@ -521,6 +558,18 @@ mod tests {
     fn recognizes_clean_success() {
         let out = "blah blah\nVERIFICATION:- SUCCESSFUL\nComplete\n";
         assert!(matches!(parse_output(out), KaniOutcome::Verified));
+    }
+
+    #[test]
+    fn a_pre_verification_process_failure_keeps_kanis_exit_status_and_compiler_error() {
+        let out = "error[E0308]: mismatched types\n";
+        match parse_output_with_status(out, Some(101)) {
+            KaniOutcome::ToolError { reason, raw_output } => {
+                assert!(reason.contains("status 101"), "{reason}");
+                assert_eq!(raw_output, out);
+            }
+            other => panic!("an early Kani failure must remain a tool error, got {other:?}"),
+        }
     }
 
     #[test]

@@ -2408,6 +2408,14 @@ pub fn generate_fuzz_test(cf: &ContractFn, cases: u32, seed: &[u8; 32]) -> Resul
     generate_fuzz_test_with_examples(cf, cases, seed, &[])
 }
 
+/// Proptest's default is a fixed 1,024 global rejects regardless of the
+/// requested accepted-case count. Keep that useful floor for ordinary runs,
+/// but scale it for large evidence budgets so a broad precondition does not
+/// abandon a healthy run merely because the author asked for more cases.
+fn global_reject_budget(cases: u32) -> u32 {
+    cases.saturating_mul(4).max(1_024)
+}
+
 /// Exactly [`generate_fuzz_test`], plus `examples_pool` -- every `examples:`
 /// entry declared anywhere in the crate being verified (not just this fn's
 /// own), so a seed written against the constructor from a sibling claim
@@ -2497,6 +2505,7 @@ pub fn generate_fuzz_test_with_examples(
             .join(", ")
     );
     let seed_hex = seed_hex(seed);
+    let max_global_rejects = global_reject_budget(cases);
     // Receiver construction (docs/review-self-construction.md's "fourth
     // option", 2026-08-27): a method whose `ContractFn::receiver` is `Some`
     // gets a wider outer strategy/pattern (constructor slot, bounded
@@ -2768,7 +2777,7 @@ pub fn generate_fuzz_test_with_examples(
          \x20\x20\x20\x20fn ply_fuzz_{ident}() {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_SEED|{label}|{seed_hex}\");\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let mut __ply_runner = proptest::test_runner::TestRunner::new_with_rng(\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::Config {{ cases: {cases}, failure_persistence: None, ..proptest::test_runner::Config::default() }},\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::Config {{ cases: {cases}, max_global_rejects: {max_global_rejects}, failure_persistence: None, ..proptest::test_runner::Config::default() }},\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::TestRng::from_seed(\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::RngAlgorithm::ChaCha, &{seed_literal}),\n\
          \x20\x20\x20\x20\x20\x20\x20\x20);\n\
@@ -3035,6 +3044,39 @@ fn element_values(inner: &RustType) -> Option<(String, String)> {
     Some((first, second))
 }
 
+/// The concrete local type that stores one direct-case literal.
+///
+/// Most parameters use their own Rust type. A borrowed slice is the one
+/// important exception: the generated literal owns a `Vec<T>`, and the
+/// call site borrows it as `&[T]`. Keeping this spelling beside the literal
+/// generation prevents the precondition-only admissibility probe from
+/// losing the signature's type constraints.
+fn direct_binding_type(ty: &RustType) -> String {
+    match ty {
+        RustType::Slice(inner) => format!("Vec<{}>", direct_binding_type(inner)),
+        RustType::VecU8 => "Vec<u8>".to_string(),
+        RustType::Vec(inner) => format!("Vec<{}>", direct_binding_type(inner)),
+        RustType::BTreeSet(inner) => {
+            format!("std::collections::BTreeSet<{}>", direct_binding_type(inner))
+        }
+        RustType::BTreeMap(key, value) => format!(
+            "std::collections::BTreeMap<{}, {}>",
+            direct_binding_type(key),
+            direct_binding_type(value)
+        ),
+        RustType::Tuple(items) => format!(
+            "({})",
+            items
+                .iter()
+                .map(direct_binding_type)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        RustType::BoxT(inner) => format!("Box<{}>", direct_binding_type(inner)),
+        other => other.rust_name().unwrap_or_else(|| other.display_name()),
+    }
+}
+
 /// Generates a small, fixed battery of "direct contract case" tests: real
 /// concrete inputs (boundary literals per parameter, diagonally zipped
 /// rather than a full cross product, to keep the generated file small) run
@@ -3136,7 +3178,11 @@ pub fn generate_direct_contract_cases(cf: &ContractFn, examples: &[String]) -> S
     for (case_idx, case) in cases.iter().enumerate() {
         let mut lets = String::new();
         for (p, lit) in cf.params.iter().zip(case.iter()) {
-            lets.push_str(&format!("        let {name} = {lit};\n", name = p.name));
+            lets.push_str(&format!(
+                "        let {name}: {ty} = {lit};\n",
+                name = p.name,
+                ty = direct_binding_type(&p.ty)
+            ));
         }
         let args = call_args(cf).join(", ");
         let guard = match &requires_cond {
@@ -3182,7 +3228,11 @@ pub fn generate_direct_contract_cases(cf: &ContractFn, examples: &[String]) -> S
         for case in &cases {
             let mut lets = String::new();
             for (p, lit) in cf.params.iter().zip(case.iter()) {
-                lets.push_str(&format!("            let {name} = {lit};\n", name = p.name));
+                lets.push_str(&format!(
+                    "            let {name}: {ty} = {lit};\n",
+                    name = p.name,
+                    ty = direct_binding_type(&p.ty)
+                ));
             }
             probes.push_str(&format!(
                 "        {{\n{lets}            if {cond} {{ __ply_accepted += 1; }}\n        }}\n"
@@ -3579,13 +3629,14 @@ pub fn generate_invariant_test(
             .join(", ")
     );
     let seed_hex = seed_hex(seed);
+    let max_global_rejects = global_reject_budget(cases);
 
     Ok(format!(
         "    #[test]\n\
          \x20\x20\x20\x20fn ply_holds_{ident}() {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZ_SEED|{label}|{seed_hex}\");\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let mut __ply_runner = proptest::test_runner::TestRunner::new_with_rng(\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::Config {{ cases: {cases}, failure_persistence: None, ..proptest::test_runner::Config::default() }},\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::Config {{ cases: {cases}, max_global_rejects: {max_global_rejects}, failure_persistence: None, ..proptest::test_runner::Config::default() }},\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::TestRng::from_seed(\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20proptest::test_runner::RngAlgorithm::ChaCha, &{seed_literal}),\n\
          \x20\x20\x20\x20\x20\x20\x20\x20);\n\
@@ -4444,6 +4495,28 @@ pub fn safe_increment(x: u32) -> u32 { x + 1 }
         );
     }
 
+    /// Proptest's default global-reject ceiling is a fixed 1,024 draws.
+    /// That is enough for the usual 256-case run, but it makes a healthy
+    /// 65,536-case run with a broad precondition abandon after only a few
+    /// thousand accepted cases. The ceiling must scale with the evidence
+    /// requested while retaining the existing floor for small runs.
+    #[test]
+    fn a_large_case_budget_scales_the_global_rejection_budget() {
+        let cf = discover(
+            r#"
+#[ply::requires(x >= -4_611_686_018_427_387_904)]
+#[ply::ensures(|result| *result == x)]
+pub fn bounded_identity(x: i64) -> i64 { x }
+"#,
+            "bounded_identity",
+        );
+        let body = generate_fuzz_test(&cf, 65_536, &derive_seed("bounded_identity", "")).unwrap();
+        assert!(
+            body.contains("max_global_rejects: 262144"),
+            "the rejection budget must grow with the requested accepted-case count:\n{body}"
+        );
+    }
+
     /// Defect B: `v: Vec<u8>` is passed by value, so it has been moved into
     /// the call by the time the postcondition reads `v.len()` -- the exact
     /// shape a compile failure the task's repro used. Before the refusal
@@ -4724,6 +4797,40 @@ pub fn clamp(x: u32) -> u32 { x.min(100) }
         assert!(cases.contains("fn ply_direct_clamp_00()"));
         assert!(cases.contains("0u32"));
         assert!(cases.contains("u32::MAX"));
+    }
+
+    #[test]
+    fn direct_precondition_probe_keeps_integer_parameter_types() {
+        let cf = discover(
+            r#"
+#[ply::requires(free >= -4611686018427387904)]
+#[ply::ensures(|result| *result == free)]
+pub fn component_balance(free: i64) -> i64 { free }
+"#,
+            "component_balance",
+        );
+        let cases = generate_direct_contract_cases(&cf, &[]);
+        assert!(
+            cases.contains("let free: i64 ="),
+            "the admissibility probe must constrain large literals to the real signature:\n{cases}"
+        );
+    }
+
+    #[test]
+    fn direct_precondition_probe_binds_a_slice_literal_as_its_owned_vector_type() {
+        let cf = discover(
+            r#"
+#[ply::requires(banned.len() == len)]
+#[ply::ensures(|result| *result <= len)]
+pub fn next_index(len: usize, banned: &[bool]) -> usize { banned.len().min(len) }
+"#,
+            "next_index",
+        );
+        let cases = generate_direct_contract_cases(&cf, &[]);
+        assert!(
+            cases.contains("let banned: Vec<bool> = vec![];"),
+            "a slice argument's local storage must give an empty vector its element type:\n{cases}"
+        );
     }
 
     // -- the NaN/infinity decision (task, 2026-08-27), pinned so reversing
