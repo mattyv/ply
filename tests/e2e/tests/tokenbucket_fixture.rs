@@ -119,3 +119,73 @@ fn the_untouched_bucket_earns_evidence_for_both_of_its_mutators() {
         run.json
     );
 }
+
+/// The false clean this refusal closes, reproduced end to end (2026-09-07).
+///
+/// A promise that takes its "before" reading through a method which itself
+/// changes the bucket is evaluated by running that reading first -- so the
+/// reading resets the very state the promise is about, and the planted
+/// refill-of-nothing bug becomes unreachable. Before the refusal this run
+/// came back `fuzzed(256)` with no diagnostic at all: a clean result over a
+/// broken bucket.
+///
+/// The bug is planted as well as the promise rewritten on purpose. Refusing
+/// a promise that happened to be over correct code proves much less than
+/// refusing one that was about to certify a real bug as fine.
+#[test]
+fn a_promise_that_reads_through_a_mutating_method_is_refused_not_reported_clean() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("tokenbucket");
+
+    let src = fixture.read_lib_rs();
+    let rigged = src
+        // A reading that also empties the bucket -- the shape a real cache
+        // `get` (touching recency) or a `level_and_reset` gauge has.
+        .replace(
+            "    pub fn capacity(&self) -> u32 {",
+            "    pub fn take_reading(&mut self) -> u32 {\n        let n = self.available;\n        self.available = 0;\n        n\n    }\n\n    pub fn capacity(&self) -> u32 {",
+        )
+        // `refill`'s promise now takes its before-reading through it.
+        .replace(
+            "        == old(self.available()).saturating_add(tokens).min(old(self.capacity())))]",
+            "        == old(self.take_reading()).saturating_add(tokens).min(old(self.capacity())))]",
+        )
+        // ... over a bucket that silently refills to the top on a refill of
+        // nothing: the round-3 bug, live.
+        .replace(
+            "        let room = self.capacity - self.available;",
+            "        if tokens == 0 {\n            self.available = self.capacity;\n            return;\n        }\n        let room = self.capacity - self.available;",
+        );
+    assert_ne!(src, rigged, "the fixture must have been rewritten");
+    fixture.write_lib_rs(&rigged);
+
+    let run = run_verify(&cargo_ply, fixture.path(), 300);
+    let diags = run.json["diagnostics"].as_array().unwrap();
+
+    let refusal = diags
+        .iter()
+        .find(|d| d["node_id"] == "tokenbucket::TokenBucket::refill")
+        .unwrap_or_else(|| {
+            panic!(
+                "a promise that changes what it reads has to be refused by name -- with no \
+                 diagnostic at all this is the false clean itself, a broken bucket reported as \
+                 checked: {}",
+                run.json
+            )
+        });
+    assert_eq!(
+        refusal["title"].as_str().unwrap(),
+        "Ply cannot check `refill`: its promise calls `take_reading`, and that method changes \
+         the `TokenBucket` it is called on. Ply works out what a reading was before the call by \
+         running that reading first -- so a reading taken through a method that changes the \
+         value would alter the very thing the promise is about, and the check could come back \
+         clean while the bug it was written to catch is still there. Use a method that only \
+         reads (one taking `&self`) in the promise, or add one.",
+        "the sentence a reader sees is reviewed like code: {refusal}"
+    );
+    assert_ne!(
+        run.json["root"]["verdict"], "fuzzed(256)",
+        "the run must not report evidence it did not earn: {}",
+        run.json
+    );
+}

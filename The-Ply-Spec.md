@@ -1044,6 +1044,16 @@ rather than a gap in what can be said, and `bounded` still refuses any receiver.
 Full two-state/model-based specs (sequence histories, FIFO ordering) remain out of
 scope — `old()` is the single two-state primitive.
 
+**A promise must not change what it reads** (2026-09-07). `old(expr)` is evaluated by
+running `expr` against the receiver *before* the checked call, so a reading taken through
+one of the type's own `&mut self` methods — a `get` that touches recency, a
+`level_and_reset` — rewrites the very state the promise is about, and the bug the promise
+was written to catch becomes unreachable. That was a live false clean (`fuzzed(256)`,
+no diagnostic, over a planted bug), and is now refused by name (`V0507`), naming the
+method and why. Reading a *field* (`old(self.level)`) is untouched; so is a reading
+through a `&self` method, which is the supported shape. `old(self)` — the whole receiver
+— is refused too: taking that copy would need `Clone`, which nothing here establishes.
+
 A `#[ply::pure]` helper called from any contract is a trust surface, not a free pass. It
 is always checked for capability use — a pure fn that touches any capability is an error
 (`A0408`), regardless of `strict` — and every contract-used helper appears in

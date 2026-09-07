@@ -1965,7 +1965,7 @@ pub fn scan_type_operations(
     let file: syn::File = syn::parse_file(&src).map_err(|_| ReceiverError::Unreadable)?;
     let aliases = alias_map(&file);
 
-    let (_, plan) = scan_impls_for_receiver(
+    let (_, plan, _) = scan_impls_for_receiver(
         &file, &aliases, type_name, None, crate_dir, &file_path, routes,
     )?;
     Ok(plan)
@@ -2479,6 +2479,24 @@ pub enum ReceiverError {
     /// already names for a free function, reached here before that shared
     /// path is even called.
     UnsupportedParamPattern,
+    /// The method's promise takes a reading through one of the type's own
+    /// `&mut self` methods -- so evaluating the promise changes the value
+    /// the promise is about. See
+    /// [`refuse_a_promise_that_changes_what_it_reads`] for the measured
+    /// false clean this refusal closes.
+    PromiseChangesWhatItReads {
+        method_name: String,
+        type_name: String,
+        mutating_method: String,
+    },
+    /// The method's promise writes `old(self)` -- a copy of the whole
+    /// receiver from before the call, which Ply cannot take without
+    /// `Clone`. Before this refusal the generated harness failed to
+    /// compile and the reader saw the compiler's error rather than Ply's.
+    PromiseSnapshotsWholeReceiver {
+        method_name: String,
+        type_name: String,
+    },
 }
 
 impl std::fmt::Display for ReceiverError {
@@ -2529,6 +2547,31 @@ impl std::fmt::Display for ReceiverError {
                 f,
                 "the method's own parameter list uses a pattern this scan does not read (only \
                  plain identifiers are supported)"
+            ),
+            ReceiverError::PromiseChangesWhatItReads {
+                method_name,
+                type_name,
+                mutating_method,
+            } => write!(
+                f,
+                "Ply cannot check `{method_name}`: its promise calls `{mutating_method}`, and \
+                 that method changes the `{type_name}` it is called on. Ply works out what a \
+                 reading was before the call by running that reading first -- so a reading taken \
+                 through a method that changes the value would alter the very thing the promise \
+                 is about, and the check could come back clean while the bug it was written to \
+                 catch is still there. Use a method that only reads (one taking `&self`) in the \
+                 promise, or add one"
+            ),
+            ReceiverError::PromiseSnapshotsWholeReceiver {
+                method_name,
+                type_name,
+            } => write!(
+                f,
+                "Ply cannot check `{method_name}`: its promise writes `old(self)`, which asks \
+                 for a copy of the whole `{type_name}` as it was before the call. Ply has no way \
+                 to take that copy -- it would need `{type_name}` to be copyable (`Clone`), and \
+                 nothing here says it is. Write the reading you actually want instead, such as \
+                 `old(self.level())`, and Ply will capture that one value before the call"
             ),
         }
     }
@@ -2984,6 +3027,14 @@ struct FileReceiverScan {
     ctor_candidates: Vec<CtorCandidate>,
     other_ops: Vec<Operation>,
     excluded_ops: Vec<ExcludedOperation>,
+    /// Every method on this type that takes `&mut self` -- the checked
+    /// method itself included, and methods this scan would never *call*
+    /// (unbuildable arguments, a trait implementation) included too. This
+    /// is deliberately wider than `other_ops`: it exists to answer "would
+    /// naming this in a promise change the value?", and the answer to that
+    /// does not depend on whether Ply can build the arguments to call it
+    /// with (2026-09-07).
+    mut_self_methods: Vec<String>,
 }
 
 /// Scans every `impl {type_name} { .. }` block in `file` for: the checked
@@ -3075,6 +3126,12 @@ fn scan_file_for_receiver(
                     m.sig.inputs.first(),
                     Some(FnArg::Receiver(r)) if r.reference.is_some()
                 );
+                if matches!(
+                    m.sig.inputs.first(),
+                    Some(FnArg::Receiver(r)) if r.mutability.is_some()
+                ) {
+                    out.mut_self_methods.push(m.sig.ident.to_string());
+                }
                 if has_ref_receiver {
                     out.excluded_ops.push(ExcludedOperation {
                         call_path: format!("{type_name}::{}", m.sig.ident),
@@ -3094,6 +3151,16 @@ fn scan_file_for_receiver(
                 continue;
             };
             let is_receiverless = !matches!(m.sig.inputs.first(), Some(FnArg::Receiver(_)));
+            // Recorded before the target's own `continue` below, so the
+            // checked method itself counts: a promise that names it inside
+            // `old(...)` is exactly as hazardous as one naming a sibling
+            // mutator.
+            if matches!(
+                m.sig.inputs.first(),
+                Some(FnArg::Receiver(r)) if r.mutability.is_some()
+            ) {
+                out.mut_self_methods.push(m.sig.ident.to_string());
+            }
             if method_name.is_some_and(|n| m.sig.ident == n) && !is_receiverless {
                 out.target = Some(m.clone());
                 continue;
@@ -3213,11 +3280,12 @@ fn scan_impls_for_receiver(
     crate_dir: &Path,
     declaring_file: &Path,
     routes: &RouteTable,
-) -> std::result::Result<(Option<syn::ImplItemFn>, ReceiverPlan), ReceiverError> {
+) -> std::result::Result<(Option<syn::ImplItemFn>, ReceiverPlan, Vec<String>), ReceiverError> {
     let mut target: Option<syn::ImplItemFn> = None;
     let mut ctor_candidates: Vec<CtorCandidate> = Vec::new();
     let mut other_ops: Vec<Operation> = Vec::new();
     let mut excluded_ops: Vec<ExcludedOperation> = Vec::new();
+    let mut mut_self_methods: Vec<String> = Vec::new();
 
     // Computed once, up front, and reused twice below: first (here) to
     // resolve a qualified/aliased `impl` self type against the type's own
@@ -3247,6 +3315,7 @@ fn scan_impls_for_receiver(
         ctor_candidates.extend(scan.ctor_candidates);
         other_ops.extend(scan.other_ops);
         excluded_ops.extend(scan.excluded_ops);
+        mut_self_methods.extend(scan.mut_self_methods);
     };
     let declaring_mod = file_module_segments(crate_dir, declaring_file);
     merge(scan_file_for_receiver(
@@ -3476,7 +3545,93 @@ fn scan_impls_for_receiver(
         max_sequence_len: MAX_RECEIVER_SEQUENCE_LEN,
         route: None,
     };
-    Ok((target, plan))
+    mut_self_methods.sort();
+    mut_self_methods.dedup();
+    Ok((target, plan, mut_self_methods))
+}
+
+/// Refuses a promise that would change the very value it is reading
+/// (2026-09-07, found by adversarial review of the transition-promise
+/// slice in the shipped binary, not in theory).
+///
+/// Two shapes, both of which produced a *clean* run over a planted bug
+/// before this refusal existed:
+///
+/// 1. **A reading taken through a `&mut self` method.** Ply works out what
+///    a value was before the call by evaluating the code inside `old(...)`
+///    first, against the same receiver the call is about to run on. If that
+///    code is `self.level_and_reset()`, taking the reading resets the
+///    level -- so the state the promise is comparing against is one the
+///    real program never had, and the bug the promise was written to catch
+///    becomes unreachable. Each `old(...)` mention is captured separately,
+///    so a mutating reading named three times runs three times.
+/// 2. **`old(self)` -- the whole receiver.** Ply would have to keep a copy
+///    of the value from before the call, which needs `Clone`. Nothing here
+///    establishes that, so the generated harness simply failed to compile
+///    and the reader saw the compiler's error instead of Ply's.
+///
+/// The walk is syntactic and deliberately narrow: a method call whose
+/// receiver is literally `self`, checked against the names this type's own
+/// scan found taking `&mut self`. A field read (`old(self.level)`) is
+/// untouched -- reading a field changes nothing -- and so is a reading
+/// through a `&self` method, which is the shape the whole
+/// transition-promise feature exists to support.
+fn refuse_a_promise_that_changes_what_it_reads(
+    body: &Expr,
+    method_name: &str,
+    type_name: &str,
+    mut_self_methods: &[String],
+) -> std::result::Result<(), ReceiverError> {
+    struct Walk<'a> {
+        mut_self_methods: &'a [String],
+        mutating_read: Option<String>,
+        whole_receiver: bool,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for Walk<'_> {
+        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+            if is_bare_self(&call.receiver) {
+                let name = call.method.to_string();
+                if self.mut_self_methods.contains(&name) && self.mutating_read.is_none() {
+                    self.mutating_read = Some(name);
+                }
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if let Expr::Path(p) = &*call.func
+                && p.path.is_ident("old")
+                && call.args.len() == 1
+                && is_bare_self(&call.args[0])
+            {
+                self.whole_receiver = true;
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+    }
+    fn is_bare_self(e: &Expr) -> bool {
+        matches!(e, Expr::Path(p) if p.qself.is_none() && p.path.is_ident("self"))
+    }
+
+    let mut walk = Walk {
+        mut_self_methods,
+        mutating_read: None,
+        whole_receiver: false,
+    };
+    syn::visit::Visit::visit_expr(&mut walk, body);
+    if let Some(mutating_method) = walk.mutating_read {
+        return Err(ReceiverError::PromiseChangesWhatItReads {
+            method_name: method_name.to_string(),
+            type_name: type_name.to_string(),
+            mutating_method,
+        });
+    }
+    if walk.whole_receiver {
+        return Err(ReceiverError::PromiseSnapshotsWholeReceiver {
+            method_name: method_name.to_string(),
+            type_name: type_name.to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// The second, narrower path §"Receiver construction" above describes: given
@@ -3503,7 +3658,7 @@ pub fn discover_method_with_receiver(
     let file: syn::File = syn::parse_file(&src).map_err(|_| ReceiverError::Unreadable)?;
     let aliases = alias_map(&file);
 
-    let (target, plan) = scan_impls_for_receiver(
+    let (target, plan, mut_self_methods) = scan_impls_for_receiver(
         &file,
         &aliases,
         type_name,
@@ -3519,6 +3674,14 @@ pub fn discover_method_with_receiver(
     let item_fn = strip_receiver_to_item_fn(&target);
     let mut cf = build_contract_fn(&item_fn, &aliases, fn_path, true)
         .map_err(|_| ReceiverError::UnsupportedParamPattern)?;
+    if let Some((closure, _)) = &cf.ensures {
+        refuse_a_promise_that_changes_what_it_reads(
+            &closure.body,
+            method_name,
+            type_name,
+            &mut_self_methods,
+        )?;
+    }
     cf.source_span = Some(crate::callgraph::source_span(
         crate_dir,
         &file_path,
@@ -8295,6 +8458,139 @@ impl Builder {
         )
         .unwrap_err();
         assert!(matches!(err, ReceiverError::MutableOrOwnedReceiver));
+    }
+
+    /// A promise that reads the receiver through a method which itself
+    /// changes the receiver is refused by name (2026-09-07).
+    ///
+    /// This is the false clean the review found in the shipped binary:
+    /// `old(...)` is evaluated by running the code inside it *before* the
+    /// checked call, so a reading taken through a `&mut self` method
+    /// rewrites the very state the promise is about. The planted
+    /// refill-of-nothing bug went unreachable and the run came back
+    /// `fuzzed(256)` with no diagnostic at all.
+    #[test]
+    fn a_promise_that_reads_through_a_mutating_method_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "meter.rs",
+                r#"
+pub struct Meter { level: u32 }
+impl Meter {
+    pub fn new() -> Self { Meter { level: 0 } }
+    pub fn level_and_reset(&mut self) -> u32 { let n = self.level; self.level = 0; n }
+    #[ply::ensures(|result| *result >= old(self.level_and_reset()))]
+    pub fn add(&mut self, n: u32) -> u32 { self.level = self.level.saturating_add(n); self.level }
+}
+"#,
+            )],
+        );
+        let err =
+            discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new())
+                .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Ply cannot check `add`: its promise calls `level_and_reset`, and that method \
+             changes the `Meter` it is called on. Ply works out what a reading was before the \
+             call by running that reading first -- so a reading taken through a method that \
+             changes the value would alter the very thing the promise is about, and the check \
+             could come back clean while the bug it was written to catch is still there. Use a \
+             method that only reads (one taking `&self`) in the promise, or add one"
+        );
+    }
+
+    /// `old(self)` -- the whole receiver, rather than a reading taken from
+    /// it -- is refused by name too. Ply would have to keep a copy of the
+    /// value from before the call, which needs `Clone`; without this
+    /// refusal the generated harness simply failed to compile, and the
+    /// reader saw the compiler's error rather than Ply's.
+    #[test]
+    fn a_promise_that_snapshots_the_whole_receiver_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "meter.rs",
+                r#"
+pub struct Meter { level: u32 }
+impl Meter {
+    pub fn new() -> Self { Meter { level: 0 } }
+    #[ply::ensures(|result| *result >= old(self).level)]
+    pub fn add(&mut self, n: u32) -> u32 { self.level = self.level.saturating_add(n); self.level }
+}
+"#,
+            )],
+        );
+        let err =
+            discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new())
+                .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Ply cannot check `add`: its promise writes `old(self)`, which asks for a copy of \
+             the whole `Meter` as it was before the call. Ply has no way to take that copy -- it \
+             would need `Meter` to be copyable (`Clone`), and nothing here says it is. Write the \
+             reading you actually want instead, such as `old(self.level())`, and Ply will \
+             capture that one value before the call"
+        );
+    }
+
+    /// The refusal must not catch an ordinary read-only observer: this is
+    /// exactly the shape the transition-promise work exists to support, and
+    /// a rule that refuses it deletes the feature.
+    #[test]
+    fn a_promise_that_reads_through_a_read_only_method_is_still_checkable() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "meter.rs",
+                r#"
+pub struct Meter { level: u32 }
+impl Meter {
+    pub fn new() -> Self { Meter { level: 0 } }
+    pub fn level(&self) -> u32 { self.level }
+    #[ply::ensures(|result| *result >= old(self.level()))]
+    pub fn add(&mut self, n: u32) -> u32 { self.level = self.level.saturating_add(n); self.level }
+}
+"#,
+            )],
+        );
+        discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new())
+            .expect("a promise reading through a `&self` method is exactly what this supports");
+    }
+
+    /// The same mutating call, written *after* the call rather than inside
+    /// `old(...)`, is the same hazard: it changes the value the rest of the
+    /// promise then reads.
+    #[test]
+    fn a_mutating_read_in_the_after_half_of_a_promise_is_refused_too() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "meter.rs",
+                r#"
+pub struct Meter { level: u32 }
+impl Meter {
+    pub fn new() -> Self { Meter { level: 0 } }
+    pub fn level_and_reset(&mut self) -> u32 { let n = self.level; self.level = 0; n }
+    #[ply::ensures(|result| *result == self.level_and_reset())]
+    pub fn add(&mut self, n: u32) -> u32 { self.level = self.level.saturating_add(n); self.level }
+}
+"#,
+            )],
+        );
+        let err =
+            discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new())
+                .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("changes the `Meter` it is called on"),
+            "the after-half of a promise runs against the same receiver, so a mutating read \
+             there is the same hazard: {err}"
+        );
     }
 
     /// A trait-impl method is not in any inherent `impl` block this scan

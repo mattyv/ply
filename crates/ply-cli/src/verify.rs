@@ -906,6 +906,8 @@ fn verify_loaded_crate(
                             err @ (harness::ReceiverError::NoConstructor { .. }
                             | harness::ReceiverError::UnsupportedConstructorParam { .. }
                             | harness::ReceiverError::PrivateConstructor { .. }
+                            | harness::ReceiverError::PromiseChangesWhatItReads { .. }
+                            | harness::ReceiverError::PromiseSnapshotsWholeReceiver { .. }
                             | harness::ReceiverError::UnsupportedParamPattern),
                         ) => {
                             diagnostics.push(refused_anchor_diag(&node_id, &err.to_string()));

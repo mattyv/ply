@@ -109,11 +109,16 @@ invariant can see, and the bug-planting tier scored them without change.
       promise it cannot show you the input for" is currently untrue for a
       transition. The constructor call and the sequence are both in scope in
       the generated test and simply not printed.
-- [ ] **NOT DONE: refuse two shapes by name.** A `&mut self` operation
-      inside `old(...)` silently alters the state being snapshotted (verified
-      in review on a cache whose `get` takes `&mut self`). And a whole-value
-      `old(self)` needs `Clone` and today reports a raw compiler error rather
-      than a refusal. Both should be refused by name, with exact-string tests.
+- [x] **Both shapes are now refused by name.** A promise that takes a
+      reading through one of the type's own `&mut self` methods is refused
+      naming the method and saying why -- taking the reading would change the
+      value the promise is about, so the check could come back clean over the
+      very bug it was written to catch. A whole-value `old(self)` is refused
+      too, saying it would need `Clone`, instead of the raw compiler error it
+      used to produce. Exact-string tests on both sentences, plus a guard
+      that a read-only observer stays checkable (a rule that refused that
+      would delete the feature) and one that the after-half of a promise is
+      covered as well as the `old(...)` half.
 - [ ] **NOT DONE: a precondition that names the state does not compile,**
       because the filter is emitted before the receiver exists. Once fixed it
       behaves correctly as a rejection filter and the existing high-rejection
@@ -124,19 +129,24 @@ invariant can see, and the bug-planting tier scored them without change.
       comment, `docs/old-and-misleading-advice.md`. Nobody who followed the
       old advice is stranded -- `state:` and `&self` claims are unchanged --
       but the advice is now wrong and says "cannot", not "should not".
-- [ ] **NOT DONE, and now the highest-priority one: a snapshot that
-      silently mutates is a live false clean.** Verified in the shipped
-      binary, not merely in a fork: a `&mut self` observer inside `old(...)`
-      -- e.g. a `get` that touches recency, or a `level_and_reset` -- is
-      evaluated as a plain read on the mutable receiver, so it alters the
-      very state being snapshotted and the bug becomes unreachable. Run with
-      the refill-of-nothing bug present and such an observer: `fuzzed(256)`,
-      clean, no warning. The mechanism predates this slice, but before it
-      nobody would write `old(self.x)` on a read-only method; now it is the
-      point of the feature, so the exposure went from theoretical to
-      expected. Each mention is snapshotted separately, so a mutating
-      observer named three times runs three times. **Do not land another
-      slice before this.**
+- [x] **CLOSED: the snapshot that silently mutates.** This was the live
+      false clean the review found in the shipped binary -- a `&mut self`
+      observer inside `old(...)` (a `get` that touches recency, a
+      `level_and_reset`) is evaluated as a plain read on the mutable
+      receiver, so it altered the very state being snapshotted and the bug
+      became unreachable: `fuzzed(256)`, clean, no warning. It is now a
+      refusal. Reproduced end to end before the fix and pinned by
+      `tokenbucket_fixture.rs`'s fourth test, which plants the
+      refill-of-nothing bug *and* rigs the promise, so the test is refusing
+      a promise that was about to certify a real bug rather than one that
+      merely looked wrong. The check is deliberately wider than the
+      operation pool: a mutating method Ply could never *call* (unbuildable
+      arguments, a trait implementation) still counts, because whether
+      naming it in a promise changes the value does not depend on that.
+      Known narrowing: the walk recognises a call whose receiver is
+      literally `self`, so `old(self.inner().touch())` is caught at
+      `inner()` only if `inner` itself mutates. Field reads
+      (`old(self.level)`) are untouched, as they should be.
 - [ ] **NOT DONE: a panic inside the generated sequence is blamed on the
       checked method.** One buggy mutator now produces a "this method
       panicked" report for every sibling that pools it, naming correct code.
