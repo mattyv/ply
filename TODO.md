@@ -1178,10 +1178,11 @@ riding in the text tier after the usual `N components · M fns` count.
 - [x] **Four named ways a candidate fails to link, each tested**: the target exists but
       cannot be read or does not parse (`A0417`, error); its top-level anchor no longer
       sits under the linking anchor (`W0532`, "drifted", warning); a chain of documents
-      would lead back into itself (`W0534`, warning — real in this repo only as the
+      would lead back into itself (`W0534`, error — real in this repo only as the
       two-file fixture the unit tests build directly, since discovery is a real crate
       directory per hop and today's two documents are one hop apart); another component
-      in the same document already claimed the same target (`W0533`, warning). A crate
+      in the same document already claimed the same target (`W0533`, error; neither
+      component links). A crate
       with no `ply.yaml` of its own produces neither a link nor a finding — the ordinary
       case for four of `core`'s five siblings. All four codes registered in
       `crates/ply-core/src/registry.rs`. `cargo ply check` reports all four; both real
@@ -1189,6 +1190,21 @@ riding in the text tier after the usual `N components · M fns` count.
       resolves cleanly and the self-reference `crates/ply-core/ply.yaml`'s own top
       component would otherwise "link to itself" (a document naming its own crate, not a
       link to "another" document) is refused silently rather than as a finding.
+
+## Linked verification scrutiny follow-up — 2026-09-07
+
+- [x] Derive links only for hollow components, so render and verify make one decision.
+      (landed in `dd95efc`)
+- [x] Return link failures as ordinary diagnostics, including JSON output and `--fail-on`.
+      (landed in `dd95efc`)
+- [x] Verify linked functions under the outer component's effective `checks:` default.
+      (landed in `dd95efc`)
+- [x] Pin nested result, path, and diagnostic rebasing with focused fixtures.
+      (landed in `dd95efc`)
+- [x] Move the real root self-check out of the engine-free unit job.
+      (landed in `dd95efc`)
+- [x] Replace §5's unimplemented recursive-discovery claim with the actual selection rule.
+      (landed in `dd95efc`)
 - [x] **The ordering trap held**: a derived-link box with no declared interior of its own
       ranks above the hollow rule (checked first in `render_component_dispatch`), so it
       draws the collapsed stack rather than a dashed hollow box — verified by temporarily
