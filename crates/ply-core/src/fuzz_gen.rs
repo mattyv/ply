@@ -3077,6 +3077,18 @@ fn direct_binding_type(ty: &RustType) -> String {
     }
 }
 
+/// Adapts an argument expression from a worked example to the owned local
+/// storage used by direct cases. The important mismatch is `&str`: callers
+/// naturally write a string literal, while Ply stores a `String` and lends
+/// it to the real function. Applying `to_string` is also harmless for the
+/// already-owned boundary expressions generated beside the example.
+fn direct_binding_expr(ty: &RustType, expr: &str) -> String {
+    match ty {
+        RustType::String => format!("({expr}).to_string()"),
+        _ => expr.to_string(),
+    }
+}
+
 /// Generates a small, fixed battery of "direct contract case" tests: real
 /// concrete inputs (boundary literals per parameter, diagonally zipped
 /// rather than a full cross product, to keep the generated file small) run
@@ -3178,8 +3190,9 @@ pub fn generate_direct_contract_cases(cf: &ContractFn, examples: &[String]) -> S
     for (case_idx, case) in cases.iter().enumerate() {
         let mut lets = String::new();
         for (p, lit) in cf.params.iter().zip(case.iter()) {
+            let binding = direct_binding_expr(&p.ty, lit);
             lets.push_str(&format!(
-                "        let {name}: {ty} = {lit};\n",
+                "        let {name}: {ty} = {binding};\n",
                 name = p.name,
                 ty = direct_binding_type(&p.ty)
             ));
@@ -3228,8 +3241,9 @@ pub fn generate_direct_contract_cases(cf: &ContractFn, examples: &[String]) -> S
         for case in &cases {
             let mut lets = String::new();
             for (p, lit) in cf.params.iter().zip(case.iter()) {
+                let binding = direct_binding_expr(&p.ty, lit);
                 lets.push_str(&format!(
-                    "            let {name}: {ty} = {lit};\n",
+                    "            let {name}: {ty} = {binding};\n",
                     name = p.name,
                     ty = direct_binding_type(&p.ty)
                 ));
@@ -4830,6 +4844,31 @@ pub fn next_index(len: usize, banned: &[bool]) -> usize { banned.len().min(len) 
         assert!(
             cases.contains("let banned: Vec<bool> = vec![];"),
             "a slice argument's local storage must give an empty vector its element type:\n{cases}"
+        );
+    }
+
+    /// A worked example calls an `&str` parameter with a string literal,
+    /// while the generated local owns a `String` so the ordinary call can
+    /// borrow it. Adding the missing type annotation without adapting that
+    /// literal turns Ply's own self-check into `let manifest: String =
+    /// "..."`, which is a generated E0308 rather than useful evidence.
+    #[test]
+    fn a_string_literal_example_is_owned_before_binding_it_as_string() {
+        let cf = discover(
+            r#"
+#[ply::requires(!manifest.is_empty())]
+#[ply::ensures(|result| *result <= manifest.len())]
+pub fn dependency_count(manifest: &str) -> usize { manifest.len() }
+"#,
+            "dependency_count",
+        );
+        let cases = generate_direct_contract_cases(
+            &cf,
+            &["dependency_count(\"[dependencies]\") == 1".into()],
+        );
+        assert!(
+            cases.contains("let manifest: String = (\"[dependencies]\").to_string();"),
+            "a borrowed string parameter needs owned local storage:\n{cases}"
         );
     }
 
