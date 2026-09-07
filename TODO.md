@@ -325,20 +325,16 @@ fixture), and the record module still earns `fuzzed(256)` through `verdict_is_ea
       which cited this claim as a live run, now says it was the case that proved the shape and
       has since been withdrawn under rule 8.
 
-## The drawing crosses documents; the evidence does not — 2026-09-06
+## The drawing and evidence cross documents together — 2026-09-06
 
-Ply's own root drawing shows the library's interior through the derived link, so `verify .`
-paints ~70 chips grey while `verify crates/ply-core` earns all 81. Both runs current, both
-from the same build. The maintainer asked why it was not green within a minute of
-publishing evidence, and said it "seems like the first thing someone will ask me".
+Ply's own root drawing used to show linked library interiors while `verify .` checked none
+of them, painting the visible promises grey even after their child runs were green. The
+root verification now freezes each eligible link before engines run, verifies the selected
+child component in its own crate context, rebases its ids and paths, and grafts it before
+aggregation and publication. The 2026-09-06 self-run published 62 earned function chips
+from the root document and reported `workspace — tested`.
 
-Landed: the false sentence is gone. A borrowed chip said "no run has answered this promise
-yet"; it now names the document that declares it and the command that answers it, and
-`verify` prints one line per linked component saying the same. The verdict stays
-`declared`, true of *this* run. The feature had been contradicting itself -- the collapsed
-card already declines to speak for evidence it does not own, the expanded chips did not.
-
-- [ ] **The real fix, and it needs spec text first: `verify` follows the link**, one level,
+- [x] **The real fix: `verify` follows the link** (landed in `4cad5d4`), one level,
       so one run covers the merged model. Design reviewed 2026-09-06 and recommended over
       the alternatives: a viewer that composites two runs invents a run that never happened
       (two build identities, two timestamps, possibly one stale) and puts verdict logic in
@@ -347,13 +343,15 @@ card already declines to speak for evidence it does not own, the expanded chips 
       the linked subtree and worst-of aggregation carries a violation to the workspace root,
       which today it cannot. Costs: a root run takes as long as its linked crates on first
       run and inherits their engine requirements, and the grafted subtree's source paths
-      must be re-rooted.
-- [ ] **Owed spec text, the maintainer's to write, and it blocks the above.** §7.1 has
+      must be re-rooted. Landed with fail-closed `E0211` ambiguity handling, child-native
+      records, frozen publication inputs, and source-path tests.
+- [x] **Owed spec text** (landed in `4cad5d4`). §7.1 has
       **no derived-link row at all** — `crates/ply-core/ply.yaml` cites it and there is
       nothing there. §5 says documents "merge into one model" and that "duplicate component
       names are errors", which a link merging by *anchor* contradicts: the root's `core` and
       the library document's own top-level name collide under that rule. §6 needs the
-      sentence that `verify` follows links. §8 needs nothing for this option.
+      sentence that `verify` follows links. §8 keeps the wire shape and now specifies
+      deterministic node/path rebasing. Written 2026-09-06 before implementation.
 - [ ] Side finding for ply-vis: both runs record `root.path: "."`, so the viewer labels a
       nested crate's run "Checked folder: Workspace root". It describes the run's own root,
       not the workspace, and reads wrong for anything but the root document.

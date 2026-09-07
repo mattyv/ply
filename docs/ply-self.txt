@@ -597,7 +597,7 @@ components:
         join_plainly(&["a".to_string(), "b".to_string(), "c".to_string()]) == "a, b and c"
     component verify — maps to Rust module ply_cli::verify
       note: Runs the checks and assembles what comes back. The one command that produces evidence rather than describing intent.
-      state VerificationResult — the structure this component holds. 3 of 3 of its fields shown
+      state VerificationResult — the structure this component holds. 3 of 4 of its fields shown
         document is a structure of your own, written `Document` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
         envelope is a structure of your own, written `Envelope` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
         source_map is a lookup table, written `BTreeMap<String, Span>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked

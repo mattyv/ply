@@ -51,7 +51,7 @@ separately; a supported signature does not make live side effects safe to exerci
 
 ## Workflow
 
-1. Find every affected crate by walking from changed implementation files to the nearest ancestor that contains `ply.yaml`. Treat each such directory as a separate Ply root. If scope is ambiguous, state the roots you selected before running anything.
+1. Find the verification root requested by the user. A workspace/root `ply.yaml` may contain hollow top-level components that derive one-hop links to crate-local `ply.yaml` files. Verifying that root verifies each eligible linked component in the same invocation; do not run or publish the linked crates separately as a substitute. For an implementation change with no requested workspace root, walk to the nearest ancestor containing `ply.yaml`. If scope remains ambiguous, state the root selected before running anything.
 2. Run the fast public check for each root:
 
 ```bash
@@ -65,6 +65,8 @@ cargo ply verify path/to/crate --json
 ```
 
 Do not add `--fail-on error` to turn missing evidence into success. Use `--engine-timeout` only to give the same declared checks more time. Use `--seed` only with the 64-character seed emitted by a prior public JSON result.
+
+A composed root run freezes each linked document before engines start, uses the child crate's own configuration and result record, and grafts the selected child result before root aggregation and publication. Read linked evidence as evidence from this one run, not as cached evidence copied from an independent child run. `E0211` means Ply could not map the child result without guessing (for example, another top-level owner also has claims or ids collide); report and fix the ambiguity rather than falling back to separate snapshots.
 
 4. Read the command's public JSON and exit status together. Report what passed, what failed, what evidence is absent or narrowed, and any concrete counterexample or repair offered by the diagnostics. Never infer success from a partial tree or from the absence of an error message.
 5. Repair implementation code when the declared intent is clear, then rerun the same root. Stop at the approval boundary below instead of editing the goal to fit the code.

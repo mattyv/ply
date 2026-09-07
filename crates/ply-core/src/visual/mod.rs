@@ -708,6 +708,41 @@ pub fn build_visual_envelope_at(
     });
     let links: Option<&crate::config::LinkIndex> = resolved.as_ref().map(|(l, _)| &l.links);
     let state_fields: Option<&crate::harness::StateFieldIndex> = resolved.as_ref().map(|(_, s)| s);
+    build_visual_envelope_resolved(document, result, run, source_map, links, state_fields)
+}
+
+/// Build a verified visual from the exact links frozen before its engines
+/// ran. This is the publication path for composed verification: re-deriving
+/// here could render a child file edited after the run with evidence earned
+/// against the earlier snapshot.
+pub fn build_visual_envelope_at_with_resolved_links(
+    document: &Document,
+    result: &Envelope,
+    run: RunMetadata,
+    source_map: &BTreeMap<String, Span>,
+    source_root: &std::path::Path,
+    links: &crate::config::LinkIndex,
+) -> Result<VisualEnvelope, VisualEnvelopeError> {
+    let state_fields =
+        crate::harness::resolve_state_fields_with_links(source_root, document, Some(links));
+    build_visual_envelope_resolved(
+        document,
+        result,
+        run,
+        source_map,
+        Some(links),
+        Some(&state_fields),
+    )
+}
+
+fn build_visual_envelope_resolved(
+    document: &Document,
+    result: &Envelope,
+    run: RunMetadata,
+    source_map: &BTreeMap<String, Span>,
+    links: Option<&crate::config::LinkIndex>,
+    state_fields: Option<&crate::harness::StateFieldIndex>,
+) -> Result<VisualEnvelope, VisualEnvelopeError> {
     let mut elements = BTreeMap::new();
     let mut semantic_ids = BTreeMap::new();
     collect_elements(
@@ -1715,6 +1750,105 @@ mod tests {
         assert!(
             bump.evidence.engine.is_none() && bump.evidence.cases.is_none(),
             "no engine ran against it, so naming one would be inventing evidence"
+        );
+    }
+
+    #[test]
+    fn verified_publication_uses_the_frozen_link_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("sub/src")).unwrap();
+        std::fs::write(
+            root.join("ply.yaml"),
+            "ply: 1\ncomponents:\n  sub:\n    anchor: ply_linked_sub\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sub/ply.yaml"),
+            "ply: 1\ncomponents:\n  child:\n    anchor: ply_linked_sub\n    fns:\n      bump: {checks: [test]}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sub/Cargo.toml"),
+            "[package]\nname = \"ply-linked-sub\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("sub/src/lib.rs"), "pub fn bump() {}\n").unwrap();
+        let document = crate::config::load(&root.join("ply.yaml")).unwrap();
+        let frozen = crate::config::derive_links(&document, root);
+        assert!(frozen.findings.is_empty());
+
+        // Simulate an edit after planning and verification but before view
+        // publication. The verified visual must not re-read this new shape.
+        std::fs::write(
+            root.join("sub/ply.yaml"),
+            "ply: 1\ncomponents:\n  child:\n    anchor: ply_linked_sub\n    fns:\n      replacement: {checks: [test]}\n",
+        )
+        .unwrap();
+        let result = crate::diag::Envelope {
+            command: "verify".into(),
+            ply_version: "test".into(),
+            root: crate::diag::Node {
+                id: "workspace".into(),
+                kind: "workspace".into(),
+                verdict: "tested".into(),
+                children: vec![crate::diag::Node {
+                    id: "sub".into(),
+                    kind: "component".into(),
+                    verdict: "tested".into(),
+                    children: vec![crate::diag::Node {
+                        id: "bump".into(),
+                        kind: "fn".into(),
+                        verdict: "tested".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            diagnostics: Vec::new(),
+            coverage: None,
+            trust_surface: None,
+            open_items: None,
+            not_carried_forward: Vec::new(),
+        };
+        let visual = build_visual_envelope_at_with_resolved_links(
+            &document,
+            &result,
+            RunMetadata {
+                id: "test".into(),
+                completed_at: "1970-01-01T00:00:00Z".into(),
+                root: RootIdentity {
+                    path: "ply.yaml".into(),
+                },
+                tool: ToolIdentity {
+                    name: "ply".into(),
+                    version: "test".into(),
+                },
+                outcome: RunOutcome::Clean,
+            },
+            &BTreeMap::new(),
+            root,
+            &frozen.links,
+        )
+        .unwrap();
+
+        let labels = visual
+            .elements
+            .values()
+            .map(|element| element.label.as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"bump"), "{labels:?}");
+        assert!(!labels.contains(&"replacement"), "{labels:?}");
+        assert_eq!(
+            visual
+                .elements
+                .values()
+                .find(|element| element.label == "bump")
+                .unwrap()
+                .evidence
+                .verdict,
+            "tested"
         );
     }
 }

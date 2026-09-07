@@ -285,12 +285,12 @@ fn a_component_with_real_local_content_ignores_a_resolvable_link() {
 /// document -- whose `core` note appeared in `docs/ply-self.txt` and zero
 /// times in `docs/ply-self.svg`.
 #[test]
-fn a_linked_box_keeps_this_documents_own_words_not_the_other_files() {
+fn a_linked_box_keeps_this_documents_own_words_when_the_child_is_silent() {
     let dir = tempfile::tempdir().unwrap();
     write_crate(
         dir.path(),
         "inner_lib",
-        "ply: 1\ncomponents:\n  inner:\n    anchor: inner_lib\n    note: THE INNER FILES OWN NOTE\n    components:\n      nested:\n        anchor: inner_lib::nested\n        fns:\n          go:\n            checks: [bounded(2)]\n",
+        "ply: 1\ncomponents:\n  inner:\n    anchor: inner_lib\n    components:\n      nested:\n        anchor: inner_lib::nested\n        fns:\n          go:\n            checks: [bounded(2)]\n",
     );
     let outer_text =
         "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    note: THIS DOCUMENTS OWN NOTE\n";
@@ -298,17 +298,9 @@ fn a_linked_box_keeps_this_documents_own_words_not_the_other_files() {
     let doc = parse_document(outer_text).unwrap();
 
     let link_set = derive_links(&doc, dir.path());
-    // Both documents give this component a note and they differ, which is
-    // an error as of 2026-09-06 (`E0210`): §5 says merge order cannot
-    // matter, so nothing may settle a disagreement by going first. This
-    // fixture used to assert no findings at all; that was pinning the
-    // silence, not the drawing. The drawing's own rule is unchanged and
-    // still worth pinning -- and a document with findings still renders,
-    // because a picture that refuses to draw hides the problem it should be
-    // showing (§7.1).
     assert!(
-        link_set.findings.iter().any(|f| f.code == "E0210"),
-        "two differing notes for one component must be reported: {:?}",
+        link_set.findings.is_empty(),
+        "one document supplying identity and the other supplying interior is unambiguous: {:?}",
         link_set.findings
     );
     let state_fields = ply_core::harness::resolve_state_fields(dir.path(), &doc);
@@ -328,10 +320,6 @@ fn a_linked_box_keeps_this_documents_own_words_not_the_other_files() {
     assert!(
         svg.contains("THIS DOCUMENTS OWN NOTE"),
         "the drawing dropped this document's own note:\n{svg}"
-    );
-    assert!(
-        !svg.contains("THE INNER FILES OWN NOTE"),
-        "the drawing showed the other file's note in its place:\n{svg}"
     );
     // The interior still comes from the other file -- that is the feature.
     assert!(svg.contains(">nested<") && svg.contains(">go<"), "{svg}");

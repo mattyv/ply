@@ -241,8 +241,15 @@ ADRs to write as their milestones start:
 ## 5. The `ply.yaml` format
 
 Files named `ply.yaml` (or `*.ply.yaml`) are discovered from the workspace root downward
-(lexicographic path order; `target/` and gitignored paths excluded) and merge into one
-model. Merge order cannot matter: duplicate component names are errors. **The JSON Schema
+(lexicographic path order; `target/` and gitignored paths excluded). A command has one
+root document. A hollow top-level component in that document may derive a one-hop link
+from its crate anchor to that crate's own `ply.yaml`; the linked component supplies the
+hollow component's interior, while the outer component keeps its name and other identity.
+Names need only be unique within one document's component namespace. Two documents may
+therefore use different top-level names for the same anchored component without a
+duplicate-name error. Merge order still cannot decide meaning: conflicting declarations
+of the same linked component are errors, and a link never imports unrelated top-level
+components or architecture rules from the child document. **The JSON Schema
 at `schema/ply.schema.json` is the normative definition of the format**; this section is
 its prose rendering, and any divergence is a bug in this section. The schema is embedded
 in the binary, shipped in the repo, versioned by the top-level `ply: 1` field, and
@@ -2009,6 +2016,18 @@ cargo ply synth <fn>         # M6
 cargo ply skill              # (re)generate docs/PLY.skill.md from schema + diag registry
 ```
 
+When the selected `ply.yaml` derives an eligible cross-document component link,
+`verify` freezes the linked document at planning time and verifies its selected component
+in the same invocation, using that child crate's own directory, configuration, and
+`ply.lock`. It follows links one level only. The child result is grafted under the outer
+component's name before verdict aggregation, JSON output, SVG generation, or view
+publication, so all those surfaces describe one run and a child failure weakens the root.
+Paths and node ids in the grafted result are rebased to the command's root. A present but
+unreadable, cyclic, conflicting, multiply owned, or otherwise ambiguous link is a named error
+(`E0211` when no narrower error already names it);
+Ply never guesses which evidence belongs in the root. `--seed` and engine timeouts apply
+to every check run by the composed invocation.
+
 **`render` is the pre-code command.** It accepts a `ply.yaml` file or a directory that
 contains one, and defaults to the current directory. It parses the same document model
 and calls the same SVG renderer used by published visual artifacts. It runs no checks,
@@ -2247,6 +2266,7 @@ grammar.**
 | `mode: synth` | the fn chip's fill turns light violet — violet is hereby the authorship channel, its single meaning "machine-written": the body below the watermark is synthesized from the contract, with the checks holding the line. Tooltip says exactly that |
 | `examples` | a gray `e×N` token in the chip's annotation area (next to the `T=...` note); the tooltip already counts and the `test` check runs them |
 | hollow component (derived, like findings) | a component that declares nothing inside — no fns, no nested components — draws with a dashed border: a sketch outline, nothing to zoom into yet. Tooltip says so plainly. Derived from absence rather than declared; the natural state of every box in top-down authoring, expected to solidify as claims arrive |
+| derived document link | a hollow top-level component whose crate has its own `ply.yaml` draws that linked component's interior in place, while naming the document that supplied it. A declaration-only render shows those promises as unclaimed. A verified evidence view uses the actual grafted results from the same composed invocation: earned promises are green, violations are red, and unanswered checks remain unanswered. Expanded and folded drawings summarize the same evidence; clients never combine independent snapshots. A refused or ambiguous link remains unresolved and carries its named finding rather than borrowing evidence. |
 | finding (tool-computed, not declared) | the offending item drawn in error red with an `E####` badge; its tooltip leads with the diagnostic. A finding with no drawable item attaches a red count to the workspace title. A document with findings still renders — a picture that refuses to draw hides the problem it should be showing (origin: fault-injection demo, where a faulted toolchain drew `bounded(0)` as legitimate evidence) |
 | external | a solid-bordered, unfilled, anchor-less, badge-less box **outside the workspace frame** — position extends its one declared meaning (containment) from "inside the box = part of the component" to "inside the frame = part of the system"; no new channel. Never on the verdict scale, not even `unclaimed`. Tooltip: "⟨name⟩ — a system or person outside this codebase: ⟨note⟩. Ply draws it so the boundary is visible, but checks nothing about it — every arrow touching it is a declaration, not a verified fact." |
 | `entry:` (derived edge) | a dashed arrow, labeled `entry`, from the reachable fn to the external that can reach it — crossing the frame border like any `~>` edge. Not a declared edge (fn claims are not edge endpoints, §5.3); the renderer derives it the same way it derives the ceiling fill. Tooltip names the fn, the external, and lists each `requires` clause now standing as an environmental assumption |
@@ -2529,6 +2549,12 @@ was recomputed from today's inputs and matched the recorded one, so its presence
 statement that the recorded result is about the code in front of you. Everything else on
 such a node — verdict, statuses, `evidence`, and the diagnostics carrying its node id —
 is exactly what the run that earned it emitted.
+
+For a composed verification (§6), the wire shape is unchanged. Linked child nodes are
+rebased beneath the outer component id, and relative source, counterexample, and edit
+paths are rebased from the child crate to the invocation root. Node ids are rewritten by
+the explicit selected-component prefix mapping, never by splitting an arbitrary function
+key. Collisions and mappings that are not unique are errors rather than last-writer-wins.
 
 A node whose verdict came from a sampling engine that **actually ran** additionally
 carries `evidence: { "engine": "proptest", "seed": "<64 hex chars>", "cases": 256 }` —

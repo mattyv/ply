@@ -71,7 +71,7 @@ codes!(
     // --- Tier::Anchor: resolving a claim to real code (§5.2). ---
     E0301, E0304, E0306, // --- Tier::Crate: architecture, exact and sound (§5.3). ---
     A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, A0416, A0417, W0413, W0532,
-    W0533, W0534, E0210,
+    W0533, W0534, E0210, E0211,
     // --- Tier::Item: architecture, approximate (§5.3) -- none of these
     // are built yet; see each row's status. ---
     A0402, A0403, A0404, A0406, A0407, A0408, W0411, W0412,
@@ -365,6 +365,14 @@ impl Code {
                 severity: Error,
                 spec_anchor: "§5",
                 gloss: "Two ply.yaml files describe the same component and say different things about it -- both give it a note, or a profile, or declared checks, and the two do not match. §5 says merge order cannot matter, so nothing may decide this by going first: one description has to be deleted, or the two made to agree. Only fields both files actually write are compared; a file that says nothing about a field is not disagreeing.",
+            },
+            E0211 => RuleEntry {
+                code: self,
+                tier: Crate,
+                status: Enforced,
+                severity: Error,
+                spec_anchor: "§6",
+                gloss: "A linked verification cannot map one child result into the root without guessing -- for example the child document has claims under another top-level owner, two outer components claim one child, a link is unresolved, or an id collides while rebasing. No linked evidence is admitted and no view is published.",
             },
             W0533 => RuleEntry {
                 code: self,
