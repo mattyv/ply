@@ -1406,22 +1406,18 @@ fn verify_loaded_crate(
         let harness_pkg = harness_crate::harness_package_name(&target_names.package_name);
         let harness_rel = harness_crate::harness_rel_path(&target_names.package_name);
         let harness_dir = crate_dir.join(&harness_rel);
-        // docs/review-caveats.md N1: registering the harness as a member of
-        // the target crate's own workspace only happens when that crate
-        // already opted into having one. Otherwise (an ordinary crate, or a
-        // member of someone else's workspace with no `[workspace]` table of
-        // its own) Ply never edits the target's `Cargo.toml` at all -- the
-        // harness gets its own isolated `[workspace]` table instead
-        // (`harness_crate` module doc), and every `cargo test`/`cargo
-        // mutants` invocation against it below runs from *its own*
-        // directory, never the target crate's.
-        let standalone = !harness_crate::crate_has_workspace_table(&cargo_toml_text);
+        // Cargo, not the member manifest, decides workspace membership. A
+        // member of a virtual workspace has no `[workspace]` table of its
+        // own, so inspecting only this `cargo_toml_text` incorrectly made
+        // every such crate ineligible for mutation testing.
+        let workspace = harness_crate::harness_workspace_plan(crate_dir, &harness_dir)?;
+        let standalone = workspace.standalone;
         _manifest_registration = if standalone {
             None
         } else {
             Some(harness_crate::ManifestRegistration::register(
-                &cargo_toml_path,
-                &harness_rel,
+                &workspace.workspace_manifest,
+                &workspace.harness_member_path,
                 &harness_dir,
                 &harness_pkg,
                 &target_names,
@@ -1430,7 +1426,7 @@ fn verify_loaded_crate(
         let harness_workspace_root: PathBuf = if standalone {
             harness_dir.clone()
         } else {
-            crate_dir.to_path_buf()
+            workspace.workspace_root
         };
         harness_crate::write_harness_cargo_toml(
             &harness_dir,
@@ -3514,15 +3510,13 @@ struct HarnessInfo {
     /// (§1) rather than either reporting a clean pass on an unbuilt harness
     /// or guessing which one function is at fault.
     unattributed_cause: Option<String>,
-    /// Where `fuzz`/`test` cargo invocations against this harness must run
-    /// from (docs/review-caveats.md N1): the target crate's own root when
-    /// it was already registered into that crate's existing workspace, or
-    /// the harness crate's own directory when it was instead given an
-    /// isolated `[workspace]` table of its own (`standalone` below).
+    /// Where Cargo invocations against this harness must run: Cargo's real
+    /// workspace root after temporary registration, or the harness crate's
+    /// own directory for a plain package's isolated harness.
     workspace_root: PathBuf,
     /// Whether the harness was placed in its own isolated `[workspace]`
-    /// (true) rather than registered as a member of the target crate's own
-    /// (false). `mutate` needs the registered-member shape specifically
+    /// (true) rather than registered in Cargo's real workspace (false).
+    /// `mutate` needs the registered-member shape specifically
     /// (`engines::mutants`' own module doc) and cannot be attempted at all
     /// when this is true -- see its call site in `run_fn_checks`.
     standalone: bool,
@@ -4029,6 +4023,7 @@ fn run_fn_checks(
             if let Some(info) = harness_info {
                 let (outcome, mut d) = run_mutate_check(
                     crate_dir,
+                    &info.workspace_root,
                     &info.package,
                     info.standalone,
                     MutateTarget {
@@ -5518,7 +5513,6 @@ fn run_bounded_check(
             Ok(("timeout".into(), vec![], vec![d]))
         }
         KaniOutcome::ToolError { reason, raw_output } => {
-            let _ = raw_output;
             let d = Diagnostic {
                 code: "X0901".into(),
                 severity: "error".into(),
@@ -5526,7 +5520,7 @@ fn run_bounded_check(
                 engine: "kani".into(),
                 check: check_label,
                 node_id: node_id.into(),
-                title: format!("Ply's Kani adapter could not interpret Kani's output: {reason}"),
+                title: kani_tool_error_title(&reason, &raw_output),
                 pointer: None,
                 primary_span: None,
                 counterexample: None,
@@ -7160,6 +7154,37 @@ fn kani_timeout_title(fn_name: &str, secs: u32, stubbed: &[StubSpec]) -> String 
     title
 }
 
+/// Keeps the useful end of Kani's output in the diagnostic. Rust compiler
+/// errors and Cargo's final cause appear there; dropping it turned an
+/// ordinary harness build failure into a misleading parser complaint.
+fn kani_tool_error_title(reason: &str, raw_output: &str) -> String {
+    let raw_output = raw_output.trim();
+    if raw_output.is_empty() {
+        return format!(
+            "Kani stopped before it reported whether the contract passed or failed: {reason}. \
+             It produced no process output."
+        );
+    }
+
+    const MAX_CHARS: usize = 4_000;
+    let count = raw_output.chars().count();
+    let excerpt = if count > MAX_CHARS {
+        format!(
+            "[earlier Kani output omitted]\n{}",
+            raw_output
+                .chars()
+                .skip(count - MAX_CHARS)
+                .collect::<String>()
+        )
+    } else {
+        raw_output.to_string()
+    };
+    format!(
+        "Kani stopped before it reported whether the contract passed or failed: {reason}.\n\
+         Kani's process output:\n{excerpt}"
+    )
+}
+
 /// `W0541`'s words. Extracted and made shape-aware 2026-08-25 (adversarial
 /// review of the post-004 fixes, D4): the message used to say Ply "has no way
 /// yet to spell a `BTreeSet`, or a `Vec` of anything but `u8`, as a literal
@@ -7400,6 +7425,7 @@ struct MutateTarget<'a> {
 
 fn run_mutate_check(
     crate_dir: &Path,
+    harness_workspace_root: &Path,
     harness_pkg: &str,
     standalone: bool,
     target: MutateTarget<'_>,
@@ -7416,16 +7442,12 @@ fn run_mutate_check(
     } = target;
     let _ = checks;
     if standalone {
-        // docs/review-caveats.md N1: `cargo mutants -p <target> --test-package
-        // <harness>` (`engines::mutants`) resolves both names against one
-        // `cargo metadata` call rooted at the target crate, so it only works
-        // when the harness is a member of *that* workspace. Ply no longer
-        // makes it one uninvited (that used to mean either editing a crate
-        // that had no workspace at all, or breaking a crate that already
-        // belonged to someone else's -- both reproduced in the review this
-        // fixes). So on this crate's layout, `mutate` is refused by name,
-        // honestly, rather than handed to cargo-mutants to fail on a package
-        // spec it cannot resolve.
+        // A plain package with no explicit workspace keeps an isolated
+        // harness. `cargo mutants -p <target> --test-package <harness>`
+        // requires both packages in one Cargo workspace, and Ply will not
+        // create a new `[workspace]` declaration in user code merely to
+        // enable it. Virtual-workspace members never reach this branch:
+        // Cargo's reported root is used and the harness is registered there.
         return Ok((
             MutateOutcome::Inconclusive("unsupported"),
             vec![Diagnostic {
@@ -7438,10 +7460,10 @@ fn run_mutate_check(
                 title: format!(
                     "`{fn_name}` declares `mutate`, but this crate's layout doesn't support it yet: \
                      mutation testing needs the crate under test and Ply's generated test harness \
-                     to sit in one shared Cargo workspace, and this crate has no `[workspace]` table \
-                     of its own for Ply to register the harness into. Ply does not add one \
-                     automatically -- doing that used to either do nothing or break a project that \
-                     already belonged to a different workspace. This is reported as unsupported, not \
+                     to sit in one shared Cargo workspace, and this package is not part of an explicit \
+                     workspace where Ply can register the harness. Ply does not create a new \
+                     `[workspace]` declaration automatically because that can change Cargo's package \
+                     discovery. This is reported as unsupported, not \
                      attempted, so nothing here says the spec is weak; it does mean `mutate` produced \
                      no evidence, so the run does not pass."
                 ),
@@ -7451,9 +7473,7 @@ fn run_mutate_check(
                 fixes: vec![
                     Fix {
                         title:
-                            "add an empty `[workspace]` table to this crate's own Cargo.toml to \
-                                enable `mutate` (only safe when this crate is not already a member \
-                                of a different workspace)"
+                            "place this package in an explicit Cargo workspace to enable `mutate`"
                                 .into(),
                         edits: vec![],
                     },
@@ -7526,14 +7546,13 @@ fn run_mutate_check(
         }
     }
     let cfg = MutantsRunConfig {
-        workspace_root: crate_dir.to_path_buf(),
+        workspace_root: harness_workspace_root.to_path_buf(),
         mutated_package: target_names.package_name,
         harness_package: harness_pkg.to_string(),
-        // Unanchored: cargo-mutants' `--re` matches against the whole
-        // descriptive mutant name (e.g. "src/lib.rs:8:5: replace vacuous ->
-        // u32 with 0"), not the bare fn name, so `^{fn}$` matches nothing --
-        // confirmed against a real run (docs/m4-findings.md) and matching
-        // the spike's own usage (`--re strong_target`, no anchors).
+        // The engine adapter turns each name into a selector for the two
+        // places cargo-mutants identifies the containing function. Passing
+        // raw names here is deliberate; treating them as ready-made regexes
+        // lets a string literal inside another body widen the mutation scope.
         fn_regexes: mutate_scope.clone(),
         // `test_filter` is the caller's `harness_test_filter(cf)`, never
         // built from `fn_name` here: the generated harness names its
@@ -9452,6 +9471,20 @@ mod tests {
         assert!(
             !plain.contains("stood in for"),
             "an unstubbed timeout must not carry an explanation that does not apply to it: {plain}"
+        );
+    }
+
+    #[test]
+    fn a_kani_tool_error_shows_the_process_failure_output() {
+        let title = kani_tool_error_title(
+            "Kani exited with status 101 before reporting a result",
+            "error[E0308]: mismatched types\n",
+        );
+        assert!(title.contains("status 101"), "{title}");
+        assert!(title.contains("error[E0308]: mismatched types"), "{title}");
+        assert!(
+            !title.contains("could not interpret"),
+            "an earlier compiler failure is not an output-format problem: {title}"
         );
     }
 

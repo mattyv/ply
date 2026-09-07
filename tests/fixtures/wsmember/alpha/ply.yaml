@@ -5,4 +5,4 @@ components:
     anchor: ply_fixture_wsmember_alpha
     fns:
       seeded_bug:
-        checks: [fuzz(256)]
+        checks: [fuzz(256), mutate]

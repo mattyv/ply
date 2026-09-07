@@ -3,44 +3,25 @@
 //! per `tests/spike/mutants/MUTANTS-FINDINGS.md`'s verified mechanism, is
 //! what `mutate` names via `--test-package`.
 //!
-//! **Two placements, chosen per target crate, never by user request.** The
-//! original mechanism (below, still exactly what happens when the target
-//! crate already declares `[workspace]` itself) idempotently registers the
-//! harness as a member of *that same* workspace, because `mutate`'s
-//! `--test-package` genuinely needs it there (part 1 below). But that
-//! registration requires a `[workspace]` table to add a member *to*, and
-//! adding one to a crate that doesn't have it either does nothing (an
-//! ordinary `cargo new --lib` crate) or actively breaks the enclosing
-//! project (a crate that is already a member of someone else's workspace --
-//! Cargo refuses "multiple workspace roots" the moment a second
-//! `[workspace]` table appears inside the first one's member tree). Both
-//! were reproduced against a real `cargo-ply verify` run
-//! (docs/review-caveats.md N1) and are why this module never edits a
-//! target crate's `Cargo.toml` unless that file already opted in by
-//! carrying `[workspace]` itself.
+//! **Two placements, chosen from Cargo's real workspace, never by user
+//! request.** `cargo_workspace_root` reads `cargo metadata`; this is
+//! load-bearing because a member of a virtual workspace correctly carries
+//! no `[workspace]` table in its own manifest. When Cargo reports either a
+//! virtual root above the target or an explicit workspace in the target
+//! package itself, Ply temporarily registers the harness in that real
+//! root. `mutate`'s `--test-package` genuinely needs both packages in that
+//! one graph.
 //!
-//! When it doesn't (`crate_has_workspace_table` is false -- an ordinary
-//! crate, or a member of a bigger workspace with no `[workspace]` table of
-//! its own), the harness crate instead gets **its own** `[workspace]`
-//! table (`write_harness_cargo_toml`'s `standalone` flag) -- the exact
-//! shape every M3/M4 fixture crate already uses for itself: `[workspace]`
-//! with no `members` key makes a crate its own workspace root, stopping
-//! Cargo's upward search for an enclosing one dead at that file, so it
-//! never joins -- and never risks colliding with -- whatever workspace (if
-//! any) contains the target crate. The target crate is reached purely as
-//! an ordinary path dependency (`../../../..`, unchanged), which needs no
-//! shared workspace at all. `fuzz`/`test` (`engines::fuzz::run_harness_tests`
-//! et al.) are invoked with *that* directory as their own working directory
-//! in this case (`ply-cli/src/verify.rs`), never the target crate's, so
-//! `cargo test -p <harness>` resolves the harness against its own
-//! single-crate workspace instead of failing to find it in the target's.
-//! `mutate` cannot make the same move -- see its own module
-//! (`engines::mutants`) for why -- so a crate in this shape earns an honest
-//! "not supported for this crate's layout yet" the moment `mutate` is
-//! declared, rather than a cargo-mutants error nobody could act on.
+//! An ordinary package with no explicit `[workspace]` keeps the harness in
+//! its own isolated workspace (`write_harness_cargo_toml`'s `standalone`
+//! flag). Ply does not add a new workspace declaration to user code merely
+//! to run mutation testing, because that may change Cargo's package
+//! discovery. The target remains an ordinary path dependency and
+//! `fuzz`/`test` run from the harness directory. `mutate` cannot make the
+//! same move, so only this plain-package shape gets the named unsupported
+//! result.
 //!
-//! The registered-member mechanism (only reached once `crate_has_workspace_table`
-//! is true) has three load-bearing parts, all confirmed in the spike and
+//! The registered-member mechanism has three load-bearing parts, all confirmed in the spike and
 //! reproduced here as real codegen rather than a hand-written fixture:
 //!
 //! 1. The harness must be a *proper workspace member* -- `cargo metadata`
@@ -48,8 +29,9 @@
 //!    resolve against) only sees packages that are members of the same
 //!    workspace as the target crate. Since every M3/M4 fixture is its own
 //!    single-package workspace (`[workspace]` with no `members` key), this
-//!    module idempotently adds `members = [".", "target/ply/fuzz/<name>"]`
-//!    to the target crate's root `Cargo.toml`.
+//!    module idempotently adds the harness path to the actual workspace
+//!    root's `members` list. For a virtual workspace member, that path
+//!    includes the member directory before `target/ply/fuzz/<name>`.
 //! 2. The harness crate's own `Cargo.toml` depends on the target crate by
 //!    *path*, using its actual `[lib] name` (the Rust identifier `use`
 //!    needs), not necessarily its package name (they can differ by
@@ -134,6 +116,88 @@ fn find_key_after_section(text: &str, section: &str, key: &str) -> Option<String
 /// looks for.
 pub fn crate_has_workspace_table(cargo_toml_text: &str) -> bool {
     cargo_toml_text.lines().any(|l| l.trim() == "[workspace]")
+}
+
+/// The workspace Cargo itself assigns to `crate_dir`.
+///
+/// Reading this from `cargo metadata` matters for member crates: their own
+/// manifest correctly has no `[workspace]` table, while the virtual root
+/// above them does. Mutation testing needs that real shared root so both
+/// the target package and generated harness resolve in one package graph.
+pub fn cargo_workspace_root(crate_dir: &Path) -> Result<PathBuf> {
+    let output = std::process::Command::new("cargo")
+        .args(["metadata", "--format-version=1", "--no-deps"])
+        .current_dir(crate_dir)
+        .output()
+        .with_context(|| format!("spawning `cargo metadata` in {}", crate_dir.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "`cargo metadata` could not resolve the workspace containing {} (status {}): {}",
+            crate_dir.display(),
+            output.status,
+            stderr.trim()
+        );
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("reading `cargo metadata` output while locating the workspace root")?;
+    let root = metadata
+        .get("workspace_root")
+        .and_then(serde_json::Value::as_str)
+        .context("`cargo metadata` output had no string `workspace_root`")?;
+    PathBuf::from(root)
+        .canonicalize()
+        .with_context(|| format!("resolving Cargo workspace root {root}"))
+}
+
+/// Where the generated harness participates while verification runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessWorkspacePlan {
+    pub workspace_root: PathBuf,
+    pub workspace_manifest: PathBuf,
+    pub harness_member_path: String,
+    /// A plain package with no explicit workspace keeps the harness in its
+    /// own isolated workspace. An explicit package workspace and a member
+    /// of a virtual workspace both set this to false.
+    pub standalone: bool,
+}
+
+/// Plans harness membership from Cargo's real workspace, not from whether
+/// the target package's own manifest happens to contain `[workspace]`.
+pub fn harness_workspace_plan(
+    crate_dir: &Path,
+    harness_dir: &Path,
+) -> Result<HarnessWorkspacePlan> {
+    let crate_root = crate_dir
+        .canonicalize()
+        .with_context(|| format!("resolving target crate directory {}", crate_dir.display()))?;
+    let workspace_root = cargo_workspace_root(&crate_root)?;
+    let target_manifest = std::fs::read_to_string(crate_root.join("Cargo.toml"))
+        .with_context(|| format!("reading {}/Cargo.toml", crate_root.display()))?;
+    let standalone = workspace_root == crate_root && !crate_has_workspace_table(&target_manifest);
+
+    let harness_abs = if let Ok(suffix) = harness_dir.strip_prefix(crate_dir) {
+        crate_root.join(suffix)
+    } else if harness_dir.is_absolute() {
+        harness_dir.to_path_buf()
+    } else {
+        crate_root.join(harness_dir)
+    };
+    let member = harness_abs.strip_prefix(&workspace_root).with_context(|| {
+        format!(
+            "generated harness {} does not sit under Cargo workspace root {}",
+            harness_abs.display(),
+            workspace_root.display()
+        )
+    })?;
+    let harness_member_path = member.to_string_lossy().replace('\\', "/");
+
+    Ok(HarnessWorkspacePlan {
+        workspace_manifest: workspace_root.join("Cargo.toml"),
+        workspace_root,
+        harness_member_path,
+        standalone,
+    })
 }
 
 /// The harness crate's package name for a given target package name --
@@ -572,6 +636,62 @@ path = "src/lib.rs"
         assert!(!crate_has_workspace_table(
             "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n"
         ));
+    }
+
+    #[test]
+    fn a_member_crate_finds_its_virtual_workspace_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let member = dir.path().join("crates/member");
+        std::fs::create_dir_all(member.join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/member\"]\nresolver = \"2\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(member.join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n").unwrap();
+
+        let root = cargo_workspace_root(&member).unwrap();
+        assert_eq!(root, dir.path().canonicalize().unwrap());
+
+        let harness = member.join("target/ply/fuzz/member-ply-harness");
+        let plan = harness_workspace_plan(&member, &harness).unwrap();
+        assert!(!plan.standalone);
+        assert_eq!(plan.workspace_root, dir.path().canonicalize().unwrap());
+        assert_eq!(
+            plan.harness_member_path,
+            "crates/member/target/ply/fuzz/member-ply-harness"
+        );
+
+        let workspace_manifest = dir.path().join("Cargo.toml");
+        let original = std::fs::read_to_string(&workspace_manifest).unwrap();
+        {
+            let _registration = ManifestRegistration::register(
+                &plan.workspace_manifest,
+                &plan.harness_member_path,
+                &harness,
+                "member-ply-harness",
+                &CrateNames {
+                    package_name: "member".into(),
+                    lib_ident: "member".into(),
+                },
+            )
+            .unwrap();
+            let registered = std::fs::read_to_string(&workspace_manifest).unwrap();
+            assert!(
+                registered.contains("crates/member/target/ply/fuzz/member-ply-harness"),
+                "the harness must be registered in the virtual root, not refused:\n{registered}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&workspace_manifest).unwrap(),
+            original,
+            "the virtual workspace manifest must be restored byte-for-byte"
+        );
     }
 
     #[test]

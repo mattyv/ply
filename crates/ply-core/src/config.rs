@@ -199,12 +199,10 @@ fn conflicting_fields(mine: &Component, theirs: &Component) -> Vec<(&'static str
     let listed = |v: &Vec<String>| (!v.is_empty()).then(|| format!("{v:?}"));
     both("owns", listed(&mine.owns), listed(&theirs.owns));
     both("uses", listed(&mine.uses), listed(&theirs.uses));
-    // A bool cannot say "absent", so only a difference is reportable -- and
-    // a difference means one file claims the property and the other does not.
-    if mine.pure != theirs.pure {
+    if mine.pure_declared && theirs.pure_declared && mine.pure != theirs.pure {
         out.push(("pure", mine.pure.to_string(), theirs.pure.to_string()));
     }
-    if mine.strict != theirs.strict {
+    if mine.strict_declared && theirs.strict_declared && mine.strict != theirs.strict {
         out.push(("strict", mine.strict.to_string(), theirs.strict.to_string()));
     }
     out
@@ -1089,5 +1087,85 @@ mod conflict_tests {
             "agreement is not conflict: {:?}",
             set.findings
         );
+    }
+
+    #[test]
+    fn omitted_booleans_in_a_hollow_root_do_not_conflict_with_child_declarations() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/inner_lib\"]\nresolver = \"2\"\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/Cargo.toml",
+            "[package]\nname = \"inner_lib\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/src/lib.rs",
+            "pub fn go() {}\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/ply.yaml",
+            "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    pure: true\n    strict: true\n    fns:\n      go: {}\n",
+        );
+        write(
+            dir.path(),
+            "ply.yaml",
+            "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n",
+        );
+
+        let doc = load(&dir.path().join("ply.yaml")).unwrap();
+        let set = derive_links(&doc, dir.path());
+        assert!(
+            !set.findings.iter().any(|f| f.code == "E0210"),
+            "an omitted field says nothing and cannot disagree: {:?}",
+            set.findings
+        );
+        assert!(set.links.contains_key("core"));
+    }
+
+    #[test]
+    fn explicitly_false_still_conflicts_with_a_linked_true_boolean() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/inner_lib\"]\nresolver = \"2\"\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/Cargo.toml",
+            "[package]\nname = \"inner_lib\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/src/lib.rs",
+            "pub fn go() {}\n",
+        );
+        write(
+            dir.path(),
+            "crates/inner_lib/ply.yaml",
+            "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    pure: true\n    fns:\n      go: {}\n",
+        );
+        write(
+            dir.path(),
+            "ply.yaml",
+            "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    pure: false\n",
+        );
+
+        let doc = load(&dir.path().join("ply.yaml")).unwrap();
+        let set = derive_links(&doc, dir.path());
+        assert!(
+            set.findings
+                .iter()
+                .any(|f| f.code == "E0210" && f.message.contains("pure")),
+            "an explicit false and explicit true are conflicting declarations: {:?}",
+            set.findings
+        );
+        assert!(!set.links.contains_key("core"));
     }
 }

@@ -43,10 +43,21 @@ fn verify_runs_on_a_workspace_member_and_the_parent_workspace_still_builds() {
         run.json
     );
     let diagnostics = run.json["diagnostics"].as_array().unwrap();
-    assert_eq!(diagnostics.len(), 1, "envelope: {}", run.json);
+    assert_eq!(diagnostics.len(), 2, "envelope: {}", run.json);
+    let violation = diagnostics
+        .iter()
+        .find(|d| d["counterexample"].is_object())
+        .unwrap_or_else(|| panic!("missing the real failing input: {}", run.json));
     assert_eq!(
-        diagnostics[0]["counterexample"]["inputs"]["x"], "7",
+        violation["counterexample"]["inputs"]["x"], "7",
         "must catch the genuinely seeded bug, not merely produce a green tree"
+    );
+    assert!(
+        diagnostics.iter().any(|d| {
+            d["code"] == "W0110" && d["title"].as_str().is_some_and(|t| t.contains("skipped"))
+        }),
+        "mutation testing must wait for the broken base check: {}",
+        run.json
     );
 
     // Neither manifest was touched: no [workspace] table appeared in
@@ -94,14 +105,19 @@ fn verify_runs_on_a_workspace_member_and_the_parent_workspace_still_builds() {
 
     let run2 = run_verify(&cargo_ply, &alpha, 120);
     assert_eq!(
-        run2.json["root"]["verdict"], "fuzzed(256)",
-        "envelope: {}",
-        run2.json
+        run2.json["root"]["verdict"], "fuzzed(256)·spec-strong",
+        "a virtual-workspace member must now run mutation testing too: {}",
+        run2.json,
     );
     assert_eq!(run2.json["diagnostics"].as_array().unwrap().len(), 0);
 
     let build2 = run_cargo_build(root);
     assert!(build2.success, "{}", build2.combined_output);
+    assert_eq!(
+        std::fs::read_to_string(root.join("Cargo.toml")).unwrap(),
+        root_toml_before,
+        "the virtual workspace manifest must be restored after cargo-mutants too"
+    );
     let test2 = run_cargo_test(&alpha);
     assert!(test2.success, "{}", test2.combined_output);
 }

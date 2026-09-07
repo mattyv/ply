@@ -6,7 +6,8 @@
 //!
 //! ```text
 //! cargo mutants -p <mutated-crate> --test-package <harness-crate> \
-//!     --re <fn> --copy-target true --no-times -t <secs> -- <test-name-filter>
+//!     --re <owned-fn-pattern> --exclude **/ply_generated*.rs \
+//!     --copy-target true --no-times -t <secs> -- <test-name-filter>
 //! ```
 //!
 //! (That is the command as it is actually spawned -- `mutants_argv` builds
@@ -74,18 +75,16 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 pub struct MutantsRunConfig {
-    /// The workspace root cargo-mutants should run from -- the target
-    /// crate's root, which now has the harness crate registered as a
-    /// workspace member (`harness_crate::ensure_workspace_member`).
+    /// The Cargo workspace root cargo-mutants should run from. This may be
+    /// a virtual root above the target crate; the generated harness is
+    /// temporarily registered there as a workspace member.
     pub workspace_root: std::path::PathBuf,
     pub mutated_package: String,
     pub harness_package: String,
-    /// A regex matched against cargo-mutants' own *descriptive* mutant
-    /// names (`src/lib.rs:8:5: replace vacuous -> u32 with 0`), not against
-    /// the bare function name -- so Ply passes the fn name **unanchored**.
-    /// `^fn$` matched zero mutants in a real run (docs/m4-findings.md
-    /// finding 4). Known limitation recorded there: an unanchored name can
-    /// over-match a fn whose name is a substring of another's.
+    /// Function names converted by [`mutation_selector`] into regexes for
+    /// cargo-mutants' descriptive mutant names (`src/lib.rs:8:5: replace
+    /// vacuous -> u32 with 0`). A bare unanchored name can match a literal
+    /// inside another function, so the adapter owns the exact conversion.
     /// Every function the check runs, claimed one first -- not just the
     /// claimed one. `spec-strong` says deliberate bugs were planted and the
     /// checks caught them all; planting only in the claimed function reports
@@ -165,6 +164,8 @@ pub fn mutants_argv(cfg: &MutantsRunConfig) -> Vec<String> {
         "--copy-target".to_string(),
         "true".to_string(),
         "--no-times".to_string(),
+        "--exclude".to_string(),
+        "**/ply_generated*.rs".to_string(),
         "-t".to_string(),
         cfg.timeout_secs.to_string(),
         "--".to_string(),
@@ -175,10 +176,18 @@ pub fn mutants_argv(cfg: &MutantsRunConfig) -> Vec<String> {
     // binary.
     let at = out.len() - 2;
     for name in cfg.fn_regexes.iter().rev() {
-        out.insert(at, name.clone());
+        out.insert(at, mutation_selector(name));
         out.insert(at, "--re".to_string());
     }
     out
+}
+
+/// Matches the two positions where cargo-mutants names the function that
+/// owns a mutant: immediately after `replace`, or at the end after `in`.
+/// Text elsewhere in the description (a string literal, type, or called
+/// function) is not ownership and must not widen the planting scope.
+fn mutation_selector(name: &str) -> String {
+    format!(r"(?:replace {name} ->| in {name}$)")
 }
 
 /// The whole-invocation wall-clock budget `run` enforces via
@@ -346,9 +355,10 @@ mod tests {
             .position(|a| a == "--")
             .expect("a `--` separator");
         for name in ["scaled", "doubled_then_capped"] {
+            let selector = mutation_selector(name);
             let at = argv
                 .iter()
-                .position(|a| a == name)
+                .position(|a| a == &selector)
                 .unwrap_or_else(|| panic!("`{name}` never reached cargo-mutants: {argv:?}"));
             assert_eq!(
                 argv[at - 1],
@@ -361,6 +371,51 @@ mod tests {
                  the test binary as a filter: {argv:?}"
             );
         }
+    }
+
+    /// Generated proof and replay modules are Ply's checking machinery,
+    /// not application code whose specification is being measured. If
+    /// cargo-mutants plants changes there, an intentionally empty proof
+    /// harness survives and is misreported as weakness in the user's spec.
+    #[test]
+    fn generated_ply_modules_are_never_mutation_targets() {
+        let argv = mutants_argv(&cfg());
+        let dashdash = argv.iter().position(|a| a == "--").unwrap();
+        let exclude = argv
+            .iter()
+            .position(|a| a == "**/ply_generated*.rs")
+            .expect("the generated-module exclusion must reach cargo-mutants");
+        assert_eq!(argv[exclude - 1], "--exclude");
+        assert!(
+            exclude < dashdash,
+            "the exclusion is a cargo-mutants option: {argv:?}"
+        );
+    }
+
+    /// A bare function name is ambiguous inside cargo-mutants' descriptive
+    /// strings: `component_balance` identifies its own body, but can also
+    /// occur as a string literal in a mutant belonging to `required_inputs`.
+    /// Select the two positions where cargo-mutants names the containing
+    /// function instead of accepting any substring hit.
+    #[test]
+    fn a_function_selector_cannot_match_its_name_inside_another_body() {
+        let mut c = cfg();
+        c.fn_regexes = vec!["component_balance".into()];
+        let argv = mutants_argv(&c);
+        let pattern = argv
+            .iter()
+            .skip_while(|a| *a != "--re")
+            .nth(1)
+            .expect("a selector after --re");
+        let re = regex::Regex::new(pattern).unwrap();
+
+        assert!(re.is_match(
+            "src/lib.rs:75:5: replace component_balance -> Balance with Default::default()"
+        ));
+        assert!(re.is_match("src/lib.rs:76:21: replace + with - in component_balance"));
+        assert!(!re.is_match(
+            "src/lib.rs:106:9: delete match arm \"component_balance\" in required_inputs"
+        ));
     }
 
     /// §5.4c MUST: "every engine invocation carries a hard cap ... Exceeding
