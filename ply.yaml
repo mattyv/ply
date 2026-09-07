@@ -107,9 +107,8 @@ components:
     # Do not restore a `state:` or `components:` block here: the moment
     # either exists again, it is a second copy the two files can drift
     # apart on, and the derived link stops being consulted for this box (a
-    # component that already declares real content never looks at a link --
-    # see `render_component_dispatch` in
-    # `crates/ply-core/src/visual/svg.rs`).
+    # component that already declares real content never derives a link --
+    # see `resolve_one` in `crates/ply-core/src/config.rs`).
     note: >-
       Everything Ply knows how to do, with no terminal attached. It must
       never reach up into the command-line layer: that constraint is what

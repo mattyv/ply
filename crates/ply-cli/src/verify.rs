@@ -342,8 +342,40 @@ pub struct VerificationResult {
     pub links: config::LinkIndex,
 }
 
-fn linked_verification_diag(code: &str, detail: impl std::fmt::Display) -> anyhow::Error {
-    anyhow::anyhow!("{code}: {detail}")
+fn linked_verification_diag(node_id: &str, detail: impl std::fmt::Display) -> Diagnostic {
+    Diagnostic {
+        code: "E0211".into(),
+        severity: "error".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "architecture".into(),
+        node_id: node_id.into(),
+        title: format!("{detail} (E0211, §6)"),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
+fn link_finding_diag(finding: &config::LinkFinding) -> Diagnostic {
+    Diagnostic {
+        code: finding.code.into(),
+        severity: finding.severity.into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "architecture".into(),
+        node_id: finding.component_path.clone(),
+        title: finding.message.clone(),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
 }
 
 /// Verifies one config snapshot and returns that same parsed document for
@@ -351,51 +383,83 @@ fn linked_verification_diag(code: &str, detail: impl std::fmt::Display) -> anyho
 pub fn verify_crate_result(crate_dir: &Path, opts: &VerifyOptions) -> Result<VerificationResult> {
     let yaml_path = crate_dir.join("ply.yaml");
     let file = config::load(&yaml_path)?;
-    let link_set = config::derive_links(&file, crate_dir);
-    if !link_set.findings.is_empty() {
-        let details = link_set
-            .findings
-            .iter()
-            .map(|finding| {
-                format!(
-                    "{} on component `{}`: {}",
-                    finding.code, finding.component_path, finding.message
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(linked_verification_diag(
-            "E0211",
-            format!(
-                "linked verification is ambiguous or unresolved; no linked evidence was admitted: {details}"
-            ),
-        ));
+    let mut link_set = config::derive_links(&file, crate_dir);
+    let mut planning_diagnostics = link_set
+        .findings
+        .iter()
+        .map(link_finding_diag)
+        .collect::<Vec<_>>();
+    for (outer_name, diagnostic) in invalid_link_ownership(&link_set.links) {
+        link_set.links.remove(&outer_name);
+        planning_diagnostics.push(diagnostic);
     }
-    validate_link_ownership(&link_set.links)?;
 
     let mut result = verify_loaded_crate(crate_dir, opts, file)?;
+    planning_diagnostics.append(&mut result.envelope.diagnostics);
+    result.envelope.diagnostics = planning_diagnostics;
+    let mut admitted_links = config::LinkIndex::new();
     for (outer_name, link) in &link_set.links {
         let child_yaml = crate_dir.join(&link.target_path);
-        let child_dir = child_yaml.parent().ok_or_else(|| {
-            anyhow::anyhow!(
-                "E0211: linked document `{}` has no parent directory",
-                link.target_path
-            )
-        })?;
+        let Some(child_dir) = child_yaml.parent() else {
+            result.envelope.diagnostics.push(linked_verification_diag(
+                outer_name,
+                format!(
+                    "linked document `{}` has no parent directory",
+                    link.target_path
+                ),
+            ));
+            continue;
+        };
+        let Ok(child_prefix) = child_dir.strip_prefix(crate_dir) else {
+            result.envelope.diagnostics.push(linked_verification_diag(
+                outer_name,
+                format!(
+                    "linked document `{}` is outside this verification root",
+                    link.target_path
+                ),
+            ));
+            continue;
+        };
+        let Some(outer_component) = result.document.components.get(outer_name) else {
+            result.envelope.diagnostics.push(linked_verification_diag(
+                outer_name,
+                "the outer component disappeared after link planning",
+            ));
+            continue;
+        };
+        let Some(effective_component) =
+            config::linked_body(outer_name, outer_component, Some(&link_set.links))
+        else {
+            result.envelope.diagnostics.push(linked_verification_diag(
+                outer_name,
+                "the component no longer qualifies for the link frozen at planning time",
+            ));
+            continue;
+        };
         let mut selected_document = link.document.clone();
+        selected_document.components.clear();
         selected_document
             .components
-            .retain(|name, _| name == &link.target_name);
+            .insert(link.target_name.clone(), effective_component);
         let child = verify_loaded_crate(child_dir, opts, selected_document)?;
-        graft_linked_result(
+        let before_graft = result.clone();
+        if let Err(error) = graft_linked_result(
             &mut result,
             child,
             outer_name,
             &link.target_name,
-            child_dir.strip_prefix(crate_dir).unwrap_or(child_dir),
-        )?;
+            child_prefix,
+        ) {
+            result = before_graft;
+            result
+                .envelope
+                .diagnostics
+                .push(linked_verification_diag(outer_name, error));
+            continue;
+        }
+        admitted_links.insert(outer_name.clone(), link.clone());
     }
-    result.links = link_set.links;
+    result.links = admitted_links;
     Ok(result)
 }
 
@@ -412,7 +476,8 @@ fn component_has_claims(component: &Component) -> bool {
 /// from a child document that also has claims elsewhere would either erase
 /// those other records or verify and then hide their failures. Refuse that
 /// shape until the record format can represent a filtered run honestly.
-fn validate_link_ownership(links: &config::LinkIndex) -> Result<()> {
+fn invalid_link_ownership(links: &config::LinkIndex) -> Vec<(String, Diagnostic)> {
+    let mut diagnostics = Vec::new();
     for (outer_name, link) in links {
         let extras = link
             .document
@@ -424,19 +489,25 @@ fn validate_link_ownership(links: &config::LinkIndex) -> Result<()> {
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>();
         if !extras.is_empty() {
-            anyhow::bail!(
-                "E0211: component `{outer_name}` selects `{}` from `{}`, but that linked document also owns claims under {}; Ply cannot verify only one owner without making the discarded evidence ambiguous",
-                link.target_name,
-                link.target_path,
-                extras
-                    .iter()
-                    .map(|name| format!("`{name}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+            diagnostics.push((
+                outer_name.clone(),
+                linked_verification_diag(
+                    outer_name,
+                    format!(
+                        "component `{outer_name}` selects `{}` from `{}`, but that linked document also owns claims under {}; Ply cannot verify only one owner without making the discarded evidence ambiguous",
+                        link.target_name,
+                        link.target_path,
+                        extras
+                            .iter()
+                            .map(|name| format!("`{name}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ),
+            ));
         }
     }
-    Ok(())
+    diagnostics
 }
 
 fn mapped_prefix(id: &str, child: &str, outer: &str, separator: &str) -> Option<String> {
@@ -512,7 +583,7 @@ fn graft_linked_result(
             .any(|existing| existing.id == outer_name)
         {
             anyhow::bail!(
-                "E0211: linked component `{outer_name}` collides with a local verification node; no evidence was admitted"
+                "linked component `{outer_name}` collides with a local verification node; no evidence was admitted"
             );
         }
         root.envelope.root.children.push(node);
@@ -522,9 +593,11 @@ fn graft_linked_result(
     for mut diagnostic in child.envelope.diagnostics {
         if let Some(mapped) = mapped_claim_id(&diagnostic.node_id, child_name, outer_name) {
             diagnostic.node_id = mapped;
-        } else if diagnostic.node_id != "workspace" {
+        } else if diagnostic.node_id == "workspace" {
+            diagnostic.node_id = outer_name.to_string();
+        } else {
             anyhow::bail!(
-                "E0211: diagnostic `{}` from linked component `{child_name}` cannot be mapped beneath `{outer_name}`",
+                "diagnostic `{}` from linked component `{child_name}` cannot be mapped beneath `{outer_name}`",
                 diagnostic.node_id
             );
         }
@@ -550,13 +623,13 @@ fn graft_linked_result(
     for (id, mut span) in child.source_map {
         let Some(mapped) = mapped_claim_id(&id, child_name, outer_name) else {
             anyhow::bail!(
-                "E0211: source id `{id}` from linked component `{child_name}` cannot be mapped beneath `{outer_name}`"
+                "source id `{id}` from linked component `{child_name}` cannot be mapped beneath `{outer_name}`"
             );
         };
         span.file = rebase_relative_path(&span.file, child_prefix);
         if root.source_map.insert(mapped.clone(), span).is_some() {
             anyhow::bail!(
-                "E0211: linked source id `{mapped}` collides with an existing claim; no last-writer-wins mapping is allowed"
+                "linked source id `{mapped}` collides with an existing claim; no last-writer-wins mapping is allowed"
             );
         }
     }
@@ -564,7 +637,7 @@ fn graft_linked_result(
     for mut item in child.envelope.not_carried_forward {
         let Some(mapped) = mapped_claim_id(&item.node_id, child_name, outer_name) else {
             anyhow::bail!(
-                "E0211: carried-forward id `{}` from linked component `{child_name}` cannot be mapped beneath `{outer_name}`",
+                "carried-forward id `{}` from linked component `{child_name}` cannot be mapped beneath `{outer_name}`",
                 item.node_id
             );
         };
@@ -9931,24 +10004,144 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_linked_document_is_an_error_before_any_evidence_is_borrowed() {
+    fn ambiguous_linked_document_is_a_diagnostic_before_any_evidence_is_borrowed() {
         let dir = linked_workspace(
             "ply: 1\ncomponents:\n  selected:\n    anchor: inner_lib\n    fns:\n      seven: {checks: []}\n  unrelated:\n    anchor: inner_lib::other\n    fns:\n      eight: {checks: []}\n",
             "pub fn seven() -> u32 { 7 }\npub fn eight() -> u32 { 8 }\n",
         );
 
-        let error = verify_crate_result(
+        let result = verify_crate_result(
             dir.path(),
             &VerifyOptions {
                 engine_timeout_secs: None,
                 seed: None,
             },
         )
-        .expect_err("a child with claims outside the selected component is ambiguous");
+        .expect("link ambiguity belongs in the normal result envelope");
 
         assert!(
-            error.to_string().contains("E0211") && error.to_string().contains("unrelated"),
-            "the refusal must be named and identify the extra owner: {error:#}"
+            result.envelope.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "E0211"
+                    && diagnostic.severity == "error"
+                    && diagnostic.node_id == "core"
+                    && diagnostic.title.contains("unrelated")
+            }),
+            "the refusal must be a normal diagnostic naming the extra owner: {:#?}",
+            result.envelope.diagnostics
+        );
+        assert!(
+            result.links.is_empty(),
+            "ambiguous evidence must not be drawable"
+        );
+    }
+
+    #[test]
+    fn outer_checks_govern_a_linked_child_that_declares_no_default() {
+        let dir = linked_workspace(
+            "ply: 1\ncomponents:\n  implementation:\n    anchor: inner_lib\n    fns:\n      seven:\n        examples: [\"seven() == 7\"]\n",
+            "pub fn seven() -> u32 { 7 }\n",
+        );
+        std::fs::write(
+            dir.path().join("ply.yaml"),
+            "ply: 1\ncomponents:\n  core:\n    anchor: inner_lib\n    checks: [test]\n",
+        )
+        .unwrap();
+
+        let result = verify_crate_result(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: Some(120),
+                seed: None,
+            },
+        )
+        .unwrap();
+
+        let core = result
+            .envelope
+            .root
+            .children
+            .first()
+            .unwrap_or_else(|| panic!("missing grafted core node: {:#?}", result.envelope));
+        let seven = core
+            .children
+            .first()
+            .unwrap_or_else(|| panic!("missing linked function node: {:#?}", result.envelope));
+        assert_eq!(seven.verdict, "tested");
+    }
+
+    #[test]
+    fn nested_linked_violation_reaches_the_root_and_rebases_its_source() {
+        let dir = linked_workspace(
+            "ply: 1\ncomponents:\n  implementation:\n    anchor: inner_lib\n    components:\n      nested:\n        anchor: inner_lib::nested\n        fns:\n          seven:\n            checks: [test]\n            ensures: [\"|result| *result == 99\"]\n            examples: [\"seven() == 7\"]\n",
+            "pub mod nested { pub fn seven() -> u32 { 7 } }\n",
+        );
+
+        let result = verify_crate_result(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: Some(120),
+                seed: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.envelope.root.verdict, "violation",
+            "unexpected linked result: {:#?}",
+            result.envelope
+        );
+        assert_eq!(result.envelope.root.children[0].id, "core");
+        assert_eq!(
+            result.envelope.root.children[0].children[0].id,
+            "core.nested"
+        );
+        assert_eq!(
+            result.envelope.root.children[0].children[0].children[0].verdict,
+            "violation"
+        );
+        assert_eq!(
+            result
+                .source_map
+                .get("core.nested::seven")
+                .map(|span| span.file.as_str()),
+            Some("inner_lib/src/lib.rs")
+        );
+        assert!(
+            result
+                .envelope
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.node_id == "core.nested::seven")
+        );
+    }
+
+    #[test]
+    fn a_child_workspace_diagnostic_is_owned_by_the_outer_component() {
+        let dir = linked_workspace(
+            "ply: 1\nroutes:\n  NeverAsked: totally::bogus::path\ncomponents:\n  implementation:\n    anchor: inner_lib\n    fns:\n      seven: {checks: []}\n",
+            "pub fn seven() -> u32 { 7 }\n",
+        );
+
+        let result = verify_crate_result(
+            dir.path(),
+            &VerifyOptions {
+                engine_timeout_secs: None,
+                seed: None,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            result
+                .envelope
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "W0528" && diagnostic.node_id == "core" })
+        );
+        assert!(
+            !result.envelope.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "W0528" && diagnostic.node_id == "workspace"
+            })
         );
     }
 

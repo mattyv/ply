@@ -242,10 +242,11 @@ fn a_component_with_real_local_content_ignores_a_resolvable_link() {
     std::fs::write(dir.path().join("ply.yaml"), outer_text).unwrap();
     let doc = parse_document(outer_text).unwrap();
 
-    // The link still *resolves* -- deriving it is unconditional -- but the
-    // renderer must not act on it here.
+    // Link derivation applies the hollow-component gate so every consumer
+    // agrees that real local content wins over an otherwise resolvable link.
     let link_set = derive_links(&doc, dir.path());
-    assert!(link_set.links.contains_key("core"));
+    assert!(!link_set.links.contains_key("core"));
+    assert!(link_set.findings.is_empty());
 
     let state_fields = ply_core::harness::resolve_state_fields(dir.path(), &doc);
     let svg = render_svg_with_state_and_links(

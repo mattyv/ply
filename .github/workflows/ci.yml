@@ -312,15 +312,10 @@ jobs:
       - name: Build cargo-ply
         run: cargo build -p ply-cli
 
-      - name: Ply verifies its own library
+      - name: Ply verifies its root document and linked crates
         run: |
-          ./target/debug/cargo-ply verify crates/ply-core \
-            --fail-on evidence --svg ply-core-verified.svg
-
-      - name: Ply verifies its own command line
-        run: |
-          ./target/debug/cargo-ply verify crates/ply-cli \
-            --fail-on evidence --svg ply-cli-verified.svg
+          ./target/debug/cargo-ply verify . \
+            --fail-on evidence --svg ply-root-verified.svg
 
       # `if: always()` so a drawing from a run that just failed is still
       # attached -- that is the one a reader most wants, since it shows
@@ -331,8 +326,7 @@ jobs:
         with:
           name: ply-self-check-drawings
           path: |
-            ply-core-verified.svg
-            ply-cli-verified.svg
+            ply-root-verified.svg
           if-no-files-found: ignore
 
   # Publishes those drawings where a person can actually look at them,
