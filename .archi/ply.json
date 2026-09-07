@@ -1549,8 +1549,8 @@
           "mutants": [
             {
               "id": "b4d6c1e9c295aef3",
-              "text": "Runs the mutate check: cargo mutants --re <fn> plants small bugs in the function and checks whether the same-list test/fuzz checks kill them (D12). A surviving mutant is reported as a weak spec (W0502), not a pass.",
-              "ts": 1787443917891
+              "text": "Runs the mutate check: cargo mutants receives one ownership selector for every local function body the claim's checks execute, using each canonical owner name exactly as cargo-mutants reports it (including inline modules and enclosing types such as `maths::helper` and `Widget::adjust`). The same-list test/fuzz checks must kill every planted bug (D12); a surviving mutant is reported as a weak spec (W0502), not a pass.",
+              "ts": 1788766093000
             }
           ],
           "verus": [
@@ -4561,8 +4561,8 @@
           "proof_harness": [
             {
               "id": "n7",
-              "text": "A Kani proof, generated from one function's promises and written straight into the checked crate's own src/ply_generated.rs, with a `mod ply_generated;` line added to its lib.rs if one isn't already there (crates/ply-core/src/harness.rs:4085-4114, `write_generated_module`/`write_generated_file`). Writing it inside the crate rather than off to the side is deliberate: it lets the generated proof see private items the crate never exports. tests/fixtures/vecbound/src/ply_generated.rs is a real example left on disk from an earlier fixture run.",
-              "ts": 1788357723267
+              "text": "A Kani proof generated from one function's promises and written into the checked crate's own src/ply_generated.rs, with a `mod ply_generated;` line added to lib.rs when needed (crates/ply-core/src/harness.rs). A contract declared in ply.yaml is attached to a generated free wrapper. That wrapper renders source-valid return types: standard-library types keep their full paths, and a constructor returning `Self` names its enclosing `module::Type`; if Ply cannot resolve that owner, generation stops with an explicit error. Keeping the module inside the crate lets the proof see private items the crate never exports.",
+              "ts": 1788766093000
             }
           ],
           "cex_test": [
@@ -5758,8 +5758,8 @@
           "cargo-mutants": [
             {
               "id": "n-cp-mutants-1",
-              "text": "cargo-mutants, spawned as `cargo mutants -p <crate> --test-package <harness> --copy-target true ...`, with the whole invocation's wall-clock cap enforced in-process by `engines::run_with_timeout` -- never by an external `timeout` wrapper (crates/ply-core/src/engines/mutants.rs:152-215). It deliberately breaks the checked function one small way at a time and reruns the harness's tests, to see whether any of those breakages go unnoticed -- the `mutate` check. `--copy-target true` exists because of a real bug this project found and documented: cargo-mutants' own tree-copy step silently skips any directory literally named `target` sitting at the very top of what it is copying, and that is exactly where the generated harness lives, one level further down (crates/ply-core/src/engines/mutants.rs's own top-of-file comment).",
-              "ts": 1788307200000
+              "text": "cargo-mutants, spawned as `cargo mutants -p <crate> --test-package <harness> --copy-target true ...`, with the whole invocation's wall-clock cap enforced in-process by `engines::run_with_timeout` -- never by an external `timeout` wrapper (crates/ply-core/src/engines/mutants.rs). Ply passes one `--re` ownership selector per local body the claim's checks execute and preserves the canonical inline-module or enclosing-type qualification, so `maths::helper` and `Widget::adjust` select the owners cargo-mutants actually names. It deliberately breaks the selected functions one small way at a time and reruns the harness's tests, to see whether any breakage goes unnoticed -- the `mutate` check. `--copy-target true` exists because cargo-mutants' tree-copy step skips a top-level directory named `target`, exactly where the generated harness lives one level further down.",
+              "ts": 1788766093000
             }
           ],
           "mutants-out": [

@@ -36,6 +36,13 @@ pub fn tokens_requested(n: NonZeroU32) -> u32 {
     n.get()
 }
 
+/// A `NonZeroU32` return whose contract lives in `ply.yaml`. The generated
+/// Kani wrapper must spell the standard-library type without relying on
+/// this module's import.
+pub fn round_trip_nonzero(n: NonZeroU32) -> NonZeroU32 {
+    n
+}
+
 /// `NonZeroUsize` -- the same invariant, at the width the rate limiter uses
 /// for its own key-table caps (`KeyedLimiterConfig::max_keys`/`shard_count`).
 #[ply::ensures(|result| *result > 0)]

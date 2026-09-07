@@ -12,15 +12,19 @@
 //! planting a bug in its helper: the wait shrank on every attempt and the
 //! run still came back `fuzzed(256)·spec-strong`.
 
-/// Where the logic actually lives. Nothing claims this directly.
-fn doubled_then_capped(x: u32) -> u32 {
-    let doubled = x.saturating_mul(2);
-    if doubled > 100 { 100 } else { doubled }
+/// Where the logic actually lives. Nothing claims this inline module or its
+/// helper directly; cargo-mutants reports its owner as
+/// `maths::doubled_then_capped`.
+mod maths {
+    pub(super) fn doubled_then_capped(x: u32) -> u32 {
+        let doubled = x.saturating_mul(2);
+        if doubled > 100 { 100 } else { doubled }
+    }
 }
 
 /// The claimed function: a thin shell, exactly as the guide advises.
 #[ply::requires(x < 1000)]
 #[ply::ensures(|result| *result <= 100)]
 pub fn scaled(x: u32) -> u32 {
-    doubled_then_capped(x)
+    maths::doubled_then_capped(x)
 }

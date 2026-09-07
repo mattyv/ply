@@ -12,9 +12,9 @@
 
 use ply_e2e::{build_cargo_ply, copy_fixture, run_verify};
 
-/// The claimed function is a shell over `doubled_then_capped`. Break the
-/// helper so the answer is wrong while the bound still holds, and the run
-/// must not call its own checks strong.
+/// The claimed function is a shell over namespaced
+/// `maths::doubled_then_capped`. Break the helper so the answer is wrong
+/// while the bound still holds, and the run must not call its checks strong.
 #[test]
 fn a_bug_in_the_helper_the_check_runs_is_not_reported_as_spec_strong() {
     let cargo_ply = build_cargo_ply();
@@ -74,8 +74,8 @@ fn a_macro_in_the_wrapper_does_not_shrink_the_planting_back_to_the_wrapper() {
 
     let src = fixture.read_lib_rs();
     let widened = src.replace(
-        "    doubled_then_capped(x)\n",
-        "    let batch = vec![x];\n    doubled_then_capped(batch[0])\n",
+        "    maths::doubled_then_capped(x)\n",
+        "    let batch = vec![x];\n    maths::doubled_then_capped(batch[0])\n",
     );
     assert_ne!(src, widened, "the wrapper must have gained a macro");
     // Same broken helper as above: wrong in every case, still under the cap.

@@ -10,9 +10,13 @@ components:
         checks: [bounded(2), fuzz(64)]
       tokens_requested:
         checks: [bounded(2), fuzz(64)]
+      round_trip_nonzero:
+        checks: [bounded(2)]
+        ensures: ["|result| result.get() > 0"]
       shard_count:
         checks: [bounded(2), fuzz(64)]
       round_trip:
         checks: [bounded(2), fuzz(64)]
+        ensures: ["|result| result.subsec_nanos() < 1000000000"]
       from_whole_seconds:
         checks: [bounded(2), fuzz(64)]
