@@ -134,6 +134,34 @@ also had Ply. Scored mechanically against three bugs planted before either arm s
       prove the badge flips on a strong promise. A fixture with a promise tight enough to
       kill the wrapper's mutants but not the helper's would close this.
 
+## Glyph documentation swept — 2026-09-07
+
+Asked whether the shield and the numbered pin are documented anywhere; three of the four
+answers were yes, and the sweep turned up one false claim.
+
+- [x] The shield's hover text now names its own shape ("Hollow shield: …"), so a reader who
+      does not recognise `⛉` at 13px can look it up from the picture — the newbie-bar rule
+      the other unusual marks already followed. Exact-string test in
+      `tools/render/tests/render.rs`; golden and the three committed vetting SVGs
+      regenerated (tooltip text only, no geometry moved).
+- [x] README's pin row carried one clause where the hover text carries the caveat that the
+      weakest-level cap **is not applied yet**. A reader of the README alone would not have
+      learned that. Both rows now point at the hover text as well.
+- [x] **Retracted a claim that was never true:** README's line table listed a "thin dotted
+      arrow" for what a verdict rested on. `tools/render` emits `edge-call` and `edge-flow`
+      only, plus the derived `entry` arrow and the deny bar — no render has ever contained
+      a dotted rail. §7.1's row is now marked designed-not-drawn, and the README says
+      assumption chains are text-only.
+- [x] README's line table also never mentioned that any arrow turns red and thickens when a
+      finding attaches to the connection itself (`edge-line-finding`). Documented.
+- [x] ply-book: its "read the visual language" table listed neither mark, the glossary's
+      `Trusted` entry never mentioned that it draws as a shield, and there was no glossary
+      entry for the numbered pin at all. All three fixed.
+- [ ] **KNOWN GAP, recorded not hidden**: the assumption chain remains undrawn. §7.1 keeps
+      it as a design commitment, and the honest position is that a reader who wants to see
+      what a verdict stood on must leave the drawing for `cargo ply tree`. Drawing it is
+      unscheduled, not abandoned.
+
 ## Measured: what stops `bounded` on Ply's own claims — 2026-09-07
 
 Asked before building component-level proof, and it changed the answer. `docs/reach-measurement-3.md`.
@@ -215,6 +243,26 @@ make this codebase provable.
 
 **Picking this up fresh?** `docs/handoff-2026-09-04.md` is the narrative and the traps; this
 file is the state. Read that one first, then this.
+
+
+## Landed: close the remaining false-reuse paths — 2026-09-07
+
+Both were confirmed by external review after the eight narrower reuse defects landed.
+They can each carry a green result over a build that now compiles different behaviour.
+
+- [x] **Hash every Cargo configuration file Cargo discovers for the crate.** Include
+      `.cargo/config.toml` and legacy `.cargo/config` from the crate directory through
+      its ancestors and Cargo home. Hash the whole file, not a guessed subset of keys, so
+      an unrecognised compiler setting costs reuse rather than correctness. (`118a165`)
+- [x] **Do not reuse or record results when the first-party closure has a build script.**
+      A build script can consume undeclared files, environment, time, or external state;
+      `cargo:rerun-if-*` declarations cannot prove that the list is complete. Detect the
+      default `build.rs` and a custom `package.build` path in the crate and transitive
+      path dependencies. (`118a165`)
+- [x] **Pin the stale passes end to end.** Change compiler flags through
+      `.cargo/config.toml`, then change a file and an environment value consumed by an
+      unchanged build script. Each second verify must run fresh and expose the broken
+      promise. (`118a165`)
 
 
 ## Landed: two more ways a stored result outlived the code it stood on — 2026-09-06

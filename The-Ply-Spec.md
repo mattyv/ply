@@ -37,7 +37,7 @@ Terms this spec uses without further explanation. Ply-specific terms are marked 
 | component | (Ply) A named architectural unit, declared in `ply.yaml` and anchored to a crate or module. |
 | capability (cap) | (Ply) A coarse effect a component is allowed: `net fs db time rand proc unsafe`. |
 | anchor | (Ply) The real code item (crate, module, or function) a claim attaches to. |
-| fingerprint | (Ply) The recorded hash of what a result depended on: item body, contract text, **the first-party bodies the check runs or descends into** (or all of the crate's source, when Ply cannot bound that set — §5.2a), the worked examples it asserts, the contracts assumed for the callees it crosses into, the same-crate callees it stands on rather than assumes and the bound each earned (D5's first branch, §5.5), the checks that ran, engine name + version + flags, active features, target triple, compiler version, the resolved versions of packages outside the workspace, **and Ply's own version**. It is recomputed from today's inputs every time a recorded result is used or shown: it matches, the result is reused; it does not, the check runs again (D14, §5.2a). |
+| fingerprint | (Ply) The recorded hash of what a result depended on: item body, contract text, **the first-party bodies the check runs or descends into** (or all of the crate's source, when Ply cannot bound that set — §5.2a), the worked examples it asserts, the contracts assumed for the callees it crosses into, the same-crate callees it stands on rather than assumes and the bound each earned (D5's first branch, §5.5), the checks that ran, engine name + version + flags, active features, target triple, compiler version, Cargo configuration, the resolved versions of packages outside the workspace, **and Ply's own version**. It is recomputed from today's inputs every time a recorded result is used or shown: it matches, the result is reused; it does not, the check runs again (D14, §5.2a). A crate whose first-party closure contains a build script does not reuse recorded results, because the script can consume inputs Ply cannot enumerate. |
 | verdict tree | (Ply) The aggregated per-node verdicts for the whole workspace, rendered by `cargo ply tree`. |
 | visual grammar | (Ply) The fixed one-to-one mapping between grammar constructs and visual forms (§7.1). A grammar feature that cannot be drawn is not admitted. |
 | watermark | (Ply) The per-function line where declaration stops and code begins: signature plus contract (§7.2). Below it, Ply verifies but never specifies; the un-specifiable imperative interior is the *floor*. |
@@ -141,7 +141,7 @@ proof search has gone off-spec — stop.
 | D11 | Extraction may be incomplete but never silently so: every call site the extractor cannot resolve is counted and reported (W0412 plus a per-component coverage metric in `check` output). | Visibility is what makes the advisory tier (D4) and any future `strict` opt-in meaningful. |
 | D12 | A function declares a **checks list**, e.g. `checks: [bounded(3), fuzz(256), mutate]`. `mutate` requires a `test` or `fuzz` entry in the same list (else `E0504`) and uses only those as its mutant-kill signal, scoped per function with cargo-mutants' `--re`. | One base check could not express "bounded plus a fuzz-backed mutation tier". Running Kani once per mutant costs minutes per mutant per function; proof-backed mutation needs an opt-in budget, which is out of scope. |
 | D13 | **Spike before build** (milestone M0): every engine-facing detail in this spec is provisional until a hands-on spike, with the pinned Kani version, records in ADR-0003 what actually works — attribute emission, in-crate harness modules, `stub_verified`, playback, input construction. The spec is then amended to match reality. | The engine surface is the highest-risk part of the design; paper decisions there are guesses. |
-| D14 | `ply.lock` (committed) records, per claim, a **fingerprint** beside the result that fingerprint earned: item token-stream hash, merged contract text, **the first-party bodies the check runs or descends into** — or, where a syntactic walk cannot bound that set, the whole of the crate's source (§5.2a) — the worked examples a `test` check asserts, the contracts assumed for the callees it crosses into, the same-crate callees it stands on rather than assumes and the bound each earned (D5's first branch, §5.5), the checks that ran, engine name + version + flags, active features, target triple, compiler version, the resolved versions of packages outside the workspace, **and Ply's own version**. `verify` recomputes the fingerprint from today's inputs *before* it uses or shows a recorded result — matches, the result is reused and the run says so on the node; differs, the check runs again and the record is rewritten. **There is no `stale` state and nothing for a human to re-bless**: the hash is the confirmation, and it is checked at every single use. Only a result that earned evidence is recorded, so no failure, timeout or absence is ever carried forward. | Committing the record is what stops CI and the next colleague re-proving what is already proven, and lets a reviewer see in a diff that a claim was checked. Re-hashing at every use is what makes storing verdicts safe at all: a stored verdict a human re-blesses can drift from the code between blessings, and every warning that accumulates faster than it is cleared ends up meaning nothing. **Ply's own version is in the hash because a fix to Ply changes what a result means.** The four defects fixed on 2026-08-25 — a harness that failed to compile earning a confident pass, an ordinary `use` import letting an unvouched-for body into a proof, an unsatisfiable declared promise passing vacuously, a claim inside a nested component skipped in silence — would every one of them have hash-matched perfectly against a record written the day before, because the source had not changed: Ply had. |
+| D14 | `ply.lock` (committed) records, per claim, a **fingerprint** beside the result that fingerprint earned: item token-stream hash, merged contract text, **the first-party bodies the check runs or descends into** — or, where a syntactic walk cannot bound that set, the whole of the crate's source (§5.2a) — the worked examples a `test` check asserts, the contracts assumed for the callees it crosses into, the same-crate callees it stands on rather than assumes and the bound each earned (D5's first branch, §5.5), the checks that ran, engine name + version + flags, active features, target triple, compiler version, Cargo configuration, the resolved versions of packages outside the workspace, **and Ply's own version**. `verify` recomputes the fingerprint from today's inputs *before* it uses or shows a recorded result — matches, the result is reused and the run says so on the node; differs, the check runs again and the record is rewritten. **There is no `stale` state and nothing for a human to re-bless**: the hash is the confirmation, and it is checked at every single use. Only a result that earned evidence is recorded, so no failure, timeout or absence is ever carried forward. A crate whose first-party closure contains a build script always re-earns its claims and stores none: a build script can read files, environment, time, or external state that no finite source fingerprint can discover. | Committing the record is what stops CI and the next colleague re-proving what is already proven, and lets a reviewer see in a diff that a claim was checked. Re-hashing at every use is what makes storing verdicts safe at all: a stored verdict a human re-blesses can drift from the code between blessings, and every warning that accumulates faster than it is cleared ends up meaning nothing. **Ply's own version is in the hash because a fix to Ply changes what a result means.** The four defects fixed on 2026-08-25 — a harness that failed to compile earning a confident pass, an ordinary `use` import letting an unvouched-for body into a proof, an unsatisfiable declared promise passing vacuously, a claim inside a nested component skipped in silence — would every one of them have hash-matched perfectly against a record written the day before, because the source had not changed: Ply had. |
 
 ## 3. Toolchain
 
@@ -549,13 +549,16 @@ fingerprint of what it was checked against" into a diff a reviewer reads.
    obligation it discharged;
 9. the build target triple, the compiler that builds for it (D9's "an old success must
    not bless ... a different toolchain"), **the rustc flags Cargo inherits from the
-   environment** (`RUSTFLAGS` and `CARGO_ENCODED_RUSTFLAGS`), and the crate's declared
-   feature table — Ply passes no `--features`, so the set that is active is the default
-   set that table defines. The flags are there because they compile a different body out
-   of the same text: `--cfg broken` changes what is compiled while the source, the compiler,
-   the target and the features are all identical. **A stated gap:** flags reaching Cargo
-   another way — a `[build] rustflags` or `target.<triple>.rustflags` table in
-   `.cargo/config.toml` — are not read and not hashed;
+   environment** (`RUSTFLAGS` and `CARGO_ENCODED_RUSTFLAGS`), every `.cargo/config.toml`
+   or legacy `.cargo/config` Cargo discovers from the crate directory through its
+   ancestors and in Cargo home, and the crate's declared feature table — Ply passes no
+   `--features`, so the set that is active is the default set that table defines. The
+   whole configuration file is hashed rather than only the currently recognised flags:
+   that deliberately re-earns too much when an unrelated Cargo setting changes, while
+   never carrying a result across a build-setting change Ply failed to parse. The flags
+   are there because they compile a different body out of the same text: `--cfg broken`
+   changes what is compiled while the source, the compiler, the target and the features
+   are all identical;
 10. the resolved versions of every package outside this workspace that the crate depends
     on, as the lockfile pins them. A `bounded` proof descends into registry code and every
     `fuzz`/`test` run executes it, so `cargo update` changes what was checked. Where there
@@ -601,10 +604,12 @@ would bury the list it exists to explain. It is never printed for a bounded walk
 it would be false.
 
 **What it does not cover, stated rather than implied.** Environment that shapes a build
-without appearing in any file Ply reads — `RUSTFLAGS`, `[profile]` settings such as
-`overflow-checks`, a `#[path]` module attribute — is not an input. Neither is anything a
+without appearing in any file Ply reads, a `#[path]` module attribute, and anything a
 proc macro from outside the workspace expands to beyond the identity of the crate it came
-from. And a hash cannot defend the record against a text editor; see the closing
+from are not inputs. A crate with a discovered build script is therefore never eligible
+for result reuse: every `verify` runs its claims again and leaves them out of `ply.lock`,
+because the script may read an undeclared file or environment value, the clock, or the
+network. And a hash cannot defend the record against a text editor; see the closing
 paragraph for what is done about the honest version of that.
 
 Ply's own version is in there for the reason D14 gives, and it is the input that makes
@@ -1838,11 +1843,15 @@ platform predicate (`[target.'cfg(unix)'.dependencies]`). A build script's own
 dependencies count because they run during the build and can write the source the crate
 then compiles.
 
-The crate's **own `build.rs`** is first-party source for the same reason: what it emits
-reaches the compilation (`cargo:rustc-env=X=7` makes `env!("X")` compile to 7), so an edit
-to it changes behaviour with every line under `src/` untouched. **A stated gap:** the
-script is hashed, what the script *reads* is not. A build script that opens a data file
-and emits what it finds there still changes behaviour without changing anything hashed.
+The crate's own build script — the default `build.rs` or the path named by
+`package.build` — is first-party source for the same reason: what it emits reaches the
+compilation (`cargo:rustc-env=X=7` makes `env!("X")` compile to 7), so an edit to it
+changes behaviour with every line under `src/` untouched. But hashing the script is not
+enough: it can read a data file, an environment value, the clock, or the network without
+changing its own text. Whenever the crate or one of its path dependencies has a build
+script, Ply therefore neither reuses nor records results for that verify. It pays the
+engine cost again instead of presenting an old result as evidence about a build whose
+inputs it cannot enumerate.
 
 Resolution has three outcomes, not two, and the third is what keeps the rule honest:
 
@@ -2291,7 +2300,7 @@ grammar.**
 | verdict | fn-chip fill by discrete display state, never a continuous ordinal ramp — see the amendment below. Five states: `declared` (no evidence resolved, or evidence that settled nothing — drawn exactly as a chip with no evidence always has), `earned` (green — the one hue reserved for evidence a run actually produced), `violated` (red — the only red besides `deny`/finding), `unanswered` (a run tried and could not say; distinct, never red), `stale` (a stored result exists but the code moved since; distinct, never red). "Earned on assumptions" (§5.5's `conditional`) is a marked variant of `earned`, not a sixth hue — the mark is an attached character, never a new colour |
 | statuses | corner markers on the node (conditional, weak-spec, …) — `tools/render`'s own SVG realizes the colourblind-safety half of this today folded into the five display states above (`✓`/`✓†`/`✗`/`?`/`↻` beside the fn's check labels, not yet one marker per individual status kind) |
 | worst_descendant | a collapsed box takes its weakest descendant's fill — D6 made visible |
-| assumption chain | thin dotted arrows from a verdict to the contracts it assumed |
+| assumption chain | thin dotted arrows from a verdict to the contracts it assumed — **designed, not drawn.** `tools/render` emits exactly two arrow kinds (`edge-call`, `edge-flow`) plus the derived `entry` arrow and the deny bar; no dotted rail exists in any render. Assumption chains reach a reader through `cargo ply tree` and the text form only. Retracted from README.md's line table on 2026-09-07, where it had been listed as a mark a reader would see (TODO.md) |
 | unresolved marker | numbered pin on the fn or component |
 | trusted claim | hollow shield badge on the node — attested by named evidence, not machine-checked |
 | contract clauses (`requires`/`ensures`) | a contract mark on the fn chip — a solid ink bar the full height of the chip's left edge (a gutter mark: "this row carries something binding"); the tooltip lists each clause verbatim, and inside a `--focus` target the clauses are additionally *drawn* under the fn name, one line each, prefixed `Input (requires)` and `Postcondition (ensures)`. Drawn only at focus, never at overview: the overview answers "where does attention go", the focused view answers "what exactly is promised here", and clause text at overview zoom buries the first question. Ancestors of the focus target are excluded for the same reason — they stay expanded only to show the path down. This draws the §7.2 watermark per function: marked = a promise stands at the mark; bare = signature only. The static renderer sees YAML clauses; the §8 envelope adds inline attributes from a completed `cargo ply verify` run. |

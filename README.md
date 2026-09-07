@@ -540,8 +540,8 @@ these you can read any Ply drawing without a key beside it.
 | A solid bar down the left edge | Something binding is stated here — a precondition, a postcondition. Hover, or use the text form, to read it |
 | A second line of small text | The checks asked for: `fuzz: 256 cases`, `bounded: loop<=2` |
 | `✓` `✗` `?` `↻` | Earned, broken, a run that could not say, and a stored result whose code has since moved |
-| A hollow shield | Attested by named evidence a human vouched for, not machine-checked |
-| A numbered pin | An open decision recorded against this item |
+| A hollow shield | Attested by named evidence a human vouched for, not machine-checked. Hover it for the claim and the artifact cited — that artifact is worth exactly what whoever inspected it is worth |
+| A numbered pin | An open decision recorded against this item. Hover it for the question still owed. While the decision is open the item's checks are *meant* to be held down to the weakest level, but **that cap is not applied yet** — everything below the pin still runs at full strength |
 
 **Lines between boxes**
 
@@ -550,7 +550,10 @@ these you can read any Ply drawing without a key beside it.
 | Solid arrow | One component calls another |
 | Dashed arrow, labelled with a type | Data flows this way |
 | Barred red arrow | A forbidden dependency, drawn where the rule was broken |
-| Thin dotted arrow | This verdict rested on that promise — the assumption it stands on |
+| Any arrow turned red and thickened | Ply found a problem with this connection itself; the red `E####` badge beside it says which |
+
+Nothing else is a line. **What a verdict rested on is not drawn** — assumption chains are
+text-only today, in `cargo ply tree` and the text form. A drawing has no dotted arrows.
 
 **The strip along the top** counts what the document declares and how much of it promises
 nothing, so a page of confident-looking boxes cannot hide that half of it is empty.
