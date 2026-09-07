@@ -803,7 +803,7 @@ fn build_visual_envelope_resolved(
     Ok(envelope)
 }
 
-/// Draw the document again at every level shallower than it actually nests.
+/// Draw the document again at every level that can still fold visible detail.
 ///
 /// Only levels that change something are kept. A drawing identical to the one
 /// the caller already has is pure weight in the envelope, and a client reading
@@ -836,7 +836,7 @@ fn folded_drawings(
         links,
     )?;
     let mut folded = Vec::new();
-    for depth in 1..nesting_levels(document, links) {
+    for depth in 1..=nesting_levels(document, links) {
         let options = svg::RenderOptions {
             depth: Some(depth),
             ..base.clone()
@@ -1638,6 +1638,41 @@ mod tests {
     #[test]
     fn epoch_formats_as_rfc3339() {
         assert_eq!(rfc3339_utc(UNIX_EPOCH), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn envelope_includes_the_last_depth_that_can_fold_function_rows() {
+        let document = crate::model::parse_document(
+            "ply: 1\ncomponents:\n  outer:\n    anchor: crate\n    components:\n      inner:\n        anchor: crate::inner\n        fns:\n          run: {checks: [test]}\n",
+        )
+        .unwrap();
+        let visual = build_declared_visual_envelope(
+            &document,
+            RunMetadata {
+                id: "test".into(),
+                completed_at: "1970-01-01T00:00:00Z".into(),
+                root: RootIdentity { path: ".".into() },
+                tool: ToolIdentity {
+                    name: "ply".into(),
+                    version: "test".into(),
+                },
+                outcome: RunOutcome::MissingEvidence,
+            },
+            &svg::RenderOptions::default(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            visual
+                .folded
+                .iter()
+                .map(|drawing| drawing.depth)
+                .collect::<Vec<_>>(),
+            vec![1, 2],
+            "depth 2 still folds the innermost box's function rows; omitting it makes a viewer \
+             hide those rows in the full drawing and leave the box at its original empty height"
+        );
     }
 
     /// Everything the drawing shows must be addressable in the envelope
