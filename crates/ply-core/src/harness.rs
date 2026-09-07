@@ -113,10 +113,12 @@ pub enum RustType {
     ///
     /// **Measured, not assumed, whether this needs its own bound (task
     /// brief, 2026-08-27):** it does not. `tests/fixtures/durationnonzero`
-    /// carries six functions over these new shapes (`Duration`, `NonZeroU32`,
-    /// `NonZeroUsize`, `usize`, `isize`), each checked with both `bounded(2)`
-    /// and `fuzz(64)` — twelve real engine invocations, no two functions
-    /// sharing a cached result. A cold run (`ply.lock` cleared) completed
+    /// originally carried six functions over these new shapes (`Duration`,
+    /// `NonZeroU32`, `NonZeroUsize`, `usize`, `isize`), each checked with
+    /// both `bounded(2)` and `fuzz(64)` — twelve real engine invocations, no
+    /// two functions sharing a cached result. (A later seventh function
+    /// covers YAML-wrapper type rendering and is not part of this timing.)
+    /// A cold run (`ply.lock` cleared) completed
     /// in 1m26s wall-clock with every one earning a clean `bounded(2)` and
     /// zero diagnostics — about 7s/harness on average, the ordinary
     /// per-invocation cost of a trivial Kani harness of any shape, not a
@@ -5840,7 +5842,20 @@ pub fn generate_proof_module(
             .map(|p| p.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let return_ty = cf.return_type.display_name();
+        let return_ty = match &cf.return_type {
+            RustType::SelfType => cf
+                .path
+                .rsplit_once("::")
+                .map(|(owner, _)| owner.to_string())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Ply cannot generate a free contract wrapper returning `Self` for `{}`: \
+                         its enclosing type is not present in the resolved function path",
+                        cf.path
+                    )
+                })?,
+            ty => ty.rust_name().unwrap_or_else(|| ty.display_name()),
+        };
         (
             contract_fn_name.clone(),
             format!(
@@ -6690,6 +6705,70 @@ pub struct OrderBook {
             "the wrapper must preserve the checked function's signature:\n{}",
             generated.module_source
         );
+    }
+
+    /// A YAML contract is materialised on a free wrapper. `Self` is only
+    /// legal inside its original impl, so the wrapper must name the
+    /// constructor's enclosing type, including its module path.
+    #[test]
+    fn a_document_contract_wrapper_resolves_self_to_its_enclosing_type() {
+        let mut cf = contract_fn_named("new");
+        cf.path = "clock::Timer::new".into();
+        cf.is_method = true;
+        cf.return_type = RustType::SelfType;
+        merge_declared_contract(&mut cf, &[], &["|result| true".into()]).unwrap();
+
+        let generated = generate_proof_module(&cf, 2, &[]).unwrap();
+        assert!(
+            generated
+                .module_source
+                .contains("fn ply_contract_clock_Timer_new() -> clock::Timer"),
+            "a free wrapper cannot return `Self`:\n{}",
+            generated.module_source
+        );
+    }
+
+    #[test]
+    fn a_self_return_without_an_enclosing_type_is_refused_before_codegen() {
+        let mut cf = contract_fn_named("new");
+        cf.return_type = RustType::SelfType;
+        merge_declared_contract(&mut cf, &[], &["|result| true".into()]).unwrap();
+
+        let err = match generate_proof_module(&cf, 2, &[]) {
+            Ok(_) => panic!("a free wrapper must not emit an unresolved `Self`"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("enclosing type"),
+            "an ambiguous `Self` must be an explicit error: {err:#}"
+        );
+    }
+
+    /// Generated source cannot rely on imports that happened to be in the
+    /// checked function's file. Standard-library return types therefore use
+    /// the same fully-qualified Rust spelling as generated parameters.
+    #[test]
+    fn a_document_contract_wrapper_qualifies_standard_library_return_types() {
+        for (ty, expected) in [
+            (RustType::Duration, "std::time::Duration"),
+            (
+                RustType::NonZero(Box::new(RustType::U32)),
+                "std::num::NonZeroU32",
+            ),
+        ] {
+            let mut cf = contract_fn_named("identity");
+            cf.return_type = ty;
+            merge_declared_contract(&mut cf, &[], &["|result| true".into()]).unwrap();
+
+            let generated = generate_proof_module(&cf, 2, &[]).unwrap();
+            assert!(
+                generated
+                    .module_source
+                    .contains(&format!("fn ply_contract_identity() -> {expected}")),
+                "the wrapper must contain a source-valid return type:\n{}",
+                generated.module_source
+            );
+        }
     }
 
     /// `ensures:` is written two ways in real documents, and both have to

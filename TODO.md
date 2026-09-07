@@ -1,5 +1,10 @@
 # TODO
 
+## Review follow-ups — namespaced mutation and YAML proof return types — 2026-09-07
+
+- [ ] Keep inline-module and method qualification when selecting every function whose mutants a claim must catch.
+- [ ] Render YAML proof-wrapper return types as valid Rust, resolving `Self` and preserving standard-library qualification.
+
 ## Landed: four review findings on cb8e3cd, plus the test-module widening — 2026-09-07
 
 - [x] **A `#[cfg(test)]` item no longer widens the walk.** The usual `mod tests`

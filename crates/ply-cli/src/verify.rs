@@ -4029,6 +4029,7 @@ fn run_fn_checks(
                     MutateTarget {
                         node_id,
                         fn_name,
+                        fn_path: &cf.path,
                         test_filter: &harness_test_filter(cf),
                         reached_fns,
                         reached_foreign,
@@ -7350,6 +7351,27 @@ fn mutate_scope_prose(scope: &[String]) -> String {
     }
 }
 
+/// The exact function owners cargo-mutants should plant in for one claim.
+fn mutation_scope(
+    fn_path: &str,
+    reached_fns: &[String],
+    reached_foreign: &[(String, String)],
+) -> Vec<String> {
+    let mut scope = vec![fn_path.to_string()];
+    for name in reached_fns {
+        if reached_foreign
+            .iter()
+            .any(|(canonical, _)| canonical == name)
+        {
+            continue;
+        }
+        if !scope.contains(name) {
+            scope.push(name.clone());
+        }
+    }
+    scope
+}
+
 /// The sentence a reader gets when the deliberate bugs went into a list Ply
 /// knows is incomplete.
 ///
@@ -7407,6 +7429,10 @@ fn foreign_package_note(fn_name: &str, foreign: &[(String, String)]) -> String {
 struct MutateTarget<'a> {
     node_id: &'a str,
     fn_name: &'a str,
+    /// The claimed function's canonical crate-root path. Unlike `fn_name`,
+    /// this retains an inline module or enclosing type, exactly as
+    /// cargo-mutants spells the owner in its mutant descriptions.
+    fn_path: &'a str,
     test_filter: &'a str,
     /// The bodies this claim's checks run, claimed one first, from the same
     /// walk the fingerprint uses. When `scope_incomplete` is set this is
@@ -7435,6 +7461,7 @@ fn run_mutate_check(
     let MutateTarget {
         node_id,
         fn_name,
+        fn_path,
         test_filter,
         reached_fns,
         reached_foreign,
@@ -7530,21 +7557,7 @@ fn run_mutate_check(
     // Claimed function first, then every other body the walk identified as
     // run. When the walk could not be bounded this is what it had before it
     // stopped, not the whole list, and `W0530` below says so.
-    let mut mutate_scope: Vec<String> = vec![fn_name.to_string()];
-    for name in reached_fns {
-        // A body in another package cannot be reached by this run's planting,
-        // so naming it here would report coverage nothing produced.
-        if reached_foreign
-            .iter()
-            .any(|(canonical, _)| canonical == name)
-        {
-            continue;
-        }
-        let leaf = name.rsplit("::").next().unwrap_or(name).to_string();
-        if !mutate_scope.contains(&leaf) {
-            mutate_scope.push(leaf);
-        }
-    }
+    let mutate_scope = mutation_scope(fn_path, reached_fns, reached_foreign);
     let cfg = MutantsRunConfig {
         workspace_root: harness_workspace_root.to_path_buf(),
         mutated_package: target_names.package_name,
@@ -8222,6 +8235,32 @@ fn unused(_p: &PathBuf) {}
 
 #[cfg(test)]
 mod tests {
+    /// cargo-mutants reports the owner of an inline-module function or a
+    /// method with its qualification. Reducing either to its leaf selects
+    /// no mutant in that body, so a clean run can otherwise overstate what
+    /// the tests killed.
+    #[test]
+    fn mutation_scope_keeps_namespaced_function_owners() {
+        let scope = super::mutation_scope(
+            "maths::scaled",
+            &[
+                "maths::helper".to_string(),
+                "Widget::adjust".to_string(),
+                "dependency::foreign_helper".to_string(),
+            ],
+            &[(
+                "dependency::foreign_helper".to_string(),
+                "dependency".to_string(),
+            )],
+        );
+
+        assert_eq!(
+            scope,
+            vec!["maths::scaled", "maths::helper", "Widget::adjust"],
+            "the selector names must match cargo-mutants' qualified function owners exactly"
+        );
+    }
+
     /// `cargo mutants` is pointed at one package, so a body the checks run
     /// in a second one is never broken -- and until 2026-09-07 the run named
     /// it as covered anyway. Measured on `tests/fixtures/crosspkgmutate`:

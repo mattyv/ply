@@ -418,6 +418,23 @@ mod tests {
         ));
     }
 
+    /// Inline modules and impl methods are qualified in cargo-mutants'
+    /// owner text. The selector must retain that qualification in both
+    /// description forms and must not accept the same leaf in another
+    /// namespace.
+    #[test]
+    fn a_namespaced_function_selector_matches_only_that_owner() {
+        for name in ["maths::helper", "Widget::adjust"] {
+            let re = regex::Regex::new(&mutation_selector(name)).unwrap();
+            assert!(re.is_match(&format!("src/lib.rs:20:5: replace {name} -> u32 with 0")));
+            assert!(re.is_match(&format!("src/lib.rs:21:9: replace + with - in {name}")));
+            let leaf = name.rsplit("::").next().unwrap();
+            assert!(!re.is_match(&format!(
+                "src/lib.rs:30:5: replace other::{leaf} -> u32 with 0"
+            )));
+        }
+    }
+
     /// §5.4c MUST: "every engine invocation carries a hard cap ... Exceeding
     /// it yields `timeout`, never a silent hang." `-t` caps each *mutant's*
     /// test phase inside cargo-mutants; it does not cap the invocation, so a
