@@ -1,5 +1,119 @@
 # TODO
 
+## Landed: four review findings on cb8e3cd, plus the test-module widening — 2026-09-07
+
+- [x] **A `#[cfg(test)]` item no longer widens the walk.** The usual `mod tests`
+      block declaring a `const` put every such crate beyond the walk, so reuse
+      could never hit for it and `W0530` announced a partial planting scope
+      with nothing else to plant in. A `#[cfg(test)]` item is not in the
+      library a check links against -- Ply's checks are generated tests in a
+      sibling crate, selected by `harness_test_filter`, never the crate's own
+      `#[test]`s -- so it now passes the gate and is not hashed as a type
+      declaration either. Test watched failing first; the pinned reference
+      fingerprint does not move, and the false `W0530` is gone end to end.
+      Only a bare `#[cfg(test)]` counts: `cfg(all(test, ...))` still widens,
+      because guessing at cfg expressions would silently drop real code.
+- [x] **P1: ancestor Cargo configuration is read from the resolved path.**
+      `Path::ancestors` is lexical, so `cargo ply verify .` -- the ordinary
+      invocation -- yielded `.` and `""` and nothing else. A parent
+      `.cargo/config.toml` could change compilation without moving the
+      fingerprint, and a stored result would be carried forward as still
+      valid. Now canonicalised first, falling back to the path as given.
+      Pinned with a symlink, which reproduces the same lexical/real mismatch
+      without a test having to move the process's working directory -- the
+      existing test used an absolute path and so never exercised this.
+- [x] **P2: the evidence page is built from the drawing CI actually makes.**
+      The self-check writes one `ply-root-verified.svg`; the page builder
+      still copied and linked the two per-crate files it stopped producing,
+      so publishing failed on every push to main. One drawing, one section,
+      the filename named once. Verified by running the script by hand, which
+      is what its own doc comment says it exists for.
+- [x] **P2: a body in another package is no longer counted as planted in.**
+      The walk follows path dependencies, so a claim can genuinely run a body
+      in a second package -- and `cargo mutants -p <root>` cannot plant a bug
+      there whatever `--re` it is given. Measured on the new
+      `tests/fixtures/crosspkgmutate`: two mutants planted, both in the
+      wrapper, with the helper next door named as covered. That is the
+      `helperspec` defect one package out. Those bodies are now excluded from
+      the planting scope and disclosed by `W0530` instead, naming the function
+      and its package. Gate test watched failing first.
+- [ ] **NOT DONE, deliberately: select the other package rather than
+      disclosing it.** The review offered both. Disclosure is what landed,
+      because pointing `cargo mutants` at several packages changes what is
+      mutated wholesale and needs the one harness to remain the kill signal
+      for all of it -- a bigger change than this round should carry. The
+      honest position is that `spec-strong` on a claim whose logic lives in a
+      path dependency still covers less than it looks like, and now says so.
+
+## A/B round 4: the tool's best result, and three new gaps — 2026-09-07
+
+Two scenarios picked to reach ground the first three rounds could not. An
+order state machine over three fieldless enums -- a *pure* function, so
+none of it is blocked at `&mut self` the way every earlier stateful
+scenario was -- and a path normaliser, the wrapper-plus-helper shape the
+writing guide teaches. Three pre-registered bugs each, every one confirmed
+by an independent oracle first (all 25 pairs; 5,616 generated paths).
+
+**Score: every arm 3 of 3, and Ply 3 of 3 on both.** The score is not the
+result. These are:
+
+**The strongest evidence for the tool in four rounds.** On the path
+normaliser, the agent's first contract was a *shape* check -- output starts
+with `/`, no trailing slash, no leftover `.` or `..`. Mutation testing
+showed it was nearly empty: **18 planted bugs survived**, because a correct
+function's output satisfies a shape rule no matter how the checking code is
+broken. So the agent discarded it and wrote a second, independent
+implementation (a functional fold against an imperative stack walk) and made
+the promise "these two must agree exactly". **Survivors went to zero.** The
+tool did not find a bug in the code; it proved the *specification* was empty
+and forced a real one. No TDD-only arm in four rounds produced anything like
+that, and neither did any earlier Ply arm.
+
+- [ ] **Exhaustive checking is refused on a fieldless enum.** The state
+      machine has 25 possible inputs -- two `Copy` enums, five variants each,
+      the cheapest exhaustive domain there is -- and `bounded` is declined
+      with `V0508`, calling the type "real, substantial work" to reason about
+      every value of. Verified directly, not taken from the agent's report.
+      The refusal is honest (it says unsupported, not unchecked) but the gap
+      is real: this is the one shape where "every input" is nearly free.
+      Consequence measured in the round: random sampling alone let a deleted
+      transition survive as a planted bug -- 25 discrete pairs, 64 random
+      draws -- so the agent had to write out all 25 cases by hand.
+- [ ] **A constant in a `#[cfg(test)]` module widens the walk to the whole
+      crate.** Found because `W0530`, added this morning, fired on clean code
+      and said the planting scope was partial when there was nothing else to
+      plant in. Reproduced with two crates differing by one line -- a
+      `const CASES: [u32; 3]` inside `#[cfg(test)] mod tests`. Two costs:
+      result reuse can never hit for that crate, and the new warning cries
+      wolf. Nearly every Rust crate has a test module and they very often
+      declare constants. **The fix looks sound but touches §5.2a:** Ply's
+      checks only ever run its own generated tests, in a sibling crate
+      (`harness_test_filter` selects `<generated module>::` and nothing
+      else), so a `#[cfg(test)]` item is definitionally not something a check
+      can execute and should not gate the walk. Skipping them also removes
+      them from the hash, which is a change to what a reused result depends
+      on -- worth a deliberate decision rather than a quiet one.
+- [ ] **A counterexample over an enum is unreadable.** A failing promise
+      reports `state = __ply_leaf_p_state_variant=2, event =
+      __ply_leaf_p_event_variant=0`. The reader has to count variants by hand
+      to learn that means `Approved` and `Submit`. Ply generated that
+      strategy and holds the variant names; it just does not use them. The
+      `W0541` wording is honest that this is the engine's raw output, but the
+      whole value of a counterexample is naming the input that broke it.
+- [ ] **The sibling-crate harness pushed a helper into the public API.** To
+      let the generated harness see the differential oracle, the agent made
+      it `pub` -- widening a public API to suit the tool, which
+      `ply-checkable-code`'s own "What to do when Ply refuses" section warns
+      against in as many words. Not a defect, but a real cost, and the guide
+      currently gives no alternative for this shape.
+
+Working as intended, worth recording: `W0530` named the helper correctly on
+the path normaliser ("its own body and `normalise_via_fold`, the one other
+function its checks run"), which is the fix from cb8e3cd doing its job on
+code written without knowledge of it. Counterexamples for text are clean and
+minimal (`path = "."`, `path = "0/"`) with runnable regression tests written
+to disk.
+
 ## Landed: focused folding no longer leaves full-size empty boxes — 2026-09-07
 
 - [x] **Ply now sends the last useful folded depth** (`92ad725`). A nested

@@ -297,7 +297,16 @@ fn compiler_configuration(
         }
     };
 
-    for (depth, dir) in crate_dir.ancestors().enumerate() {
+    // Cargo discovers `.cargo/config.toml` by walking the *real* parents of
+    // the directory it builds in, so the walk below has to start from the
+    // resolved path. `Path::ancestors` is lexical: `cargo ply verify .` --
+    // the ordinary way to invoke it -- yields `.` and `""` and stops, so
+    // every parent config was missed and a change to one could not move the
+    // fingerprint (external review of cb8e3cd, 2026-09-07). Falls back to
+    // the path as given when it cannot be resolved, which is the same
+    // behaviour as before rather than a refusal to check at all.
+    let resolved = std::fs::canonicalize(crate_dir).unwrap_or_else(|_| crate_dir.to_path_buf());
+    for (depth, dir) in resolved.ancestors().enumerate() {
         for name in ["config.toml", "config"] {
             add(
                 format!("ancestor-{depth}/.cargo/{name}"),
@@ -750,6 +759,9 @@ fn verify_loaded_crate(
         /// `mutate` so bugs are planted where the logic is, not only in the
         /// claimed function.
         reached_fns: Vec<String>,
+        /// Reached bodies belonging to another package, which `cargo mutants
+        /// -p <root>` cannot plant a bug in whatever `--re` it is given.
+        reached_foreign: Vec<(String, String)>,
         /// The checks as `ply.yaml` spells them, which is what a recorded
         /// verdict is checked against for possibility before it is trusted.
         check_spellings: Vec<String>,
@@ -1205,6 +1217,7 @@ fn verify_loaded_crate(
             // Taken before `code.units` is moved into the fingerprint below.
             let widened_because = code.widened_because.clone();
             let reached_fns = code.reached_fns.clone();
+            let reached_foreign = code.reached_fns_outside_package.clone();
             let check_spellings: Vec<String> = checks.iter().map(check_spelling).collect();
 
             let inputs = FingerprintInputs {
@@ -1301,6 +1314,7 @@ fn verify_loaded_crate(
                 inputs,
                 widened_because,
                 reached_fns,
+                reached_foreign,
                 check_spellings,
             });
         }
@@ -1833,6 +1847,7 @@ fn verify_loaded_crate(
             &plans[idx].seed,
             harness_info.as_ref(),
             &plans[idx].reached_fns,
+            &plans[idx].reached_foreign,
             plans[idx].widened_because.as_deref(),
             !plans[idx].claim.examples.is_empty(),
             opts,
@@ -3529,6 +3544,9 @@ fn run_fn_checks(
     // list when `scope_incomplete` is set: the walk stopped early and kept
     // what it had.
     reached_fns: &[String],
+    // Of those, the ones in another package: named in the report as not
+    // planted in, rather than counted as covered.
+    reached_foreign: &[(String, String)],
     // Why the reach walk could not bound what this claim's checks run, when
     // it could not. Set means the planting below is over a partial list and
     // the report has to say so.
@@ -4018,6 +4036,7 @@ fn run_fn_checks(
                         fn_name,
                         test_filter: &harness_test_filter(cf),
                         reached_fns,
+                        reached_foreign,
                         scope_incomplete,
                     },
                     checks,
@@ -7326,6 +7345,38 @@ fn incomplete_scope_note(fn_name: &str, scope: &[String], reason: &str) -> Strin
     )
 }
 
+/// The sentence a reader gets when a body this claim's checks run sits in
+/// another package, where this run's planting cannot reach it.
+///
+/// `cargo mutants` is pointed at one package. The reach walk follows path
+/// dependencies, so a claim can genuinely run a body in a second one -- and
+/// a `--re` naming it selects nothing there. Counting it as covered is the
+/// same overstatement as planting only in a thin wrapper, one package out.
+fn foreign_package_note(fn_name: &str, foreign: &[(String, String)]) -> String {
+    let mut named: Vec<String> = foreign
+        .iter()
+        .map(|(canonical, pkg)| {
+            let leaf = canonical.rsplit("::").next().unwrap_or(canonical);
+            format!("`{leaf}` (in `{pkg}`)")
+        })
+        .collect();
+    named.sort();
+    named.dedup();
+    let list = named.join(", ");
+    let subject = if named.len() == 1 {
+        "one function that lives in a different package"
+    } else {
+        "functions that live in a different package"
+    };
+    let them = if named.len() == 1 { "it" } else { "them" };
+    format!(
+        "`{fn_name}`'s checks run {subject}: {list}. Ply plants its deliberate bugs one \
+         package at a time, so nothing was planted in {them}, and a clean result here says \
+         nothing about that code. Claim the function where it is declared to get evidence \
+         for it."
+    )
+}
+
 /// What one claim hands the mutation planter: where to plant the deliberate
 /// bugs, and which tests are the kill signal.
 struct MutateTarget<'a> {
@@ -7336,6 +7387,10 @@ struct MutateTarget<'a> {
     /// walk the fingerprint uses. When `scope_incomplete` is set this is
     /// what the walk had identified before it stopped, not the whole list.
     reached_fns: &'a [String],
+    /// Of those, the ones belonging to another package. `cargo mutants` is
+    /// pointed at one package, so a `--re` naming a body in a second selects
+    /// nothing: these are excluded from the planting and disclosed instead.
+    reached_foreign: &'a [(String, String)],
     /// Why the walk could not bound that list, when it could not. Set means
     /// the deliberate bugs went into a partial set, and `W0530` says so --
     /// silence there is how "every planted bug was caught" came to cover a
@@ -7356,6 +7411,7 @@ fn run_mutate_check(
         fn_name,
         test_filter,
         reached_fns,
+        reached_foreign,
         scope_incomplete,
     } = target;
     let _ = checks;
@@ -7456,6 +7512,14 @@ fn run_mutate_check(
     // stopped, not the whole list, and `W0530` below says so.
     let mut mutate_scope: Vec<String> = vec![fn_name.to_string()];
     for name in reached_fns {
+        // A body in another package cannot be reached by this run's planting,
+        // so naming it here would report coverage nothing produced.
+        if reached_foreign
+            .iter()
+            .any(|(canonical, _)| canonical == name)
+        {
+            continue;
+        }
         let leaf = name.rsplit("::").next().unwrap_or(name).to_string();
         if !mutate_scope.contains(&leaf) {
             mutate_scope.push(leaf);
@@ -7637,6 +7701,25 @@ fn run_mutate_check(
     // The planting happened over a list Ply knows is partial. Every outcome
     // above reads as though it were complete, so the note goes on all of
     // them rather than only on the clean one.
+    if let Ok((_, diags)) = &mut result
+        && !reached_foreign.is_empty()
+    {
+        diags.push(Diagnostic {
+            code: "W0530".into(),
+            severity: "warning".into(),
+            phase: "verify".into(),
+            engine: "cargo-mutants".into(),
+            check: "mutate".into(),
+            node_id: node_id.into(),
+            title: foreign_package_note(fn_name, reached_foreign),
+            pointer: None,
+            primary_span: None,
+            counterexample: None,
+            fixes: vec![],
+            assumptions: vec![],
+            open_item: Some("partial_mutate_scope".into()),
+        });
+    }
     if let (Ok((_, diags)), Some(reason)) = (&mut result, scope_incomplete) {
         diags.push(Diagnostic {
             code: "W0530".into(),
@@ -8120,6 +8203,27 @@ fn unused(_p: &PathBuf) {}
 
 #[cfg(test)]
 mod tests {
+    /// `cargo mutants` is pointed at one package, so a body the checks run
+    /// in a second one is never broken -- and until 2026-09-07 the run named
+    /// it as covered anyway. Measured on `tests/fixtures/crosspkgmutate`:
+    /// two mutants planted, both in the wrapper, with the helper next door
+    /// reported as included.
+    #[test]
+    fn a_body_in_another_package_is_reported_as_not_planted_in() {
+        let note = super::foreign_package_note(
+            "scaled",
+            &[("doubled_then_capped".to_string(), "helperpkg".to_string())],
+        );
+        assert_eq!(
+            note,
+            "`scaled`'s checks run one function that lives in a different package: \
+             `doubled_then_capped` (in `helperpkg`). Ply plants its deliberate bugs one \
+             package at a time, so nothing was planted in it, and a clean result here says \
+             nothing about that code. Claim the function where it is declared to get \
+             evidence for it."
+        );
+    }
+
     /// A clean mutation result means "deliberate bugs were planted and the
     /// checks caught every one". When Ply could not work out the whole list
     /// of bodies a claim's checks run, that sentence covers less code than
@@ -8148,6 +8252,46 @@ mod tests {
     }
 
     use super::*;
+
+    /// Cargo reads `.cargo/config.toml` from every real ancestor of the
+    /// crate directory. `Path::ancestors` is purely lexical, so a path that
+    /// does not spell those ancestors out finds none of them: the reported
+    /// shape was `cargo ply verify .`, whose ancestors are `.` and `""` and
+    /// nothing else, so a parent config could change compilation while a
+    /// stored result was carried forward as still valid. Pinned here with a
+    /// symlink, which reproduces the same lexical/real mismatch without a
+    /// test having to move the process's working directory.
+    #[test]
+    fn a_path_whose_lexical_ancestors_are_not_its_real_ones_still_reads_them() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("workspace/member");
+        let workspace_config = root.path().join("workspace/.cargo/config.toml");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(workspace_config.parent().unwrap()).unwrap();
+        std::fs::write(
+            &workspace_config,
+            "[build]\nrustflags = [\"--cfg\", \"one\"]\n",
+        )
+        .unwrap();
+
+        // `root/link` resolves to `root/workspace/member`, but its lexical
+        // ancestors are `root/link` and `root` -- never `root/workspace`.
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let through_link = compiler_configuration(&link, None, "e", "p").unwrap();
+        assert!(
+            through_link.contains("--cfg"),
+            "Cargo would read {} when building in that directory, so it is an input to the \
+             build and has to move the fingerprint: {through_link}",
+            workspace_config.display()
+        );
+        assert_eq!(
+            through_link,
+            compiler_configuration(&real, None, "e", "p").unwrap(),
+            "the same directory reached by two spellings is the same build"
+        );
+    }
 
     #[test]
     fn cargo_configuration_from_ancestors_and_cargo_home_is_fingerprinted() {

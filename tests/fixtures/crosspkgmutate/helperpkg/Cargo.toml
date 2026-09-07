@@ -1,0 +1,9 @@
+[package]
+name = "helperpkg"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "helperpkg"
+path = "src/lib.rs"

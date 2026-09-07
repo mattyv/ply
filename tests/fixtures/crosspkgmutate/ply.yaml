@@ -1,0 +1,12 @@
+ply: 1
+
+# Bound-shaped on purpose, for the same reason `helperspec` is: a promise
+# that cannot see a wrong answer under a cap leaves mutation testing as the
+# only instrument, so what this fixture measures is where the bugs are
+# planted rather than whether some other check happened to notice.
+components:
+  crosspkgmutate:
+    anchor: ply_fixture_crosspkgmutate
+    fns:
+      scaled:
+        checks: [fuzz(256), test, mutate]

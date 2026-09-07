@@ -320,7 +320,7 @@ jobs:
       # `if: always()` so a drawing from a run that just failed is still
       # attached -- that is the one a reader most wants, since it shows
       # exactly which chip stopped earning what it used to.
-      - name: Upload the verified drawings
+      - name: Upload the verified drawing
         if: always()
         uses: actions/upload-artifact@v6
         with:
@@ -329,7 +329,7 @@ jobs:
             ply-root-verified.svg
           if-no-files-found: ignore
 
-  # Publishes those drawings where a person can actually look at them,
+  # Publishes that drawing where a person can actually look at it,
   # without downloading anything.
   #
   # The artifact above is the right home for a *failed* run's drawing and the
