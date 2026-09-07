@@ -71,6 +71,18 @@ pub struct CodeScope {
     pub units: Vec<(String, String)>,
     /// One plain sentence naming what stopped the walk, when it stopped.
     pub widened_because: Option<String>,
+    /// The canonical path of every first-party function this claim's checks
+    /// run, the claimed one first. Empty when the walk widened, because a
+    /// widened scope names files rather than functions and there is no
+    /// bounded set to hand anyone.
+    ///
+    /// Separate from `units` because the two answer different questions:
+    /// `units` is what the fingerprint hashes, and includes type
+    /// declarations no walk of bodies could reach. This is the set of
+    /// *bodies the check executes*, which is what mutation testing has to
+    /// plant bugs in -- planting only in the claimed function reports that
+    /// nothing survived on a thin wrapper whose helpers were never touched.
+    pub reached_fns: Vec<String>,
 }
 
 /// Every first-party source file in reach of this crate, parsed once per
@@ -371,6 +383,11 @@ pub fn code_scope(
         return widened(first_party, reason.clone());
     }
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    // The bodies this claim's checks execute, claimed function first. Kept
+    // apart from `units`, which is what the fingerprint hashes and which
+    // deliberately omits the claimed function's own tokens (hashed
+    // separately) and includes type declarations that are not bodies at all.
+    let mut reached_fns: Vec<String> = Vec::new();
     let mut queue: VecDeque<String> = VecDeque::new();
     // Seeded with every first-party type declaration, because no walk of
     // bodies can reach one and changing one changes what the bodies mean.
@@ -450,6 +467,7 @@ pub fn code_scope(
         if !seen.insert(found.canonical.clone()) {
             continue;
         }
+        reached_fns.push(found.canonical.clone());
         // The claimed function's own tokens are a hashed input in their own
         // right, and hashing them twice would make one edit report as two
         // inputs moving ("the function's own source *and* the code it
@@ -534,11 +552,13 @@ pub fn code_scope(
         scope: "reached",
         units,
         widened_because: None,
+        reached_fns,
     }
 }
 
 fn widened(first_party: &FirstParty, reason: String) -> CodeScope {
     CodeScope {
+        reached_fns: Vec::new(),
         scope: "whole-crate",
         units: first_party.units.clone(),
         widened_because: Some(reason),

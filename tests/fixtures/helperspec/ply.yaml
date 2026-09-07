@@ -1,0 +1,18 @@
+ply: 1
+
+# The promise is bound-shaped on purpose -- it is the shape a brief asks for
+# ("never more than the maximum") and the shape that cannot see a wrong
+# answer underneath a cap. What is being checked here is whether `mutate`
+# plants bugs where the logic is.
+components:
+  helperspec:
+    anchor: ply_fixture_helperspec
+    fns:
+#
+# Deliberately **no** worked example. An example pinning a concrete answer
+# catches a wrong helper on its own, which would let this fixture pass
+# without mutation testing ever looking at the helper -- the first draft did
+# exactly that and went green for the wrong reason. With only a bound-shaped
+# promise, `mutate` is the sole instrument that can see the bug.
+      scaled:
+        checks: [fuzz(256), test, mutate]
