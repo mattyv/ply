@@ -1,5 +1,15 @@
 # TODO
 
+## Landed: focused folding no longer leaves full-size empty boxes — 2026-09-07
+
+- [x] **Ply now sends the last useful folded depth** (`92ad725`). A nested
+      leaf box can still fold its function rows even when it has no deeper
+      component beneath it; Auros was missing exactly that depth-2 drawing.
+- [x] **ply-vis uses folded drawings relative to the focused box**
+      (`a07ccc6`). If an older artifact does not supply the requested depth,
+      the viewer keeps its full contents visible instead of hiding them while
+      retaining their full-size geometry.
+
 ## A/B round 3: where the sampling actually earns its keep — 2026-09-07
 
 Same protocol again. Two scenarios chosen to probe known-weak ground rather
