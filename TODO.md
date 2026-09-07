@@ -39,7 +39,7 @@ reinvented the thing the tool automates, unprompted, in both scenarios.
       clean about five times in six, and catching it is luck. Fix has to
       relate the constructor's size argument to the sequence length rather
       than drawing them independently.
-- [ ] **One `vec!` undoes the planting-scope fix.** Any macro Ply cannot
+- [x] **One `vec!` undoes the planting-scope fix.** Fixed the same day. Any macro Ply cannot
       expand makes the reach walk widen to the whole crate, which empties the
       list of reached function names, which drops the planting back to the
       claimed function alone -- the exact defect fixed in 2fa2d0e, by another
@@ -47,8 +47,18 @@ reinvented the thing the tool automates, unprompted, in both scenarios.
       the helper, down to 2 in the wrapper alone**, from adding `let batch =
       vec![x];` to the wrapper. The message still says "its own body" and
       gives no hint the helper was skipped, and `MutateTarget`'s own doc
-      comment claims "the report says so", which is false. `vec!` is not a
+      comment claimed "the report says so", which was false. `vec!` is not a
       corner case.
+      **Fixed:** the walk now records why it had to widen and keeps walking,
+      so the bodies it did resolve still reach the planter, and a new
+      `W0530` says the list was partial and names what stopped it -- rather
+      than printing "its own body" as though the list were complete. Three
+      tests, each watched failing first: the walk test failed with an empty
+      list of names, the wording test on the exact sentence, and the
+      end-to-end fixture (helper broken, `vec!` added to the wrapper) which
+      was re-run with only the walk change reverted to confirm it goes red
+      for that reason and nothing else. §5.4c amended; the stale doc comment
+      retracted.
 - [ ] **Pointing Ply at `ply.yaml` instead of the crate directory prints a
       raw Rust backtrace** -- `Not a directory (os error 20)` and twelve
       stack frames -- rather than a sentence saying to pass the directory.

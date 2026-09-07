@@ -388,6 +388,15 @@ pub fn code_scope(
     // deliberately omits the claimed function's own tokens (hashed
     // separately) and includes type declarations that are not bodies at all.
     let mut reached_fns: Vec<String> = Vec::new();
+    // The first reason the *fingerprint* had to widen to the whole crate.
+    // Recorded rather than returned on, because widening says "an edit
+    // anywhere in this crate must re-run the check", not "forget the bodies
+    // already identified". Mutation testing plants its deliberate bugs in
+    // `reached_fns`, and returning early emptied that list -- one `assert!`
+    // or `vec!` in a wrapper took the planting back down to the wrapper's
+    // own lines while the report still said "its own body" (A/B round 2,
+    // 2026-09-07).
+    let mut widened_because: Option<String> = None;
     let mut queue: VecDeque<String> = VecDeque::new();
     // Seeded with every first-party type declaration, because no walk of
     // bodies can reach one and changing one changes what the bodies mean.
@@ -408,13 +417,13 @@ pub fn code_scope(
             // The harness refuses this text too, but that happens later, and
             // a scope that quietly skips what it cannot read is the silence
             // this module exists to end.
-            return widened(
-                first_party,
+            widened_because.get_or_insert_with(|| {
                 format!(
                     "Ply could not read `{example}` -- a worked example, or a contract \
                      written in ply.yaml -- to walk out of it"
-                ),
-            );
+                )
+            });
+            continue;
         };
         let mut collector = MentionCollector {
             paths: Vec::new(),
@@ -422,14 +431,13 @@ pub fn code_scope(
         };
         collector.visit_expr(&expr);
         if let Some(mac) = collector.macro_invocation {
-            return widened(
-                first_party,
+            widened_because.get_or_insert_with(|| {
                 format!(
                     "`{example}` -- a worked example, or a contract written in ply.yaml -- \
                      invokes the macro `{mac}!`, whose expansion is not in the tokens Ply's \
                      call walk reads"
-                ),
-            );
+                )
+            });
         }
         for path in collector.paths {
             queue.push_back(path);
@@ -439,7 +447,10 @@ pub fn code_scope(
         let is_root = seen.is_empty();
         let found = match resolver.lookup_fn(&spelling) {
             Resolution::Found(f) => f,
-            Resolution::Opaque(reason) => return widened(first_party, reason),
+            Resolution::Opaque(reason) => {
+                widened_because.get_or_insert(reason);
+                continue;
+            }
             // A path that names nothing is ordinary further down the walk:
             // most mentioned paths are local variables. At the **root** it
             // means Ply is about to hash an empty set of reachable bodies
@@ -447,10 +458,10 @@ pub fn code_scope(
             // check runs nothing" -- the exact silence this module exists
             // to end. Widen instead.
             Resolution::NotFound if is_root => {
-                return widened(
-                    first_party,
-                    format!("Ply could not resolve `{root_fn_path}` to walk out of it"),
-                );
+                widened_because.get_or_insert_with(|| {
+                    format!("Ply could not resolve `{root_fn_path}` to walk out of it")
+                });
+                continue;
             }
             Resolution::NotFound => continue,
             // A method Ply resolves and refuses (a receiver, a generic
@@ -460,7 +471,8 @@ pub fn code_scope(
             // root would, and is skipped the same way an unresolved callee
             // further down the walk already is.
             Resolution::Refused(reason) | Resolution::Ambiguous(reason) if is_root => {
-                return widened(first_party, reason);
+                widened_because.get_or_insert(reason);
+                continue;
             }
             Resolution::Refused(_) | Resolution::Ambiguous(_) => continue,
         };
@@ -480,18 +492,25 @@ pub fn code_scope(
             ));
         }
         if let Err(reason) = attributes_are_inert(&found.item.attrs, &found.canonical) {
-            return widened(first_party, reason);
+            // The attribute may rewrite this body, so its tokens are not
+            // trustworthy to walk out of -- but the check still runs it, so
+            // it stays in `reached_fns` and stays worth planting bugs in.
+            widened_because.get_or_insert(reason);
+            continue;
         }
         let mentions = mentioned_paths(&found.item);
         if let Some(mac) = mentions.macro_invocation {
-            return widened(
-                first_party,
+            // The expansion is unreadable, so what it calls is unknown and
+            // the fingerprint widens. The paths written *outside* the macro
+            // are still there to be read, and they are the ones a reader
+            // would expect the planter to reach.
+            widened_because.get_or_insert_with(|| {
                 format!(
                     "`{}` invokes the macro `{mac}!`, whose expansion is not in the tokens Ply's \
                      call walk reads",
                     found.canonical
-                ),
-            );
+                )
+            });
         }
         // A name written inside a module is resolved from that module
         // first, then from the crate root -- the way Rust reads it. Without
@@ -533,7 +552,9 @@ pub fn code_scope(
             };
             match resolver.classify(&site).status {
                 // First-party source Ply was pointed at and could not read.
-                CalleeStatus::Opaque(reason) => return widened(first_party, reason),
+                CalleeStatus::Opaque(reason) => {
+                    widened_because.get_or_insert(reason);
+                }
                 // Out of the workspace: `std`, or a registry crate. Not
                 // hashable as source, and covered instead by the compiler
                 // identity and the resolved dependency versions (§5.2a).
@@ -546,6 +567,11 @@ pub fn code_scope(
                 _ => queue.push_back(path),
             }
         }
+    }
+    if let Some(reason) = widened_because {
+        let mut scope = widened(first_party, reason);
+        scope.reached_fns = reached_fns;
+        return scope;
     }
     units.sort();
     CodeScope {
@@ -1376,6 +1402,29 @@ pub fn f(x: u32) -> u32 { x }
         )]);
         let scope = scope_of(dir.path(), "f", &[]);
         assert_eq!(scope.scope, "whole-crate", "{:?}", scope.widened_because);
+    }
+
+    /// Widening is about the *fingerprint*: once a macro hides part of the
+    /// walk, any edit in the crate has to re-run the check. It is not a
+    /// reason to forget the bodies the walk did positively identify --
+    /// those are still code the check runs, and mutation testing plants
+    /// deliberate bugs in exactly that list. Losing them is how one `vec!`
+    /// in a wrapper silently took the planting back down to the wrapper's
+    /// own two lines (A/B round 2, 2026-09-07).
+    #[test]
+    fn a_macro_does_not_erase_the_helpers_the_walk_did_resolve() {
+        let dir = crate_with(&[(
+            "src/lib.rs",
+            "pub fn helper() -> bool { true }\npub fn f() -> u32 { assert!(true); if helper() { 1 } else { 0 } }\n",
+        )]);
+        let scope = scope_of(dir.path(), "f", &[]);
+        assert_eq!(scope.scope, "whole-crate", "{:?}", scope.widened_because);
+        assert!(
+            scope.reached_fns.iter().any(|n| n.ends_with("helper")),
+            "the walk resolved `helper` before the macro stopped it, so the \
+             planter must still be offered it: {:?}",
+            scope.reached_fns
+        );
     }
 
     /// Ply writes a proof module into the crate it checks. Hashing it would

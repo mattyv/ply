@@ -56,3 +56,58 @@ fn a_bug_in_the_helper_the_check_runs_is_not_reported_as_spec_strong() {
         run.json
     );
 }
+
+/// The same shape, with one `vec!` in the wrapper.
+///
+/// A macro Ply cannot expand makes the reach walk widen: every edit in the
+/// crate must re-run the check, because what the macro calls is unknown.
+/// Until 2026-09-07 widening also *emptied* the list of bodies the walk had
+/// already identified, so the deliberate bugs went back to the wrapper's own
+/// lines and the report still said "its own body" -- the very defect the
+/// test above pins, reached by another road. Measured before the fix on this
+/// fixture: nine planted bugs spanning the helper, down to two in the
+/// wrapper alone.
+#[test]
+fn a_macro_in_the_wrapper_does_not_shrink_the_planting_back_to_the_wrapper() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("helperspec");
+
+    let src = fixture.read_lib_rs();
+    let widened = src.replace(
+        "    doubled_then_capped(x)\n",
+        "    let batch = vec![x];\n    doubled_then_capped(batch[0])\n",
+    );
+    assert_ne!(src, widened, "the wrapper must have gained a macro");
+    // Same broken helper as above: wrong in every case, still under the cap.
+    let broken = widened.replace("let doubled = x.saturating_mul(2);", "let doubled = x / 2;");
+    assert_ne!(widened, broken, "the helper body must have been rewritten");
+    fixture.write_lib_rs(&broken);
+
+    let run = run_verify(&cargo_ply, fixture.path(), 300);
+    let diags = run.json["diagnostics"].as_array().unwrap();
+
+    let weak = diags
+        .iter()
+        .find(|d| d["code"] == "W0502")
+        .unwrap_or_else(|| panic!("no weak-spec diagnostic in {}", run.json));
+    assert!(
+        weak["title"]
+            .as_str()
+            .unwrap_or("")
+            .contains("doubled_then_capped"),
+        "a macro the walk cannot read says nothing about the helper beside it, so the \
+         planting must still reach `doubled_then_capped`: {}",
+        weak["title"]
+    );
+
+    // And the run has to admit the list was partial, naming what stopped it.
+    let note = diags
+        .iter()
+        .find(|d| d["code"] == "W0530")
+        .unwrap_or_else(|| panic!("no partial-scope note in {}", run.json));
+    let title = note["title"].as_str().unwrap_or("");
+    assert!(
+        title.contains("vec!") && title.contains("doubled_then_capped"),
+        "the note has to say which bodies were mutated and what Ply could not read: {title}"
+    );
+}
