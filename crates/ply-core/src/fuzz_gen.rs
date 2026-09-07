@@ -2548,9 +2548,18 @@ pub fn generate_fuzz_test_with_examples(
         None => params_preamble(&cf.params)?,
     };
     let target_args = call_args(cf).join(", ");
+    // The checked call borrows the built receiver the way the method's own
+    // signature asks for it. Operation zero is the checked method itself, so
+    // its recorded mutability is the method's.
+    let recv_ref = match &cf.receiver {
+        Some(plan) if plan.operations.first().is_some_and(|op| op.takes_mut_self) => {
+            "&mut __ply_receiver"
+        }
+        _ => "&__ply_receiver",
+    };
     let args = match &cf.receiver {
-        Some(_) if target_args.is_empty() => "&__ply_receiver".to_string(),
-        Some(_) => format!("&__ply_receiver, {target_args}"),
+        Some(_) if target_args.is_empty() => recv_ref.to_string(),
+        Some(_) => format!("{recv_ref}, {target_args}"),
         None => target_args,
     };
     // Two spellings, deliberately. `fname` is the expression generated

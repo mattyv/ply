@@ -3281,9 +3281,23 @@ fn scan_impls_for_receiver(
         (None, Some(_)) => return Err(ReceiverError::MethodNotFound),
         (_, None) => None,
     };
+    // A `&mut self` method is admitted here (2026-09-07). What a method
+    // changes is exactly what a promise about it can say, once the value's
+    // own readings before and after are what the promise talks about --
+    // `old(self.available())` against `self.available()`. Measured: of the
+    // three bugs planted in `tests/fixtures/tokenbucket`'s type, two leave
+    // the whole-value rule perfectly true and only a promise about the
+    // transition can see them.
+    //
+    // Owned `self` is still refused. It fits the same shape (state in, state
+    // out as the return) but is a second codegen shape, and admitting it
+    // here without generating it would report a claim this run cannot make.
+    let mut target_takes_mut_self = false;
     if let Some(target) = &target {
         match target.sig.inputs.first() {
-            Some(FnArg::Receiver(r)) if r.reference.is_some() && r.mutability.is_none() => {}
+            Some(FnArg::Receiver(r)) if r.reference.is_some() => {
+                target_takes_mut_self = r.mutability.is_some();
+            }
             _ => return Err(ReceiverError::MutableOrOwnedReceiver),
         }
     }
@@ -3403,7 +3417,7 @@ fn scan_impls_for_receiver(
         Some(method_name) => vec![Operation {
             call_path: format!("{type_name}::{method_name}"),
             params: target_params.clone(),
-            takes_mut_self: false,
+            takes_mut_self: target_takes_mut_self,
         }],
         None => Vec::new(),
     };
@@ -8204,11 +8218,20 @@ fn self_label_len() -> u32 { 0 }
         }
     }
 
-    /// A `&mut self` target stays refused exactly as before this task: Ply
-    /// still has no way to state what such a call is supposed to change
-    /// about the receiver, so building one would not close the gap.
+    /// A `&mut self` target is admitted (2026-09-07), and operation zero
+    /// carries its mutability so the checked call borrows the receiver the
+    /// way the method's own signature asks.
+    ///
+    /// This test previously pinned the opposite, on the reasoning that Ply
+    /// "has no way to state what such a call is supposed to change about the
+    /// receiver". That reasoning was wrong: a promise can say it in terms of
+    /// the value's own readings before and after
+    /// (`old(self.available())` against `self.available()`), which needs no
+    /// new vocabulary. Measured on `tests/fixtures/tokenbucket`: two of that
+    /// type's three planted bugs leave the whole-value rule perfectly true
+    /// and only a promise about the transition can see them.
     #[test]
-    fn a_mut_self_method_is_still_refused() {
+    fn a_mut_self_method_is_admitted_and_borrows_mutably() {
         let dir = tempfile::tempdir().unwrap();
         write_crate(
             dir.path(),
@@ -8223,9 +8246,47 @@ impl Counter {
 "#,
             )],
         );
-        let err =
+        let plan =
             discover_method_with_receiver(dir.path(), "counter::Counter::bump", &RouteTable::new())
-                .unwrap_err();
+                .expect("a `&mut self` method is checkable");
+        let receiver = plan
+            .receiver
+            .expect("a receiver plan is built for a method");
+        assert!(
+            receiver.operations[0].takes_mut_self,
+            "operation zero is the checked method itself, so it must carry that method's own \
+             mutability -- otherwise the generated call borrows the receiver the wrong way and \
+             does not compile: {:?}",
+            receiver.operations[0]
+        );
+    }
+
+    /// An owned `self` stays refused. It fits the same shape -- state in,
+    /// state out as the return -- but is a second codegen shape, and
+    /// admitting it here without generating it would report a claim the run
+    /// cannot actually make.
+    #[test]
+    fn an_owned_self_method_is_still_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "builder.rs",
+                r#"
+pub struct Builder { n: u32 }
+impl Builder {
+    pub fn new() -> Self { Builder { n: 0 } }
+    pub fn with_limit(mut self, n: u32) -> Self { self.n = n; self }
+}
+"#,
+            )],
+        );
+        let err = discover_method_with_receiver(
+            dir.path(),
+            "builder::Builder::with_limit",
+            &RouteTable::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ReceiverError::MutableOrOwnedReceiver));
     }
 

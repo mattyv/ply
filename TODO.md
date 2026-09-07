@@ -45,6 +45,71 @@
       honest position is that `spec-strong` on a claim whose logic lives in a
       path dependency still covers less than it looks like, and now says so.
 
+## Landed: a method that changes something can now be claimed — 2026-09-07
+
+The direction the maintainer chose, after the fork was settled on evidence
+(`docs/component-proof-design.md`, `docs/transition-promises-plan.md`). Their
+framing, which is what made it small: **every member function is a pure
+function once the object's state is an explicit input or output** -- a
+mutator is `(readings before, arguments) -> (readings after, result)`, a
+getter is `(readings) -> result`.
+
+- [x] **`&mut self` methods are claimable.** The machinery already existed:
+      the harness builds a receiver from the constructor plus a random
+      sequence of the type's own operations, and already snapshots `old(...)`
+      before the call. One gate refused any receiver that was not `&self`.
+      Lifting it, carrying the checked method's own mutability on operation
+      zero, and borrowing the final call to match is the whole enablement.
+      Owned `self` stays refused -- it fits the same shape but is a second
+      codegen shape, and admitting what cannot be generated would report a
+      claim the run cannot make.
+- [x] **New fixture `tests/fixtures/tokenbucket`**, round 3's type with
+      promises about what each operation does. Three tests watched failing
+      first against `V0507`. Two plant the bugs a whole-value rule cannot
+      see -- a refill of nothing that silently tops the bucket up, and a take
+      that succeeds one token short -- and the third pins that the untouched
+      fixture earns evidence rather than a refusal, without which the other
+      two would pass against a tool that refused everything.
+- [x] **Retracted a false refusal.** `receiver_refusal_reason` said a built
+      receiver "would not be enough here: this method takes `&mut self`, and
+      Ply has no way yet to state what it is supposed to change ... so there
+      would still be nothing to check". A promise says it in terms of the
+      value's own readings before and after, needing no new vocabulary. The
+      sentence and the test that pinned it are both replaced; owned `self`
+      now carries its own, true, reason.
+
+Verified by an adversarial review that ran it: a 23-line lift of the same
+gate found **5 of 5** planted bugs across two fixtures, including the two no
+invariant can see, and the bug-planting tier scored them without change.
+
+- [ ] **NOT DONE, and the honesty gap that has to close next.** When a
+      promise about a transition fails, the report names the failing call's
+      arguments and says nothing about the sequence of operations that put
+      the value into the state where it fails. "Ply never reports a broken
+      promise it cannot show you the input for" is currently untrue for a
+      transition. The constructor call and the sequence are both in scope in
+      the generated test and simply not printed.
+- [ ] **NOT DONE: refuse two shapes by name.** A `&mut self` operation
+      inside `old(...)` silently alters the state being snapshotted (verified
+      in review on a cache whose `get` takes `&mut self`). And a whole-value
+      `old(self)` needs `Clone` and today reports a raw compiler error rather
+      than a refusal. Both should be refused by name, with exact-string tests.
+- [ ] **NOT DONE: a precondition that names the state does not compile,**
+      because the filter is emitted before the receiver exists. Once fixed it
+      behaves correctly as a rejection filter and the existing high-rejection
+      warning fires honestly.
+- [ ] **NOT DONE: the guidance still says this cannot be done.**
+      `ply-checkable-code` rule 9, §5.4a's honest-limit paragraph, §5.4b/c's
+      receiver text, `registry.rs`'s `V0507` gloss, `harness.rs`'s module
+      comment, `docs/old-and-misleading-advice.md`. Nobody who followed the
+      old advice is stranded -- `state:` and `&self` claims are unchanged --
+      but the advice is now wrong and says "cannot", not "should not".
+- [ ] **OPEN DECISION for the maintainer:** is a getter added purely so a
+      promise can read a private field acceptable? The cache needed a
+      `contains`/`peek` to state its promise; those are ordinary cache API,
+      but rule 4 leaves "adding public API for the tool's benefit" to the
+      developer and every real type meets this on day one.
+
 ## A/B round 4: the tool's best result, and three new gaps — 2026-09-07
 
 Two scenarios picked to reach ground the first three rounds could not. An

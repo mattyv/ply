@@ -1,0 +1,14 @@
+ply: 1
+
+# Deliberately no `state:` clause. The whole-value rule
+# (`available <= capacity`) is real and worth having, and
+# `tests/fixtures/boundedcache` is where it is checked. This fixture exists
+# to measure the other half: a bug that leaves that rule perfectly true.
+components:
+  tokenbucket:
+    anchor: ply_fixture_tokenbucket
+    fns:
+      TokenBucket::try_take:
+        checks: [fuzz(256)]
+      TokenBucket::refill:
+        checks: [fuzz(256)]

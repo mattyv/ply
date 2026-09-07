@@ -1298,13 +1298,22 @@ fn receiver_refusal_reason(type_text: &str, method_name: &str, m: &syn::ImplItem
         "cannot yet build a value of `{type_text}` to call it on -- constructing a receiver is \
          not supported yet"
     )];
+    // Retracted 2026-09-07. This used to add "even a built receiver would not
+    // be enough here ... Ply has no way yet to state what it is supposed to
+    // change about the value it was called on, so there would still be
+    // nothing to check". That was false: a promise says it in terms of the
+    // value's own readings before and after (`old(self.available())` against
+    // `self.available()`), which needs no new vocabulary, and
+    // `tests/fixtures/tokenbucket` does exactly that. Only an owned `self`
+    // is a second blocker now, and it is a codegen shape rather than a gap
+    // in what can be said.
     if let Some(syn::FnArg::Receiver(r)) = m.sig.inputs.first()
-        && r.mutability.is_some()
+        && r.reference.is_none()
     {
         reasons.push(
-            "even a built receiver would not be enough here: this method takes `&mut self`, and \
-             Ply has no way yet to state what it is supposed to change about the value it was \
-             called on, so there would still be nothing to check"
+            "and this method takes `self` by value, which is a second shape: it consumes the \
+             value it was called on and hands back a new one, and Ply builds a receiver to call \
+             into, not one to give away"
                 .to_string(),
         );
     }
@@ -2243,7 +2252,7 @@ pub mod fees {
     // names only the receiver was true before this.
 
     #[test]
-    fn a_mut_self_method_names_both_the_receiver_and_the_mutation_gap() {
+    fn a_mut_self_method_names_the_receiver_and_no_longer_claims_nothing_to_check() {
         let src = r#"
 pub struct Bucket { n: u32 }
 impl Bucket {
@@ -2258,10 +2267,10 @@ impl Bucket {
                     "must still name the receiver blocker: {reason}"
                 );
                 assert!(
-                    reason.contains("&mut self") || reason.contains("change"),
-                    "must ALSO name that Ply has no way to state what a `&mut self` method \
-                     changes -- a second, real blocker a fixed receiver would not remove: \
-                     {reason}"
+                    !reason.contains("nothing to check"),
+                    "retracted 2026-09-07: a `&mut self` method's promise is expressible in \
+                     terms of the value's own readings before and after, so claiming there is \
+                     nothing to check is false: {reason}"
                 );
             }
             other => panic!("expected Refused, got {}", describe(&other)),
