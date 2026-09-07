@@ -21,10 +21,13 @@ its own blockers.
   built with `format!` and produced no verdict. Kani is healthy here (0.67.0, symbolic `u32`
   arithmetic in 0.70s); the same crate with a one-line `format!` over a symbolic `u32` was
   killed at 900s. The bodies, not the adapter.
-- [ ] **KNOWN GAP: `X0901` is the wrong report for this.** "Could not interpret Kani's
-      output" reads as an adapter defect. What actually happened is that Kani did not finish
-      on that body. A shape the engine cannot complete deserves the same by-name refusal the
-      parameter gate already gives, not a tool error.
+- [ ] **OPEN: why those four report `X0901` is not established.** "Could not interpret
+      Kani's output" reads as an adapter defect. The first write-up asserted it was really an
+      unfinished engine being mislabelled; that was asserted without checking and is **wrong**
+      -- two minimal fixtures, one returning `String` from `format!` and one returning
+      `Vec<&'static str>`, both report a clean `timeout` with `K0601`. The timeout path works.
+      The untested hypothesis is that Kani cannot build a harness crate against `ply-core`'s
+      dependency set at all, which would also yield no verdict line. Verify before fixing.
 
 **What it says about component proof:** the same wall one level up. A component-invariant
 proof is honest for components written to be provable and refuses otherwise; it does not

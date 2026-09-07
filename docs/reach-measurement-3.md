@@ -47,12 +47,22 @@ recorded in this repository under the float/`i128` bug: `bounded` there "would h
 exhaustively proved the *rewritten integer* comparison and reported a stronger, more
 confident wrong answer".
 
-**The four claims that got past the gate say the same thing independently.** All four return
-a heap string built with `format!`, and all four produced no verdict at all. Kani itself is
-healthy here — `kani 0.67.0`, symbolic `u32` arithmetic verified in **0.70s**. The same
-crate, with the body changed to a single `format!` over a symbolic `u32` and an assertion
-that the result is non-empty, was **killed at 900s with no verdict**. Unblocking the
-parameter would hand those claims to an engine that does not finish on their bodies.
+**The four claims that got past the gate point the same way, though less cleanly than the
+first draft of this document claimed.** All four return a heap value built with `format!`
+or `vec!`, and all four produced no verdict at all. Kani itself is healthy here — `kani
+0.67.0`, symbolic `u32` arithmetic verified in **0.70s** — while the same crate with the
+body changed to a single `format!` over a symbolic `u32` was **killed at 900s**. So the
+bodies are certainly beyond the engine's reach.
+
+**What is *not* established is why those four reported `X0901` rather than a timeout.** The
+first draft of this document asserted that `X0901` was mislabelling an unfinished engine.
+That was written without checking and is wrong: two minimal fixtures built for this, one
+returning `String` from `format!` and one returning `Vec<&'static str>`, both report a clean
+`timeout` verdict with `K0601` ("an exhausted search, not a broken promise"). The timeout
+path works. The remaining difference between those fixtures and the real run is the crate:
+`ply-core` pulls a large dependency set that Kani must compile with its own toolchain, and a
+harness crate that fails to *build* would also produce no verdict line. That hypothesis is
+untested here and is recorded as open rather than asserted.
 
 ## What this says about proving components
 
