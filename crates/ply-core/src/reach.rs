@@ -83,6 +83,15 @@ pub struct CodeScope {
     /// plant bugs in -- planting only in the claimed function reports that
     /// nothing survived on a thin wrapper whose helpers were never touched.
     pub reached_fns: Vec<String>,
+    /// The subset of `reached_fns` declared outside the crate directory's own
+    /// `src/`, as `(canonical path, package label)`.
+    ///
+    /// The walk follows path dependencies, so a claim's checks really can run
+    /// a body belonging to another package -- and `cargo mutants -p <root>`
+    /// cannot plant a bug there, whatever `--re` names are passed. Kept apart
+    /// so the planting scope can exclude them and the report can say so
+    /// instead of counting them as covered (external review, 2026-09-07).
+    pub reached_fns_outside_package: Vec<(String, String)>,
 }
 
 /// Every first-party source file in reach of this crate, parsed once per
@@ -157,6 +166,17 @@ fn type_path_source(ty: &syn::Type) -> String {
 }
 
 fn item_is_walkable(item: &syn::Item, label: &str) -> Result<(), String> {
+    // A `#[cfg(test)]` item is not compiled into the library a check links
+    // against. Ply's checks are generated tests in a sibling crate, selected
+    // by `harness_test_filter` -- the crate's own `#[test]`s are never the
+    // kill signal and never run by a check -- so nothing here can be code a
+    // check executes, and it has no business putting the walk beyond reach.
+    // The usual `mod tests` block declaring a `const` used to widen every
+    // such crate to whole-crate, which meant reuse could never hit for it
+    // (A/B round 4, 2026-09-07).
+    if is_cfg_test(item) {
+        return Ok(());
+    }
     let named = |what: &str, name: String| {
         Err(format!(
             "{label} declares {what} `{name}`, and Ply cannot tell by reading the source \
@@ -193,6 +213,35 @@ fn item_is_walkable(item: &syn::Item, label: &str) -> Result<(), String> {
             first_tokens(other)
         )),
     }
+}
+
+/// Whether an item is gated behind `#[cfg(test)]`, and so absent from the
+/// library the checks are compiled against.
+///
+/// Only the bare `#[cfg(test)]` counts. `cfg(all(test, ...))` and friends
+/// are left to widen as before: reading them correctly means evaluating
+/// arbitrary cfg expressions, and guessing wrong here would silently drop
+/// real code from the walk.
+fn is_cfg_test(item: &syn::Item) -> bool {
+    let attrs: &[syn::Attribute] = match item {
+        syn::Item::Const(i) => &i.attrs,
+        syn::Item::Enum(i) => &i.attrs,
+        syn::Item::Fn(i) => &i.attrs,
+        syn::Item::Impl(i) => &i.attrs,
+        syn::Item::Macro(i) => &i.attrs,
+        syn::Item::Mod(i) => &i.attrs,
+        syn::Item::Static(i) => &i.attrs,
+        syn::Item::Struct(i) => &i.attrs,
+        syn::Item::Trait(i) => &i.attrs,
+        syn::Item::Type(i) => &i.attrs,
+        syn::Item::Use(i) => &i.attrs,
+        _ => return false,
+    };
+    attrs.iter().any(|a| {
+        a.path().is_ident("cfg")
+            && a.parse_args::<syn::Path>()
+                .is_ok_and(|p| p.is_ident("test"))
+    })
 }
 
 /// The attributes a **walked** function may carry without putting code
@@ -363,6 +412,9 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
 /// alias, a struct, an enum. Anything else has already widened the scope to
 /// the whole crate, where the file's own tokens are hashed regardless.
 fn collect_type_decls(item: &syn::Item, label: &str, out: &mut Vec<(String, String)>) {
+    if is_cfg_test(item) {
+        return;
+    }
     match item {
         syn::Item::Type(t) => out.push((
             format!("{label}::{}", t.ident),
@@ -411,6 +463,7 @@ pub fn code_scope(
     // deliberately omits the claimed function's own tokens (hashed
     // separately) and includes type declarations that are not bodies at all.
     let mut reached_fns: Vec<String> = Vec::new();
+    let mut reached_fns_outside_package: Vec<(String, String)> = Vec::new();
     // The first reason the *fingerprint* had to widen to the whole crate.
     // Recorded rather than returned on, because widening says "an edit
     // anywhere in this crate must re-run the check", not "forget the bodies
@@ -503,6 +556,19 @@ pub fn code_scope(
             continue;
         }
         reached_fns.push(found.canonical.clone());
+        // `source_span.file` is relative to the crate directory, and
+        // `first_party_file_set` labels a path dependency's files with that
+        // dependency's own name. So anything not under this crate's `src/`
+        // belongs to another package, and its first path segment names it.
+        if let Some(pkg) = found
+            .source_span
+            .file
+            .split('/')
+            .next()
+            .filter(|first| *first != "src" && !first.is_empty())
+        {
+            reached_fns_outside_package.push((found.canonical.clone(), pkg.to_string()));
+        }
         // The claimed function's own tokens are a hashed input in their own
         // right, and hashing them twice would make one edit report as two
         // inputs moving ("the function's own source *and* the code it
@@ -594,6 +660,7 @@ pub fn code_scope(
     if let Some(reason) = widened_because {
         let mut scope = widened(first_party, reason);
         scope.reached_fns = reached_fns;
+        scope.reached_fns_outside_package = reached_fns_outside_package;
         return scope;
     }
     units.sort();
@@ -602,12 +669,14 @@ pub fn code_scope(
         units,
         widened_because: None,
         reached_fns,
+        reached_fns_outside_package,
     }
 }
 
 fn widened(first_party: &FirstParty, reason: String) -> CodeScope {
     CodeScope {
         reached_fns: Vec::new(),
+        reached_fns_outside_package: Vec::new(),
         scope: "whole-crate",
         units: first_party.units.clone(),
         widened_because: Some(reason),
@@ -1555,6 +1624,33 @@ pub fn f(x: u32) -> u32 { x }
         )]);
         let scope = scope_of(dir.path(), "f", &[]);
         assert_eq!(scope.scope, "whole-crate", "{:?}", scope.widened_because);
+    }
+
+    /// A `#[cfg(test)]` module is not in the library the checks link
+    /// against, so nothing in it can be code a check runs -- Ply's own
+    /// checks are generated tests in a sibling crate, selected by
+    /// `harness_test_filter`, and never the crate's own `#[test]`s. Until
+    /// 2026-09-07 a `const` in the usual `mod tests` block widened the walk
+    /// to the whole crate, which meant reuse could never hit for any crate
+    /// with a test module that declares one -- and, once `W0530` existed,
+    /// that the run announced a partial planting scope with nothing else to
+    /// plant in. Found by A/B round 4, on a crate written without knowledge
+    /// of any of this.
+    #[test]
+    fn a_constant_in_a_test_module_does_not_widen_the_scope() {
+        let dir = crate_with(&[(
+            "src/lib.rs",
+            "pub fn helper() -> u32 { 1 }\npub fn f() -> u32 { helper() }\n\
+             #[cfg(test)]\nmod tests {\n    const CASES: [u32; 2] = [0, 1];\n\
+             #[test]\n    fn t() { let _ = CASES; }\n}\n",
+        )]);
+        let scope = scope_of(dir.path(), "f", &[]);
+        assert_eq!(
+            scope.scope, "reached",
+            "a constant only the crate's own tests can see is not code any check runs, so it \
+             must not put the whole crate beyond the walk: {:?}",
+            scope.widened_because
+        );
     }
 
     /// Widening is about the *fingerprint*: once a macro hides part of the

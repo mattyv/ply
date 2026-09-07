@@ -1,5 +1,50 @@
 # TODO
 
+## Landed: four review findings on cb8e3cd, plus the test-module widening — 2026-09-07
+
+- [x] **A `#[cfg(test)]` item no longer widens the walk.** The usual `mod tests`
+      block declaring a `const` put every such crate beyond the walk, so reuse
+      could never hit for it and `W0530` announced a partial planting scope
+      with nothing else to plant in. A `#[cfg(test)]` item is not in the
+      library a check links against -- Ply's checks are generated tests in a
+      sibling crate, selected by `harness_test_filter`, never the crate's own
+      `#[test]`s -- so it now passes the gate and is not hashed as a type
+      declaration either. Test watched failing first; the pinned reference
+      fingerprint does not move, and the false `W0530` is gone end to end.
+      Only a bare `#[cfg(test)]` counts: `cfg(all(test, ...))` still widens,
+      because guessing at cfg expressions would silently drop real code.
+- [x] **P1: ancestor Cargo configuration is read from the resolved path.**
+      `Path::ancestors` is lexical, so `cargo ply verify .` -- the ordinary
+      invocation -- yielded `.` and `""` and nothing else. A parent
+      `.cargo/config.toml` could change compilation without moving the
+      fingerprint, and a stored result would be carried forward as still
+      valid. Now canonicalised first, falling back to the path as given.
+      Pinned with a symlink, which reproduces the same lexical/real mismatch
+      without a test having to move the process's working directory -- the
+      existing test used an absolute path and so never exercised this.
+- [x] **P2: the evidence page is built from the drawing CI actually makes.**
+      The self-check writes one `ply-root-verified.svg`; the page builder
+      still copied and linked the two per-crate files it stopped producing,
+      so publishing failed on every push to main. One drawing, one section,
+      the filename named once. Verified by running the script by hand, which
+      is what its own doc comment says it exists for.
+- [x] **P2: a body in another package is no longer counted as planted in.**
+      The walk follows path dependencies, so a claim can genuinely run a body
+      in a second package -- and `cargo mutants -p <root>` cannot plant a bug
+      there whatever `--re` it is given. Measured on the new
+      `tests/fixtures/crosspkgmutate`: two mutants planted, both in the
+      wrapper, with the helper next door named as covered. That is the
+      `helperspec` defect one package out. Those bodies are now excluded from
+      the planting scope and disclosed by `W0530` instead, naming the function
+      and its package. Gate test watched failing first.
+- [ ] **NOT DONE, deliberately: select the other package rather than
+      disclosing it.** The review offered both. Disclosure is what landed,
+      because pointing `cargo mutants` at several packages changes what is
+      mutated wholesale and needs the one harness to remain the kill signal
+      for all of it -- a bigger change than this round should carry. The
+      honest position is that `spec-strong` on a claim whose logic lives in a
+      path dependency still covers less than it looks like, and now says so.
+
 ## A/B round 4: the tool's best result, and three new gaps — 2026-09-07
 
 Two scenarios picked to reach ground the first three rounds could not. An

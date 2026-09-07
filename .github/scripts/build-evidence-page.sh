@@ -9,14 +9,22 @@
 # A page that can only be seen after a successful deploy is a page nobody
 # checks, and this one exists precisely to be looked at.
 #
-# Reads the two drawings from the working directory and writes them, plus an
-# index, into the output directory. GITHUB_SHA / RUN_URL / REPO_URL come from
-# the workflow; each falls back to something sensible so a local run works.
+# Reads the drawing from the working directory and writes it, plus an index,
+# into the output directory. GITHUB_SHA / RUN_URL / REPO_URL come from the
+# workflow; each falls back to something sensible so a local run works.
+#
+# One drawing, not two: the self-check verifies the root document and every
+# crate it links, and writes a single `ply-root-verified.svg`. This script
+# went on copying the two per-crate files that step stopped producing, so the
+# publishing job failed on every push to main with both files missing
+# (external review, 2026-09-07). Named once, here, so the next rename breaks
+# in one place.
 set -euo pipefail
 
 out=${1:?usage: build-evidence-page.sh OUT_DIR}
 mkdir -p "$out"
-cp ply-core-verified.svg ply-cli-verified.svg "$out/"
+drawing=ply-root-verified.svg
+cp "$drawing" "$out/"
 
 sha=${GITHUB_SHA:-}
 repo_url=${REPO_URL:-https://github.com/mattyv/ply}
@@ -61,9 +69,9 @@ cat > "$out/index.html" <<HTML
 <p class="meta">Built from $origin<br>$built</p>
 
 <p>
-  Ply checks whether code does what its author promised it would do. The two
-  pictures below are Ply's report on Ply's own source code. They are produced
-  by the build, not drawn by hand.
+  Ply checks whether code does what its author promised it would do. The
+  picture below is Ply's report on Ply's own source code. It is produced by
+  the build, not drawn by hand.
 </p>
 <p>
   Each outlined box is one part of the program, and the small chips inside it
@@ -95,26 +103,16 @@ cat > "$out/index.html" <<HTML
   state that passed.
 </p>
 
-<h2>The library</h2>
+<h2>Ply itself</h2>
 <p class="sub">
-  The part that reads the promises, runs the checks, and decides what counts
-  as evidence. <a href="ply-core-verified.svg">Open this drawing on its own</a>
+  Every part of the program the root document links: the library that reads
+  the promises and decides what counts as evidence, and the command-line tool
+  you actually run. <a href="$drawing">Open this drawing on its own</a>
 </p>
 <figure>
-  <img src="ply-core-verified.svg"
-       alt="Ply's library, drawn as nested boxes of functions, with each
-            checked function's chip filled in green.">
-</figure>
-
-<h2>The command-line tool</h2>
-<p class="sub">
-  The part you actually run. <a href="ply-cli-verified.svg">Open this drawing
-  on its own</a>
-</p>
-<figure>
-  <img src="ply-cli-verified.svg"
-       alt="Ply's command-line tool, drawn as nested boxes of functions, with
-            each checked function's chip filled in green.">
+  <img src="$drawing"
+       alt="Ply, drawn as nested boxes of functions, with each checked
+            function's chip filled in green.">
 </figure>
 </html>
 HTML

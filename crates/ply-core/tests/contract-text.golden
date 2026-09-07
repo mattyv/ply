@@ -45,6 +45,8 @@ compositiongrammar::vec_option_u32 ensures |result|*result >= 0
 compositiongrammar::vec_string ensures |result|*result >= 0
 compositiongrammar::vec_u32 ensures |result|*result >= 0
 compositiongrammar::vec_vec_u32 ensures |result|*result >= 0
+crosspkgmutate::scaled ensures |result|*result <= 100
+crosspkgmutate::scaled requires x < 1000
 durationnonzero::bump_len ensures |result|*result == len + 1
 durationnonzero::bump_len requires len < 1_000
 durationnonzero::double_delta ensures |result|*result == delta *2
