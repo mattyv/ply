@@ -155,17 +155,17 @@ struct Toolchain {
 }
 
 impl Toolchain {
-    fn probe(crate_dir: &Path) -> Toolchain {
+    fn probe(crate_dir: &Path) -> Result<Toolchain> {
         let (rustc, target) = rustc_identity(crate_dir);
-        Toolchain {
+        Ok(Toolchain {
             target,
             rustc,
-            rustflags: inherited_rustflags(),
+            rustflags: inherited_rustflags(crate_dir)?,
             features: declared_features(crate_dir),
             kani: std::cell::OnceCell::new(),
             mutants: std::cell::OnceCell::new(),
             crate_dir: crate_dir.to_path_buf(),
-        }
+        })
     }
 
     /// The engines one claim's checks stand on, in check order. An engine
@@ -236,21 +236,81 @@ fn kani_flags(has_stubs: bool) -> String {
     )
 }
 
-/// The rustc flags Cargo will inherit from this environment.
+/// The compiler configuration Cargo will inherit for this crate.
 ///
 /// Cargo reads `CARGO_ENCODED_RUSTFLAGS` in preference to `RUSTFLAGS` and
 /// ignores the latter when the former is set, so both are recorded and which
 /// one is in force is left visible rather than resolved away -- a reader
 /// comparing two records should see exactly what differed.
 ///
-/// Why they are hashed at all: `FingerprintInputs::rustflags`.
-fn inherited_rustflags() -> String {
+/// Cargo also merges `.cargo/config.toml` (and legacy `.cargo/config`) from
+/// the invocation directory through its ancestors, then Cargo home. The
+/// whole contents are retained here: parsing only today's known flag keys
+/// would make the next unrecognised build-setting key another false-reuse
+/// hole. Absolute paths are deliberately absent so two checkout locations
+/// with the same configuration still hash alike.
+fn inherited_rustflags(crate_dir: &Path) -> Result<String> {
     let read = |key: &str| std::env::var(key).unwrap_or_default();
-    format!(
-        "CARGO_ENCODED_RUSTFLAGS={}\nRUSTFLAGS={}",
-        read("CARGO_ENCODED_RUSTFLAGS"),
-        read("RUSTFLAGS"),
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                crate_dir.join(path)
+            }
+        });
+    compiler_configuration(
+        crate_dir,
+        cargo_home.as_deref(),
+        &read("CARGO_ENCODED_RUSTFLAGS"),
+        &read("RUSTFLAGS"),
     )
+}
+
+fn compiler_configuration(
+    crate_dir: &Path,
+    cargo_home: Option<&Path>,
+    encoded_rustflags: &str,
+    rustflags: &str,
+) -> Result<String> {
+    let mut out = format!("CARGO_ENCODED_RUSTFLAGS={encoded_rustflags}\nRUSTFLAGS={rustflags}");
+    let mut seen = std::collections::BTreeSet::new();
+    let mut add = |label: String, path: PathBuf| -> Result<()> {
+        let identity = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if !seen.insert(identity) {
+            return Ok(());
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                out.push_str(&format!("\n{label}:{}\n{text}", text.len()));
+                Ok(())
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err).with_context(|| {
+                format!(
+                    "reading Cargo configuration {} -- Ply cannot decide whether a stored result still describes this build",
+                    path.display()
+                )
+            }),
+        }
+    };
+
+    for (depth, dir) in crate_dir.ancestors().enumerate() {
+        for name in ["config.toml", "config"] {
+            add(
+                format!("ancestor-{depth}/.cargo/{name}"),
+                dir.join(".cargo").join(name),
+            )?;
+        }
+    }
+    if let Some(home) = cargo_home {
+        for name in ["config.toml", "config"] {
+            add(format!("cargo-home/{name}"), home.join(name))?;
+        }
+    }
+    Ok(out)
 }
 
 /// `rustc -vV`, split into the version line and the host triple. Both
@@ -728,7 +788,7 @@ fn verify_loaded_crate(
     // continuing would re-pay every proof and tell nobody why.
     let record_path = crate_dir.join("ply.lock");
     let mut record = record::load(&record_path, PLY_VERSION)?;
-    let toolchain = Toolchain::probe(crate_dir);
+    let toolchain = Toolchain::probe(crate_dir)?;
     // §5.2a's largest input, read once for the whole run: every first-party
     // source file this crate can reach, and the resolved versions of
     // everything outside it. A check does not run the claimed function
@@ -737,6 +797,11 @@ fn verify_loaded_crate(
     // result stood on. Leaving them out is what made a broken helper reuse
     // a green verdict (adversarial review of result reuse, D1).
     let first_party = reach::scan_first_party(crate_dir);
+    // A build script can read inputs no source walk can enumerate. For
+    // this closure, every claim runs fresh and no result is stored; an
+    // honest extra engine run is preferable to stale evidence about a
+    // different build (§5.2a).
+    let result_reuse_is_sound = first_party.result_reuse_is_sound();
     let deps_at_plan_time = reach::dependency_identity(crate_dir);
     // Every claim this run either reused or earned. Everything else is
     // dropped from the record at the end: a claim somebody deleted, one
@@ -1264,7 +1329,7 @@ fn verify_loaded_crate(
     let mut not_carried_forward: Vec<ply_core::diag::NotCarriedForward> = Vec::new();
     let mut reused: Vec<Option<RecordEntry>> = vec![None; plans.len()];
     for (i, p) in plans.iter().enumerate() {
-        if bounded_eligible.contains(&i) {
+        if bounded_eligible.contains(&i) || !result_reuse_is_sound {
             continue;
         }
         reused[i] = lookup_record(
@@ -1727,15 +1792,19 @@ fn verify_loaded_crate(
                 &known_bounded,
             );
             plans[idx].inputs.verified_bounds = plans[idx].boundary.verified.clone();
-            let hit = lookup_record(
-                &record,
-                &plans[idx].node_id,
-                &plans[idx].inputs,
-                &plans[idx].check_spellings,
-                &mut diagnostics,
-                &mut not_carried_forward,
-                &plans[idx].widened_because,
-            );
+            let hit = result_reuse_is_sound
+                .then(|| {
+                    lookup_record(
+                        &record,
+                        &plans[idx].node_id,
+                        &plans[idx].inputs,
+                        &plans[idx].check_spellings,
+                        &mut diagnostics,
+                        &mut not_carried_forward,
+                        &plans[idx].widened_because,
+                    )
+                })
+                .flatten();
             if let Some(entry) = hit {
                 if !entry.statuses.iter().any(|s| s == "conditional")
                     && let Some(k) = parse_bound(&entry.verdict)
@@ -1818,7 +1887,7 @@ fn verify_loaded_crate(
         // Recorded only when this run earned evidence: a violation, a
         // timeout or any other absence is never stored, so nothing that
         // failed can ever be carried forward (§5.2a).
-        if earned_evidence(&node, &fn_diags) {
+        if earned_evidence(&node, &fn_diags) && result_reuse_is_sound {
             kept_claims.insert(plan.node_id.clone());
             // The dependency versions are read again here, not reused from
             // plan time: a crate that had never been built has no lockfile
@@ -7936,6 +8005,52 @@ fn unused(_p: &PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_configuration_from_ancestors_and_cargo_home_is_fingerprinted() {
+        let root = tempfile::tempdir().unwrap();
+        let crate_dir = root.path().join("workspace/member");
+        let workspace_config = root.path().join("workspace/.cargo/config.toml");
+        let crate_legacy_config = crate_dir.join(".cargo/config");
+        let cargo_home = root.path().join("cargo-home");
+        std::fs::create_dir_all(workspace_config.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(crate_legacy_config.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&cargo_home).unwrap();
+        std::fs::write(
+            &workspace_config,
+            "[build]\nrustflags = [\"--cfg\", \"one\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &crate_legacy_config,
+            "[target.x]\nrustflags = [\"--cfg\", \"two\"]\n",
+        )
+        .unwrap();
+        std::fs::write(cargo_home.join("config.toml"), "[net]\noffline = true\n").unwrap();
+
+        let before =
+            compiler_configuration(&crate_dir, Some(&cargo_home), "encoded", "plain").unwrap();
+        assert!(before.contains("ancestor-0/.cargo/config"), "{before}");
+        assert!(before.contains("ancestor-1/.cargo/config.toml"), "{before}");
+        assert!(before.contains("cargo-home/config.toml"), "{before}");
+        assert!(
+            before.contains("CARGO_ENCODED_RUSTFLAGS=encoded"),
+            "{before}"
+        );
+        assert!(before.contains("RUSTFLAGS=plain"), "{before}");
+
+        std::fs::write(
+            &workspace_config,
+            "[build]\nrustflags = [\"--cfg\", \"changed\"]\n",
+        )
+        .unwrap();
+        let after =
+            compiler_configuration(&crate_dir, Some(&cargo_home), "encoded", "plain").unwrap();
+        assert_ne!(
+            before, after,
+            "changing a Cargo config Cargo discovers must move the compiler input"
+        );
+    }
 
     /// The high-rejection warning's opening word must not overclaim near its
     /// own threshold. The warning already fires only once the rejection
