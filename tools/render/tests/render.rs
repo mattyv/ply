@@ -485,6 +485,18 @@ fn trusted_claim_renders_hollow_shield_badge() {
     assert!(svg.contains('\u{26C9}')); // ⛉
 }
 
+/// The glyph is unusual enough that a reader who does not already know it is
+/// a shield cannot look it up from the picture, so the hover text names the
+/// shape before explaining it -- the same rule every other unusual mark
+/// follows (CLAUDE.md, "name the visual if the glyph is unusual").
+#[test]
+fn shield_tooltip_names_the_shape_it_is_attached_to() {
+    let svg = render_fixture("tests/fixtures/full.ply.yaml");
+    assert!(svg.contains(
+        "Hollow shield: a human vouches for the claims below; no machine checks them"
+    ));
+}
+
 #[test]
 fn unresolved_fn_marker_renders_numbered_pin() {
     let svg = render_fixture("tests/fixtures/full.ply.yaml");

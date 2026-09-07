@@ -1583,7 +1583,9 @@ fn render_fn_chip(
         inner.push_str(&format!(
             "<g class=\"fn-shield\">{}<text x=\"{cursor_x:.1}\" y=\"{text_y:.1}\">\u{26C9}</text></g>",
             title(&format!(
-                "a human vouches for the claims below; no machine checks them\n{claims}"
+                "Hollow shield: a human vouches for the claims below; no machine checks \
+                 them, so the evidence named is worth exactly what whoever inspected \
+                 it is worth\n{claims}"
             ))
         ));
         cursor_x += SHIELD_W + BADGE_GAP;
