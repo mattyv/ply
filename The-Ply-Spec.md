@@ -1430,9 +1430,10 @@ to end in `tests/spike/mutants/`, is package targeting plus a name filter:
 The exclusion is semantic, not cosmetic: generated proof and counterexample modules are
 Ply's checking machinery, not application code. Mutating a generated proof wrapper can
 create a survivor that says nothing about the user's specification and must never become
-a `W0502` weak-spec finding. Each `<fn>` is also expanded to the positions where
-cargo-mutants' description identifies the containing function (`replace <fn> -> ...` or
-`... in <fn>`), not used as a bare substring. A function name appearing in another
+a `W0502` weak-spec finding. Each `<fn>` is also expanded to the three forms where
+cargo-mutants' description identifies the containing function: `replace <fn> -> ...`,
+`replace <fn> with ()` for whole-body deletion of an implicit-unit function, or
+`... in <fn>`. It is not used as a bare substring. A function name appearing in another
 body's string literal is not permission to mutate that other body. `<fn>` is the canonical
 owner name, including inline-module or enclosing-type qualification (`maths::helper`,
 `Widget::adjust`); reducing it to the leaf silently selects no mutant for those bodies.

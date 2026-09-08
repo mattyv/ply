@@ -1,5 +1,11 @@
 # TODO
 
+## Landed: implicit-unit whole-body mutations — `90f1b62` — 2026-09-08
+
+- [x] Treat cargo-mutants' `replace <fn> with ()` description as a
+      whole-body mutation owned by `<fn>` in both the command selector and
+      the result-file filter. Pin the real surviving-helper case end to end.
+
 ## Landed: namespaced mutation and YAML proof return types — `ffa7fb4` — 2026-09-07
 
 - [x] Keep inline-module and method qualification when selecting every function whose mutants a claim must catch.
