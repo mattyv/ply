@@ -316,6 +316,21 @@ class PlyCheckableCodeSkillTests(unittest.TestCase):
             text,
             "the refusal section still forbids what rule 4 now permits",
         )
+        # Rule 8's sentence was the one that actually still contradicted
+        # rule 4, and the assertion above pinned a different one -- found by
+        # adversarial review, 2026-09-08.
+        self.assertNotIn(
+            "not to widen the API until the checker can reach it",
+            text,
+            "rule 8 still forbids what rule 4 now permits",
+        )
+
+    def test_it_never_claims_every_check_runs_outside_your_crate(self):
+        """`bounded`/`proved` generate into the crate under check. Saying
+        otherwise contradicts the tool's own V0510 message."""
+        text = flat(skill_text("ply-checkable-code"))
+        self.assertNotIn("Ply's checks run from a separate crate", text)
+        self.assertIn("generate *into* your crate", text)
 
     def test_weakening_a_promise_to_pass_is_forbidden_outright(self):
         """Not ask-first. There is no version of this that is correct: it

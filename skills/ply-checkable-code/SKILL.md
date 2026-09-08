@@ -140,8 +140,8 @@ public producer that already exists**; it names one, it does not create one.
 routes: { Handle: open_handle }        # open_handle must be a real public fn
 ```
 
-When no such function exists, you may need to add one, and that is allowed. Two cases look
-alike and are not:
+A route never creates a producer — that is what the bold above means. Writing one yourself is
+a separate decision, and it is allowed. Two cases look alike and are not:
 
 - **An observer a caller would want anyway.** A cache with no way to ask whether a key is
   present is an incomplete cache — writing the promise is what showed the gap. Add it as
@@ -153,8 +153,10 @@ alike and are not:
   what your crate exposes.
 
 The question to ask is not "am I widening the API for the tool" but **"would anyone but Ply
-ever call this"**. A `#[cfg(test)]` helper answers neither: Ply's checks run from a separate
-crate, where test-only items do not exist at all.
+ever call this"**. A `#[cfg(test)]` helper answers neither: the `fuzz` and
+`test` checks run from a crate Ply generates alongside yours, where test-only items do not
+exist at all. `bounded`/`proved` generate *into* your crate and can see private items, so a
+claim checked that way never meets this wall — a third option worth remembering.
 
 What Ply cannot do for you is know whether those public fields have a relationship between
 them that nothing in the type enforces. It says so out loud rather than assuming: the run
@@ -256,8 +258,11 @@ the code. The test that settles it: a `fingerprint` that ignored every one of it
 would pass that promise. Nothing that reads a fingerprint depends on its width either; the
 record compares two for equality.
 
-The honest answer is not to widen the API until the checker can reach it. It is a plain
-Rust test. Ply's has one: it mutates each of the twenty inputs in turn and asserts the hash
+Rule 4 says making that helper reachable is allowed, and it would work: `#[doc(hidden)] pub`
+on the encoder, and the claim moves to where the property actually lives. The reason not to
+here is different, and it is the point of this rule — the property is easy to state as a
+plain Rust test and awkward to state as a promise. Widening the surface buys nothing when the
+ordinary test is the better instrument. Ply's is one. Ply's has one: it mutates each of the twenty inputs in turn and asserts the hash
 moves, naming which input stopped counting when it fails. That is better coverage than any
 promise about the wrapper, and it needs nothing from Ply at all.
 
@@ -266,7 +271,7 @@ So, before contorting a signature to make a claim possible, ask which of these i
 | The property lives... | Do this |
 | --- | --- |
 | in the function being claimed | Claim it |
-| in a private helper it calls | Write an ordinary test; leave the wrapper unclaimed |
+| in a private helper it calls | Write an ordinary test and leave the wrapper unclaimed — or make the helper reachable (rule 4) and claim it there, whichever states the property better |
 | in a public helper it calls | Claim the helper instead |
 
 **A claim whose only honest promise says nothing about the function's job — a fact about

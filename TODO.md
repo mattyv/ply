@@ -361,6 +361,33 @@ refusal shipped the day before.
       it immediately found a real crash (inserting into a zero-capacity
       cache).
 
+      **Adversarial review found six defects in the first version of this,
+      four of them real errors rather than gaps.** All fixed in the same
+      session. Worst first: the explanation fired wherever a cause existed,
+      including where Ply could *not* place the error in its own generated
+      code -- so a user whose own crate failed to compile with an ordinary
+      private-field bug was told Ply's harness could not see it and that
+      "your own code uses it freely", when their own code was the bug. The
+      explanation now fires only where the failure was attributed to
+      generated code. Second: the sentence claimed "Ply's checks run from a
+      separate crate", which is true of the sampling tier only --
+      `bounded`/`proved` generate into the crate under check, and `V0510`
+      was already telling the same user the opposite in the same binary. The
+      wording now names which checks it is true of and offers the other tier
+      as a third way out. Third: the clause saying what a type must always
+      keep true -- the most natural place of all to read private state --
+      never got the explanation at all. Fourth: the cache anecdote was
+      emitted verbatim for every type, asserting as fact why *that* reader's
+      API was incomplete. Also fixed: the guide contradicted itself, rule 8
+      still forbidding what rule 4 now permits, with the new wording test
+      pinning a different sentence than the one that actually conflicted.
+
+      The tests deserve their own note. They were `contains` checks, and a
+      whitespace bug shipped straight through them during development --
+      caught only by reading real output. There is now one exact-string
+      assertion on the full rendered sentence, and **it failed on its first
+      run**, catching the identical whitespace bug a second time.
+
 - [x] **CLOSED, and the worse half of it: the guide-wording tests were not
       run by anything.** `tests/skills/test_skill_contracts.py` pins the
       exact sentences of the shipped guides, and no CI job invoked it. The
