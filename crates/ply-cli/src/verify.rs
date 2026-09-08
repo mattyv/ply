@@ -3831,6 +3831,7 @@ fn run_fn_checks(
                         Some(cause.as_str()),
                         has_examples,
                         cf.receiver.is_some(),
+                        true,
                     ));
                     labels.push("tool_error".into());
                     mutation_base_labels.push("tool_error".into());
@@ -3845,6 +3846,7 @@ fn run_fn_checks(
                         Some(cause.as_str()),
                         has_examples,
                         cf.receiver.is_some(),
+                        true,
                     ));
                     labels.push("tool_error".into());
                     mutation_base_labels.push("tool_error".into());
@@ -5944,6 +5946,7 @@ fn run_fuzz_and_test_checks(
                 cause.as_deref(),
                 has_examples,
                 cf.receiver.is_some(),
+                false,
             ));
         }
         if wants_test {
@@ -5956,6 +5959,7 @@ fn run_fuzz_and_test_checks(
                 cause.as_deref(),
                 has_examples,
                 cf.receiver.is_some(),
+                false,
             ));
         }
         return Ok(HarnessRun {
@@ -6009,6 +6013,7 @@ fn run_fuzz_and_test_checks(
                 None,
                 has_examples,
                 cf.receiver.is_some(),
+                false,
             ));
             fuzz_label = Some("tool_error".into());
             fuzz_ran = false;
@@ -6584,6 +6589,7 @@ fn run_fuzz_and_test_checks(
                 None,
                 has_examples,
                 cf.receiver.is_some(),
+                false,
             ));
             test_label = Some("tool_error".into());
         } else if run.timed_out && failing_test_checks.is_empty() {
@@ -6736,6 +6742,74 @@ fn harness_fuzz_test_name(cf: &ContractFn) -> String {
     format!("{}::ply_fuzz_{}", harness_module_name(cf), cf.ident())
 }
 
+/// What Ply can add to a compiler error that is really a visibility problem.
+///
+/// `from_generated_code` is the honesty gate, and it is not optional
+/// (adversarial review, 2026-09-08). Ply may only explain its own harness
+/// when it has actually placed the error inside code it generated. On the
+/// unattributed paths the failure may be the crate under check simply not
+/// compiling -- and the first version of this said "your own code uses it
+/// freely" to a reader whose own code was the bug.
+///
+/// The tier claim matters just as much. `bounded`/`proved` generate *into*
+/// the crate under check and can see private items; only the sampling tier
+/// builds a separate crate. Saying "Ply's checks run from a separate crate"
+/// was false as a general statement, and contradicted `V0510`, which tells
+/// the same user the opposite in the same binary.
+///
+/// `None` for everything else, deliberately: a harness that fails to compile
+/// usually fails for reasons that have nothing to do with visibility, and a
+/// sentence appended to all of them is one readers learn to skip.
+fn visibility_hint(cause: &str, from_generated_code: bool) -> Option<String> {
+    if !from_generated_code {
+        return None;
+    }
+    // E0616 private field, E0624 private method: the error names the kind,
+    // so the sentence can too.
+    if cause.contains("E0616") || cause.contains("E0624") {
+        return Some(format!(
+            " {}",
+            visibility_body("a private field or method is")
+        ));
+    }
+    // E0603 is a private item behind a path -- a module or a free item,
+    // neither a field nor a method.
+    if cause.contains("E0603") {
+        return Some(format!(" {}", visibility_body("a private item is")));
+    }
+    // E0425 is what a private *free function* looks like from outside the
+    // crate -- but a plain typo produces exactly the same error, and Ply
+    // cannot tell which. So this is offered as a possibility, never as a
+    // diagnosis.
+    if cause.contains("E0425") {
+        return Some(
+            " If that name does exist in your crate but is not reachable from outside it, that \
+             is the reason: the `fuzz` and `test` checks run from a crate Ply generates alongside \
+             yours, and can only use what it makes public. A helper those checks need -- a second \
+             implementation a promise compares against, say -- can be `#[doc(hidden)] pub`: \
+             reachable, and marked as no part of your documented API. `bounded(k)` does not have \
+             this limitation; its generated code lives inside your own crate."
+                .to_string(),
+        );
+    }
+    None
+}
+
+/// The shared sentence, with only the noun changing. One body rather than
+/// three near-copies, so a correction cannot land on two of them.
+fn visibility_body(what: &str) -> String {
+    format!(
+        "The `fuzz` and `test` checks run from a crate Ply generates alongside yours, so they \
+         can only use what your crate makes public -- {what} invisible to them. Three ways \
+         forward: give the type a public way to observe that state, which is often ordinary API \
+         the type was missing; mark an item only these checks would ever call \
+         `#[doc(hidden)] pub`, which keeps it reachable while telling anyone reading your \
+         documentation that it is not part of the supported surface; or check this claim with \
+         `bounded(k)` instead, whose generated code lives inside your own crate and can see \
+         private items."
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn harness_did_not_run_diag(
     node_id: &str,
@@ -6746,9 +6820,15 @@ fn harness_did_not_run_diag(
     cause: Option<&str>,
     has_examples: bool,
     is_receiver_method: bool,
+    // True only where the caller placed this error inside Ply's own
+    // generated code. See `visibility_hint`.
+    cause_from_generated_code: bool,
 ) -> Diagnostic {
     let compiler_says = match cause {
-        Some(c) => format!(" The compiler's own first error was: {c}."),
+        Some(c) => format!(
+            " The compiler's own first error was: {c}.{}",
+            visibility_hint(c, cause_from_generated_code).unwrap_or_default()
+        ),
         None => String::new(),
     };
     let examples_hint = if has_examples {
@@ -8237,7 +8317,8 @@ fn holds_harness_broken_diag(node_id: &str, type_name: &str, cause: &str) -> Dia
             "the check for what `{type_name}` promises about itself never ran: the code Ply \
              generated for it did not compile, so no value was ever built and no promise was ever \
              tried. This is reported against `{type_name}` alone -- every other claim in this crate \
-             still ran. The compiler's own first error was: {cause}. (X0901)"
+             still ran. The compiler's own first error was: {cause}.{hint} (X0901)",
+            hint = visibility_hint(cause, true).unwrap_or_default()
         ),
         vec![Fix {
             title: format!(
@@ -11023,6 +11104,178 @@ mod tests {
                 .any(|status| status == "unsupported"),
             "the non-result status must propagate too: {:#?}",
             result.envelope.root
+        );
+    }
+
+    /// A promise that reads private state fails to compile, and until now
+    /// the only thing said about it was rustc's own line -- `field
+    /// `entries` of struct `Cache` is private`. That names what the
+    /// compiler saw, not what happened. Measured on a real cache fixture
+    /// (2026-09-08).
+    #[test]
+    fn a_private_field_says_why_ply_cannot_reach_it_and_what_to_do() {
+        let hint = visibility_hint(
+            "error[E0616]: field `entries` of struct `Cache` is private",
+            true,
+        )
+        .expect("a private-field error is a visibility problem Ply can explain");
+        assert!(
+            hint.contains("`fuzz` and `test` checks run from a crate Ply generates"),
+            "the reason has to name which checks it is true of: {hint}"
+        );
+        assert!(
+            hint.contains("`bounded(k)`"),
+            "and the tier that does not have the problem, or this contradicts V0510, which \
+             tells the same user the opposite: {hint}"
+        );
+        assert!(
+            hint.contains("#[doc(hidden)] pub"),
+            "and the way to add a reachable item without claiming it as supported API: {hint}"
+        );
+    }
+
+    /// The claim must not be broader than the truth. `bounded`/`proved`
+    /// generate *into* the crate under check, so "Ply's checks run from a
+    /// separate crate" was simply false as a general statement -- and
+    /// V0510 already told users the opposite, in the same binary
+    /// (adversarial review, 2026-09-08).
+    #[test]
+    fn the_hint_never_claims_every_check_runs_outside_the_crate() {
+        let hint = visibility_hint("error[E0624]: method `peek` is private", true).unwrap();
+        assert!(
+            !hint.contains("Ply's checks run from a separate crate"),
+            "that sentence is true of the sampling tier only: {hint}"
+        );
+    }
+
+    /// A private item behind a path is not a field and not a method, and
+    /// saying so puts the reader to work ruling out a mismatch that was
+    /// never there.
+    #[test]
+    fn a_private_item_behind_a_path_is_not_described_as_a_field() {
+        let hint = visibility_hint("error[E0603]: module `inner` is private", true).unwrap();
+        assert!(
+            !hint.contains("a private field or method"),
+            "E0603 is about neither: {hint}"
+        );
+    }
+
+    /// **The regression that matters.** The hint used to be attached
+    /// wherever a cause existed -- including when Ply could not tell which
+    /// part of the build broke, which is exactly when the failure may be
+    /// the user's own crate not compiling. It then told them their own
+    /// code "uses it freely" while their own code was the bug. Ply only
+    /// speaks when it has placed the error inside code it generated.
+    #[test]
+    fn nothing_is_said_when_ply_cannot_place_the_error_in_its_own_code() {
+        assert_eq!(
+            visibility_hint("error[E0616]: field `x` of struct `S` is private", false),
+            None,
+            "an unattributed failure may be the crate under check failing to build, and \
+             explaining Ply's harness to that reader is a false diagnosis"
+        );
+    }
+
+    /// A name the harness cannot resolve *might* be a visibility problem
+    /// and might be a typo. Ply does not know which, so it says so
+    /// conditionally rather than asserting a cause it has not established.
+    #[test]
+    fn an_unresolved_name_is_offered_as_a_possibility_not_a_diagnosis() {
+        let hint = visibility_hint(
+            "error[E0425]: cannot find function `normalise_via_fold` in this scope",
+            true,
+        )
+        .expect("worth mentioning: this is what a private helper looks like from outside");
+        assert!(
+            hint.contains("If that name does exist"),
+            "it must read as a possibility, since a plain typo produces the same error: {hint}"
+        );
+        assert!(
+            !hint.contains("is private"),
+            "and must not assert privacy as the cause when it cannot know that: {hint}"
+        );
+    }
+
+    /// The negative that keeps the hint honest. Every harness that fails to
+    /// compile would otherwise collect advice about visibility, including
+    /// the great majority whose problem is nothing of the kind.
+    #[test]
+    fn an_ordinary_type_error_gets_no_visibility_advice() {
+        assert_eq!(
+            visibility_hint("error[E0308]: mismatched types", true),
+            None
+        );
+        assert_eq!(
+            visibility_hint(
+                "error: could not compile `ply-fixture-x` (lib) due to 1 error",
+                true
+            ),
+            None
+        );
+    }
+
+    /// Exact string, not `contains`. A whitespace bug shipped during
+    /// development on 2026-09-08 -- the rendered text carried runs of
+    /// stray spaces from a mangled line continuation -- and every
+    /// `contains` assertion passed straight through it, because the
+    /// substrings were all still there. It was caught by reading real
+    /// output. This is what would have caught it instead.
+    #[test]
+    fn the_rendered_sentence_is_pinned_exactly_not_by_substring() {
+        let hint = visibility_hint(
+            "error[E0616]: field `entries` of struct `Cache` is private",
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            hint,
+            " The `fuzz` and `test` checks run from a crate Ply generates alongside yours, so they can \
+             only use what your crate makes public -- a private field or method is invisible to them. \
+             Three ways forward: give the type a public way to observe that state, which is often \
+             ordinary API the type was missing; mark an item only these checks would ever call \
+             `#[doc(hidden)] pub`, which keeps it reachable while telling anyone reading your \
+             documentation that it is not part of the supported surface; or check this claim with \
+             `bounded(k)` instead, whose generated code lives inside your own crate and can see private \
+             items."
+        );
+    }
+
+    /// And it reaches the reader, on the path that knows the error is
+    /// Ply's own generated code.
+    #[test]
+    fn the_diagnostic_a_person_reads_carries_the_visibility_explanation() {
+        let diag = harness_did_not_run_diag(
+            "c::Cache::insert",
+            "Cache::insert",
+            "c",
+            "fuzz(32)",
+            "ply-harness-c",
+            Some("error[E0616]: field `entries` of struct `Cache` is private"),
+            false,
+            true,
+            true,
+        );
+        assert!(
+            diag.title.contains("`bounded(k)`"),
+            "the explanation must travel with the report: {}",
+            diag.title
+        );
+    }
+
+    /// The same reader, hitting the same wall through the clause that says
+    /// what a type must always keep true -- the most natural place of all
+    /// to read private state, and silent until now.
+    #[test]
+    fn a_holds_clause_reading_private_state_gets_the_same_explanation() {
+        let diag = holds_harness_broken_diag(
+            "c::state Cache",
+            "Cache",
+            "error[E0616]: field `entries` of struct `Cache` is private",
+        );
+        assert!(
+            diag.title.contains("#[doc(hidden)] pub"),
+            "a `holds:` clause is where a person most often reads private state: {}",
+            diag.title
         );
     }
 }

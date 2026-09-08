@@ -289,13 +289,48 @@ class PlyCheckableCodeSkillTests(unittest.TestCase):
         self.assertIn("should not be declared at all", text)
 
     def test_it_covers_methods_and_not_just_free_functions(self):
-        """`&self` is checkable, `&mut self` is not, and the only way to
-        check a type that changes is a structure promise. An agent given
-        only the free-function rules will claim mutating methods one by one
-        and get nothing back."""
+        """A method that changes the object it is called on IS checkable --
+        that shipped, and this test asserted the opposite until 2026-09-08,
+        which nothing noticed because nothing ran this file. Rule 9 has to
+        carry both halves: the transition promise for one operation, and the
+        component's own clauses for what must always be true."""
         text = flat(skill_text("ply-checkable-code"))
         self.assertIn("`&mut self`", text, "missing")
-        self.assertIn("under the component's `state:`", text, "missing")
+        self.assertIn("is checkable too", text, "missing")
+        self.assertIn("old(self.available())", text, "missing")
+        self.assertIn("the component's `state:` and `holds:` clauses", text, "missing")
+
+    def test_it_settles_whether_a_getter_added_for_a_promise_is_allowed(self):
+        """The decision of 2026-09-08. A promise that reads private state
+        needs a public way to observe it, and the guide used to leave that
+        entirely to the developer while warning against it elsewhere -- so
+        the developer did it anyway and felt they had broken a rule. Rule 4
+        now separates an observer a caller would want from one only the
+        checks would ever call, and the refusal section must not contradict
+        it."""
+        text = flat(skill_text("ply-checkable-code"))
+        self.assertIn("would anyone but Ply", text, "missing the test to apply")
+        self.assertIn("`#[doc(hidden)] pub`", text, "missing the not-API option")
+        self.assertNotIn(
+            "widening public APIs just to suit the tool",
+            text,
+            "the refusal section still forbids what rule 4 now permits",
+        )
+        # Rule 8's sentence was the one that actually still contradicted
+        # rule 4, and the assertion above pinned a different one -- found by
+        # adversarial review, 2026-09-08.
+        self.assertNotIn(
+            "not to widen the API until the checker can reach it",
+            text,
+            "rule 8 still forbids what rule 4 now permits",
+        )
+
+    def test_it_never_claims_every_check_runs_outside_your_crate(self):
+        """`bounded`/`proved` generate into the crate under check. Saying
+        otherwise contradicts the tool's own V0510 message."""
+        text = flat(skill_text("ply-checkable-code"))
+        self.assertNotIn("Ply's checks run from a separate crate", text)
+        self.assertIn("generate *into* your crate", text)
 
     def test_weakening_a_promise_to_pass_is_forbidden_outright(self):
         """Not ask-first. There is no version of this that is correct: it

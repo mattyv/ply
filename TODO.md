@@ -137,7 +137,7 @@ invariant can see, and the bug-planting tier scored them without change.
       specs are "not in this build". All four corrected; the `&mut`
       *parameter* half of §5.4a stands and is marked as standing.
 
-- [x] **CLOSED: the report now shows how the value reached the failing
+- [x] **CLOSED (merged `7820a4b`): the report now shows how the value reached the failing
       state.** A promise about what a call changed is broken by a *history*,
       not only by the failing call's own arguments, so the report was
       satisfying "Ply never reports a broken promise it cannot show you the
@@ -161,7 +161,7 @@ invariant can see, and the bug-planting tier scored them without change.
       that a read-only observer stays checkable (a rule that refused that
       would delete the feature) and one that the after-half of a promise is
       covered as well as the `old(...)` half.
-- [x] **CLOSED: a precondition that names the state compiles and filters.**
+- [x] **CLOSED (merged `7820a4b`): a precondition that names the state compiles and filters.**
       The rejection filter was written out above the line that builds the
       value, so `#[ply::requires(self.available() > 0)]` -- the ordinary way
       to say "only check this when there is something in the bucket" -- named
@@ -268,7 +268,7 @@ refusal shipped the day before.
       test that goes red without the fix is the one asserting the deliberate
       bugs land in the helper's file at all.
 
-- [x] **CLOSED: a crashing call now carries its history too.** It was the
+- [x] **CLOSED (`f71f235`, merged `0855ec2`): a crashing call now carries its history too.** It was the
       one case with none, and the case where it is worth most -- a crash
       leaves the reader with the engine's raw shrunk value
       (`6, [(3,0,(),(),1)], 0`) and nothing that explains it. The call is
@@ -279,7 +279,7 @@ refusal shipped the day before.
       promise -- caught by reading the classification code, not by a test.
       A function with no receiver is untouched, now pinned by a test rather
       than by hand-diffing two built binaries as it was twice before.
-- [x] **CLOSED: a contract that hides the value inside a macro is refused by
+- [x] **CLOSED (`f71f235`, merged `0855ec2`): a contract that hides the value inside a macro is refused by
       name.** It did not compile before, because neither the "does this
       mention the value" test nor the rewrite descends into a macro's tokens.
       Refused rather than taught to rewrite, and the reason matters: the
@@ -313,7 +313,7 @@ refusal shipped the day before.
       test that spawns a subprocess, or stop it mutating process-global
       state at all. Both are more than the flake costs today.
 
-- [x] **CLOSED: a person is now told the guides exist.** Discovery only ever
+- [x] **CLOSED (`a0b7d92`, merged `0855ec2`): a person is now told the guides exist.** Discovery only ever
       ran one way. An assistant finds the guides reliably once they are on
       disk -- Claude Code reads the one-sentence description at the top of
       each and loads the body when a task matches -- but a person who
@@ -323,7 +323,7 @@ refusal shipped the day before.
       disappears the moment the guides are installed. A workspace member
       looks upward, so installing once at the top is enough.
 
-- [x] **CLOSED: the source copy carries everything a build of Ply reads,
+- [x] **CLOSED (`cdef9bc`, merged `0855ec2`): the source copy carries everything a build of Ply reads,
       and proves it rather than listing it.** Embedding the guides in the
       binary broke two build-identity tests, because the copy those tests
       build from carried the schema and the spec but not `skills/`. The
@@ -336,11 +336,67 @@ refusal shipped the day before.
       whichever the copy would not carry. A third stale entry cannot be
       mysterious.
 
-- [ ] **OPEN DECISION for the maintainer:** is a getter added purely so a
-      promise can read a private field acceptable? The cache needed a
-      `contains`/`peek` to state its promise; those are ordinary cache API,
-      but rule 4 leaves "adding public API for the tool's benefit" to the
-      developer and every real type meets this on day one.
+- [x] **DECIDED 2026-09-08: yes, and the question was the wrong one.** A
+      getter a promise needs is acceptable; the test is not "am I widening
+      the API for the tool" but "would anyone but Ply ever call this". Two
+      cases were being conflated. An observer a caller would want anyway --
+      a cache with no way to ask whether a key is present is an incomplete
+      cache -- is ordinary API, and writing the promise is what found the
+      gap. Something only the checks would call, such as a differential
+      oracle, gets `#[doc(hidden)] pub`: verified empirically that Ply
+      accepts it (a claim whose promise calls a doc-hidden oracle earns
+      `tested` cleanly). Guide rule 4 rewritten, the refusal section no
+      longer contradicts it, and both are pinned by wording tests.
+
+- [x] **CLOSED, found while doing the above: a promise that reads private
+      state got rustc's line and nothing else.** `field \`entries\` of struct
+      \`Cache\` is private` names what the compiler saw, not what happened --
+      Ply's checks run from a separate crate, so a private item is invisible
+      to them however freely the crate's own code uses it. That reason is
+      now stated, with both options named. A private *function* gets the
+      same explanation conditionally, because a plain typo produces the
+      identical error and Ply cannot tell which. Every other compile failure
+      gets nothing added, which is what stops it becoming noise.
+      Demonstrated end to end: following the advice let the check run, and
+      it immediately found a real crash (inserting into a zero-capacity
+      cache).
+
+      **Adversarial review found six defects in the first version of this,
+      four of them real errors rather than gaps.** All fixed in the same
+      session. Worst first: the explanation fired wherever a cause existed,
+      including where Ply could *not* place the error in its own generated
+      code -- so a user whose own crate failed to compile with an ordinary
+      private-field bug was told Ply's harness could not see it and that
+      "your own code uses it freely", when their own code was the bug. The
+      explanation now fires only where the failure was attributed to
+      generated code. Second: the sentence claimed "Ply's checks run from a
+      separate crate", which is true of the sampling tier only --
+      `bounded`/`proved` generate into the crate under check, and `V0510`
+      was already telling the same user the opposite in the same binary. The
+      wording now names which checks it is true of and offers the other tier
+      as a third way out. Third: the clause saying what a type must always
+      keep true -- the most natural place of all to read private state --
+      never got the explanation at all. Fourth: the cache anecdote was
+      emitted verbatim for every type, asserting as fact why *that* reader's
+      API was incomplete. Also fixed: the guide contradicted itself, rule 8
+      still forbidding what rule 4 now permits, with the new wording test
+      pinning a different sentence than the one that actually conflicted.
+
+      The tests deserve their own note. They were `contains` checks, and a
+      whitespace bug shipped straight through them during development --
+      caught only by reading real output. There is now one exact-string
+      assertion on the full rendered sentence, and **it failed on its first
+      run**, catching the identical whitespace bug a second time.
+
+- [x] **CLOSED, and the worse half of it: the guide-wording tests were not
+      run by anything.** `tests/skills/test_skill_contracts.py` pins the
+      exact sentences of the shipped guides, and no CI job invoked it. The
+      rule 9 rewrite changed a sentence one test asserted; the file went red
+      and stayed red, unseen, until it was run by hand on 2026-09-08. That
+      test also still claimed a method changing its receiver was
+      uncheckable, which stopped being true when that shipped. Assertion
+      corrected to what rule 9 now says, and the suite is now a CI step. A
+      test nothing runs is not a test.
 
 ## A/B round 4: the tool's best result, and three new gaps — 2026-09-07
 
