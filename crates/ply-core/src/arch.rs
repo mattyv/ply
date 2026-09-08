@@ -211,7 +211,7 @@ pub struct WorkspaceGraph {
 /// drive it directly against a crafted `Metadata` value with no
 /// `cargo metadata` process in the loop.
 pub fn crate_dependency_graph(crate_dir: &Path) -> Result<WorkspaceGraph, MetadataError> {
-    let output = Command::new("cargo")
+    let output = Command::new(crate::engines::cargo_program())
         .arg("metadata")
         .arg("--format-version=1")
         .current_dir(crate_dir)

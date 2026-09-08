@@ -10,6 +10,39 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
+/// Which `cargo` to run.
+///
+/// Cargo sets `CARGO` for everything it launches, pointing at the exact
+/// binary the user invoked -- so this runs *that* cargo rather than
+/// whichever one happens to be first on `PATH`. For a developer with more
+/// than one toolchain installed that is the difference between reading the
+/// workspace their build actually uses and reading a different one.
+///
+/// It also removes a `PATH` lookup that never needed to happen, which is
+/// what made this worth doing now (2026-09-08). Ply's own test suite has a
+/// test that empties `PATH` process-wide to prove the timeout budget needs
+/// no helper binary; every sibling test spawning `cargo` in parallel was
+/// racing it, and one of them lost often enough to fail the whole library
+/// suite in some environments while passing in CI. Resolving the program
+/// before `PATH` is consulted takes those tests out of each other's way
+/// without either of them knowing about the other.
+///
+/// Falls back to the bare name when `CARGO` is unset -- Ply run as a plain
+/// binary rather than as `cargo ply` -- which is exactly the old behaviour.
+pub fn cargo_program() -> std::ffi::OsString {
+    cargo_program_from(std::env::var_os("CARGO"))
+}
+
+/// [`cargo_program`]'s decision, with the environment passed in so it can be
+/// tested without touching the process's own -- which is the very thing that
+/// caused the race this exists to end.
+fn cargo_program_from(declared: Option<std::ffi::OsString>) -> std::ffi::OsString {
+    match declared {
+        Some(path) if !path.is_empty() => path,
+        _ => std::ffi::OsString::from("cargo"),
+    }
+}
+
 /// How often [`run_with_timeout`] polls the child for exit -- a compromise
 /// between wasted CPU (too tight) and slack in when a killed run is
 /// noticed (too loose). Chosen small enough that no caller's wall-clock
@@ -627,6 +660,37 @@ mod run_with_timeout_tests {
     /// PATH lookup) fails here exactly as it failed on macOS -- while a
     /// budget enforced in-process neither needs nor looks for one, so it
     /// keeps working with an absolute path to the real program.
+    /// Which cargo Ply runs is decided before `PATH` is consulted
+    /// (2026-09-08).
+    ///
+    /// Tested with the value passed in rather than by setting the real
+    /// environment variable, deliberately: a test that mutates the
+    /// process's own environment is exactly what this change exists to
+    /// stop, and writing one here would trade a race for a race.
+    #[test]
+    fn ply_runs_the_cargo_that_invoked_it_when_cargo_says_which() {
+        use std::ffi::OsString;
+
+        assert_eq!(
+            super::cargo_program_from(Some(OsString::from("/opt/rust/bin/cargo"))),
+            OsString::from("/opt/rust/bin/cargo"),
+            "cargo names the exact binary the user invoked, and that is the one whose \
+             workspace Ply must read -- not whichever cargo `PATH` happens to find first"
+        );
+        assert_eq!(
+            super::cargo_program_from(None),
+            OsString::from("cargo"),
+            "run as a plain binary rather than as `cargo ply`, nothing names one, so the \
+             bare name is the honest fallback -- unchanged from before this fix"
+        );
+        assert_eq!(
+            super::cargo_program_from(Some(OsString::new())),
+            OsString::from("cargo"),
+            "an empty value names nothing, and spawning the empty string fails with an \
+             error that explains none of this"
+        );
+    }
+
     #[test]
     fn enforces_the_budget_with_no_timeout_binary_reachable_on_path() {
         let _guard = test_lock();

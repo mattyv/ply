@@ -242,25 +242,45 @@ refusal shipped the day before.
       test that goes red without the fix is the one asserting the deliberate
       bugs land in the helper's file at all.
 
-- [ ] **KNOWN GAP: no history when the checked call panics.** The marker
-      carrying it is written after the call returns, so a call that never
-      returns writes none. Honest (absent, never fabricated, and §8 now says
-      so) but this is exactly the case whose raw witness is least readable,
-      so it is the most valuable one to have. Closing it means wrapping the
-      checked call in a panic guard, which changes how a panicking call is
-      reported -- a real change, not a tidy-up, and not one to make while
-      landing something else.
+- [x] **CLOSED: a crashing call now carries its history too.** It was the
+      one case with none, and the case where it is worth most -- a crash
+      leaves the reader with the engine's raw shrunk value
+      (`6, [(3,0,(),(),1)], 0`) and nothing that explains it. The call is
+      wrapped, the history printed, the panic resumed unchanged. On its own
+      line, deliberately: the ordinary counterexample marker's *presence* is
+      what tells `verify` a run ended in a broken promise rather than a
+      crash, so reusing it would have relabelled every crash as a broken
+      promise -- caught by reading the classification code, not by a test.
+      A function with no receiver is untouched, now pinned by a test rather
+      than by hand-diffing two built binaries as it was twice before.
+- [x] **CLOSED: a contract that hides the value inside a macro is refused by
+      name.** It did not compile before, because neither the "does this
+      mention the value" test nor the rewrite descends into a macro's tokens.
+      Refused rather than taught to rewrite, and the reason matters: the
+      refusal that stops a promise changing what it reads is blind in the
+      same place, so a macro was the **third** way found in two rounds to
+      walk past that one check -- after a `ply.yaml` clause and a pair of
+      brackets. Teaching the rewrite to edit macro tokens would have worked
+      and made a macro a fourth place for a bypass to hide. A macro that
+      never names the value is untouched.
+- [x] **CLOSED: the `PATH` race that made one test fail with the suite.**
+      A test empties the process's `PATH` to prove the timeout budget needs
+      no helper binary; every sibling spawning `cargo` in parallel was racing
+      it. Fixed in production code rather than in the tests: Ply now runs the
+      cargo named by the `CARGO` variable, which cargo sets for everything it
+      launches, falling back to the bare name when nothing names one. That is
+      also simply more correct -- with two toolchains installed, the
+      workspace Ply reads is now the one the user's build actually uses. Nine
+      spawn sites, one decision, tested with the value passed in rather than
+      by setting the real variable, because a test that mutates the process
+      environment is the very thing being removed. The library suite ran
+      five times with no failure where it previously failed every time.
 
-- [ ] **KNOWN GAP: a precondition that hides `self` inside a macro still
-      does not compile.** `#[ply::requires(matches!(self.available(), 1..))]`
-      comes back as a tool error naming a compile failure. Both the "does
-      this mention the value" test and the rewrite walk the syntax tree, and
-      neither descends into a macro's tokens, so the filter is emitted before
-      the value exists and unrewritten. Not a regression -- it never
-      compiled -- and it fails loudly rather than silently, but it is a hole
-      in "a precondition that names the value is checked after the value is
-      built".
-
+      Two tests masked an engine by putting a fake `cargo` first on `PATH`,
+      which Ply no longer consults -- both now mask the named one too. One
+      of them had kept passing for the wrong reason (cargo with no `PATH`
+      cannot find `rustc`), which is exactly how a test comes to guard
+      something other than what its name says.
 - [x] **CLOSED: the guidance no longer says this cannot be done.** Rule 9 of
       `ply-checkable-code` now opens by saying a method that changes the
       object is checkable, shows the shape of such a promise, and presents

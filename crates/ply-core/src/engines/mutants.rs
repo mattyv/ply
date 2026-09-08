@@ -297,7 +297,7 @@ pub fn classify_run(timed_out: bool, combined: String, mutants_out: &Path) -> Mu
 /// fingerprint input, so getting it from the wrong place lets stale evidence
 /// survive a real change.
 pub fn version(crate_dir: &std::path::Path) -> Option<String> {
-    let out = Command::new("cargo")
+    let out = Command::new(crate::engines::cargo_program())
         .args(["mutants", "--version"])
         .current_dir(crate_dir)
         .output()
@@ -313,7 +313,7 @@ pub fn version(crate_dir: &std::path::Path) -> Option<String> {
 /// all, so a missing engine can be reported as `engine-missing`/`W0110`
 /// (D9) rather than a confusing subprocess-spawn error.
 pub fn is_available() -> bool {
-    Command::new("cargo")
+    Command::new(crate::engines::cargo_program())
         .args(["mutants", "--version"])
         .output()
         .map(|o| o.status.success())

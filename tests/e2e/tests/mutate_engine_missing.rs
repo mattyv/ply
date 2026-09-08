@@ -46,7 +46,20 @@ fn a_declared_mutate_check_with_no_engine_is_an_absence_not_a_clean_run() {
         std::env::var("PATH").unwrap_or_default()
     );
 
-    let run = run_verify_with_env(&cargo_ply, fixture.path(), Some(150), &[("PATH", path)]);
+    // Both, since 2026-09-08: Ply runs the cargo named by `CARGO` -- the one
+    // that invoked it -- rather than whichever `PATH` finds first, so masking
+    // the engine now means masking the named one too. Without this the shim
+    // sits on `PATH` being ignored, and the test quietly stops testing an
+    // absence at all.
+    let run = run_verify_with_env(
+        &cargo_ply,
+        fixture.path(),
+        Some(150),
+        &[
+            ("PATH", path),
+            ("CARGO", shim.path().join("cargo").display().to_string()),
+        ],
+    );
 
     // The fuzz check really ran, so the verdict is real evidence. The
     // absence is the `mutate` check, and it is recorded as a status.

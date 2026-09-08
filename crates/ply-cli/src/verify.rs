@@ -7098,7 +7098,13 @@ fn render_fuzz_violation(
                             harness_fuzz_test_name(cf)
                         )),
                         cargo_test: Some(test_file_display),
-                        receiver_history: fields.get("__ply_history").cloned(),
+                        // The crash path prints the history on its own line, since it
+                        // never reaches the marker the field lives on
+                        // (2026-09-08).
+                        receiver_history: fields
+                            .get("__ply_history")
+                            .cloned()
+                            .or_else(|| fuzz_engine::parse_history_marker(combined_output)),
                     }),
                     fixes: vec![],
                     assumptions: vec![],
@@ -7152,7 +7158,13 @@ fn render_fuzz_violation(
                         inputs,
                         kani_witness: None,
                         cargo_test: None,
-                        receiver_history: fields.get("__ply_history").cloned(),
+                        // The crash path prints the history on its own line, since it
+                        // never reaches the marker the field lives on
+                        // (2026-09-08).
+                        receiver_history: fields
+                            .get("__ply_history")
+                            .cloned()
+                            .or_else(|| fuzz_engine::parse_history_marker(combined_output)),
                     }),
                     fixes: vec![],
                     assumptions: vec![],

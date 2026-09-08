@@ -2726,14 +2726,16 @@ call's own arguments are only half the input — the other half is this — so w
 envelope's own rule that a violation always carries a witness was satisfied in form and
 not in substance. Never empty and never fabricated.
 
-It is **absent** in three cases, each honestly rather than by omission: a free function,
-which has no such history; the exhaustive tier, which refuses any receiver (§5.4b); and a
-case where **the checked call itself panicked** rather than returning and failing its
-promise — the marker carrying the history is written after the call returns, so a call
-that never returns writes none. That last one is a real gap rather than a design choice
-(it is precisely the case whose raw witness is least readable), recorded as such in
-TODO.md; a reader who sees no `receiver_history` beside a panic is seeing an absence Ply
-knows about, not a claim that no history exists.
+A crashing call carries one too (2026-09-08). The marker the history normally rides on is
+written after the call returns, so a call that never returns wrote none — and that was
+precisely the case where the history is worth most, since a crash otherwise leaves the
+reader with the engine's raw shrunk value and nothing that explains it. The call is now
+wrapped so the history is printed before the panic is resumed, on a line of its own: the
+ordinary marker's *presence* is what distinguishes a broken promise from a crash, so
+reusing it here would relabel every crash.
+
+It is **absent** in two cases, each honestly rather than by omission: a free function,
+which has no such history, and the exhaustive tier, which refuses any receiver (§5.4b).
 
 **A non-result is still feedback.** `timeout`, `unsupported`, and `engine-missing` carry
 no counterexample, but the consumer is usually an agent mid-repair, and §1's second

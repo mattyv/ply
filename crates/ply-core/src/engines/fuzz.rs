@@ -46,7 +46,7 @@ pub fn run_harness_tests(
     filter: &str,
     timeout_secs: u32,
 ) -> Result<HarnessTestRun> {
-    let mut cmd = Command::new("cargo");
+    let mut cmd = Command::new(crate::engines::cargo_program());
     cmd.arg("test")
         .arg("-p")
         .arg(harness_package)
@@ -106,7 +106,7 @@ pub fn check_harness_builds(
     harness_package: &str,
     timeout_secs: u32,
 ) -> Result<HarnessBuildCheck> {
-    let mut cmd = Command::new("cargo");
+    let mut cmd = Command::new(crate::engines::cargo_program());
     cmd.arg("test")
         .arg("-p")
         .arg(harness_package)
@@ -339,6 +339,26 @@ pub fn attribute_build_errors(
             .or_insert_with(|| err.message.clone());
     }
     out
+}
+
+/// The last `PLY_FUZZED_HISTORY|<fn>|<escaped>` line, if any.
+///
+/// Printed by a receiver method's harness from the crash path only, where
+/// the ordinary counterexample marker is never reached (2026-09-08). Its own
+/// line rather than a field on that marker: the marker's *presence* is what
+/// tells `verify` the run ended in a broken promise rather than a crash, so
+/// borrowing it here would relabel every crash.
+///
+/// Unescaped exactly like any marker field -- the history is text Ply built
+/// and can contain the characters the wire format reads as structure.
+pub fn parse_history_marker(combined: &str) -> Option<String> {
+    let line = combined
+        .lines()
+        .rev()
+        .find(|l| l.contains("PLY_FUZZED_HISTORY|"))?;
+    let after = line.split_once("PLY_FUZZED_HISTORY|")?.1;
+    let (_fn_name, rest) = after.split_once('|')?;
+    Some(unescape_marker_value(rest))
 }
 
 /// Parses the last `PLY_FUZZED_CEX|<fn>|k1=v1;k2=v2` marker line out of
