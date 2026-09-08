@@ -395,13 +395,14 @@ spellings like `<T as Trait>::f` are not accepted (`E0304`).
 |---|---|---|
 | `test` | Ordinary `#[test]`s: your `examples` entries, plus generated cases run through the real function with the contract asserted. | `tested` |
 | `fuzz(n)` | A property-test run of `n` generated inputs, with shrinking. `1 ≤ n ≤ 1000000`. | `fuzzed(n)` |
-| `bounded(k)` | A model-checking proof: every execution, every input, loops unrolled `k` times. `1 ≤ k ≤ 64`. | `bounded(k)` |
+| `bounded(k)` | A model-checking proof over every input; `k` bounds generated collection exploration where the harness needs an unwind annotation. `1 ≤ k ≤ 64`. | `bounded(k)` |
 | `prove` | An unbounded deductive proof. | `proved` |
 | `mutate` | Deliberately breaks the code and checks that your other checks notice. | Strengthens the verdict, or warns that the specification is weak. |
 
 They are not alternatives so much as rungs. `test` says "these inputs work".
-`fuzz(n)` says "*n* random inputs worked". `bounded(k)` says "*every* input worked, as
-long as loops run at most *k* times". Two claims of the same kind are the same rung —
+`fuzz(n)` says "*n* random inputs worked". `bounded(k)` says "*every* input worked in
+the generated proof; collection exploration is limited where the harness uses *k* as an
+unwind bound". Two claims of the same kind are the same rung —
 `fuzz(4096)` is not a stronger *kind* of evidence than `fuzz(256)`, just more of it.
 
 A number out of range is rejected with the reason, not just a code: `bounded(0)` gets
@@ -409,7 +410,12 @@ told that a bound of 0 would prove nothing (`E0203`).
 
 `mutate` needs something to break: it must appear alongside a `test` or `fuzz` entry in
 the same list, because those are the checks a planted bug has to survive. On its own it
-is an error (`E0504`).
+is an error (`E0504`). Mutation runs only after every such base check earns evidence.
+Ply reapplies its per-function ownership filter to every cargo-mutants result file;
+cargo-mutants 27.1.0 can otherwise return unrelated struct-field deletions despite
+`--re`, which must neither create a warning nor earn strength for this function. That
+filter keeps the source file too, because two file modules can contain different
+functions that cargo-mutants gives the same bare owner name.
 
 ```yaml
 ply: 1
@@ -486,6 +492,10 @@ components:
 ```
 
 Examples are exempt from the restrictions on contract expressions — they are just Rust.
+For a nested free function, an example under that function's own claim may use the bare
+name imported by the generated module; its literal arguments still become generated
+contract cases. A qualified call must match the function's module suffix, so a different
+same-named function cannot donate inputs.
 The cost of that freedom: nothing type-checks them until the generated test crate is
 compiled. An entry that does not compile takes the whole harness down with it, and
 because the `test` and `fuzz` checks share one harness, *neither* runs. Ply reports
@@ -942,11 +952,16 @@ Every function claim ends with exactly one verdict. Six of them, weakest to stro
 | `unclaimed` | **Nothing was checked.** No claim, or a claim Ply refused to run — most often the legacy-boundary refusal above. |
 | `tested` | The examples and generated cases ran and passed. |
 | `fuzzed(n)` | *n* generated inputs ran and passed. |
-| `bounded(k)` | Every input passed, for every execution in which loops run at most *k* times. Says nothing beyond that bound. |
+| `bounded(k)` | Every input passed in the generated model-checking proof. For collection-shaped inputs, exploration says nothing beyond the generated unwind bound derived from *k*. |
 | `proved` | Proved for all inputs with no bound. (No engine in this build.) |
 
 Alongside the verdict, a node can carry **statuses**. These are not weaker verdicts;
 they are different kinds of fact, and they travel upward as flags:
+
+When several checks are declared, the verdict keeps the strongest evidence that actually
+ran unless any check finds a violation. A check that reaches no result remains visible as
+a status beside that evidence instead of erasing it, so the overall run is not silently
+clean.
 
 | Status | In plain words |
 |---|---|
@@ -1193,7 +1208,7 @@ would make deleting the note the cheapest fix.
 | `uses:` (capabilities) | Declared only | none |
 | `owns:` (ownership) | Declared only | none |
 | `state:` (the structure a component holds) | The type and every named field must resolve, or Ply says it could not check; a field's *declared shape*, once it resolves, is checked against the real one; that the component holds one is **declared only** | `A0414`, `A0415`, `A0416`, `W0413` |
-| `holds:` (what must always be true of that structure) | `check` reads each line and refuses one it cannot parse (`E0506`); `verify` **checks it against the real type**, by building a value through the type's own constructor and putting it through a generated sequence of the type's own operations, asserting every clause after each one (`V0511`, `W0414`–`W0418`) | `E0506` here; the rest under `verify` |
+| `holds:` (what must always be true of that structure) | `check` reads each line and refuses one it cannot parse (`E0506`); `verify` **checks it against the real type**, by building a value through the type's own constructor and putting it through a generated sequence of its plain-`pub` operations, asserting every clause after each one; private and `pub(crate)` operations are named as excluded (`V0511`, `W0414`–`W0418`) | `E0506` here; the rest under `verify` |
 | `pure:` | Declared only | none |
 | `strict:` | Declared only — read by the renderers, nothing else | none |
 

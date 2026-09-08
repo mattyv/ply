@@ -1,0 +1,11 @@
+ply: 1
+components:
+  mixednoinput:
+    anchor: ply_fixture_mixednoinput
+    fns:
+      narrow:
+        checks: [test, fuzz(64)]
+        requires:
+          - "x > 1 && x < 4294967295"
+        ensures:
+          - "|result| *result == x"

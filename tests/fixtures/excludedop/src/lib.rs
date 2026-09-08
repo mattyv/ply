@@ -47,6 +47,17 @@ impl Acc {
         self.total += 5;
     }
 
+    // Both methods are valid operations inside this crate but inaccessible
+    // to Ply's separate generated harness crate. They must be disclosed as
+    // excluded, never emitted as calls that break the whole harness.
+    fn reset_private(&mut self) {
+        self.total = 0;
+    }
+
+    pub(crate) fn reset_crate(&mut self) {
+        self.total = 0;
+    }
+
     /// FALSE after a single `note` call. A receiver sequence that can never
     /// include `note` can never see this fail -- which is exactly why the
     /// run must say so rather than reporting a clean pass indistinguishable

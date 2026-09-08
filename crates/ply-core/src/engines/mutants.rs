@@ -91,6 +91,11 @@ pub struct MutantsRunConfig {
     /// that over a thin wrapper whose helpers were never touched, which is
     /// the shape Ply's own writing guide teaches authors to write.
     pub fn_regexes: Vec<String>,
+    /// The same cargo-mutants owner names paired with their source files.
+    /// Out-of-line modules lose their module prefix in cargo-mutants' owner
+    /// text, so the file is what distinguishes `a::helper` from
+    /// `b::helper` after both become bare `helper`.
+    pub fn_owner_files: Vec<(String, String)>,
     /// The cargo-test name filter appended after `--` -- narrows the
     /// harness package's test run to this fn's own generated tests, so a
     /// harness crate covering many functions never lets one fn's mutants
@@ -190,6 +195,24 @@ fn mutation_selector(name: &str) -> String {
     format!(r"(?:replace {name} ->| in {name}$)")
 }
 
+/// The same ownership rule as [`mutation_selector`], applied to one result
+/// line without shipping a regex engine solely to defend an adapter
+/// boundary. Rust paths contain neither spaces nor arrows, so these two
+/// literal positions are unambiguous.
+fn mutation_description_is_owned_by(description: &str, name: &str) -> bool {
+    description.contains(&format!("replace {name} ->"))
+        || description.ends_with(&format!(" in {name}"))
+}
+
+fn mutation_description_is_in_file(description: &str, file: &str) -> bool {
+    let Some((reported, _)) = description.split_once(':') else {
+        return false;
+    };
+    let reported = reported.replace('\\', "/");
+    let file = file.replace('\\', "/");
+    reported == file || reported.ends_with(&format!("/{file}"))
+}
+
 /// The whole-invocation wall-clock budget `run` enforces via
 /// `engines::run_with_timeout` -- distinct from `-t` in [`mutants_argv`],
 /// which is cargo-mutants' own per-mutant budget. Split out, like
@@ -227,7 +250,13 @@ pub fn run(cfg: &MutantsRunConfig) -> Result<MutantsRunOutcome> {
         String::from_utf8_lossy(&output.stderr)
     ));
 
-    Ok(classify_run(output.timed_out, combined, &mutants_out))
+    Ok(classify_run_for_owners(
+        output.timed_out,
+        combined,
+        &mutants_out,
+        &cfg.fn_regexes,
+        &cfg.fn_owner_files,
+    ))
 }
 
 /// Turns one finished invocation into an engine-honest outcome: a run the
@@ -240,6 +269,16 @@ pub fn run(cfg: &MutantsRunConfig) -> Result<MutantsRunOutcome> {
 /// inferred from an exit code (GNU `timeout`'s old 124 convention has no
 /// counterpart here, because nothing spawns that program any more).
 pub fn classify_run(timed_out: bool, combined: String, mutants_out: &Path) -> MutantsRunOutcome {
+    classify_run_for_owners(timed_out, combined, mutants_out, &[], &[])
+}
+
+fn classify_run_for_owners(
+    timed_out: bool,
+    combined: String,
+    mutants_out: &Path,
+    fn_regexes: &[String],
+    fn_owner_files: &[(String, String)],
+) -> MutantsRunOutcome {
     if timed_out {
         return MutantsRunOutcome::Timeout {
             raw_output: combined,
@@ -263,12 +302,16 @@ pub fn classify_run(timed_out: bool, combined: String, mutants_out: &Path) -> Mu
             .filter(|l| !l.is_empty())
             .collect()
     };
-    let missed = read_lines("missed.txt");
-    let caught = read_lines("caught.txt").len() as u32;
-    let unviable = read_lines("unviable.txt").len() as u32;
-    let timeout = read_lines("timeout.txt").len() as u32;
+    let raw_missed = read_lines("missed.txt");
+    let raw_caught = read_lines("caught.txt");
+    let raw_unviable = read_lines("unviable.txt");
+    let raw_timeout = read_lines("timeout.txt");
 
-    if caught == 0 && missed.is_empty() && unviable == 0 && timeout == 0 {
+    if raw_caught.is_empty()
+        && raw_missed.is_empty()
+        && raw_unviable.is_empty()
+        && raw_timeout.is_empty()
+    {
         return MutantsRunOutcome::ToolError {
             raw_output: combined,
             reason: "cargo-mutants produced no mutants.out/*.txt result files -- could not \
@@ -276,6 +319,31 @@ pub fn classify_run(timed_out: bool, combined: String, mutants_out: &Path) -> Mu
                 .into(),
         };
     }
+
+    // cargo-mutants 27.1.0 applies `--re` to ordinary mutations but its
+    // struct-literal field deletion path pushes candidates without calling
+    // that filter. Treat the engine's result files as untrusted input and
+    // enforce the same owner selectors here for every outcome category.
+    // Filtering only `missed.txt` would still let an unrelated caught
+    // mutation earn `spec-strong`.
+    let in_scope = |line: &String| {
+        if fn_regexes.is_empty() {
+            return true;
+        }
+        if fn_owner_files.is_empty() {
+            return fn_regexes
+                .iter()
+                .any(|name| mutation_description_is_owned_by(line, name));
+        }
+        fn_owner_files.iter().any(|(name, file)| {
+            mutation_description_is_owned_by(line, name)
+                && (file.is_empty() || mutation_description_is_in_file(line, file))
+        })
+    };
+    let missed: Vec<String> = raw_missed.into_iter().filter(&in_scope).collect();
+    let caught = raw_caught.into_iter().filter(&in_scope).count() as u32;
+    let unviable = raw_unviable.into_iter().filter(&in_scope).count() as u32;
+    let timeout = raw_timeout.into_iter().filter(&in_scope).count() as u32;
 
     MutantsRunOutcome::Completed(MutantsOutcome {
         caught,
@@ -333,6 +401,7 @@ mod tests {
             mutated_package: "target-pkg".into(),
             harness_package: "harness-pkg".into(),
             fn_regexes: vec!["add_small".into()],
+            fn_owner_files: vec![],
             test_filter: "add_small_harness::".into(),
             timeout_secs: 60,
             wall_clock_secs: 600,
@@ -433,6 +502,70 @@ mod tests {
                 "src/lib.rs:30:5: replace other::{leaf} -> u32 with 0"
             )));
         }
+    }
+
+    /// cargo-mutants 27.1.0 applies `--re` to ordinary mutations but not to
+    /// struct-literal field deletions. Ply must apply the same owner filter
+    /// to the result files before an unrelated deletion can be blamed on a
+    /// function—or, worse, counted as a caught mutant that earns strength.
+    #[test]
+    fn result_files_are_filtered_against_the_requested_function_owners() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("caught.txt"),
+            "src/lib.rs:5:5: replace wanted -> u32 with 0\n\
+             src/fixtures.rs:10:9: delete field cursor from struct Pool expression in unrelated\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("missed.txt"),
+            "src/lib.rs:6:9: replace + with - in wanted\n\
+             src/fixtures.rs:11:9: delete field cursor from struct Pool expression in unrelated\n",
+        )
+        .unwrap();
+
+        let outcome = classify_run_for_owners(
+            false,
+            String::new(),
+            dir.path(),
+            &["wanted".to_string()],
+            &[],
+        );
+        let MutantsRunOutcome::Completed(outcome) = outcome else {
+            panic!("result files with selected mutants must be a completed run");
+        };
+        assert_eq!(
+            outcome.caught, 1,
+            "unrelated caught mutants cannot earn strength"
+        );
+        assert_eq!(
+            outcome.missed,
+            vec!["src/lib.rs:6:9: replace + with - in wanted"],
+            "only survivors owned by the requested function may be reported"
+        );
+    }
+
+    #[test]
+    fn same_named_owners_are_filtered_by_source_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("caught.txt"),
+            "src/a.rs:5:5: replace helper -> u32 with 0\n\
+             src/b.rs:5:5: replace helper -> u32 with 0\n",
+        )
+        .unwrap();
+
+        let outcome = classify_run_for_owners(
+            false,
+            String::new(),
+            dir.path(),
+            &["helper".to_string()],
+            &[("helper".to_string(), "src/a.rs".to_string())],
+        );
+        let MutantsRunOutcome::Completed(outcome) = outcome else {
+            panic!("selected result file must produce a completed run");
+        };
+        assert_eq!(outcome.caught, 1, "src/b.rs belongs to another function");
     }
 
     /// §5.4c MUST: "every engine invocation carries a hard cap ... Exceeding

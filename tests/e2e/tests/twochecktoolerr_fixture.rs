@@ -8,7 +8,9 @@
 //! read as `tested`. The promise here is deliberately TRUE and `fuzz`
 //! deliberately passes: a false promise would let worst-of aggregation
 //! report `violation` regardless of what `test` did, hiding the exact bug
-//! this fixture exists to catch.
+//! this fixture exists to catch. Since 2026-09-08 the successful fuzz
+//! evidence remains the verdict while the empty test remains a `tool_error`
+//! status: neither fact is allowed to erase the other.
 
 use ply_e2e::{build_cargo_ply, copy_fixture, run_verify};
 
@@ -18,17 +20,23 @@ fn a_check_that_ran_nothing_is_never_hidden_by_a_sibling_check_that_passed() {
     let fixture = copy_fixture("twochecktoolerr");
     let run = run_verify(&cargo_ply, fixture.path(), 90);
 
-    let verdict = run.json["root"]["verdict"].as_str().unwrap_or("");
-    assert!(
-        verdict != "tested" && !verdict.starts_with("fuzzed") && verdict != "proved",
-        "`test` ran zero cases here -- the overall verdict must never read as a clean pass just \
-         because the sibling `fuzz` check happened to succeed: {}",
+    assert_eq!(
+        run.json["root"]["verdict"], "fuzzed(64)",
+        "the sibling fuzz check really ran, so its evidence must not disappear: {}",
         run.json
     );
-    assert_eq!(
-        verdict, "tool_error",
-        "zero cases ran for `test`, so this is an honest tool error, never a silent pass: {}",
+
+    let fn_node = &run.json["root"]["children"][0]["children"][0];
+    let statuses = fn_node["statuses"].as_array().unwrap();
+    assert!(
+        statuses.iter().any(|status| status == "tool_error"),
+        "zero cases ran for `test`, so its non-result must remain beside the fuzz evidence: {}",
         run.json
+    );
+    assert_ne!(
+        run.exit_code,
+        Some(0),
+        "preserving the fuzz evidence must not turn the unresolved test into a clean run"
     );
 
     let diagnostics = run.json["diagnostics"].as_array().unwrap();

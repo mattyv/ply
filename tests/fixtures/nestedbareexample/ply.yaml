@@ -1,0 +1,16 @@
+ply: 1
+components:
+  nestedbareexample:
+    anchor: ply_fixture_nestedbareexample
+    fns:
+      rate_limiter::wait_millis:
+        checks: [test]
+        requires:
+          - "admits > 0 && oldest < period"
+        ensures:
+          - "|result| *result <= period"
+        # The generated module imports this nested function, so this bare
+        # call is valid there. The equality is deliberately tautological:
+        # only the generated contract case can expose the false promise.
+        examples:
+          - "wait_millis(4, 4, 1000, 999) == wait_millis(4, 4, 1000, 999)"
