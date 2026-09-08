@@ -323,6 +323,19 @@ refusal shipped the day before.
       disappears the moment the guides are installed. A workspace member
       looks upward, so installing once at the top is enough.
 
+- [x] **CLOSED: the source copy carries everything a build of Ply reads,
+      and proves it rather than listing it.** Embedding the guides in the
+      binary broke two build-identity tests, because the copy those tests
+      build from carried the schema and the spec but not `skills/`. The
+      only symptom was `cargo build (Ply source copy) failed` with no
+      compiler output -- the same uninformative failure this list already
+      recorded from 2026-08-30, when four crates joined the workspace and
+      the copy stopped loading. Fixed twice over: the failure now prints
+      what the compiler actually said, and a new check walks the real source
+      for every file embedded from outside its own crate and fails naming
+      whichever the copy would not carry. A third stale entry cannot be
+      mysterious.
+
 - [ ] **OPEN DECISION for the maintainer:** is a getter added purely so a
       promise can read a private field acceptable? The cache needed a
       `contains`/`peek` to state its promise; those are ordinary cache API,
