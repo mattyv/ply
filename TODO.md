@@ -336,7 +336,7 @@ refusal shipped the day before.
       whichever the copy would not carry. A third stale entry cannot be
       mysterious.
 
-- [x] **DECIDED 2026-09-08: yes, and the question was the wrong one.** A
+- [x] **DECIDED 2026-09-08 (`ff9df4e`, merged `eda7fb4`): yes, and the question was the wrong one.** A
       getter a promise needs is acceptable; the test is not "am I widening
       the API for the tool" but "would anyone but Ply ever call this". Two
       cases were being conflated. An observer a caller would want anyway --
@@ -348,7 +348,7 @@ refusal shipped the day before.
       `tested` cleanly). Guide rule 4 rewritten, the refusal section no
       longer contradicts it, and both are pinned by wording tests.
 
-- [x] **CLOSED, found while doing the above: a promise that reads private
+- [x] **CLOSED (`ff9df4e`+`68ef34a`, merged `eda7fb4`), found while doing the above: a promise that reads private
       state got rustc's line and nothing else.** `field \`entries\` of struct
       \`Cache\` is private` names what the compiler saw, not what happened --
       Ply's checks run from a separate crate, so a private item is invisible
@@ -388,7 +388,7 @@ refusal shipped the day before.
       assertion on the full rendered sentence, and **it failed on its first
       run**, catching the identical whitespace bug a second time.
 
-- [x] **CLOSED, and the worse half of it: the guide-wording tests were not
+- [x] **CLOSED (`ff9df4e`, merged `eda7fb4`), and the worse half of it: the guide-wording tests were not
       run by anything.** `tests/skills/test_skill_contracts.py` pins the
       exact sentences of the shipped guides, and no CI job invoked it. The
       rule 9 rewrite changed a sentence one test asserted; the file went red
