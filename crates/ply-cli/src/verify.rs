@@ -2197,7 +2197,7 @@ fn verify_loaded_crate(
     // initially unknown resolution was safe. Workers never reach this path
     // with an unknown graph: they were held on the serial path above.
     let result_storage_is_sound = first_party.result_reuse_is_sound()
-        && cargo_verification_state(crate_dir, &first_party)
+        && refresh_cargo_verification_state(crate_dir, &first_party)
             .is_ok_and(|(_, lock_current, closure_complete)| lock_current && closure_complete);
     if ply_core::engines::cancellation_requested() {
         anyhow::bail!("verification was interrupted; no partial result was published");
@@ -2389,6 +2389,24 @@ fn cargo_verification_state(
     } else {
         false
     };
+    Ok((workspace_root, lock_is_current, closure_is_complete))
+}
+
+/// Re-resolve after every engine has stopped so a serial first run can store
+/// the exact dependency graph it used. Generated standalone harnesses own a
+/// separate lockfile, so without this coordinator-owned refresh the original
+/// crate would remain forever uncacheable. Planning never calls this path:
+/// absent or stale locks still keep the whole current run serial.
+fn refresh_cargo_verification_state(
+    crate_dir: &Path,
+    first_party: &reach::FirstParty,
+) -> Result<(PathBuf, bool, bool)> {
+    let workspace_root = harness_crate::cargo_workspace_root(crate_dir)?;
+    let cargo_closure = harness_crate::refresh_cargo_local_dependency_closure(crate_dir)?;
+    let lock_is_current = workspace_root.join("Cargo.lock").is_file()
+        && harness_crate::cargo_lock_is_current(crate_dir)?;
+    let closure_is_complete =
+        lock_is_current && first_party_closure_is_complete(first_party, &cargo_closure);
     Ok((workspace_root, lock_is_current, closure_is_complete))
 }
 

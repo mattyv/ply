@@ -206,22 +206,40 @@ pub struct CargoLocalClosure {
 /// walk: an unrecognised TOML spelling or custom library path must keep
 /// source-shadow work serial and uncacheable rather than silently omit code.
 pub fn cargo_local_dependency_closure(crate_dir: &Path) -> Result<CargoLocalClosure> {
+    cargo_local_dependency_closure_with(crate_dir, true)
+}
+
+/// Resolve the same local package closure while allowing Cargo to create or
+/// refresh the workspace lockfile. A first serial verification uses this
+/// when no current lock exists; workers are still forbidden until a later
+/// locked probe confirms the resolution.
+pub fn refresh_cargo_local_dependency_closure(crate_dir: &Path) -> Result<CargoLocalClosure> {
+    cargo_local_dependency_closure_with(crate_dir, false)
+}
+
+fn cargo_local_dependency_closure_with(
+    crate_dir: &Path,
+    require_current_lock: bool,
+) -> Result<CargoLocalClosure> {
     let mut command = std::process::Command::new("cargo");
-    command
-        .args(["metadata", "--format-version=1", "--locked"])
-        .current_dir(crate_dir);
-    let output = crate::engines::run_until_cancelled(&mut command).with_context(|| {
-        format!(
-            "spawning locked `cargo metadata` in {}",
-            crate_dir.display()
-        )
-    })?;
+    command.args(["metadata", "--format-version=1"]);
+    if require_current_lock {
+        command.arg("--locked");
+    }
+    command.current_dir(crate_dir);
+    let metadata_mode = if require_current_lock {
+        "locked `cargo metadata`"
+    } else {
+        "`cargo metadata`"
+    };
+    let output = crate::engines::run_until_cancelled(&mut command)
+        .with_context(|| format!("spawning {metadata_mode} in {}", crate_dir.display()))?;
     if output.cancelled {
         bail!("verification was interrupted while resolving local Cargo dependencies");
     }
     if !output.status.success() {
         bail!(
-            "locked `cargo metadata` could not resolve local dependencies in {}: {}",
+            "{metadata_mode} could not resolve local dependencies in {}: {}",
             crate_dir.display(),
             output.stderr_string().trim()
         );
@@ -289,7 +307,28 @@ pub fn cargo_local_dependency_closure(crate_dir: &Path) -> Result<CargoLocalClos
             local_packages.insert(id.to_string(), (canonical, library_sources));
         }
     }
-    let root_id = root_id.context("`cargo metadata` did not name the package being verified")?;
+    let root_id = match root_id {
+        Some(root_id) => root_id,
+        None => {
+            let workspace_root = metadata
+                .get("workspace_root")
+                .and_then(serde_json::Value::as_str)
+                .map(PathBuf::from)
+                .context("`cargo metadata` output had no workspace root")?;
+            let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
+            if workspace_root == root_dir {
+                // A root document may describe a virtual Cargo workspace and
+                // delegate every claim to linked member documents. There is
+                // no root package closure to compare in that case; each
+                // linked member is resolved separately below this call.
+                return Ok(CargoLocalClosure {
+                    package_dirs: vec![],
+                    library_sources: vec![],
+                });
+            }
+            anyhow::bail!("`cargo metadata` did not name the package being verified");
+        }
+    };
     let nodes = metadata
         .pointer("/resolve/nodes")
         .and_then(serde_json::Value::as_array)
@@ -915,6 +954,33 @@ path = "src/lib.rs"
         )
         .unwrap();
         assert!(!cargo_lock_is_current(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn a_virtual_workspace_root_has_an_empty_local_package_closure() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("member/src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers=['member']\nresolver='3'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("member/Cargo.toml"),
+            "[package]\nname='member'\nversion='0.0.0'\nedition='2024'\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("member/src/lib.rs"), "pub fn member() {}\n").unwrap();
+        let generated = std::process::Command::new("cargo")
+            .args(["generate-lockfile", "--offline"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(generated.success());
+
+        let closure = cargo_local_dependency_closure(dir.path()).unwrap();
+        assert!(closure.package_dirs.is_empty());
+        assert!(closure.library_sources.is_empty());
     }
 
     #[test]

@@ -535,6 +535,9 @@ mod run_with_timeout_tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
+    const CANCELLATION_CHILD_ENV: &str = "PLY_TEST_CANCELLATION_CHILD";
+    const CANCELLATION_TEST_NAME: &str = "engines::run_with_timeout_tests::cancellation_kills_an_active_process_tree_and_is_reported_separately";
+
     /// Serializes every test in this module against state that is shared
     /// process-wide rather than per-test: the temp-file namespace
     /// `scratch_path` writes into (every test transiently populates it,
@@ -615,6 +618,21 @@ mod run_with_timeout_tests {
 
     #[test]
     fn cancellation_kills_an_active_process_tree_and_is_reported_separately() {
+        // Cancellation is deliberately process-wide in production so every
+        // active worker stops together. Exercise that global state in an
+        // isolated copy of this test binary: otherwise libtest may run an
+        // unrelated subprocess test concurrently and make it observe this
+        // test's synthetic interrupt.
+        if std::env::var_os(CANCELLATION_CHILD_ENV).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", CANCELLATION_TEST_NAME, "--nocapture"])
+                .env(CANCELLATION_CHILD_ENV, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated cancellation test failed");
+            return;
+        }
+
         let _guard = test_lock();
         let _scope = ManagedCancellation::begin();
         let trigger = std::thread::spawn(|| {
