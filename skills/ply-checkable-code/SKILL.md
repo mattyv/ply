@@ -270,18 +270,49 @@ against it.
 
 ## 9. Methods, and how a type's own state gets checked
 
-A method taking `&self` is checkable like any function. `&mut self` and methods that
-consume `self` are not. A constructor that returns `Result<Self, _>` is recognised: Ply calls
-it and discards any generated arguments it rejects, so every value checked is one the
-constructor accepted — but a type built that way cannot sit inside a container
-(`Vec<Inner>`), because a rejection partway through a list has nowhere to go.
+A method taking `&self` is checkable like any function. A method taking `&mut self` — one
+that changes the object it is called on — is checkable too: Ply builds the value through
+the type's own constructor, runs a random sequence of the type's own operations on it, then
+calls the checked method, and the promise says what that call changed in terms of the
+value's own readings before and after:
 
-The way to check a type that changes is not to claim its mutating methods one by one. It is
-to state what must always be true of the value, under the component's `state:`; Ply then
-builds one through the type's own constructor, calls its public operations in generated
-sequences, and checks every clause after each one. Read the report: it names the operations
-it could not call, and a promise checked without the one mutator that would break it is
-worth much less than the number beside it suggests.
+```rust
+#[ply::ensures(|result| !*result
+    || self.available() as u64 + tokens as u64 == old(self.available()) as u64)]
+pub fn try_take(&mut self, tokens: u32) -> bool { /* ... */ }
+```
+
+`old(self.available())` is the reading before the call, `self.available()` the reading
+after — both ordinary calls to the type's own `&self` methods, nothing new. See
+`tests/fixtures/tokenbucket/src/lib.rs` for the worked example this is drawn from.
+
+A method that **consumes** `self` (takes it by value) is still not checkable — it fits the
+same shape but needs codegen that does not exist yet. And a promise about a `&mut self`
+method has two shapes of its own that Ply refuses by name: taking the "before" reading
+through one of the type's own `&mut self` methods (that call would itself change the very
+thing the promise is about — read a field, or a `&self` method, instead), and `old(self)`
+asking for a copy of the whole object (that would need `Clone`, which nothing here
+provides).
+
+A constructor that returns `Result<Self, _>` is recognised: Ply calls it and discards any
+generated arguments it rejects, so every value checked is one the constructor accepted —
+but a type built that way cannot sit inside a container (`Vec<Inner>`), because a rejection
+partway through a list has nowhere to go.
+
+A method promise says what one operation *does*; it is not a replacement for stating what
+must always be true of the value. For that, use the component's `state:` and `holds:`
+clauses — Ply builds a value through the type's own constructor, calls its public
+operations in generated sequences, and checks every `holds:` clause after each one. The two
+are complementary: `holds:` catches an invariant broken by *any* sequence of operations,
+including ones nobody wrote a method promise for; a method promise catches a bug that
+leaves every invariant true but still does the wrong thing (round 3 of the vetting rounds
+measured this directly — four of six planted bugs left the whole-value rule perfectly true
+and only a promise about the transition saw them). Read the report either way: it names the
+operations it could not call, and a promise checked without the one mutator that would
+break it is worth much less than the number beside it suggests.
+
+Only the random-sampling tier (`fuzz`) can check a method with a receiver at all — the
+exhaustive/proof tier (`bounded`) refuses any receiver, checked or not.
 
 ## What to do when Ply refuses
 

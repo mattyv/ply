@@ -30,6 +30,17 @@ pub struct Counterexample {
     /// else absent and a `W0541` diagnostic explains why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cargo_test: Option<String>,
+    /// How the value the method was called on reached the state it failed
+    /// in: the constructor call Ply made, then every operation that ran on
+    /// it before the checked call, with the arguments this case drew
+    /// (2026-09-08). Present only for a method with a receiver Ply built --
+    /// `None` for every free function, which has no such history.
+    ///
+    /// A promise about what a call *changed* is broken by a history, not
+    /// only by the failing call's own arguments, so without this the report
+    /// was not showing the input it says it always shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_history: Option<String>,
 }
 
 /// One suggested repair (§8): "Ply proposes, never rewrites" -- a `Fix` is
@@ -352,6 +363,7 @@ mod tests {
             inputs: BTreeMap::new(),
             kani_witness: Some("captured".into()),
             cargo_test: None,
+            receiver_history: None,
         };
         let json = serde_json::to_string(&cex).unwrap();
         assert!(json.contains("kani_witness"));

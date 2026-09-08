@@ -264,7 +264,10 @@ Add, under the section that records the boundary-contract gaps:
 
 The existing line "Not attempted this session … `impl`-method contracts (`&self`,
 `old()`)" is now half-true and should say so: the before-value construct itself is done;
-`&self`/`&mut self` methods remain out.
+~~`&self`/`&mut self` methods remain out~~ — corrected 2026-09-07: `&self` methods have
+been checkable for a while, and a `&mut self` method now is too, with its promise written
+against the value's own readings before and after the call (§5.4a). Only a method that
+consumes `self` by value remains out.
 
 ---
 

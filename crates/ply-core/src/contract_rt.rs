@@ -90,6 +90,34 @@ pub(crate) fn lift_entry_values(body: &Expr) -> (Expr, Vec<EntryValue>) {
 /// consequence. This rewrite happens *before* `old()` is lifted, so
 /// `old(self.a)` reads the receiver's value on entry the same way
 /// `old(param)` does.
+/// Whether `e` reads the value a method was called on -- a bare `self`
+/// anywhere in it, which is what a precondition or promise writes when it
+/// talks about the value rather than only the arguments.
+///
+/// Used to decide *when* a precondition is checked: one that reads the
+/// value can only be checked after the value has been built, while one
+/// naming only arguments is checked first, so a case Ply is going to throw
+/// away costs nothing to build (`fuzz_gen`, 2026-09-08).
+pub(crate) fn mentions_self(e: &Expr) -> bool {
+    use syn::visit::Visit;
+
+    struct Look(bool);
+    impl<'ast> Visit<'ast> for Look {
+        fn visit_expr(&mut self, e: &'ast Expr) {
+            if let Expr::Path(p) = e
+                && p.qself.is_none()
+                && p.path.is_ident("self")
+            {
+                self.0 = true;
+            }
+            syn::visit::visit_expr(self, e);
+        }
+    }
+    let mut look = Look(false);
+    look.visit_expr(e);
+    look.0
+}
+
 pub(crate) fn rewrite_self_to_receiver(body: &Expr) -> Expr {
     use syn::visit_mut::VisitMut;
 

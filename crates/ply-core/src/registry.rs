@@ -624,7 +624,7 @@ impl Code {
                 status: Enforced,
                 severity: Warning,
                 spec_anchor: "§5.2",
-                gloss: "A claim's anchor names a real function -- a method with a receiver, a trait method, or an item inside a generic implementation -- that this version of Ply declines to check; the function exists, Ply simply doesn't attempt this shape yet.",
+                gloss: "A claim's anchor names a real method Ply cannot check yet. Either the method itself is out of reach -- declared on a trait, inside a generic implementation, or taking `self` by value so that calling it consumes the value -- or Ply could not build a value to call it on, or its promise or precondition reads that value in a way that would change it, or asks for a copy of the whole value. The function exists; the specific reason is named in the message.",
             },
             V0508 => RuleEntry {
                 code: self,
