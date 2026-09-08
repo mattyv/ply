@@ -794,16 +794,42 @@ fn walk_anchors(
                         // (adversarial review, 2026-08-27). Ask the same
                         // question `verify` asks, and only report the
                         // refusal when the answer is genuinely no.
-                        let buildable = lib_path.parent().and_then(|src| src.parent()).is_some_and(
-                            |crate_dir| {
-                                ply_core::harness::discover_method_with_receiver(
-                                    crate_dir, fn_path, routes,
-                                )
-                                .is_ok()
-                            },
-                        );
-                        if !buildable {
-                            diagnostics.push(crate::verify::refused_anchor_diag(&node_id, &reason));
+                        let attempt =
+                            lib_path
+                                .parent()
+                                .and_then(|src| src.parent())
+                                .map(|crate_dir| {
+                                    ply_core::harness::discover_method_with_receiver(
+                                        crate_dir, fn_path, routes,
+                                    )
+                                });
+                        match attempt {
+                            Some(Ok(_)) => {}
+                            // A promise that would change the value it
+                            // reads is this scan's *own* finding, and a
+                            // sharper sentence than the resolver's blanket
+                            // one -- shown here for the same reason
+                            // `verify` shows it (2026-09-07): `check` is
+                            // the command people run first, so a refusal
+                            // whose real reason is the promise they just
+                            // wrote must say so here too.
+                            Some(Err(
+                                err @ (ply_core::harness::ReceiverError::PromiseChangesWhatItReads {
+                                    ..
+                                }
+                                | ply_core::harness::ReceiverError::PromiseSnapshotsWholeReceiver {
+                                    ..
+                                }),
+                            )) => {
+                                diagnostics.push(crate::verify::refused_anchor_diag(
+                                    &node_id,
+                                    &err.to_string(),
+                                ));
+                            }
+                            _ => {
+                                diagnostics
+                                    .push(crate::verify::refused_anchor_diag(&node_id, &reason));
+                            }
                         }
                         continue;
                     }
