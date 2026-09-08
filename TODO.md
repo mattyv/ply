@@ -7,6 +7,10 @@
 - [x] After a serial first run, let Cargo materialise or refresh the original
       workspace lock, then accept evidence for reuse only after locked metadata
       confirms that exact resolution and the first-party source walk covers it.
+- [x] For a standalone sampling harness, also require the target package's
+      resolved external dependency identity in the harness lock to match the
+      original lock before recording anything (`1f09f7c`). A pass against one
+      dependency version must never be reused under another.
 - [x] Run the process-global cancellation regression in an isolated test
       process so its synthetic interrupt cannot cancel unrelated unit tests
       running concurrently under libtest or cargo-mutants.

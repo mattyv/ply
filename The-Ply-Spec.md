@@ -2248,7 +2248,11 @@ root package closure; linked member documents resolve their own closures. After 
 run that began with no current lock, the coordinator may let ordinary `cargo metadata`
 materialise or refresh the original workspace lock. It stores the new evidence only if a
 second, locked probe confirms that resolution is current and the source walk covers its
-complete local closure. That refresh never enables workers in the run already in progress.
+complete local closure. When a sampling harness owns a separate workspace and lock, the
+target package's resolved external dependency identity in that lock must also equal the
+identity in the original lock; harness-only dependencies are excluded. A mismatch leaves
+the evidence visible in the current report but unrecorded. That refresh never enables
+workers in the run already in progress.
 Worker source shadows, target directories, and
 witness directories are private; build outputs are never copied into a shadow. Each worker
 compiles only its own generated proof through the shadow manifest while starting from the
