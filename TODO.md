@@ -1,5 +1,15 @@
 # TODO
 
+## Agreed, not yet done — 2026-09-08
+
+- [ ] **The installer should install the skills.** `ply-checkable-code` and
+      `ply-author` are what tell an author how to write code Ply can check,
+      and today they live in the repo where only someone reading the source
+      finds them. Someone who installs Ply gets the tool without the guidance
+      that makes it usable -- and rule 9 of `ply-checkable-code` is now the
+      only place that explains how to write a promise about a method that
+      changes something, which landed this week.
+
 ## Landed: implicit-unit whole-body mutations — `90f1b62` — 2026-09-08
 
 - [x] Treat cargo-mutants' `replace <fn> with ()` description as a
