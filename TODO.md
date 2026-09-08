@@ -1,28 +1,28 @@
 # TODO
 
-## In progress: bounded concurrency for `cargo ply verify`
+## Landed: bounded concurrency for `cargo ply verify` — `8302e95` — 2026-09-08
 
-- [ ] Accept `-j N` and `--jobs N`, reject zero before verification starts,
+- [x] Accept `-j N` and `--jobs N`, reject zero before verification starts,
       and keep one active verification task as the default.
-- [ ] Split bounded verification into coordinator-owned planning/publication
+- [x] Split bounded verification into coordinator-owned planning/publication
       and worker-owned engine execution.
-- [ ] Run only independent, dependency-ready `bounded(k)` claims concurrently
+- [x] Run only independent, dependency-ready `bounded(k)` claims concurrently
       in the first release. Keep shared-harness, state-history, sampling, and
       mutation work serial.
-- [ ] Give each active proof a private source shadow, Cargo target directory,
+- [x] Give each active proof a private source shadow, Cargo target directory,
       and witness directory. Preserve relative path-dependency layout, never
       copy build outputs, and leave build-script closures serial.
-- [ ] Fall back to serial when Cargo.lock is absent or stale, a shared harness
+- [x] Fall back to serial when Cargo.lock is absent or stale, a shared harness
       is registered, or compile-time path and inclusion constructs make source
       relocation observable. Preserve external packages' owning workspace
       configuration and exclude Cargo/Ply-marked nested output directories without
       dropping a source directory that happens to be named `target`.
-- [ ] Compare first-party package and source sets with Cargo's resolved local closure
+- [x] Compare first-party package and source sets with Cargo's resolved local closure
       and library entry points; keep any unrecognised dependency spelling or custom
       library path serial and uncached.
-- [ ] Preserve callee-before-caller evidence, deferred cache decisions,
+- [x] Preserve callee-before-caller evidence, deferred cache decisions,
       deterministic report order, and one final `ply.lock` publication.
-- [ ] Add controlled scheduler tests and real-Kani attribution/isolation
+- [x] Add controlled scheduler tests and real-Kani attribution/isolation
       coverage, then measure `-j 1`, `-j 2`, and `-j 4` before recommending a
       non-default value.
 
