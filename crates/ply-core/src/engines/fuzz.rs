@@ -46,7 +46,7 @@ pub fn run_harness_tests(
     filter: &str,
     timeout_secs: u32,
 ) -> Result<HarnessTestRun> {
-    let mut cmd = Command::new(crate::engines::cargo_program());
+    let mut cmd = Command::new("cargo");
     cmd.arg("test")
         .arg("-p")
         .arg(harness_package)
@@ -106,7 +106,7 @@ pub fn check_harness_builds(
     harness_package: &str,
     timeout_secs: u32,
 ) -> Result<HarnessBuildCheck> {
-    let mut cmd = Command::new(crate::engines::cargo_program());
+    let mut cmd = Command::new("cargo");
     cmd.arg("test")
         .arg("-p")
         .arg(harness_package)

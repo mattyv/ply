@@ -125,7 +125,7 @@ pub fn crate_has_workspace_table(cargo_toml_text: &str) -> bool {
 /// above them does. Mutation testing needs that real shared root so both
 /// the target package and generated harness resolve in one package graph.
 pub fn cargo_workspace_root(crate_dir: &Path) -> Result<PathBuf> {
-    let output = std::process::Command::new(crate::engines::cargo_program())
+    let output = std::process::Command::new("cargo")
         .args(["metadata", "--format-version=1", "--no-deps"])
         .current_dir(crate_dir)
         .output()

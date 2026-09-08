@@ -117,7 +117,7 @@ pub fn unstable_flags(enable_stubbing: bool) -> Vec<&'static str> {
 /// fingerprint input, so getting it from the wrong place lets stale evidence
 /// survive a real change.
 pub fn version(crate_dir: &std::path::Path) -> Option<String> {
-    let out = Command::new(crate::engines::cargo_program())
+    let out = Command::new("cargo")
         .args(["kani", "--version"])
         .current_dir(crate_dir)
         .output()
@@ -154,7 +154,7 @@ struct InvocationOutput {
 /// promise-content probes beside it would rebuild the crate for each.
 fn invoke(cfg: &KaniRunConfig) -> Result<InvocationOutput> {
     let timeout_arg = format!("{}s", cfg.engine_timeout_secs);
-    let mut cmd = Command::new(crate::engines::cargo_program());
+    let mut cmd = Command::new("cargo");
     cmd.current_dir(&cfg.crate_dir).arg("kani");
     cmd.args(unstable_flags(cfg.enable_stubbing));
     let output = cmd
@@ -504,7 +504,7 @@ pub fn run_playback(
     exact_test_name: &str,
     timeout: Duration,
 ) -> Result<super::TimedOutput> {
-    let mut cmd = Command::new(crate::engines::cargo_program());
+    let mut cmd = Command::new("cargo");
     cmd.arg("kani")
         .arg("playback")
         .args([
