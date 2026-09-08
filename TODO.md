@@ -155,8 +155,9 @@ invariant can see, and the bug-planting tier scored them without change.
       against the built value just before the checked call -- and it only
       became writable once a precondition could read the value at all. It is
       refused by the same walk, with the same sentence.
-- [x] **Fixed after adversarial review of the above (2026-09-08).** Three
-      real defects in the history, all reproduced before being fixed:
+- [x] **Fixed after adversarial review of the above (2026-09-08), merged as
+      PR #81 (`7820a4b`).** Three real defects in the history, all reproduced
+      before being fixed:
       **(1) the printed recipe was not the recipe that ran.** Each argument
       was escaped once going into the history and once more going onto the
       marker line, while the reader unescapes once -- so a call really made
@@ -176,6 +177,27 @@ invariant can see, and the bug-planting tier scored them without change.
       terminal line did not say the failing call is not among those listed,
       so beside `failing input: tokens = 0` a reader could take the last
       entry for it. Both corrected, both pinned exact-string.
+
+- [x] **Two more defects, found by CI rather than by me, after the PR was
+      open.** The worse one: rendering an argument for the history needed
+      `Debug`, which a user's own struct need not derive, so
+      `tests/fixtures/sharedtypeparam` came back as a tool error -- the
+      generated harness would not build and *nothing was checked*. A
+      diagnostic nicety stopped the checking, which is the exact failure mode
+      this project exists to avoid. The guard was fail-open ("does this
+      obviously contain a user type?"); it is now an allow-list of types
+      Rust's own impls cover, and anything unrecognised is named rather than
+      shown. The whole-value marker path already had this rule and said so in
+      a comment -- it was written without reading it. The other: four
+      committed self-renders read the counterexample structure from source,
+      which gained a field, so all four now say `3 of 4 shown`.
+
+      **The pattern, worth keeping:** three CI catches on one branch, all
+      mine, none caught locally until the runs were widened. Each time the
+      tests run were the ones near what was touched, not the ones that could
+      break. The whole end-to-end suite takes about twenty minutes locally
+      and would have caught the compile failure; the render goldens need a
+      release build that is not in the fast loop.
 
 - [ ] **KNOWN GAP: no history when the checked call panics.** The marker
       carrying it is written after the call returns, so a call that never
