@@ -386,3 +386,77 @@ fn a_broken_transition_promise_shows_how_the_value_reached_the_failing_state() {
          recipe: {history}"
     );
 }
+
+/// The same refusal, with the offending clause moved into `ply.yaml`
+/// (2026-09-08, external review of `7820a4b`).
+///
+/// The check ran while Ply read the method's own attributes. A document's
+/// clauses are merged in afterwards, by a different caller, and nothing
+/// re-checked them -- so writing `old(self.take_reading())` in the document
+/// instead of the source walked straight past the refusal and produced the
+/// clean-result-over-a-real-bug the refusal exists to stop. The bug is
+/// planted here as well, so what this pins is a refusal of a promise that
+/// was about to certify a broken bucket.
+#[test]
+fn a_promise_written_in_the_document_is_refused_the_same_way_as_one_in_the_source() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("tokenbucket");
+
+    let src = fixture.read_lib_rs();
+    let rigged = src
+        .replace(
+            "    pub fn capacity(&self) -> u32 {",
+            "    pub fn take_reading(&mut self) -> u32 {\n        let n = self.available;\n        self.available = 0;\n        n\n    }\n\n    pub fn capacity(&self) -> u32 {",
+        )
+        // `refill` keeps only promises that say nothing, so the document's
+        // clause is the whole contract and cannot be refused by proxy.
+        .replace(
+            "    #[ply::ensures(|result| self.available()\n        == old(self.available()).saturating_add(tokens).min(old(self.capacity())))]\n    #[ply::ensures(|result| self.capacity() == old(self.capacity()))]\n    pub fn refill",
+            "    pub fn refill",
+        )
+        .replace(
+            "        let room = self.capacity - self.available;",
+            "        if tokens == 0 {\n            self.available = self.capacity;\n            return;\n        }\n        let room = self.capacity - self.available;",
+        );
+    assert_ne!(src, rigged, "the fixture must have been rewritten");
+    fixture.write_lib_rs(&rigged);
+
+    let yaml_path = fixture.path().join("ply.yaml");
+    let yaml = std::fs::read_to_string(&yaml_path).unwrap();
+    let with_clause = yaml.replace(
+        "      TokenBucket::refill:\n        checks: [fuzz(256)]",
+        "      TokenBucket::refill:\n        checks: [fuzz(256)]\n        ensures:\n          - \"|result| self.available() == old(self.take_reading()).saturating_add(tokens).min(old(self.capacity()))\"",
+    );
+    assert_ne!(
+        yaml, with_clause,
+        "the document must have gained the clause"
+    );
+    std::fs::write(&yaml_path, &with_clause).unwrap();
+
+    let run = run_verify(&cargo_ply, fixture.path(), 300);
+    let refusal = run.json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| {
+            d["node_id"] == "tokenbucket::TokenBucket::refill"
+                && d["title"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("calls `take_reading`"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "a promise that changes what it reads has to be refused wherever it was \
+                 written -- letting the document say what the source may not is the same \
+                 false clean with an extra step: {}",
+                run.json
+            )
+        });
+    assert!(
+        refusal["title"]
+            .as_str()
+            .unwrap()
+            .contains("changes the `TokenBucket` it is called on"),
+        "and it has to give the same reason: {refusal}"
+    );
+}

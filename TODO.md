@@ -199,6 +199,49 @@ invariant can see, and the bug-planting tier scored them without change.
       and would have caught the compile failure; the render goldens need a
       release build that is not in the fast loop.
 
+## Landed: three findings from external review of `7820a4b` — 2026-09-08
+
+All three were source-review findings the reviewer could not run; each was
+reproduced here before being fixed, and two of them were bypasses of the
+refusal shipped the day before.
+
+- [x] **A promise written in `ply.yaml` bypassed the refusal entirely.** The
+      check ran while Ply read the method's own attributes; a document's
+      clauses are merged in afterwards, by a different caller, and nothing
+      re-checked them. So moving `old(self.take_reading())` out of the source
+      and into the document walked straight past it. Reproduced end to end
+      with the bug planted as well as the clause moved, so what the new test
+      pins is a refusal of a promise that was about to certify a broken
+      bucket. There is now **one** entry point for both callers -- two copies
+      of the walk is how the second caller came to be missing -- and it is
+      called after the receiver is attached, not before, which cost one round
+      of silently checking nothing.
+- [x] **One pair of brackets also bypassed it.** `(self).take_reading()`
+      runs exactly what the bare spelling runs, and the check recognised only
+      a bare `self` node. Now unwrapped, including the invisible grouping a
+      macro expansion introduces. Proved non-vacuous by reverting the
+      unwrapping and watching both new tests go red.
+- [x] **Mutation testing skipped every helper in its own file.**
+      `cargo mutants` names the function owning a mutant by its path *within
+      its own file*, because the rest is carried by the file name printed
+      beside it -- so a helper at the top of `src/maths.rs` is
+      `doubled_then_capped`, while its inline-module twin is
+      `maths::doubled_then_capped`. Ply named both the second way. Confirmed
+      against `cargo mutants --list` on a crate holding one of each shape,
+      before writing any fix. The walk now records where each reached body
+      lives and the selector is spelled the way cargo-mutants spells it.
+      New fixture `tests/fixtures/filehelperspec` -- `helperspec` with the
+      helper moved to its own file. Measured before the fix: **2 survivors,
+      both in the two-line wrapper, with the report naming the helper as
+      covered while nothing was planted in it.** After: 7, spanning the file
+      where every line of logic lives.
+
+      Worth keeping: of the two new end-to-end tests, only the second
+      discriminates. "Not `spec-strong`" passed on the unfixed selector too,
+      because two survivors in the wrapper already withhold strength. The
+      test that goes red without the fix is the one asserting the deliberate
+      bugs land in the helper's file at all.
+
 - [ ] **KNOWN GAP: no history when the checked call panics.** The marker
       carrying it is written after the call returns, so a call that never
       returns writes none. Honest (absent, never fabricated, and §8 now says

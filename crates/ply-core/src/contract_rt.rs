@@ -1708,6 +1708,7 @@ mod numeric_classification_proof {
                 operations: Vec::new(),
                 excluded_operations: Vec::new(),
                 other_constructors: Vec::new(),
+                mutating_methods: Vec::new(),
                 max_sequence_len: 0,
                 route: None,
             })),
