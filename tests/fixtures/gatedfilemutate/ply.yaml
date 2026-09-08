@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  gatedfilemutate:
+    anchor: ply_fixture_gatedfilemutate
+    fns:
+      pipeline::count_row:
+        checks: [test, mutate]

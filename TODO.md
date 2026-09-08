@@ -1,5 +1,14 @@
 # TODO
 
+## Landed: conservative widening keeps mutation ownership — `4f0d414` — 2026-09-08
+
+- [x] Continue the positive reach walk after a crate-wide fingerprint gate is
+      known. Widening what the cache hashes must not erase the claimed
+      function's source file: cargo-mutants names a top-level function in
+      `src/pipeline.rs` as `count_row`, not `pipeline::count_row`, and without
+      that file identity Ply selected no viable mutation. Pin both the reach
+      result and the real cargo-mutants outcome.
+
 ## Agreed, not yet done — 2026-09-08
 
 - [x] **`cargo ply skills` writes the guides into a project.** `cargo
