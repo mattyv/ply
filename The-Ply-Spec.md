@@ -2685,6 +2685,7 @@ One Diagnostic schema for all engines:
     "inputs": {"inst": "Instrument { id: 0, tick: -1 }"},
     "kani_witness": "target/ply/playback/pricing_quote_01.json",
     "cargo_test": "crates/pricing/src/ply_generated_cex.rs",
+    "receiver_history": "TokenBucket::new(7), then TokenBucket::try_take(1)",
     "trace": [ {"span": "…", "detail": "bid = tick * 2 = -2"} ]
   },
   "assumptions": [{"kind": "assumed_contract", "fn": "parser::parse", "verdict": "fuzzed(256)"}],
@@ -2716,6 +2717,15 @@ else `W0541` with a `reason` of `inputs_unrenderable` or `expression_unrenderabl
 path is in-crate (D2's generated-module mechanism), not a `tests/` integration file — M3
 implements this as `<crate>/src/ply_generated_cex.rs`, one file per crate, declared via a
 `mod` line the same way the proof harness is (docs/m3-slice-findings.md).
+
+`receiver_history` (2026-09-08) is present exactly when the checked function is a method
+whose receiver Ply built: the constructor call it made, then every operation that ran on
+that value before the checked call, each with the arguments this case drew, in order. For
+a promise about what a call *changed* (§5.4a), the failing call's own arguments are only
+half the input — the other half is how the value reached the state it failed in — so
+without this the envelope's own rule that a violation always carries a witness was
+satisfied in form and not in substance. Absent for every free function, which has no such
+history; never empty and never fabricated.
 
 **A non-result is still feedback.** `timeout`, `unsupported`, and `engine-missing` carry
 no counterexample, but the consumer is usually an agent mid-repair, and §1's second

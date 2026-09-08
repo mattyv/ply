@@ -1245,6 +1245,37 @@ fn combined_strategy_expr_for_with_override(
     })
 }
 
+/// The text one call contributes to a receiver's history: the call as it was
+/// actually made, with the argument values this case drew, ready to push
+/// into `__ply_history` (2026-09-08).
+///
+/// `prefix` is the operation's own binding prefix (empty for the checked
+/// method and the constructor, `op_prefix(i)` for a pooled operation), so
+/// the names this reads are the same ones the call itself reads.
+///
+/// Rendered *before* the call it describes, always: a call can move its own
+/// argument, and a history built afterwards would be reading a value that
+/// no longer exists. That is the same ordering constraint
+/// `build_user_value_stmt` already documents for the parameter marker, for
+/// the same reason.
+fn history_push_stmt(call: &str, params: &[Param], prefix: &str) -> String {
+    let rendered: Vec<String> = params
+        .iter()
+        .map(|p| marker_display_expr(&p.ty, &format!("{prefix}{}", p.name)))
+        .collect();
+    let fmt = vec!["{}"; rendered.len()].join(", ");
+    if rendered.is_empty() {
+        format!(
+            "if !__ply_history.is_empty() {{ __ply_history.push_str(\", then \"); }}              __ply_history.push_str(\"{call}()\");\n            "
+        )
+    } else {
+        format!(
+            "if !__ply_history.is_empty() {{ __ply_history.push_str(\", then \"); }}              __ply_history.push_str(&format!(\"{call}({fmt})\", {args}));\n            ",
+            args = rendered.join(", ")
+        )
+    }
+}
+
 fn call_args_for(params: &[Param]) -> Vec<String> {
     params
         .iter()
@@ -1523,6 +1554,16 @@ fn receiver_preamble(
              filter\")); }}\n            "
         ));
     }
+    // How this value came to be (2026-09-08). A promise about what a call
+    // *changed* is broken by a history, not only by the call's own
+    // arguments -- so a report that shows the arguments and nothing else is
+    // not showing the input, and "Ply never reports a broken promise it
+    // cannot show you the input for" was untrue for exactly this shape. The
+    // constructor call and every operation that runs on the value are
+    // recorded here as they happen, and printed beside the failing
+    // arguments when the promise breaks.
+    body.push_str("let mut __ply_history = String::new();\n            ");
+    body.push_str(&history_push_stmt(&ctor_call, &plan.ctor_params, ""));
     let needs_mut = plan.operations.iter().any(|op| op.takes_mut_self);
     let mut_kw = if needs_mut { "mut " } else { "" };
     // A fallible constructor (defect 1, 2026-08-31, docs/reach-measurement-2.md):
@@ -1605,11 +1646,22 @@ fn receiver_preamble(
         // sequence loop never had, and the whole reason an operation taking
         // one was left out of the pool instead of called.
         let bind = &op_plans[i].1;
-        let call_stmt = format!("{bind}let _ = {call}({full_args});");
+        let history = if i == 0 {
+            history_push_stmt(&call, &op.params, "")
+        } else {
+            history_push_stmt(&call, &op.params, &op_prefix(i))
+        };
+        let call_stmt = format!("{bind}{history}let _ = {call}({full_args});");
         let arm_body = if i == 0 {
             match &cf.requires {
                 Some((expr, _)) => {
-                    let cond = expr.to_token_stream().to_string();
+                    // The receiver binding exists by this point (it is built
+                    // at the top of this preamble), so a precondition that
+                    // reads the value gates these repeats too rather than
+                    // failing to compile (2026-09-08).
+                    let cond = crate::contract_rt::rewrite_self_to_receiver(expr)
+                        .to_token_stream()
+                        .to_string();
                     format!("if {cond} {{ {call_stmt} }}")
                 }
                 None => call_stmt,
@@ -2584,15 +2636,40 @@ pub fn generate_fuzz_test_with_examples(
     let label = &cf.path;
     let ident = cf.ident();
 
-    let requires_check = match &cf.requires {
+    // A precondition that reads the value the method is called on has to be
+    // checked *after* that value exists (2026-09-08). Before this, the
+    // rejection filter was written out above the line that builds the
+    // receiver, so a precondition saying `self.available() > 0` -- the
+    // ordinary way to say "only check this when there is something in the
+    // bucket" -- named a binding that did not exist yet and the whole check
+    // died as a compiler error rather than doing its job.
+    //
+    // A precondition that reads only the method's arguments keeps gating
+    // early, exactly as before: rejecting a case before building anything
+    // for it is free, and rejecting it afterwards is not. So this is two
+    // slots rather than one moved slot, and which one is used is decided by
+    // whether the precondition mentions the value at all.
+    let (requires_check, requires_check_after_receiver) = match &cf.requires {
         Some((expr, _)) => {
-            let cond = expr.to_token_stream().to_string();
-            format!(
+            let reads_the_receiver =
+                cf.receiver.is_some() && crate::contract_rt::mentions_self(expr);
+            let rendered = if reads_the_receiver {
+                crate::contract_rt::rewrite_self_to_receiver(expr)
+            } else {
+                expr.clone()
+            };
+            let cond = rendered.to_token_stream().to_string();
+            let filter = format!(
                 "if !({cond}) {{ __ply_rejected.set(__ply_rejected.get() + 1); \
                  return Err(proptest::test_runner::TestCaseError::reject(\"requires filter\")); }}\n            "
-            )
+            );
+            if reads_the_receiver {
+                (String::new(), filter)
+            } else {
+                (filter, String::new())
+            }
         }
-        None => String::new(),
+        None => (String::new(), String::new()),
     };
 
     // A receiver method's postcondition is spliced into this generated test
@@ -2732,6 +2809,23 @@ pub fn generate_fuzz_test_with_examples(
             name = p.name
         ));
     }
+    // The value's own history rides along as one more field on the same
+    // marker line (2026-09-08). It is a `String` Ply itself built, so it
+    // goes through the identical escaping every generated `String` field
+    // uses -- the wire format reads `;` and `=` as structure, and a call
+    // rendered with a `String` argument can contain both. `engines::fuzz`
+    // unescapes every field the same way, so nothing new is needed to read
+    // it back. The name is not a legal thing for a parameter to be called
+    // in practice, so it cannot collide with one.
+    if cf.receiver.is_some() {
+        if !cf.params.is_empty() {
+            marker_build.push_str("            __ply_marker.push(';');\n");
+        }
+        marker_build.push_str(&format!(
+            "            __ply_marker.push_str(&format!(\"__ply_history={{}}\", {escaped}));\n",
+            escaped = marker_display_expr(&RustType::String, "__ply_history")
+        ));
+    }
 
     // Seeded generation's own runtime support and the honest-provenance
     // marker it reports (docs/reach-measurement-2.md): both empty strings
@@ -2798,7 +2892,7 @@ pub fn generate_fuzz_test_with_examples(
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {strategy};\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{pattern}| {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{params_preamble_text}{route_capture}{requires_check}{receiver_preamble_text}{entry_lets}{marker_precompute}let __ply_call_result = {fname}({args});\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{params_preamble_text}{route_capture}{requires_check}{receiver_preamble_text}{requires_check_after_receiver}{entry_lets}{marker_precompute}let __ply_call_result = {fname}({args});\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let result = &__ply_call_result;\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {check_expr}));\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20match __ply_ok {{\n\
@@ -5095,6 +5189,79 @@ impl Gauge {
         );
     }
 
+    /// A precondition that names the value the method is called on must
+    /// compile (2026-09-08). It did not: the rejection filter was written
+    /// out *above* the line that builds the value, so the generated test
+    /// referred to a binding that did not exist yet and the whole check
+    /// died with a compiler error rather than doing its job.
+    ///
+    /// This is exactly the shape a caller writes to say "only check this
+    /// when the bucket has something in it".
+    #[test]
+    fn a_precondition_that_reads_the_value_is_checked_after_the_value_exists() {
+        let cf = discover_receiver(
+            r#"
+pub struct Gauge { n: u32 }
+impl Gauge {
+    pub fn new() -> Self { Gauge { n: 0 } }
+    pub fn value(&self) -> u32 { self.n }
+    #[ply::requires(self.value() > 0)]
+    #[ply::ensures(|result| *result <= old(self.value()))]
+    pub fn drain(&mut self, k: u32) -> u32 { self.n = self.n.saturating_sub(k); self.n }
+}
+"#,
+            "m::Gauge::drain",
+        );
+        let body = generate_fuzz_test(&cf, 32, &derive_seed("drain", "")).unwrap();
+        assert!(
+            !body.contains("if !(self."),
+            "a bare `self` cannot appear in the generated test -- it sits outside the `impl` \
+             block the promise was written in, so it does not compile:\n{body}"
+        );
+        let ctor_pos = body
+            .find("__ply_receiver = Gauge::new")
+            .expect("the receiver must be built");
+        let filter_pos = body
+            .find("requires filter")
+            .expect("the precondition must be rendered as a rejection filter");
+        assert!(
+            ctor_pos < filter_pos,
+            "a precondition that reads the value has to be checked *after* the value is built, \
+             or it names a binding that does not exist yet:\n{body}"
+        );
+    }
+
+    /// The fix must not move a precondition that reads only the arguments.
+    /// Those still gate before the value is built, so a case Ply is going to
+    /// throw away costs nothing to throw away.
+    #[test]
+    fn a_precondition_that_reads_only_arguments_still_gates_before_the_value_is_built() {
+        let cf = discover_receiver(
+            r#"
+pub struct Gauge { n: u32 }
+impl Gauge {
+    pub fn new() -> Self { Gauge { n: 0 } }
+    #[ply::requires(k < 100)]
+    #[ply::ensures(|result| *result <= 100)]
+    pub fn drain(&mut self, k: u32) -> u32 { self.n = self.n.saturating_sub(k); self.n }
+}
+"#,
+            "m::Gauge::drain",
+        );
+        let body = generate_fuzz_test(&cf, 32, &derive_seed("drain", "")).unwrap();
+        let ctor_pos = body
+            .find("__ply_receiver = Gauge::new")
+            .expect("the receiver must be built");
+        let filter_pos = body
+            .find("\"requires filter\"")
+            .expect("the precondition must be rendered as a rejection filter");
+        assert!(
+            filter_pos < ctor_pos,
+            "a precondition naming only arguments must still be checked before the value is \
+             built -- rejecting early is free, rejecting late is not:\n{body}"
+        );
+    }
+
     /// docs/review-caveats.md N2, second half: the checked method's own
     /// `#[ply::requires]` must gate *every* call the sequence makes to it,
     /// not only the final one -- operation zero (a repeat of the checked
@@ -5120,11 +5287,31 @@ impl Thing {
         // match on the whole body, so this fails if the guard is missing
         // even though the *final* call's own filter (elsewhere in the body)
         // still contains the same text.
+        let arm = body
+            .split("0 => {")
+            .nth(1)
+            .and_then(|rest| rest.split("}\n").next())
+            .unwrap_or_else(|| panic!("arm zero must exist:\n{body}"));
         assert!(
-            body.contains("0 => { if k <= 10u32 { let _ = Thing::set(&__ply_receiver, k); } }")
-                || body.contains("0 => { if k <= 10 { let _ = Thing::set(&__ply_receiver, k); } }"),
+            arm.trim_start().starts_with("if k <= 10"),
             "the sequence's own repeat of the checked method must be gated by its own \
              precondition, never called out of contract:\n{body}"
+        );
+        assert!(
+            arm.contains("let _ = Thing::set(&__ply_receiver, k);"),
+            "and the guarded thing must be the call itself:\n{body}"
+        );
+        // The history record lives inside the guard too, so a call that was
+        // never made is never reported as part of how the value got there
+        // (2026-09-08).
+        let hist = arm
+            .find("__ply_history.push_str")
+            .unwrap_or_else(|| panic!("the arm must record the call it makes:\n{body}"));
+        let call = arm.find("let _ = Thing::set").expect("checked just above");
+        assert!(
+            hist < call,
+            "the record has to be written before the call, which may move its own \
+             arguments:\n{body}"
         );
     }
 

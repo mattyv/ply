@@ -111,13 +111,20 @@ invariant can see, and the bug-planting tier scored them without change.
       specs are "not in this build". All four corrected; the `&mut`
       *parameter* half of §5.4a stands and is marked as standing.
 
-- [ ] **NOT DONE, and the honesty gap that has to close next.** When a
-      promise about a transition fails, the report names the failing call's
-      arguments and says nothing about the sequence of operations that put
-      the value into the state where it fails. "Ply never reports a broken
-      promise it cannot show you the input for" is currently untrue for a
-      transition. The constructor call and the sequence are both in scope in
-      the generated test and simply not printed.
+- [x] **CLOSED: the report now shows how the value reached the failing
+      state.** A promise about what a call changed is broken by a *history*,
+      not only by the failing call's own arguments, so the report was
+      satisfying "Ply never reports a broken promise it cannot show you the
+      input for" in form and not in substance. The constructor call and every
+      operation that ran before the checked one are now recorded as they
+      happen and printed beside the arguments: `TokenBucket::new(7), then
+      TokenBucket::try_take(1)`. Written into the record *before* each call,
+      because a call can move its own argument and a history built afterwards
+      would read a value that no longer exists. New envelope field
+      `counterexample.receiver_history`, documented in §8; absent for a free
+      function, which has no such history. Exact-string test on the terminal
+      sentence, a guard that a free function grows no such line, and an
+      end-to-end test over the real planted bug.
 - [x] **Both shapes are now refused by name.** A promise that takes a
       reading through one of the type's own `&mut self` methods is refused
       naming the method and saying why -- taking the reading would change the
@@ -128,16 +135,41 @@ invariant can see, and the bug-planting tier scored them without change.
       that a read-only observer stays checkable (a rule that refused that
       would delete the feature) and one that the after-half of a promise is
       covered as well as the `old(...)` half.
-- [ ] **NOT DONE: a precondition that names the state does not compile,**
-      because the filter is emitted before the receiver exists. Once fixed it
-      behaves correctly as a rejection filter and the existing high-rejection
-      warning fires honestly.
-- [ ] **NOT DONE: the guidance still says this cannot be done.**
-      `ply-checkable-code` rule 9, §5.4a's honest-limit paragraph, §5.4b/c's
-      receiver text, `registry.rs`'s `V0507` gloss, `harness.rs`'s module
-      comment, `docs/old-and-misleading-advice.md`. Nobody who followed the
-      old advice is stranded -- `state:` and `&self` claims are unchanged --
-      but the advice is now wrong and says "cannot", not "should not".
+- [x] **CLOSED: a precondition that names the state compiles and filters.**
+      The rejection filter was written out above the line that builds the
+      value, so `#[ply::requires(self.available() > 0)]` -- the ordinary way
+      to say "only check this when there is something in the bucket" -- named
+      a binding that did not exist yet. It is now checked after the value is
+      built, and rewritten to the receiver binding the same way a promise
+      already was. A precondition naming only arguments still gates *before*
+      anything is built, so rejecting a case Ply was going to throw away
+      stays free -- two slots, not one moved slot, pinned by its own test.
+      Confirmed by running the tool, not by reading generated text: the
+      gated fixture comes back checked, and an impossible precondition comes
+      back `unclaimed` with 0 cases and `W0503` naming the precondition as
+      what threw every input away -- which is the high-rejection warning
+      firing honestly, exactly as predicted here.
+- [x] **And the door that opened with it, closed in the same change.** A
+      precondition that reads the value through one of the type's own
+      `&mut self` methods is the same hazard as one in a promise -- it runs
+      against the built value just before the checked call -- and it only
+      became writable once a precondition could read the value at all. It is
+      refused by the same walk, with the same sentence.
+- [x] **CLOSED: the guidance no longer says this cannot be done.** Rule 9 of
+      `ply-checkable-code` now opens by saying a method that changes the
+      object is checkable, shows the shape of such a promise, and presents
+      `state:`/`holds:` as complementary rather than as the replacement it
+      used to be billed as -- a whole-value rule catches an invariant broken
+      by any sequence; a method promise catches a bug that leaves every
+      invariant true. It also names the two refused promise shapes so a
+      reader does not walk into them. `V0507`'s gloss is narrowed to what
+      still fires it (verified against the actual emitting sites, not the
+      old text). Two stale doc comments left in `harness.rs` were found and
+      fixed. `docs/old-and-misleading-advice.md` marks the old line
+      superseded in that document's own convention rather than deleting it.
+      §5.4a/b/c were re-read and are accurate as they stand.
+      `docs/component-proof-design.md` still quotes the old rule; left as
+      the dated proposal document it is, like every other `docs/review-*.md`.
 - [x] **CLOSED: the snapshot that silently mutates.** This was the live
       false clean the review found in the shipped binary -- a `&mut self`
       observer inside `old(...)` (a `get` that touches recency, a

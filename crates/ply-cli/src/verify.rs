@@ -5627,6 +5627,10 @@ fn run_bounded_check(
                         generated.proof_fn_path
                     )),
                     cargo_test: Some(test_file_display),
+                    // The exhaustive tier refuses any receiver (§5.4b), so
+                    // a counterexample from it never has a value-history to
+                    // report.
+                    receiver_history: None,
                 }),
                 fixes: vec![],
                 assumptions: vec![],
@@ -7063,6 +7067,7 @@ fn render_fuzz_violation(
                             harness_fuzz_test_name(cf)
                         )),
                         cargo_test: Some(test_file_display),
+                        receiver_history: fields.get("__ply_history").cloned(),
                     }),
                     fixes: vec![],
                     assumptions: vec![],
@@ -7116,6 +7121,7 @@ fn render_fuzz_violation(
                         inputs,
                         kani_witness: None,
                         cargo_test: None,
+                        receiver_history: fields.get("__ply_history").cloned(),
                     }),
                     fixes: vec![],
                     assumptions: vec![],

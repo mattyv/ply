@@ -189,3 +189,163 @@ fn a_promise_that_reads_through_a_mutating_method_is_refused_not_reported_clean(
         run.json
     );
 }
+
+/// A precondition that reads the value the method is called on has to work
+/// in a real run, not merely appear in the generated text (2026-09-08).
+///
+/// It did not: the filter was written out above the line that builds the
+/// value, so the generated check named something that did not exist yet and
+/// died as a compiler error. A test that only inspected the generated source
+/// would not have caught that, which is why this one runs the tool.
+#[test]
+fn a_precondition_that_reads_the_bucket_is_checked_rather_than_failing_to_compile() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("tokenbucket");
+
+    let src = fixture.read_lib_rs();
+    // "only check a take when there is something in the bucket" -- the
+    // ordinary thing a caller writes, and the shape that used to be
+    // unwritable.
+    let gated = src.replace(
+        "    #[ply::ensures(|result| *result == (old(self.available()) >= tokens))]",
+        "    #[ply::requires(self.available() > 0)]\n    #[ply::ensures(|result| *result == (old(self.available()) >= tokens))]",
+    );
+    assert_ne!(src, gated, "the precondition must have been added");
+    fixture.write_lib_rs(&gated);
+
+    let run = run_verify(&cargo_ply, fixture.path(), 300);
+    let node = run.json["root"]["children"][0]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == "TokenBucket::try_take")
+        .unwrap_or_else(|| panic!("`try_take` must still be in the report: {}", run.json));
+
+    assert_eq!(
+        node["verdict"], "fuzzed(256)",
+        "a precondition that reads the bucket must leave the method checked -- a refusal or a \
+         build failure here is the defect this closes: {}",
+        run.json
+    );
+}
+
+/// The honest other half: the precondition must actually *reject* cases,
+/// rather than being quietly dropped on the floor. A filter nobody applies
+/// would pass the test above while doing nothing.
+///
+/// A precondition no case can satisfy has to end the run with Ply saying so,
+/// not with evidence it did not earn.
+#[test]
+fn a_precondition_no_case_can_satisfy_is_reported_rather_than_earning_evidence() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("tokenbucket");
+
+    let src = fixture.read_lib_rs();
+    // A bucket never holds more than its capacity, so this is false for
+    // every value the constructor can build.
+    let impossible = src.replace(
+        "    #[ply::ensures(|result| *result == (old(self.available()) >= tokens))]",
+        "    #[ply::requires(self.available() > self.capacity())]\n    #[ply::ensures(|result| *result == (old(self.available()) >= tokens))]",
+    );
+    assert_ne!(src, impossible, "the precondition must have been added");
+    fixture.write_lib_rs(&impossible);
+
+    let run = run_verify(&cargo_ply, fixture.path(), 300);
+    let node = run.json["root"]["children"][0]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == "TokenBucket::try_take")
+        .unwrap_or_else(|| panic!("`try_take` must still be in the report: {}", run.json));
+
+    assert_eq!(
+        node["verdict"], "unclaimed",
+        "no case reached `try_take` at all, so reporting 256 cases' worth of evidence would be \
+         a false clean -- the filter has to be doing something: {}",
+        run.json
+    );
+    assert_eq!(
+        node["evidence"]["cases"], 0,
+        "and the recorded case count has to be the real one: {}",
+        run.json
+    );
+    let said_so = run.json["diagnostics"].as_array().unwrap().iter().any(|d| {
+        d["node_id"] == "tokenbucket::TokenBucket::try_take"
+            && d["title"].as_str().is_some_and(|t| {
+                t.contains("thrown away by the function's own `#[ply::requires]` precondition")
+                    && t.contains("no fuzz evidence at all")
+            })
+    });
+    assert!(
+        said_so,
+        "and Ply has to say why the run came back with nothing, naming the precondition as what \
+         threw every input away -- a weaker verdict with no explanation leaves the reader to \
+         guess: {}",
+        run.json
+    );
+}
+
+/// The honesty gap this closes (2026-09-08): "Ply never reports a broken
+/// promise it cannot show you the input for" was untrue for a method that
+/// changes the value it is called on.
+///
+/// The report named the failing call's arguments and said nothing about how
+/// the value got into the state where the call broke its promise -- which,
+/// for this kind of promise, is most of the input. The constructor call and
+/// the sequence of operations were both right there in the generated test
+/// and simply never printed.
+#[test]
+fn a_broken_transition_promise_shows_how_the_value_reached_the_failing_state() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("tokenbucket");
+
+    let src = fixture.read_lib_rs();
+    let broken = src.replace(
+        "        let room = self.capacity - self.available;",
+        "        if tokens == 0 {\n            self.available = self.capacity;\n            return;\n        }\n        let room = self.capacity - self.available;",
+    );
+    assert_ne!(src, broken, "the refill body must have been rewritten");
+    fixture.write_lib_rs(&broken);
+
+    let run = run_verify(&cargo_ply, fixture.path(), 300);
+    let diag = run.json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| {
+            d["node_id"] == "tokenbucket::TokenBucket::refill" && d["counterexample"].is_object()
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the broken refill must be reported with a counterexample: {}",
+                run.json
+            )
+        });
+
+    let history = diag["counterexample"]["receiver_history"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!(
+                "a promise about what a call changed is broken by a *history*, not only by the \
+                 call's own arguments -- without it the report cannot show the input it says it \
+                 always shows: {diag}"
+            )
+        });
+    assert!(
+        history.starts_with("TokenBucket::new("),
+        "the history has to start where the value did -- the constructor call Ply made, with \
+         the arguments it made it with: {history}"
+    );
+    assert!(
+        history.contains(", then TokenBucket::"),
+        "and then name, in order, the calls that ran on it before the checked one -- a history \
+         of just the constructor cannot explain a state no fresh value has: {history}"
+    );
+    // The arguments have to be the ones this case actually drew. A history
+    // that named the calls but not their arguments would be a shape, not an
+    // input, and the whole point is that it is an input.
+    assert!(
+        history.chars().any(|c| c.is_ascii_digit()),
+        "and carry the argument values the calls were made with: {history}"
+    );
+}

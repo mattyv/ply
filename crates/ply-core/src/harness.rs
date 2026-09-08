@@ -2445,12 +2445,14 @@ pub enum ReceiverError {
     /// already names the real reason in every one of those cases; this
     /// variant only ever means "try the original message".
     MethodNotFound,
-    /// The method exists but takes `&mut self` (or owned `self`) rather than
-    /// `&self` -- unchanged from before this task: Ply still has no way to
-    /// state what such a call is supposed to change about the receiver, so
-    /// building one would not be enough on its own (`callgraph`'s own
-    /// `&mut self` reason already says this; this variant exists so the
-    /// caller can fall back to it rather than silently doing nothing).
+    /// The method takes owned `self` rather than `&self`/`&mut self` -- it
+    /// consumes the value it was called on and hands back a new one, which
+    /// is a second codegen shape Ply does not generate yet (retracted
+    /// 2026-09-07: a `&mut self` target no longer reaches this variant at
+    /// all -- see `target_takes_mut_self` above, which admits it directly).
+    /// `callgraph`'s own by-value-receiver reason already says this; this
+    /// variant exists so the caller can fall back to it rather than
+    /// silently doing nothing.
     MutableOrOwnedReceiver,
     /// This scan's own module-path convention (`module::Type::method`, one
     /// segment at most) does not reach this claim's path -- named rather
@@ -3046,7 +3048,9 @@ struct FileReceiverScan {
 }
 
 /// Scans every `impl {type_name} { .. }` block in `file` for: the checked
-/// method itself (must exist, must take `&self`), a constructor candidate
+/// method itself (must exist, must take `&self` or `&mut self` -- owned
+/// `self` is still refused, see `ReceiverError::MutableOrOwnedReceiver`), a
+/// constructor candidate
 /// (a receiverless associated function returning bare `Self`), and every
 /// other `&self`/`&mut self` operation whose own parameters are all types
 /// the fuzz tier can build (no longer required to match the checked
@@ -3685,6 +3689,21 @@ pub fn discover_method_with_receiver(
     if let Some((closure, _)) = &cf.ensures {
         refuse_a_promise_that_changes_what_it_reads(
             &closure.body,
+            method_name,
+            type_name,
+            &mut_self_methods,
+        )?;
+    }
+    // A precondition gets the same walk (2026-09-08). It is evaluated
+    // against the built value just before the checked call, so a reading
+    // taken there through a method that changes the value alters the state
+    // the promise is about, exactly as one inside `old(...)` does -- and
+    // this became reachable in the same change that let a precondition read
+    // the value at all, so refusing it is part of that change rather than
+    // separate work.
+    if let Some((expr, _)) = &cf.requires {
+        refuse_a_promise_that_changes_what_it_reads(
+            expr,
             method_name,
             type_name,
             &mut_self_methods,
@@ -8756,6 +8775,72 @@ impl Meter {
         );
         discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new())
             .expect("a promise reading through a `&self` method is exactly what this supports");
+    }
+
+    /// A precondition gets the same refusal, for the same reason: it runs
+    /// against the built value just before the checked call, so a reading
+    /// taken through a method that changes the value alters the state the
+    /// promise is about.
+    ///
+    /// This became reachable on 2026-09-08, when a precondition was first
+    /// able to read the value at all -- before that it did not compile, so
+    /// the hazard could not be written down.
+    #[test]
+    fn a_precondition_that_reads_through_a_mutating_method_is_refused_too() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "meter.rs",
+                r#"
+pub struct Meter { level: u32 }
+impl Meter {
+    pub fn new() -> Self { Meter { level: 0 } }
+    pub fn level_and_reset(&mut self) -> u32 { let n = self.level; self.level = 0; n }
+    #[ply::requires(self.level_and_reset() > 0)]
+    #[ply::ensures(|result| *result >= 0)]
+    pub fn add(&mut self, n: u32) -> u32 { self.level = self.level.saturating_add(n); self.level }
+}
+"#,
+            )],
+        );
+        let err =
+            discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new())
+                .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("changes the `Meter` it is called on"),
+            "a precondition runs against the same value the promise is about, so a mutating \
+             read there is the same hazard: {err}"
+        );
+    }
+
+    /// A precondition that reads the value through a method which only
+    /// looks must stay checkable -- this is the shape the 2026-09-08 fix
+    /// exists to support, and a rule that refused it would delete it.
+    #[test]
+    fn a_precondition_that_reads_through_a_read_only_method_is_still_checkable() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "meter.rs",
+                r#"
+pub struct Meter { level: u32 }
+impl Meter {
+    pub fn new() -> Self { Meter { level: 0 } }
+    pub fn level(&self) -> u32 { self.level }
+    #[ply::requires(self.level() > 0)]
+    #[ply::ensures(|result| *result >= old(self.level()))]
+    pub fn add(&mut self, n: u32) -> u32 { self.level = self.level.saturating_add(n); self.level }
+}
+"#,
+            )],
+        );
+        discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new()).expect(
+            "a precondition reading through a `&self` method is exactly the shape this \
+                     supports",
+        );
     }
 
     /// The same mutating call, written *after* the call rather than inside

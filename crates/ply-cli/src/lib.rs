@@ -898,6 +898,15 @@ fn counterexample_report(cex: &ply_core::diag::Counterexample) -> String {
             .collect();
         out.push_str(&format!("    failing input: {}\n", pairs.join(", ")));
     }
+    // For a method that changes the value it is called on, the arguments are
+    // only half the input: the other half is how that value got into the
+    // state where the call broke its promise. Printed in the order the calls
+    // ran, so it reads as the recipe it is (2026-09-08).
+    if let Some(history) = &cex.receiver_history {
+        out.push_str(&format!(
+            "    the value it was called on was built and used like this: {history}\n"
+        ));
+    }
     if let Some(path) = &cex.cargo_test {
         out.push_str(&format!(
             "    Ply wrote a test that reproduces this to {path} -- run `cargo test` from this \
@@ -1092,6 +1101,7 @@ mod tests {
             inputs,
             kani_witness: None,
             cargo_test: None,
+            receiver_history: None,
         };
         let report = counterexample_report(&cex);
         assert!(
@@ -1107,6 +1117,7 @@ mod tests {
             inputs: std::collections::BTreeMap::new(),
             kani_witness: None,
             cargo_test: Some("src/ply_generated_cex.rs".to_string()),
+            receiver_history: None,
         };
         let report = counterexample_report(&cex);
         assert_eq!(
@@ -1809,6 +1820,7 @@ mod tests {
                 "captured from proptest shrinking, replayable with --seed abcd".into(),
             ),
             cargo_test: Some("src/ply_generated_cex.rs".into()),
+            receiver_history: None,
         }));
         let report = diagnostics_report(&[diag]);
         assert!(
@@ -1819,6 +1831,54 @@ mod tests {
             report.contains("src/ply_generated_cex.rs"),
             "must name the path of the runnable test Ply just wrote into the user's own src/: \
              {report}"
+        );
+    }
+
+    /// A promise about what a call *changed* is broken by a history, not
+    /// only by the failing call's own arguments -- so a report that shows
+    /// the arguments and stops is not showing the input, whatever the title
+    /// above it claims (2026-09-08).
+    ///
+    /// Exact-string, because this sentence is the whole fix: a reader who
+    /// has never seen Ply has to be able to rebuild the failing value from
+    /// this line alone.
+    #[test]
+    fn a_broken_promise_about_a_change_shows_how_the_value_reached_that_state() {
+        let mut inputs = std::collections::BTreeMap::new();
+        inputs.insert("tokens".to_string(), "0".to_string());
+        let diag = cex_diagnostic(Some(ply_core::diag::Counterexample {
+            inputs,
+            kani_witness: None,
+            cargo_test: None,
+            receiver_history: Some("TokenBucket::new(7), then TokenBucket::try_take(1)".into()),
+        }));
+        let report = diagnostics_report(&[diag]);
+        assert!(
+            report.contains(
+                "    the value it was called on was built and used like this: \
+                 TokenBucket::new(7), then TokenBucket::try_take(1)\n"
+            ),
+            "the history has to be printed in full, in the order the calls ran: {report}"
+        );
+    }
+
+    /// A free function has no such history, and the line must simply not
+    /// appear -- never an empty one, and never a fabricated "no history".
+    #[test]
+    fn a_free_function_counterexample_carries_no_history_line_at_all() {
+        let mut inputs = std::collections::BTreeMap::new();
+        inputs.insert("x".to_string(), "42".to_string());
+        let diag = cex_diagnostic(Some(ply_core::diag::Counterexample {
+            inputs,
+            kani_witness: None,
+            cargo_test: None,
+            receiver_history: None,
+        }));
+        let report = diagnostics_report(&[diag]);
+        assert!(
+            !report.contains("the value it was called on"),
+            "a function with no receiver has no history to show, so the line must be absent \
+             rather than empty: {report}"
         );
     }
 
@@ -1833,6 +1893,7 @@ mod tests {
             inputs,
             kani_witness: None,
             cargo_test: None,
+            receiver_history: None,
         }));
         let report = diagnostics_report(&[diag]);
         assert!(
