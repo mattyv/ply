@@ -1972,7 +1972,7 @@ pub fn scan_type_operations(
     let file: syn::File = syn::parse_file(&src).map_err(|_| ReceiverError::Unreadable)?;
     let aliases = alias_map(&file);
 
-    let (_, plan, _) = scan_impls_for_receiver(
+    let (_, plan) = scan_impls_for_receiver(
         &file, &aliases, type_name, None, crate_dir, &file_path, routes,
     )?;
     Ok(plan)
@@ -2371,6 +2371,20 @@ pub struct ReceiverPlan {
     /// [`MAX_RECEIVER_SEQUENCE_LEN`], carried alongside the plan so a
     /// caller building the verdict-visibility disclosure never has to
     /// import the constant under a different name than what codegen used.
+    /// Every method on this type that takes `&mut self` -- naming one in a
+    /// promise or a precondition changes the value that promise is about.
+    ///
+    /// Carried on the plan rather than kept local to discovery (2026-09-08,
+    /// external review of `7820a4b`) because the check has a *second*
+    /// caller: a contract written in `ply.yaml` is merged into the function
+    /// after discovery has finished, so validating only during discovery
+    /// left the document's own clauses unchecked -- the same false clean,
+    /// one file over.
+    ///
+    /// Deliberately wider than `operations`: a method Ply could never
+    /// *call* still counts, because whether naming it changes the value
+    /// does not depend on that.
+    pub mutating_methods: Vec<String>,
     pub max_sequence_len: u32,
     /// `Some` exactly when this plan was built through §5.4b's generator
     /// hook -- a `routes:` entry in `ply.yaml` naming a public function
@@ -3299,7 +3313,7 @@ fn scan_impls_for_receiver(
     crate_dir: &Path,
     declaring_file: &Path,
     routes: &RouteTable,
-) -> std::result::Result<(Option<syn::ImplItemFn>, ReceiverPlan, Vec<String>), ReceiverError> {
+) -> std::result::Result<(Option<syn::ImplItemFn>, ReceiverPlan), ReceiverError> {
     let mut target: Option<syn::ImplItemFn> = None;
     let mut ctor_candidates: Vec<CtorCandidate> = Vec::new();
     let mut other_ops: Vec<Operation> = Vec::new();
@@ -3561,12 +3575,56 @@ fn scan_impls_for_receiver(
         operations,
         excluded_operations: excluded_ops,
         other_constructors,
+        mutating_methods: {
+            mut_self_methods.sort();
+            mut_self_methods.dedup();
+            mut_self_methods.clone()
+        },
         max_sequence_len: MAX_RECEIVER_SEQUENCE_LEN,
         route: None,
     };
-    mut_self_methods.sort();
-    mut_self_methods.dedup();
-    Ok((target, plan, mut_self_methods))
+    Ok((target, plan))
+}
+
+/// The same refusal, run over a [`ContractFn`] whose contract may have come
+/// from anywhere -- the function's own attributes, `ply.yaml`'s `requires:`
+/// and `ensures:` lines, or both merged together.
+///
+/// Discovery validates what it reads off the function itself. A document's
+/// clauses are merged in afterwards, by a different caller, and until
+/// 2026-09-08 nothing re-checked them: moving `old(self.take_reading())`
+/// out of the source and into `ply.yaml` walked straight past the refusal
+/// and produced the clean-result-over-a-real-bug it exists to stop. Found
+/// by external review of `7820a4b`, in the source, before anyone hit it.
+///
+/// A no-op for a function with no receiver: there is no value for a promise
+/// to change, so there is nothing to refuse.
+pub fn refuse_a_contract_that_changes_what_it_reads(
+    cf: &ContractFn,
+) -> std::result::Result<(), ReceiverError> {
+    let Some(plan) = &cf.receiver else {
+        return Ok(());
+    };
+    let method_name = cf.name.clone();
+    if let Some((closure, _)) = &cf.ensures {
+        refuse_a_promise_that_changes_what_it_reads(
+            &closure.body,
+            &method_name,
+            &plan.type_name,
+            &plan.mutating_methods,
+            "promise",
+        )?;
+    }
+    if let Some((expr, _)) = &cf.requires {
+        refuse_a_promise_that_changes_what_it_reads(
+            expr,
+            &method_name,
+            &plan.type_name,
+            &plan.mutating_methods,
+            "precondition",
+        )?;
+    }
+    Ok(())
 }
 
 /// Refuses a promise that would change the very value it is reading
@@ -3628,8 +3686,24 @@ fn refuse_a_promise_that_changes_what_it_reads(
             syn::visit::visit_expr_call(self, call);
         }
     }
+    /// `self`, however many parentheses are wrapped round it.
+    ///
+    /// `(self).take_reading()` runs exactly what `self.take_reading()` runs,
+    /// so a check that recognised only the bare spelling was one pair of
+    /// brackets away from being bypassed -- and the thing it guards is a
+    /// clean result over a broken bug. Found by external review of
+    /// `7820a4b`, which spotted it in the source before anyone wrote it.
+    ///
+    /// `Expr::Group` is stripped alongside `Expr::Paren`: it is the
+    /// invisible grouping a macro expansion introduces, which no source
+    /// spelling produces but any `macro_rules!` interpolation can.
     fn is_bare_self(e: &Expr) -> bool {
-        matches!(e, Expr::Path(p) if p.qself.is_none() && p.path.is_ident("self"))
+        match e {
+            Expr::Paren(inner) => is_bare_self(&inner.expr),
+            Expr::Group(inner) => is_bare_self(&inner.expr),
+            Expr::Path(p) => p.qself.is_none() && p.path.is_ident("self"),
+            _ => false,
+        }
     }
 
     let mut walk = Walk {
@@ -3679,7 +3753,7 @@ pub fn discover_method_with_receiver(
     let file: syn::File = syn::parse_file(&src).map_err(|_| ReceiverError::Unreadable)?;
     let aliases = alias_map(&file);
 
-    let (target, plan, mut_self_methods) = scan_impls_for_receiver(
+    let (target, plan) = scan_impls_for_receiver(
         &file,
         &aliases,
         type_name,
@@ -3695,37 +3769,20 @@ pub fn discover_method_with_receiver(
     let item_fn = strip_receiver_to_item_fn(&target);
     let mut cf = build_contract_fn(&item_fn, &aliases, fn_path, true)
         .map_err(|_| ReceiverError::UnsupportedParamPattern)?;
-    if let Some((closure, _)) = &cf.ensures {
-        refuse_a_promise_that_changes_what_it_reads(
-            &closure.body,
-            method_name,
-            type_name,
-            &mut_self_methods,
-            "promise",
-        )?;
-    }
-    // A precondition gets the same walk (2026-09-08). It is evaluated
-    // against the built value just before the checked call, so a reading
-    // taken there through a method that changes the value alters the state
-    // the promise is about, exactly as one inside `old(...)` does -- and
-    // this became reachable in the same change that let a precondition read
-    // the value at all, so refusing it is part of that change rather than
-    // separate work.
-    if let Some((expr, _)) = &cf.requires {
-        refuse_a_promise_that_changes_what_it_reads(
-            expr,
-            method_name,
-            type_name,
-            &mut_self_methods,
-            "precondition",
-        )?;
-    }
     cf.source_span = Some(crate::callgraph::source_span(
         crate_dir,
         &file_path,
         target.span(),
     ));
     cf.receiver = Some(plan);
+    // After the receiver is attached, not before: the check reads the
+    // type's own mutating methods off the plan, so running it a line
+    // earlier silently checked nothing.
+    //
+    // One entry point for both callers (2026-09-08): discovery here, and
+    // `verify` again once a document's own clauses are merged in. Two
+    // copies of this walk is how the second caller came to be missing.
+    refuse_a_contract_that_changes_what_it_reads(&cf)?;
     cf.use_aliases = use_aliases_in_file(&file);
     // Struct/enum parameters (2026-08-27): the checked method's own
     // parameters (not the receiver, not the constructor's own arguments --
@@ -4777,6 +4834,7 @@ fn resolve_declared_route(
         operations: vec![],
         excluded_operations: vec![],
         other_constructors: vec![],
+        mutating_methods: Vec::new(),
         max_sequence_len: 0,
         route: Some(RouteOrigin {
             declared_as: fn_path.to_string(),
@@ -4847,6 +4905,7 @@ fn resolve_declared_route_typed(
         operations: vec![],
         excluded_operations: vec![],
         other_constructors: vec![],
+        mutating_methods: Vec::new(),
         max_sequence_len: 0,
         route: Some(RouteOrigin {
             declared_as: fn_path.to_string(),
@@ -5223,6 +5282,7 @@ fn resolve_user_type(
                     operations: vec![],
                     excluded_operations: vec![],
                     other_constructors: vec![],
+                    mutating_methods: Vec::new(),
                     max_sequence_len: 0,
                     route: None,
                 })));
@@ -6743,6 +6803,7 @@ mod tests {
             operations: vec![],
             excluded_operations: vec![],
             other_constructors: vec![],
+            mutating_methods: Vec::new(),
             max_sequence_len: 0,
             route: None,
         };
@@ -8851,6 +8912,75 @@ impl Meter {
         discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new()).expect(
             "a precondition reading through a `&self` method is exactly the shape this \
                      supports",
+        );
+    }
+
+    /// One pair of brackets must not get past the refusal (2026-09-08,
+    /// external review of `7820a4b`).
+    ///
+    /// `(self).take_reading()` runs exactly what `self.take_reading()`
+    /// runs. The check recognised only the bare spelling, so this shape
+    /// went through and produced the very clean-result-over-a-real-bug the
+    /// refusal exists to stop.
+    #[test]
+    fn parentheses_round_the_value_do_not_get_past_the_refusal() {
+        for spelling in [
+            "old((self).level_and_reset())",
+            "old(((self)).level_and_reset())",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            write_crate(
+                dir.path(),
+                &[(
+                    "meter.rs",
+                    &format!(
+                        r#"
+pub struct Meter {{ level: u32 }}
+impl Meter {{
+    pub fn new() -> Self {{ Meter {{ level: 0 }} }}
+    pub fn level_and_reset(&mut self) -> u32 {{ let n = self.level; self.level = 0; n }}
+    #[ply::ensures(|result| *result >= {spelling})]
+    pub fn add(&mut self, n: u32) -> u32 {{ self.level = self.level.saturating_add(n); self.level }}
+}}
+"#
+                    ),
+                )],
+            );
+            let err =
+                discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new())
+                    .unwrap_err();
+            assert!(
+                err.to_string().contains("calls `level_and_reset`"),
+                "`{spelling}` runs the same code as the bare spelling, so it has to be refused \
+                 the same way: {err}"
+            );
+        }
+    }
+
+    /// And the whole-value form, bracketed, for the same reason.
+    #[test]
+    fn parentheses_round_a_whole_value_snapshot_do_not_get_past_it_either() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "meter.rs",
+                r#"
+pub struct Meter { level: u32 }
+impl Meter {
+    pub fn new() -> Self { Meter { level: 0 } }
+    #[ply::ensures(|result| *result >= old((self)).level)]
+    pub fn add(&mut self, n: u32) -> u32 { self.level = self.level.saturating_add(n); self.level }
+}
+"#,
+            )],
+        );
+        let err =
+            discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new())
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("writes `old(self)`"),
+            "a bracketed whole-value snapshot needs the same copy the bare one does: {err}"
         );
     }
 

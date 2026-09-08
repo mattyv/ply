@@ -92,6 +92,19 @@ pub struct CodeScope {
     /// so the planting scope can exclude them and the report can say so
     /// instead of counting them as covered (external review, 2026-09-07).
     pub reached_fns_outside_package: Vec<(String, String)>,
+    /// Where each entry of `reached_fns` is declared, as a crate-relative
+    /// source path (`src/maths.rs`), paired with its canonical name.
+    ///
+    /// Mutation testing needs this, not just the name (2026-09-08, external
+    /// review of `7820a4b`). `cargo mutants` names the function that owns a
+    /// mutant by its path *within its own file*: a function at the top of
+    /// `src/maths.rs` is `helper`, while the same function written inside
+    /// `mod maths { .. }` in `src/lib.rs` is `maths::helper`. Ply's names
+    /// are crate-root-relative and so match only the second, which meant a
+    /// helper in its own file was never selected -- and a run that planted
+    /// no bug in it still reported that every planted bug was caught.
+    /// Confirmed against `cargo mutants --list` before the fix.
+    pub reached_fn_files: Vec<(String, String)>,
 }
 
 /// Every first-party source file in reach of this crate, parsed once per
@@ -463,6 +476,7 @@ pub fn code_scope(
     // deliberately omits the claimed function's own tokens (hashed
     // separately) and includes type declarations that are not bodies at all.
     let mut reached_fns: Vec<String> = Vec::new();
+    let mut reached_fn_files: Vec<(String, String)> = Vec::new();
     let mut reached_fns_outside_package: Vec<(String, String)> = Vec::new();
     // The first reason the *fingerprint* had to widen to the whole crate.
     // Recorded rather than returned on, because widening says "an edit
@@ -556,6 +570,7 @@ pub fn code_scope(
             continue;
         }
         reached_fns.push(found.canonical.clone());
+        reached_fn_files.push((found.canonical.clone(), found.source_span.file.clone()));
         // `source_span.file` is relative to the crate directory, and
         // `first_party_file_set` labels a path dependency's files with that
         // dependency's own name. So anything not under this crate's `src/`
@@ -661,6 +676,7 @@ pub fn code_scope(
         let mut scope = widened(first_party, reason);
         scope.reached_fns = reached_fns;
         scope.reached_fns_outside_package = reached_fns_outside_package;
+        scope.reached_fn_files = reached_fn_files;
         return scope;
     }
     units.sort();
@@ -670,6 +686,7 @@ pub fn code_scope(
         widened_because: None,
         reached_fns,
         reached_fns_outside_package,
+        reached_fn_files,
     }
 }
 
@@ -677,6 +694,7 @@ fn widened(first_party: &FirstParty, reason: String) -> CodeScope {
     CodeScope {
         reached_fns: Vec::new(),
         reached_fns_outside_package: Vec::new(),
+        reached_fn_files: Vec::new(),
         scope: "whole-crate",
         units: first_party.units.clone(),
         widened_because: Some(reason),

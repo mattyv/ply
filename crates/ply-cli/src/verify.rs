@@ -762,6 +762,9 @@ fn verify_loaded_crate(
         /// Reached bodies belonging to another package, which `cargo mutants
         /// -p <root>` cannot plant a bug in whatever `--re` it is given.
         reached_foreign: Vec<(String, String)>,
+        /// Where each reached body lives, so a selector can be spelled the
+        /// way cargo-mutants itself spells it (see `selector_name`).
+        reached_files: Vec<(String, String)>,
         /// The checks as `ply.yaml` spells them, which is what a recorded
         /// verdict is checked against for possibility before it is trusted.
         check_spellings: Vec<String>,
@@ -1043,6 +1046,27 @@ fn verify_loaded_crate(
                 continue;
             }
 
+            // The merged contract gets the same refusal the function's own
+            // attributes already got (2026-09-08, external review of
+            // `7820a4b`). A promise that changes the value it reads is
+            // exactly as dangerous written in this document as written in
+            // the source, and until now only the source was checked -- so
+            // moving the offending clause here walked past the refusal and
+            // produced the clean result over a real bug it exists to stop.
+            //
+            // Re-run over the *whole* merged contract rather than over the
+            // document's clauses alone: they are ANDed into what the
+            // function already declared, and it is the combination that
+            // runs.
+            if let Err(refusal) = harness::refuse_a_contract_that_changes_what_it_reads(&cf) {
+                diagnostics.push(refused_anchor_diag(&node_id, &refusal.to_string()));
+                early_nodes_by_component
+                    .entry(comp_name.clone())
+                    .or_default()
+                    .push(leaf_node(fn_name, "unsupported"));
+                continue;
+            }
+
             // §5.4c: **an empty list is a list.** `checks: []` reads to a
             // person as "do not check this", and it is now what it reads
             // as: nothing runs, and the claim earns no evidence. Reading it
@@ -1220,6 +1244,7 @@ fn verify_loaded_crate(
             let widened_because = code.widened_because.clone();
             let reached_fns = code.reached_fns.clone();
             let reached_foreign = code.reached_fns_outside_package.clone();
+            let reached_files = code.reached_fn_files.clone();
             let check_spellings: Vec<String> = checks.iter().map(check_spelling).collect();
 
             let inputs = FingerprintInputs {
@@ -1317,6 +1342,7 @@ fn verify_loaded_crate(
                 widened_because,
                 reached_fns,
                 reached_foreign,
+                reached_files,
                 check_spellings,
             });
         }
@@ -1846,6 +1872,7 @@ fn verify_loaded_crate(
             harness_info.as_ref(),
             &plans[idx].reached_fns,
             &plans[idx].reached_foreign,
+            &plans[idx].reached_files,
             plans[idx].widened_because.as_deref(),
             !plans[idx].claim.examples.is_empty(),
             opts,
@@ -3543,6 +3570,9 @@ fn run_fn_checks(
     // Of those, the ones in another package: named in the report as not
     // planted in, rather than counted as covered.
     reached_foreign: &[(String, String)],
+    // Where each of them lives, so the selector matches how cargo-mutants
+    // names it (2026-09-08).
+    reached_files: &[(String, String)],
     // Why the reach walk could not bound what this claim's checks run, when
     // it could not. Set means the planting below is over a partial list and
     // the report has to say so.
@@ -4035,6 +4065,7 @@ fn run_fn_checks(
                         test_filter: &harness_test_filter(cf),
                         reached_fns,
                         reached_foreign,
+                        reached_files,
                         scope_incomplete,
                     },
                     checks,
@@ -7359,13 +7390,65 @@ fn mutate_scope_prose(scope: &[String]) -> String {
     }
 }
 
+/// The module path a source file *is*, from its crate-relative path.
+///
+/// `src/lib.rs` and `src/main.rs` are the crate root and are no module at
+/// all; `src/maths.rs` and `src/maths/mod.rs` are both `maths`;
+/// `src/a/b.rs` is `a::b`.
+fn module_prefix_of_file(file: &str) -> String {
+    let Some(rest) = file.strip_prefix("src/") else {
+        return String::new();
+    };
+    let rest = rest.strip_suffix(".rs").unwrap_or(rest);
+    let mut segs: Vec<&str> = rest.split('/').collect();
+    match segs.last() {
+        Some(&"lib") | Some(&"main") | Some(&"mod") => {
+            segs.pop();
+        }
+        _ => {}
+    }
+    segs.join("::")
+}
+
+/// The name `cargo mutants` itself uses for a function, given Ply's
+/// crate-root-relative name and the file it lives in.
+///
+/// cargo-mutants qualifies a function by its path *within its own file*,
+/// because the rest of the path is carried by the file name it prints
+/// beside it. So a function at the top of `src/maths.rs` is `helper`, while
+/// the same function inside `mod maths { .. }` in `src/lib.rs` is
+/// `maths::helper`. Ply named both the second way, so a helper living in
+/// its own file -- the ordinary way to write one -- matched no mutant, and
+/// the run still reported that every planted bug was caught (2026-09-08,
+/// external review of `7820a4b`; confirmed against `cargo mutants --list`).
+fn selector_name(canonical: &str, file: &str) -> String {
+    let prefix = module_prefix_of_file(file);
+    if prefix.is_empty() {
+        return canonical.to_string();
+    }
+    canonical
+        .strip_prefix(&format!("{prefix}::"))
+        .unwrap_or(canonical)
+        .to_string()
+}
+
 /// The exact function owners cargo-mutants should plant in for one claim.
 fn mutation_scope(
     fn_path: &str,
     reached_fns: &[String],
     reached_foreign: &[(String, String)],
+    reached_files: &[(String, String)],
 ) -> Vec<String> {
-    let mut scope = vec![fn_path.to_string()];
+    let file_of = |name: &str| -> Option<&str> {
+        reached_files
+            .iter()
+            .find(|(canonical, _)| canonical == name)
+            .map(|(_, file)| file.as_str())
+    };
+    let mut scope = vec![match file_of(fn_path) {
+        Some(file) => selector_name(fn_path, file),
+        None => fn_path.to_string(),
+    }];
     for name in reached_fns {
         if reached_foreign
             .iter()
@@ -7373,8 +7456,12 @@ fn mutation_scope(
         {
             continue;
         }
-        if !scope.contains(name) {
-            scope.push(name.clone());
+        let selector = match file_of(name) {
+            Some(file) => selector_name(name, file),
+            None => name.clone(),
+        };
+        if !scope.contains(&selector) {
+            scope.push(selector);
         }
     }
     scope
@@ -7450,6 +7537,9 @@ struct MutateTarget<'a> {
     /// pointed at one package, so a `--re` naming a body in a second selects
     /// nothing: these are excluded from the planting and disclosed instead.
     reached_foreign: &'a [(String, String)],
+    /// Where each reached body lives, so a selector can be spelled the way
+    /// cargo-mutants itself spells it (see `selector_name`).
+    reached_files: &'a [(String, String)],
     /// Why the walk could not bound that list, when it could not. Set means
     /// the deliberate bugs went into a partial set, and `W0530` says so --
     /// silence there is how "every planted bug was caught" came to cover a
@@ -7473,6 +7563,7 @@ fn run_mutate_check(
         test_filter,
         reached_fns,
         reached_foreign,
+        reached_files,
         scope_incomplete,
     } = target;
     let _ = checks;
@@ -7565,7 +7656,7 @@ fn run_mutate_check(
     // Claimed function first, then every other body the walk identified as
     // run. When the walk could not be bounded this is what it had before it
     // stopped, not the whole list, and `W0530` below says so.
-    let mutate_scope = mutation_scope(fn_path, reached_fns, reached_foreign);
+    let mutate_scope = mutation_scope(fn_path, reached_fns, reached_foreign, reached_files);
     let cfg = MutantsRunConfig {
         workspace_root: harness_workspace_root.to_path_buf(),
         mutated_package: target_names.package_name,
@@ -8260,6 +8351,13 @@ mod tests {
                 "dependency::foreign_helper".to_string(),
                 "dependency".to_string(),
             )],
+            // All declared in `src/lib.rs`, so `mod maths { .. }` is written
+            // out in the file and cargo-mutants qualifies with it.
+            &[
+                ("maths::scaled".to_string(), "src/lib.rs".to_string()),
+                ("maths::helper".to_string(), "src/lib.rs".to_string()),
+                ("Widget::adjust".to_string(), "src/lib.rs".to_string()),
+            ],
         );
 
         assert_eq!(
@@ -8267,6 +8365,92 @@ mod tests {
             vec!["maths::scaled", "maths::helper", "Widget::adjust"],
             "the selector names must match cargo-mutants' qualified function owners exactly"
         );
+    }
+
+    /// The other half of the same rule, and the half that was wrong
+    /// (2026-09-08, external review of `7820a4b`).
+    ///
+    /// `cargo mutants` qualifies a function by its path *within its own
+    /// file*, because the rest of the path is carried by the file name it
+    /// prints beside it. A helper at the top of `src/maths.rs` is therefore
+    /// `helper`, not `maths::helper` -- so Ply's crate-root-relative name
+    /// selected nothing, no bug was ever planted in that helper, and the run
+    /// still reported that every planted bug was caught. Verified against
+    /// `cargo mutants --list` on a crate with one helper in each shape:
+    ///
+    /// ```text
+    /// src/lib.rs:4:43:   replace inlinemod::inline_helper -> u32 with 0
+    /// src/maths.rs:1:32: replace helper -> u32 with 0
+    /// ```
+    #[test]
+    fn a_helper_in_its_own_file_is_selected_by_the_name_cargo_mutants_gives_it() {
+        let scope = super::mutation_scope(
+            "scaled",
+            &[
+                "maths::helper".to_string(),
+                "inlinemod::inline_helper".to_string(),
+                "deep::nested::far".to_string(),
+                "shapes::Widget::adjust".to_string(),
+            ],
+            &[],
+            &[
+                ("scaled".to_string(), "src/lib.rs".to_string()),
+                // Its own file: the module comes from the path, so the name
+                // cargo-mutants prints is the bare one.
+                ("maths::helper".to_string(), "src/maths.rs".to_string()),
+                // Written inline in the crate root: qualified, as before.
+                (
+                    "inlinemod::inline_helper".to_string(),
+                    "src/lib.rs".to_string(),
+                ),
+                // A directory module: `src/deep/mod.rs` is `deep`, so only
+                // the part below it survives.
+                (
+                    "deep::nested::far".to_string(),
+                    "src/deep/mod.rs".to_string(),
+                ),
+                // A method in its own file keeps its type, loses its module.
+                (
+                    "shapes::Widget::adjust".to_string(),
+                    "src/shapes.rs".to_string(),
+                ),
+            ],
+        );
+
+        assert_eq!(
+            scope,
+            vec![
+                "scaled",
+                "helper",
+                "inlinemod::inline_helper",
+                "nested::far",
+                "Widget::adjust",
+            ],
+            "a name cargo-mutants never prints selects no mutant, and a run that planted \
+             nothing in a body still reports every planted bug caught"
+        );
+    }
+
+    #[test]
+    fn a_files_own_module_path_is_read_from_where_it_sits() {
+        for (file, expected) in [
+            ("src/lib.rs", ""),
+            ("src/main.rs", ""),
+            ("src/maths.rs", "maths"),
+            ("src/maths/mod.rs", "maths"),
+            ("src/a/b.rs", "a::b"),
+            ("src/a/b/mod.rs", "a::b"),
+            // A path dependency's file is labelled by its package, not by
+            // `src/` -- and those are excluded from planting anyway, so the
+            // safe answer is to change nothing about the name.
+            ("dependency/src/lib.rs", ""),
+        ] {
+            assert_eq!(
+                super::module_prefix_of_file(file),
+                expected,
+                "{file} names the module `{expected}`"
+            );
+        }
     }
 
     /// `cargo mutants` is pointed at one package, so a body the checks run
@@ -10088,6 +10272,7 @@ mod tests {
             }],
             excluded_operations: vec![],
             other_constructors: vec![],
+            mutating_methods: Vec::new(),
             max_sequence_len: 3,
             route: None,
         }

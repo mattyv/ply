@@ -1,0 +1,12 @@
+ply: 1
+
+# `helperspec`'s document, over the same shape with the helper in its own
+# file. The promise is bound-shaped on purpose and there is deliberately no
+# worked example: with only a bound, `mutate` is the sole instrument that
+# can see a wrong answer underneath the cap.
+components:
+  filehelperspec:
+    anchor: ply_fixture_filehelperspec
+    fns:
+      scaled:
+        checks: [fuzz(256), test, mutate]

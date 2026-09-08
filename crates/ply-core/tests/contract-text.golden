@@ -68,6 +68,8 @@ ensuresimport::is_le ensures |result|*result == (a.cmp (& b) != Ordering :: Grea
 envelopecontract::add ensures |result|*result >= a
 examplesnotrun::increment ensures |result|*result == x + 1
 existingworkspace::seeded_bug ensures |result|*result == x
+filehelperspec::scaled ensures |result|*result <= 100
+filehelperspec::scaled requires x < 1000
 fiveshapes::normal_fn ensures |result|*result > 0
 fiveshapes::uses_big13 ensures |result|*result
 fiveshapes::uses_hidden ensures |result|*result

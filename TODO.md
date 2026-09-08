@@ -155,8 +155,9 @@ invariant can see, and the bug-planting tier scored them without change.
       against the built value just before the checked call -- and it only
       became writable once a precondition could read the value at all. It is
       refused by the same walk, with the same sentence.
-- [x] **Fixed after adversarial review of the above (2026-09-08).** Three
-      real defects in the history, all reproduced before being fixed:
+- [x] **Fixed after adversarial review of the above (2026-09-08), merged as
+      PR #81 (`7820a4b`).** Three real defects in the history, all reproduced
+      before being fixed:
       **(1) the printed recipe was not the recipe that ran.** Each argument
       was escaped once going into the history and once more going onto the
       marker line, while the reader unescapes once -- so a call really made
@@ -176,6 +177,70 @@ invariant can see, and the bug-planting tier scored them without change.
       terminal line did not say the failing call is not among those listed,
       so beside `failing input: tokens = 0` a reader could take the last
       entry for it. Both corrected, both pinned exact-string.
+
+- [x] **Two more defects, found by CI rather than by me, after the PR was
+      open.** The worse one: rendering an argument for the history needed
+      `Debug`, which a user's own struct need not derive, so
+      `tests/fixtures/sharedtypeparam` came back as a tool error -- the
+      generated harness would not build and *nothing was checked*. A
+      diagnostic nicety stopped the checking, which is the exact failure mode
+      this project exists to avoid. The guard was fail-open ("does this
+      obviously contain a user type?"); it is now an allow-list of types
+      Rust's own impls cover, and anything unrecognised is named rather than
+      shown. The whole-value marker path already had this rule and said so in
+      a comment -- it was written without reading it. The other: four
+      committed self-renders read the counterexample structure from source,
+      which gained a field, so all four now say `3 of 4 shown`.
+
+      **The pattern, worth keeping:** three CI catches on one branch, all
+      mine, none caught locally until the runs were widened. Each time the
+      tests run were the ones near what was touched, not the ones that could
+      break. The whole end-to-end suite takes about twenty minutes locally
+      and would have caught the compile failure; the render goldens need a
+      release build that is not in the fast loop.
+
+## Landed: three findings from external review of `7820a4b` — 2026-09-08
+
+All three were source-review findings the reviewer could not run; each was
+reproduced here before being fixed, and two of them were bypasses of the
+refusal shipped the day before.
+
+- [x] **A promise written in `ply.yaml` bypassed the refusal entirely.** The
+      check ran while Ply read the method's own attributes; a document's
+      clauses are merged in afterwards, by a different caller, and nothing
+      re-checked them. So moving `old(self.take_reading())` out of the source
+      and into the document walked straight past it. Reproduced end to end
+      with the bug planted as well as the clause moved, so what the new test
+      pins is a refusal of a promise that was about to certify a broken
+      bucket. There is now **one** entry point for both callers -- two copies
+      of the walk is how the second caller came to be missing -- and it is
+      called after the receiver is attached, not before, which cost one round
+      of silently checking nothing.
+- [x] **One pair of brackets also bypassed it.** `(self).take_reading()`
+      runs exactly what the bare spelling runs, and the check recognised only
+      a bare `self` node. Now unwrapped, including the invisible grouping a
+      macro expansion introduces. Proved non-vacuous by reverting the
+      unwrapping and watching both new tests go red.
+- [x] **Mutation testing skipped every helper in its own file.**
+      `cargo mutants` names the function owning a mutant by its path *within
+      its own file*, because the rest is carried by the file name printed
+      beside it -- so a helper at the top of `src/maths.rs` is
+      `doubled_then_capped`, while its inline-module twin is
+      `maths::doubled_then_capped`. Ply named both the second way. Confirmed
+      against `cargo mutants --list` on a crate holding one of each shape,
+      before writing any fix. The walk now records where each reached body
+      lives and the selector is spelled the way cargo-mutants spells it.
+      New fixture `tests/fixtures/filehelperspec` -- `helperspec` with the
+      helper moved to its own file. Measured before the fix: **2 survivors,
+      both in the two-line wrapper, with the report naming the helper as
+      covered while nothing was planted in it.** After: 7, spanning the file
+      where every line of logic lives.
+
+      Worth keeping: of the two new end-to-end tests, only the second
+      discriminates. "Not `spec-strong`" passed on the unfixed selector too,
+      because two survivors in the wrapper already withhold strength. The
+      test that goes red without the fix is the one asserting the deliberate
+      bugs land in the helper's file at all.
 
 - [ ] **KNOWN GAP: no history when the checked call panics.** The marker
       carrying it is written after the call returns, so a call that never
