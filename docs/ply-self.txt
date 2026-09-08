@@ -338,7 +338,7 @@ components:
           ensures: |result| result.contains(&location[..]) (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component diag — maps to Rust module ply_core::diag
-      state Counterexample — the structure this component holds. 3 of 3 of its fields shown
+      state Counterexample — the structure this component holds. 3 of 4 of its fields shown
         inputs is a lookup table, written `BTreeMap<String, String>`
         kani_witness is something that might not be there, written `Option<String>`
         cargo_test is something that might not be there, written `Option<String>`
