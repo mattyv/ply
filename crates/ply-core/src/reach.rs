@@ -467,9 +467,6 @@ pub fn code_scope(
     expressions: &[String],
     stubbed: &BTreeSet<String>,
 ) -> CodeScope {
-    if let Some(reason) = &first_party.gate {
-        return widened(first_party, reason.clone());
-    }
     let mut seen: BTreeSet<String> = BTreeSet::new();
     // The bodies this claim's checks execute, claimed function first. Kept
     // apart from `units`, which is what the fingerprint hashes and which
@@ -486,7 +483,12 @@ pub fn code_scope(
     // or `vec!` in a wrapper took the planting back down to the wrapper's
     // own lines while the report still said "its own body" (A/B round 2,
     // 2026-09-07).
-    let mut widened_because: Option<String> = None;
+    // A crate-wide gate widens what the fingerprint hashes, but it must not
+    // stop the positive part of the walk. Mutation selection still needs
+    // every function and source file Ply can identify, especially the root
+    // itself; returning before this walk made a file-module root lose the
+    // basename Cargo Mutants uses for its selector and selected no mutants.
+    let mut widened_because: Option<String> = first_party.gate.clone();
     let mut queue: VecDeque<String> = VecDeque::new();
     // Seeded with every first-party type declaration, because no walk of
     // bodies can reach one and changing one changes what the bodies mean.
@@ -1533,6 +1535,37 @@ mod tests {
                 .is_some_and(|r| r.contains("impl")),
             "{:?}",
             scope.widened_because
+        );
+    }
+
+    /// Widening the fingerprint must not erase the root function's owner.
+    /// Mutation selection still needs the file Cargo Mutants uses to spell
+    /// a top-level function in a file module (`count_row`, not
+    /// `pipeline::count_row`). An unrelated impl block used to trip the
+    /// crate-wide gate before the root was resolved and left this list
+    /// empty, so the requested function selected no viable mutants.
+    #[test]
+    fn a_crate_wide_gate_keeps_the_root_functions_file_for_mutation_selection() {
+        let dir = crate_with(&[
+            (
+                "src/lib.rs",
+                "mod pipeline;\npub struct T;\nimpl T { pub fn go(&self) -> u32 { 1 } }\n",
+            ),
+            (
+                "src/pipeline.rs",
+                "pub fn count_row(x: u32) -> u32 { x + 1 }\n",
+            ),
+        ]);
+
+        let scope = scope_of(dir.path(), "pipeline::count_row", &[]);
+        assert_eq!(scope.scope, "whole-crate");
+        assert_eq!(
+            scope.reached_fn_files,
+            vec![(
+                "pipeline::count_row".to_string(),
+                "src/pipeline.rs".to_string()
+            )],
+            "a widened fingerprint still knows which function and file the check runs"
         );
     }
 

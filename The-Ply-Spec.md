@@ -1512,7 +1512,12 @@ had already identified rather than discarding them, and the run reports `W0530`:
 deliberate bugs went into a list Ply knows is partial, so a clean result covers less code
 than a complete one. Discarding them instead is how a single `vec!` in a wrapper took the
 planting from nine bugs back down to two while the report still said "its own body"
-(A/B round 2, 2026-09-07).
+(A/B round 2, 2026-09-07). This remains true when the conservative gate is known before
+the walk starts: widening the fingerprint to the whole crate does not erase positive
+function or source-file identities. In particular, a claimed top-level function in a
+file module retains its file-local cargo-mutants owner (`count_row` in
+`src/pipeline.rs`, not `pipeline::count_row`), or the widened run could select no mutant
+at all.
 
 `W0502`'s surviving-mutant count is not a pure weak-spec measure: an *equivalent* mutant —
 one whose change cannot alter observable behaviour — survives any spec, however strong.
