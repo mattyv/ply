@@ -398,6 +398,22 @@ refusal shipped the day before.
       corrected to what rule 9 now says, and the suite is now a CI step. A
       test nothing runs is not a test.
 
+- [x] **CLOSED: the spec reference now names the command that prints it.**
+      Asked whether `cargo ply skills` should also write out
+      `The-Ply-Spec.md`. It should not: the spec is already embedded, and
+      `cargo ply explain 5.4b` already prints any section on request; none
+      of the five guides reference the spec at all, by design, since each
+      carries its own gloss; and it is 239 KB of design rationale for
+      someone changing how Ply decides things, not for someone writing code
+      it checks. But the question exposed a real defect. Every `explain`
+      answer ended with "The reasoning behind this rule is in
+      The-Ply-Spec.md §5.4b" -- naming a file the reader does not have,
+      while saying nothing about the command in their hand that would print
+      it. It now names the command, with the section sign stripped, because
+      that is how a reference is written and not what `explain` takes as an
+      argument. Pinned by a test that runs the command each message names
+      and requires it to print the section.
+
 ## A/B round 4: the tool's best result, and three new gaps — 2026-09-07
 
 Two scenarios picked to reach ground the first three rounds could not. An

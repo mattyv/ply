@@ -168,10 +168,21 @@ fn one(code: &str, out: &mut impl Write) -> anyhow::Result<()> {
             )?;
         }
     }
+    // Name the command, not just the file. `cargo install` copies one
+    // executable, so a reader of this message has no `The-Ply-Spec.md` on
+    // disk -- while the binary they just ran carries the whole thing and
+    // will print any section on request. Pointing only at a filename sent
+    // them looking for something they do not have, straight past the one
+    // thing that would have answered them (2026-09-08).
+    //
+    // The section sign is stripped: it is how a reference is *written*, and
+    // is not part of what `explain` takes as an argument.
+    let anchor = entry.spec_anchor;
     writeln!(
         out,
-        "\nThe reasoning behind this rule is in The-Ply-Spec.md {}.",
-        entry.spec_anchor
+        "\nThe reasoning behind this rule is in The-Ply-Spec.md {anchor}, which this build \
+         carries -- run `cargo ply explain {}` to read it.",
+        anchor.trim_start_matches('§')
     )?;
     Ok(())
 }
@@ -308,6 +319,55 @@ mod tests {
             "the leading letter is the thing nothing else explains: {out}"
         );
         assert!(out.contains("The-Ply-Spec.md §8"), "{out}");
+    }
+
+    /// The signpost has to point somewhere the reader can actually go.
+    ///
+    /// `cargo install` copies one executable, so a person reading this
+    /// message has no `The-Ply-Spec.md` on disk to open -- but the binary
+    /// in their hand already carries it, and `explain` already serves any
+    /// section by number. Naming only the file sent them looking for
+    /// something they do not have, past the command that would have shown
+    /// it to them (2026-09-08).
+    #[test]
+    fn the_spec_reference_names_the_command_that_will_print_it() {
+        let out = render(Some("K0502"));
+        assert!(
+            out.contains("cargo ply explain 8"),
+            "the reference must name the command, not just a filename the reader has no \
+             copy of: {out}"
+        );
+    }
+
+    /// And the command it names has to be the one that works. A section
+    /// reference is printed with a leading section sign, which is not part
+    /// of what `explain` takes -- so a message that echoed the anchor
+    /// verbatim into a command line would be telling the reader to type
+    /// something the tool does not accept.
+    #[test]
+    fn the_command_it_names_is_one_the_tool_actually_accepts() {
+        for code in ["K0502", "V0509", "W0530"] {
+            let out = render(Some(code));
+            let line = out
+                .lines()
+                .find(|l| l.contains("cargo ply explain"))
+                .unwrap_or_else(|| panic!("no spec reference for {code}: {out}"));
+            let arg = line
+                .split("cargo ply explain ")
+                .nth(1)
+                .and_then(|rest| rest.split(['`', ' ', '.']).next())
+                .unwrap_or_else(|| panic!("no argument in: {line}"));
+            assert!(
+                !arg.contains('§'),
+                "`{arg}` still carries the section sign, which `explain` does not take as \
+                 part of a section number: {line}"
+            );
+            let printed = render(Some(arg));
+            assert!(
+                printed.contains("The-Ply-Spec.md"),
+                "and it has to print the section, not an error: {printed}"
+            );
+        }
     }
 
     /// `W0503` fires for two different outcomes at runtime (`verify.rs`):
