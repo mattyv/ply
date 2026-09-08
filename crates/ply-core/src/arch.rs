@@ -211,17 +211,22 @@ pub struct WorkspaceGraph {
 /// drive it directly against a crafted `Metadata` value with no
 /// `cargo metadata` process in the loop.
 pub fn crate_dependency_graph(crate_dir: &Path) -> Result<WorkspaceGraph, MetadataError> {
-    let output = Command::new("cargo")
+    let mut command = Command::new("cargo");
+    command
         .arg("metadata")
         .arg("--format-version=1")
-        .current_dir(crate_dir)
-        .output()
-        .map_err(|e| {
-            MetadataError(format!(
-                "could not run `cargo metadata` in {}: {e}",
-                crate_dir.display()
-            ))
-        })?;
+        .current_dir(crate_dir);
+    let output = crate::engines::run_until_cancelled(&mut command).map_err(|e| {
+        MetadataError(format!(
+            "could not run `cargo metadata` in {}: {e}",
+            crate_dir.display()
+        ))
+    })?;
+    if output.cancelled {
+        return Err(MetadataError(
+            "verification was interrupted while reading Cargo metadata".into(),
+        ));
+    }
     if !output.status.success() {
         return Err(MetadataError(format!(
             "`cargo metadata` failed in {}: {}",

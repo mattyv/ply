@@ -18,7 +18,7 @@ use ply_core::engines::fuzz as fuzz_engine;
 use ply_core::engines::kani::ProbeOutcome;
 use ply_core::engines::kani::{self, KaniOutcome, KaniRunConfig};
 use ply_core::engines::mutants::{self, MutantsRunConfig, MutantsRunOutcome};
-use ply_core::harness::{self, ContractFn, Param, RustType, StubKind, StubSpec};
+use ply_core::harness::{self, ContractFn, GeneratedHarness, Param, RustType, StubKind, StubSpec};
 use ply_core::harness_crate;
 use ply_core::model::{
     Check, Component, Document, FnClaim, InheritedChecks, component_default_checks,
@@ -51,6 +51,10 @@ pub struct VerifyOptions {
     /// is still deterministic for identical source -- the property vetting
     /// 004's finding 4 showed missing.
     pub seed: Option<[u8; 32]>,
+    /// Maximum number of Ply verification tasks active at once. Engines and
+    /// compilers started by a task may use additional processes or threads.
+    /// One preserves the historical serial execution path.
+    pub jobs: usize,
 }
 
 /// The engine-timeout default (Task 0 of the M4 brief): §6 used to say a
@@ -349,10 +353,9 @@ fn compiler_configuration(
 /// forward. Recording a compiler that never compiled anything here is the
 /// kind of quiet wrongness that lets stale evidence look current.
 fn rustc_identity(crate_dir: &Path) -> (String, String) {
-    let out = std::process::Command::new("rustc")
-        .arg("-vV")
-        .current_dir(crate_dir)
-        .output();
+    let mut command = std::process::Command::new("rustc");
+    command.arg("-vV").current_dir(crate_dir);
+    let out = ply_core::engines::run_until_cancelled(&mut command);
     let text = match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
         _ => return ("unknown".into(), "unknown".into()),
@@ -816,11 +819,31 @@ fn verify_loaded_crate(
     // result stood on. Leaving them out is what made a broken helper reuse
     // a green verdict (adversarial review of result reuse, D1).
     let first_party = reach::scan_first_party(crate_dir);
-    // A build script can read inputs no source walk can enumerate. For
-    // this closure, every claim runs fresh and no result is stored; an
-    // honest extra engine run is preferable to stale evidence about a
-    // different build (§5.2a).
-    let result_reuse_is_sound = first_party.result_reuse_is_sound();
+    // Resolve and validate the dependency graph before any generated
+    // harness can temporarily edit workspace membership. Parallel workers
+    // copy this exact lock, validate that copy with locked metadata, and
+    // reject an engine result if it changes; if Cargo says the original lock
+    // is absent or stale, this run stays serial so ordinary Cargo can
+    // materialise the new resolution in the user's workspace.
+    let verification_state = cargo_verification_state(crate_dir, &first_party);
+    let (verification_workspace_root, lock_is_current, dependency_closure_is_complete) =
+        match verification_state {
+            Ok(state) => state,
+            Err(_) if opts.jobs == 1 && !crate_dir.join("Cargo.toml").is_file() => (
+                crate_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| crate_dir.to_path_buf()),
+                false,
+                false,
+            ),
+            Err(error) => return Err(error),
+        };
+    // A build script or a local dependency the source walk did not resolve
+    // can change code no fingerprint names. For this closure every claim
+    // runs fresh and no result is stored; an honest extra engine run is
+    // preferable to stale evidence about a different build (§5.2a).
+    let result_reuse_is_sound =
+        first_party.result_reuse_is_sound() && dependency_closure_is_complete;
     let deps_at_plan_time = reach::dependency_identity(crate_dir);
     // Every claim this run either reused or earned. Everything else is
     // dropped from the record at the end: a claim somebody deleted, one
@@ -1788,7 +1811,7 @@ fn verify_loaded_crate(
     // fresh claim in the order Pass 1 already produced -- fuzz/test/mutate
     // claims and unsupported/unclaimed ones never consult `known_bounded` at
     // all, so nothing about their order is load-bearing.
-    let mut processing_order: Vec<usize> = topo_order;
+    let mut processing_order: Vec<usize> = topo_order.clone();
     processing_order.extend(tainted.iter().copied());
     let ordered: std::collections::BTreeSet<usize> = processing_order.iter().copied().collect();
     processing_order.extend(
@@ -1823,69 +1846,373 @@ fn verify_loaded_crate(
     // reported as `reused: true` (caught by `resultreuse_fixture`, 2026-08-26).
     let mut results: Vec<Option<(Node, Vec<Diagnostic>)>> =
         (0..plans.len()).map(|_| None).collect();
+    // Deferred bounded-cache findings are collected per claim, then emitted
+    // in the serial scheduler's canonical order. Wave traversal is allowed
+    // to change start time, never the order of W0516 or displaced-record
+    // entries in the envelope.
+    let mut deferred_cache_diagnostics: Vec<Vec<Diagnostic>> =
+        (0..plans.len()).map(|_| Vec::new()).collect();
+    let mut deferred_not_carried: Vec<Vec<ply_core::diag::NotCarriedForward>> =
+        (0..plans.len()).map(|_| Vec::new()).collect();
     // Every rendered cex test any fn in this run earns, across the whole
     // loop below -- written to `ply_generated_cex.rs` exactly once, after
     // the loop, so a second fn's counterexample never overwrites a first
     // fn's (`push_cex_test`'s own doc comment has the full story).
     let mut all_cex_tests: Vec<RenderedTest> = Vec::new();
-    for idx in processing_order {
-        if bounded_eligible.contains(&idx) {
-            resolve_contracted_calls(
-                &mut plans[idx].boundary,
-                tainted.contains(&idx),
-                &known_bounded,
-            );
-            plans[idx].inputs.verified_bounds = plans[idx].boundary.verified.clone();
-            let hit = result_reuse_is_sound
-                .then(|| {
-                    lookup_record(
-                        &record,
-                        &plans[idx].node_id,
-                        &plans[idx].inputs,
-                        &plans[idx].check_spellings,
-                        &mut diagnostics,
-                        &mut not_carried_forward,
-                        &plans[idx].widened_because,
-                    )
-                })
-                .flatten();
-            if let Some(entry) = hit {
-                if !entry.statuses.iter().any(|s| s == "conditional")
-                    && let Some(k) = parse_bound(&entry.verdict)
-                {
-                    known_bounded.insert(plans[idx].cf.path.clone(), k);
+    let mut pending_witnesses: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    if opts.jobs == 1 {
+        for &idx in &processing_order {
+            if ply_core::engines::cancellation_requested() {
+                anyhow::bail!("verification was interrupted; no partial result was published");
+            }
+            if bounded_eligible.contains(&idx) {
+                resolve_contracted_calls(
+                    &mut plans[idx].boundary,
+                    tainted.contains(&idx),
+                    &known_bounded,
+                );
+                plans[idx].inputs.verified_bounds = plans[idx].boundary.verified.clone();
+                let hit = result_reuse_is_sound
+                    .then(|| {
+                        lookup_record(
+                            &record,
+                            &plans[idx].node_id,
+                            &plans[idx].inputs,
+                            &plans[idx].check_spellings,
+                            &mut deferred_cache_diagnostics[idx],
+                            &mut deferred_not_carried[idx],
+                            &plans[idx].widened_because,
+                        )
+                    })
+                    .flatten();
+                if let Some(entry) = hit {
+                    if !entry.statuses.iter().any(|s| s == "conditional")
+                        && let Some(k) = parse_bound(&entry.verdict)
+                    {
+                        known_bounded.insert(plans[idx].cf.path.clone(), k);
+                    }
+                    reused[idx] = Some(entry);
+                    continue;
                 }
-                reused[idx] = Some(entry);
-                continue;
+            }
+            let (node, fn_diags) = run_fn_checks(
+                &plans[idx].node_id,
+                &src_dir,
+                &lib_path,
+                crate_dir,
+                plans[idx].fn_name,
+                &plans[idx].cf,
+                &plans[idx].checks,
+                &plans[idx].boundary,
+                &plans[idx].seed,
+                harness_info.as_ref(),
+                &plans[idx].reached_fns,
+                &plans[idx].reached_foreign,
+                &plans[idx].reached_files,
+                plans[idx].widened_because.as_deref(),
+                !plans[idx].claim.examples.is_empty(),
+                opts,
+                None,
+                &mut all_cex_tests,
+                &examples_pool,
+            )?;
+            remember_clean_bound(&plans[idx].cf.path, &node, &mut known_bounded);
+            results[idx] = Some((node, fn_diags));
+        }
+    } else {
+        let cancelled = ply_core::engines::cancellation_flag();
+        let worker_workspace_root = &verification_workspace_root;
+        let mut waves = ply_core::schedule::waves(&topo_order, &edges);
+        waves.push(tainted.iter().copied().collect());
+        let non_bounded: Vec<usize> = processing_order
+            .iter()
+            .copied()
+            .filter(|idx| !bounded_eligible.contains(idx))
+            .collect();
+        waves.push(non_bounded);
+
+        for wave in waves {
+            if ply_core::engines::cancellation_requested() {
+                anyhow::bail!("verification was interrupted; no partial result was published");
+            }
+            let mut fresh = Vec::new();
+            for idx in wave {
+                if bounded_eligible.contains(&idx) {
+                    resolve_contracted_calls(
+                        &mut plans[idx].boundary,
+                        tainted.contains(&idx),
+                        &known_bounded,
+                    );
+                    plans[idx].inputs.verified_bounds = plans[idx].boundary.verified.clone();
+                    let hit = result_reuse_is_sound
+                        .then(|| {
+                            lookup_record(
+                                &record,
+                                &plans[idx].node_id,
+                                &plans[idx].inputs,
+                                &plans[idx].check_spellings,
+                                &mut deferred_cache_diagnostics[idx],
+                                &mut deferred_not_carried[idx],
+                                &plans[idx].widened_because,
+                            )
+                        })
+                        .flatten();
+                    if let Some(entry) = hit {
+                        if !entry.statuses.iter().any(|s| s == "conditional")
+                            && let Some(k) = parse_bound(&entry.verdict)
+                        {
+                            known_bounded.insert(plans[idx].cf.path.clone(), k);
+                        }
+                        reused[idx] = Some(entry);
+                        continue;
+                    }
+                }
+                fresh.push(idx);
+            }
+
+            let mut parallel = Vec::new();
+            for idx in fresh {
+                let plan = &plans[idx];
+                let generated_source_is_relocation_safe = match plan.checks.as_slice() {
+                    [Check::Bounded(bound)] => {
+                        harness::generate_proof_module(&plan.cf, *bound, &plan.boundary.stubs)
+                            .is_ok_and(|generated| {
+                                reach::generated_source_relocation_is_sound(
+                                    &generated.module_source,
+                                )
+                            })
+                    }
+                    _ => false,
+                };
+                let worker_safe = !tainted.contains(&idx)
+                    && result_reuse_is_sound
+                    // A private Cargo resolution must start from the same
+                    // committed dependency choice the fingerprint names.
+                    // With no original workspace lock, resolving only in a
+                    // shadow would leave the original lock absent and let a
+                    // later run reuse the `(no Cargo.lock)` fingerprint even
+                    // if the registry selected different versions. The
+                    // serial path creates Cargo.lock normally; a subsequent
+                    // run can then copy and parallelise that fixed graph.
+                    && lock_is_current
+                    && dependency_closure_is_complete
+                    && first_party.source_relocation_is_sound()
+                    && generated_source_is_relocation_safe
+                    // A fuzz/test/state harness registered in the user's
+                    // workspace temporarily adds a member below `target/`.
+                    // Worker shadows deliberately exclude target trees, so
+                    // copying that transient manifest would leave Cargo
+                    // pointing at an absent member. Keep bounded work serial
+                    // for that mixed run; the registration guard restores
+                    // the manifest before a later bounded-only run can use
+                    // private workers.
+                    && !matches!(harness_info.as_ref(), Some(info) if !info.standalone)
+                    && plan.checks.len() == 1
+                    && matches!(&plan.checks[0], Check::Bounded(_))
+                    && plan.cf.is_bounded_supported()
+                    && plan.boundary.unclaimed.is_empty()
+                    && plan.boundary.opaque.is_empty()
+                    && plan.boundary.unstubbable.is_empty()
+                    && plan.boundary.unstubbable_contracted.is_empty();
+                if !worker_safe {
+                    let (node, fn_diags) = run_fn_checks(
+                        &plan.node_id,
+                        &src_dir,
+                        &lib_path,
+                        crate_dir,
+                        plan.fn_name,
+                        &plan.cf,
+                        &plan.checks,
+                        &plan.boundary,
+                        &plan.seed,
+                        harness_info.as_ref(),
+                        &plan.reached_fns,
+                        &plan.reached_foreign,
+                        &plan.reached_files,
+                        plan.widened_because.as_deref(),
+                        !plan.claim.examples.is_empty(),
+                        opts,
+                        None,
+                        &mut all_cex_tests,
+                        &examples_pool,
+                    )?;
+                    remember_clean_bound(&plan.cf.path, &node, &mut known_bounded);
+                    results[idx] = Some((node, fn_diags));
+                    continue;
+                }
+                parallel.push(idx);
+            }
+
+            // Prepare no more source shadows than can actually run. A wave
+            // can contain hundreds of independent claims; materialising one
+            // workspace copy for every member before a two-worker run would
+            // make `-j 2` consume wave-sized disk instead of job-sized disk.
+            for chunk in parallel.chunks(opts.jobs.max(1)) {
+                let mut contexts: BTreeMap<usize, BoundedWorkerContext> = BTreeMap::new();
+                let mut engine_tasks: BTreeMap<usize, BoundedEngineTask> = BTreeMap::new();
+                for &idx in chunk {
+                    let plan = &plans[idx];
+                    let Check::Bounded(bound) = &plan.checks[0] else {
+                        unreachable!("worker_safe accepted only one bounded check")
+                    };
+                    let generated =
+                        harness::generate_proof_module(&plan.cf, *bound, &plan.boundary.stubs)?;
+                    let context = BoundedWorkerContext::prepare(
+                        BoundedWorkerSpec {
+                            workspace_root: worker_workspace_root,
+                            package_dirs: first_party.package_dirs(),
+                            source_paths: first_party.source_paths(),
+                            crate_dir,
+                            src_dir: &src_dir,
+                            lib_path: &lib_path,
+                            fn_name: plan.fn_name,
+                            engine_timeout_secs: opts.engine_timeout_secs.unwrap_or_else(|| {
+                                default_engine_timeout_secs(
+                                    plan.cf.has_vec_param(),
+                                    *bound,
+                                    !plan.boundary.stubs.is_empty(),
+                                )
+                            }),
+                        },
+                        generated,
+                    )?;
+                    engine_tasks.insert(
+                        idx,
+                        BoundedEngineTask {
+                            promise: context.generated.promise.clone(),
+                            run_cfg: context.run_cfg.clone(),
+                        },
+                    );
+                    contexts.insert(idx, context);
+                }
+
+                let completed = ply_core::schedule::run_jobs(
+                    chunk,
+                    opts.jobs,
+                    cancelled,
+                    |idx| -> Result<BoundedExecution> {
+                        let task = &engine_tasks[&idx];
+                        execute_bounded(&task.promise, &task.run_cfg)
+                    },
+                );
+                if ply_core::engines::cancellation_requested() {
+                    anyhow::bail!("verification was interrupted; no partial result was published");
+                }
+                for (idx, outcome) in completed {
+                    let execution: std::result::Result<_, BoundedWorkerResult> = match outcome {
+                        Ok(Ok(execution)) => Ok(execution),
+                        Ok(Err(error)) => Err(bounded_worker_failed(
+                            &plans[idx].node_id,
+                            plans[idx].fn_name,
+                            &error.to_string(),
+                        )),
+                        Err(panic) => Err(bounded_worker_failed(
+                            &plans[idx].node_id,
+                            plans[idx].fn_name,
+                            &panic,
+                        )),
+                    };
+                    let execution = match execution {
+                        Ok(execution) => execution,
+                        Err(worker_result) => {
+                            results[idx] = Some((worker_result.node, worker_result.diagnostics));
+                            continue;
+                        }
+                    };
+                    let context = contexts
+                        .get_mut(&idx)
+                        .expect("every scheduled worker has a context");
+                    if !context.lock_is_unchanged() {
+                        let worker_result = bounded_worker_failed(
+                            &plans[idx].node_id,
+                            plans[idx].fn_name,
+                            "Cargo changed the worker's copy of Cargo.lock, so this proof did not run against the dependency resolution Ply fingerprinted",
+                        );
+                        results[idx] = Some((worker_result.node, worker_result.diagnostics));
+                        continue;
+                    }
+                    context.execution = Some(execution);
+                    let plan = &plans[idx];
+                    let worker = &contexts[&idx];
+                    let mut cex_tests = Vec::new();
+                    let (node, fn_diags) = run_fn_checks(
+                        &plan.node_id,
+                        &src_dir,
+                        &lib_path,
+                        crate_dir,
+                        plan.fn_name,
+                        &plan.cf,
+                        &plan.checks,
+                        &plan.boundary,
+                        &plan.seed,
+                        None,
+                        &plan.reached_fns,
+                        &plan.reached_foreign,
+                        &plan.reached_files,
+                        plan.widened_because.as_deref(),
+                        !plan.claim.examples.is_empty(),
+                        opts,
+                        Some(worker),
+                        &mut cex_tests,
+                        &examples_pool,
+                    )?;
+                    let witness = match std::fs::read(&worker.witness_path) {
+                        Ok(bytes) => Some(bytes),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                        Err(error) => return Err(error).context("reading a worker witness"),
+                    };
+                    let worker_result = BoundedWorkerResult {
+                        node,
+                        diagnostics: fn_diags,
+                        cex_tests,
+                        witness,
+                    };
+                    if let Some(witness) = worker_result.witness {
+                        pending_witnesses.push((
+                            crate_dir
+                                .join("target/ply/witness")
+                                .join(format!("{}.json", plans[idx].fn_name)),
+                            witness,
+                        ));
+                    }
+                    all_cex_tests.extend(worker_result.cex_tests);
+                    remember_clean_bound(
+                        &plans[idx].cf.path,
+                        &worker_result.node,
+                        &mut known_bounded,
+                    );
+                    results[idx] = Some((worker_result.node, worker_result.diagnostics));
+                }
             }
         }
-        let (node, fn_diags) = run_fn_checks(
-            &plans[idx].node_id,
-            &src_dir,
-            &lib_path,
-            crate_dir,
-            plans[idx].fn_name,
-            &plans[idx].cf,
-            &plans[idx].checks,
-            &plans[idx].boundary,
-            &plans[idx].seed,
-            harness_info.as_ref(),
-            &plans[idx].reached_fns,
-            &plans[idx].reached_foreign,
-            &plans[idx].reached_files,
-            plans[idx].widened_because.as_deref(),
-            !plans[idx].claim.examples.is_empty(),
-            opts,
-            &mut all_cex_tests,
-            &examples_pool,
-        )?;
-        if node.verdict.starts_with("bounded(")
-            && !node.statuses.iter().any(|s| s == "conditional")
-            && let Some(k) = parse_bound(&node.verdict)
-        {
-            known_bounded.insert(plans[idx].cf.path.clone(), k);
+    }
+
+    if ply_core::engines::cancellation_requested() {
+        anyhow::bail!("verification was interrupted; no partial result was published");
+    }
+
+    // A serial first run may have created Cargo.lock. Re-read the resolved
+    // graph once, after every engine has stopped but before publishing the
+    // record, so that fresh evidence can be cached without pretending the
+    // initially unknown resolution was safe. Workers never reach this path
+    // with an unknown graph: they were held on the serial path above.
+    let result_storage_is_sound = first_party.result_reuse_is_sound()
+        && cargo_verification_state(crate_dir, &first_party)
+            .is_ok_and(|(_, lock_current, closure_complete)| lock_current && closure_complete);
+    if ply_core::engines::cancellation_requested() {
+        anyhow::bail!("verification was interrupted; no partial result was published");
+    }
+
+    for &idx in &processing_order {
+        diagnostics.append(&mut deferred_cache_diagnostics[idx]);
+        not_carried_forward.append(&mut deferred_not_carried[idx]);
+    }
+
+    for (path, witness) in pending_witnesses {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        results[idx] = Some((node, fn_diags));
+        std::fs::write(&path, witness).with_context(|| format!("publishing {}", path.display()))?;
     }
 
     // One combined write for every cex test this whole run earned (§9,
@@ -1935,7 +2262,7 @@ fn verify_loaded_crate(
         // Recorded only when this run earned evidence: a violation, a
         // timeout or any other absence is never stored, so nothing that
         // failed can ever be carried forward (§5.2a).
-        if earned_evidence(&node, &fn_diags) && result_reuse_is_sound {
+        if earned_evidence(&node, &fn_diags) && result_storage_is_sound {
             kept_claims.insert(plan.node_id.clone());
             // The dependency versions are read again here, not reused from
             // plan time: a crate that had never been built has no lockfile
@@ -1964,6 +2291,9 @@ fn verify_loaded_crate(
             .push(node);
     }
 
+    if ply_core::engines::cancellation_requested() {
+        anyhow::bail!("verification was interrupted; the existing record was preserved");
+    }
     record.retain_claims(&kept_claims);
     record::save(&record_path, &record)?;
 
@@ -2021,6 +2351,87 @@ fn verify_loaded_crate(
         source_map,
         links: BTreeMap::new(),
     })
+}
+
+fn first_party_closure_is_complete(
+    first_party: &reach::FirstParty,
+    cargo: &harness_crate::CargoLocalClosure,
+) -> bool {
+    let scanned_dirs: std::collections::BTreeSet<PathBuf> = first_party
+        .package_dirs()
+        .iter()
+        .filter_map(|path| path.canonicalize().ok())
+        .collect();
+    let scanned_sources: std::collections::BTreeSet<PathBuf> =
+        first_party.source_paths().iter().cloned().collect();
+    cargo
+        .package_dirs
+        .iter()
+        .all(|path| scanned_dirs.contains(path))
+        && cargo
+            .library_sources
+            .iter()
+            .all(|path| scanned_sources.contains(path))
+}
+
+fn cargo_verification_state(
+    crate_dir: &Path,
+    first_party: &reach::FirstParty,
+) -> Result<(PathBuf, bool, bool)> {
+    let workspace_root = harness_crate::cargo_workspace_root(crate_dir)?;
+    let lock_is_current = workspace_root.join("Cargo.lock").is_file()
+        && harness_crate::cargo_lock_is_current(crate_dir)?;
+    let closure_is_complete = if lock_is_current {
+        first_party_closure_is_complete(
+            first_party,
+            &harness_crate::cargo_local_dependency_closure(crate_dir)?,
+        )
+    } else {
+        false
+    };
+    Ok((workspace_root, lock_is_current, closure_is_complete))
+}
+
+fn remember_clean_bound(path: &str, node: &Node, known: &mut BTreeMap<String, u32>) {
+    if !node.statuses.iter().any(|status| status == "conditional")
+        && let Some(bound) = parse_bound(&node.verdict)
+    {
+        known.insert(path.to_string(), bound);
+    }
+}
+
+fn bounded_worker_failed(node_id: &str, fn_name: &str, reason: &str) -> BoundedWorkerResult {
+    BoundedWorkerResult {
+        node: Node {
+            id: fn_name.to_string(),
+            kind: "fn".into(),
+            verdict: "tool_error".into(),
+            statuses: vec!["tool_error".into()],
+            reused: false,
+            evidence: None,
+            children: vec![],
+            ..Default::default()
+        },
+        diagnostics: vec![Diagnostic {
+            code: "X0901".into(),
+            severity: "error".into(),
+            phase: "verify".into(),
+            engine: "ply".into(),
+            check: "bounded".into(),
+            node_id: node_id.into(),
+            title: format!(
+                "Ply's worker for `{fn_name}` stopped unexpectedly, so this claim earned no evidence: {reason}. (X0901)"
+            ),
+            pointer: None,
+            primary_span: None,
+            counterexample: None,
+            fixes: vec![],
+            assumptions: vec![],
+            open_item: Some("tool_error".into()),
+        }],
+        cex_tests: vec![],
+        witness: None,
+    }
 }
 
 /// A stored result whose verdict none of its own checks could have earned:
@@ -3577,6 +3988,342 @@ struct HarnessInfo {
     standalone: bool,
 }
 
+/// Everything one concurrent bounded worker may write. The coordinator
+/// copies the workspace without build outputs, installs this claim's sole
+/// proof module in that shadow, and gives Cargo a private target directory.
+/// The worker therefore cannot compile another claim's generated source or
+/// alter the user's workspace.
+struct BoundedWorkerContext {
+    generated: GeneratedHarness,
+    witness_path: PathBuf,
+    run_cfg: KaniRunConfig,
+    lock_path: PathBuf,
+    lock_bytes: Vec<u8>,
+    execution: Option<BoundedExecution>,
+    _root: tempfile::TempDir,
+}
+
+struct BoundedWorkerSpec<'a> {
+    workspace_root: &'a Path,
+    package_dirs: &'a [PathBuf],
+    source_paths: &'a [PathBuf],
+    crate_dir: &'a Path,
+    src_dir: &'a Path,
+    lib_path: &'a Path,
+    fn_name: &'a str,
+    engine_timeout_secs: u32,
+}
+
+impl BoundedWorkerContext {
+    fn prepare(spec: BoundedWorkerSpec<'_>, generated: GeneratedHarness) -> Result<Self> {
+        let BoundedWorkerSpec {
+            workspace_root,
+            package_dirs,
+            source_paths,
+            crate_dir,
+            src_dir,
+            lib_path,
+            fn_name,
+            engine_timeout_secs,
+        } = spec;
+        let root = tempfile::Builder::new()
+            .prefix("ply-bounded-worker-")
+            .tempdir()
+            .context("creating a private output directory for a bounded proof")?;
+        let crate_dir = crate_dir
+            .canonicalize()
+            .with_context(|| format!("resolving worker crate {}", crate_dir.display()))?;
+        let src_dir = src_dir
+            .canonicalize()
+            .with_context(|| format!("resolving worker source {}", src_dir.display()))?;
+        let lib_path = lib_path
+            .canonicalize()
+            .with_context(|| format!("resolving worker crate root {}", lib_path.display()))?;
+        let (private_workspace, source_roots) =
+            copy_sources_for_worker(root.path(), workspace_root, package_dirs, source_paths)?;
+        let crate_relative = crate_dir.strip_prefix(workspace_root).with_context(|| {
+            format!(
+                "locating {} inside Cargo workspace {}",
+                crate_dir.display(),
+                workspace_root.display()
+            )
+        })?;
+        let src_relative = src_dir.strip_prefix(workspace_root).with_context(|| {
+            format!(
+                "locating {} inside Cargo workspace {}",
+                src_dir.display(),
+                workspace_root.display()
+            )
+        })?;
+        let lib_relative = lib_path.strip_prefix(workspace_root).with_context(|| {
+            format!(
+                "locating {} inside Cargo workspace {}",
+                lib_path.display(),
+                workspace_root.display()
+            )
+        })?;
+        let private_crate = private_workspace.join(crate_relative);
+        harness::write_generated_module(
+            &private_workspace.join(src_relative),
+            &private_workspace.join(lib_relative),
+            &generated.module_source,
+        )?;
+        let witness_path = root.path().join("witness.json");
+        let published_witness = crate_dir
+            .join("target/ply/witness")
+            .join(format!("{fn_name}.json"));
+        if published_witness.exists() {
+            std::fs::copy(&published_witness, &witness_path).with_context(|| {
+                format!(
+                    "copying {} into the bounded worker's private witness directory",
+                    published_witness.display()
+                )
+            })?;
+        }
+        let target_dir = root.path().join("target");
+        let lock_path = private_workspace.join("Cargo.lock");
+        let lock_bytes = std::fs::read(&lock_path).with_context(|| {
+            format!(
+                "reading the validated dependency resolution from {}",
+                lock_path.display()
+            )
+        })?;
+        let mut locked_metadata = std::process::Command::new("cargo");
+        locked_metadata
+            .args(["metadata", "--format-version=1", "--locked"])
+            .arg("--manifest-path")
+            .arg(private_crate.join("Cargo.toml"))
+            .current_dir(&crate_dir);
+        let locked_metadata = ply_core::engines::run_until_cancelled(&mut locked_metadata)
+            .context("validating the dependency resolution inside a worker source shadow")?;
+        if locked_metadata.cancelled {
+            anyhow::bail!("verification was interrupted while validating a worker source shadow");
+        }
+        if !locked_metadata.status.success() {
+            anyhow::bail!(
+                "the worker source shadow could not use the original Cargo.lock without changing it: {}",
+                locked_metadata.stderr_string().trim()
+            );
+        }
+        let run_cfg = KaniRunConfig {
+            crate_dir: crate_dir.clone(),
+            harness_path: generated.proof_fn_path.clone(),
+            engine_timeout_secs,
+            enable_stubbing: !generated.stubbed.is_empty(),
+            target_dir: Some(target_dir.clone()),
+            manifest_path: Some(private_crate.join("Cargo.toml")),
+            source_roots,
+        };
+        Ok(Self {
+            generated,
+            witness_path,
+            run_cfg,
+            lock_path,
+            lock_bytes,
+            execution: None,
+            _root: root,
+        })
+    }
+
+    fn lock_is_unchanged(&self) -> bool {
+        std::fs::read(&self.lock_path).is_ok_and(|now| now == self.lock_bytes)
+    }
+}
+
+/// Copies the source/configuration view one worker compiles while excluding
+/// build and mutation outputs. Directory symlinks are followed into private
+/// directories instead of being preserved: a generated proof must never
+/// reach back through a symlink and edit the original workspace.
+fn copy_sources_for_worker(
+    worker_root: &Path,
+    workspace_root: &Path,
+    package_dirs: &[PathBuf],
+    source_paths: &[PathBuf],
+) -> Result<(PathBuf, Vec<(PathBuf, PathBuf)>)> {
+    let workspace_root = workspace_root.canonicalize().with_context(|| {
+        format!(
+            "resolving Cargo workspace root {} for worker isolation",
+            workspace_root.display()
+        )
+    })?;
+    let source_mirror = worker_root.join("source");
+    let private_workspace = mirrored_source_path(&source_mirror, &workspace_root)?;
+    let mut copy_roots = vec![workspace_root.clone()];
+    let packages: Vec<PathBuf> = package_dirs
+        .iter()
+        .filter_map(|path| path.canonicalize().ok())
+        .collect();
+    let mut protected = packages.clone();
+    protected.extend(
+        source_paths
+            .iter()
+            .filter_map(|path| path.canonicalize().ok()),
+    );
+    for package in packages {
+        if copy_roots.iter().any(|root| package.starts_with(root)) {
+            continue;
+        }
+        // A path dependency can inherit `edition`, dependencies, lints, and
+        // other fields from a workspace outside the workspace being
+        // verified. Copying only its package directory leaves those
+        // `*.workspace = true` fields without their owner and makes the
+        // private manifest invalid. Ask Cargo for the owning root and keep
+        // that configuration beside the package at the same mirrored path.
+        let owner = harness_crate::cargo_workspace_root(&package).with_context(|| {
+            format!(
+                "resolving the Cargo workspace that owns path dependency {}",
+                package.display()
+            )
+        })?;
+        copy_roots.push(owner);
+    }
+    copy_roots.sort_by_key(|path| path.components().count());
+    copy_roots.dedup();
+    let mut retained_roots = Vec::new();
+    for root in copy_roots {
+        if retained_roots
+            .iter()
+            .any(|retained: &PathBuf| root.starts_with(retained))
+        {
+            continue;
+        }
+        retained_roots.push(root);
+    }
+
+    let mut excluded = Vec::new();
+    for root in &retained_roots {
+        excluded.push(
+            harness_crate::cargo_target_directory(root).with_context(|| {
+                format!(
+                    "resolving Cargo's build-output directory under {}",
+                    root.display()
+                )
+            })?,
+        );
+        excluded.push(root.join("mutants.out"));
+        excluded.push(root.join("mutants.out.old"));
+    }
+    let excluded: Vec<PathBuf> = excluded
+        .into_iter()
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .collect();
+
+    let mut source_roots = Vec::new();
+    for root in retained_roots {
+        let private = mirrored_source_path(&source_mirror, &root)?;
+        copy_workspace_entry(&root, &private, &mut Vec::new(), &excluded, &protected)?;
+        source_roots.push((private, root));
+    }
+    source_roots.sort_by_key(|(private, _)| std::cmp::Reverse(private.components().count()));
+    Ok((private_workspace, source_roots))
+}
+
+fn mirrored_source_path(mirror: &Path, original: &Path) -> Result<PathBuf> {
+    let relative = original.strip_prefix(Path::new("/")).with_context(|| {
+        format!(
+            "worker isolation needs an absolute source path, got {}",
+            original.display()
+        )
+    })?;
+    Ok(mirror.join(relative))
+}
+
+fn copy_workspace_entry(
+    source: &Path,
+    destination: &Path,
+    ancestors: &mut Vec<PathBuf>,
+    excluded: &[PathBuf],
+    protected: &[PathBuf],
+) -> Result<()> {
+    if ply_core::engines::cancellation_requested() {
+        anyhow::bail!("verification was interrupted while preparing a worker source shadow");
+    }
+    let metadata = std::fs::metadata(source)
+        .with_context(|| format!("reading worker input {}", source.display()))?;
+    if metadata.is_dir() {
+        let canonical = source
+            .canonicalize()
+            .with_context(|| format!("resolving worker input {}", source.display()))?;
+        // Cargo marks build directories with CACHEDIR.TAG/.rustc_info.json;
+        // Ply marks its package-local target tree with a publication lock.
+        // These can sit below nested or excluded workspaces whose effective
+        // target directory is not the retained root's own target directory.
+        // Recognise the artifacts, not the basename: `src/target` is valid
+        // source and is covered by a regression below.
+        if source.file_name().and_then(std::ffi::OsStr::to_str) == Some("target")
+            && (source.join("CACHEDIR.TAG").is_file()
+                || source.join(".rustc_info.json").is_file()
+                || source.join("ply/.publication.lock").is_file())
+            && !protected.iter().any(|path| path.starts_with(&canonical))
+        {
+            return Ok(());
+        }
+        if excluded.iter().any(|path| path == &canonical) {
+            return Ok(());
+        }
+        if ancestors.contains(&canonical) {
+            anyhow::bail!(
+                "cannot isolate the workspace because {} forms a directory-symlink cycle",
+                source.display()
+            );
+        }
+        ancestors.push(canonical);
+        std::fs::create_dir_all(destination)
+            .with_context(|| format!("creating worker directory {}", destination.display()))?;
+        let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(source)
+            .with_context(|| format!("reading worker directory {}", source.display()))?
+            .collect::<std::io::Result<_>>()?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let name = entry.file_name();
+            if name.to_str() == Some(".git") {
+                continue;
+            }
+            copy_workspace_entry(
+                &entry.path(),
+                &destination.join(name),
+                ancestors,
+                excluded,
+                protected,
+            )?;
+        }
+        ancestors.pop();
+        return Ok(());
+    }
+    if metadata.is_file() {
+        std::fs::copy(source, destination).with_context(|| {
+            format!(
+                "copying worker input {} to {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+        return Ok(());
+    }
+    anyhow::bail!(
+        "cannot isolate unsupported workspace entry {}",
+        source.display()
+    )
+}
+
+struct BoundedExecution {
+    promise_findings: Vec<PromiseFinding>,
+    outcome: Option<KaniOutcome>,
+}
+
+#[derive(Clone)]
+struct BoundedEngineTask {
+    promise: PromisePlan,
+    run_cfg: KaniRunConfig,
+}
+
+struct BoundedWorkerResult {
+    node: Node,
+    diagnostics: Vec<Diagnostic>,
+    cex_tests: Vec<RenderedTest>,
+    witness: Option<Vec<u8>>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_fn_checks(
     node_id: &str,
@@ -3605,6 +4352,7 @@ fn run_fn_checks(
     scope_incomplete: Option<&str>,
     has_examples: bool,
     opts: &VerifyOptions,
+    bounded_worker: Option<&BoundedWorkerContext>,
     // Every rendered cex test earned by any fn in this whole run, so far --
     // accumulated rather than written per-fn (`push_cex_test`'s own doc).
     cex_tests_out: &mut Vec<RenderedTest>,
@@ -3634,6 +4382,7 @@ fn run_fn_checks(
                     *k,
                     boundary,
                     opts,
+                    bounded_worker,
                     &mut promise_diags,
                     cex_tests_out,
                 )?;
@@ -4182,16 +4931,24 @@ fn promise_findings(plan: &PromisePlan, run_cfg: &KaniRunConfig) -> Vec<PromiseF
     if plan.is_empty() {
         return vec![];
     }
+    let module_stem = run_cfg
+        .harness_path
+        .split_once("::")
+        .map(|(module, _)| module)
+        .unwrap_or("ply_generated");
     ply_core::promise::findings(plan, |h| {
         let cfg = KaniRunConfig {
             crate_dir: run_cfg.crate_dir.clone(),
-            harness_path: format!("ply_generated::{}", h.fn_name),
+            harness_path: format!("{module_stem}::{}", h.fn_name),
             // A probe over one scalar type is solved in hundredths of a
             // second (measured 2026-08-25). A minute is generous; the point
             // of capping it is that a pathological clause must not eat the
             // proof's own budget before the proof has started.
             engine_timeout_secs: run_cfg.engine_timeout_secs.min(60),
             enable_stubbing: run_cfg.enable_stubbing,
+            target_dir: run_cfg.target_dir.clone(),
+            manifest_path: run_cfg.manifest_path.clone(),
+            source_roots: run_cfg.source_roots.clone(),
         };
         match kani::run_probe(&cfg) {
             Ok(ProbeOutcome::Holds) => HarnessAnswer::Holds,
@@ -5371,6 +6128,22 @@ fn kani_timeout_fixes(
     fixes
 }
 
+fn execute_bounded(promise: &PromisePlan, run_cfg: &KaniRunConfig) -> Result<BoundedExecution> {
+    let promise_findings = promise_findings(promise, run_cfg);
+    let outcome = if promise_findings
+        .iter()
+        .any(|finding| finding.verdict == ClauseVerdict::Unsatisfiable)
+    {
+        None
+    } else {
+        Some(kani::run(run_cfg)?)
+    };
+    Ok(BoundedExecution {
+        promise_findings,
+        outcome,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_bounded_check(
     cf: &ContractFn,
@@ -5382,6 +6155,7 @@ fn run_bounded_check(
     bound_k: u32,
     boundary: &BoundaryPlan,
     opts: &VerifyOptions,
+    worker: Option<&BoundedWorkerContext>,
     // §5.5's promise-content findings go straight into the caller's list
     // rather than travelling back through the return value. Whatever the
     // proof then said -- verified, violated, timed out -- a promise that
@@ -5471,18 +6245,33 @@ fn run_bounded_check(
         .map(|(_, k)| *k)
         .fold(bound_k, u32::min);
 
-    let generated = harness::generate_proof_module(cf, bound_k, &boundary.stubs)?;
-    harness::write_generated_module(src_dir, lib_path, &generated.module_source)?;
+    let generated_here;
+    let generated = if let Some(worker) = worker {
+        &worker.generated
+    } else {
+        generated_here = harness::generate_proof_module(cf, bound_k, &boundary.stubs)?;
+        harness::write_generated_module(src_dir, lib_path, &generated_here.module_source)?;
+        &generated_here
+    };
 
     let engine_timeout_secs = opts.engine_timeout_secs.unwrap_or_else(|| {
         default_engine_timeout_secs(cf.has_vec_param(), bound_k, !generated.stubbed.is_empty())
     });
 
-    let run_cfg = KaniRunConfig {
-        crate_dir: crate_dir.to_path_buf(),
-        harness_path: generated.proof_fn_path.clone(),
-        engine_timeout_secs,
-        enable_stubbing: !generated.stubbed.is_empty(),
+    let run_cfg_here;
+    let run_cfg = if let Some(worker) = worker {
+        &worker.run_cfg
+    } else {
+        run_cfg_here = KaniRunConfig {
+            crate_dir: crate_dir.to_path_buf(),
+            harness_path: generated.proof_fn_path.clone(),
+            engine_timeout_secs,
+            enable_stubbing: !generated.stubbed.is_empty(),
+            target_dir: None,
+            manifest_path: None,
+            source_roots: vec![],
+        };
+        &run_cfg_here
     };
 
     // §5.5's promise-content gate, before the proof rather than after it: a
@@ -5491,12 +6280,22 @@ fn run_bounded_check(
     // probes carry no function body and solve in well under a second each
     // (measured 2026-08-25), and they ride in the same generated module, so
     // the crate is compiled once for the whole set.
-    let promise_findings = promise_findings(&generated.promise, &run_cfg);
+    let execution_here;
+    let execution = if let Some(worker) = worker {
+        worker
+            .execution
+            .as_ref()
+            .expect("a bounded worker is interpreted only after it finishes")
+    } else {
+        execution_here = execute_bounded(&generated.promise, run_cfg)?;
+        &execution_here
+    };
+    let promise_findings = &execution.promise_findings;
     promise_out.append(&mut promise_diagnostics(
         node_id,
         fn_name,
         &check_label,
-        &promise_findings,
+        promise_findings,
     ));
     if promise_findings
         .iter()
@@ -5505,15 +6304,22 @@ fn run_bounded_check(
         return Ok(("unclaimed".into(), vec![], vec![]));
     }
 
-    let outcome = kani::run(&run_cfg)?;
+    let outcome = execution
+        .outcome
+        .as_ref()
+        .expect("a satisfiable bounded promise always runs its proof");
 
     // §9's cex validity oracle demands the SAME rendered test transitions
     // FAIL -> PASS once a fix lands (see docs/m3-slice-findings.md finding
     // 6): persist any witness found, and re-render its regression test
     // against the CURRENT contract text on every run.
-    let witness_path = crate_dir
-        .join("target/ply/witness")
-        .join(format!("{fn_name}.json"));
+    let witness_path = worker
+        .map(|worker| worker.witness_path.clone())
+        .unwrap_or_else(|| {
+            crate_dir
+                .join("target/ply/witness")
+                .join(format!("{fn_name}.json"))
+        });
     if let KaniOutcome::Violation { witness_bytes, .. } = &outcome {
         if let Some(parent) = witness_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -5578,7 +6384,7 @@ fn run_bounded_check(
                     fn_name,
                     &composed_label,
                     &assumed,
-                    &promise_findings,
+                    promise_findings,
                 ));
                 Ok((
                     composed_label,
@@ -5614,7 +6420,7 @@ fn run_bounded_check(
                 engine: "kani".into(),
                 check: check_label,
                 node_id: node_id.into(),
-                title: kani_tool_error_title(&reason, &raw_output),
+                title: kani_tool_error_title(reason, raw_output),
                 pointer: None,
                 primary_span: None,
                 counterexample: None,
@@ -5629,7 +6435,7 @@ fn run_bounded_check(
             raw_output,
         } => {
             let _ = raw_output;
-            let values = match kani::decode_witness(&witness_bytes, &cf.params, bound_k) {
+            let values = match kani::decode_witness(witness_bytes, &cf.params, bound_k) {
                 Ok(values) => values,
                 Err(e) => {
                     // §5.4c's MUST: never a `violation` Ply cannot show the
@@ -7779,7 +8585,7 @@ fn run_mutate_check(
             }],
         ));
     }
-    if !mutants::is_available() {
+    if !mutants::is_available(crate_dir) {
         return Ok((
             MutateOutcome::Inconclusive("engine-missing"),
             vec![Diagnostic {
@@ -8504,6 +9310,183 @@ fn unused(_p: &PathBuf) {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cargo_closure_check_rejects_an_unparsed_local_dependency_spelling() {
+        let base = tempfile::tempdir().unwrap();
+        let app = base.path().join("app");
+        let helper = base.path().join("helper");
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::create_dir_all(helper.join("src")).unwrap();
+        std::fs::write(
+            app.join("Cargo.toml"),
+            "[workspace]\n[package]\nname='app'\nversion='0.0.0'\nedition='2024'\n[dependencies]\nhelper={path='../helper'}\n",
+        )
+        .unwrap();
+        std::fs::write(app.join("src/lib.rs"), "pub fn app() {}\n").unwrap();
+        std::fs::write(
+            helper.join("Cargo.toml"),
+            "[workspace]\n[package]\nname='helper'\nversion='0.0.0'\nedition='2024'\n",
+        )
+        .unwrap();
+        std::fs::write(helper.join("src/lib.rs"), "pub fn helper() {}\n").unwrap();
+        let generated = std::process::Command::new("cargo")
+            .args(["generate-lockfile", "--offline"])
+            .current_dir(&app)
+            .status()
+            .unwrap();
+        assert!(generated.success());
+
+        let first_party = ply_core::reach::scan_first_party(&app);
+        let cargo = ply_core::harness_crate::cargo_local_dependency_closure(&app).unwrap();
+        assert!(cargo.package_dirs.contains(&helper.canonicalize().unwrap()));
+        assert!(!super::first_party_closure_is_complete(
+            &first_party,
+            &cargo
+        ));
+    }
+
+    #[test]
+    fn cargo_closure_check_rejects_a_local_library_outside_src() {
+        let base = tempfile::tempdir().unwrap();
+        let app = base.path().join("app");
+        let helper = base.path().join("helper");
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::create_dir_all(&helper).unwrap();
+        std::fs::write(
+            app.join("Cargo.toml"),
+            "[workspace]\n[package]\nname='app'\nversion='0.0.0'\nedition='2024'\n[dependencies]\nhelper={path='../helper'}\n",
+        )
+        .unwrap();
+        std::fs::write(app.join("src/lib.rs"), "pub fn app() {}\n").unwrap();
+        std::fs::write(
+            helper.join("Cargo.toml"),
+            "[workspace]\n[package]\nname='helper'\nversion='0.0.0'\nedition='2024'\n[lib]\npath='root.rs'\n",
+        )
+        .unwrap();
+        std::fs::write(helper.join("root.rs"), "pub fn helper() {}\n").unwrap();
+        let generated = std::process::Command::new("cargo")
+            .args(["generate-lockfile", "--offline"])
+            .current_dir(&app)
+            .status()
+            .unwrap();
+        assert!(generated.success());
+
+        let first_party = ply_core::reach::scan_first_party(&app);
+        let cargo = ply_core::harness_crate::cargo_local_dependency_closure(&app).unwrap();
+        assert!(
+            cargo
+                .library_sources
+                .contains(&helper.join("root.rs").canonicalize().unwrap())
+        );
+        assert!(!super::first_party_closure_is_complete(
+            &first_party,
+            &cargo
+        ));
+    }
+
+    #[test]
+    fn worker_source_shadows_preserve_relative_path_dependencies_without_copying_targets() {
+        let base = tempfile::tempdir().unwrap();
+        let workspace = base.path().join("project/workspace");
+        let dependency_workspace = base.path().join("project/depworkspace");
+        let dependency = dependency_workspace.join("helper");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::create_dir_all(workspace.join("src/target")).unwrap();
+        std::fs::create_dir_all(workspace.join(".cargo")).unwrap();
+        std::fs::create_dir_all(dependency.join("src")).unwrap();
+        std::fs::create_dir_all(workspace.join("build/large-output")).unwrap();
+        std::fs::create_dir_all(workspace.join("nested/target/debug")).unwrap();
+        std::fs::write(
+            workspace.join("nested/target/CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.join("nested/target/debug/output"), "generated\n").unwrap();
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[package]\nname='root'\nversion='0.0.0'\nedition='2024'\n[dependencies]\nhelper={path='../depworkspace/helper'}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join(".cargo/config.toml"),
+            "[build]\ntarget-dir='build'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/lib.rs"),
+            "mod target;\npub fn root() {}\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.join("src/target/mod.rs"), "pub fn source() {}\n").unwrap();
+        std::fs::write(
+            workspace.join("src/target/CACHEDIR.TAG"),
+            "ordinary source data\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dependency_workspace.join("Cargo.toml"),
+            "[workspace]\nmembers=['helper']\nresolver='3'\n[workspace.package]\nedition='2024'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dependency.join("Cargo.toml"),
+            "[package]\nname='helper'\nversion='0.0.0'\nedition.workspace=true\n",
+        )
+        .unwrap();
+        std::fs::write(dependency.join("src/lib.rs"), "pub fn helper() {}\n").unwrap();
+        std::fs::write(workspace.join("build/large-output/skip"), "build output").unwrap();
+
+        let worker = tempfile::tempdir().unwrap();
+        let source_paths = [
+            workspace.join("src/lib.rs"),
+            workspace.join("src/target/mod.rs"),
+            dependency.join("src/lib.rs"),
+        ];
+        let (private_workspace, rewrites) = super::copy_sources_for_worker(
+            worker.path(),
+            &workspace,
+            &[workspace.clone(), dependency.clone()],
+            &source_paths,
+        )
+        .unwrap();
+        let private_dependency = private_workspace
+            .parent()
+            .unwrap()
+            .join("depworkspace/helper");
+        assert!(private_dependency.join("src/lib.rs").is_file());
+        assert!(
+            private_dependency
+                .parent()
+                .unwrap()
+                .join("Cargo.toml")
+                .is_file()
+        );
+        assert!(private_workspace.join("src/target/mod.rs").is_file());
+        assert!(!private_workspace.join("build").exists());
+        assert!(!private_workspace.join("nested/target").exists());
+        std::fs::write(private_dependency.join("src/lib.rs"), "changed privately\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dependency.join("src/lib.rs")).unwrap(),
+            "pub fn helper() {}\n"
+        );
+        assert!(
+            rewrites
+                .iter()
+                .any(|(_, original)| original == &dependency_workspace)
+        );
+
+        let metadata = std::process::Command::new("cargo")
+            .args(["metadata", "--format-version=1", "--no-deps"])
+            .current_dir(&private_dependency)
+            .output()
+            .unwrap();
+        assert!(
+            metadata.status.success(),
+            "private dependency lost its workspace inheritance: {}",
+            String::from_utf8_lossy(&metadata.stderr)
+        );
+    }
+
     /// cargo-mutants reports the owner of an inline-module function or a
     /// method with its qualification. Reducing either to its leaf selects
     /// no mutant in that body, so a clean run can otherwise overstate what
@@ -8844,6 +9827,7 @@ mod tests {
                 // pass nor the failure this test is about.
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -8897,6 +9881,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -8942,6 +9927,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -8989,6 +9975,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -9053,6 +10040,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -9100,6 +10088,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -9152,6 +10141,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -9213,6 +10203,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -9274,6 +10265,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -9336,6 +10328,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -9395,6 +10388,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -9470,6 +10464,7 @@ mod tests {
                 // pass nor the failure this test is about.
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -9538,6 +10533,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(5),
                 seed: None,
+                jobs: 1,
             },
             loaded,
         )
@@ -9590,6 +10586,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: None,
                 seed: None,
+                jobs: 1,
             },
             loaded.clone(),
         )
@@ -10916,6 +11913,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
         )
         .unwrap();
@@ -10944,6 +11942,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: None,
                 seed: None,
+                jobs: 1,
             },
         )
         .expect("link ambiguity belongs in the normal result envelope");
@@ -10981,6 +11980,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
         )
         .unwrap();
@@ -11010,6 +12010,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: Some(120),
                 seed: None,
+                jobs: 1,
             },
         )
         .unwrap();
@@ -11056,6 +12057,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: None,
                 seed: None,
+                jobs: 1,
             },
         )
         .unwrap();
@@ -11086,6 +12088,7 @@ mod tests {
             &VerifyOptions {
                 engine_timeout_secs: None,
                 seed: None,
+                jobs: 1,
             },
         )
         .unwrap();

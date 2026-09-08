@@ -132,6 +132,18 @@ ordinaryspellings::foreign_shaped_name ensures |result|*result >= 0
 ordinaryspellings::gauge_reading ensures |result|*result >= 1
 orskewed::maybe_pass_through ensures |result|x < 100||result.unwrap() == x
 panicbug::halves ensures |result|*result *2 == x
+parallelbounded::bad ensures |result|*result == x + 1
+parallelbounded::bad requires x > 0
+parallelbounded::bad_two ensures |result|*result == x
+parallelbounded::bad_two requires x > 1
+parallelbounded::good ensures |result|*result == x + 1
+parallelbounded::good requires x < u32 :: MAX
+parallelbounded::good_two ensures |result|*result == x + 2
+parallelbounded::good_two requires x < u32 :: MAX - 1
+parallelmixed::bounded_claim ensures |result|*result == x
+parallelmixed::sampled_claim ensures |result|*result == x
+parallelrelocation::ordinary ensures |result|*result == x
+parallelrelocation::path_sensitive ensures |result|! *result
 paramseeded::width ensures |result|*result >= 0
 paramseedopaque::always_true ensures |result|*result
 passing::safe_increment ensures |result|*result == x + 1

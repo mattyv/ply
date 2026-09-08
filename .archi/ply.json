@@ -2,9 +2,9 @@
   "version": 1,
   "bundleId": "56737745-a03f-4e47-9208-9b86d9a69907",
   "revision": {
-    "number": 5,
-    "updatedAt": "2026-09-02T00:00:00.000Z",
-    "summary": "Add the five missing diagram types (flow, state, dataflow, ER, concurrency), rebuild the overview, give Tooling Today tour steps, and correct the lock-file note that described a stale status Ply does not have"
+    "number": 6,
+    "updatedAt": "2026-09-08T00:00:00.000Z",
+    "summary": "Reconcile the concurrency view with bounded proof worker pools, dependency waves, isolated outputs, coordinated publication, and cancellation"
   },
   "diagrams": [
     {
@@ -5315,21 +5315,24 @@
           },
           {
             "id": "verify-loop",
-            "label": "Per-function check loop",
+            "label": "Dependency-wave scheduler",
             "files": [
               "crates/ply-cli/src/verify.rs",
               "crates/ply-core/src/schedule.rs"
             ],
             "group": "g-ply-process",
             "kind": "loop",
+            "parallel": true,
             "step": 2,
             "x": 524,
             "y": 266.75
           },
           {
             "id": "harness-files",
-            "label": "Generated test harness",
+            "label": "Private proof shadows / serial harnesses",
             "files": [
+              "crates/ply-cli/src/verify.rs",
+              "crates/ply-core/src/harness.rs",
               "crates/ply-core/src/harness_crate.rs"
             ],
             "kind": "resource",
@@ -5341,6 +5344,7 @@
             "id": "workspace-manifest",
             "label": "Checked crate's Cargo.toml",
             "files": [
+              "crates/ply-core/src/harness.rs",
               "crates/ply-core/src/harness_crate.rs"
             ],
             "kind": "resource",
@@ -5355,6 +5359,7 @@
               "crates/ply-core/src/engines/kani.rs"
             ],
             "kind": "process",
+            "parallel": true,
             "step": 5,
             "x": 1174,
             "y": 105
@@ -5397,7 +5402,7 @@
           {
             "from": "ply-verify",
             "to": "verify-loop",
-            "label": "drives, in the same thread",
+            "label": "plans, executes, then publishes",
             "vertices": [
               {
                 "x": 387,
@@ -5415,7 +5420,7 @@
           {
             "from": "verify-loop",
             "to": "workspace-manifest",
-            "label": "registers the harness as a workspace member for the whole run",
+            "label": "leaves features alone; registers only a serial shared harness",
             "vertices": [
               {
                 "x": 766,
@@ -5445,7 +5450,7 @@
           {
             "from": "verify-loop",
             "to": "harness-files",
-            "label": "writes, before checking each function",
+            "label": "prepares private source shadows; drops after collection",
             "vertices": [
               {
                 "x": 766,
@@ -5475,7 +5480,7 @@
           {
             "from": "verify-loop",
             "to": "cargo-kani",
-            "label": "spawns, then blocks until it exits",
+            "label": "spawns up to -j dependency-ready bounded tasks",
             "vertices": [
               {
                 "x": 766,
@@ -5698,7 +5703,7 @@
         "groups": [
           {
             "id": "g-ply-process",
-            "label": "One OS process, one thread",
+            "label": "One Ply process, bounded worker threads",
             "labelPosition": {
               "x": 14,
               "y": 6
@@ -5709,43 +5714,43 @@
           "__diagram__": [
             {
               "id": "n-cp-diag-1",
-              "text": "How Ply actually runs the tools that check a function's promises. Ply is one single-threaded process: there is no thread pool, no async runtime, and no sign anywhere in the codebase of two things running at once (checked directly: grepping every crate under crates/*/src for thread::spawn, tokio, rayon, and channel types such as std::sync::mpsc turns up nothing). Ply drives one loop that checks one function at a time, and inside that loop it spawns exactly one external tool at a time -- Kani, the fuzz harness's tests, or cargo-mutants -- and blocks until that tool exits before doing anything else (the fuzz and mutants runs go through one blocking helper, `engines::run_with_timeout`, which spawns the child, polls for its exit on the same thread, and kills it if its wall-clock budget runs out; the Kani proof run is a plain blocking `Command::new(...).output()`, with Kani's own `--harness-timeout` flag as its cap -- either way, one child at a time, nothing concurrent). The order the loop checks functions in is decided by a callees-before-callers rule (crates/ply-core/src/schedule.rs), not by a scheduler trying to go faster: a function can only be credited with its callee's result once that callee has genuinely been checked, so getting the order wrong would let a caller claim evidence its callee never actually earned. That is a soundness requirement -- the same kind of rule this project's own verdict-kernel proof protects elsewhere -- not a performance optimisation. Left out of this picture on purpose: the short version-probe calls to rustc and cargo-mutants (they answer 'which version is installed', not part of the checking work itself), and the fact that cargo kani / cargo test / cargo mutants are each free to use their own internal build parallelism once Ply has started them -- that happens inside the child process, is invisible to Ply, and is not what this diagram is about.",
-              "ts": 1788307200000
+              "text": "How Ply runs the tools that check a function's promises after D15. `verify -j N` still has one coordinator, but it may start at most N independent, dependency-ready bounded tasks. The scheduler groups bounded claims into callee-before-caller waves; only a completed clean callee proof can feed a caller's effective bound and deferred cache decision. Each active Kani task compiles its own generated proof in a private source shadow, Cargo target, and witness directory. Workers return engine outcomes; the coordinator interprets them in serial order, publishes every counterexample, and writes ply.lock once. Fuzz, test, mutation, state-history, linked-document, build-script, mixed-check, dependency-tainted, relocation-sensitive, shared-harness, and unresolved-lock work remain serial. SIGINT/SIGTERM stop new work and terminate active planning and engine process groups. Cargo, rustc, Kani, and other engines may create more processes or threads than N; the jobs flag limits Ply tasks, not the whole machine.",
+              "ts": 1788825600000
             }
           ],
           "ply-verify": [
             {
               "id": "n-cp-plyverify-1",
-              "text": "Ply itself: the single process a developer or CI job starts by running `cargo ply verify`. Everything else in this diagram happens inside this one process, on its one thread, one step after another -- there is no background work happening anywhere else.",
-              "ts": 1788307200000
+              "text": "The coordinator process started by `cargo ply verify`. It owns planning, final report order, counterexample publication, and the one verification-record write. `-j N` defaults to one and bounds active Ply tasks; worker threads never publish final artifacts themselves.",
+              "ts": 1788825600000
             }
           ],
           "verify-loop": [
             {
               "id": "n-cp-loop-1",
-              "text": "The loop, inside the Ply process, that checks each function one at a time (`for idx in processing_order`, crates/ply-cli/src/verify.rs:1162). Before it starts, `ply_core::schedule::order` works out which order to go in: callees are checked before the callers that depend on them, because a caller may only be credited with an assumed contract if its callee's own check already passed cleanly (crates/ply-core/src/schedule.rs's module comment spells this out as the scheduler's entire soundness guarantee). When one function has more than one kind of check -- say both a bounded check and a mutation check -- even those two run one after the other, never together: the mutation check deliberately waits until the other check's result is known before it starts (crates/ply-cli/src/verify.rs:2586).",
-              "ts": 1788307200000
+              "text": "`schedule::order` preserves the soundness-critical callee-before-caller order; `schedule::waves` exposes only independent claims whose prerequisites are complete. `schedule::run_jobs` admits at most N members of one ready wave and returns them in the wave's deterministic input order even when processes finish out of order. Cache lookup for a bounded caller stays deferred until its callee outcomes have updated the known clean bounds. Claims outside the isolated bounded-only path run serially.",
+              "ts": 1788825600000
             }
           ],
           "harness-files": [
             {
               "id": "n-cp-harness-1",
-              "text": "The small generated test crate Ply writes for the function currently being checked -- a Cargo.toml plus a lib.rs, placed at `<crate>/target/ply/fuzz/<name>` (crates/ply-core/src/harness_crate.rs). Ply writes these files before it spawns any checking tool for that function, and every tool it then spawns builds and runs against exactly these files -- they are the common ground every tool's result is actually about.",
-              "ts": 1788307200000
+              "text": "Serial sampling and mutation checks keep using their shared generated harness crate under target/ply. Each concurrent bounded check instead receives a private source shadow containing the Cargo workspace and every external path package's owning workspace, without .git, Cargo's resolved output directories, or cargo-mutants output. A source directory merely named target is retained. The worker overwrites only that shadow's canonical ply_generated.rs and receives a private target and witness directory, so a stale or broken proof cannot contaminate another claim and no worker edits the original source, features, manifest, or compiler flags. Cargo starts in the original crate for unchanged ancestor configuration and rustup selection, but compiles through the shadow's --manifest-path. First-party closures with build scripts, a mismatch against Cargo's resolved local dependency graph, or relocation-sensitive macros remain serial and uncached because their writable, unresolved-source, or compile-time path semantics cannot be preserved by this milestone; the relocation scan is repeated on the generated proof after YAML contracts and callee stubs are merged.",
+              "ts": 1788825600000
             }
           ],
           "workspace-manifest": [
             {
               "id": "n-cp-manifest-1",
-              "text": "The Cargo.toml at the workspace root Cargo reports for the crate being checked, not necessarily the member crate's own manifest and never Ply's. Ply temporarily adds the generated harness to this root's workspace members so Cargo can resolve both packages, then writes the original file back byte-for-byte when the run ends (`ManifestRegistration`, crates/ply-core/src/harness_crate.rs). This is genuinely shared, temporarily mutated state. A plain package with no explicit workspace instead gives the generated harness its own isolated workspace; fuzz and test still run there, while mutation testing is reported as unsupported.",
-              "ts": 1788307200000
+              "text": "Only the existing serial shared-harness path touches the original manifest: it may temporarily register a generated package at the workspace root, then restores the original bytes. A run with that registration keeps its bounded claims serial. Concurrent bounded workers edit only copied manifests inside private source shadows and pass no feature or compiler-flag override; they preserve the user's feature and Cargo configuration exactly. Planning requires the original Cargo.lock to be current, every shadow accepts the copy under locked metadata, and any engine change to that copy invalidates its result.",
+              "ts": 1788825600000
             }
           ],
           "cargo-kani": [
             {
               "id": "n-cp-kani-1",
-              "text": "Kani, the model checker, spawned as its own process: `cargo kani -Z function-contracts ... --harness <name>` (crates/ply-core/src/engines/kani.rs:135-151). Ply waits for it to finish and reads all of its output before doing anything else. It answers the `bounded` check: does the function hold up against every input Kani can enumerate up to a size limit, not just the ones a test happened to try.",
-              "ts": 1788307200000
+              "text": "Kani answers `bounded(k)`. In parallel mode, each dependency-ready proof is a separate `cargo kani` process with its own source shadow, `--target-dir`, exact harness name, timeout, and process group. The coordinator may wait for several at once, but interprets and publishes their returned outcomes in deterministic serial order. Worker-specific temporary paths are mapped back to the original workspace before they can enter a diagnostic.",
+              "ts": 1788825600000
             }
           ],
           "cargo-fuzz": [

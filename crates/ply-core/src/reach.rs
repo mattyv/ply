@@ -132,6 +132,19 @@ pub struct FirstParty {
     /// is not, so an unused struct changing re-earns the crate's claims.
     /// That is this module's stated trade -- coarser, never wrong.
     type_decls: Vec<(String, String)>,
+    /// Canonical package roots in the first-party path-dependency closure.
+    /// Concurrent proof workers use these to preserve relative dependency
+    /// layout in a private source shadow.
+    package_dirs: Vec<PathBuf>,
+    /// Canonical Rust sources included in the fingerprint walk. Cargo's
+    /// resolved local library entry points are checked against this set
+    /// before evidence may be reused or a source shadow may run.
+    source_paths: Vec<PathBuf>,
+    /// Whether compiling this closure from a relocated manifest preserves
+    /// its meaning. Compile-time path/environment macros observe the source
+    /// and manifest location, while `#[path]` can name source outside the
+    /// copied roots; either shape keeps bounded verification serial.
+    source_relocation_is_sound: bool,
 }
 
 impl FirstParty {
@@ -146,6 +159,18 @@ impl FirstParty {
             .units
             .iter()
             .any(|(label, _)| label == BUILD_SCRIPT_REUSE_MARKER)
+    }
+
+    pub fn package_dirs(&self) -> &[PathBuf] {
+        &self.package_dirs
+    }
+
+    pub fn source_paths(&self) -> &[PathBuf] {
+        &self.source_paths
+    }
+
+    pub fn source_relocation_is_sound(&self) -> bool {
+        self.source_relocation_is_sound
     }
 }
 
@@ -376,6 +401,14 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
     let mut type_decls: Vec<(String, String)> = Vec::new();
     let mut gate: Option<String> = None;
     let files = first_party_file_set(crate_dir);
+    let mut source_paths: Vec<PathBuf> = files
+        .files
+        .iter()
+        .filter_map(|(_, path)| path.canonicalize().ok())
+        .collect();
+    source_paths.sort();
+    source_paths.dedup();
+    let mut source_relocation_is_sound = true;
     for (label, path) in files.files {
         let Ok(text) = std::fs::read_to_string(&path) else {
             gate.get_or_insert(format!("Ply could not read {label}"));
@@ -388,6 +421,9 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
             units.push((label, text));
             continue;
         };
+        if source_uses_relocation_sensitive_rust(&file) {
+            source_relocation_is_sound = false;
+        }
         let mut tokens = proc_macro2::TokenStream::new();
         for item in &file.items {
             if let syn::Item::Mod(m) = item
@@ -415,7 +451,76 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
         units,
         gate,
         type_decls,
+        package_dirs: files.package_dirs,
+        source_paths,
+        source_relocation_is_sound,
     }
+}
+
+/// Constructs whose compile-time value or source closure can change after a
+/// package is moved beneath a worker's private manifest. The token walk is
+/// recursive so it also sees built-ins nested in `macro_rules!` bodies; the
+/// identifier immediately before `!` catches both bare and namespaced forms.
+fn source_uses_relocation_sensitive_rust(file: &syn::File) -> bool {
+    struct PathAttribute(bool);
+    impl<'ast> Visit<'ast> for PathAttribute {
+        fn visit_attribute(&mut self, attribute: &'ast syn::Attribute) {
+            if attribute.path().is_ident("path") {
+                self.0 = true;
+            }
+            syn::visit::visit_attribute(self, attribute);
+        }
+    }
+
+    fn tokens_contain_sensitive_macro(tokens: proc_macro2::TokenStream) -> bool {
+        let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+        for (index, token) in tokens.iter().enumerate() {
+            if matches!(token, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == '#')
+                && let Some(proc_macro2::TokenTree::Group(attribute)) = tokens.get(index + 1)
+                && attribute.delimiter() == proc_macro2::Delimiter::Bracket
+                && attribute.stream().into_iter().any(|token| {
+                    matches!(token, proc_macro2::TokenTree::Ident(ident) if ident == "path")
+                })
+            {
+                return true;
+            }
+            if let proc_macro2::TokenTree::Group(group) = token
+                && tokens_contain_sensitive_macro(group.stream())
+            {
+                return true;
+            }
+            let proc_macro2::TokenTree::Ident(ident) = token else {
+                continue;
+            };
+            let ident = ident.to_string();
+            let sensitive = matches!(
+                ident.strip_prefix("r#").unwrap_or(&ident),
+                "env" | "option_env" | "file" | "include" | "include_str" | "include_bytes"
+            );
+            // The identifier need not sit beside `!`: built-in macros can
+            // be imported under an alias or forwarded as a token into
+            // macro_rules. Resolving those expansions is beyond this source
+            // walk, so an occurrence conservatively keeps the closure
+            // serial. Raw identifiers normalise to the same spelling.
+            if sensitive {
+                return true;
+            }
+        }
+        false
+    }
+
+    let mut path_attribute = PathAttribute(false);
+    path_attribute.visit_file(file);
+    path_attribute.0 || tokens_contain_sensitive_macro(file.to_token_stream())
+}
+
+/// Whether a complete generated Rust module can be compiled from a private
+/// manifest without changing the contract it expresses. This second gate is
+/// intentionally applied after YAML clauses and callee stubs have been
+/// merged: scanning source files alone misses relocation-sensitive Rust that
+/// exists only in generated proof code.
+pub fn generated_source_relocation_is_sound(source: &str) -> bool {
+    syn::parse_file(source).is_ok_and(|file| !source_uses_relocation_sensitive_rust(&file))
 }
 
 /// Every type declaration in one item, including inside modules, as
@@ -780,6 +885,7 @@ fn mentioned_paths(f: &syn::ItemFn) -> Mentions {
 struct FirstPartyFileSet {
     files: Vec<(String, PathBuf)>,
     build_scripts: Vec<String>,
+    package_dirs: Vec<PathBuf>,
 }
 
 fn first_party_file_set(crate_dir: &Path) -> FirstPartyFileSet {
@@ -819,9 +925,11 @@ fn first_party_file_set(crate_dir: &Path) -> FirstPartyFileSet {
     }
     out.sort();
     build_scripts.sort();
+    let package_dirs = seen_crates.into_iter().collect();
     FirstPartyFileSet {
         files: out,
         build_scripts,
+        package_dirs,
     }
 }
 
@@ -1341,6 +1449,32 @@ mod tests {
         .unwrap();
         std::fs::write(dependency.path().join("helper/build.rs"), "fn main() {}\n").unwrap();
         assert!(!scan_first_party(dependency.path()).result_reuse_is_sound());
+    }
+
+    #[test]
+    fn compile_time_paths_and_external_modules_disable_source_relocation() {
+        for source in [
+            "pub fn f() -> &'static str { env!(concat!(\"CARGO_\", \"MANIFEST_DIR\")) }\n",
+            "pub fn f() -> &'static str { std::include_str!(\"data.txt\") }\n",
+            "macro_rules! location { () => { file!() } }\npub fn f() -> &'static str { location!() }\n",
+            "use std::env as manifest_directory;\npub fn f() -> &'static str { manifest_directory!(\"CARGO_MANIFEST_DIR\") }\n",
+            "macro_rules! invoke { ($m:ident) => { $m!(\"CARGO_MANIFEST_DIR\") } }\npub fn f() -> &'static str { invoke!(env) }\n",
+            "#[path = \"../../shared.rs\"] mod shared;\npub fn f() {}\n",
+            "macro_rules! external { () => { #[path = \"../../shared.rs\"] mod shared; } }\npub fn f() {}\n",
+        ] {
+            let dir = crate_with(&[("src/lib.rs", source), ("src/data.txt", "data")]);
+            assert!(
+                !scan_first_party(dir.path()).source_relocation_is_sound(),
+                "relocated a source-sensitive closure: {source}"
+            );
+        }
+
+        let ordinary = crate_with(&[("src/lib.rs", "pub fn f(x: u32) -> u32 { x + 1 }\n")]);
+        assert!(scan_first_party(ordinary.path()).source_relocation_is_sound());
+
+        assert!(!generated_source_relocation_is_sound(
+            "mod proof { fn clause() -> &'static str { env!(\"CARGO_MANIFEST_DIR\") } }"
+        ));
     }
 
     #[test]

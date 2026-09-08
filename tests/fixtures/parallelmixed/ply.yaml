@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  proofs:
+    anchor: ply_fixture_parallelmixed
+    fns:
+      bounded_claim: { checks: [bounded(2)] }
+      sampled_claim: { checks: [fuzz(4)] }

@@ -121,6 +121,12 @@ enum Commands {
     Verify {
         /// Path to the crate directory containing `ply.yaml`.
         path: PathBuf,
+        /// Maximum number of Ply verification tasks active at once. The
+        /// engines and compilers those tasks start may use more processes or
+        /// threads of their own. This first release overlaps independent
+        /// bounded proofs; other check kinds remain serial.
+        #[arg(short = 'j', long, default_value_t = 1, value_parser = parse_jobs)]
+        jobs: usize,
         /// Per-check engine time budget, in seconds. Omit to use the
         /// shape-aware default (a `Vec`-typed `bounded(k)` check gets more
         /// budget than a scalar one -- see
@@ -276,6 +282,7 @@ pub fn run() -> anyhow::Result<()> {
         }
         Commands::Verify {
             path,
+            jobs,
             engine_timeout,
             fail_on,
             seed,
@@ -283,6 +290,7 @@ pub fn run() -> anyhow::Result<()> {
             retain_views,
             svg,
         } => {
+            let _interrupt_guard = InterruptGuard::install()?;
             crate_dir_or_explain(&path)?;
             let seed = match seed {
                 Some(text) => match ply_core::fuzz_gen::seed_from_hex(&text) {
@@ -302,6 +310,7 @@ pub fn run() -> anyhow::Result<()> {
             let opts = VerifyOptions {
                 engine_timeout_secs: engine_timeout,
                 seed,
+                jobs,
             };
             let verification = verify::verify_crate_result(&path, &opts)?;
             let envelope = verification.envelope;
@@ -380,6 +389,81 @@ fn parse_render_depth(value: &str) -> Result<usize, String> {
         Err(_) => Err(format!(
             "--depth needs a whole number of nesting levels; {value:?} is not one"
         )),
+    }
+}
+
+fn parse_jobs(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(0) | Err(_) => Err(format!(
+            "--jobs needs a positive integer; {value:?} is not one"
+        )),
+        Ok(jobs) => Ok(jobs),
+    }
+}
+
+#[cfg(unix)]
+extern "C" fn request_verify_cancellation(_: libc::c_int) {
+    ply_core::engines::request_cancellation();
+}
+
+struct InterruptGuard {
+    #[cfg(unix)]
+    previous_int: libc::sighandler_t,
+    #[cfg(unix)]
+    previous_term: libc::sighandler_t,
+}
+
+impl InterruptGuard {
+    fn install() -> anyhow::Result<Self> {
+        ply_core::engines::begin_cancellation_scope();
+        #[cfg(unix)]
+        {
+            // SAFETY: `request_verify_cancellation` only stores to a static
+            // atomic flag. `signal` returns the previous handler so Drop can
+            // restore the process before another command runs in-process.
+            let previous_int = unsafe {
+                libc::signal(
+                    libc::SIGINT,
+                    request_verify_cancellation as *const () as libc::sighandler_t,
+                )
+            };
+            if previous_int == libc::SIG_ERR {
+                ply_core::engines::end_cancellation_scope();
+                anyhow::bail!("could not install the Ctrl+C handler for verification");
+            }
+            let previous_term = unsafe {
+                libc::signal(
+                    libc::SIGTERM,
+                    request_verify_cancellation as *const () as libc::sighandler_t,
+                )
+            };
+            if previous_term == libc::SIG_ERR {
+                unsafe {
+                    let _ = libc::signal(libc::SIGINT, previous_int);
+                }
+                ply_core::engines::end_cancellation_scope();
+                anyhow::bail!("could not install the termination handler for verification");
+            }
+            Ok(Self {
+                previous_int,
+                previous_term,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Self {})
+        }
+    }
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            let _ = libc::signal(libc::SIGINT, self.previous_int);
+            let _ = libc::signal(libc::SIGTERM, self.previous_term);
+        }
+        ply_core::engines::end_cancellation_scope();
     }
 }
 
@@ -1535,6 +1619,33 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn verify_jobs_defaults_to_one_and_accepts_both_spellings() {
+        let cli = Cli::try_parse_from(["cargo-ply", "verify", "."]).unwrap();
+        assert!(matches!(cli.command, Commands::Verify { jobs: 1, .. }));
+
+        let short = Cli::try_parse_from(["cargo-ply", "verify", ".", "-j", "2"]).unwrap();
+        assert!(matches!(short.command, Commands::Verify { jobs: 2, .. }));
+
+        let long = Cli::try_parse_from(["cargo-ply", "verify", ".", "--jobs", "4"]).unwrap();
+        assert!(matches!(long.command, Commands::Verify { jobs: 4, .. }));
+    }
+
+    #[test]
+    fn verify_rejects_an_invalid_job_count_before_running() {
+        let zero = match Cli::try_parse_from(["cargo-ply", "verify", ".", "--jobs", "0"]) {
+            Ok(_) => panic!("zero jobs must be rejected"),
+            Err(error) => error.to_string(),
+        };
+        assert!(zero.contains("positive integer"), "{zero}");
+
+        let not_a_number = match Cli::try_parse_from(["cargo-ply", "verify", ".", "-j", "many"]) {
+            Ok(_) => panic!("a non-number job count must be rejected"),
+            Err(error) => error.to_string(),
+        };
+        assert!(not_a_number.contains("positive integer"), "{not_a_number}");
     }
 
     #[test]

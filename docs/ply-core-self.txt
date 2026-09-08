@@ -218,7 +218,7 @@ components:
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
     component engines — maps to Rust module ply_core::engines
       note: The adapters that drive each outside checking tool as a separate program and read back what it said. Ply never re-implements a checker; everything here is translation, in both directions.
-      state TimedOutput — the structure this component holds. 3 of 4 of its fields shown
+      state TimedOutput — the structure this component holds. 3 of 5 of its fields shown
         stdout is a list, written `Vec<u8>`
         stderr is a list, written `Vec<u8>`
         status is a structure of your own, written `ExitStatus` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
@@ -280,7 +280,7 @@ components:
             first_build_error("error[E0425]: cannot find value\n").is_some()
             first_build_error("all good\n").is_none()
       component kani_engine — maps to Rust module ply_core::engines::kani
-        state KaniRunConfig — the structure this component holds. 4 of 4 of its fields shown
+        state KaniRunConfig — the structure this component holds. 4 of 7 of its fields shown
           crate_dir is text, written `std::path::PathBuf` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
           harness_path is text, written `String`
           engine_timeout_secs is a single value, written `u32`
@@ -365,7 +365,7 @@ components:
           path_dependency("[dependencies]\nfoo = { path = \"../foo\" }\n", "foo") == Some("../foo".to_string())
           path_dependency("[dependencies]\nfoo = \"1.0\"\n", "foo").is_none()
     component reach — maps to Rust module ply_core::reach
-      state FirstParty — the structure this component holds. 3 of 3 of its fields shown
+      state FirstParty — the structure this component holds. 3 of 6 of its fields shown
         units is a list, written `Vec<(String, String)>`
         gate is something that might not be there, written `Option<String>`
         type_decls is a list, written `Vec<(String, String)>`
