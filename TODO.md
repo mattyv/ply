@@ -52,6 +52,10 @@
 
 ## Landed: a method that changes something can now be claimed — 2026-09-07
 
+Merged as PR #80 (`c4ad656`): the enablement in `4c4677b`, the vacuous-test fix and
+retraction sweep in `b8a4eed`, the refusal that closes the false clean in `5dfbf2b`, and
+the stale-fixture correction CI caught in `5ecca9c`.
+
 The direction the maintainer chose, after the fork was settled on evidence
 (`docs/component-proof-design.md`, `docs/transition-promises-plan.md`). Their
 framing, which is what made it small: **every member function is a pure
