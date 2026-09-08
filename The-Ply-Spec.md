@@ -2243,7 +2243,13 @@ compile-time environment/path/inclusion macros or external `#[path]` modules. Th
 relocation gate is applied to the complete generated proof after YAML contracts and
 callee stubs are merged. Cargo's resolved local dependency closure must be fully
 covered by the first-party source walk; an unrecognised manifest spelling, including
-`workspace = true`, remains serial and uncached. Worker source shadows, target directories, and
+`workspace = true`, remains serial and uncached. A virtual Cargo workspace root has no
+root package closure; linked member documents resolve their own closures. After a serial
+run that began with no current lock, the coordinator may let ordinary `cargo metadata`
+materialise or refresh the original workspace lock. It stores the new evidence only if a
+second, locked probe confirms that resolution is current and the source walk covers its
+complete local closure. That refresh never enables workers in the run already in progress.
+Worker source shadows, target directories, and
 witness directories are private; build outputs are never copied into a shadow. Each worker
 compiles only its own generated proof through the shadow manifest while starting from the
 original crate directory, preserving ancestor Cargo configuration, rustup selection,

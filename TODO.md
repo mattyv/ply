@@ -1,5 +1,16 @@
 # TODO
 
+## Landed: PR #88 CI regressions — `0535022` — 2026-09-08
+
+- [x] Treat a virtual Cargo workspace root as an empty local package closure;
+      linked member documents resolve and verify their own package closures.
+- [x] After a serial first run, let Cargo materialise or refresh the original
+      workspace lock, then accept evidence for reuse only after locked metadata
+      confirms that exact resolution and the first-party source walk covers it.
+- [x] Run the process-global cancellation regression in an isolated test
+      process so its synthetic interrupt cannot cancel unrelated unit tests
+      running concurrently under libtest or cargo-mutants.
+
 ## Landed: bounded concurrency for `cargo ply verify` — `8302e95` — 2026-09-08
 
 - [x] Accept `-j N` and `--jobs N`, reject zero before verification starts,
