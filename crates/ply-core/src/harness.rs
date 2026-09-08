@@ -3305,11 +3305,21 @@ fn scan_file_for_receiver(
                 // work ended on (TODO.md, 2026-09-03): a mutator taking a
                 // plain enum was dropped from the sequence pool while the
                 // identical enum built fine as an ordinary parameter.
-                out.other_ops.push(Operation {
-                    call_path: format!("{type_name}::{}", m.sig.ident),
-                    params,
-                    takes_mut_self: r.mutability.is_some(),
-                });
+                let call_path = format!("{type_name}::{}", m.sig.ident);
+                if !is_pub(&m.vis) {
+                    out.excluded_ops.push(ExcludedOperation {
+                        call_path,
+                        reason: "it is not `pub`, so Ply's generated harness outside this crate \
+                                 cannot call it"
+                            .to_string(),
+                    });
+                } else {
+                    out.other_ops.push(Operation {
+                        call_path,
+                        params,
+                        takes_mut_self: r.mutability.is_some(),
+                    });
+                }
             }
         }
     }
@@ -8639,6 +8649,56 @@ impl Meter {
             set_direct_op.takes_mut_self,
             "codegen needs to know this operation borrows `&mut`, not `&`, to call it correctly"
         );
+    }
+
+    /// Generated receiver histories live in a separate harness crate. A
+    /// private or `pub(crate)` sibling can be called by the type itself but
+    /// not by that harness, so admitting either one turns the whole state
+    /// check into a compiler error instead of checking the public history.
+    #[test]
+    fn receiver_histories_exclude_operations_the_external_harness_cannot_call() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "meter.rs",
+                r#"
+pub struct Meter { n: u32 }
+impl Meter {
+    pub fn new() -> Self { Meter { n: 0 } }
+    pub fn read(&self) -> u32 { self.n }
+    pub fn set(&mut self, n: u32) { self.n = n; }
+    fn reset_private(&mut self) { self.n = 0; }
+    pub(crate) fn reset_crate(&mut self) { self.n = 0; }
+}
+"#,
+            )],
+        );
+
+        let cf =
+            discover_method_with_receiver(dir.path(), "meter::Meter::read", &RouteTable::new())
+                .unwrap();
+        let plan = cf.receiver.expect("a receiver plan");
+        let pooled: Vec<&str> = plan
+            .operations
+            .iter()
+            .map(|op| op.call_path.as_str())
+            .collect();
+        assert!(
+            pooled.contains(&"Meter::set"),
+            "public operation missing: {pooled:?}"
+        );
+        assert!(
+            !pooled.contains(&"Meter::reset_private") && !pooled.contains(&"Meter::reset_crate"),
+            "the external harness cannot call these operations: {pooled:?}"
+        );
+        let excluded: Vec<&str> = plan
+            .excluded_operations
+            .iter()
+            .map(|op| op.call_path.as_str())
+            .collect();
+        assert!(excluded.contains(&"Meter::reset_private"), "{excluded:?}");
+        assert!(excluded.contains(&"Meter::reset_crate"), "{excluded:?}");
     }
 
     /// The refusal-by-name half of the feature: a type with genuinely no

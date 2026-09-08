@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  unitreturnmutate:
+    anchor: ply_fixture_unitreturnmutate
+    fns:
+      capped:
+        checks: [test, mutate]

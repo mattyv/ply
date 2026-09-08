@@ -5758,14 +5758,14 @@
           "cargo-mutants": [
             {
               "id": "n-cp-mutants-1",
-              "text": "cargo-mutants, spawned as `cargo mutants -p <crate> --test-package <harness> --copy-target true ...`, with the whole invocation's wall-clock cap enforced in-process by `engines::run_with_timeout` -- never by an external `timeout` wrapper (crates/ply-core/src/engines/mutants.rs). Ply passes one `--re` ownership selector per local body the claim's checks execute and preserves the canonical inline-module or enclosing-type qualification, so `maths::helper` and `Widget::adjust` select the owners cargo-mutants actually names. It deliberately breaks the selected functions one small way at a time and reruns the harness's tests, to see whether any breakage goes unnoticed -- the `mutate` check. `--copy-target true` exists because cargo-mutants' tree-copy step skips a top-level directory named `target`, exactly where the generated harness lives one level further down.",
+              "text": "cargo-mutants, spawned as `cargo mutants -p <crate> --test-package <harness> --copy-target true ...`, with the whole invocation's wall-clock cap enforced in-process by `engines::run_with_timeout` -- never by an external `timeout` wrapper (crates/ply-core/src/engines/mutants.rs). Ply passes one `--re` ownership selector per local body the claim's checks execute and preserves the canonical inline-module or enclosing-type qualification, so `maths::helper` and `Widget::adjust` select the owners cargo-mutants actually names. The selector recognizes ordinary `replace fn -> TYPE` mutations, the no-arrow `replace fn with ()` whole-body deletion used for implicit-unit functions, and mutations described as occurring `in fn`. It deliberately breaks the selected functions one small way at a time and reruns the harness's tests, to see whether any breakage goes unnoticed -- the `mutate` check. `--copy-target true` exists because cargo-mutants' tree-copy step skips a top-level directory named `target`, exactly where the generated harness lives one level further down.",
               "ts": 1788766093000
             }
           ],
           "mutants-out": [
             {
               "id": "n-cp-mutout-1",
-              "text": "`mutants.out/`, the folder cargo-mutants writes its results into. Ply deletes any copy left over from an earlier run before spawning cargo-mutants, so an old run's files can never be mistaken for this run's, then reads the fresh files back afterwards to count which mutations were caught, missed, or timed out (crates/ply-core/src/engines/mutants.rs:174-196).",
+              "text": "`mutants.out/`, the folder cargo-mutants writes its results into. Ply deletes any copy left over from an earlier run before spawning cargo-mutants, so an old run's files can never be mistaken for this run. It then reads every fresh result category through the same owner-and-source-file filter used to select mutations, including the no-arrow `replace fn with ()` form, before counting what was caught, missed, unviable, or timed out (crates/ply-core/src/engines/mutants.rs).",
               "ts": 1788307200000
             }
           ]
@@ -5778,7 +5778,7 @@
     {
       "id": "t-spec-d2-attrs",
       "file": "The-Ply-Spec.md",
-      "line": 178,
+      "line": 179,
       "snippet": "position). `requires`/`ensures` re-emit the item with `cfg_attr(kani, ...)` attributes",
       "anchored": true,
       "node": "attrs",
@@ -5794,7 +5794,7 @@
     {
       "id": "t-spec-d4-arch",
       "file": "The-Ply-Spec.md",
-      "line": 699,
+      "line": 700,
       "snippet": "**Crate tier (sound, errors).** From `cargo metadata`: the exact crate dependency graph.",
       "anchored": true,
       "node": "arch",
@@ -5810,7 +5810,7 @@
     {
       "id": "t-spec-d5-model",
       "file": "The-Ply-Spec.md",
-      "line": 1726,
+      "line": 1746,
       "snippet": "generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict: `f` is not",
       "anchored": true,
       "node": "model",
@@ -5826,7 +5826,7 @@
     {
       "id": "t-spec-cli-verify",
       "file": "The-Ply-Spec.md",
-      "line": 2095,
+      "line": 2115,
       "snippet": "cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts",
       "anchored": true,
       "node": "cli",
@@ -5842,7 +5842,7 @@
     {
       "id": "t-spec-d7-cex",
       "file": "The-Ply-Spec.md",
-      "line": 2715,
+      "line": 2740,
       "snippet": "else `W0541` with a `reason` of `inputs_unrenderable` or `expression_unrenderable`. Its",
       "anchored": true,
       "node": "cex",
@@ -5858,7 +5858,7 @@
     {
       "id": "t-spec-staleness-plylock",
       "file": "The-Ply-Spec.md",
-      "line": 638,
+      "line": 639,
       "snippet": "`W0302`, no `cargo ply accept` and no `E0303`: a claim is never in a state of \"recorded",
       "anchored": true,
       "node": "plylock",
@@ -5874,7 +5874,7 @@
     {
       "id": "t-spec-engines-subprocess",
       "file": "The-Ply-Spec.md",
-      "line": 154,
+      "line": 155,
       "snippet": "External engines run as subprocesses and are detected at startup. Each is optional: a",
       "anchored": true,
       "node": "engines",
@@ -5890,7 +5890,7 @@
     {
       "id": "t-spec-envelope-shape",
       "file": "The-Ply-Spec.md",
-      "line": 2639,
+      "line": 2664,
       "snippet": "`{ \"command\": \"...\", \"ply_version\": \"...\", \"root\": <node tree §7>, \"diagnostics\": [<Diagnostic>...] }`.",
       "anchored": true,
       "node": "envelope",
@@ -5906,7 +5906,7 @@
     {
       "id": "t-spec-d6-node",
       "file": "The-Ply-Spec.md",
-      "line": 2301,
+      "line": 2326,
       "snippet": "D6 over the evidence order; `statuses` and `open_items` (unresolved markers, weak specs,",
       "anchored": true,
       "node": "node",
@@ -5922,7 +5922,7 @@
     {
       "id": "t-spec-violation-rule",
       "file": "The-Ply-Spec.md",
-      "line": 1510,
+      "line": 1526,
       "snippet": "passing checks earned; a failing check is a `violation` regardless of what else passed.",
       "anchored": true,
       "node": "violation",

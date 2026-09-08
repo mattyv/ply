@@ -67,6 +67,10 @@ fn an_excluded_mutator_is_named_and_the_verdict_is_marked_narrower() {
         "the disclosure must name `Acc::note` as the operation this run never called: {title}"
     );
     assert!(
+        title.contains("Acc::reset_private") && title.contains("Acc::reset_crate"),
+        "private and pub(crate) methods must be named as excluded instead of breaking the external harness: {title}"
+    );
+    assert!(
         !title.contains("nothing here was assumed"),
         "the old wording asserted every value this run saw was reachable by the type's own code \
          alone -- false the moment an operation was excluded, and it must not survive unchanged: \

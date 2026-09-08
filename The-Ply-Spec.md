@@ -886,6 +886,10 @@ it calls the type's own public operations on it in a generated sequence, and ass
 clause after the constructor and again after **every single operation**. A clause that
 holds when a value is made and breaks three operations later is the whole reason this is
 a sequence rather than one call, and the diagnostic says how many operations in.
+Only plain `pub` operations enter that sequence: the generated harness is a separate
+crate, so private and `pub(crate)` methods cannot be called there. Ply names each such
+method in the existing partial-history disclosure instead of emitting code that cannot
+compile or silently pretending the method was exercised.
 
 **The sequence bound is a reachability budget, and it is measured (MUST).** "Checked
 across the states this run could reach" is only worth anything if those states include the
@@ -1399,7 +1403,7 @@ mistakes evidence about one instantiation for evidence about all.
 |---|---|---|
 | test | generated `#[test]`s from `examples`, plus generated direct contract cases (concrete inputs run through the real function, contract asserted) | `tested` |
 | fuzz(n) | proptest harness, n cases (default 256), shrinking on; `requires` as a rejection filter, with a warning when the rejection rate is high | `fuzzed(n)` |
-| bounded(k) | Kani contract proof (`proof_for_contract`), loop bound k (default 2) | `bounded(k)` |
+| bounded(k) | Kani contract proof (`proof_for_contract`); `k` bounds generated collection exploration where the harness emits an unwind annotation (default 2) | `bounded(k)` |
 | prove | Verus translation (M7, optional) | `proved` |
 | mutate | cargo-mutants scoped with one `--re` per body the reach walk (§5.2a) says this claim's checks run, the claimed one first; kill signal = the `test`/`fuzz` checks in the same list (D12) | appends `·spec-strong`, or flags `W0502 weak spec (N surviving mutants)`; adds `W0530` when the walk could not bound that list |
 
@@ -1409,6 +1413,10 @@ stored in an owned `Vec<T>` and borrowed only at the call. The admissibility che
 not leave an integer to default to `i32` or an empty collection without an element type:
 that check exists to establish that at least one case reached the body, and an untyped
 copy can fail the shared harness or count a different condition from the one Rust checks.
+For a nested free function, its own example may call the function by the bare name that
+the generated module imports; those literal arguments still feed its generated direct
+cases and admissibility probe. A qualified call must match the claimed function's module
+suffix, so an example for a different same-named function cannot be borrowed.
 
 cargo-mutants runs the workspace test suite by default, which would never execute the
 generated fuzz harnesses under `target/ply/fuzz/`. Earlier drafts of this section said the
@@ -1422,12 +1430,19 @@ to end in `tests/spike/mutants/`, is package targeting plus a name filter:
 The exclusion is semantic, not cosmetic: generated proof and counterexample modules are
 Ply's checking machinery, not application code. Mutating a generated proof wrapper can
 create a survivor that says nothing about the user's specification and must never become
-a `W0502` weak-spec finding. Each `<fn>` is also expanded to the positions where
-cargo-mutants' description identifies the containing function (`replace <fn> -> ...` or
-`... in <fn>`), not used as a bare substring. A function name appearing in another
+a `W0502` weak-spec finding. Each `<fn>` is also expanded to the three forms where
+cargo-mutants' description identifies the containing function: `replace <fn> -> ...`,
+`replace <fn> with ()` for whole-body deletion of an implicit-unit function, or
+`... in <fn>`. It is not used as a bare substring. A function name appearing in another
 body's string literal is not permission to mutate that other body. `<fn>` is the canonical
 owner name, including inline-module or enclosing-type qualification (`maths::helper`,
 `Widget::adjust`); reducing it to the leaf silently selects no mutant for those bodies.
+Ply also reapplies those owner rules to every cargo-mutants result category before it
+counts or reports anything. cargo-mutants 27.1.0 bypasses `--re` for struct-literal field
+deletions; trusting its files directly could blame an unrelated survivor on this claim,
+or let an unrelated caught mutant award `spec-strong`. The source file remains part of
+that ownership check: cargo-mutants calls top-level functions in both `src/a.rs` and
+`src/b.rs` simply `helper`, so the bare owner text alone cannot distinguish them.
 
 **M4 correction: it is `--copy-target true`, not `--gitignore false`.** The earlier
 mutants spike's own recommendation ("pin `--gitignore false` explicitly") is falsified by
@@ -1509,6 +1524,10 @@ An `induct` check (Kani loop contracts, proving loops by invariant instead of un
 is planned, not in v1: Kani's loop-contract support is experimental, and Ply has no
 stable-Rust invariant attribute yet. A function's verdict is the strongest evidence its
 passing checks earned; a failing check is a `violation` regardless of what else passed.
+A sibling check that reaches no result does not erase evidence that really ran: its
+non-result remains on the node as a status, so the run is not silently clean. `mutate`
+waits until every declared `test`/`fuzz` base check has earned evidence; one passing base
+check cannot mask another that never ran.
 **A timeout is not a violation (MUST).** Kani's summary line renders a CBMC timeout and a
 genuine contract failure identically as `VERIFICATION:- FAILED`. The distinction *is*
 available — `--harness-timeout` reports exhaustion explicitly — so an adapter that
@@ -2228,6 +2247,11 @@ do not carry Kani's `Vec`-unwind cost profile, so nothing here shows a shape-awa
 is needed for them yet — except that a `mutate` run is many test runs, so Ply caps the
 whole cargo-mutants invocation separately (§5.4c). Passing `--engine-timeout` explicitly
 always overrides the default, for every check kind, exactly as before.
+
+The same distinction governs timeout advice. A generated collection proof carries an
+unwind annotation derived from `bounded(k)`, so lowering `k` can shrink it. A scalar-only
+proof carries no such annotation; lowering `k` cannot change that proof, and Ply must say
+so instead of offering an ineffective edit.
 
 **A stubbed `bounded` harness gets a floor of 300s (2026-08-25).** §5.5's second branch
 replaces a callee with its declared contract, so where the real body returned one of a

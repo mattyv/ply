@@ -1,5 +1,11 @@
 # TODO
 
+## Landed: implicit-unit whole-body mutations — `90f1b62` — 2026-09-08
+
+- [x] Treat cargo-mutants' `replace <fn> with ()` description as a
+      whole-body mutation owned by `<fn>` in both the command selector and
+      the result-file filter. Pin the real surviving-helper case end to end.
+
 ## Landed: namespaced mutation and YAML proof return types — `ffa7fb4` — 2026-09-07
 
 - [x] Keep inline-module and method qualification when selecting every function whose mutants a claim must catch.
@@ -275,6 +281,41 @@ refusal shipped the day before.
       by setting the real variable, because a test that mutates the process
       environment is the very thing being removed. The library suite ran
       five times with no failure where it previously failed every time.
+
+## In progress: remaining response-mapper trial findings — 2026-09-08
+
+- [x] Keep private and `pub(crate)` methods out of generated receiver histories. The
+      harness lives outside the checked crate, so those calls cannot compile; name the
+      omitted operation in the existing partial-history disclosure instead. Landed in `be7600f`.
+- [x] Treat a bare call in a function's own `examples:` as that function when extracting
+      literal contract cases, without letting a same-named function elsewhere borrow the
+      example. Preserve successful fuzz or proof evidence when a second declared check
+      reaches no admissible input, and carry that non-result beside the evidence. Landed in `be7600f`.
+- [x] Defend against cargo-mutants 27.1.0 returning struct-field mutations outside every
+      requested selector. Apply Ply's ownership selectors to every result category before
+      a run can report survivors or earn `spec-strong`; retain PR #83's file-module owner
+      mapping rather than duplicating it. Landed in `be7600f`.
+- [x] Stop advising users to lower `bounded(k)` when the generated proof has no unwind
+      bound. Say plainly that changing `k` does not shrink that proof. Landed in `be7600f`.
+
+- [ ] **KNOWN GAP: no history when the checked call panics.** The marker
+      carrying it is written after the call returns, so a call that never
+      returns writes none. Honest (absent, never fabricated, and §8 now says
+      so) but this is exactly the case whose raw witness is least readable,
+      so it is the most valuable one to have. Closing it means wrapping the
+      checked call in a panic guard, which changes how a panicking call is
+      reported -- a real change, not a tidy-up, and not one to make while
+      landing something else.
+
+- [ ] **KNOWN GAP: a precondition that hides `self` inside a macro still
+      does not compile.** `#[ply::requires(matches!(self.available(), 1..))]`
+      comes back as a tool error naming a compile failure. Both the "does
+      this mention the value" test and the rewrite walk the syntax tree, and
+      neither descends into a macro's tokens, so the filter is emitted before
+      the value exists and unrewritten. Not a regression -- it never
+      compiled -- and it fails loudly rather than silently, but it is a hole
+      in "a precondition that names the value is checked after the value is
+      built".
 
       Two tests masked an engine by putting a fake `cargo` first on `PATH`,
       which Ply no longer consults -- both now mask the named one too. One

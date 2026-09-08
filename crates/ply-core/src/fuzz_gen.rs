@@ -2100,6 +2100,22 @@ pub fn examples_are_consumed(cf: &ContractFn, checks: &[Check], examples: &[Stri
 /// enough for the shape this exists for -- an author naming the one input
 /// their precondition accepts -- and anything richer is skipped, leaving
 /// the example running as an example test exactly as before.
+/// Whether a call written in one function claim's own `examples:` names
+/// that function. The generated module imports the claimed free function
+/// directly, so its bare leaf is valid Rust there; a qualified call still
+/// has to match the claim's module suffix and cannot borrow a same-named
+/// function from somewhere else.
+fn own_example_call_matches(func_text: &str, fn_path: &str) -> bool {
+    let func_text = func_text.replace(' ', "");
+    let fn_path = fn_path.replace(' ', "");
+    harness::last_two_segments(&func_text) == harness::last_two_segments(&fn_path)
+        || (!func_text.contains("::")
+            && fn_path
+                .rsplit("::")
+                .next()
+                .is_some_and(|leaf| leaf == func_text))
+}
+
 pub fn example_argument_literals(
     examples: &[String],
     fn_path: &str,
@@ -2119,14 +2135,14 @@ pub fn example_argument_literals(
         }
     }
     struct CallFinder<'a> {
-        target: &'a str,
+        fn_path: &'a str,
         param_index: usize,
         out: Vec<String>,
     }
     impl<'a> Visit<'a> for CallFinder<'a> {
         fn visit_expr_call(&mut self, node: &'a syn::ExprCall) {
-            let func_text = node.func.to_token_stream().to_string().replace(' ', "");
-            if harness::last_two_segments(&func_text) == self.target
+            let func_text = node.func.to_token_stream().to_string();
+            if own_example_call_matches(&func_text, self.fn_path)
                 && let Some(arg) = node.args.iter().nth(self.param_index)
                 && let Some(text) = literal_text(arg)
             {
@@ -2135,14 +2151,13 @@ pub fn example_argument_literals(
             syn::visit::visit_expr_call(self, node);
         }
     }
-    let target = harness::last_two_segments(fn_path);
     let mut out = Vec::new();
     for example in examples {
         let Ok(expr) = syn::parse_str::<Expr>(example) else {
             continue;
         };
         let mut finder = CallFinder {
-            target: &target,
+            fn_path,
             param_index,
             out: Vec::new(),
         };
@@ -2164,14 +2179,14 @@ pub fn example_argument_tuples(
     arity: usize,
 ) -> Vec<Vec<String>> {
     struct TupleFinder<'a> {
-        target: &'a str,
+        fn_path: &'a str,
         arity: usize,
         out: Vec<Vec<String>>,
     }
     impl<'a> Visit<'a> for TupleFinder<'a> {
         fn visit_expr_call(&mut self, node: &'a syn::ExprCall) {
-            let func_text = node.func.to_token_stream().to_string().replace(' ', "");
-            if harness::last_two_segments(&func_text) == self.target
+            let func_text = node.func.to_token_stream().to_string();
+            if own_example_call_matches(&func_text, self.fn_path)
                 && node.args.len() == self.arity
                 && let Some(args) = node
                     .args
@@ -2184,14 +2199,13 @@ pub fn example_argument_tuples(
             syn::visit::visit_expr_call(self, node);
         }
     }
-    let target = harness::last_two_segments(&fn_path.replace(' ', ""));
     let mut out: Vec<Vec<String>> = Vec::new();
     for example in examples {
         let Ok(expr) = syn::parse_str::<Expr>(example) else {
             continue;
         };
         let mut finder = TupleFinder {
-            target: &target,
+            fn_path,
             arity,
             out: Vec::new(),
         };
@@ -5115,6 +5129,45 @@ pub fn dependency_count(manifest: &str) -> usize { manifest.len() }
         assert!(
             cases.contains("let manifest: String = (\"[dependencies]\").to_string();"),
             "a borrowed string parameter needs owned local storage:\n{cases}"
+        );
+    }
+
+    /// The generated module imports a nested free function directly, so an
+    /// example under that function's own claim naturally calls its bare
+    /// name. The literal extractor must resolve that call the same way Rust
+    /// does instead of comparing `module::function` with `function` and
+    /// silently dropping the author's only admissible inputs.
+    #[test]
+    fn a_nested_functions_own_bare_examples_feed_its_contract_cases() {
+        let mut cf = discover(
+            r#"
+#[ply::requires(admits > 0 && oldest < period)]
+#[ply::ensures(|result| *result <= period)]
+pub fn wait_millis(used: u32, admits: u32, period: u64, oldest: u64) -> u64 {
+    period - oldest + (used >= admits) as u64
+}
+"#,
+            "wait_millis",
+        );
+        cf.path = "rate_limiter::wait_millis".into();
+
+        let cases =
+            generate_direct_contract_cases(&cf, &["wait_millis(4, 4, 1000, 999) == 1".into()]);
+        assert!(
+            cases.contains("let used: u32 = 4;")
+                && cases.contains("let admits: u32 = 4;")
+                && cases.contains("let period: u64 = 1000;")
+                && cases.contains("let oldest: u64 = 999;"),
+            "the function's own bare example must become a contract case:\n{cases}"
+        );
+
+        let foreign = generate_direct_contract_cases(
+            &cf,
+            &["other::wait_millis(9, 9, 2000, 1999) == 1".into()],
+        );
+        assert!(
+            !foreign.contains("let used: u32 = 9;") && !foreign.contains("let period: u64 = 2000;"),
+            "a qualified same-named function is not this claim and cannot donate cases:\n{foreign}"
         );
     }
 
