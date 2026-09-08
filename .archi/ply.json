@@ -5794,7 +5794,7 @@
     {
       "id": "t-spec-d4-arch",
       "file": "The-Ply-Spec.md",
-      "line": 673,
+      "line": 699,
       "snippet": "**Crate tier (sound, errors).** From `cargo metadata`: the exact crate dependency graph.",
       "anchored": true,
       "node": "arch",
@@ -5810,7 +5810,7 @@
     {
       "id": "t-spec-d5-model",
       "file": "The-Ply-Spec.md",
-      "line": 1622,
+      "line": 1726,
       "snippet": "generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict: `f` is not",
       "anchored": true,
       "node": "model",
@@ -5826,7 +5826,7 @@
     {
       "id": "t-spec-cli-verify",
       "file": "The-Ply-Spec.md",
-      "line": 1981,
+      "line": 2095,
       "snippet": "cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts",
       "anchored": true,
       "node": "cli",
@@ -5842,7 +5842,7 @@
     {
       "id": "t-spec-d7-cex",
       "file": "The-Ply-Spec.md",
-      "line": 2575,
+      "line": 2715,
       "snippet": "else `W0541` with a `reason` of `inputs_unrenderable` or `expression_unrenderable`. Its",
       "anchored": true,
       "node": "cex",
@@ -5858,7 +5858,7 @@
     {
       "id": "t-spec-staleness-plylock",
       "file": "The-Ply-Spec.md",
-      "line": 612,
+      "line": 638,
       "snippet": "`W0302`, no `cargo ply accept` and no `E0303`: a claim is never in a state of \"recorded",
       "anchored": true,
       "node": "plylock",
@@ -5890,7 +5890,7 @@
     {
       "id": "t-spec-envelope-shape",
       "file": "The-Ply-Spec.md",
-      "line": 2506,
+      "line": 2639,
       "snippet": "`{ \"command\": \"...\", \"ply_version\": \"...\", \"root\": <node tree §7>, \"diagnostics\": [<Diagnostic>...] }`.",
       "anchored": true,
       "node": "envelope",
@@ -5906,7 +5906,7 @@
     {
       "id": "t-spec-d6-node",
       "file": "The-Ply-Spec.md",
-      "line": 2169,
+      "line": 2301,
       "snippet": "D6 over the evidence order; `statuses` and `open_items` (unresolved markers, weak specs,",
       "anchored": true,
       "node": "node",
@@ -5922,7 +5922,7 @@
     {
       "id": "t-spec-violation-rule",
       "file": "The-Ply-Spec.md",
-      "line": 1412,
+      "line": 1510,
       "snippet": "passing checks earned; a failing check is a `violation` regardless of what else passed.",
       "anchored": true,
       "node": "violation",
