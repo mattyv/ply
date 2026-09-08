@@ -137,7 +137,7 @@ invariant can see, and the bug-planting tier scored them without change.
       specs are "not in this build". All four corrected; the `&mut`
       *parameter* half of §5.4a stands and is marked as standing.
 
-- [x] **CLOSED: the report now shows how the value reached the failing
+- [x] **CLOSED (merged `7820a4b`): the report now shows how the value reached the failing
       state.** A promise about what a call changed is broken by a *history*,
       not only by the failing call's own arguments, so the report was
       satisfying "Ply never reports a broken promise it cannot show you the
@@ -161,7 +161,7 @@ invariant can see, and the bug-planting tier scored them without change.
       that a read-only observer stays checkable (a rule that refused that
       would delete the feature) and one that the after-half of a promise is
       covered as well as the `old(...)` half.
-- [x] **CLOSED: a precondition that names the state compiles and filters.**
+- [x] **CLOSED (merged `7820a4b`): a precondition that names the state compiles and filters.**
       The rejection filter was written out above the line that builds the
       value, so `#[ply::requires(self.available() > 0)]` -- the ordinary way
       to say "only check this when there is something in the bucket" -- named
@@ -268,7 +268,7 @@ refusal shipped the day before.
       test that goes red without the fix is the one asserting the deliberate
       bugs land in the helper's file at all.
 
-- [x] **CLOSED: a crashing call now carries its history too.** It was the
+- [x] **CLOSED (`f71f235`, merged `0855ec2`): a crashing call now carries its history too.** It was the
       one case with none, and the case where it is worth most -- a crash
       leaves the reader with the engine's raw shrunk value
       (`6, [(3,0,(),(),1)], 0`) and nothing that explains it. The call is
@@ -279,7 +279,7 @@ refusal shipped the day before.
       promise -- caught by reading the classification code, not by a test.
       A function with no receiver is untouched, now pinned by a test rather
       than by hand-diffing two built binaries as it was twice before.
-- [x] **CLOSED: a contract that hides the value inside a macro is refused by
+- [x] **CLOSED (`f71f235`, merged `0855ec2`): a contract that hides the value inside a macro is refused by
       name.** It did not compile before, because neither the "does this
       mention the value" test nor the rewrite descends into a macro's tokens.
       Refused rather than taught to rewrite, and the reason matters: the
@@ -313,7 +313,7 @@ refusal shipped the day before.
       test that spawns a subprocess, or stop it mutating process-global
       state at all. Both are more than the flake costs today.
 
-- [x] **CLOSED: a person is now told the guides exist.** Discovery only ever
+- [x] **CLOSED (`a0b7d92`, merged `0855ec2`): a person is now told the guides exist.** Discovery only ever
       ran one way. An assistant finds the guides reliably once they are on
       disk -- Claude Code reads the one-sentence description at the top of
       each and loads the body when a task matches -- but a person who
@@ -323,7 +323,7 @@ refusal shipped the day before.
       disappears the moment the guides are installed. A workspace member
       looks upward, so installing once at the top is enough.
 
-- [x] **CLOSED: the source copy carries everything a build of Ply reads,
+- [x] **CLOSED (`cdef9bc`, merged `0855ec2`): the source copy carries everything a build of Ply reads,
       and proves it rather than listing it.** Embedding the guides in the
       binary broke two build-identity tests, because the copy those tests
       build from carried the schema and the spec but not `skills/`. The
