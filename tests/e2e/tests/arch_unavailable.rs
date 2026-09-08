@@ -45,6 +45,14 @@ fn run(fixture: &Path, path_override: Option<&str>) -> (i32, String, String) {
     cmd.args(["check", fixture.to_str().unwrap(), "--json"]);
     if let Some(path) = path_override {
         cmd.env("PATH", path);
+        // And unset `CARGO`, since 2026-09-08: Ply runs the cargo that
+        // variable names in preference to searching `PATH`, so leaving it
+        // set means this subprocess still finds a perfectly good cargo and
+        // the test stops exercising the toolchain-less container it
+        // describes. It kept passing either way -- cargo with no `PATH`
+        // cannot find `rustc` -- which is exactly how a test comes to guard
+        // something other than what it says.
+        cmd.env_remove("CARGO");
     }
     let out = cmd.output().expect("spawning cargo-ply check");
     (

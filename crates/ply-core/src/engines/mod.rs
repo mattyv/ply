@@ -10,6 +10,22 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
+// **`cargo` is spawned by bare name, on purpose** (2026-09-08).
+//
+// It is tempting to run the binary `CARGO` names -- cargo sets it for
+// everything it launches -- since that removes a `PATH` lookup and, on a
+// machine with two toolchains, sounds more precise. It was tried, and it
+// is wrong: the `cargo` found on `PATH` is rustup's proxy, and the proxy
+// is what reads a crate's own `rust-toolchain.toml` and dispatches to the
+// toolchain that crate pins. Naming a concrete binary skips that, so a
+// crate pinning its own compiler would be checked with a different one --
+// and the compiler is a fingerprint input (§5.2a), so the stored result
+// would be attributed to a toolchain that never touched the code.
+//
+// `tests/e2e/tests/toolchainprobe_fixture.rs` is the test that catches
+// this; its own doc explains why it strips `RUSTUP_TOOLCHAIN` so that
+// directory-based resolution is what runs.
+
 /// How often [`run_with_timeout`] polls the child for exit -- a compromise
 /// between wasted CPU (too tight) and slack in when a killed run is
 /// noticed (too loose). Chosen small enough that no caller's wall-clock

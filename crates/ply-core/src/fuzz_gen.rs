@@ -2921,6 +2921,38 @@ pub fn generate_fuzz_test_with_examples(
             )
         })
         .collect();
+    // A call that *crashes* never reaches either marker arm below -- the
+    // closure unwinds and proptest reports the panic itself. That left the
+    // one case with no history at all, and it is the case where a history
+    // is worth most: a crash leaves the reader with proptest's raw shrunk
+    // value and nothing that explains it (2026-09-08).
+    //
+    // So a receiver method's call is wrapped, the history printed on its
+    // own line, and the panic resumed unchanged. Its own line, deliberately:
+    // the ordinary counterexample marker is what tells `verify` the run
+    // ended in a broken promise rather than a crash, so printing that one
+    // here would relabel every crash as a broken promise. This line carries
+    // the history and nothing else.
+    //
+    // A function with no receiver has no history and is left exactly as it
+    // was -- its generated harness stays byte-identical, which is a
+    // property this file is checked against.
+    let call_stmt = if cf.receiver.is_some() {
+        format!(
+            "let __ply_call_result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {fname}({args}))) {{\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(__ply_v) => __ply_v,\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Err(__ply_panic) => {{\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"PLY_FUZZED_HISTORY|{label}|{{}}\", {escaped});\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20std::panic::resume_unwind(__ply_panic)\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20}};\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20",
+            escaped = marker_display_expr(&RustType::String, "__ply_history")
+        )
+    } else {
+        format!("let __ply_call_result = {fname}({args});")
+    };
+
     let mut marker_build = String::from("let mut __ply_marker = String::new();\n");
     marker_build.push_str(&format!(
         "            __ply_marker.push_str(\"PLY_FUZZED_CEX|{label}|\");\n"
@@ -3017,7 +3049,7 @@ pub fn generate_fuzz_test_with_examples(
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_strategy = {strategy};\n\
          \x20\x20\x20\x20\x20\x20\x20\x20let __ply_outcome = __ply_runner.run(&__ply_strategy, |{pattern}| {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20__ply_total.set(__ply_total.get() + 1);\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{params_preamble_text}{route_capture}{requires_check}{receiver_preamble_text}{requires_check_after_receiver}{entry_lets}{marker_precompute}let __ply_call_result = {fname}({args});\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{params_preamble_text}{route_capture}{requires_check}{receiver_preamble_text}{requires_check_after_receiver}{entry_lets}{marker_precompute}{call_stmt}\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let result = &__ply_call_result;\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20let __ply_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {check_expr}));\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20match __ply_ok {{\n\
@@ -5476,6 +5508,36 @@ impl Thing {
             hist < call,
             "the record has to be written before the call, which may move its own \
              arguments:\n{body}"
+        );
+    }
+
+    /// A function with no receiver has no history, and its generated
+    /// harness must not grow the crash-path machinery that carries one
+    /// (2026-09-08).
+    ///
+    /// The history work has twice claimed "unchanged for a function with no
+    /// receiver" and had it verified by hand, once by diffing two built
+    /// binaries' output. This pins it instead: the call is made plainly,
+    /// with nothing wrapped round it.
+    #[test]
+    fn a_function_with_no_receiver_still_calls_straight_through() {
+        let cf = discover(
+            r#"
+#[ply::ensures(|result| *result >= x)]
+pub fn bump(x: u32) -> u32 { x + 1 }
+"#,
+            "bump",
+        );
+        let body = generate_fuzz_test(&cf, 32, &derive_seed("bump", "")).unwrap();
+        assert!(
+            body.contains("let __ply_call_result = bump(x);"),
+            "a function with no receiver is called plainly, with nothing wrapped round \
+             it:\n{body}"
+        );
+        assert!(
+            !body.contains("PLY_FUZZED_HISTORY"),
+            "and grows none of the machinery that exists to carry a history it does not \
+             have:\n{body}"
         );
     }
 

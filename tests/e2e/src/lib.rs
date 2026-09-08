@@ -301,13 +301,21 @@ impl PlySourceCopy {
     /// each call is an ordinary incremental `cargo build`.
     pub fn build(&self) -> PathBuf {
         let target_dir = self.dir.path().join("target");
-        let status = Command::new("cargo")
+        let output = Command::new("cargo")
             .current_dir(self.dir.path())
             .args(["build", "-p", "ply-cli"])
             .env("CARGO_TARGET_DIR", &target_dir)
-            .status()
+            .output()
             .expect("spawning `cargo build -p ply-cli` in the Ply source copy");
-        assert!(status.success(), "cargo build (Ply source copy) failed");
+        // The compiler's own words, not just "failed". Twice now this build
+        // has broken because the copy was missing a file the real tree has,
+        // and twice the failure named nothing -- so whoever hit it went
+        // looking in the test's subject instead of at the copy.
+        assert!(
+            output.status.success(),
+            "cargo build (Ply source copy) failed. The compiler said:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         target_dir.join("debug/cargo-ply")
     }
 }
@@ -325,11 +333,18 @@ pub fn copy_ply_source() -> PlySourceCopy {
     let root = repo_root();
     let dir = tempfile::tempdir().expect("tempdir");
 
-    // `schema/` is not a workspace member but a build of `ply-cli` reads it:
-    // `ply_core::schema` embeds `schema/ply.schema.json` with `include_str!`
-    // at a path relative to `ply-core`'s manifest, so it has to sit at the
-    // same relative depth in the copy.
-    let mut to_copy = vec!["schema".to_string()];
+    // Neither `schema/` nor `skills/` is a workspace member, but a build of
+    // `ply-cli` reads both: `ply_core::schema` embeds `schema/ply.schema.json`
+    // and `ply_cli::skills` embeds every file under `skills/`, each with
+    // `include_str!` at a path relative to its own crate's manifest -- so each
+    // has to sit at the same relative depth in the copy.
+    //
+    // This list going stale is not hypothetical; it has now happened twice,
+    // and both times the only symptom was `cargo build (Ply source copy)
+    // failed` from a test about something else. `sourcecopy_fixture` now
+    // walks the real source for cross-crate embeds and fails naming whatever
+    // is missing, so a third one is caught before it can be mysterious.
+    let mut to_copy = vec!["schema".to_string(), "skills".to_string()];
     to_copy.extend(workspace_member_dirs(&root));
 
     for name in to_copy {

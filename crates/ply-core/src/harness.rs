@@ -2519,6 +2519,17 @@ pub enum ReceiverError {
         /// (2026-09-08, adversarial review).
         written_in: &'static str,
     },
+    /// The contract names the receiver from inside a macro, whose
+    /// expansion Ply does not read -- so it can neither rewrite that
+    /// `self` into the receiver it built (the check would not compile) nor
+    /// tell whether the reading changes the value (the check could be
+    /// meaningless). Refused rather than guessed at: see
+    /// [`refuse_a_promise_that_changes_what_it_reads`] for why fail-closed
+    /// beats teaching the rewrite to edit macro tokens.
+    NamesTheValueInsideAMacro {
+        method_name: String,
+        written_in: &'static str,
+    },
     /// The method's promise writes `old(self)` -- a copy of the whole
     /// receiver from before the call, which Ply cannot take without
     /// `Clone`. Before this refusal the generated harness failed to
@@ -2592,6 +2603,18 @@ impl std::fmt::Display for ReceiverError {
                  is about, and the check could come back clean while the bug it was written to \
                  catch is still there. Use a method that only reads (one taking `&self`) in the \
                  promise, or add one"
+            ),
+            ReceiverError::NamesTheValueInsideAMacro {
+                method_name,
+                written_in,
+            } => write!(
+                f,
+                "Ply cannot check `{method_name}`: its {written_in} names the value the method \
+                 is called on from inside a macro, and Ply cannot read what a macro expands to. \
+                 It therefore cannot tell whether that reading would change the value -- which \
+                 is the one thing that would make the whole check meaningless -- so it refuses \
+                 rather than guess. Write the reading outside the macro, or use a plain \
+                 comparison instead"
             ),
             ReceiverError::PromiseSnapshotsWholeReceiver {
                 method_name,
@@ -3674,6 +3697,15 @@ fn refuse_a_promise_that_changes_what_it_reads(
         mut_self_methods: &'a [String],
         mutating_read: Option<String>,
         whole_receiver: bool,
+        self_in_macro: bool,
+    }
+    /// Whether a token stream names `self` anywhere, at any nesting depth.
+    fn tokens_name_self(tokens: proc_macro2::TokenStream) -> bool {
+        tokens.into_iter().any(|tt| match tt {
+            proc_macro2::TokenTree::Ident(id) => id == "self",
+            proc_macro2::TokenTree::Group(g) => tokens_name_self(g.stream()),
+            _ => false,
+        })
     }
     impl<'ast> syn::visit::Visit<'ast> for Walk<'_> {
         fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
@@ -3684,6 +3716,15 @@ fn refuse_a_promise_that_changes_what_it_reads(
                 }
             }
             syn::visit::visit_expr_method_call(self, call);
+        }
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            // A macro's expansion is not something Ply reads, so a `self`
+            // inside one is a reading it can neither rewrite nor judge.
+            // Detected on the raw tokens, which is all there is to go on.
+            if tokens_name_self(mac.tokens.clone()) {
+                self.self_in_macro = true;
+            }
+            syn::visit::visit_macro(self, mac);
         }
         fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
             if let Expr::Path(p) = &*call.func
@@ -3720,6 +3761,7 @@ fn refuse_a_promise_that_changes_what_it_reads(
         mut_self_methods,
         mutating_read: None,
         whole_receiver: false,
+        self_in_macro: false,
     };
     syn::visit::Visit::visit_expr(&mut walk, body);
     if let Some(mutating_method) = walk.mutating_read {
@@ -3727,6 +3769,12 @@ fn refuse_a_promise_that_changes_what_it_reads(
             method_name: method_name.to_string(),
             type_name: type_name.to_string(),
             mutating_method,
+            written_in,
+        });
+    }
+    if walk.self_in_macro {
+        return Err(ReceiverError::NamesTheValueInsideAMacro {
+            method_name: method_name.to_string(),
             written_in,
         });
     }
@@ -8973,6 +9021,134 @@ impl Meter {
             "a precondition reading through a `&self` method is exactly the shape this \
                      supports",
         );
+    }
+
+    /// A contract that hides the value inside a macro is refused by name
+    /// (2026-09-08).
+    ///
+    /// Two problems, one cause. `matches!(self.available(), 1..)` did not
+    /// compile at all, because neither the "does this mention the value"
+    /// test nor the rewrite that turns `self` into the receiver Ply built
+    /// descends into a macro's tokens -- so the filter was written out
+    /// before the value existed and still spelled `self`. And the refusal
+    /// that stops a promise changing what it reads is blind in exactly the
+    /// same place, which makes a macro the *third* way found in two rounds
+    /// to walk past it: `old(matches!(self.take_reading(), _))` would have
+    /// gone straight through.
+    ///
+    /// Refusing is the fail-closed answer, and the reason to prefer it over
+    /// teaching the rewrite to edit macro tokens: rewriting would work, but
+    /// it would also make a macro a fourth place for a bypass to hide,
+    /// where every future check of a contract has to remember to look.
+    #[test]
+    fn a_contract_that_hides_the_value_inside_a_macro_is_refused_by_name() {
+        for (attr, what) in [
+            (
+                "#[ply::requires(matches!(self.level(), 1..))]",
+                "precondition",
+            ),
+            (
+                "#[ply::ensures(|result| matches!(old(self.level()), 0..) && *result >= 0)]",
+                "promise",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            write_crate(
+                dir.path(),
+                &[(
+                    "meter.rs",
+                    &format!(
+                        r#"
+pub struct Meter {{ level: u32 }}
+impl Meter {{
+    pub fn new() -> Self {{ Meter {{ level: 0 }} }}
+    pub fn level(&self) -> u32 {{ self.level }}
+    {attr}
+    #[ply::ensures(|result| *result >= 0)]
+    pub fn add(&mut self, n: u32) -> u32 {{ self.level = self.level.saturating_add(n); self.level }}
+}}
+"#
+                    ),
+                )],
+            );
+            let err =
+                discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new())
+                    .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "Ply cannot check `add`: its {what} names the value the method is called \
+                     on from inside a macro, and Ply cannot read what a macro expands to. It \
+                     therefore cannot tell whether that reading would change the value -- which \
+                     is the one thing that would make the whole check meaningless -- so it \
+                     refuses rather than guess. Write the reading outside the macro, or use a \
+                     plain comparison instead"
+                ),
+                "the sentence has to say which half of the contract, and why a macro is the \
+                 problem: {err}"
+            );
+        }
+    }
+
+    /// The bypass that made the rule above urgent rather than tidy: a
+    /// reading that *changes* the value, hidden inside a macro.
+    ///
+    /// The refusal walks the syntax tree and a macro's tokens are not on
+    /// it, so this went straight through -- the third way found in two
+    /// rounds to walk past that one check, after a `ply.yaml` clause and a
+    /// pair of brackets. It is refused now for not being readable at all,
+    /// which covers this case without Ply having to understand it.
+    #[test]
+    fn a_reading_that_changes_the_value_cannot_hide_inside_a_macro() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "meter.rs",
+                r#"
+pub struct Meter { level: u32 }
+impl Meter {
+    pub fn new() -> Self { Meter { level: 0 } }
+    pub fn level_and_reset(&mut self) -> u32 { let n = self.level; self.level = 0; n }
+    #[ply::ensures(|result| *result >= old(matches!(self.level_and_reset(), 0..) as u32))]
+    pub fn add(&mut self, n: u32) -> u32 { self.level = self.level.saturating_add(n); self.level }
+}
+"#,
+            )],
+        );
+        let err =
+            discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new())
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("from inside a macro"),
+            "a mutating read is exactly as dangerous inside a macro as outside one, and Ply \
+             cannot see in -- so it must refuse rather than report a clean run: {err}"
+        );
+    }
+
+    /// A macro that says nothing about the value is untouched -- refusing
+    /// every macro would refuse `assert!`-shaped promises that are
+    /// perfectly checkable.
+    #[test]
+    fn a_macro_that_never_names_the_value_is_still_checkable() {
+        let dir = tempfile::tempdir().unwrap();
+        write_crate(
+            dir.path(),
+            &[(
+                "meter.rs",
+                r#"
+pub struct Meter { level: u32 }
+impl Meter {
+    pub fn new() -> Self { Meter { level: 0 } }
+    pub fn level(&self) -> u32 { self.level }
+    #[ply::ensures(|result| matches!(n, 0..) && *result >= old(self.level()))]
+    pub fn add(&mut self, n: u32) -> u32 { self.level = self.level.saturating_add(n); self.level }
+}
+"#,
+            )],
+        );
+        discover_method_with_receiver(dir.path(), "meter::Meter::add", &RouteTable::new())
+            .expect("a macro over an ordinary argument says nothing about the value");
     }
 
     /// One pair of brackets must not get past the refusal (2026-09-08,

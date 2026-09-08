@@ -341,6 +341,26 @@ pub fn attribute_build_errors(
     out
 }
 
+/// The last `PLY_FUZZED_HISTORY|<fn>|<escaped>` line, if any.
+///
+/// Printed by a receiver method's harness from the crash path only, where
+/// the ordinary counterexample marker is never reached (2026-09-08). Its own
+/// line rather than a field on that marker: the marker's *presence* is what
+/// tells `verify` the run ended in a broken promise rather than a crash, so
+/// borrowing it here would relabel every crash.
+///
+/// Unescaped exactly like any marker field -- the history is text Ply built
+/// and can contain the characters the wire format reads as structure.
+pub fn parse_history_marker(combined: &str) -> Option<String> {
+    let line = combined
+        .lines()
+        .rev()
+        .find(|l| l.contains("PLY_FUZZED_HISTORY|"))?;
+    let after = line.split_once("PLY_FUZZED_HISTORY|")?.1;
+    let (_fn_name, rest) = after.split_once('|')?;
+    Some(unescape_marker_value(rest))
+}
+
 /// Parses the last `PLY_FUZZED_CEX|<fn>|k1=v1;k2=v2` marker line out of
 /// captured output, returning the fn name and its fields. Fields with a
 /// `[...]` value (a `Vec`/`BTreeSet`) keep the brackets for

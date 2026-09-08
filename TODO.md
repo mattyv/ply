@@ -1,5 +1,25 @@
 # TODO
 
+## Agreed, not yet done — 2026-09-08
+
+- [x] **`cargo ply skills` writes the guides into a project.** `cargo
+      install` copies one executable, so the skills that explain how to write
+      checkable code did not come with it -- and rule 9 is now the only
+      written explanation of how to promise something about a method that
+      changes state. All ten files are embedded in the binary, so the command
+      works offline and always writes guidance matching the build you are
+      running; a skill describing a refusal this build does not make would be
+      worse than none. Nothing is written at install time: a tool that
+      scatters files into your configuration the moment you install it is one
+      people uninstall.
+
+      A file you have edited is left alone and named rather than reclaimed,
+      with `--force` offered. The invariant test walks the real `skills/`
+      directory and fails naming anything not embedded -- proved non-vacuous
+      by adding a sixth skill and watching it go red, because shipping four
+      guides out of five silently is exactly the absence this project
+      refuses.
+
 ## Landed: implicit-unit whole-body mutations — `90f1b62` — 2026-09-08
 
 - [x] Treat cargo-mutants' `replace <fn> with ()` description as a
@@ -248,87 +268,73 @@ refusal shipped the day before.
       test that goes red without the fix is the one asserting the deliberate
       bugs land in the helper's file at all.
 
-## In progress: remaining response-mapper trial findings — 2026-09-08
+- [x] **CLOSED: a crashing call now carries its history too.** It was the
+      one case with none, and the case where it is worth most -- a crash
+      leaves the reader with the engine's raw shrunk value
+      (`6, [(3,0,(),(),1)], 0`) and nothing that explains it. The call is
+      wrapped, the history printed, the panic resumed unchanged. On its own
+      line, deliberately: the ordinary counterexample marker's *presence* is
+      what tells `verify` a run ended in a broken promise rather than a
+      crash, so reusing it would have relabelled every crash as a broken
+      promise -- caught by reading the classification code, not by a test.
+      A function with no receiver is untouched, now pinned by a test rather
+      than by hand-diffing two built binaries as it was twice before.
+- [x] **CLOSED: a contract that hides the value inside a macro is refused by
+      name.** It did not compile before, because neither the "does this
+      mention the value" test nor the rewrite descends into a macro's tokens.
+      Refused rather than taught to rewrite, and the reason matters: the
+      refusal that stops a promise changing what it reads is blind in the
+      same place, so a macro was the **third** way found in two rounds to
+      walk past that one check -- after a `ply.yaml` clause and a pair of
+      brackets. Teaching the rewrite to edit macro tokens would have worked
+      and made a macro a fourth place for a bypass to hide. A macro that
+      never names the value is untouched.
+- [ ] **KNOWN GAP, and one wrong fix ruled out by measurement: the `PATH`
+      race.** A test empties the process's `PATH` to prove the timeout budget
+      needs no helper binary; every sibling test spawning `cargo` in parallel
+      races it, and one loses often enough to fail the whole library suite in
+      this container. CI runs the same 525 tests with no failure, so it is
+      environment-specific, not a defect in the code under test.
 
-- [x] Keep private and `pub(crate)` methods out of generated receiver histories. The
-      harness lives outside the checked crate, so those calls cannot compile; name the
-      omitted operation in the existing partial-history disclosure instead. Landed in `be7600f`.
-- [x] Treat a bare call in a function's own `examples:` as that function when extracting
-      literal contract cases, without letting a same-named function elsewhere borrow the
-      example. Preserve successful fuzz or proof evidence when a second declared check
-      reaches no admissible input, and carry that non-result beside the evidence. Landed in `be7600f`.
-- [x] Defend against cargo-mutants 27.1.0 returning struct-field mutations outside every
-      requested selector. Apply Ply's ownership selectors to every result category before
-      a run can report survivors or earn `spec-strong`; retain PR #83's file-module owner
-      mapping rather than duplicating it. Landed in `be7600f`.
-- [x] Stop advising users to lower `bounded(k)` when the generated proof has no unwind
-      bound. Say plainly that changing `k` does not shrink that proof. Landed in `be7600f`.
+      **Do not fix it by running the binary `CARGO` names.** That was tried
+      on 2026-09-08 and reverted the same hour. It removes the `PATH` lookup
+      and sounds more precise on a machine with two toolchains -- but the
+      `cargo` on `PATH` is rustup's proxy, and the proxy is what reads a
+      crate's own `rust-toolchain.toml` and dispatches to the toolchain that
+      crate pins. Naming a concrete binary skips that, so a crate pinning its
+      own compiler gets checked with a different one -- and the compiler is a
+      fingerprint input (§5.2a), so a stored result would be attributed to a
+      toolchain that never touched the code. Caught by
+      `toolchainprobe_fixture`, whose own doc explains why it strips
+      `RUSTUP_TOOLCHAIN` so that directory-based resolution is what runs.
+      The reason is now recorded in `engines/mod.rs` beside the spawn.
 
-- [ ] **KNOWN GAP: no history when the checked call panics.** The marker
-      carrying it is written after the call returns, so a call that never
-      returns writes none. Honest (absent, never fabricated, and §8 now says
-      so) but this is exactly the case whose raw witness is least readable,
-      so it is the most valuable one to have. Closing it means wrapping the
-      checked call in a panic guard, which changes how a panicking call is
-      reported -- a real change, not a tidy-up, and not one to make while
-      landing something else.
+      A real fix has to serialise the `PATH`-clearing test against every
+      test that spawns a subprocess, or stop it mutating process-global
+      state at all. Both are more than the flake costs today.
 
-- [ ] **KNOWN GAP: a precondition that hides `self` inside a macro still
-      does not compile.** `#[ply::requires(matches!(self.available(), 1..))]`
-      comes back as a tool error naming a compile failure. Both the "does
-      this mention the value" test and the rewrite walk the syntax tree, and
-      neither descends into a macro's tokens, so the filter is emitted before
-      the value exists and unrewritten. Not a regression -- it never
-      compiled -- and it fails loudly rather than silently, but it is a hole
-      in "a precondition that names the value is checked after the value is
-      built".
+- [x] **CLOSED: a person is now told the guides exist.** Discovery only ever
+      ran one way. An assistant finds the guides reliably once they are on
+      disk -- Claude Code reads the one-sentence description at the top of
+      each and loads the body when a task matches -- but a person who
+      installs Ply and never reads the README never learns there is anything
+      to put there. `cargo ply check` now prints one line naming the command,
+      on stderr so nothing reading the command's output is affected, and it
+      disappears the moment the guides are installed. A workspace member
+      looks upward, so installing once at the top is enough.
 
-- [x] **CLOSED: the guidance no longer says this cannot be done.** Rule 9 of
-      `ply-checkable-code` now opens by saying a method that changes the
-      object is checkable, shows the shape of such a promise, and presents
-      `state:`/`holds:` as complementary rather than as the replacement it
-      used to be billed as -- a whole-value rule catches an invariant broken
-      by any sequence; a method promise catches a bug that leaves every
-      invariant true. It also names the two refused promise shapes so a
-      reader does not walk into them. `V0507`'s gloss is narrowed to what
-      still fires it (verified against the actual emitting sites, not the
-      old text). Two stale doc comments left in `harness.rs` were found and
-      fixed. `docs/old-and-misleading-advice.md` marks the old line
-      superseded in that document's own convention rather than deleting it.
-      §5.4a/b/c were re-read and are accurate as they stand.
-      `docs/component-proof-design.md` still quotes the old rule; left as
-      the dated proposal document it is, like every other `docs/review-*.md`.
-- [x] **CLOSED: the snapshot that silently mutates.** This was the live
-      false clean the review found in the shipped binary -- a `&mut self`
-      observer inside `old(...)` (a `get` that touches recency, a
-      `level_and_reset`) is evaluated as a plain read on the mutable
-      receiver, so it altered the very state being snapshotted and the bug
-      became unreachable: `fuzzed(256)`, clean, no warning. It is now a
-      refusal. Reproduced end to end before the fix and pinned by
-      `tokenbucket_fixture.rs`'s fourth test, which plants the
-      refill-of-nothing bug *and* rigs the promise, so the test is refusing
-      a promise that was about to certify a real bug rather than one that
-      merely looked wrong. The check is deliberately wider than the
-      operation pool: a mutating method Ply could never *call* (unbuildable
-      arguments, a trait implementation) still counts, because whether
-      naming it in a promise changes the value does not depend on that.
-      Known narrowing: the walk recognises a call whose receiver is
-      literally `self`, so `old(self.inner().touch())` is caught at
-      `inner()` only if `inner` itself mutates. Field reads
-      (`old(self.level)`) are untouched, as they should be.
-- [ ] **NOT DONE: a panic inside the generated sequence is blamed on the
-      checked method.** One buggy mutator now produces a "this method
-      panicked" report for every sibling that pools it, naming correct code.
-      Predates the slice; the slice makes it routine, because every claimed
-      mutator is now in every sibling's pool.
-- [ ] **KNOWN LIMIT, recorded rather than hidden: transition promises are
-      purely relative.** They say what an operation *changed*, so they cannot
-      see a wrong constructor or a wrong observer -- the readings they are
-      written in terms of are their trust base. Verified: breaking `new` to
-      start one token short leaves the fixture clean. The bug-planting tier
-      plants in the claimed body only, so neither the constructor nor the
-      observers are ever mutated. "5 of 5 planted bugs" must be read with
-      that caveat.
+- [x] **CLOSED: the source copy carries everything a build of Ply reads,
+      and proves it rather than listing it.** Embedding the guides in the
+      binary broke two build-identity tests, because the copy those tests
+      build from carried the schema and the spec but not `skills/`. The
+      only symptom was `cargo build (Ply source copy) failed` with no
+      compiler output -- the same uninformative failure this list already
+      recorded from 2026-08-30, when four crates joined the workspace and
+      the copy stopped loading. Fixed twice over: the failure now prints
+      what the compiler actually said, and a new check walks the real source
+      for every file embedded from outside its own crate and fails naming
+      whichever the copy would not carry. A third stale entry cannot be
+      mysterious.
 
 - [ ] **OPEN DECISION for the maintainer:** is a getter added purely so a
       promise can read a private field acceptable? The cache needed a

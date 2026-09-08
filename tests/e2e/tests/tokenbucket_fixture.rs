@@ -460,3 +460,56 @@ fn a_promise_written_in_the_document_is_refused_the_same_way_as_one_in_the_sourc
         "and it has to give the same reason: {refusal}"
     );
 }
+
+/// The gap left open when the history landed, now closed (2026-09-08).
+///
+/// The line carrying the history is written after the checked call returns,
+/// so a call that *crashes* wrote none -- and that is the case where it is
+/// worth most, because a crash leaves the reader with the raw generated
+/// witness (`4, [(3,0,(),(),1)], 5`) and nothing else. The report said
+/// which arguments crashed it and stayed silent about how the value got
+/// into the state where they did.
+#[test]
+fn a_call_that_crashes_still_shows_how_the_value_reached_that_state() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("tokenbucket");
+
+    let src = fixture.read_lib_rs();
+    // Subtracting from the capacity underflows once anything has been
+    // taken, so the crash needs a history to explain it: on a fresh bucket
+    // `available == capacity` and nothing goes wrong.
+    let broken = src.replace(
+        "        let room = self.capacity - self.available;",
+        "        let room = self.available - self.capacity;",
+    );
+    assert_ne!(src, broken, "the refill body must have been rewritten");
+    fixture.write_lib_rs(&broken);
+
+    let run = run_verify(&cargo_ply, fixture.path(), 300);
+    let diag = run.json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| {
+            d["node_id"] == "tokenbucket::TokenBucket::refill" && d["counterexample"].is_object()
+        })
+        .unwrap_or_else(|| panic!("the crash must be reported with a witness: {}", run.json));
+
+    let history = diag["counterexample"]["receiver_history"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!(
+                "a crash is the case where the reader has least to go on, so it is the case \
+                 that most needs the recipe -- and it was the one case that had none: {diag}"
+            )
+        });
+    assert!(
+        history.starts_with("TokenBucket::new("),
+        "the history has to start where the value did: {history}"
+    );
+    assert!(
+        history.contains(", then TokenBucket::"),
+        "a fresh bucket cannot crash this, so the history has to name what happened to it \
+         first, or it does not explain the crash: {history}"
+    );
+}
