@@ -14,6 +14,7 @@ pub mod audit;
 pub mod check;
 pub mod explain;
 pub mod shared;
+pub mod skills;
 pub mod verify;
 pub mod worklist;
 
@@ -176,6 +177,19 @@ enum Commands {
         #[arg(long, default_value_t = DEFAULT_RETAINED_RUNS)]
         keep: usize,
     },
+    /// Write the skills -- the guides for writing code Ply can check and for
+    /// reading what it reports -- into this project so an assistant working
+    /// here can pick them up. Installing Ply copies one executable and
+    /// nothing else, so this is how the guidance gets to you.
+    Skills {
+        /// Where to write them. Defaults to `.claude/skills`.
+        #[arg(long)]
+        dest: Option<PathBuf>,
+        /// Replace a file whose content differs from what this build ships.
+        /// Without it, such a file is left alone and named.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// §6's `--fail-on`. It relaxes the default; it never enables it -- §1's
@@ -327,6 +341,12 @@ pub fn run() -> anyhow::Result<()> {
         Commands::Explain { code } => {
             let mut stdout = std::io::stdout().lock();
             explain::explain_command(code.as_deref(), &mut stdout)?;
+        }
+        Commands::Skills { dest, force } => {
+            let dest = dest.unwrap_or_else(skills::default_destination);
+            let written = skills::write_skills(&dest, force)?;
+            print!("{}", skills::report(&dest, &written));
+            return Ok(());
         }
         Commands::CleanViews { path, keep } => {
             let cleanup = VisualPublisher::new(path).cleanup(keep)?;

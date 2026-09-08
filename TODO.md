@@ -2,13 +2,23 @@
 
 ## Agreed, not yet done — 2026-09-08
 
-- [ ] **The installer should install the skills.** `ply-checkable-code` and
-      `ply-author` are what tell an author how to write code Ply can check,
-      and today they live in the repo where only someone reading the source
-      finds them. Someone who installs Ply gets the tool without the guidance
-      that makes it usable -- and rule 9 of `ply-checkable-code` is now the
-      only place that explains how to write a promise about a method that
-      changes something, which landed this week.
+- [x] **`cargo ply skills` writes the guides into a project.** `cargo
+      install` copies one executable, so the skills that explain how to write
+      checkable code did not come with it -- and rule 9 is now the only
+      written explanation of how to promise something about a method that
+      changes state. All ten files are embedded in the binary, so the command
+      works offline and always writes guidance matching the build you are
+      running; a skill describing a refusal this build does not make would be
+      worse than none. Nothing is written at install time: a tool that
+      scatters files into your configuration the moment you install it is one
+      people uninstall.
+
+      A file you have edited is left alone and named rather than reclaimed,
+      with `--force` offered. The invariant test walks the real `skills/`
+      directory and fails naming anything not embedded -- proved non-vacuous
+      by adding a sixth skill and watching it go red, because shipping four
+      guides out of five silently is exactly the absence this project
+      refuses.
 
 ## Landed: implicit-unit whole-body mutations — `90f1b62` — 2026-09-08
 

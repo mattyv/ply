@@ -36,6 +36,19 @@ $ cargo install --git https://github.com/mattyv/ply ply-cli --locked
 $ cargo ply --help
 ```
 
+**The guides, if you work with an assistant.** `cargo install` copies one executable and
+nothing else, so the skills that explain how to write code Ply can check — and how to read
+what it reports — do not come with it. One command puts them where an assistant working in
+your project will find them:
+
+```console
+$ cargo ply skills          # writes .claude/skills/, or pass --dest
+```
+
+They are carried inside the binary, so this works offline and always writes the guidance
+that matches the Ply you are running. A file you have edited is left alone and named,
+rather than replaced.
+
 **The dependency.** The `#[ply::requires]` and `#[ply::ensures]` attributes come from a
 crate you add to whatever you are checking. Under a plain `cargo build` they compile to
 nothing, so this costs you no runtime behaviour:
