@@ -244,19 +244,19 @@ refusal shipped the day before.
 
 ## In progress: remaining response-mapper trial findings — 2026-09-08
 
-- [ ] Keep private and `pub(crate)` methods out of generated receiver histories. The
+- [x] Keep private and `pub(crate)` methods out of generated receiver histories. The
       harness lives outside the checked crate, so those calls cannot compile; name the
-      omitted operation in the existing partial-history disclosure instead.
-- [ ] Treat a bare call in a function's own `examples:` as that function when extracting
+      omitted operation in the existing partial-history disclosure instead. Landed in `be7600f`.
+- [x] Treat a bare call in a function's own `examples:` as that function when extracting
       literal contract cases, without letting a same-named function elsewhere borrow the
       example. Preserve successful fuzz or proof evidence when a second declared check
-      reaches no admissible input, and carry that non-result beside the evidence.
-- [ ] Defend against cargo-mutants 27.1.0 returning struct-field mutations outside every
+      reaches no admissible input, and carry that non-result beside the evidence. Landed in `be7600f`.
+- [x] Defend against cargo-mutants 27.1.0 returning struct-field mutations outside every
       requested selector. Apply Ply's ownership selectors to every result category before
       a run can report survivors or earn `spec-strong`; retain PR #83's file-module owner
-      mapping rather than duplicating it.
-- [ ] Stop advising users to lower `bounded(k)` when the generated proof has no unwind
-      bound. Say plainly that changing `k` does not shrink that proof.
+      mapping rather than duplicating it. Landed in `be7600f`.
+- [x] Stop advising users to lower `bounded(k)` when the generated proof has no unwind
+      bound. Say plainly that changing `k` does not shrink that proof. Landed in `be7600f`.
 
 - [ ] **KNOWN GAP: no history when the checked call panics.** The marker
       carrying it is written after the call returns, so a call that never
