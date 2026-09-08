@@ -1275,16 +1275,78 @@ fn combined_strategy_expr_for_with_override(
 /// way Rust source does, so the reported call can be typed straight into a
 /// test -- and an empty string reads as `note("")` rather than as `note()`,
 /// which is a different call altogether.
-fn history_display_expr(ty: &RustType, var: &str) -> String {
-    // A value that recursively contains a user-defined type is not
-    // guaranteed to implement `Debug` at all, and a generated harness must
-    // never fail to compile over a diagnostic nicety -- the same rule, and
-    // the same placeholder, `marker_display_expr` already applies.
-    if contains_user_type(ty) {
-        return "\"<value containing a user-defined type, not shown>\".to_string()".to_string();
-    }
+/// Whether a value of this type can be handed to `{:?}` in generated code
+/// without risking a harness that will not compile.
+///
+/// **Fail closed, and deliberately** (2026-09-08). The first version of the
+/// history asked the opposite question -- "does this obviously contain a
+/// user type?" -- and let everything else through to `{:?}`. CI found what
+/// that misses: `tests/fixtures/sharedtypeparam`'s `Pair` derives nothing,
+/// its own methods take another `&Pair`, and at the point a history is
+/// rendered that parameter has not always been resolved to a user type yet
+/// -- so it fell through to `{:?}` and every claim on that fixture came
+/// back as a tool error, the harness having failed to build.
+///
+/// The list below is therefore an allow-list of types Rust's own `Debug`
+/// impls cover: scalars, text, and containers of those. A type this
+/// function does not recognise -- an unresolved name, the receiver's own
+/// type, anything of the user's -- is named rather than shown. A history
+/// is a diagnostic nicety; the check is the point, and it must never be the
+/// reason a check cannot run.
+fn history_debug_safe(ty: &RustType) -> bool {
     match ty {
-        // `Display` is exact and reads best for a plain number or bool.
+        RustType::Bool
+        | RustType::Char
+        | RustType::String
+        | RustType::U8
+        | RustType::U16
+        | RustType::U32
+        | RustType::U64
+        | RustType::Usize
+        | RustType::I8
+        | RustType::I16
+        | RustType::I32
+        | RustType::I64
+        | RustType::Isize
+        | RustType::F32
+        | RustType::F64
+        | RustType::VecU8
+        | RustType::Duration
+        | RustType::NonZero(_) => true,
+        RustType::Option(inner)
+        | RustType::Array(inner, _)
+        | RustType::Vec(inner)
+        | RustType::BTreeSet(inner)
+        | RustType::Slice(inner)
+        | RustType::BoxT(inner) => history_debug_safe(inner),
+        RustType::Result(ok, err) => history_debug_safe(ok) && history_debug_safe(err),
+        RustType::Tuple(items) => items.iter().all(history_debug_safe),
+        RustType::BTreeMap(k, v) => history_debug_safe(k) && history_debug_safe(v),
+        _ => false,
+    }
+}
+
+/// How one argument is written into a receiver's history: the way a person
+/// would write it in Rust source, and **without** the marker line's own
+/// escaping (2026-09-08).
+///
+/// The distinction cost a real defect. [`marker_display_expr`] escapes as it
+/// renders, because its output goes straight onto the marker line as its own
+/// field. A history is different: it is assembled into one `String` that is
+/// escaped once, as a whole, on its way onto that line. Rendering its parts
+/// with the escaping version escaped everything twice, while the reader
+/// unescapes once -- so a call really made with `[` was reported as
+/// `note(\[)`, a recipe that would not reproduce anything. Found by
+/// adversarial review, 2026-09-08.
+///
+/// `{:?}` rather than `{}` for text on purpose: it quotes and escapes the
+/// way Rust source does, so the reported call can be typed straight into a
+/// test -- and an empty string reads as `note("")` rather than as `note()`,
+/// which is a different call altogether.
+fn history_display_expr(ty: &RustType, var: &str) -> String {
+    match ty {
+        // `Display` is exact and reads best for a plain number or bool, and
+        // needs no `Debug` impl at all.
         RustType::Bool
         | RustType::U8
         | RustType::U16
@@ -1298,9 +1360,12 @@ fn history_display_expr(ty: &RustType, var: &str) -> String {
         | RustType::Isize
         | RustType::F32
         | RustType::F64 => format!("format!(\"{{}}\", {var})"),
-        // Everything else -- text, a collection, an `Option`, a `char` --
-        // reads correctly as its Rust literal.
-        _ => format!("format!(\"{{:?}}\", {var})"),
+        // Text, a collection, an `Option`, a `char` -- all read correctly as
+        // their Rust literal, and all are covered by `Debug` impls Rust
+        // itself provides.
+        _ if history_debug_safe(ty) => format!("format!(\"{{:?}}\", {var})"),
+        // Anything else is named, never shown: see `history_debug_safe`.
+        _ => "\"<a value this history cannot show>\".to_string()".to_string(),
     }
 }
 
@@ -5358,6 +5423,43 @@ impl Thing {
             hist < call,
             "the record has to be written before the call, which may move its own \
              arguments:\n{body}"
+        );
+    }
+
+    /// A history must never be the reason a generated harness fails to
+    /// compile (2026-09-08). It is a diagnostic nicety; the check is the
+    /// point.
+    ///
+    /// Found by CI, not by me: rendering an argument as `{:?}` needs
+    /// `Debug`, and a user's own struct is not guaranteed to derive it.
+    /// `tests/fixtures/sharedtypeparam`'s `Pair` does not, and every claim
+    /// on that fixture came back as a tool error -- the harness would not
+    /// build. The whole-value marker path had this rule already and said so
+    /// in a comment; the history path was written without it.
+    #[test]
+    fn a_user_typed_argument_is_never_rendered_through_debug_in_a_history() {
+        let cf = discover_receiver(
+            r#"
+pub struct Pair { pub a: u64 }
+impl Pair {
+    pub fn new(a: u64) -> Self { Pair { a } }
+    #[ply::ensures(|result| *result == other.a)]
+    pub fn value_of(&self, other: &Pair) -> u64 { other.a }
+}
+"#,
+            "m::Pair::value_of",
+        );
+        let body = generate_fuzz_test(&cf, 32, &derive_seed("value_of", "")).unwrap();
+        for line in body.lines().filter(|l| l.contains("__ply_history")) {
+            assert!(
+                !line.contains("{:?}\", other"),
+                "`Pair` derives nothing, so asking the compiler to `Debug` it does not build -- \
+                 a history has to fall back to naming the shape rather than showing it:\n{line}"
+            );
+        }
+        assert!(
+            body.contains("__ply_history"),
+            "and the history must still be recorded, not dropped:\n{body}"
         );
     }
 
