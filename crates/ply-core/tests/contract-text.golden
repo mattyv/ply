@@ -230,6 +230,7 @@ twogood::increment ensures |result|*result >= x
 twogood::increment requires x <= 1_000
 unclaimedcallee::tiered_fee ensures |result|*result <= amount_cents
 unclaimedcallee::tiered_fee requires amount_cents <= 100_000
+unitreturnmutate::capped ensures |result|*result <= 10
 unparseableexample::add_small ensures |result|*result == a + b
 unparseableexample::add_small requires a < 100 && b < 100
 useimport::tiered_fee ensures |result|*result <= amount_cents

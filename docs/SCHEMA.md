@@ -415,7 +415,9 @@ Ply reapplies its per-function ownership filter to every cargo-mutants result fi
 cargo-mutants 27.1.0 can otherwise return unrelated struct-field deletions despite
 `--re`, which must neither create a warning nor earn strength for this function. That
 filter keeps the source file too, because two file modules can contain different
-functions that cargo-mutants gives the same bare owner name.
+functions that cargo-mutants gives the same bare owner name. It recognizes both ordinary
+`replace fn -> TYPE with ...` mutations and the no-arrow `replace fn with ()` form used
+when cargo-mutants deletes the whole body of a function with an implicit `()` return.
 
 ```yaml
 ply: 1

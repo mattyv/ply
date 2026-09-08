@@ -187,20 +187,22 @@ pub fn mutants_argv(cfg: &MutantsRunConfig) -> Vec<String> {
     out
 }
 
-/// Matches the two positions where cargo-mutants names the function that
-/// owns a mutant: immediately after `replace`, or at the end after `in`.
-/// Text elsewhere in the description (a string literal, type, or called
-/// function) is not ownership and must not widen the planting scope.
+/// Matches the three forms where cargo-mutants names the function that owns
+/// a mutant: after `replace` with its return type, after `replace` in the
+/// implicit-unit whole-body form, or at the end after `in`. Text elsewhere
+/// in the description (a string literal, type, or called function) is not
+/// ownership and must not widen the planting scope.
 fn mutation_selector(name: &str) -> String {
-    format!(r"(?:replace {name} ->| in {name}$)")
+    format!(r"(?:replace {name} ->|replace {name} with \(\)$| in {name}$)")
 }
 
 /// The same ownership rule as [`mutation_selector`], applied to one result
 /// line without shipping a regex engine solely to defend an adapter
-/// boundary. Rust paths contain neither spaces nor arrows, so these two
-/// literal positions are unambiguous.
+/// boundary. Rust paths contain neither spaces nor arrows, so these three
+/// literal forms are unambiguous.
 fn mutation_description_is_owned_by(description: &str, name: &str) -> bool {
     description.contains(&format!("replace {name} ->"))
+        || description.ends_with(&format!("replace {name} with ()"))
         || description.ends_with(&format!(" in {name}"))
 }
 
@@ -504,6 +506,20 @@ mod tests {
         }
     }
 
+    /// An implicit `()` return has no `-> TYPE` in Rust source, and
+    /// cargo-mutants consequently describes its whole-body replacement as
+    /// `replace reset with ()` rather than the usual `replace reset -> ...`.
+    /// That is still a mutation owned by `reset`, not a third-party mention
+    /// of the name elsewhere in the description.
+    #[test]
+    fn an_implicit_unit_body_replacement_matches_its_owner_selector() {
+        let re = regex::Regex::new(&mutation_selector("reset")).unwrap();
+
+        assert!(re.is_match("src/lib.rs:5:5: replace reset with ()"));
+        assert!(!re.is_match("src/lib.rs:6:5: replace reset_all with ()"));
+        assert!(!re.is_match("src/lib.rs:7:9: replace call with reset() in another"));
+    }
+
     /// cargo-mutants 27.1.0 applies `--re` to ordinary mutations but not to
     /// struct-literal field deletions. Ply must apply the same owner filter
     /// to the result files before an unrelated deletion can be blamed on a
@@ -542,6 +558,37 @@ mod tests {
             outcome.missed,
             vec!["src/lib.rs:6:9: replace + with - in wanted"],
             "only survivors owned by the requested function may be reported"
+        );
+    }
+
+    /// The post-run filter is a second ownership boundary because some
+    /// cargo-mutants candidates bypass `--re`. It must admit the same
+    /// implicit-unit whole-body form as the command selector or a genuine
+    /// survivor disappears after the engine reports it.
+    #[test]
+    fn an_implicit_unit_body_survivor_passes_the_result_owner_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("missed.txt"),
+            "src/lib.rs:5:5: replace reset with ()\n\
+             src/lib.rs:6:5: replace reset_all with ()\n",
+        )
+        .unwrap();
+
+        let outcome = classify_run_for_owners(
+            false,
+            String::new(),
+            dir.path(),
+            &["reset".to_string()],
+            &[],
+        );
+        let MutantsRunOutcome::Completed(outcome) = outcome else {
+            panic!("selected result file must produce a completed run");
+        };
+        assert_eq!(
+            outcome.missed,
+            vec!["src/lib.rs:5:5: replace reset with ()"],
+            "the requested unit-return body survivor must remain, without admitting a prefix owner"
         );
     }
 
