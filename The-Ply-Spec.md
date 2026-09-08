@@ -564,10 +564,13 @@ fingerprint of what it was checked against" into a diff a reviewer reads.
    changes what is compiled while the source, the compiler, the target and the features
    are all identical;
 10. the resolved versions of every package outside this workspace that the crate depends
-    on, as the lockfile pins them. A `bounded` proof descends into registry code and every
-    `fuzz`/`test` run executes it, so `cargo update` changes what was checked. Where there
-    is no lockfile, Ply records that fact instead of a version list, and a result recorded
-    with one never matches a run without one;
+    on, as the lockfile pins them. Identity includes package name and version, and for Git
+    or alternative-registry packages the source too; a Git source retains its precise
+    `#revision` even though Cargo omits that suffix from source-qualified dependency edges.
+    A `bounded` proof descends into registry code and every `fuzz`/`test` run executes it,
+    so `cargo update` changes what was checked. Where there is no lockfile, Ply records
+    that fact instead of a version list, and a result recorded with one never matches a
+    run without one;
 11. **Ply's own version.**
 
 **Input 3 is the one that has to be stated carefully, because it cannot always be

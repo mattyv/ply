@@ -11,6 +11,10 @@
       resolved external dependency identity in the harness lock to match the
       original lock before recording anything (`1f09f7c`). A pass against one
       dependency version must never be reused under another.
+- [x] Resolve Cargo's source-qualified lock edges by name, version, and source
+      while retaining a Git package's precise `#revision` in the fingerprint
+      (`3e1f72d`). Registry and Git packages sharing a name/version must not
+      collapse into an empty or interchangeable dependency graph.
 - [x] Run the process-global cancellation regression in an isolated test
       process so its synthetic interrupt cannot cancel unrelated unit tests
       running concurrently under libtest or cargo-mutants.
