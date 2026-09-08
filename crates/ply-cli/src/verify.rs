@@ -1764,6 +1764,7 @@ fn verify_loaded_crate(
 
         harness_info = Some(HarnessInfo {
             package: harness_pkg,
+            target_package: target_names.package_name,
             broken,
             unattributed_cause,
             workspace_root: harness_workspace_root,
@@ -2197,8 +2198,16 @@ fn verify_loaded_crate(
     // initially unknown resolution was safe. Workers never reach this path
     // with an unknown graph: they were held on the serial path above.
     let result_storage_is_sound = first_party.result_reuse_is_sound()
-        && refresh_cargo_verification_state(crate_dir, &first_party)
-            .is_ok_and(|(_, lock_current, closure_complete)| lock_current && closure_complete);
+        && refresh_cargo_verification_state(crate_dir, &first_party).is_ok_and(
+            |(_, lock_current, closure_complete)| {
+                lock_current
+                    && closure_complete
+                    && standalone_harness_matches_recorded_dependencies(
+                        harness_info.as_ref(),
+                        &reach::dependency_identity(crate_dir),
+                    )
+            },
+        );
     if ply_core::engines::cancellation_requested() {
         anyhow::bail!("verification was interrupted; no partial result was published");
     }
@@ -2268,6 +2277,8 @@ fn verify_loaded_crate(
             // plan time: a crate that had never been built has no lockfile
             // until this run compiled it, and the versions that governed
             // the run that just happened are the ones the result stood on.
+            // For a standalone sampling harness, the storage gate above has
+            // already proved its separate graph has this same identity.
             // Without this a first run would record a fingerprint no second
             // run could ever match, and every crate would pay twice.
             let mut inputs = plan.inputs.clone();
@@ -2408,6 +2419,23 @@ fn refresh_cargo_verification_state(
     let closure_is_complete =
         lock_is_current && first_party_closure_is_complete(first_party, &cargo_closure);
     Ok((workspace_root, lock_is_current, closure_is_complete))
+}
+
+/// A standalone sampling harness resolves dependencies in its own Cargo
+/// workspace. Evidence can be recorded against the original workspace only
+/// when the target package reached the same external code in both graphs.
+fn standalone_harness_matches_recorded_dependencies(
+    harness_info: Option<&HarnessInfo>,
+    recorded_identity: &str,
+) -> bool {
+    let Some(info) = harness_info.filter(|info| info.standalone) else {
+        return true;
+    };
+    reach::dependency_identity_for_package_in_lock(
+        &info.workspace_root.join("Cargo.lock"),
+        &info.target_package,
+    )
+    .is_some_and(|executed_identity| executed_identity == recorded_identity)
 }
 
 fn remember_clean_bound(path: &str, node: &Node, known: &mut BTreeMap<String, u32>) {
@@ -3981,6 +4009,10 @@ fn combine_fn_check_verdicts(labels: &[String]) -> String {
 /// and could not pin down.
 struct HarnessInfo {
     package: String,
+    /// The package whose code the harness actually exercised. Its resolved
+    /// external dependency graph must match the graph publication records;
+    /// the harness package's own proptest dependencies are irrelevant.
+    target_package: String,
     /// `ContractFn::ident()` -> the specific compiler error attributed to
     /// exactly that function's own generated module. A fn in this map never
     /// runs its harness test at all (its module was dropped from the crate
@@ -9328,6 +9360,59 @@ fn unused(_p: &PathBuf) {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn standalone_harness_evidence_requires_the_graph_it_actually_ran() {
+        let harness = tempfile::tempdir().unwrap();
+        std::fs::write(
+            harness.path().join("Cargo.lock"),
+            r#"version = 4
+
+[[package]]
+name = "app"
+version = "0.0.0"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "app-ply-harness"
+version = "0.0.0"
+dependencies = [
+ "app",
+ "proptest",
+]
+
+[[package]]
+name = "memchr"
+version = "2.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "proptest"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+        )
+        .unwrap();
+        let info = super::HarnessInfo {
+            package: "app-ply-harness".into(),
+            target_package: "app".into(),
+            broken: std::collections::BTreeMap::new(),
+            unattributed_cause: None,
+            workspace_root: harness.path().to_path_buf(),
+            standalone: true,
+        };
+
+        assert!(super::standalone_harness_matches_recorded_dependencies(
+            Some(&info),
+            "memchr 2.7.4"
+        ));
+        assert!(
+            !super::standalone_harness_matches_recorded_dependencies(Some(&info), "memchr 2.8.3"),
+            "a pass executed with the old dependency must not be recorded under the new one"
+        );
+    }
+
     #[test]
     fn cargo_closure_check_rejects_an_unparsed_local_dependency_spelling() {
         let base = tempfile::tempdir().unwrap();

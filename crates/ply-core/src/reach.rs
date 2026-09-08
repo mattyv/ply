@@ -1140,6 +1140,24 @@ pub fn dependency_identity(crate_dir: &Path) -> String {
     }
 }
 
+/// Read the dependency identity for one named local package from a specific
+/// Cargo lockfile. Generated standalone harnesses have a lockfile separate
+/// from the crate under test; publication uses this to prove that the graph
+/// the harness actually ran matches the graph the verification record names.
+/// `None` means the lock could not be read or did not contain that local
+/// package, which callers must treat as unknown rather than as no dependency.
+pub fn dependency_identity_for_package_in_lock(lock_path: &Path, package: &str) -> Option<String> {
+    let text = std::fs::read_to_string(lock_path).ok()?;
+    let (has_local_root, pinned) = registry_packages_reachable_from_with_presence(&text, package);
+    has_local_root.then(|| {
+        if pinned.is_empty() {
+            NO_EXTERNAL_CODE.to_string()
+        } else {
+            pinned.join("\n")
+        }
+    })
+}
+
 const NO_EXTERNAL_CODE: &str = "(nothing outside this workspace)";
 
 fn lockfile(crate_dir: &Path) -> Option<String> {
@@ -1211,6 +1229,10 @@ fn declared_dependency_count(manifest: &str) -> usize {
 const CRATES_IO_REGISTRY: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
 fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
+    registry_packages_reachable_from_with_presence(lock, root).1
+}
+
+fn registry_packages_reachable_from_with_presence(lock: &str, root: &str) -> (bool, Vec<String>) {
     struct Pkg {
         name: String,
         version: String,
@@ -1329,10 +1351,14 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
         by_name.get(entry).cloned().unwrap_or_default()
     };
 
+    let roots = resolve(root);
+    let has_local_root = roots
+        .iter()
+        .any(|key| packages.get(key).is_some_and(|pkg| pkg.source.is_none()));
     let mut out: BTreeSet<String> = BTreeSet::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut queue: VecDeque<String> = VecDeque::new();
-    queue.extend(resolve(root));
+    queue.extend(roots);
     while let Some(next) = queue.pop_front() {
         if !seen.insert(next.clone()) {
             continue;
@@ -1366,7 +1392,7 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
             queue.extend(resolve(d));
         }
     }
-    out.into_iter().collect()
+    (has_local_root, out.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -2043,6 +2069,54 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         )
         .unwrap();
         assert_eq!(dependency_identity(dir.path()), "serde 1.0.9");
+    }
+
+    #[test]
+    fn a_standalone_harness_lock_names_the_graph_the_target_package_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("Cargo.lock");
+        std::fs::write(
+            &lock,
+            r#"version = 4
+
+[[package]]
+name = "app"
+version = "0.0.0"
+dependencies = [
+ "memchr 2.7.4",
+]
+
+[[package]]
+name = "app-ply-harness"
+version = "0.0.0"
+dependencies = [
+ "app",
+ "proptest",
+]
+
+[[package]]
+name = "memchr"
+version = "2.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "proptest"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            dependency_identity_for_package_in_lock(&lock, "app").as_deref(),
+            Some("memchr 2.7.4"),
+            "the target identity must exclude dependencies used only by Ply's harness"
+        );
+        assert_eq!(
+            dependency_identity_for_package_in_lock(&lock, "missing"),
+            None,
+            "an absent target is unknown, never an empty dependency graph"
+        );
     }
 
     #[test]
