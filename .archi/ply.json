@@ -5778,7 +5778,7 @@
     {
       "id": "t-spec-d2-attrs",
       "file": "The-Ply-Spec.md",
-      "line": 178,
+      "line": 179,
       "snippet": "position). `requires`/`ensures` re-emit the item with `cfg_attr(kani, ...)` attributes",
       "anchored": true,
       "node": "attrs",
@@ -5794,7 +5794,7 @@
     {
       "id": "t-spec-d4-arch",
       "file": "The-Ply-Spec.md",
-      "line": 699,
+      "line": 700,
       "snippet": "**Crate tier (sound, errors).** From `cargo metadata`: the exact crate dependency graph.",
       "anchored": true,
       "node": "arch",
@@ -5810,7 +5810,7 @@
     {
       "id": "t-spec-d5-model",
       "file": "The-Ply-Spec.md",
-      "line": 1726,
+      "line": 1745,
       "snippet": "generate `f`'s harness with `#[kani::stub_verified(g)]`. Clean verdict: `f` is not",
       "anchored": true,
       "node": "model",
@@ -5826,7 +5826,7 @@
     {
       "id": "t-spec-cli-verify",
       "file": "The-Ply-Spec.md",
-      "line": 2095,
+      "line": 2114,
       "snippet": "cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts",
       "anchored": true,
       "node": "cli",
@@ -5842,7 +5842,7 @@
     {
       "id": "t-spec-d7-cex",
       "file": "The-Ply-Spec.md",
-      "line": 2715,
+      "line": 2739,
       "snippet": "else `W0541` with a `reason` of `inputs_unrenderable` or `expression_unrenderable`. Its",
       "anchored": true,
       "node": "cex",
@@ -5858,7 +5858,7 @@
     {
       "id": "t-spec-staleness-plylock",
       "file": "The-Ply-Spec.md",
-      "line": 638,
+      "line": 639,
       "snippet": "`W0302`, no `cargo ply accept` and no `E0303`: a claim is never in a state of \"recorded",
       "anchored": true,
       "node": "plylock",
@@ -5874,7 +5874,7 @@
     {
       "id": "t-spec-engines-subprocess",
       "file": "The-Ply-Spec.md",
-      "line": 154,
+      "line": 155,
       "snippet": "External engines run as subprocesses and are detected at startup. Each is optional: a",
       "anchored": true,
       "node": "engines",
@@ -5890,7 +5890,7 @@
     {
       "id": "t-spec-envelope-shape",
       "file": "The-Ply-Spec.md",
-      "line": 2639,
+      "line": 2663,
       "snippet": "`{ \"command\": \"...\", \"ply_version\": \"...\", \"root\": <node tree §7>, \"diagnostics\": [<Diagnostic>...] }`.",
       "anchored": true,
       "node": "envelope",
@@ -5906,7 +5906,7 @@
     {
       "id": "t-spec-d6-node",
       "file": "The-Ply-Spec.md",
-      "line": 2301,
+      "line": 2325,
       "snippet": "D6 over the evidence order; `statuses` and `open_items` (unresolved markers, weak specs,",
       "anchored": true,
       "node": "node",
@@ -5922,7 +5922,7 @@
     {
       "id": "t-spec-violation-rule",
       "file": "The-Ply-Spec.md",
-      "line": 1510,
+      "line": 1525,
       "snippet": "passing checks earned; a failing check is a `violation` regardless of what else passed.",
       "anchored": true,
       "node": "violation",

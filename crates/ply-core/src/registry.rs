@@ -773,7 +773,7 @@ impl Code {
                 status: Enforced,
                 severity: Warning,
                 spec_anchor: "§5.4c",
-                gloss: "Every input Ply could build for this function was turned away by the function's own precondition, so the body was never entered and the promise has not been checked on a single value. Nothing here is broken -- the promise may well be true -- and nothing here is proven either, which is why this is an absence of evidence rather than a violation. A worked example naming an input the precondition accepts is what gets it checked.",
+                gloss: "The generated `test` check's boundary values were all turned away by this function's precondition, so that part of the check gathered no contract evidence. Worked examples and sibling checks are reported separately and may still have called the function. An example call using literal inputs the precondition accepts gives the generated contract check a concrete case.",
             },
             W0110 => RuleEntry {
                 code: self,

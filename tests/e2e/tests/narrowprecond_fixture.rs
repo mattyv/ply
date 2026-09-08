@@ -95,12 +95,12 @@ fn a_correct_function_the_generator_cannot_reach_is_not_called_a_violation() {
     let title = w["title"].as_str().unwrap();
     assert_eq!(
         title,
-        "`only_at_42` was never called, so its promise has not been checked on a single input. \
-         Ply builds test inputs by trying boundary values for each parameter -- for `x: u32` \
-         that is 0, 1, small numbers and the maximum -- and its precondition `x == 42` rejects \
-         every one of them. Nothing here is broken and nothing here is proven. Add an \
-         `examples:` entry that satisfies the precondition and the promise gets checked on \
-         that input. (W0542)",
+        "`only_at_42`'s generated `test` check found no admissible boundary input, so that part \
+         of the check gathered no contract evidence. Ply tried 0, 1, small numbers and the \
+         maximum for `x: u32`, and the precondition `x == 42` rejected every case. Any worked \
+         examples and sibling checks are reported separately. Add an `examples:` entry whose \
+         call uses literal arguments satisfying the precondition to give this generated \
+         contract check a concrete case. (W0542)",
         "the sentence a reader gets must name the cause and give advice that works (W0542)"
     );
 

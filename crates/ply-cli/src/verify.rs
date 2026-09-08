@@ -3500,22 +3500,48 @@ fn worst_of(children: &[Node]) -> String {
         .unwrap_or_else(|| "unclaimed".into())
 }
 
+/// Records every declared check that reached no conclusion beside any
+/// evidence another check earned. The verdict remains about evidence; these
+/// flags keep an empty, refused, missing, timed-out, or broken check from
+/// disappearing merely because a sibling check passed.
+fn record_check_non_result_statuses(labels: &[String], statuses: &mut Vec<String>) {
+    for label in labels {
+        let status = verdict_carries_its_own_reason(label).or(match label.as_str() {
+            "engine-missing" => Some("engine-missing"),
+            "unclaimed" => Some("inconclusive"),
+            _ => None,
+        });
+        if let Some(status) = status
+            && !statuses.iter().any(|existing| existing == status)
+        {
+            statuses.push(status.to_string());
+        }
+    }
+}
+
+fn mutation_base_checks_passed(labels: &[String], expected: usize) -> bool {
+    labels.len() == expected && labels.iter().all(|label| verdict_carries_evidence(label))
+}
+
 /// Combines the results of *one fn's own* checks list (§5.4c: "a function's
 /// verdict is the strongest evidence its passing checks earned; a failing
-/// check is a violation regardless of what else passed") -- the opposite
-/// direction from `worst_of`: when nothing failed, this takes the
-/// *strongest* passing verdict, not the weakest.
+/// check is a violation regardless of what else passed"). A non-result is
+/// carried separately by [`record_check_non_result_statuses`]; it does not
+/// erase evidence that another check actually earned.
 fn combine_fn_check_verdicts(labels: &[String]) -> String {
-    let worst = labels
+    if labels.iter().any(|label| label == "violation") {
+        return "violation".into();
+    }
+    if let Some(strongest) = labels
         .iter()
-        .filter(|l| !verdict_carries_evidence(l))
-        .min_by_key(|l| rung(l));
-    if let Some(w) = worst {
-        return w.clone();
+        .filter(|label| verdict_carries_evidence(label))
+        .max_by_key(|label| rung(label))
+    {
+        return strongest.clone();
     }
     labels
         .iter()
-        .max_by_key(|l| rung(l.as_str()))
+        .min_by_key(|label| rung(label.as_str()))
         .cloned()
         .unwrap_or_else(|| "unclaimed".into())
 }
@@ -3590,6 +3616,7 @@ fn run_fn_checks(
 ) -> Result<(Node, Vec<Diagnostic>)> {
     let mut diagnostics = Vec::new();
     let mut labels: Vec<String> = Vec::new();
+    let mut mutation_base_labels: Vec<String> = Vec::new();
     let mut statuses: Vec<String> = Vec::new();
     let mut fuzz_evidence: Option<Evidence> = None;
 
@@ -3695,6 +3722,7 @@ fn run_fn_checks(
         if !cf.is_fuzz_supported() && !fuzz_unlocked_by_seed && !test_unlocked_by_examples {
             diagnostics.push(unsupported_shape_diag(node_id, fn_name, cf, examples_pool));
             labels.push("unsupported".into());
+            mutation_base_labels.push("unsupported".into());
         } else if cf.ensures.is_none() && (wants_fuzz.is_some() || (wants_test && !has_examples)) {
             // Widened 2026-08-27 (docs/review-strings-receivers.md finding 1,
             // "one step milder"): a `test`-only claim with no `#[ply::ensures]`
@@ -3765,6 +3793,7 @@ fn run_fn_checks(
                 open_item: Some("no_contract_to_check".into()),
             });
             labels.push("unsupported".into());
+            mutation_base_labels.push("unsupported".into());
         } else if let Some(p) = ply_core::fuzz_gen::moved_param_read_in_ensures(cf) {
             // §5.4a: `old(param)` reads a by-value parameter's *entry*
             // value; nothing outside `old()` can read it after the call,
@@ -3773,6 +3802,7 @@ fn run_fn_checks(
             // cannot compile (`error[E0382]: borrow of moved value`).
             diagnostics.push(moved_param_diag(node_id, fn_name, p));
             labels.push("unsupported".into());
+            mutation_base_labels.push("unsupported".into());
         } else if let Some(field) = self_return_reads_private_field_on_sampling_tier(cf, lib_path) {
             // The "a `Self` answer is always fine" rule's own blind spot
             // on the sampling tier (adversarial review, 2026-08-27):
@@ -3781,6 +3811,7 @@ fn run_fn_checks(
             // message the harness crate could never avoid.
             diagnostics.push(self_return_private_field_diag(node_id, fn_name, &field));
             labels.push("unsupported".into());
+            mutation_base_labels.push("unsupported".into());
         } else if let Some(info) = harness_info {
             let ident = cf.ident();
             if let Some(cause) = info.broken.get(&ident) {
@@ -3802,6 +3833,7 @@ fn run_fn_checks(
                         cf.receiver.is_some(),
                     ));
                     labels.push("tool_error".into());
+                    mutation_base_labels.push("tool_error".into());
                 }
                 if wants_test {
                     diagnostics.push(harness_did_not_run_diag(
@@ -3815,6 +3847,7 @@ fn run_fn_checks(
                         cf.receiver.is_some(),
                     ));
                     labels.push("tool_error".into());
+                    mutation_base_labels.push("tool_error".into());
                 }
             } else if let Some(cause) = &info.unattributed_cause {
                 // Ply could not isolate the failure to a specific function
@@ -3829,10 +3862,12 @@ fn run_fn_checks(
                         cause,
                     ));
                     labels.push("tool_error".into());
+                    mutation_base_labels.push("tool_error".into());
                 }
                 if wants_test {
                     diagnostics.push(harness_unattributed_diag(node_id, fn_name, "test", cause));
                     labels.push("tool_error".into());
+                    mutation_base_labels.push("tool_error".into());
                 }
             } else {
                 let mut run = run_fuzz_and_test_checks(
@@ -3851,9 +3886,11 @@ fn run_fn_checks(
                 )?;
                 diagnostics.append(&mut run.diagnostics);
                 if let Some(l) = run.fuzz_label {
+                    mutation_base_labels.push(l.clone());
                     labels.push(l);
                 }
                 if let Some(l) = run.test_label {
+                    mutation_base_labels.push(l.clone());
                     labels.push(l);
                 }
                 // The same structural pattern `conditional`/`partial-history`
@@ -4044,6 +4081,10 @@ fn run_fn_checks(
         }
     }
 
+    record_check_non_result_statuses(&labels, &mut statuses);
+    let expected_mutation_base_checks = usize::from(wants_fuzz.is_some()) + usize::from(wants_test);
+    let all_base_checks_passed =
+        mutation_base_checks_passed(&mutation_base_labels, expected_mutation_base_checks);
     let mut verdict = combine_fn_check_verdicts(&labels);
 
     // `mutate` runs last, and only against a genuinely passing base verdict
@@ -4051,7 +4092,7 @@ fn run_fn_checks(
     // baseline to mutate from, and cargo-mutants itself refuses to proceed
     // past a failing baseline.
     if checks.iter().any(|c| matches!(c, Check::Mutate)) {
-        if verdict_carries_evidence(&verdict) {
+        if all_base_checks_passed && verdict_carries_evidence(&verdict) {
             if let Some(info) = harness_info {
                 let (outcome, mut d) = run_mutate_check(
                     crate_dir,
@@ -5292,6 +5333,42 @@ fn self_return_private_field_diag(node_id: &str, fn_name: &str, field: &str) -> 
     }
 }
 
+fn kani_timeout_fixes(
+    fn_name: &str,
+    engine_timeout_secs: u32,
+    bound_k: u32,
+    unwind: Option<u32>,
+) -> Vec<Fix> {
+    let mut fixes = vec![Fix {
+        title: format!(
+            "raise --engine-timeout past {engine_timeout_secs}s (Kani's CBMC solve time \
+             varies run to run; docs/m3-slice-findings.md measured ~1s-107s on an \
+             identical harness)"
+        ),
+        edits: vec![],
+    }];
+    if unwind.is_some() {
+        fixes.push(Fix {
+            title: format!("lower `bounded({bound_k})` to a smaller bound"),
+            edits: vec![],
+        });
+    } else {
+        fixes.push(Fix {
+            title: format!(
+                "`{fn_name}`'s generated proof does not use an unwind bound, so lowering \
+                 `bounded({bound_k})` cannot make this run smaller; simplify the arithmetic or \
+                 narrow the real input domain before trying the proof again"
+            ),
+            edits: vec![],
+        });
+    }
+    fixes.push(Fix {
+        title: format!("switch `{fn_name}` to `fuzz(256)` -- proptest has no unwind-bound cost"),
+        edits: vec![],
+    });
+    fixes
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_bounded_check(
     cf: &ContractFn,
@@ -5521,26 +5598,7 @@ fn run_bounded_check(
                 pointer: None,
                 primary_span: None,
                 counterexample: None,
-                fixes: vec![
-                    Fix {
-                        title: format!(
-                            "raise --engine-timeout past {engine_timeout_secs}s (Kani's CBMC solve time \
-                             varies run to run; docs/m3-slice-findings.md measured ~1s-107s on an \
-                             identical harness)"
-                        ),
-                        edits: vec![],
-                    },
-                    Fix {
-                        title: format!("lower `bounded({bound_k})` to a smaller bound"),
-                        edits: vec![],
-                    },
-                    Fix {
-                        title: format!(
-                            "switch `{fn_name}` to `fuzz(256)` -- proptest has no unwind-bound cost"
-                        ),
-                        edits: vec![],
-                    },
-                ],
+                fixes: kani_timeout_fixes(fn_name, engine_timeout_secs, bound_k, generated.unwind),
                 assumptions: vec![],
                 open_item: Some("timeout".into()),
             };
@@ -7433,22 +7491,23 @@ fn selector_name(canonical: &str, file: &str) -> String {
 }
 
 /// The exact function owners cargo-mutants should plant in for one claim.
-fn mutation_scope(
+fn mutation_owners(
     fn_path: &str,
     reached_fns: &[String],
     reached_foreign: &[(String, String)],
     reached_files: &[(String, String)],
-) -> Vec<String> {
+) -> Vec<(String, String)> {
     let file_of = |name: &str| -> Option<&str> {
         reached_files
             .iter()
             .find(|(canonical, _)| canonical == name)
             .map(|(_, file)| file.as_str())
     };
-    let mut scope = vec![match file_of(fn_path) {
-        Some(file) => selector_name(fn_path, file),
-        None => fn_path.to_string(),
-    }];
+    let owner_for = |name: &str| match file_of(name) {
+        Some(file) => (selector_name(name, file), file.to_string()),
+        None => (name.to_string(), String::new()),
+    };
+    let mut owners = vec![owner_for(fn_path)];
     for name in reached_fns {
         if reached_foreign
             .iter()
@@ -7456,12 +7515,24 @@ fn mutation_scope(
         {
             continue;
         }
-        let selector = match file_of(name) {
-            Some(file) => selector_name(name, file),
-            None => name.clone(),
-        };
-        if !scope.contains(&selector) {
-            scope.push(selector);
+        let owner = owner_for(name);
+        if !owners.contains(&owner) {
+            owners.push(owner);
+        }
+    }
+    owners
+}
+
+fn mutation_scope(
+    fn_path: &str,
+    reached_fns: &[String],
+    reached_foreign: &[(String, String)],
+    reached_files: &[(String, String)],
+) -> Vec<String> {
+    let mut scope = Vec::new();
+    for (owner, _) in mutation_owners(fn_path, reached_fns, reached_foreign, reached_files) {
+        if !scope.contains(&owner) {
+            scope.push(owner);
         }
     }
     scope
@@ -7657,6 +7728,7 @@ fn run_mutate_check(
     // run. When the walk could not be bounded this is what it had before it
     // stopped, not the whole list, and `W0530` below says so.
     let mutate_scope = mutation_scope(fn_path, reached_fns, reached_foreign, reached_files);
+    let mutate_owners = mutation_owners(fn_path, reached_fns, reached_foreign, reached_files);
     let cfg = MutantsRunConfig {
         workspace_root: harness_workspace_root.to_path_buf(),
         mutated_package: target_names.package_name,
@@ -7666,6 +7738,7 @@ fn run_mutate_check(
         // raw names here is deliberate; treating them as ready-made regexes
         // lets a string literal inside another body widen the mutation scope.
         fn_regexes: mutate_scope.clone(),
+        fn_owner_files: mutate_owners,
         // `test_filter` is the caller's `harness_test_filter(cf)`, never
         // built from `fn_name` here: the generated harness names its
         // module from `cf.ident()` (`path.replace("::", "_")`), and a
@@ -8271,9 +8344,20 @@ fn holds_violation_diag(
 /// check. Reporting it as a violation, which this did for one day, accuses
 /// the author's code of something Ply has no witness for.
 ///
-/// Written to the newbie bar: what happened, why, and one thing to do that
-/// actually works -- the previous wording told the reader to add a worked
-/// example while the check that produced it could not see examples at all.
+/// Written to the newbie bar and scoped to the generated boundary cases:
+/// worked examples and sibling fuzz/proof checks can still have called the
+/// function and earned evidence, so this diagnostic must not deny them.
+fn no_admissible_input_title(fn_name: &str, params: &str, precondition: &str) -> String {
+    format!(
+        "`{fn_name}`'s generated `test` check found no admissible boundary input, so that part \
+         of the check gathered no contract evidence. Ply tried 0, 1, small numbers and the \
+         maximum for {params}, and the precondition `{precondition}` rejected every case. Any \
+         worked examples and sibling checks are reported separately. Add an `examples:` entry \
+         whose call uses literal arguments satisfying the precondition to give this generated \
+         contract check a concrete case. (W0542)"
+    )
+}
+
 fn no_admissible_input_diag(node_id: &str, fn_name: &str, cf: &ContractFn) -> Diagnostic {
     let params = cf
         .params
@@ -8293,14 +8377,7 @@ fn no_admissible_input_diag(node_id: &str, fn_name: &str, cf: &ContractFn) -> Di
         engine: "ply".into(),
         check: "test".into(),
         node_id: node_id.into(),
-        title: format!(
-            "`{fn_name}` was never called, so its promise has not been checked on a single \
-             input. Ply builds test inputs by trying boundary values for each parameter -- for \
-             {params} that is 0, 1, small numbers and the maximum -- and its precondition \
-             `{precondition}` rejects every one of them. Nothing here is broken and nothing \
-             here is proven. Add an `examples:` entry that satisfies the precondition and the \
-             promise gets checked on that input. (W0542)"
-        ),
+        title: no_admissible_input_title(fn_name, &params, &precondition),
         pointer: None,
         primary_span: cf.source_span.clone(),
         counterexample: None,
@@ -8428,6 +8505,29 @@ mod tests {
             ],
             "a name cargo-mutants never prints selects no mutant, and a run that planted \
              nothing in a body still reports every planted bug caught"
+        );
+    }
+
+    #[test]
+    fn same_named_file_module_owners_keep_their_source_identity() {
+        let owners = super::mutation_owners(
+            "entry",
+            &["a::helper".to_string(), "b::helper".to_string()],
+            &[],
+            &[
+                ("entry".to_string(), "src/lib.rs".to_string()),
+                ("a::helper".to_string(), "src/a.rs".to_string()),
+                ("b::helper".to_string(), "src/b.rs".to_string()),
+            ],
+        );
+        assert_eq!(
+            owners,
+            vec![
+                ("entry".to_string(), "src/lib.rs".to_string()),
+                ("helper".to_string(), "src/a.rs".to_string()),
+                ("helper".to_string(), "src/b.rs".to_string()),
+            ],
+            "cargo-mutants uses the same bare owner in both files, so the file is the only identity left"
         );
     }
 
@@ -9739,6 +9839,75 @@ mod tests {
     fn combine_picks_the_strongest_passing_check_when_nothing_failed() {
         let labels = vec!["tested".to_string(), "fuzzed(256)".to_string()];
         assert_eq!(combine_fn_check_verdicts(&labels), "fuzzed(256)");
+    }
+
+    #[test]
+    fn one_empty_check_does_not_erase_evidence_another_check_earned() {
+        let labels = vec![
+            "bounded(12)".to_string(),
+            "fuzzed(65536)".to_string(),
+            "unclaimed".to_string(),
+        ];
+        assert_eq!(
+            combine_fn_check_verdicts(&labels),
+            "bounded(12)",
+            "a declared test with no admissible boundary input remains a reported non-result, \
+             but it cannot make two checks that ran disappear"
+        );
+        let mut statuses = Vec::new();
+        record_check_non_result_statuses(&labels, &mut statuses);
+        assert!(
+            statuses.iter().any(|status| status == "inconclusive"),
+            "the empty declared check must remain visible beside the earned evidence: {statuses:?}"
+        );
+    }
+
+    #[test]
+    fn proof_non_results_do_not_block_a_passing_mutation_baseline() {
+        let all_labels = [
+            "timeout".to_string(),
+            "tested".to_string(),
+            "fuzzed(64)".to_string(),
+        ];
+        let base_labels = vec!["tested".to_string(), "fuzzed(64)".to_string()];
+        assert!(
+            !mutation_base_checks_passed(&all_labels, 2)
+                && mutation_base_checks_passed(&base_labels, 2),
+            "the bounded timeout is carried in the full result but is not part of cargo-mutants' test/fuzz baseline"
+        );
+    }
+
+    #[test]
+    fn no_admissible_input_message_is_scoped_to_the_generated_test_check() {
+        let title = no_admissible_input_title("wait_millis", "four integers", "admits > 0");
+        assert!(title.contains("generated `test` check"));
+        assert!(!title.contains("was never called"));
+        assert!(!title.contains("nothing here is proven"));
+    }
+
+    #[test]
+    fn timeout_advice_only_mentions_the_bound_when_the_generated_proof_uses_it() {
+        let scalar = kani_timeout_fixes("next_tick", 60, 8, None);
+        assert!(
+            scalar
+                .iter()
+                .all(|fix| !fix.title.contains("lower `bounded")),
+            "a scalar proof has no unwind annotation, so changing k cannot shrink it: {scalar:?}"
+        );
+        assert!(
+            scalar
+                .iter()
+                .any(|fix| fix.title.contains("does not use an unwind bound")),
+            "the advice must explain why changing k cannot help: {scalar:?}"
+        );
+
+        let vector = kani_timeout_fixes("scan", 150, 8, Some(9));
+        assert!(
+            vector
+                .iter()
+                .any(|fix| fix.title.contains("lower `bounded(8)`")),
+            "a vector proof really does use the generated unwind bound: {vector:?}"
+        );
     }
 
     #[test]
