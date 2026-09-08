@@ -49,6 +49,9 @@ They are carried inside the binary, so this works offline and always writes the 
 that matches the Ply you are running. A file you have edited is left alone and named,
 rather than replaced.
 
+`cargo ply check` says so once if a project has not installed them, and then stops
+mentioning it.
+
 **The dependency.** The `#[ply::requires]` and `#[ply::ensures]` attributes come from a
 crate you add to whatever you are checking. Under a plain `cargo build` they compile to
 nothing, so this costs you no runtime behaviour:

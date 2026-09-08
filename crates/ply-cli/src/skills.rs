@@ -164,6 +164,35 @@ pub fn report(dest: &Path, written: &Written) -> String {
     out
 }
 
+/// The line a run prints when this project has never installed the guides.
+///
+/// `None` once they are there, so a reader sees it until they act on it and
+/// then never again. Ancestors are searched because a workspace installs
+/// them once at the top and checking a member crate must not report them
+/// missing.
+///
+/// This exists because discovery ran one way only: an assistant finds the
+/// guides reliably once they are on disk, but a person who installs Ply and
+/// does not read the README never learns there is anything to put there.
+pub fn missing_guides_notice(crate_dir: &Path) -> Option<String> {
+    let mut dir = Some(crate_dir);
+    while let Some(d) = dir {
+        if d.join(".claude/skills/ply-checkable-code/SKILL.md")
+            .exists()
+        {
+            return None;
+        }
+        dir = d.parent();
+    }
+    Some(
+        "Ply ships five short guides that tell a coding assistant how to write code this \
+         tool can actually check, and how to read what it reports. This project does not \
+         have them yet -- run `cargo ply skills` to write them into .claude/skills/, where \
+         an assistant working here will pick them up on its own."
+            .to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +330,52 @@ mod tests {
             forced.created.contains(&"ply-author/SKILL.md".to_string()),
             "and `--force` really replaces it: {:?}",
             forced.created
+        );
+    }
+
+    /// A project that has never run `cargo ply skills` is told the guides
+    /// exist -- otherwise the only way to find out is to read the README,
+    /// and an assistant that could have been given the guidance works
+    /// without it and nobody ever knows.
+    #[test]
+    fn a_project_without_the_guides_is_told_they_exist_and_how_to_get_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let notice = missing_guides_notice(dir.path())
+            .expect("nothing is installed, so there is something to say");
+        assert!(
+            notice.contains("cargo ply skills"),
+            "the one thing a reader needs next is the command: {notice}"
+        );
+    }
+
+    /// And is not told twice. Once they are installed the line disappears,
+    /// so this costs a reader exactly one sighting.
+    #[test]
+    fn a_project_that_already_has_the_guides_is_told_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skills(&dir.path().join(".claude/skills"), false).unwrap();
+        assert_eq!(
+            missing_guides_notice(dir.path()),
+            None,
+            "installed guides must silence the notice, or it becomes noise a \
+             user learns to skip"
+        );
+    }
+
+    /// A crate inside a workspace looks upward. The guides are installed
+    /// once at the top of a project, and checking a member crate must not
+    /// claim they are missing because they are not in that member's own
+    /// directory.
+    #[test]
+    fn a_crate_inside_a_workspace_sees_guides_installed_at_the_top() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skills(&dir.path().join(".claude/skills"), false).unwrap();
+        let member = dir.path().join("crates/inner");
+        std::fs::create_dir_all(&member).unwrap();
+        assert_eq!(
+            missing_guides_notice(&member),
+            None,
+            "a workspace installs the guides once, at the root"
         );
     }
 }

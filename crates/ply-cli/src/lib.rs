@@ -245,6 +245,12 @@ pub fn run() -> anyhow::Result<()> {
                 println!("{}", report.envelope.to_json_pretty());
             } else {
                 check::print_human(&report);
+                // Advisory, and on stderr so a human sees it while anything
+                // reading this command's output does not. Silent once the
+                // guides are installed.
+                if let Some(notice) = skills::missing_guides_notice(&path) {
+                    eprintln!("\n{notice}");
+                }
             }
             std::process::exit(report.exit_code());
         }

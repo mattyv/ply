@@ -313,6 +313,16 @@ refusal shipped the day before.
       test that spawns a subprocess, or stop it mutating process-global
       state at all. Both are more than the flake costs today.
 
+- [x] **CLOSED: a person is now told the guides exist.** Discovery only ever
+      ran one way. An assistant finds the guides reliably once they are on
+      disk -- Claude Code reads the one-sentence description at the top of
+      each and loads the body when a task matches -- but a person who
+      installs Ply and never reads the README never learns there is anything
+      to put there. `cargo ply check` now prints one line naming the command,
+      on stderr so nothing reading the command's output is affected, and it
+      disappears the moment the guides are installed. A workspace member
+      looks upward, so installing once at the top is enough.
+
 - [ ] **OPEN DECISION for the maintainer:** is a getter added purely so a
       promise can read a private field acceptable? The cache needed a
       `contains`/`peek` to state its promise; those are ordinary cache API,
