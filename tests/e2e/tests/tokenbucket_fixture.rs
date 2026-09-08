@@ -331,21 +331,58 @@ fn a_broken_transition_promise_shows_how_the_value_reached_the_failing_state() {
                  always shows: {diag}"
             )
         });
+    // An independent oracle, not a shape check (2026-09-08). An adversarial
+    // review planted a bug that reported every argument as `0`, and the
+    // previous version of this test -- which asserted the history started
+    // with the constructor, named some calls, and contained a digit --
+    // passed. A history is a claim about how the value got somewhere, so
+    // the honest assertion is to follow it and see where it lands.
+    //
+    // `refill`'s promise is broken by the planted bug only on a bucket that
+    // is not already full: a full bucket refilled by nothing stays full and
+    // the promise holds. So a history that replays to a full bucket cannot
+    // be the history of this failure, whatever shape it has. Under that
+    // planted all-zeroes bug the recipe reads `new(0), then try_take(0)`,
+    // which replays to a full bucket -- and fails here.
     assert!(
         history.starts_with("TokenBucket::new("),
-        "the history has to start where the value did -- the constructor call Ply made, with \
-         the arguments it made it with: {history}"
+        "the history has to start where the value did: {history}"
     );
+    let (mut capacity, mut available) = (None::<u64>, 0u64);
+    for call in history.split(", then ") {
+        let (name, rest) = call
+            .split_once('(')
+            .unwrap_or_else(|| panic!("every step must be a call: {history}"));
+        let arg = rest.trim_end_matches(')');
+        let n: Option<u64> = if arg.is_empty() {
+            None
+        } else {
+            arg.parse().ok()
+        };
+        match (name, n) {
+            ("TokenBucket::new", Some(c)) => {
+                capacity = Some(c);
+                available = c;
+            }
+            ("TokenBucket::try_take", Some(k)) => {
+                if available >= k {
+                    available -= k;
+                }
+            }
+            ("TokenBucket::refill", Some(k)) => {
+                let cap = capacity.expect("the constructor comes first");
+                available = available.saturating_add(k).min(cap);
+            }
+            ("TokenBucket::available", None) | ("TokenBucket::capacity", None) => {}
+            _ => panic!("the history names a call this oracle does not know: {call} in {history}"),
+        }
+    }
+    let capacity = capacity.expect("checked above that the constructor comes first");
     assert!(
-        history.contains(", then TokenBucket::"),
-        "and then name, in order, the calls that ran on it before the checked one -- a history \
-         of just the constructor cannot explain a state no fresh value has: {history}"
-    );
-    // The arguments have to be the ones this case actually drew. A history
-    // that named the calls but not their arguments would be a shape, not an
-    // input, and the whole point is that it is an input.
-    assert!(
-        history.chars().any(|c| c.is_ascii_digit()),
-        "and carry the argument values the calls were made with: {history}"
+        available < capacity,
+        "replaying the reported history leaves a full bucket ({available} of {capacity}), and a \
+         full bucket refilled by nothing keeps its promise -- so this cannot be how the reported \
+         failure happened. A recipe that does not reproduce the failure is worse than no \
+         recipe: {history}"
     );
 }

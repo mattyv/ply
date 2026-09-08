@@ -2498,6 +2498,12 @@ pub enum ReceiverError {
         method_name: String,
         type_name: String,
         mutating_method: String,
+        /// Which of the two the mutating read was written in -- "promise"
+        /// or "precondition". The walk is shared, so without this the
+        /// message told a reader their *promise* was at fault when it was
+        /// their precondition, sending them to read the wrong line
+        /// (2026-09-08, adversarial review).
+        written_in: &'static str,
     },
     /// The method's promise writes `old(self)` -- a copy of the whole
     /// receiver from before the call, which Ply cannot take without
@@ -2562,9 +2568,10 @@ impl std::fmt::Display for ReceiverError {
                 method_name,
                 type_name,
                 mutating_method,
+                written_in,
             } => write!(
                 f,
-                "Ply cannot check `{method_name}`: its promise calls `{mutating_method}`, and \
+                "Ply cannot check `{method_name}`: its {written_in} calls `{mutating_method}`, and \
                  that method changes the `{type_name}` it is called on. Ply works out what a \
                  reading was before the call by running that reading first -- so a reading taken \
                  through a method that changes the value would alter the very thing the promise \
@@ -3593,6 +3600,7 @@ fn refuse_a_promise_that_changes_what_it_reads(
     method_name: &str,
     type_name: &str,
     mut_self_methods: &[String],
+    written_in: &'static str,
 ) -> std::result::Result<(), ReceiverError> {
     struct Walk<'a> {
         mut_self_methods: &'a [String],
@@ -3635,6 +3643,7 @@ fn refuse_a_promise_that_changes_what_it_reads(
             method_name: method_name.to_string(),
             type_name: type_name.to_string(),
             mutating_method,
+            written_in,
         });
     }
     if walk.whole_receiver {
@@ -3692,6 +3701,7 @@ pub fn discover_method_with_receiver(
             method_name,
             type_name,
             &mut_self_methods,
+            "promise",
         )?;
     }
     // A precondition gets the same walk (2026-09-08). It is evaluated
@@ -3707,6 +3717,7 @@ pub fn discover_method_with_receiver(
             method_name,
             type_name,
             &mut_self_methods,
+            "precondition",
         )?;
     }
     cf.source_span = Some(crate::callgraph::source_span(

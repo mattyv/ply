@@ -2718,14 +2718,22 @@ path is in-crate (D2's generated-module mechanism), not a `tests/` integration f
 implements this as `<crate>/src/ply_generated_cex.rs`, one file per crate, declared via a
 `mod` line the same way the proof harness is (docs/m3-slice-findings.md).
 
-`receiver_history` (2026-09-08) is present exactly when the checked function is a method
-whose receiver Ply built: the constructor call it made, then every operation that ran on
-that value before the checked call, each with the arguments this case drew, in order. For
-a promise about what a call *changed* (§5.4a), the failing call's own arguments are only
-half the input — the other half is how the value reached the state it failed in — so
-without this the envelope's own rule that a violation always carries a witness was
-satisfied in form and not in substance. Absent for every free function, which has no such
-history; never empty and never fabricated.
+`receiver_history` (2026-09-08) carries how the value reached the state it failed in: the
+constructor call Ply made, then every operation that ran on that value before the checked
+call, each with the arguments this case drew, in order and written the way they would be
+written in Rust source. For a promise about what a call *changed* (§5.4a), the failing
+call's own arguments are only half the input — the other half is this — so without it the
+envelope's own rule that a violation always carries a witness was satisfied in form and
+not in substance. Never empty and never fabricated.
+
+It is **absent** in three cases, each honestly rather than by omission: a free function,
+which has no such history; the exhaustive tier, which refuses any receiver (§5.4b); and a
+case where **the checked call itself panicked** rather than returning and failing its
+promise — the marker carrying the history is written after the call returns, so a call
+that never returns writes none. That last one is a real gap rather than a design choice
+(it is precisely the case whose raw witness is least readable), recorded as such in
+TODO.md; a reader who sees no `receiver_history` beside a panic is seeing an absence Ply
+knows about, not a claim that no history exists.
 
 **A non-result is still feedback.** `timeout`, `unsupported`, and `engine-missing` carry
 no counterexample, but the consumer is usually an agent mid-repair, and §1's second

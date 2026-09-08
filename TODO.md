@@ -155,6 +155,47 @@ invariant can see, and the bug-planting tier scored them without change.
       against the built value just before the checked call -- and it only
       became writable once a precondition could read the value at all. It is
       refused by the same walk, with the same sentence.
+- [x] **Fixed after adversarial review of the above (2026-09-08).** Three
+      real defects in the history, all reproduced before being fixed:
+      **(1) the printed recipe was not the recipe that ran.** Each argument
+      was escaped once going into the history and once more going onto the
+      marker line, while the reader unescapes once -- so a call really made
+      with `=` was reported as `note(\=)`. Arguments now render the way they
+      would be written in Rust source, escaped once, as a whole.
+      **(2) text was printed unquoted,** so a call made with the empty string
+      read as `note()` -- a call to a one-argument function with no argument.
+      Now `note("")`. **(3) the test guarding all of this was vacuous:** a
+      planted bug reporting every argument as `0` passed it, because it
+      checked the history's shape (starts with the constructor, names calls,
+      contains a digit) and not its truth. It now replays the printed recipe
+      against an independent model of the fixture and fails unless the
+      replay actually reaches the state that breaks the promise -- verified
+      by replanting that same bug and watching it die.
+      Also: the shared refusal said "its promise" when the offending read was
+      in a *precondition*, sending the reader to the wrong line; and the new
+      terminal line did not say the failing call is not among those listed,
+      so beside `failing input: tokens = 0` a reader could take the last
+      entry for it. Both corrected, both pinned exact-string.
+
+- [ ] **KNOWN GAP: no history when the checked call panics.** The marker
+      carrying it is written after the call returns, so a call that never
+      returns writes none. Honest (absent, never fabricated, and §8 now says
+      so) but this is exactly the case whose raw witness is least readable,
+      so it is the most valuable one to have. Closing it means wrapping the
+      checked call in a panic guard, which changes how a panicking call is
+      reported -- a real change, not a tidy-up, and not one to make while
+      landing something else.
+
+- [ ] **KNOWN GAP: a precondition that hides `self` inside a macro still
+      does not compile.** `#[ply::requires(matches!(self.available(), 1..))]`
+      comes back as a tool error naming a compile failure. Both the "does
+      this mention the value" test and the rewrite walk the syntax tree, and
+      neither descends into a macro's tokens, so the filter is emitted before
+      the value exists and unrewritten. Not a regression -- it never
+      compiled -- and it fails loudly rather than silently, but it is a hole
+      in "a precondition that names the value is checked after the value is
+      built".
+
 - [x] **CLOSED: the guidance no longer says this cannot be done.** Rule 9 of
       `ply-checkable-code` now opens by saying a method that changes the
       object is checkable, shows the shape of such a promise, and presents

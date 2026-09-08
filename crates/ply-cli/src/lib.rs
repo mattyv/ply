@@ -904,7 +904,8 @@ fn counterexample_report(cex: &ply_core::diag::Counterexample) -> String {
     // ran, so it reads as the recipe it is (2026-09-08).
     if let Some(history) = &cex.receiver_history {
         out.push_str(&format!(
-            "    the value it was called on was built and used like this: {history}\n"
+            "    the value it was called on was built and used like this, before the failing \
+             call: {history}\n"
         ));
     }
     if let Some(path) = &cex.cargo_test {
@@ -1855,10 +1856,12 @@ mod tests {
         let report = diagnostics_report(&[diag]);
         assert!(
             report.contains(
-                "    the value it was called on was built and used like this: \
-                 TokenBucket::new(7), then TokenBucket::try_take(1)\n"
+                "    the value it was called on was built and used like this, before the \
+                 failing call: TokenBucket::new(7), then TokenBucket::try_take(1)\n"
             ),
-            "the history has to be printed in full, in the order the calls ran: {report}"
+            "the history has to be printed in full, in the order the calls ran -- and has to say \
+             the failing call is not one of them, or beside `failing input: tokens = 0` a reader \
+             takes the last entry for it (2026-09-08 review): {report}"
         );
     }
 

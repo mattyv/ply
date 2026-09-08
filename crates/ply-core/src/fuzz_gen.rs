@@ -1258,10 +1258,56 @@ fn combined_strategy_expr_for_with_override(
 /// no longer exists. That is the same ordering constraint
 /// `build_user_value_stmt` already documents for the parameter marker, for
 /// the same reason.
+/// How one argument is written into a receiver's history: the way a person
+/// would write it in Rust source, and **without** the marker line's own
+/// escaping (2026-09-08).
+///
+/// The distinction cost a real defect. [`marker_display_expr`] escapes as it
+/// renders, because its output goes straight onto the marker line as its own
+/// field. A history is different: it is assembled into one `String` that is
+/// escaped once, as a whole, on its way onto that line. Rendering its parts
+/// with the escaping version escaped everything twice, while the reader
+/// unescapes once -- so a call really made with `[` was reported as
+/// `note(\[)`, a recipe that would not reproduce anything. Found by
+/// adversarial review, 2026-09-08.
+///
+/// `{:?}` rather than `{}` for text on purpose: it quotes and escapes the
+/// way Rust source does, so the reported call can be typed straight into a
+/// test -- and an empty string reads as `note("")` rather than as `note()`,
+/// which is a different call altogether.
+fn history_display_expr(ty: &RustType, var: &str) -> String {
+    // A value that recursively contains a user-defined type is not
+    // guaranteed to implement `Debug` at all, and a generated harness must
+    // never fail to compile over a diagnostic nicety -- the same rule, and
+    // the same placeholder, `marker_display_expr` already applies.
+    if contains_user_type(ty) {
+        return "\"<value containing a user-defined type, not shown>\".to_string()".to_string();
+    }
+    match ty {
+        // `Display` is exact and reads best for a plain number or bool.
+        RustType::Bool
+        | RustType::U8
+        | RustType::U16
+        | RustType::U32
+        | RustType::U64
+        | RustType::Usize
+        | RustType::I8
+        | RustType::I16
+        | RustType::I32
+        | RustType::I64
+        | RustType::Isize
+        | RustType::F32
+        | RustType::F64 => format!("format!(\"{{}}\", {var})"),
+        // Everything else -- text, a collection, an `Option`, a `char` --
+        // reads correctly as its Rust literal.
+        _ => format!("format!(\"{{:?}}\", {var})"),
+    }
+}
+
 fn history_push_stmt(call: &str, params: &[Param], prefix: &str) -> String {
     let rendered: Vec<String> = params
         .iter()
-        .map(|p| marker_display_expr(&p.ty, &format!("{prefix}{}", p.name)))
+        .map(|p| history_display_expr(&p.ty, &format!("{prefix}{}", p.name)))
         .collect();
     let fmt = vec!["{}"; rendered.len()].join(", ");
     if rendered.is_empty() {
