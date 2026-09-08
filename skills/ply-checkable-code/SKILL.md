@@ -140,9 +140,21 @@ public producer that already exists**; it names one, it does not create one.
 routes: { Handle: open_handle }        # open_handle must be a real public fn
 ```
 
-When no such function exists, adding one whose only caller is Ply is adding public API for
-the tool's benefit, and that is the developer's call, not yours. Rule 9 is what to do
-instead.
+When no such function exists, you may need to add one, and that is allowed. Two cases look
+alike and are not:
+
+- **An observer a caller would want anyway.** A cache with no way to ask whether a key is
+  present is an incomplete cache — writing the promise is what showed the gap. Add it as
+  ordinary public API. This is the common case, and the type is better for it.
+- **Something only the checks would ever call**, such as a second implementation a promise
+  compares against. Mark it `#[doc(hidden)] pub`: Ply reaches it, and anyone reading your
+  documentation is told it is not part of the supported surface. Be honest about what that
+  buys — it hides the item from the docs, it does not make it private, and it stays part of
+  what your crate exposes.
+
+The question to ask is not "am I widening the API for the tool" but **"would anyone but Ply
+ever call this"**. A `#[cfg(test)]` helper answers neither: Ply's checks run from a separate
+crate, where test-only items do not exist at all.
 
 What Ply cannot do for you is know whether those public fields have a relationship between
 them that nothing in the type enforces. It says so out loud rather than assuming: the run
@@ -328,9 +340,10 @@ parameter and the reason. In order:
    (rule 8)
 
 A refusal may simply be a Ply limitation. Consider these alternatives without changing
-required behavior or widening public APIs just to suit the tool. Report the parameter
-and reason when leaving verification unresolved; ordinary tests may be the right way
-to check the property.
+required behavior. Adding a public observer so a promise can read private state is not
+off-limits — rule 4 says when it is the right answer and when to mark it
+`#[doc(hidden)] pub` instead. Report the parameter and reason when leaving verification
+unresolved; ordinary tests may be the right way to check the property.
 
 ## Change authority
 

@@ -96,6 +96,14 @@ jobs:
           cargo run -q -p ply-check -- vetting/001-spsc-disruptor.ply.yaml
           cargo run -q -p ply-check -- vetting/002-ingest-pipeline.ply.yaml
 
+      # The guides shipped inside the binary have their exact wording pinned
+      # by these tests -- and until 2026-09-08 nothing ran them. The rule 9
+      # rewrite changed a sentence one of them asserted, the file went red,
+      # and it stayed red unnoticed because no job invoked it. A test nothing
+      # runs is not a test; that is the whole premise of this repository.
+      - name: guide wording contracts
+        run: python3 -m unittest discover -s tests/skills -v
+
       - name: rendered-artifact drift check
         run: |
           cargo run -q -p ply-render -- vetting/001-spsc-disruptor.ply.yaml -o vetting/001-spsc-disruptor.svg

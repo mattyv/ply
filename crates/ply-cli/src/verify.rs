@@ -6736,6 +6736,53 @@ fn harness_fuzz_test_name(cf: &ContractFn) -> String {
     format!("{}::ply_fuzz_{}", harness_module_name(cf), cf.ident())
 }
 
+/// What Ply can add to a compiler error that is really a visibility problem.
+///
+/// Ply's generated checks live in a *separate crate* from the code they
+/// check, so they can only use what that code makes public. A private field
+/// or method is invisible to them however freely the crate's own code uses
+/// it -- and the only thing said about that until 2026-09-08 was rustc's own
+/// line, which names what the compiler saw rather than what happened. A
+/// person writing the obvious promise about their own cache got `field
+/// `entries` of struct `Cache` is private` and no indication that the fix is
+/// ordinary, allowed, and usually an improvement to the type.
+///
+/// `None` for everything else, deliberately: a harness that fails to compile
+/// usually fails for reasons that have nothing to do with visibility, and a
+/// sentence appended to all of them is one readers learn to skip.
+fn visibility_hint(cause: &str) -> Option<String> {
+    // E0616 private field, E0624 private method, E0603 private item behind a
+    // path. Each of these *is* a visibility error, so Ply can say so.
+    if cause.contains("E0616") || cause.contains("E0624") || cause.contains("E0603") {
+        return Some(
+            " Ply's checks run from a separate crate, so they can only use what your crate \
+             makes public -- a private field or method is invisible to them even though your \
+             own code uses it freely. If the promise needs to read that state, give the type \
+             a public way to observe it: for a cache that is something like `contains` or \
+             `peek`, ordinary API a caller would want, and writing the promise is what showed \
+             it was missing. If the observer really is only for checking, `#[doc(hidden)] pub` \
+             keeps it reachable while telling anyone reading your documentation that it is \
+             not part of the supported surface."
+                .to_string(),
+        );
+    }
+    // E0425 is what a private *free function* looks like from outside the
+    // crate -- but a plain typo produces exactly the same error, and Ply
+    // cannot tell which. So this is offered as a possibility, never as a
+    // diagnosis.
+    if cause.contains("E0425") {
+        return Some(
+            " If that name does exist in your crate but is not `pub`, that is the reason: \
+             Ply's checks run from a separate crate and can only use public items. A helper \
+             the checks need -- a second implementation a promise compares against, say -- \
+             can be `#[doc(hidden)] pub`: reachable, and marked as no part of your \
+             documented API."
+                .to_string(),
+        );
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 fn harness_did_not_run_diag(
     node_id: &str,
@@ -6748,7 +6795,10 @@ fn harness_did_not_run_diag(
     is_receiver_method: bool,
 ) -> Diagnostic {
     let compiler_says = match cause {
-        Some(c) => format!(" The compiler's own first error was: {c}."),
+        Some(c) => format!(
+            " The compiler's own first error was: {c}.{}",
+            visibility_hint(c).unwrap_or_default()
+        ),
         None => String::new(),
     };
     let examples_hint = if has_examples {
@@ -6878,7 +6928,8 @@ fn harness_unattributed_diag(
              `{fn_name}`'s own tests, even though Ply could not tell whether `{fn_name}`'s own \
              generated code is what broke it. Rather than guess and blame a function that might \
              be completely fine, Ply reports every function still waiting on this harness as a \
-             tool error. The compiler's own first error was: {cause}. (X0901)"
+             tool error. The compiler's own first error was: {cause}.{hint} (X0901)",
+            hint = visibility_hint(cause).unwrap_or_default()
         ),
         pointer: None,
         primary_span: None,
@@ -11023,6 +11074,96 @@ mod tests {
                 .any(|status| status == "unsupported"),
             "the non-result status must propagate too: {:#?}",
             result.envelope.root
+        );
+    }
+
+    /// A promise that reads private state fails to compile, and until now
+    /// the only thing said about it was rustc's own line -- `field
+    /// `entries` of struct `Cache` is private`. That names what the
+    /// compiler saw, not what happened: Ply's checks run from a separate
+    /// crate, so a private item is invisible to them however freely the
+    /// crate's own code uses it. Measured on a real cache fixture
+    /// (2026-09-08).
+    #[test]
+    fn a_private_field_says_why_ply_cannot_see_it_and_what_to_do() {
+        let hint = visibility_hint("error[E0616]: field `entries` of struct `Cache` is private")
+            .expect("a private-field error is a visibility problem Ply can explain");
+        assert!(
+            hint.contains("separate crate"),
+            "the reason has to be stated, or the reader cannot tell why their own code \
+             compiles and this does not: {hint}"
+        );
+        assert!(
+            hint.contains("#[doc(hidden)]"),
+            "and the way to add a reachable observer without claiming it as supported API: \
+             {hint}"
+        );
+    }
+
+    /// The same for a private method, which is the shape the cache in the
+    /// A/B round actually hit: it had no public way to ask whether a key
+    /// was present.
+    #[test]
+    fn a_private_method_gets_the_same_explanation() {
+        let hint = visibility_hint("error[E0624]: method `peek` is private")
+            .expect("a private-method error is a visibility problem too");
+        assert!(hint.contains("separate crate"), "{hint}");
+    }
+
+    /// A name the harness cannot resolve *might* be a visibility problem
+    /// and might be a typo. Ply does not know which, so it says so
+    /// conditionally rather than asserting a cause it has not established.
+    #[test]
+    fn an_unresolved_name_is_offered_as_a_possibility_not_a_diagnosis() {
+        let hint = visibility_hint(
+            "error[E0425]: cannot find function `normalise_via_fold` in this scope",
+        )
+        .expect("worth mentioning: this is what a private helper looks like from outside");
+        assert!(
+            hint.contains("if") || hint.contains("If"),
+            "it must read as a possibility, since a plain typo produces the same error: {hint}"
+        );
+        assert!(
+            !hint.contains("is private"),
+            "and must not assert privacy as the cause when it cannot know that: {hint}"
+        );
+    }
+
+    /// The negative that keeps the hint honest. Every harness that fails to
+    /// compile would otherwise collect advice about visibility, including
+    /// the great majority whose problem is nothing of the kind -- which is
+    /// how a helpful sentence becomes noise a reader learns to skip.
+    #[test]
+    fn an_ordinary_type_error_gets_no_visibility_advice() {
+        assert_eq!(
+            visibility_hint("error[E0308]: mismatched types"),
+            None,
+            "a type error is not a visibility problem and must not be dressed as one"
+        );
+        assert_eq!(
+            visibility_hint("error: could not compile `ply-fixture-x` (lib) due to 1 error"),
+            None
+        );
+    }
+
+    /// And it reaches the reader: the hint has to be in the diagnostic the
+    /// person actually sees, not merely computable.
+    #[test]
+    fn the_diagnostic_a_person_reads_carries_the_visibility_explanation() {
+        let diag = harness_did_not_run_diag(
+            "c::Cache::insert",
+            "Cache::insert",
+            "c",
+            "fuzz(32)",
+            "ply-harness-c",
+            Some("error[E0616]: field `entries` of struct `Cache` is private"),
+            false,
+            true,
+        );
+        assert!(
+            diag.title.contains("separate crate"),
+            "the explanation must travel with the report, not sit in a helper: {}",
+            diag.title
         );
     }
 }

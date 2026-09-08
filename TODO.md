@@ -336,11 +336,40 @@ refusal shipped the day before.
       whichever the copy would not carry. A third stale entry cannot be
       mysterious.
 
-- [ ] **OPEN DECISION for the maintainer:** is a getter added purely so a
-      promise can read a private field acceptable? The cache needed a
-      `contains`/`peek` to state its promise; those are ordinary cache API,
-      but rule 4 leaves "adding public API for the tool's benefit" to the
-      developer and every real type meets this on day one.
+- [x] **DECIDED 2026-09-08: yes, and the question was the wrong one.** A
+      getter a promise needs is acceptable; the test is not "am I widening
+      the API for the tool" but "would anyone but Ply ever call this". Two
+      cases were being conflated. An observer a caller would want anyway --
+      a cache with no way to ask whether a key is present is an incomplete
+      cache -- is ordinary API, and writing the promise is what found the
+      gap. Something only the checks would call, such as a differential
+      oracle, gets `#[doc(hidden)] pub`: verified empirically that Ply
+      accepts it (a claim whose promise calls a doc-hidden oracle earns
+      `tested` cleanly). Guide rule 4 rewritten, the refusal section no
+      longer contradicts it, and both are pinned by wording tests.
+
+- [x] **CLOSED, found while doing the above: a promise that reads private
+      state got rustc's line and nothing else.** `field \`entries\` of struct
+      \`Cache\` is private` names what the compiler saw, not what happened --
+      Ply's checks run from a separate crate, so a private item is invisible
+      to them however freely the crate's own code uses it. That reason is
+      now stated, with both options named. A private *function* gets the
+      same explanation conditionally, because a plain typo produces the
+      identical error and Ply cannot tell which. Every other compile failure
+      gets nothing added, which is what stops it becoming noise.
+      Demonstrated end to end: following the advice let the check run, and
+      it immediately found a real crash (inserting into a zero-capacity
+      cache).
+
+- [x] **CLOSED, and the worse half of it: the guide-wording tests were not
+      run by anything.** `tests/skills/test_skill_contracts.py` pins the
+      exact sentences of the shipped guides, and no CI job invoked it. The
+      rule 9 rewrite changed a sentence one test asserted; the file went red
+      and stayed red, unseen, until it was run by hand on 2026-09-08. That
+      test also still claimed a method changing its receiver was
+      uncheckable, which stopped being true when that shipped. Assertion
+      corrected to what rule 9 now says, and the suite is now a CI step. A
+      test nothing runs is not a test.
 
 ## A/B round 4: the tool's best result, and three new gaps — 2026-09-07
 
