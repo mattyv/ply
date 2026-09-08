@@ -1,6 +1,6 @@
 # TODO
 
-## In progress: conservative widening keeps mutation ownership — 2026-09-08
+## Landed: conservative widening keeps mutation ownership — `4f0d414` — 2026-09-08
 
 - [x] Continue the positive reach walk after a crate-wide fingerprint gate is
       known. Widening what the cache hashes must not erase the claimed
