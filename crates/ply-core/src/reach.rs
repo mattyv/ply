@@ -1252,41 +1252,63 @@ fn registry_packages_reachable_from_with_presence(lock: &str, root: &str) -> (bo
     let mut packages: std::collections::BTreeMap<String, Pkg> = std::collections::BTreeMap::new();
     let mut by_name: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
+    let mut by_name_version: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     let mut name = String::new();
     let mut version = String::new();
     let mut source: Option<String> = None;
     let mut deps: Vec<String> = Vec::new();
     let mut in_deps_list = false;
     let mut started = false;
-    let flush = |name: &mut String,
-                 version: &mut String,
-                 source: &mut Option<String>,
-                 deps: &mut Vec<String>,
-                 packages: &mut std::collections::BTreeMap<String, Pkg>,
-                 by_name: &mut std::collections::BTreeMap<String, Vec<String>>| {
-        if !name.is_empty() {
-            // Keyed by name *and* version. A lockfile may legitimately hold
-            // two versions of one crate; keyed by name alone the second
-            // block overwrote the first, so the identity could name a
-            // version this crate never built with and would move when an
-            // unrelated crate bumped its own copy.
-            let n = std::mem::take(name);
-            let v = std::mem::take(version);
-            by_name
-                .entry(n.clone())
-                .or_default()
-                .push(format!("{n} {v}"));
-            packages.insert(
-                format!("{n} {v}"),
-                Pkg {
-                    name: n,
-                    version: v,
-                    source: source.take(),
-                    deps: std::mem::take(deps),
-                },
-            );
-        }
-    };
+    let flush =
+        |name: &mut String,
+         version: &mut String,
+         source: &mut Option<String>,
+         deps: &mut Vec<String>,
+         packages: &mut std::collections::BTreeMap<String, Pkg>,
+         by_name: &mut std::collections::BTreeMap<String, Vec<String>>,
+         by_name_version: &mut std::collections::BTreeMap<String, Vec<String>>| {
+            if !name.is_empty() {
+                // The package key follows Cargo's most-qualified dependency
+                // spelling: name, version and source. A graph may contain two
+                // versions of one crate, or even the same name/version from a
+                // registry and a Git fork. Dropping either discriminator can
+                // walk code the target never ran -- or no code at all.
+                let n = std::mem::take(name);
+                let v = std::mem::take(version);
+                let src = source.take();
+                let name_version = format!("{n} {v}");
+                let key = src.as_ref().map_or_else(
+                    || name_version.clone(),
+                    |s| {
+                        // Cargo's dependency edge omits a Git source's precise
+                        // `#revision`; the package's own source retains it.
+                        // Resolve with Cargo's shorter spelling, then fingerprint
+                        // the full source below so a moving branch invalidates.
+                        let edge_source = if s.starts_with("git+") {
+                            s.split_once('#').map_or(s.as_str(), |(base, _)| base)
+                        } else {
+                            s
+                        };
+                        format!("{name_version} ({edge_source})")
+                    },
+                );
+                by_name.entry(n.clone()).or_default().push(key.clone());
+                by_name_version
+                    .entry(name_version)
+                    .or_default()
+                    .push(key.clone());
+                packages.insert(
+                    key,
+                    Pkg {
+                        name: n,
+                        version: v,
+                        source: src,
+                        deps: std::mem::take(deps),
+                    },
+                );
+            }
+        };
     for line in lock.lines() {
         let t = line.trim();
         if t == "[[package]]" {
@@ -1297,6 +1319,7 @@ fn registry_packages_reachable_from_with_presence(lock: &str, root: &str) -> (bo
                 &mut deps,
                 &mut packages,
                 &mut by_name,
+                &mut by_name_version,
             );
             started = true;
             in_deps_list = false;
@@ -1337,16 +1360,20 @@ fn registry_packages_reachable_from_with_presence(lock: &str, root: &str) -> (bo
         &mut deps,
         &mut packages,
         &mut by_name,
+        &mut by_name_version,
     );
 
-    // A `dependencies` entry is either `"name"` or `"name version"`. The
-    // second form is already a key; the first is one only when the name is
-    // unambiguous. When it is not -- which a well-formed lockfile does not
-    // produce, but a hand-edited one might -- every candidate is walked, so
-    // the identity is coarser than necessary rather than silently wrong.
+    // Cargo uses the shortest unambiguous spelling: `name`, `name version`,
+    // or `name version (source)`. The last form matters when one graph uses
+    // both a registry release and a Git fork at the same name and version.
+    // A malformed ambiguous short spelling walks every candidate, making
+    // the identity conservatively coarse rather than silently incomplete.
     let resolve = |entry: &str| -> Vec<String> {
         if packages.contains_key(entry) {
             return vec![entry.to_string()];
+        }
+        if let Some(keys) = by_name_version.get(entry) {
+            return keys.clone();
         }
         by_name.get(entry).cloned().unwrap_or_default()
     };
@@ -1984,6 +2011,47 @@ source = "git+https://example.invalid/dep?branch=main#{rev}"
             "the same version at two different revisions is two different \
              dependencies, and a result earned against one must not be reused \
              against the other"
+        );
+    }
+
+    #[test]
+    fn a_source_qualified_edge_reaches_the_exact_git_package() {
+        let identity = |rev: &str| {
+            let dir = crate_with(&[("src/lib.rs", "pub fn f() {}\n")]);
+            std::fs::write(
+                dir.path().join("Cargo.lock"),
+                format!(
+                    r#"version = 4
+
+[[package]]
+name = "c"
+version = "0.0.0"
+dependencies = [
+ "dep 0.1.0 (git+https://example.invalid/dep)",
+]
+
+[[package]]
+name = "dep"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "dep"
+version = "0.1.0"
+source = "git+https://example.invalid/dep#{rev}"
+"#,
+                ),
+            )
+            .unwrap();
+            dependency_identity(dir.path())
+        };
+
+        let first = identity("1111111111111111111111111111111111111111");
+        assert!(first.starts_with("dep 0.1.0 git+"), "{first}");
+        assert_ne!(
+            first,
+            identity("2222222222222222222222222222222222222222"),
+            "a source-qualified edge must retain the exact Git revision it selected"
         );
     }
 
