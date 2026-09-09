@@ -830,7 +830,7 @@ make this codebase provable.
 
 ## Generated proof modules must not survive verification
 
-- [ ] Restore `src/lib.rs` byte-for-byte and remove `src/ply_generated.rs` after every
+- [x] Implemented in `06ccd32`: restore `src/lib.rs` byte-for-byte and remove `src/ply_generated.rs` after every
       serial bounded check, including error and early-return paths. Prune recognized
       leftovers from older Ply runs even when the current document no longer declares a
       bounded check. Keep rendered counterexample tests persistent: they are user-facing
