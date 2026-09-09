@@ -1,5 +1,29 @@
 # TODO
 
+## Next: named acceptance evidence and module boundaries — 2026-09-09
+
+- [ ] Add deterministic, freshly executed acceptance claims that invoke an exact Cargo
+      integration test, keep their result separate from local contract evidence, and
+      withhold overall success when a required acceptance claim fails.
+- [ ] Add a production-path fixture whose raw decimal-string response reaches the real
+      parser and mapper, with independent expected output and explicit provenance.
+- [ ] Build deterministic module ownership with most-specific descendant ownership,
+      residual crate-root ownership, errors for contradictory overlaps, and visible
+      unassigned first-party modules. Keep Cargo-tier ownership as a separate projection:
+      only exact crate-root anchors own package edges, while module-only package dependencies
+      remain visible and unattributed rather than becoming first-owner-wins.
+- [ ] Extract resolved calls, function values, type references, imports, and re-exports
+      for ordinary inline and file modules; record unresolved constructs and the active
+      configuration without guessing.
+- [ ] Enforce existing edge, containment, wildcard, and explicit-deny policy across
+      same-crate module references, preserving the Cargo-metadata tier and its behavior.
+- [ ] Extend coverage, JSON, explanations, and drawings so package evidence, source
+      references, acceptance results, and incomplete scope remain distinguishable.
+- [ ] Measure the single-crate fixture and, if available, an isolated copy of the trial
+      application. Do not restructure the real application as part of this work.
+
+Design: `docs/plans/module-boundaries-and-acceptance.md`.
+
 ## Landed: receiver struct arguments and honest exclusion reasons — `f4a42fa` — 2026-09-09
 
 - [x] Rebuild a by-value user-defined struct argument for every preparatory receiver
