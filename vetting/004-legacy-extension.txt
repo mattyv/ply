@@ -31,6 +31,8 @@ components:
     fn withdraw
       bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
 
+acceptance — finite production-path examples: none declared
+
 externals — systems and people outside this codebase: none declared
 
 edges — who may call whom, and what data flows where:

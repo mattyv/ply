@@ -42,6 +42,8 @@ pub fn schema() -> &'static Value {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Document,
+    AcceptanceClaim,
+    AcceptanceTest,
     Component,
     FnClaim,
     External,
@@ -50,8 +52,10 @@ pub enum Level {
 }
 
 impl Level {
-    pub const ALL: [Level; 6] = [
+    pub const ALL: [Level; 8] = [
         Level::Document,
+        Level::AcceptanceClaim,
+        Level::AcceptanceTest,
         Level::Component,
         Level::FnClaim,
         Level::External,
@@ -63,6 +67,8 @@ impl Level {
     fn definition_pointer(self) -> &'static str {
         match self {
             Level::Document => "",
+            Level::AcceptanceClaim => "/$defs/acceptance_claim",
+            Level::AcceptanceTest => "/$defs/acceptance_test",
             Level::Component => "/$defs/component",
             Level::FnClaim => "/$defs/fn_claim",
             Level::External => "/$defs/external",
@@ -301,6 +307,7 @@ pub fn validate(doc: &serde_yaml_ng::Value) -> Vec<SchemaViolation> {
 
     check_keys(doc, Level::Document, "", &mut out);
     check_named_map(doc, "components", &mut out);
+    check_named_map(doc, "acceptance", &mut out);
     check_named_map(doc, "externals", &mut out);
     check_named_map(doc, "profiles", &mut out);
 
@@ -327,8 +334,140 @@ pub fn validate(doc: &serde_yaml_ng::Value) -> Vec<SchemaViolation> {
             check_component(comp, &format!("/components/{name}"), &mut out);
         }
     }
+    if let Some(acceptance) = map.get("acceptance").and_then(|v| v.as_mapping()) {
+        for (name, claim) in acceptance {
+            let name = name.as_str().unwrap_or("?");
+            check_acceptance(claim, &format!("/acceptance/{name}"), &mut out);
+        }
+    }
     check_unresolved_list(doc, "", &mut out);
     out
+}
+
+fn check_acceptance(claim: &serde_yaml_ng::Value, pointer: &str, out: &mut Vec<SchemaViolation>) {
+    if claim.as_mapping().is_none() {
+        value_violation(pointer, "an acceptance claim object", out);
+        return;
+    }
+    check_keys(claim, Level::AcceptanceClaim, pointer, out);
+    check_nonempty_string(claim, "requirement", pointer, out);
+    if let Some(value) = claim.get("component") {
+        match value.as_str() {
+            Some(component) if !component.is_empty() && component.split('.').all(is_identifier) => {
+            }
+            _ => value_violation(
+                &format!("{pointer}/component"),
+                "a qualified component name such as `mapping` or `app.mapping`",
+                out,
+            ),
+        }
+    }
+    if let Some(value) = claim.get("entry") {
+        match value.as_str() {
+            Some(entry) if crate::check::is_valid_path_form(entry) => {}
+            _ => value_violation(
+                &format!("{pointer}/entry"),
+                "a plain Rust path such as `app::mapping::map_response`",
+                out,
+            ),
+        }
+    }
+    if let Some(test) = claim.get("test") {
+        if test.as_mapping().is_none() {
+            value_violation(
+                &format!("{pointer}/test"),
+                "an acceptance test target object",
+                out,
+            );
+        } else {
+            check_keys(test, Level::AcceptanceTest, &format!("{pointer}/test"), out);
+            for key in ["package", "target"] {
+                if let Some(value) = test.get(key) {
+                    match value.as_str() {
+                        Some(value) if is_cargo_name(value) => {}
+                        _ => value_violation(
+                            &format!("{pointer}/test/{key}"),
+                            "a non-empty Cargo package or target name",
+                            out,
+                        ),
+                    }
+                }
+            }
+            if let Some(value) = test.get("name") {
+                match value.as_str() {
+                    Some(name) if crate::check::is_valid_path_form(name) => {}
+                    _ => value_violation(
+                        &format!("{pointer}/test/name"),
+                        "an exact libtest name written as a Rust path",
+                        out,
+                    ),
+                }
+            }
+        }
+    }
+    check_nonempty_string_list(claim, "inputs", pointer, out);
+    check_nonempty_string_list(claim, "expected", pointer, out);
+    if let Some(required) = claim.get("required")
+        && required.as_bool().is_none()
+    {
+        value_violation(
+            &format!("{pointer}/required"),
+            "a boolean (`true` or `false`)",
+            out,
+        );
+    }
+}
+
+fn check_nonempty_string(
+    parent: &serde_yaml_ng::Value,
+    key: &str,
+    pointer: &str,
+    out: &mut Vec<SchemaViolation>,
+) {
+    if let Some(value) = parent.get(key)
+        && value.as_str().is_none_or(str::is_empty)
+    {
+        value_violation(&format!("{pointer}/{key}"), "a non-empty string", out);
+    }
+}
+
+fn check_nonempty_string_list(
+    parent: &serde_yaml_ng::Value,
+    key: &str,
+    pointer: &str,
+    out: &mut Vec<SchemaViolation>,
+) {
+    let Some(value) = parent.get(key) else { return };
+    let valid = value.as_sequence().is_some_and(|items| {
+        !items.is_empty()
+            && items
+                .iter()
+                .all(|item| item.as_str().is_some_and(|text| !text.is_empty()))
+    });
+    if !valid {
+        value_violation(
+            &format!("{pointer}/{key}"),
+            "a non-empty list of non-empty paths",
+            out,
+        );
+    }
+}
+
+fn value_violation(pointer: &str, expected: &str, out: &mut Vec<SchemaViolation>) {
+    out.push(violation(
+        "E0201",
+        pointer.into(),
+        format!(
+            "this value must be {expected}. Found at `{}` in ply.yaml.",
+            dotted(pointer)
+        ),
+    ));
+}
+
+fn is_cargo_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 fn check_component(comp: &serde_yaml_ng::Value, pointer: &str, out: &mut Vec<SchemaViolation>) {
@@ -430,6 +569,7 @@ fn check_named_map(doc: &serde_yaml_ng::Value, field: &str, out: &mut Vec<Schema
     };
     let kind = match field {
         "components" => "a component name",
+        "acceptance" => "an acceptance claim name",
         "externals" => "an external's name",
         _ => "a profile name",
     };

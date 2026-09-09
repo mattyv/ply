@@ -35,9 +35,11 @@ acceptance:
 
 The first version runs Rust integration tests only. It accepts Cargo package, integration
 test target, and exact test name as separate fields; arbitrary shell text is not accepted.
-`inputs` and `expected` are workspace-relative regular files. `component` must resolve to
-one declared component. `entry` records the production entry point exercised; the test
-remains responsible for calling it.
+`inputs` and `expected` are regular files relative to the named Cargo package. Published
+results normalize them to portable verification-root-relative paths, so the same child document
+keeps working both alone and when composed through a parent workspace. `component` must
+resolve to one declared component. `entry` records the production entry point exercised;
+the test remains responsible for calling it.
 
 `required` is independent of architecture profiles in this first version. It applies whenever
 the claim is admitted to this invocation; it does not import claims belonging to components
@@ -51,11 +53,14 @@ Ply first asks Cargo to build the named integration-test target with bounded bui
 reads Cargo's JSON artifact messages. It accepts exactly one artifact matching both Cargo
 package identity and integration-test target identity. A missing or ambiguous artifact, or a
 target with `harness = false`, is a tool/configuration error rather than acceptance evidence.
-Ply then runs that executable with a bounded run time, the package directory as its working
-directory, Cargo's required runtime environment, and an exact libtest name filter. A successful
-process counts only when libtest reports one executed, non-ignored test with that exact name.
+Ply then asks Cargo, from the package directory, to launch that package and target with an exact
+libtest name filter and a bounded run time. This preserves member-specific Cargo configuration,
+build-script library paths, package environment, and toolchain selection instead of recreating
+Cargo's runtime contract. A successful process counts only when the final libtest summary reports
+one executed, non-ignored test; the exact filter makes that one test the declared name.
 Zero matches and ignored tests are “not run,” never passes. Tests cover relative fixture paths
 from a workspace member, custom harnesses, missing exact names, ignored tests, and timeouts.
+Nested or otherwise ambiguous libtest output is a tool error rather than inferred evidence.
 
 Each claim produces a top-level, additive acceptance result with its id, requirement,
 component, entry, test identity, input paths, required flag, outcome, and observation
@@ -73,7 +78,7 @@ proof success plus acceptance failure, optional failure, and every required outc
 
 Linked verification selects only acceptance claims whose declared component is the linked
 target or one of its declared descendants. Result identity is qualified by source document and
-claim id; selected component ids and workspace-relative display paths are rebased into the root
+claim id; selected component ids and verification-root-relative display paths are rebased into the root
 invocation. All admitted results are grafted before the acceptance gate is evaluated. Claims
 belonging to unselected sibling components are not run and are disclosed as outside the composed
 invocation, so a required child failure can neither disappear nor be attributed to the root.

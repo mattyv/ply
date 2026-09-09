@@ -23,6 +23,16 @@
         "$ref": "#/$defs/component"
       }
     },
+    "acceptance": {
+      "description": "Named, finite application requirements exercised through exact Cargo integration tests. Their outcomes stay separate from function-contract evidence.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/identifier"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/acceptance_claim"
+      }
+    },
     "externals": {
       "description": "Named outside parties -- systems or people this codebase talks to but Ply can never verify. Top-level only: an external has no interior and cannot nest. Shares the component reference namespace (\u00a75.1a rule 6).",
       "type": "object",
@@ -98,6 +108,85 @@
       "description": "\u00a75.4b's cross-crate extension (defect 2): a `code_path` (unchanged -- infers its parameters from this crate's own source), optionally followed by a parenthesized, comma-separated list of the input types a function outside this crate takes, since Ply has no source there to read them from.",
       "type": "string",
       "pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*(\\([^()]*\\))?$"
+    },
+    "component_path": {
+      "description": "A qualified component identity: snake_case component names joined by dots.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
+    },
+    "cargo_name": {
+      "description": "A Cargo package or target name, kept separate from command text.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
+    },
+    "acceptance_claim": {
+      "title": "an acceptance claim",
+      "description": "A named user requirement exercised by one exact Rust integration test over declared fixture and oracle files.",
+      "type": "object",
+      "required": [
+        "requirement",
+        "component",
+        "entry",
+        "test",
+        "inputs",
+        "expected",
+        "required"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "requirement": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The user-visible requirement this finite check exercises."
+        },
+        "component": {
+          "$ref": "#/$defs/component_path",
+          "description": "The declared component whose production path is exercised."
+        },
+        "entry": {
+          "$ref": "#/$defs/code_path",
+          "description": "The production entry point the integration test exercises."
+        },
+        "test": {
+          "$ref": "#/$defs/acceptance_test"
+        },
+        "inputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "External-input fixture files relative to the named Cargo package; reports normalize them relative to the verification root."
+        },
+        "expected": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Independently derived expected-result files relative to the named Cargo package; reports normalize them relative to the verification root."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Whether any outcome other than passed withholds overall verification success."
+        }
+      }
+    },
+    "acceptance_test": {
+      "title": "an acceptance test target",
+      "type": "object",
+      "required": ["package", "target", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "package": {
+          "$ref": "#/$defs/cargo_name",
+          "description": "The exact Cargo package name."
+        },
+        "target": {
+          "$ref": "#/$defs/cargo_name",
+          "description": "The exact Cargo integration-test target name."
+        },
+        "name": {
+          "$ref": "#/$defs/code_path",
+          "description": "The exact libtest test name, including any module path."
+        }
+      }
     },
     "check_string": {
       "description": "\u00a75 item 1 and \u00a75.1a rule 4: test | fuzz(N) | bounded(K) | prove | mutate, with 1 <= N <= 1000000 and 1 <= K <= 64. Out of range, or any other form, is E0203.",

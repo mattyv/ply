@@ -186,6 +186,50 @@ pub fn render_transcript_with_state_and_links(
     }
 
     out.push('\n');
+    let acceptance = super::declared_acceptance_results(doc, links);
+    if acceptance.is_empty() {
+        out.push_str("acceptance — finite production-path examples: none declared\n");
+    } else {
+        out.push_str("acceptance — finite production-path examples:\n");
+        out.push_str(&format!(
+            "{}These are named, finite application examples. They never upgrade a function proof, and this declaration-only transcript contains no result.\n",
+            pad(1)
+        ));
+        for claim in acceptance {
+            let name = claim
+                .id
+                .rsplit_once("::")
+                .map(|(_, id)| id)
+                .unwrap_or(&claim.id);
+            let requirement = if claim.required {
+                "required"
+            } else {
+                "optional"
+            };
+            out.push_str(&format!(
+                "{}{name} — {requirement}, declared but not run\n",
+                pad(1)
+            ));
+            out.push_str(&format!("{}requirement: {}\n", pad(2), claim.requirement));
+            out.push_str(&format!("{}component: {}\n", pad(2), claim.component));
+            out.push_str(&format!("{}production entry: {}\n", pad(2), claim.entry));
+            out.push_str(&format!(
+                "{}Cargo test: cargo test -p {} --test {} -- --exact {}\n",
+                pad(2),
+                claim.test.package,
+                claim.test.target,
+                claim.test.name
+            ));
+            out.push_str(&format!("{}inputs: {}\n", pad(2), claim.inputs.join(", ")));
+            out.push_str(&format!(
+                "{}expected results: {}\n",
+                pad(2),
+                claim.expected.join(", ")
+            ));
+        }
+    }
+
+    out.push('\n');
     if doc.externals.is_empty() {
         out.push_str("externals — systems and people outside this codebase: none declared\n");
     } else {

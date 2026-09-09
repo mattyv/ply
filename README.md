@@ -105,6 +105,12 @@ $ cargo install --locked kani-verifier && cargo kani setup   # for bounded(k)
 $ cargo install --locked cargo-mutants                       # for mutate
 ```
 
+**Application acceptance.** A top-level `acceptance:` claim can name one requirement,
+its production entry point, fixture and independently reviewed expected-result files, and
+an exact Cargo integration test. `verify` reports that finite result separately from local
+contract evidence; a required failure withholds overall success without weakening or
+upgrading any function verdict. See [the schema guide](docs/SCHEMA.md#named-acceptance-evidence).
+
 **What artefacts are created by Ply.** Persistent generated harnesses live under
 `target/ply/`, which is already ignored by every Rust `.gitignore`. A serial bounded proof
 temporarily installs `src/ply_generated.rs` and one marked module declaration so the proof

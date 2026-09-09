@@ -2,10 +2,10 @@
 
 ## Next: named acceptance evidence and module boundaries — 2026-09-09
 
-- [ ] Add deterministic, freshly executed acceptance claims that invoke an exact Cargo
+- [x] Add deterministic, freshly executed acceptance claims that invoke an exact Cargo
       integration test, keep their result separate from local contract evidence, and
       withhold overall success when a required acceptance claim fails.
-- [ ] Add a production-path fixture whose raw decimal-string response reaches the real
+- [x] Add a production-path fixture whose raw decimal-string response reaches the real
       parser and mapper, with independent expected output and explicit provenance.
 - [ ] Build deterministic module ownership with most-specific descendant ownership,
       residual crate-root ownership, errors for contradictory overlaps, and visible

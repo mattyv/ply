@@ -1,0 +1,7 @@
+{
+  "status": "ok",
+  "records": [
+    { "instrument": "BTC-HKD", "price": "95234.1250", "quantity": "2" },
+    { "instrument": "ETH-HKD", "price": "3412.5005", "quantity": "7" }
+  ]
+}

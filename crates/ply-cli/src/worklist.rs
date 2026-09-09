@@ -118,6 +118,7 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
                     ply_version: PLY_VERSION.into(),
                     root: empty_workspace(),
                     diagnostics: violations,
+                    acceptance: Vec::new(),
                     coverage: Some(unread_coverage()),
                     trust_surface: None,
                     // Absent, not empty: this run never got to look.
@@ -208,6 +209,7 @@ pub fn worklist_crate(crate_dir: &Path) -> Result<WorklistReport> {
             ply_version: PLY_VERSION.into(),
             root: workspace_node(&doc),
             diagnostics: vec![],
+            acceptance: Vec::new(),
             coverage: Some(read_coverage(&document, markers, owed)),
             trust_surface: None,
             open_items: Some(items),

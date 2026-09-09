@@ -355,6 +355,19 @@ unresolved:                      # registry entries with no code anchor
 routes:                          # optional; §5.4b's generator hook — bare type name to
   Handle: open_handle            #   a public function (free or associated) that returns it
   OsString: std::ffi::OsString::from(String)  # outside the crate: declare its input type(s)
+
+acceptance:                      # optional; finite application evidence (§5.4e)
+  decimal_response_maps:         # stable snake_case claim id
+    requirement: "a decimal response maps to the exact records"
+    component: pricing
+    entry: pricing::map_response
+    test:                        # structured Cargo target, never a shell command
+      package: pricing
+      target: venue_response
+      name: decimal_strings_map_to_expected_records
+    inputs: [tests/fixtures/venue-response.json]       # package-relative
+    expected: [tests/fixtures/venue-response.expected.json]
+    required: true
 ```
 
 Schema violations produce `E0201` diagnostics carrying the JSON-pointer path and source
@@ -1728,6 +1741,37 @@ entirely on trust. Re-attestation is a human act, and nothing in Ply clears it: 
 checked result, which §5.2a re-earns automatically the moment its fingerprint moves, an
 attestation can only be renewed by the person who made it.
 
+#### 5.4e Acceptance evidence
+
+An acceptance claim asks a different question from a function contract: whether one named
+production path met one user requirement for specific external inputs. It is finite and scoped.
+A passing fixture never upgrades a function verdict, and a function proof never hides a failing
+acceptance claim. A required outcome other than `passed` withholds overall success under every
+`--fail-on` setting.
+
+The first runner is deliberately narrow. A claim names a Cargo package, integration-test target,
+and exact libtest name as separate fields; shell commands are not accepted. `inputs` and
+`expected` are regular files relative to that package. The result normalizes their names relative
+to the verification root and records `passed`, `failed`, `timeout`, `tool_error`, or `not_run`.
+A missing component or a non-portable path is `E0212` before execution.
+A zero-match filter, an ignored test, a custom `harness = false` target, or ambiguous Cargo
+artifact can never count as a pass. Build and execution are separately time-bounded. Cargo launches
+the exact package and target from the package directory, preserving member configuration,
+build-script library paths, package environment, and toolchain selection; Ply accepts success only
+when the final libtest summary says exactly one non-ignored test passed. Nested or otherwise
+ambiguous libtest output is a `tool_error`, not evidence inferred from the most convenient summary.
+
+Acceptance always runs freshly and is never written to `ply.lock`. The fixture is raw input to the
+production entry point; expected output is an independently reviewed oracle, not output generated
+by the implementation under test. Provenance beside the fixture names whether it was captured or
+synthetic, its source/schema and date where known, and any transformation or redaction.
+
+Composition follows component selection. When a root selects one component from a linked document,
+only acceptance claims on that component or its declared descendants are admitted. Their component
+ids and source-document-qualified claim ids are rebased into the root result before the required
+gate is evaluated. An acceptance claim on an unselected sibling is outside the invocation; `W0543`
+names that exclusion, and its `required` flag does not apply to the root.
+
 ### 5.5 Modular composition (D5)
 
 Verification runs callees-before-callers over the call graph: within a crate, claimed
@@ -2338,7 +2382,9 @@ Exit codes: 0 clean, 1 violations or failures — **including a run in which any
 carries an absence of evidence** (`timeout`, `unsupported`, `tool_error`, `unclaimed`,
 `engine-missing`, `inconclusive`), **as its verdict or as a status beside it** (§1: an
 absence is a name, not a slot) — 2 tool error, 3 missing engine for an explicitly
-requested check. The code is chosen by the absence, wherever it was recorded: a missing
+requested check. A required acceptance `tool_error` exits 2; every other required non-pass exits
+1. An acceptance-only run whose required claims pass exits 0 while the untouched contract root
+continues to read `unclaimed`: no function evidence was requested or invented. The code is chosen by the absence, wherever it was recorded: a missing
 engine is 3 whether it arrived as a `bounded` check's verdict or as a status on a fn
 whose fuzz check passed.
 
@@ -2347,9 +2393,9 @@ loosest:
 
 | `--fail-on` | the run fails when |
 |---|---|
-| `warn` | any diagnostic of warning severity or worse was emitted — including the ones that sit beside a real verdict (`W0502` weak spec, `W0503` narrow spread) |
-| `evidence` (default) | any node carries an absence of evidence — as its verdict or as a status — or any error-severity diagnostic was emitted |
-| `error` | only an error-severity diagnostic was emitted (a violation, an unresolvable anchor, a tool error) |
+| `warn` | any diagnostic of warning severity or worse was emitted — including the ones that sit beside a real verdict (`W0502` weak spec, `W0503` narrow spread) — or a required acceptance claim did not pass |
+| `evidence` (default) | any requested contract node carries an absence of evidence — as its verdict or as a status — any error-severity diagnostic was emitted, or a required acceptance claim did not pass |
+| `error` | an error-severity diagnostic was emitted, or a required acceptance claim did not pass |
 
 `error` is the pre-2026-08-25 behaviour, kept as the documented opt-out for a codebase
 mid-adoption where absences are expected and tracked elsewhere. Choosing it is a
@@ -2441,6 +2487,7 @@ grammar.**
 | declared ceiling | component fill, on the **neutral grey** ramp (never green — see the channel-discipline amendment of 2026-08-29), stepped by the verdict ordinal scale: the strongest verdict the component's declared checks *could* earn — per fn the strongest check kind (`test`→tested … `prove`→proved; `mutate` strengthens, never lifts; no checks = unclaimed, unfilled), folded worst-of by the kernel's container rule. A ceiling is a promise, not proof: it is drawn in grey, never in the green reserved for evidence a run has earned, and its tooltip says none of it has run |
 | `strict` | a solid ink triangle notch in the box's top-right corner — the "flagged, zero tolerance" instinct; tooltip already explains errors-not-warnings |
 | `mode: synth` | the fn chip's fill turns light violet — violet is hereby the authorship channel, its single meaning "machine-written": the body below the watermark is synthesized from the contract, with the checks holding the line. Tooltip says exactly that |
+| `acceptance:` | a separate outlined band inside the workspace, titled `Acceptance · finite production-path examples`, with one labelled row per claim. Its dot reads declared in a declaration view, green only after the exact test passed, red on a product failure, and dashed blue for timeout/tool/not-run gaps. It never changes a component ceiling or fn-chip fill. The tooltip names the requirement, component, production entry, exact Cargo test, fixture and oracle paths, and states that the evidence is finite. |
 | `examples` | a gray `e×N` token in the chip's annotation area (next to the `T=...` note); the tooltip already counts and the `test` check runs them |
 | hollow component (derived, like findings) | a component that declares nothing inside — no fns, no nested components — draws with a dashed border: a sketch outline, nothing to zoom into yet. Tooltip says so plainly. Derived from absence rather than declared; the natural state of every box in top-down authoring, expected to solidify as claims arrive |
 | derived document link | a hollow top-level component whose crate has its own `ply.yaml` draws that linked component's interior in place, while naming the document that supplied it. A declaration-only render shows those promises as unclaimed. A verified evidence view uses the actual grafted results from the same composed invocation: earned promises are green, violations are red, and unanswered checks remain unanswered. Expanded and folded drawings summarize the same evidence; clients never combine independent snapshots. A refused or ambiguous link remains unresolved and carries its named finding rather than borrowing evidence. |
@@ -2774,7 +2821,11 @@ One Diagnostic schema for all engines:
 }
 ```
 
-Three further top-level fields are **additive and command-specific** (2026-08-25, Phase
+Four further top-level fields are **additive and command-specific**. `acceptance` is an array of
+`{id, requirement, component, entry, test, inputs, expected, required, outcome, detail}` emitted by
+`verify`; it is separate from `root`, and is omitted when no acceptance claim was admitted. Its id
+is qualified by the source document before composition, so two child files may use the same local
+claim id without colliding. The other three fields date from 2026-08-25, Phase
 1b): `trust_surface`, an array of `{kind, subject, node_id, statuses, where?, detail}`
 emitted by `audit`; `open_items`, an array of `{kind, id?, node_id, where?, blocking,
 detail}` emitted by `worklist`; and `not_carried_forward`, an array of

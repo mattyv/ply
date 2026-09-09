@@ -21,6 +21,11 @@ pub struct Document {
     pub ply: u32,
     #[serde(default)]
     pub components: IndexMap<String, Component>,
+    /// Finite, named requirements exercised through exact repository
+    /// integration tests. These are application observations, not a
+    /// stronger rung of function-contract evidence.
+    #[serde(default)]
+    pub acceptance: IndexMap<String, AcceptanceClaim>,
     /// docs/plans/external-elements.md §3: named outside parties (systems,
     /// people) this codebase talks to but Ply never verifies. Top-level
     /// only — an external has no interior and cannot nest. Shares the
@@ -50,6 +55,26 @@ pub struct Document {
     /// same way it does for a type's own constructor.
     #[serde(default)]
     pub routes: IndexMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptanceClaim {
+    pub requirement: String,
+    pub component: String,
+    pub entry: String,
+    pub test: AcceptanceTest,
+    pub inputs: Vec<String>,
+    pub expected: Vec<String>,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptanceTest {
+    pub package: String,
+    pub target: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

@@ -1,0 +1,12 @@
+status: synthetic
+source_operation: representative venue snapshot response
+schema_version: fixture-v1
+created: 2026-09-09
+captured_at: null
+redactions: []
+transformations: []
+oracle_basis:
+  - price is a base-10 string with exactly four fixed-point scale digits
+  - quantity is an unsigned base-10 integer string
+  - every valid input record appears once in input order
+note: This fixture is synthetic. Its field names and rules belong only to this test protocol; it is not presented as a captured response from a real venue.
