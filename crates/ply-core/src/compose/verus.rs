@@ -1006,7 +1006,9 @@ fn contract_of(p: &Premise, property: &Property) -> Result<Contract, Untranslata
     let state_call = if two_state { "pre, post" } else { "post" };
     let mut declarations = String::new();
     declarations.push_str(&format!(
-        "/// The contract of `{}`, exactly as it was proved.\n\
+        "/// The contract of `{}` as this adapter was handed it. That it is the contract a\n\
+         /// proof was actually taken against is the caller's to establish -- nothing in this\n\
+         /// file checks it, and saying \"exactly as it was proved\" here claimed otherwise.\n\
          pub open spec fn {name}_post({state_decl}{decl_params}) -> bool {{\n    true\n",
         p.item
     ));

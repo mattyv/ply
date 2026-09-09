@@ -591,11 +591,21 @@ Rust-to-Verus translator.
       scan cannot see. Source that will not parse yields a blocker, never an
       empty inventory, because empty reads as "nothing can change this type".
 
-      Eleven tests, all written before the scanner, and the scanner broken
-      five ways afterwards to confirm each one bites. One runs against the
-      real `tests/fixtures/tokenbucket` rather than a snippet, since a
+      Eleven tests, all written before the scanner. One runs against the real
+      `tests/fixtures/tokenbucket` rather than a snippet, since a
       hand-written test source agrees with whatever the scanner happens to
       do.
+
+      **RETRACTED 2026-09-09, twice over.** This said the scanner was
+      "broken five ways afterwards to confirm each one bites". Those
+      breakages were run in the session and left nothing behind, so no
+      reader can check them -- a claim about a check nobody can run is the
+      same defect as a green test nothing executes, which this file objects
+      to two entries down. And the substance was wrong regardless: those
+      eleven tests missed fifteen of sixteen real ways to build or write the
+      value, so whatever they confirmed, it was not that the boundary was
+      closed. The seventeen-route table that replaced them is checked in and
+      runs on every build.
 
 - [ ] **M3 original entry: close the operation boundary.** **The sampled pool cannot serve
       as the certificate** -- confirmed against the source, not assumed:

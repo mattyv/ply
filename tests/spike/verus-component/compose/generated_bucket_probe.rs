@@ -25,21 +25,27 @@ pub open spec fn typed(s: S) -> bool {
 
 pub open spec fn inv(s: S) -> bool { s.available <= s.capacity }
 
-/// The contract of `TokenBucket::new`, exactly as it was proved.
+/// The contract of `TokenBucket::new` as this adapter was handed it. That it is the contract a
+/// proof was actually taken against is the caller's to establish -- nothing in this
+/// file checks it, and saying "exactly as it was proved" here claimed otherwise.
 pub open spec fn TokenBucket_new_post(post: S, cap: int) -> bool {
     true
     && (post.available == cap)
     && (post.capacity == cap)
 }
 
-/// The contract of `TokenBucket::refill`, exactly as it was proved.
+/// The contract of `TokenBucket::refill` as this adapter was handed it. That it is the contract a
+/// proof was actually taken against is the caller's to establish -- nothing in this
+/// file checks it, and saying "exactly as it was proved" here claimed otherwise.
 pub open spec fn TokenBucket_refill_post(pre: S, post: S, tokens: int) -> bool {
     true
     && (post.available == (if (if pre.available + tokens < 0 { 0 } else if pre.available + tokens > 4294967295 { 4294967295 } else { pre.available + tokens }) <= pre.capacity { (if pre.available + tokens < 0 { 0 } else if pre.available + tokens > 4294967295 { 4294967295 } else { pre.available + tokens }) } else { pre.capacity }))
     && (post.capacity == pre.capacity)
 }
 
-/// The contract of `TokenBucket::try_take`, exactly as it was proved.
+/// The contract of `TokenBucket::try_take` as this adapter was handed it. That it is the contract a
+/// proof was actually taken against is the caller's to establish -- nothing in this
+/// file checks it, and saying "exactly as it was proved" here claimed otherwise.
 pub open spec fn TokenBucket_try_take_post(pre: S, post: S, tokens: int, ok: bool) -> bool {
     true
     && (ok == (pre.available >= tokens))
