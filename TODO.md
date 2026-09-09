@@ -3,7 +3,8 @@
 ## Landed: receiver struct arguments and honest exclusion reasons — `f4a42fa` — 2026-09-09
 
 - [x] Rebuild a by-value user-defined struct argument for every preparatory receiver
-      operation instead of consuming the final checked call's input.
+      operation instead of consuming the final checked call's input, and evaluate the
+      repeat's precondition against that rebuilt argument.
 - [x] Preserve each operation's recorded exclusion reason in the partial-history
       disclosure, including private visibility and unsupported arguments.
 - [x] Report moved-value harness failures as ownership errors without suggesting an

@@ -5,16 +5,23 @@ pub struct Key {
 
 pub struct Sink {
     count: usize,
+    poisoned: bool,
 }
 
 impl Sink {
     pub fn new() -> Self {
-        Self { count: 0 }
+        Self {
+            count: 0,
+            poisoned: false,
+        }
     }
 
     pub fn ingest(&mut self, key: Key) -> usize {
-        let _ = key;
-        self.count += 1;
+        if key.account.is_empty() {
+            self.poisoned = true;
+            return self.count;
+        }
+        self.count += if self.poisoned { 2 } else { 1 };
         self.count
     }
 

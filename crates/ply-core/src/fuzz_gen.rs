@@ -1761,14 +1761,15 @@ fn receiver_preamble(
         } else {
             history_push_stmt(&call, &op.params, &op_prefix(i))
         };
-        let call_stmt = format!("{bind}{history}let _ = {call}({full_args});");
-        let arm_body = if i == 0 {
+        let call_stmt = format!("{history}let _ = {call}({full_args});");
+        let guarded_call = if i == 0 {
             match &cf.requires {
                 Some((expr, _)) => {
                     // The receiver binding exists by this point (it is built
-                    // at the top of this preamble), so a precondition that
-                    // reads the value gates these repeats too rather than
-                    // failing to compile (2026-09-08).
+                    // at the top of this preamble), and this arm's parameter
+                    // preamble runs before the guard. A precondition therefore
+                    // reads the repeat's own arguments, not the distinct values
+                    // reserved for the final checked call (2026-09-09).
                     let cond = crate::contract_rt::rewrite_self_to_receiver(expr)
                         .to_token_stream()
                         .to_string();
@@ -1779,6 +1780,7 @@ fn receiver_preamble(
         } else {
             call_stmt
         };
+        let arm_body = format!("{bind}{guarded_call}");
         body.push_str(&format!("                    {i} => {{ {arm_body} }}\n"));
     }
     body.push_str(
@@ -2723,11 +2725,10 @@ pub fn generate_fuzz_test_with_examples(
     // direct field/variant construction -- this is empty for every fn with
     // no such parameter (`params_preamble`'s own doc), so it changes
     // nothing for the vast majority of generated harnesses. For a receiver
-    // method, `cf.params` here is the *checked method's own* arguments,
-    // deliberately never enriched into a user type (`scan_impls_for_
-    // receiver`'s own comment on `target_params`), so this is always empty
-    // in that case too -- the receiver's own construction, including its
-    // constructor's arguments, is entirely `receiver_preamble_text`'s job.
+    // method, `cf.params` here is the checked method's own enriched argument
+    // plan, so this builds the values reserved for the final checked call.
+    // `receiver_preamble_text` separately builds the receiver and each
+    // preparatory operation's own arguments.
     let params_preamble_text = match &param_seed_plan {
         Some(plan) => params_preamble_for_param_seed(&cf.params, plan)?,
         None => params_preamble(&cf.params)?,
@@ -5389,6 +5390,47 @@ impl Sink {
         assert!(
             build < call,
             "the repeat must build its own `key` before moving it into the call:\n{arm}"
+        );
+    }
+
+    /// The repeat's precondition must inspect the repeat's own reconstructed
+    /// value, not the separately generated value reserved for the final call.
+    /// Keeping the reconstruction inside the guarded block makes the guard
+    /// resolve the outer binding and can admit an out-of-contract history step.
+    #[test]
+    fn a_checked_method_repeat_builds_its_struct_before_checking_requires() {
+        let cf = discover_receiver(
+            r#"
+pub struct Key { pub account: String }
+pub struct Sink { count: usize }
+impl Sink {
+    pub fn new() -> Self { Sink { count: 0 } }
+    #[ply::requires(!key.account.is_empty())]
+    #[ply::ensures(|result| *result <= old(self.len()) + 1)]
+    pub fn ingest(&mut self, key: Key) -> usize {
+        assert!(!key.account.is_empty());
+        self.count += 1;
+        self.count
+    }
+    pub fn len(&self) -> usize { self.count }
+}
+"#,
+            "m::Sink::ingest",
+        );
+        let body = generate_fuzz_test(&cf, 32, &derive_seed("ingest", "")).unwrap();
+        let arm = body
+            .split("0 => {")
+            .nth(1)
+            .unwrap_or_else(|| panic!("the checked method's repeat must have an arm:\n{body}"));
+        let build = arm
+            .find("let key = {")
+            .unwrap_or_else(|| panic!("the repeat must build its own `key` value:\n{arm}"));
+        let guard = arm
+            .find("if ! key . account . is_empty ()")
+            .unwrap_or_else(|| panic!("the repeat must enforce its own precondition:\n{arm}"));
+        assert!(
+            build < guard,
+            "the repeat must build its own `key` before its precondition reads that name:\n{arm}"
         );
     }
 

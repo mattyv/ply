@@ -10,5 +10,7 @@ components:
     fns:
       Sink::ingest:
         checks: [fuzz(64)]
+        requires:
+          - "!key.account.is_empty()"
         ensures:
           - "self.len() == old(self.len()) + 1"

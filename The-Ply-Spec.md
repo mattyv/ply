@@ -1053,9 +1053,10 @@ whole-value rule perfectly true and only a promise about the transition sees the
 (§5.3's `holds:` remains what is *always* true of the value; a method promise is what
 one operation *does*). Every preparatory repeat receives separately generated arguments:
 a user-defined struct passed by value is reconstructed for that repeat and again for the
-final checked call, so one call cannot consume the other's input. An owned `self` is still
-refused, as a second codegen shape rather than a gap in what can be said, and `bounded`
-still refuses any receiver.
+final checked call, so one call cannot consume the other's input. The repeat's `requires`
+clause reads that reconstructed repeat argument, not the final call's separate value. An
+owned `self` is still refused, as a second codegen shape rather than a gap in what can be
+said, and `bounded` still refuses any receiver.
 Full two-state/model-based specs (sequence histories, FIFO ordering) remain out of
 scope — `old()` is the single two-state primitive.
 
