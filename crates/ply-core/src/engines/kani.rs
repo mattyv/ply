@@ -67,6 +67,7 @@ pub enum KaniOutcome {
     ToolError { raw_output: String, reason: String },
 }
 
+#[derive(Clone)]
 pub struct KaniRunConfig {
     pub crate_dir: std::path::PathBuf,
     pub harness_path: String,
@@ -77,6 +78,18 @@ pub struct KaniRunConfig {
     /// unstable `stubbing` feature"), so the flag is passed exactly when a
     /// stub is present rather than always.
     pub enable_stubbing: bool,
+    /// A concurrent worker's private Cargo output root. `None` preserves
+    /// Cargo's ordinary target-directory resolution.
+    pub target_dir: Option<std::path::PathBuf>,
+    /// A concurrent worker's private manifest. The command still starts in
+    /// the original crate so Cargo discovers exactly the user's ancestor
+    /// configuration and rustup toolchain; only source resolution moves to
+    /// the shadow.
+    pub manifest_path: Option<std::path::PathBuf>,
+    /// Concurrent worker source roots paired with the originals they
+    /// shadow. Absolute diagnostics are mapped back before they leave the
+    /// engine adapter. The serial path leaves this empty.
+    pub source_roots: Vec<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 /// The `-Z` set every `cargo kani` invocation here carries. These are
@@ -117,11 +130,12 @@ pub fn unstable_flags(enable_stubbing: bool) -> Vec<&'static str> {
 /// fingerprint input, so getting it from the wrong place lets stale evidence
 /// survive a real change.
 pub fn version(crate_dir: &std::path::Path) -> Option<String> {
-    let out = Command::new("cargo")
-        .args(["kani", "--version"])
-        .current_dir(crate_dir)
-        .output()
-        .ok()?;
+    let mut command = Command::new("cargo");
+    command.args(["kani", "--version"]).current_dir(crate_dir);
+    let out = super::run_until_cancelled(&mut command).ok()?;
+    if out.cancelled {
+        return None;
+    }
     if !out.status.success() {
         return None;
     }
@@ -153,31 +167,69 @@ struct InvocationOutput {
 /// compilation inputs, so varying them between the proof and the
 /// promise-content probes beside it would rebuild the crate for each.
 fn invoke(cfg: &KaniRunConfig) -> Result<InvocationOutput> {
+    let mut cmd = command_for(cfg);
+    let output = super::run_until_cancelled(&mut cmd)
+        .with_context(|| format!("spawning `cargo kani` for `{}`", cfg.harness_path))?;
+    if output.cancelled {
+        anyhow::bail!("verification was interrupted while Kani was checking this claim");
+    }
+
+    let combined = super::strip_ansi(&format!(
+        "{}\n{}",
+        output.stdout_string(),
+        output.stderr_string()
+    ));
+    Ok(InvocationOutput {
+        combined: normalize_worker_output(cfg, &combined),
+        exit_code: output.status.code(),
+    })
+}
+
+/// Concurrent runs use names containing a process id and private temporary
+/// directories. Those are execution details, not evidence, and exposing
+/// them would make otherwise identical reports differ from run to run.
+/// Private source paths are mapped back to the original roots alongside
+/// Ply's stable generated-module spelling and redacted Cargo output root.
+fn normalize_worker_output(cfg: &KaniRunConfig, output: &str) -> String {
+    let mut normalized = output.to_string();
+    if let Some(target_dir) = &cfg.target_dir {
+        normalized = normalized.replace(
+            &target_dir.to_string_lossy().to_string(),
+            "<Ply worker output>",
+        );
+    }
+    for (private, original) in &cfg.source_roots {
+        normalized = normalized.replace(
+            &private.to_string_lossy().to_string(),
+            &original.to_string_lossy(),
+        );
+    }
+    if let Some((module, _)) = cfg.harness_path.split_once("::") {
+        normalized = normalized.replace(module, "ply_generated");
+    }
+    normalized
+}
+
+fn command_for(cfg: &KaniRunConfig) -> Command {
     let timeout_arg = format!("{}s", cfg.engine_timeout_secs);
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cfg.crate_dir).arg("kani");
-    cmd.args(unstable_flags(cfg.enable_stubbing));
-    let output = cmd
-        .args([
-            "--harness-timeout",
-            &timeout_arg,
-            "--exact",
-            "--harness",
-            &cfg.harness_path,
-            "--concrete-playback",
-            "print",
-        ])
-        .output()
-        .with_context(|| format!("spawning `cargo kani` in {}", cfg.crate_dir.display()))?;
-
-    Ok(InvocationOutput {
-        combined: super::strip_ansi(&format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )),
-        exit_code: output.status.code(),
-    })
+    cmd.args(unstable_flags(cfg.enable_stubbing)).args([
+        "--harness-timeout",
+        &timeout_arg,
+        "--exact",
+        "--harness",
+        &cfg.harness_path,
+        "--concrete-playback",
+        "print",
+    ]);
+    if let Some(target_dir) = &cfg.target_dir {
+        cmd.arg("--target-dir").arg(target_dir);
+    }
+    if let Some(manifest_path) = &cfg.manifest_path {
+        cmd.arg("--manifest-path").arg(manifest_path);
+    }
+    cmd
 }
 
 /// Runs one **probe**: a harness asked a yes/no question about an assertion,
@@ -528,6 +580,81 @@ pub fn run_playback(
 mod tests {
     use super::*;
     use crate::harness::{Param, RustType};
+    use std::path::PathBuf;
+
+    #[test]
+    fn an_isolated_worker_gets_its_own_target_without_touching_features_or_rustflags() {
+        let cfg = KaniRunConfig {
+            crate_dir: PathBuf::from("/work/crate"),
+            harness_path: "ply_worker_7::proof".into(),
+            engine_timeout_secs: 60,
+            enable_stubbing: false,
+            target_dir: Some(PathBuf::from("/tmp/worker-7/target")),
+            manifest_path: Some(PathBuf::from("/tmp/worker-7/workspace/Cargo.toml")),
+            source_roots: vec![(
+                PathBuf::from("/tmp/worker-7/workspace"),
+                PathBuf::from("/work"),
+            )],
+        };
+        let command = command_for(&cfg);
+        assert_eq!(
+            command.get_current_dir(),
+            Some(std::path::Path::new("/work/crate")),
+            "Cargo must start in the original crate so ancestor configuration and rustup selection do not change"
+        );
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--target-dir", "/tmp/worker-7/target"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["--manifest-path", "/tmp/worker-7/workspace/Cargo.toml"] })
+        );
+        assert!(!args.iter().any(|arg| arg == "--features"));
+        assert!(
+            command
+                .get_envs()
+                .all(|(key, _)| key != std::ffi::OsStr::new("RUSTFLAGS"))
+        );
+    }
+
+    #[test]
+    fn worker_output_never_leaks_run_specific_paths_or_names() {
+        let cfg = KaniRunConfig {
+            crate_dir: PathBuf::from("/work/crate"),
+            harness_path: "ply_generated_worker_991_7::ply_proof_reset".into(),
+            engine_timeout_secs: 60,
+            enable_stubbing: false,
+            target_dir: Some(PathBuf::from("/tmp/ply-bounded-worker-secret/target")),
+            manifest_path: Some(PathBuf::from(
+                "/tmp/ply-bounded-worker-secret/workspace/Cargo.toml",
+            )),
+            source_roots: vec![(
+                PathBuf::from("/tmp/ply-bounded-worker-secret/workspace"),
+                PathBuf::from("/work"),
+            )],
+        };
+        let raw = "error in /tmp/ply-bounded-worker-secret/target/debug\n\
+                   --> /tmp/ply-bounded-worker-secret/workspace/crate/src/ply_generated_worker_991_7.rs:4";
+        let normalized = normalize_worker_output(&cfg, raw);
+        assert!(!normalized.contains("991"), "{normalized}");
+        assert!(
+            !normalized.contains("ply-bounded-worker-secret"),
+            "{normalized}"
+        );
+        assert!(
+            normalized.contains("<Ply worker output>/debug"),
+            "{normalized}"
+        );
+        assert!(
+            normalized.contains("/work/crate/src/ply_generated.rs:4"),
+            "{normalized}"
+        );
+    }
 
     /// Exact, because these flags are recorded as part of what a stored
     /// result stood on (§5.2a). Changing them changes what a `bounded`

@@ -125,11 +125,26 @@ pub fn crate_has_workspace_table(cargo_toml_text: &str) -> bool {
 /// above them does. Mutation testing needs that real shared root so both
 /// the target package and generated harness resolve in one package graph.
 pub fn cargo_workspace_root(crate_dir: &Path) -> Result<PathBuf> {
-    let output = std::process::Command::new("cargo")
+    cargo_metadata_path(crate_dir, "workspace_root")
+}
+
+/// Cargo's effective build-output directory for the workspace containing
+/// `crate_dir`, including any `build.target-dir` setting inherited from
+/// `.cargo/config.toml`.
+pub fn cargo_target_directory(crate_dir: &Path) -> Result<PathBuf> {
+    cargo_metadata_path(crate_dir, "target_directory")
+}
+
+fn cargo_metadata_path(crate_dir: &Path, key: &str) -> Result<PathBuf> {
+    let mut command = std::process::Command::new("cargo");
+    command
         .args(["metadata", "--format-version=1", "--no-deps"])
-        .current_dir(crate_dir)
-        .output()
+        .current_dir(crate_dir);
+    let output = crate::engines::run_until_cancelled(&mut command)
         .with_context(|| format!("spawning `cargo metadata` in {}", crate_dir.display()))?;
+    if output.cancelled {
+        bail!("verification was interrupted while resolving the Cargo workspace");
+    }
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
@@ -142,12 +157,223 @@ pub fn cargo_workspace_root(crate_dir: &Path) -> Result<PathBuf> {
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
         .context("reading `cargo metadata` output while locating the workspace root")?;
     let root = metadata
-        .get("workspace_root")
+        .get(key)
         .and_then(serde_json::Value::as_str)
-        .context("`cargo metadata` output had no string `workspace_root`")?;
-    PathBuf::from(root)
+        .with_context(|| format!("`cargo metadata` output had no string `{key}`"))?;
+    PathBuf::from(root).canonicalize().or_else(|_| {
+        let path = PathBuf::from(root);
+        if path.is_absolute() {
+            Ok(path)
+        } else {
+            Err(anyhow::anyhow!(
+                "Cargo returned a relative `{key}` path: {root}"
+            ))
+        }
+    })
+}
+
+/// Whether Cargo can use the original dependency resolution without editing
+/// `Cargo.lock`. A private worker is allowed to copy that resolution, never
+/// to invent a different one that the coordinator's fingerprint cannot name.
+pub fn cargo_lock_is_current(crate_dir: &Path) -> Result<bool> {
+    let mut command = std::process::Command::new("cargo");
+    command
+        .args(["metadata", "--format-version=1", "--locked"])
+        .current_dir(crate_dir);
+    let output = crate::engines::run_until_cancelled(&mut command).with_context(|| {
+        format!(
+            "spawning locked `cargo metadata` in {}",
+            crate_dir.display()
+        )
+    })?;
+    if output.cancelled {
+        bail!("verification was interrupted while validating Cargo.lock");
+    }
+    Ok(output.status.success())
+}
+
+/// Cargo's resolved local inputs that Ply's source walk must cover before a
+/// result can be reused or a source-shadow worker can compile it elsewhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CargoLocalClosure {
+    pub package_dirs: Vec<PathBuf>,
+    pub library_sources: Vec<PathBuf>,
+}
+
+/// Canonical package directories and library entry points for the root
+/// package and every local dependency Cargo actually resolves from it. This
+/// is the completeness oracle for Ply's deliberately small manifest text
+/// walk: an unrecognised TOML spelling or custom library path must keep
+/// source-shadow work serial and uncacheable rather than silently omit code.
+pub fn cargo_local_dependency_closure(crate_dir: &Path) -> Result<CargoLocalClosure> {
+    cargo_local_dependency_closure_with(crate_dir, true)
+}
+
+/// Resolve the same local package closure while allowing Cargo to create or
+/// refresh the workspace lockfile. A first serial verification uses this
+/// when no current lock exists; workers are still forbidden until a later
+/// locked probe confirms the resolution.
+pub fn refresh_cargo_local_dependency_closure(crate_dir: &Path) -> Result<CargoLocalClosure> {
+    cargo_local_dependency_closure_with(crate_dir, false)
+}
+
+fn cargo_local_dependency_closure_with(
+    crate_dir: &Path,
+    require_current_lock: bool,
+) -> Result<CargoLocalClosure> {
+    let mut command = std::process::Command::new("cargo");
+    command.args(["metadata", "--format-version=1"]);
+    if require_current_lock {
+        command.arg("--locked");
+    }
+    command.current_dir(crate_dir);
+    let metadata_mode = if require_current_lock {
+        "locked `cargo metadata`"
+    } else {
+        "`cargo metadata`"
+    };
+    let output = crate::engines::run_until_cancelled(&mut command)
+        .with_context(|| format!("spawning {metadata_mode} in {}", crate_dir.display()))?;
+    if output.cancelled {
+        bail!("verification was interrupted while resolving local Cargo dependencies");
+    }
+    if !output.status.success() {
+        bail!(
+            "{metadata_mode} could not resolve local dependencies in {}: {}",
+            crate_dir.display(),
+            output.stderr_string().trim()
+        );
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("reading `cargo metadata` output while resolving local dependencies")?;
+    let root_dir = crate_dir
         .canonicalize()
-        .with_context(|| format!("resolving Cargo workspace root {root}"))
+        .with_context(|| format!("resolving package directory {}", crate_dir.display()))?;
+    let packages = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .context("`cargo metadata` output had no packages array")?;
+    let mut local_packages = std::collections::BTreeMap::new();
+    let mut root_id = None;
+    for package in packages {
+        let Some(id) = package.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(manifest) = package
+            .get("manifest_path")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let manifest = PathBuf::from(manifest);
+        let Some(dir) = manifest.parent() else {
+            continue;
+        };
+        let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        if canonical == root_dir {
+            root_id = Some(id.to_string());
+        }
+        if package.get("source").is_none_or(serde_json::Value::is_null) {
+            let library_sources = package
+                .get("targets")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|target| {
+                    target
+                        .get("kind")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|kinds| {
+                            kinds
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .any(|kind| {
+                                    matches!(
+                                        kind,
+                                        "lib"
+                                            | "rlib"
+                                            | "dylib"
+                                            | "cdylib"
+                                            | "staticlib"
+                                            | "proc-macro"
+                                    )
+                                })
+                        })
+                })
+                .filter_map(|target| target.get("src_path").and_then(serde_json::Value::as_str))
+                .map(PathBuf::from)
+                .map(|path| path.canonicalize().unwrap_or(path))
+                .collect::<Vec<_>>();
+            local_packages.insert(id.to_string(), (canonical, library_sources));
+        }
+    }
+    let root_id = match root_id {
+        Some(root_id) => root_id,
+        None => {
+            let workspace_root = metadata
+                .get("workspace_root")
+                .and_then(serde_json::Value::as_str)
+                .map(PathBuf::from)
+                .context("`cargo metadata` output had no workspace root")?;
+            let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
+            if workspace_root == root_dir {
+                // A root document may describe a virtual Cargo workspace and
+                // delegate every claim to linked member documents. There is
+                // no root package closure to compare in that case; each
+                // linked member is resolved separately below this call.
+                return Ok(CargoLocalClosure {
+                    package_dirs: vec![],
+                    library_sources: vec![],
+                });
+            }
+            anyhow::bail!("`cargo metadata` did not name the package being verified");
+        }
+    };
+    let nodes = metadata
+        .pointer("/resolve/nodes")
+        .and_then(serde_json::Value::as_array)
+        .context("`cargo metadata` output had no resolved dependency nodes")?;
+    let dependencies: std::collections::BTreeMap<String, Vec<String>> = nodes
+        .iter()
+        .filter_map(|node| {
+            let id = node.get("id")?.as_str()?.to_string();
+            let deps = node
+                .get("dependencies")
+                .and_then(serde_json::Value::as_array)
+                .map(|deps| {
+                    deps.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some((id, deps))
+        })
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut queue = std::collections::VecDeque::from([root_id]);
+    let mut package_dirs = Vec::new();
+    let mut library_sources = Vec::new();
+    while let Some(id) = queue.pop_front() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if let Some((dir, sources)) = local_packages.get(&id) {
+            package_dirs.push(dir.clone());
+            library_sources.extend(sources.iter().cloned());
+        }
+        if let Some(deps) = dependencies.get(&id) {
+            queue.extend(deps.iter().cloned());
+        }
+    }
+    package_dirs.sort();
+    package_dirs.dedup();
+    library_sources.sort();
+    library_sources.dedup();
+    Ok(CargoLocalClosure {
+        package_dirs,
+        library_sources,
+    })
 }
 
 /// Where the generated harness participates while verification runs.
@@ -692,6 +918,69 @@ path = "src/lib.rs"
             original,
             "the virtual workspace manifest must be restored byte-for-byte"
         );
+    }
+
+    #[test]
+    fn locked_metadata_distinguishes_missing_current_and_stale_resolutions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\n[package]\nname='root'\nversion='0.0.0'\nedition='2024'\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub fn root() {}\n").unwrap();
+        assert!(!cargo_lock_is_current(dir.path()).unwrap());
+
+        let generated = std::process::Command::new("cargo")
+            .args(["generate-lockfile", "--offline"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(generated.success());
+        assert!(cargo_lock_is_current(dir.path()).unwrap());
+
+        std::fs::create_dir_all(dir.path().join("helper/src")).unwrap();
+        std::fs::write(
+            dir.path().join("helper/Cargo.toml"),
+            "[package]\nname='helper'\nversion='0.0.0'\nedition='2024'\n[workspace]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("helper/src/lib.rs"), "pub fn helper() {}\n").unwrap();
+        let manifest = std::fs::read_to_string(dir.path().join("Cargo.toml")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            format!("{manifest}\n[dependencies]\nhelper={{path='helper'}}\n"),
+        )
+        .unwrap();
+        assert!(!cargo_lock_is_current(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn a_virtual_workspace_root_has_an_empty_local_package_closure() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("member/src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers=['member']\nresolver='3'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("member/Cargo.toml"),
+            "[package]\nname='member'\nversion='0.0.0'\nedition='2024'\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("member/src/lib.rs"), "pub fn member() {}\n").unwrap();
+        let generated = std::process::Command::new("cargo")
+            .args(["generate-lockfile", "--offline"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(generated.success());
+
+        let closure = cargo_local_dependency_closure(dir.path()).unwrap();
+        assert!(closure.package_dirs.is_empty());
+        assert!(closure.library_sources.is_empty());
     }
 
     #[test]

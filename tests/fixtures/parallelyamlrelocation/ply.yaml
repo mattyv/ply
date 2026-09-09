@@ -1,0 +1,12 @@
+ply: 1
+
+components:
+  proofs:
+    anchor: ply_fixture_parallelyamlrelocation
+    fns:
+      ordinary:
+        checks: [bounded(2)]
+        ensures: ["|result| *result == x"]
+      yaml_sensitive:
+        checks: [bounded(2)]
+        ensures: ["|result| env!(\"CARGO_MANIFEST_DIR\").as_bytes()[5] != b'.' || !*result"]

@@ -3,6 +3,8 @@ pub mod kani;
 pub mod mutants;
 
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,6 +34,41 @@ use anyhow::{Context, Result};
 /// budget is meaningfully overshot by it.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
+static CANCELLATION_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static CANCELLATION_MANAGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn begin_cancellation_scope() {
+    reset_cancellation();
+    CANCELLATION_MANAGED.store(true, Ordering::SeqCst);
+}
+
+pub fn end_cancellation_scope() {
+    CANCELLATION_MANAGED.store(false, Ordering::SeqCst);
+    reset_cancellation();
+}
+
+pub fn request_cancellation() {
+    CANCELLATION_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+pub fn reset_cancellation() {
+    CANCELLATION_REQUESTED.store(false, Ordering::SeqCst);
+}
+
+pub fn cancellation_requested() -> bool {
+    CANCELLATION_REQUESTED.load(Ordering::SeqCst)
+}
+
+pub fn cancellation_flag() -> &'static std::sync::atomic::AtomicBool {
+    &CANCELLATION_REQUESTED
+}
+
+fn cancellation_managed() -> bool {
+    CANCELLATION_MANAGED.load(Ordering::SeqCst)
+}
+
 /// One finished (or killed) subprocess, captured without ever depending on
 /// an external `timeout` utility -- see [`run_with_timeout`].
 #[derive(Debug)]
@@ -45,6 +82,9 @@ pub struct TimedOutput {
     /// produced by anything here, so a caller must read this flag, not
     /// `status`, to learn whether the run timed out.
     pub timed_out: bool,
+    /// The user interrupted the run. Kept separate from timeout because one
+    /// is a run-level cancellation and the other is an engine outcome.
+    pub cancelled: bool,
 }
 
 impl TimedOutput {
@@ -122,11 +162,10 @@ const SWEEP_GAP: Duration = Duration::from_millis(20);
 /// [`KILL_SWEEPS`] times narrows that gap -- a child that appears just
 /// after one snapshot is caught by the next -- but does not close it: a
 /// process forking children fast enough, right up to and past each sweep,
-/// could still leave one behind. That is judged acceptable here because
-/// this only ever runs on the rare timeout path, against build and test
-/// tooling that is not expected to be adversarial about it, in exchange
-/// for not touching process groups or installing a process-wide signal
-/// handler -- see [`run_with_timeout`]'s doc comment for that trade.
+/// could still leave one behind. The private process group below closes that
+/// race for ordinary descendants. This walk remains useful for a tool that
+/// deliberately moved a child into another group while its ancestry is
+/// still visible -- see [`run_with_timeout`]'s doc comment.
 fn kill_descendants(root_pid: u32) {
     for sweep in 0..KILL_SWEEPS {
         let pairs = parent_pid_pairs();
@@ -151,6 +190,25 @@ fn kill_descendants(root_pid: u32) {
         }
     }
 }
+
+/// Kills the process group created for one controlled command. Unlike a
+/// parent/child walk, the group remains addressable after its leader exits,
+/// so a crashing engine cannot orphan a compiler or solver before Ply sees
+/// it. The descendant walk remains as a fallback for children that moved
+/// themselves out of the group.
+#[cfg(unix)]
+fn kill_process_group(root_pid: u32) {
+    // SAFETY: a negative pid asks `kill` to signal the process group whose
+    // id is `root_pid`. `run_controlled` puts each child in exactly that
+    // private group before spawning it, so this can never target Ply's own
+    // foreground group.
+    unsafe {
+        libc::kill(-(root_pid as libc::pid_t), libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_: u32) {}
 
 /// `(pid, ppid)` for every process this user can currently see, read via
 /// `ps` rather than `/proc` so the same code runs on macOS and Linux. A
@@ -251,33 +309,28 @@ mod descendants_of_tests {
 /// child is reaped, `timed_out` is set, and the two files are read back
 /// into memory.
 ///
-/// Every command this is used for is `cargo ...`, which spawns the real
-/// prover or test binary as a child of its own -- so killing only `cmd`
-/// itself used to leave that real, possibly hung, process running forever
-/// once cargo died. Two designs fix that:
-///
-/// - Put `cmd` in its own process group and `killpg` it on expiry. That
-///   also moves it out of Ply's own foreground process group, which is the
-///   only reason Ctrl+C reaches it today (the terminal signals the whole
-///   foreground group; nothing in this code forwards anything). Recovering
-///   Ctrl+C would need a process-wide `SIGINT`/`SIGTERM` handler that
-///   forwards to the child's group -- global, signal-handler-safety
-///   constrained state in a library crate, for every consumer of this
-///   crate, to recover behaviour this same change would take away.
-/// - Leave `cmd` exactly where it is -- sharing Ply's process group, so
-///   Ctrl+C keeps working precisely as it does today, untouched by this
-///   function -- and on expiry, separately walk the process tree rooted at
-///   `cmd`'s pid and kill every descendant before killing `cmd` itself.
-///
-/// This takes the second option: no signal handler, no process-group
-/// change, no global state, and the existing Ctrl+C behaviour is not
-/// touched at all rather than broken and then repaired. Its cost is paid
-/// only on the timeout path and is a matter of degree, not kind: walking a
-/// live process tree is inherently racy (a process forked in the gap
-/// between listing it and killing it can slip through), whereas the
-/// process-group design would have made that same moment exact. See
-/// [`kill_descendants`] for how that residual gap is narrowed.
+/// Every controlled command gets its own process group. The CLI's
+/// SIGINT/SIGTERM handler turns terminal interruption into the shared
+/// cancellation flag; this loop then kills the complete group. Group
+/// ownership is also used after an unsuccessful exit, because an engine can
+/// crash after spawning a compiler or solver and leave that child alive even
+/// though the direct process has already been reaped. Successful tools are
+/// allowed to leave an intentional daemon behind. The explicit process-tree
+/// walk remains a fallback for a tool that deliberately leaves its group.
 pub fn run_with_timeout(cmd: &mut Command, budget: Duration) -> Result<TimedOutput> {
+    run_controlled(cmd, Some(budget))
+}
+
+/// Runs until the command finishes or the current verification run is
+/// interrupted. Used by engines that enforce their own semantic timeout.
+pub fn run_until_cancelled(cmd: &mut Command) -> Result<TimedOutput> {
+    run_controlled(cmd, None)
+}
+
+fn run_controlled(cmd: &mut Command, budget: Option<Duration>) -> Result<TimedOutput> {
+    if cancellation_requested() {
+        anyhow::bail!("verification was interrupted before starting another subprocess");
+    }
     let program = cmd.get_program().to_string_lossy().into_owned();
 
     let stdout_path = scratch_path("stdout");
@@ -290,6 +343,11 @@ pub fn run_with_timeout(cmd: &mut Command, budget: Duration) -> Result<TimedOutp
     let stderr_file = std::fs::File::create(&stderr_path)
         .context("creating a scratch file to capture the child process's stderr")?;
 
+    let owns_process_group = cancellation_managed();
+    #[cfg(unix)]
+    if owns_process_group {
+        cmd.process_group(0);
+    }
     let mut child = cmd
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
@@ -300,27 +358,43 @@ pub fn run_with_timeout(cmd: &mut Command, budget: Duration) -> Result<TimedOutp
 
     let start = Instant::now();
     let mut timed_out = false;
+    let mut cancelled = false;
     let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => {
+                if owns_process_group && !status.success() {
+                    kill_process_group(child.id());
+                }
+                break status;
+            }
             Ok(None) => {}
             // Kill and reap before propagating: returning through `?` here
             // would leave the child running with nothing ever waiting on it
             // -- an orphan that outlives the budget it was spawned under.
             Err(error) => {
+                kill_descendants(child.id());
+                if owns_process_group {
+                    kill_process_group(child.id());
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(error)
                     .with_context(|| format!("checking whether `{program}` has finished"));
             }
         }
-        if start.elapsed() >= budget {
-            timed_out = true;
+        let interrupted = cancellation_requested();
+        let expired = budget.is_some_and(|budget| start.elapsed() >= budget);
+        if interrupted || expired {
+            cancelled = interrupted;
+            timed_out = expired && !interrupted;
             // Descendants before the direct child: killing `child` first
             // would let the kernel reparent any still-live descendant to
             // init before `kill_descendants` gets to look for it, which
             // erases exactly the parent-child chain it walks to find one.
             kill_descendants(child.id());
+            if owns_process_group {
+                kill_process_group(child.id());
+            }
             let _ = child.kill();
             break reap(&mut child)?;
         }
@@ -341,6 +415,7 @@ pub fn run_with_timeout(cmd: &mut Command, budget: Duration) -> Result<TimedOutp
         stderr,
         status,
         timed_out,
+        cancelled,
     })
 }
 
@@ -453,21 +528,43 @@ mod strip_ansi_tests {
 
 #[cfg(test)]
 mod run_with_timeout_tests {
-    use super::run_with_timeout;
+    use super::{
+        begin_cancellation_scope, end_cancellation_scope, request_cancellation,
+        run_until_cancelled, run_with_timeout,
+    };
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    /// Serializes every test in this module against state that is shared
-    /// process-wide rather than per-test: the temp-file namespace
-    /// `scratch_path` writes into (every test transiently populates it,
-    /// and one test below counts entries in it) and the `PATH` environment
-    /// variable (mutated by another test below). `cargo test` runs these on
-    /// separate threads by default, so without this lock they can observe
-    /// each other's scratch files or PATH -- exactly the kind of cross-talk
-    /// that would make either test pass or fail for the wrong reason.
+    const CANCELLATION_CHILD_ENV: &str = "PLY_TEST_CANCELLATION_CHILD";
+    const CANCELLATION_TEST_NAME: &str = "engines::run_with_timeout_tests::cancellation_kills_an_active_process_tree_and_is_reported_separately";
+    const EMPTY_PATH_CHILD_ENV: &str = "PLY_TEST_EMPTY_PATH_CHILD";
+    const EMPTY_PATH_TEST_NAME: &str = "engines::run_with_timeout_tests::enforces_the_budget_with_no_timeout_binary_reachable_on_path";
+    const SCRATCH_COUNT_CHILD_ENV: &str = "PLY_TEST_SCRATCH_COUNT_CHILD";
+    const SCRATCH_COUNT_TEST_NAME: &str =
+        "engines::run_with_timeout_tests::no_scratch_file_survives_a_normal_run_or_a_timed_out_one";
+
+    /// Serializes tests in this module against the process-wide temp-file
+    /// namespace `scratch_path` writes into. The tests that mutate broader
+    /// process state (cancellation and PATH) additionally run in dedicated
+    /// child test processes so tests in other modules cannot observe it.
     fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    struct ManagedCancellation;
+
+    impl ManagedCancellation {
+        fn begin() -> Self {
+            begin_cancellation_scope();
+            Self
+        }
+    }
+
+    impl Drop for ManagedCancellation {
+        fn drop(&mut self) {
+            end_cancellation_scope();
+        }
     }
 
     /// A command that finishes well inside its budget must be run for
@@ -517,6 +614,66 @@ mod run_with_timeout_tests {
             start.elapsed() < Duration::from_secs(10),
             "the helper must kill the child rather than waiting out its full sleep, took {:?}",
             start.elapsed()
+        );
+    }
+
+    #[test]
+    fn cancellation_kills_an_active_process_tree_and_is_reported_separately() {
+        // Cancellation is deliberately process-wide in production so every
+        // active worker stops together. Exercise that global state in an
+        // isolated copy of this test binary: otherwise libtest may run an
+        // unrelated subprocess test concurrently and make it observe this
+        // test's synthetic interrupt.
+        if std::env::var_os(CANCELLATION_CHILD_ENV).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", CANCELLATION_TEST_NAME, "--nocapture"])
+                .env(CANCELLATION_CHILD_ENV, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated cancellation test failed");
+            return;
+        }
+
+        let _guard = test_lock();
+        let _scope = ManagedCancellation::begin();
+        let trigger = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(150));
+            request_cancellation();
+        });
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "/bin/sleep 300 & wait"]);
+        let out = run_until_cancelled(&mut cmd).unwrap();
+        trigger.join().unwrap();
+        assert!(out.cancelled);
+        assert!(!out.timed_out);
+    }
+
+    #[test]
+    fn a_crashed_engine_cannot_leave_its_child_running() {
+        let _guard = test_lock();
+        let _scope = ManagedCancellation::begin();
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("child.pid");
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            &format!("/bin/sleep 300 & echo $! > {}; exit 9", pid_path.display()),
+        ]);
+        let out = run_until_cancelled(&mut cmd).unwrap();
+        assert_eq!(out.status.code(), Some(9));
+        let pid: libc::pid_t = std::fs::read_to_string(pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "engine child {pid} survived its parent's crash"
         );
     }
 
@@ -602,6 +759,19 @@ mod run_with_timeout_tests {
     /// trusting the `Drop` guard blindly.
     #[test]
     fn no_scratch_file_survives_a_normal_run_or_a_timed_out_one() {
+        // Every engine capture in this test binary shares the process ID in
+        // its filename. Count in a dedicated process so commands run by
+        // tests in other modules cannot transiently appear as leftovers.
+        if std::env::var_os(SCRATCH_COUNT_CHILD_ENV).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", SCRATCH_COUNT_TEST_NAME, "--nocapture"])
+                .env(SCRATCH_COUNT_CHILD_ENV, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated scratch cleanup test failed");
+            return;
+        }
+
         let _guard = test_lock();
         let prefix = format!("ply-engine-{}-", std::process::id());
         let leftover_count = || -> usize {
@@ -645,6 +815,19 @@ mod run_with_timeout_tests {
     /// keeps working with an absolute path to the real program.
     #[test]
     fn enforces_the_budget_with_no_timeout_binary_reachable_on_path() {
+        // PATH is process-wide. Run the mutation in a dedicated test process
+        // so concurrently executing tests that invoke Cargo cannot observe an
+        // empty PATH and fail for an unrelated reason.
+        if std::env::var_os(EMPTY_PATH_CHILD_ENV).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", EMPTY_PATH_TEST_NAME, "--nocapture"])
+                .env(EMPTY_PATH_CHILD_ENV, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated empty-PATH test failed");
+            return;
+        }
+
         let _guard = test_lock();
         let old_path = std::env::var_os("PATH");
         unsafe {

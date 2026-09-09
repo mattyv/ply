@@ -1,0 +1,16 @@
+ply: 1
+
+components:
+  receiverstructparam:
+    anchor: ply_fixture_receiverstructparam
+    state:
+      of: Sink
+      holds:
+        - "state.len() == state.len()"
+    fns:
+      Sink::ingest:
+        checks: [fuzz(64)]
+        requires:
+          - "!key.account.is_empty()"
+        ensures:
+          - "self.len() == old(self.len()) + 1"

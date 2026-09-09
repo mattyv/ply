@@ -367,11 +367,14 @@ fn classify_run_for_owners(
 /// fingerprint input, so getting it from the wrong place lets stale evidence
 /// survive a real change.
 pub fn version(crate_dir: &std::path::Path) -> Option<String> {
-    let out = Command::new("cargo")
+    let mut command = Command::new("cargo");
+    command
         .args(["mutants", "--version"])
-        .current_dir(crate_dir)
-        .output()
-        .ok()?;
+        .current_dir(crate_dir);
+    let out = super::run_until_cancelled(&mut command).ok()?;
+    if out.cancelled {
+        return None;
+    }
     if !out.status.success() {
         return None;
     }
@@ -382,10 +385,12 @@ pub fn version(crate_dir: &std::path::Path) -> Option<String> {
 /// Lets a caller pre-flight-check whether `cargo mutants` is on `PATH` at
 /// all, so a missing engine can be reported as `engine-missing`/`W0110`
 /// (D9) rather than a confusing subprocess-spawn error.
-pub fn is_available() -> bool {
-    Command::new("cargo")
+pub fn is_available(crate_dir: &std::path::Path) -> bool {
+    let mut command = Command::new("cargo");
+    command
         .args(["mutants", "--version"])
-        .output()
+        .current_dir(crate_dir);
+    super::run_until_cancelled(&mut command)
         .map(|o| o.status.success())
         .unwrap_or(false)
 }

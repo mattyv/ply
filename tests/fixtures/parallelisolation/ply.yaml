@@ -1,0 +1,12 @@
+ply: 1
+
+components:
+  proofs:
+    anchor: ply_fixture_parallelisolation
+    fns:
+      a_good:
+        checks: [bounded(2)]
+        ensures: ["|result| *result == x"]
+      z_bad:
+        checks: [bounded(2)]
+        ensures: ["|result| *result == missing_name"]

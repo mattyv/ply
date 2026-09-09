@@ -1,0 +1,8 @@
+ply: 1
+
+components:
+  proofs:
+    anchor: ply_fixture_parallelrelocation
+    fns:
+      ordinary: { checks: [bounded(2)] }
+      path_sensitive: { checks: [bounded(2)] }

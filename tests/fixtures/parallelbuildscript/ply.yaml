@@ -1,0 +1,12 @@
+ply: 1
+
+components:
+  proofs:
+    anchor: ply_fixture_parallelbuildscript
+    fns:
+      first:
+        checks: [bounded(2)]
+        ensures: ["|result| *result == x"]
+      second:
+        checks: [bounded(2)]
+        ensures: ["|result| *result == x"]

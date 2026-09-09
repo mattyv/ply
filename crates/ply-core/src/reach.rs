@@ -132,6 +132,19 @@ pub struct FirstParty {
     /// is not, so an unused struct changing re-earns the crate's claims.
     /// That is this module's stated trade -- coarser, never wrong.
     type_decls: Vec<(String, String)>,
+    /// Canonical package roots in the first-party path-dependency closure.
+    /// Concurrent proof workers use these to preserve relative dependency
+    /// layout in a private source shadow.
+    package_dirs: Vec<PathBuf>,
+    /// Canonical Rust sources included in the fingerprint walk. Cargo's
+    /// resolved local library entry points are checked against this set
+    /// before evidence may be reused or a source shadow may run.
+    source_paths: Vec<PathBuf>,
+    /// Whether compiling this closure from a relocated manifest preserves
+    /// its meaning. Compile-time path/environment macros observe the source
+    /// and manifest location, while `#[path]` can name source outside the
+    /// copied roots; either shape keeps bounded verification serial.
+    source_relocation_is_sound: bool,
 }
 
 impl FirstParty {
@@ -146,6 +159,18 @@ impl FirstParty {
             .units
             .iter()
             .any(|(label, _)| label == BUILD_SCRIPT_REUSE_MARKER)
+    }
+
+    pub fn package_dirs(&self) -> &[PathBuf] {
+        &self.package_dirs
+    }
+
+    pub fn source_paths(&self) -> &[PathBuf] {
+        &self.source_paths
+    }
+
+    pub fn source_relocation_is_sound(&self) -> bool {
+        self.source_relocation_is_sound
     }
 }
 
@@ -376,6 +401,14 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
     let mut type_decls: Vec<(String, String)> = Vec::new();
     let mut gate: Option<String> = None;
     let files = first_party_file_set(crate_dir);
+    let mut source_paths: Vec<PathBuf> = files
+        .files
+        .iter()
+        .filter_map(|(_, path)| path.canonicalize().ok())
+        .collect();
+    source_paths.sort();
+    source_paths.dedup();
+    let mut source_relocation_is_sound = true;
     for (label, path) in files.files {
         let Ok(text) = std::fs::read_to_string(&path) else {
             gate.get_or_insert(format!("Ply could not read {label}"));
@@ -388,6 +421,9 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
             units.push((label, text));
             continue;
         };
+        if source_uses_relocation_sensitive_rust(&file) {
+            source_relocation_is_sound = false;
+        }
         let mut tokens = proc_macro2::TokenStream::new();
         for item in &file.items {
             if let syn::Item::Mod(m) = item
@@ -415,7 +451,76 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
         units,
         gate,
         type_decls,
+        package_dirs: files.package_dirs,
+        source_paths,
+        source_relocation_is_sound,
     }
+}
+
+/// Constructs whose compile-time value or source closure can change after a
+/// package is moved beneath a worker's private manifest. The token walk is
+/// recursive so it also sees built-ins nested in `macro_rules!` bodies; the
+/// identifier immediately before `!` catches both bare and namespaced forms.
+fn source_uses_relocation_sensitive_rust(file: &syn::File) -> bool {
+    struct PathAttribute(bool);
+    impl<'ast> Visit<'ast> for PathAttribute {
+        fn visit_attribute(&mut self, attribute: &'ast syn::Attribute) {
+            if attribute.path().is_ident("path") {
+                self.0 = true;
+            }
+            syn::visit::visit_attribute(self, attribute);
+        }
+    }
+
+    fn tokens_contain_sensitive_macro(tokens: proc_macro2::TokenStream) -> bool {
+        let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+        for (index, token) in tokens.iter().enumerate() {
+            if matches!(token, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == '#')
+                && let Some(proc_macro2::TokenTree::Group(attribute)) = tokens.get(index + 1)
+                && attribute.delimiter() == proc_macro2::Delimiter::Bracket
+                && attribute.stream().into_iter().any(|token| {
+                    matches!(token, proc_macro2::TokenTree::Ident(ident) if ident == "path")
+                })
+            {
+                return true;
+            }
+            if let proc_macro2::TokenTree::Group(group) = token
+                && tokens_contain_sensitive_macro(group.stream())
+            {
+                return true;
+            }
+            let proc_macro2::TokenTree::Ident(ident) = token else {
+                continue;
+            };
+            let ident = ident.to_string();
+            let sensitive = matches!(
+                ident.strip_prefix("r#").unwrap_or(&ident),
+                "env" | "option_env" | "file" | "include" | "include_str" | "include_bytes"
+            );
+            // The identifier need not sit beside `!`: built-in macros can
+            // be imported under an alias or forwarded as a token into
+            // macro_rules. Resolving those expansions is beyond this source
+            // walk, so an occurrence conservatively keeps the closure
+            // serial. Raw identifiers normalise to the same spelling.
+            if sensitive {
+                return true;
+            }
+        }
+        false
+    }
+
+    let mut path_attribute = PathAttribute(false);
+    path_attribute.visit_file(file);
+    path_attribute.0 || tokens_contain_sensitive_macro(file.to_token_stream())
+}
+
+/// Whether a complete generated Rust module can be compiled from a private
+/// manifest without changing the contract it expresses. This second gate is
+/// intentionally applied after YAML clauses and callee stubs have been
+/// merged: scanning source files alone misses relocation-sensitive Rust that
+/// exists only in generated proof code.
+pub fn generated_source_relocation_is_sound(source: &str) -> bool {
+    syn::parse_file(source).is_ok_and(|file| !source_uses_relocation_sensitive_rust(&file))
 }
 
 /// Every type declaration in one item, including inside modules, as
@@ -780,6 +885,7 @@ fn mentioned_paths(f: &syn::ItemFn) -> Mentions {
 struct FirstPartyFileSet {
     files: Vec<(String, PathBuf)>,
     build_scripts: Vec<String>,
+    package_dirs: Vec<PathBuf>,
 }
 
 fn first_party_file_set(crate_dir: &Path) -> FirstPartyFileSet {
@@ -819,9 +925,11 @@ fn first_party_file_set(crate_dir: &Path) -> FirstPartyFileSet {
     }
     out.sort();
     build_scripts.sort();
+    let package_dirs = seen_crates.into_iter().collect();
     FirstPartyFileSet {
         files: out,
         build_scripts,
+        package_dirs,
     }
 }
 
@@ -1032,6 +1140,24 @@ pub fn dependency_identity(crate_dir: &Path) -> String {
     }
 }
 
+/// Read the dependency identity for one named local package from a specific
+/// Cargo lockfile. Generated standalone harnesses have a lockfile separate
+/// from the crate under test; publication uses this to prove that the graph
+/// the harness actually ran matches the graph the verification record names.
+/// `None` means the lock could not be read or did not contain that local
+/// package, which callers must treat as unknown rather than as no dependency.
+pub fn dependency_identity_for_package_in_lock(lock_path: &Path, package: &str) -> Option<String> {
+    let text = std::fs::read_to_string(lock_path).ok()?;
+    let (has_local_root, pinned) = registry_packages_reachable_from_with_presence(&text, package);
+    has_local_root.then(|| {
+        if pinned.is_empty() {
+            NO_EXTERNAL_CODE.to_string()
+        } else {
+            pinned.join("\n")
+        }
+    })
+}
+
 const NO_EXTERNAL_CODE: &str = "(nothing outside this workspace)";
 
 fn lockfile(crate_dir: &Path) -> Option<String> {
@@ -1103,6 +1229,10 @@ fn declared_dependency_count(manifest: &str) -> usize {
 const CRATES_IO_REGISTRY: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
 fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
+    registry_packages_reachable_from_with_presence(lock, root).1
+}
+
+fn registry_packages_reachable_from_with_presence(lock: &str, root: &str) -> (bool, Vec<String>) {
     struct Pkg {
         name: String,
         version: String,
@@ -1122,41 +1252,63 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
     let mut packages: std::collections::BTreeMap<String, Pkg> = std::collections::BTreeMap::new();
     let mut by_name: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
+    let mut by_name_version: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     let mut name = String::new();
     let mut version = String::new();
     let mut source: Option<String> = None;
     let mut deps: Vec<String> = Vec::new();
     let mut in_deps_list = false;
     let mut started = false;
-    let flush = |name: &mut String,
-                 version: &mut String,
-                 source: &mut Option<String>,
-                 deps: &mut Vec<String>,
-                 packages: &mut std::collections::BTreeMap<String, Pkg>,
-                 by_name: &mut std::collections::BTreeMap<String, Vec<String>>| {
-        if !name.is_empty() {
-            // Keyed by name *and* version. A lockfile may legitimately hold
-            // two versions of one crate; keyed by name alone the second
-            // block overwrote the first, so the identity could name a
-            // version this crate never built with and would move when an
-            // unrelated crate bumped its own copy.
-            let n = std::mem::take(name);
-            let v = std::mem::take(version);
-            by_name
-                .entry(n.clone())
-                .or_default()
-                .push(format!("{n} {v}"));
-            packages.insert(
-                format!("{n} {v}"),
-                Pkg {
-                    name: n,
-                    version: v,
-                    source: source.take(),
-                    deps: std::mem::take(deps),
-                },
-            );
-        }
-    };
+    let flush =
+        |name: &mut String,
+         version: &mut String,
+         source: &mut Option<String>,
+         deps: &mut Vec<String>,
+         packages: &mut std::collections::BTreeMap<String, Pkg>,
+         by_name: &mut std::collections::BTreeMap<String, Vec<String>>,
+         by_name_version: &mut std::collections::BTreeMap<String, Vec<String>>| {
+            if !name.is_empty() {
+                // The package key follows Cargo's most-qualified dependency
+                // spelling: name, version and source. A graph may contain two
+                // versions of one crate, or even the same name/version from a
+                // registry and a Git fork. Dropping either discriminator can
+                // walk code the target never ran -- or no code at all.
+                let n = std::mem::take(name);
+                let v = std::mem::take(version);
+                let src = source.take();
+                let name_version = format!("{n} {v}");
+                let key = src.as_ref().map_or_else(
+                    || name_version.clone(),
+                    |s| {
+                        // Cargo's dependency edge omits a Git source's precise
+                        // `#revision`; the package's own source retains it.
+                        // Resolve with Cargo's shorter spelling, then fingerprint
+                        // the full source below so a moving branch invalidates.
+                        let edge_source = if s.starts_with("git+") {
+                            s.split_once('#').map_or(s.as_str(), |(base, _)| base)
+                        } else {
+                            s
+                        };
+                        format!("{name_version} ({edge_source})")
+                    },
+                );
+                by_name.entry(n.clone()).or_default().push(key.clone());
+                by_name_version
+                    .entry(name_version)
+                    .or_default()
+                    .push(key.clone());
+                packages.insert(
+                    key,
+                    Pkg {
+                        name: n,
+                        version: v,
+                        source: src,
+                        deps: std::mem::take(deps),
+                    },
+                );
+            }
+        };
     for line in lock.lines() {
         let t = line.trim();
         if t == "[[package]]" {
@@ -1167,6 +1319,7 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
                 &mut deps,
                 &mut packages,
                 &mut by_name,
+                &mut by_name_version,
             );
             started = true;
             in_deps_list = false;
@@ -1207,24 +1360,32 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
         &mut deps,
         &mut packages,
         &mut by_name,
+        &mut by_name_version,
     );
 
-    // A `dependencies` entry is either `"name"` or `"name version"`. The
-    // second form is already a key; the first is one only when the name is
-    // unambiguous. When it is not -- which a well-formed lockfile does not
-    // produce, but a hand-edited one might -- every candidate is walked, so
-    // the identity is coarser than necessary rather than silently wrong.
+    // Cargo uses the shortest unambiguous spelling: `name`, `name version`,
+    // or `name version (source)`. The last form matters when one graph uses
+    // both a registry release and a Git fork at the same name and version.
+    // A malformed ambiguous short spelling walks every candidate, making
+    // the identity conservatively coarse rather than silently incomplete.
     let resolve = |entry: &str| -> Vec<String> {
         if packages.contains_key(entry) {
             return vec![entry.to_string()];
         }
+        if let Some(keys) = by_name_version.get(entry) {
+            return keys.clone();
+        }
         by_name.get(entry).cloned().unwrap_or_default()
     };
 
+    let roots = resolve(root);
+    let has_local_root = roots
+        .iter()
+        .any(|key| packages.get(key).is_some_and(|pkg| pkg.source.is_none()));
     let mut out: BTreeSet<String> = BTreeSet::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut queue: VecDeque<String> = VecDeque::new();
-    queue.extend(resolve(root));
+    queue.extend(roots);
     while let Some(next) = queue.pop_front() {
         if !seen.insert(next.clone()) {
             continue;
@@ -1258,7 +1419,7 @@ fn registry_packages_reachable_from(lock: &str, root: &str) -> Vec<String> {
             queue.extend(resolve(d));
         }
     }
-    out.into_iter().collect()
+    (has_local_root, out.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -1341,6 +1502,32 @@ mod tests {
         .unwrap();
         std::fs::write(dependency.path().join("helper/build.rs"), "fn main() {}\n").unwrap();
         assert!(!scan_first_party(dependency.path()).result_reuse_is_sound());
+    }
+
+    #[test]
+    fn compile_time_paths_and_external_modules_disable_source_relocation() {
+        for source in [
+            "pub fn f() -> &'static str { env!(concat!(\"CARGO_\", \"MANIFEST_DIR\")) }\n",
+            "pub fn f() -> &'static str { std::include_str!(\"data.txt\") }\n",
+            "macro_rules! location { () => { file!() } }\npub fn f() -> &'static str { location!() }\n",
+            "use std::env as manifest_directory;\npub fn f() -> &'static str { manifest_directory!(\"CARGO_MANIFEST_DIR\") }\n",
+            "macro_rules! invoke { ($m:ident) => { $m!(\"CARGO_MANIFEST_DIR\") } }\npub fn f() -> &'static str { invoke!(env) }\n",
+            "#[path = \"../../shared.rs\"] mod shared;\npub fn f() {}\n",
+            "macro_rules! external { () => { #[path = \"../../shared.rs\"] mod shared; } }\npub fn f() {}\n",
+        ] {
+            let dir = crate_with(&[("src/lib.rs", source), ("src/data.txt", "data")]);
+            assert!(
+                !scan_first_party(dir.path()).source_relocation_is_sound(),
+                "relocated a source-sensitive closure: {source}"
+            );
+        }
+
+        let ordinary = crate_with(&[("src/lib.rs", "pub fn f(x: u32) -> u32 { x + 1 }\n")]);
+        assert!(scan_first_party(ordinary.path()).source_relocation_is_sound());
+
+        assert!(!generated_source_relocation_is_sound(
+            "mod proof { fn clause() -> &'static str { env!(\"CARGO_MANIFEST_DIR\") } }"
+        ));
     }
 
     #[test]
@@ -1827,6 +2014,47 @@ source = "git+https://example.invalid/dep?branch=main#{rev}"
         );
     }
 
+    #[test]
+    fn a_source_qualified_edge_reaches_the_exact_git_package() {
+        let identity = |rev: &str| {
+            let dir = crate_with(&[("src/lib.rs", "pub fn f() {}\n")]);
+            std::fs::write(
+                dir.path().join("Cargo.lock"),
+                format!(
+                    r#"version = 4
+
+[[package]]
+name = "c"
+version = "0.0.0"
+dependencies = [
+ "dep 0.1.0 (git+https://example.invalid/dep)",
+]
+
+[[package]]
+name = "dep"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "dep"
+version = "0.1.0"
+source = "git+https://example.invalid/dep#{rev}"
+"#,
+                ),
+            )
+            .unwrap();
+            dependency_identity(dir.path())
+        };
+
+        let first = identity("1111111111111111111111111111111111111111");
+        assert!(first.starts_with("dep 0.1.0 git+"), "{first}");
+        assert_ne!(
+            first,
+            identity("2222222222222222222222222222222222222222"),
+            "a source-qualified edge must retain the exact Git revision it selected"
+        );
+    }
+
     /// When a lockfile holds two versions of one crate, the identity names
     /// the one this crate actually compiled against.
     ///
@@ -1909,6 +2137,54 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         )
         .unwrap();
         assert_eq!(dependency_identity(dir.path()), "serde 1.0.9");
+    }
+
+    #[test]
+    fn a_standalone_harness_lock_names_the_graph_the_target_package_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("Cargo.lock");
+        std::fs::write(
+            &lock,
+            r#"version = 4
+
+[[package]]
+name = "app"
+version = "0.0.0"
+dependencies = [
+ "memchr 2.7.4",
+]
+
+[[package]]
+name = "app-ply-harness"
+version = "0.0.0"
+dependencies = [
+ "app",
+ "proptest",
+]
+
+[[package]]
+name = "memchr"
+version = "2.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "proptest"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            dependency_identity_for_package_in_lock(&lock, "app").as_deref(),
+            Some("memchr 2.7.4"),
+            "the target identity must exclude dependencies used only by Ply's harness"
+        );
+        assert_eq!(
+            dependency_identity_for_package_in_lock(&lock, "missing"),
+            None,
+            "an absent target is unknown, never an empty dependency graph"
+        );
     }
 
     #[test]

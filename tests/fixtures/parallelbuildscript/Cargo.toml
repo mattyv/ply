@@ -1,0 +1,9 @@
+[package]
+name = "ply-fixture-parallelbuildscript"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ply-attrs = { path = "../../../crates/ply-attrs" }
+
+[workspace]
