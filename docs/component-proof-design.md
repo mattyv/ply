@@ -1,7 +1,10 @@
 # Component-level proof: a short design
 
-**Status: design only. Nothing here is built. The recommendation is one
-measurement first, not an implementation.**
+**Status: superseded in part. Read the addendum at the bottom first — it
+retracts three claims in the sections below, including "`&mut self` methods
+cannot be claimed", which stopped being true when transition promises
+shipped. The original text is kept because how it was wrong is the useful
+part.**
 
 ## The gap, as measured rather than argued
 
@@ -145,3 +148,152 @@ mutated in place, which is a different proposition for a deductive verifier.
 Not to be built before that answer: the adapter, result semantics, reuse and
 fingerprinting, the drawing, and the boundary/coverage analysis. All of them
 are downstream of whether obligations 1 and 2 can be discharged at all.
+
+---
+
+# Addendum: composition, not implementation — 2026-09-09
+
+**Status: this section supersedes the stale claims above and sets the shape
+of the implementation. Measured on this machine, this session, with the
+numbers below reproducible from `tests/spike/verus-component/`.**
+
+## Retractions
+
+Three statements above are no longer true and are withdrawn.
+
+1. **"`&mut self` methods cannot be claimed" is false.** It was true when
+   this document was written; transition promises shipped and `old(...)`
+   reads the before-state (`ply-checkable-code` rule 9, rewritten). Every
+   sentence above resting on rule 9's old form — including "the transitions
+   are unclaimable" in the opening section — is withdrawn.
+2. **"What to do first: one measurement, before any adapter work" is
+   discharged.** The measurement was taken (`FINDINGS.md`) and the answer was
+   yes. That instruction no longer gates anything.
+3. **"Nothing here is built"** is withdrawn as of this addendum.
+
+## The theorem, stated exactly
+
+For an invariant `I` over state type `T`:
+
+> **Every state reachable from a covered constructor by finitely many
+> permitted, normally-returning operations satisfies `I`.**
+
+Every word in that sentence is load-bearing, and three of them bound the
+claim rather than extend it:
+
+- **permitted** — operations are invoked only where their preconditions
+  hold. This proves `I` holds *under that calling discipline*. It does not
+  prove any external caller obeys it. A caller who violates a precondition
+  is outside the theorem, and the report must say so rather than let a
+  reader infer the stronger claim.
+- **normally-returning** — a transition that panics or unwinds partway is
+  excluded. The state it leaves behind is not covered.
+- **covered** — constructors Ply enumerated and accounted for. An
+  unaccounted construction path voids the theorem, it does not weaken it.
+
+Also excluded from this first theorem, each because it needs its own model
+and its own obligations: concurrency, re-entrancy, and any observation of
+the state from another thread.
+
+## The central decision: prove the composition, not the bodies
+
+The existing spike (`proof/bucket.rs`) proves the token bucket's
+*implementation* — the real method bodies, against their contracts. That is
+not what this work needs. Function proofs are taken as sound premises; the
+open question is whether their contracts **entail** the component property.
+
+That is a pure logical entailment over abstract state and contract
+predicates. It needs no function bodies at all. Measured today, both halves
+on the same machine and the same Verus (0.2026.08.23.fbbbbcf):
+
+| what is proved | obligations | wall clock | trust surface |
+|---|---|---|---|
+| the bucket's bodies (`proof/bucket.rs`) | 6 verified, 0 errors | 12.1s | vstd wrappers, `no_unwind` assertions |
+| the bucket's **contracts entail `available <= capacity`** | 4 verified, 0 errors | **1.8s** | **none** |
+
+The second row is the shape to build. It is seven times faster, and it
+avoids the entire trusted-wrapper surface `FINDINGS.md` recorded as a real
+cost: no `vstd::Vec` calls to mark `no_unwind`, because no bodies are
+translated. It also sidesteps the "invariant is checked after every
+field-mutating call" strictness, which rejects a private helper that breaks
+and restores the invariant — that restriction is a property of proving
+bodies, and it does not apply here.
+
+**Non-vacuity, checked rather than assumed.** Two deliberate breakages, each
+run:
+
+- Weakening `refill`'s contract to `post.available >= pre.available` (it may
+  now exceed capacity): **3 verified, 1 error**, "postcondition not
+  satisfied".
+- Omitting `try_take`'s capacity frame fact: **3 verified, 1 error**. The
+  solver is free to vary capacity, exactly as it should be — an omitted
+  post-state fact is *unconstrained*, never implicitly unchanged.
+
+## What a premise is
+
+A function proof is not usable as "this function is proved". Composition
+needs the contract it was proved against, the domain it was proved over, and
+enough identity to tell whether it still describes today's source. A premise
+therefore carries:
+
+- **Identity** — canonical item path and contract identity.
+- **Fingerprints** — source and contract, plus the active compilation
+  configuration. A premise whose source moved is stale, not weaker.
+- **Domain** — what the proof covered, and any bound. A premise proved over
+  a restricted domain cannot license an unrestricted conclusion.
+- **The contract itself** — preconditions, relational postconditions, the
+  observers those mention and what they mean, and the frame facts.
+- **Assumptions** — anything the proof rested on and did not discharge.
+- **Provenance** — which engine produced it, or that it is declared trusted.
+
+Frame facts get their own line because they are the quiet failure. An
+omitted post-state fact is unconstrained. A frame fact must come from a
+proved contract or from a justified effect analysis — never from the absence
+of a mention, and never from `&self`, which is not proof of purity: interior
+mutability and shared aliases can mutate through a shared reference.
+
+## The proof-provider boundary
+
+Tests may supply known-good premises directly. Production may not. It
+consumes validated existing evidence, or a premise the author has explicitly
+declared trusted — and where trust is involved, the result is visibly
+conditional on it.
+
+**A missing provider, or a proof-result fixture, can never render an
+unconditional "proved".** The current `prove` check reports the adapter as
+absent and earns `engine-missing`; that is the right floor and this work
+must not lower it.
+
+## Where the result attaches
+
+The state node. `NodeKind::Container` has no `Evidence` payload *by
+construction* — a component cannot claim its own verdict, and this design
+does not fight that. `state_node` already exists, already carries
+`evidence: None`, and already folds worst-of into its component.
+
+## Arithmetic
+
+Observers are modelled as mathematical integers **with the range facts of
+their declared Rust types carried as explicit premises** — a `u32` observer
+enters as `0 <= x <= 4294967295`. Machine arithmetic is never silently
+replaced by unbounded arithmetic; the width is a premise, written down,
+and the probe above carries it.
+
+## The outcomes, kept distinct
+
+- obligations closed with adequate premises → **property proved, within the
+  stated scope**
+- closed only under trusted premises → **conditional**
+- insufficient contracts, or the solver could not close → **not
+  established**, naming the open obligation. Never `violation`.
+- boundary not closed → **incomplete coverage**; no complete property proof
+- timeout or tool failure → that reason, retained
+- an executable counterexample → violation
+
+A model refuting a contract implication is a **composition countermodel**:
+behaviour a weak contract permits, which the implementation may well never
+produce. It is not a program bug until replay or stronger reasoning makes it
+one, and it must not be labelled as one.
+
+Sampled evidence is preserved alongside an unsuccessful proof. A claim must
+never end a proof attempt with less evidence than it had before.

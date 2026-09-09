@@ -486,6 +486,55 @@ refusal shipped the day before.
       argument. Pinned by a test that runs the command each message names
       and requires it to print the section.
 
+## Component-property proof: composing function proofs — 2026-09-09
+
+Brief: consume valid function-level proofs as premises and establish a named
+property of a component. Not re-proving function bodies; not a general
+Rust-to-Verus translator.
+
+- [x] **M1 DONE: the theorem is stated and the backend is proved capable of
+      the shape we actually need.** "Every state reachable from a covered
+      constructor by finitely many permitted, normally-returning operations
+      satisfies I", with the calling discipline and the exclusions
+      (concurrency, re-entrancy, panicking transitions) written down rather
+      than assumed. Design addendum in `docs/component-proof-design.md`,
+      which also retracts three stale claims -- chiefly "`&mut self` methods
+      cannot be claimed", untrue since transition promises shipped.
+
+      **The measurement that shapes everything below.** The existing spike
+      proves the bucket's *bodies*: 6 verified, 12.1s, and a trusted-wrapper
+      surface for every `vstd` call that can unwind. Proving instead that its
+      *contracts entail* the invariant -- which is what composition actually
+      needs -- is **4 verified, 0 errors, 1.8s, and no trust surface at all**,
+      because no bodies are translated. Non-vacuity checked both ways: a
+      weakened `refill` contract and an omitted capacity frame fact each
+      fail with "postcondition not satisfied".
+
+      Verus 0.2026.08.23.fbbbbcf installed to the session scratchpad by the
+      four steps `tests/spike/verus/FINDINGS.md` records; all four still work
+      verbatim, archive byte-for-byte the recorded 301,751,770. Control
+      re-run before anything new: the existing bucket proof, 6 verified,
+      0 errors.
+
+- [ ] **M2: the pure obligation planner.** Init, preservation, domain
+      compatibility, coverage, boundary and assumptions, generated from
+      premises. No processes, no file writes, no rendering. Explicit
+      before/after state; an omitted post-state fact is unconstrained, never
+      implicitly unchanged.
+- [ ] **M3: close the operation boundary.** **The sampled pool cannot serve
+      as the certificate** -- confirmed against the source, not assumed:
+      `harness.rs:3266` drops generic impls with *no record at all*, and
+      `ImplMatch::NotThisType` likewise. `ReceiverPlan` does retain
+      `excluded_operations` as structured data (call path + reason), which
+      is the honest half to build on.
+- [ ] **M4: discharge on the real backend**, behind a small adapter, with
+      Rust arithmetic semantics preserved as explicit range premises rather
+      than unbounded integers.
+- [ ] **M5: report exact evidence** on the state node -- `NodeKind::Container`
+      has no evidence payload by construction and this design does not fight
+      that.
+- [ ] **M6: fingerprint and invalidate**, reusing the existing scheduling.
+
 ## A/B round 4: the tool's best result, and three new gaps — 2026-09-07
 
 Two scenarios picked to reach ground the first three rounds could not. An
