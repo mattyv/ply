@@ -10,7 +10,7 @@ ply: 1 — the format version every rule below is read under; a version this bui
 components:
 
   component core — maps to Rust module ply_core
-    state Envelope — the structure this component holds. 4 of 8 of its fields shown
+    state Envelope — the structure this component holds. 4 of 9 of its fields shown
       command is text, written `String`
       root is a structure of your own, written `Node` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
       diagnostics is a list, written `Vec<Diagnostic>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
@@ -103,7 +103,7 @@ components:
           !same_expression("x + 1", "x + 2")
     component model — maps to Rust module ply_core::model
       note: The document as data: what a ply.yaml means once it has been read.
-      state Document — the structure this component holds. 4 of 8 of its fields shown
+      state Document — the structure this component holds. 4 of 9 of its fields shown
         components is a lookup table, written `IndexMap<String, Component>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
         edges is a list, written `Vec<String>`
         deny is a list, written `Vec<String>`
@@ -575,6 +575,8 @@ components:
         what this function promises — the last thing the document states before the code itself takes over:
           ensures: result.starts_with("ply-") (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
+
+acceptance — finite production-path examples: none declared
 
 externals — systems and people outside this codebase: none declared
 

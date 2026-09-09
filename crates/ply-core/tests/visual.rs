@@ -3,7 +3,10 @@ use std::fs;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use ply_core::diag::{Contract, Diagnostic, Envelope, Node, Span};
+use ply_core::diag::{
+    AcceptanceOutcome, AcceptanceResult, AcceptanceTestIdentity, Contract, Diagnostic, Envelope,
+    Node, Span,
+};
 use ply_core::harness::{RustType, StateField, StateFieldIndex};
 use ply_core::model::parse_document;
 use ply_core::visual::svg::RenderOptions;
@@ -104,6 +107,138 @@ fn schema_is_camel_case_and_rejects_an_unknown_major_version() {
     value["protocolVersion"] = 2.into();
     let error = VisualEnvelope::from_json(&serde_json::to_string(&value).unwrap()).unwrap_err();
     assert!(matches!(error, VisualEnvelopeError::UnsupportedVersion(2)));
+}
+
+#[test]
+fn acceptance_is_a_separate_drawn_element_not_function_evidence() {
+    let document = parse_document(
+        r#"
+ply: 1
+components:
+  mapping:
+    anchor: app::mapping
+acceptance:
+  decimal_response_maps:
+    requirement: decimal response maps to exact records
+    component: mapping
+    entry: app::mapping::map_response
+    test:
+      package: app
+      target: venue_response
+      name: decimal_strings_map
+    inputs: [tests/fixtures/response.json]
+    expected: [tests/fixtures/response.expected.json]
+    required: true
+"#,
+    )
+    .unwrap();
+    let run = RunMetadata {
+        id: "acceptance-view".into(),
+        completed_at: "2026-09-09T00:00:00Z".into(),
+        root: RootIdentity { path: ".".into() },
+        tool: ToolIdentity {
+            name: "cargo-ply".into(),
+            version: "test".into(),
+        },
+        outcome: RunOutcome::Clean,
+    };
+
+    let declared =
+        build_declared_visual_envelope(&document, run.clone(), &RenderOptions::default(), None)
+            .unwrap();
+    let element_id = stable_element_id("acceptance", "ply.yaml::decimal_response_maps");
+    assert_eq!(declared.elements[&element_id].kind, "acceptance");
+    assert_eq!(declared.elements[&element_id].evidence.state, "declared");
+    assert!(declared.svg.contains("acceptance-row"));
+    assert!(declared.svg.contains("decimal_response_maps — declared"));
+    let transcript = ply_core::visual::transcript::render_transcript(&document);
+    assert!(transcript.contains("acceptance — finite production-path examples:"));
+    assert!(transcript.contains("decimal_response_maps — required, declared but not run"));
+    assert!(transcript.contains(
+        "Cargo test: cargo test -p app --test venue_response -- --exact decimal_strings_map"
+    ));
+
+    let result = Envelope {
+        command: "verify".into(),
+        ply_version: "test".into(),
+        root: Node {
+            id: "workspace".into(),
+            kind: "workspace".into(),
+            verdict: "unclaimed".into(),
+            ..Node::default()
+        },
+        diagnostics: vec![],
+        acceptance: vec![AcceptanceResult {
+            id: "ply.yaml::decimal_response_maps".into(),
+            requirement: "decimal response maps to exact records".into(),
+            component: "mapping".into(),
+            entry: "app::mapping::map_response".into(),
+            test: AcceptanceTestIdentity {
+                package: "app".into(),
+                target: "venue_response".into(),
+                name: "decimal_strings_map".into(),
+            },
+            inputs: vec!["tests/fixtures/response.json".into()],
+            expected: vec!["tests/fixtures/response.expected.json".into()],
+            required: true,
+            outcome: AcceptanceOutcome::Failed,
+            detail: "exact test failed".into(),
+        }],
+        coverage: None,
+        trust_surface: None,
+        open_items: None,
+        not_carried_forward: vec![],
+    };
+    assert_eq!(ply_core::visual::outcome_of(&result), RunOutcome::Violation);
+    let verified =
+        build_visual_envelope_with_sources(&document, &result, run, &BTreeMap::new()).unwrap();
+    assert_eq!(verified.elements[&element_id].evidence.state, "violation");
+    assert_eq!(verified.elements[&element_id].evidence.verdict, "failed");
+    assert!(verified.svg.contains("decimal_response_maps — failed"));
+}
+
+#[test]
+fn invalid_acceptance_component_remains_drawable_and_anchors_its_finding() {
+    let document = parse_document(
+        r#"
+ply: 1
+components: { mapping: { anchor: app::mapping } }
+acceptance:
+  wrong_component:
+    requirement: maps records
+    component: missing
+    entry: app::mapping::map_response
+    test: { package: app, target: venue_response, name: maps }
+    inputs: [tests/input.json]
+    expected: [tests/expected.json]
+    required: true
+"#,
+    )
+    .unwrap();
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "invalid-acceptance".into(),
+            completed_at: "2026-09-09T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "test".into(),
+            },
+            outcome: RunOutcome::MissingEvidence,
+        },
+        &RenderOptions::default(),
+        None,
+    )
+    .expect("a reportable E0212 must not destroy the visual envelope");
+    let id = stable_element_id("acceptance", "ply.yaml::wrong_component");
+    assert_eq!(
+        visual.elements[&id].parent_id.as_deref(),
+        Some(stable_element_id("workspace", "workspace").as_str())
+    );
+    assert!(visual.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "E0212" && diagnostic.element_id.as_deref() == Some(&id)
+    }));
 }
 
 #[test]
@@ -741,6 +876,7 @@ fn qualified_function_identity_keeps_same_named_claims_sources_and_diagnostics_a
             diagnostic("billing::run", "W-BILLING"),
             diagnostic("shipping::run", "W-SHIPPING"),
         ],
+        acceptance: vec![],
         coverage: None,
         trust_surface: None,
         open_items: None,
@@ -1029,6 +1165,7 @@ fn published_state_matches_each_verdict_family_a_viewer_must_tell_apart() {
             ..Default::default()
         },
         diagnostics: vec![],
+        acceptance: vec![],
         coverage: None,
         trust_surface: None,
         open_items: None,

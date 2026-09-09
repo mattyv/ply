@@ -186,6 +186,46 @@ this one ever drifts from it again.
 `verify` does not re-run a check whose result it already has and whose inputs have not
 moved — see section 7's "Results Ply already has".
 
+### Named acceptance evidence
+
+Function contracts and application acceptance answer different questions. A contract says what
+the code does within its reported bounds. An acceptance claim runs one exact repository
+integration test over named external-input and expected-result files:
+
+```yaml
+acceptance:
+  decimal_response_maps:
+    requirement: "a decimal response maps to the exact records"
+    component: mapping
+    entry: response_mapper::map_response
+    test:
+      package: response-mapper
+      target: venue_response
+      name: decimal_strings_map_to_expected_records
+    inputs: [tests/fixtures/venue-response.json]
+    expected: [tests/fixtures/venue-response.expected.json]
+    required: true
+```
+
+The test identity is structured; this is not a shell-command field. `inputs` and `expected` are
+regular files relative to the named package. The report normalizes them relative to the verification
+root. Ply builds exactly that package and integration-test target, selects one Cargo artifact,
+then asks Cargo from the package directory to run the exact libtest name. This preserves Cargo
+configuration, build-script library paths, package environment, and toolchain selection. Zero matching tests, ignored tests,
+custom test harnesses, ambiguous artifacts, build failures, and timeouts never become passes.
+Nested or otherwise ambiguous libtest output is a `tool_error`; Ply does not select a convenient
+inner summary and call it the declared test's result.
+
+Results appear in a separate top-level `acceptance` array as `passed`, `failed`, `timeout`,
+`tool_error`, or `not_run`. They never colour a function chip or strengthen a contract verdict.
+A required non-pass fails `verify` under every `--fail-on` setting; optional results remain visible
+without changing the exit status. Acceptance always runs freshly and never enters `ply.lock`.
+
+When a root document selects one component from a linked child, only acceptance claims on that
+component or its descendants run. Their ids and components are rebased into the root report.
+`W0543` names a child claim excluded because it belongs to an unselected component; its required
+flag does not apply to that root invocation.
+
 ### What you need installed
 
 `test` and `fuzz` need nothing beyond cargo — Ply generates a small test crate and lets
@@ -270,6 +310,19 @@ profiles:
 
 unresolved:                       # decisions nobody has made yet
   - { id: 7, note: "backpressure policy when the ring is full: drop the frame or block" }
+
+acceptance:                       # finite application evidence, separate from contracts
+  venue_response_maps:
+    requirement: "a valid venue response returns the required records"
+    component: ingest.feed
+    entry: ingest::feed::map_response
+    test:
+      package: ingest
+      target: venue_response
+      name: valid_response_maps
+    inputs: [tests/fixtures/venue-response.json]
+    expected: [tests/fixtures/venue-response.expected.json]
+    required: true
 ```
 
 A note on YAML: strings containing `:` or starting with a character YAML treats
@@ -1723,6 +1776,7 @@ on something stable. These are the ones this build emits.
 |---|---|
 | `E0504` | `mutate` with no `test` or `fuzz` beside it — nothing to catch the planted bugs. |
 | `E0501` | A contract expression could not be parsed. |
+| `E0212` | An acceptance claim names no declared component or uses a path that is not portable and relative to its Cargo package. |
 | `E0502` | A promise declared for a callee is satisfiable by no value at all. Assuming it would make any proof standing on it hold for nothing, so the proof is not run. |
 | `E0503` | A promise declared for a callee is true of every value, so it constrains nothing and is not an assumption. |
 | `K0502` | The model checker found an input that breaks the postcondition. This is a real violation, with a witness. |
@@ -1745,6 +1799,7 @@ on something stable. These are the ones this build emits.
 | `W0515` | A `checks:` list was written and left empty, so nothing ran and the claim earned no evidence. |
 | `W0516` | A stored result in `ply.lock` claims a verdict its own checks could never earn, so it did not come from a run of Ply. It was refused and the claim checked again. |
 | `W0541` | A failing input was found but cannot be written out as runnable Rust, so the engine's own rendering is reported instead. Inputs are never invented. |
+| `W0543` | A linked child acceptance claim belongs to a component outside the selected subtree, so it was outside this invocation and was not run. |
 
 ---
 

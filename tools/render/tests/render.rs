@@ -4683,6 +4683,7 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
         let ply_render::model::Document {
             ply,
             components,
+            acceptance,
             externals,
             edges,
             deny,
@@ -4696,6 +4697,27 @@ fn the_transcript_leaves_nothing_in_the_document_out() {
             missing.push(format!("the document's format version, `ply: {ply}`"));
         }
         walk("", components, &text, &mut missing);
+
+        for (name, claim) in acceptance {
+            for value in [
+                name,
+                &claim.requirement,
+                &claim.component,
+                &claim.entry,
+                &claim.test.package,
+                &claim.test.target,
+                &claim.test.name,
+            ] {
+                if !text.contains(value) {
+                    missing.push(format!("acceptance claim `{name}` value `{value}`"));
+                }
+            }
+            for path in claim.inputs.iter().chain(&claim.expected) {
+                if !text.contains(path) {
+                    missing.push(format!("acceptance claim `{name}` path `{path}`"));
+                }
+            }
+        }
 
         for (name, ext) in externals {
             if !text.contains(name) {

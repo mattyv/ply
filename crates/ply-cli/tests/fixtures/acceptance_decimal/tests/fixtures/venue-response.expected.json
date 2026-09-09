@@ -1,0 +1,6 @@
+{
+  "records": [
+    { "instrument": "BTC-HKD", "price_ticks": 952341250, "quantity": 2 },
+    { "instrument": "ETH-HKD", "price_ticks": 34125005, "quantity": 7 }
+  ]
+}

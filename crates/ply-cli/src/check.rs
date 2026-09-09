@@ -1045,6 +1045,7 @@ fn node_id_for(target: &Target) -> String {
         Target::External(e) => format!("externals::{e}"),
         Target::EdgeIndex(i) => format!("edges[{i}]"),
         Target::DenyIndex(i) => format!("deny[{i}]"),
+        Target::Acceptance(name) => format!("acceptance::{name}"),
         Target::UnresolvedId(id) => format!("unresolved#{id}"),
         Target::Document => "ply.yaml".into(),
     }
@@ -1333,6 +1334,7 @@ fn envelope(root: Node, diagnostics: Vec<Diagnostic>, coverage: Coverage) -> Env
         ply_version: PLY_VERSION.into(),
         root,
         diagnostics,
+        acceptance: Vec::new(),
         coverage: Some(coverage),
         trust_surface: None,
         open_items: None,

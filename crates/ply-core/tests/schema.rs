@@ -18,6 +18,92 @@ fn the_schema_declares_the_2020_12_dialect() {
     assert!(s["$id"].is_string(), "the schema needs a stable $id");
 }
 
+#[test]
+fn the_schema_accepts_a_structured_acceptance_claim() {
+    let yaml = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(
+        r#"
+ply: 1
+components:
+  mapping:
+    anchor: response_mapper
+acceptance:
+  decimal_response_maps:
+    requirement: A decimal response maps to exact records
+    component: mapping
+    entry: response_mapper::map_response
+    test:
+      package: response-mapper
+      target: venue_response
+      name: decimal_strings_map_to_expected_records
+    inputs:
+      - tests/fixtures/venue-response.json
+    expected:
+      - tests/fixtures/venue-response.expected.json
+    required: true
+"#,
+    )
+    .unwrap();
+
+    let violations = schema::validate(&yaml);
+    assert!(
+        violations.is_empty(),
+        "the normative schema must admit named, structured acceptance evidence: {violations:#?}"
+    );
+}
+
+#[test]
+fn runtime_validation_enforces_acceptance_objects_not_just_the_editor_schema() {
+    let yaml = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(
+        r#"
+ply: 1
+components: { mapping: { anchor: app::mapping } }
+acceptance:
+  Bad Claim:
+    requirement: ""
+    component: Bad.Component
+    entry: not a Rust path
+    test: { package: "", target: venue_response, name: not a test }
+    inputs: []
+    expected: []
+    required: true
+  wrong_types:
+    requirement: typed fields stay typed
+    component: 123
+    entry: 123
+    test: { package: 123, target: 456, name: 789 }
+    inputs: [input.json]
+    expected: [expected.json]
+    required: true
+"#,
+    )
+    .unwrap();
+
+    let pointers = schema::validate(&yaml)
+        .into_iter()
+        .map(|violation| violation.pointer)
+        .collect::<std::collections::BTreeSet<_>>();
+    for expected in [
+        "/acceptance/Bad Claim",
+        "/acceptance/Bad Claim/requirement",
+        "/acceptance/Bad Claim/component",
+        "/acceptance/Bad Claim/entry",
+        "/acceptance/Bad Claim/test/package",
+        "/acceptance/Bad Claim/test/name",
+        "/acceptance/Bad Claim/inputs",
+        "/acceptance/Bad Claim/expected",
+        "/acceptance/wrong_types/component",
+        "/acceptance/wrong_types/entry",
+        "/acceptance/wrong_types/test/package",
+        "/acceptance/wrong_types/test/target",
+        "/acceptance/wrong_types/test/name",
+    ] {
+        assert!(
+            pointers.contains(expected),
+            "runtime validation missed {expected}: {pointers:#?}"
+        );
+    }
+}
+
 /// §5.1a rule 1: "Every object in the schema sets `additionalProperties:
 /// false`". Stated as an invariant over the whole document rather than a
 /// list of levels, so an object added later cannot quietly skip the rule.
@@ -125,6 +211,25 @@ fn every_key_the_schema_declares_is_a_key_the_model_reads() {
     assert_eq!(doc.profiles["hot_path"], ["no_panics"]);
     assert_eq!(doc.unresolved[0].id, 151);
     assert_eq!(doc.routes["Handle"], "open_handle");
+    let acceptance = &doc.acceptance["decimal_response_maps"];
+    assert_eq!(
+        acceptance.requirement,
+        "a decimal response maps to exact records"
+    );
+    assert_eq!(acceptance.component, "pricing");
+    assert_eq!(acceptance.entry, "app::pricing::map_response");
+    assert_eq!(acceptance.test.package, "app");
+    assert_eq!(acceptance.test.target, "venue_response");
+    assert_eq!(
+        acceptance.test.name,
+        "decimal_strings_map_to_expected_records"
+    );
+    assert_eq!(acceptance.inputs, ["tests/fixtures/venue-response.json"]);
+    assert_eq!(
+        acceptance.expected,
+        ["tests/fixtures/venue-response.expected.json"]
+    );
+    assert!(acceptance.required);
 
     // And every key named above is exactly the schema's own vocabulary —
     // so a key added to the model without a schema entry fails here too.
@@ -341,6 +446,18 @@ unresolved:
     note: "settlement rounding rule TBD"
 routes:
   Handle: open_handle
+acceptance:
+  decimal_response_maps:
+    requirement: "a decimal response maps to exact records"
+    component: pricing
+    entry: app::pricing::map_response
+    test:
+      package: app
+      target: venue_response
+      name: decimal_strings_map_to_expected_records
+    inputs: [tests/fixtures/venue-response.json]
+    expected: [tests/fixtures/venue-response.expected.json]
+    required: true
 "#;
 
 /// Every node of the schema document, with its JSON pointer.

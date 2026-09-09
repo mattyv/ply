@@ -67,8 +67,8 @@ macro_rules! codes {
 codes!(
     // --- Tier::Schema: document-local ply.yaml validation (§5.1/§5.1a),
     // no anchored source needed. ---
-    E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0208, E0209, E0504, W0409, W0410, W0419,
-    // --- Tier::Anchor: resolving a claim to real code (§5.2). ---
+    E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0208, E0209, E0212, E0504, W0409, W0410,
+    W0419, // --- Tier::Anchor: resolving a claim to real code (§5.2). ---
     E0301, E0304, E0306, // --- Tier::Crate: architecture, exact and sound (§5.3). ---
     A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, A0416, A0417, W0413, W0532,
     W0533, W0534, E0210, E0211,
@@ -79,9 +79,9 @@ codes!(
     // (§5.4). ---
     E0501, E0502, E0503, E0505, W0502, W0503, W0511, W0512, W0513, W0514, W0515, W0516, W0517,
     V0505, V0506, V0507, V0508, V0509, V0510, W0518, W0519, W0520, W0521, W0522, W0523, W0524,
-    W0525, W0526, W0527, W0528, W0529, W0530, W0541, W0542, W0110, W0111, W0303, W0531, K0502,
-    K0601, M0601, P0502, P0601, R0502, R0601, X0901, X0902, X0903, W0414, W0415, W0416, W0417,
-    W0418, E0506, V0511,
+    W0525, W0526, W0527, W0528, W0529, W0530, W0541, W0542, W0543, W0110, W0111, W0303, W0531,
+    K0502, K0601, M0601, P0502, P0601, R0502, R0601, X0901, X0902, X0903, W0414, W0415, W0416,
+    W0417, W0418, E0506, V0511,
 );
 
 /// The stage of Ply's own pipeline a code belongs to. See the module doc
@@ -233,6 +233,14 @@ impl Code {
                 severity: Error,
                 spec_anchor: "§5.1a",
                 gloss: "An edge or a flow line names an external that was never declared under `externals:` in this document, so there's nothing for the reference to resolve to.",
+            },
+            E0212 => RuleEntry {
+                code: self,
+                tier: Schema,
+                status: Enforced,
+                severity: Error,
+                spec_anchor: "§5.4e",
+                gloss: "A named acceptance claim cannot be attached or reproduced as written: its component does not exist in this document, or one of its fixture/oracle paths is not a portable path relative to the named Cargo package. Ply refuses the declaration instead of running an unattributed test or reading outside that package.",
             },
             E0504 => RuleEntry {
                 code: self,
@@ -774,6 +782,14 @@ impl Code {
                 severity: Warning,
                 spec_anchor: "§5.4c",
                 gloss: "The generated `test` check's boundary values were all turned away by this function's precondition, so that part of the check gathered no contract evidence. Worked examples and sibling checks are reported separately and may still have called the function. An example call using literal inputs the precondition accepts gives the generated contract check a concrete case.",
+            },
+            W0543 => RuleEntry {
+                code: self,
+                tier: Contract,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.4e",
+                gloss: "A composed root selected one component from a linked document, and a named acceptance claim belongs to another component in that child. The unrelated claim is outside this invocation: it is not run, its required flag does not affect the root, and Ply names the exclusion instead of silently dropping it or attaching it to the selected component.",
             },
             W0110 => RuleEntry {
                 code: self,

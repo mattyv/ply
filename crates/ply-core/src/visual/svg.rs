@@ -312,6 +312,28 @@ pub const EVIDENCE_STYLE: &str = "\
 }\
 ";
 
+/// Acceptance is neither a component ceiling nor a fn-proof rung. Its own
+/// bordered band and labelled status dots keep finite examples visible
+/// without borrowing the shapes or colours that mean proof evidence.
+pub const ACCEPTANCE_STYLE: &str = "\
+.acceptance-box{fill:none;stroke:#9aa2b1;stroke-width:1.5}\
+.acceptance-title{fill:#1f2430;font-weight:bold}\
+.acceptance-text{fill:#333a45;font-size:11px}\
+.acceptance-mark-declared{fill:#f6f7f9;stroke:#9aa2b1}\
+.acceptance-mark-earned{fill:#3f8a5c;stroke:#2f6b45}\
+.acceptance-mark-violation{fill:#c9534f;stroke:#8f2f2c}\
+.acceptance-mark-gap{fill:#eaf1fb;stroke:#4d6d99;stroke-dasharray:2 2}\
+@media (prefers-color-scheme: dark){\
+.acceptance-box{stroke:#6d7686}\
+.acceptance-title{fill:#e6e9ef}\
+.acceptance-text{fill:#aab3c4}\
+.acceptance-mark-declared{fill:#1c1f27;stroke:#6d7686}\
+.acceptance-mark-earned{fill:#4caf6f;stroke:#7fdba0}\
+.acceptance-mark-violation{fill:#e8524b;stroke:#ff8a84}\
+.acceptance-mark-gap{fill:#1c2836;stroke:#6f93c2;stroke-dasharray:2 2}\
+}\
+";
+
 /// Plain-language "A or B" / "A, B, or C" list, for naming every candidate
 /// an ambiguous reference could mean without reading like a data dump.
 fn join_or(items: &[String]) -> String {
@@ -608,6 +630,7 @@ struct FindingsIndex {
     by_external: HashMap<String, Vec<usize>>,
     by_edge: HashMap<usize, Vec<usize>>,
     by_deny: HashMap<usize, Vec<usize>>,
+    by_acceptance: HashMap<String, Vec<usize>>,
     by_unresolved: HashMap<u64, Vec<usize>>,
 }
 
@@ -631,6 +654,9 @@ fn build_findings_index(findings: &[Diagnostic]) -> FindingsIndex {
             }
             FindingTarget::EdgeIndex(e) => idx.by_edge.entry(*e).or_default().push(i),
             FindingTarget::DenyIndex(d) => idx.by_deny.entry(*d).or_default().push(i),
+            FindingTarget::Acceptance(name) => {
+                idx.by_acceptance.entry(name.clone()).or_default().push(i)
+            }
             FindingTarget::UnresolvedId(id) => idx.by_unresolved.entry(*id).or_default().push(i),
             // §7.1: no drawable item — stays out of every index, so it can
             // never be marked attached and always lands in the workspace-
@@ -690,6 +716,9 @@ impl<'a> FindingCtx<'a> {
     }
     fn deny_findings(&self, deny_index: usize) -> Vec<&'a Diagnostic> {
         self.mark_and_collect(self.index.by_deny.get(&deny_index))
+    }
+    fn acceptance_findings(&self, name: &str) -> Vec<&'a Diagnostic> {
+        self.mark_and_collect(self.index.by_acceptance.get(name))
     }
     fn unresolved_findings(&self, id: u64) -> Vec<&'a Diagnostic> {
         self.mark_and_collect(self.index.by_unresolved.get(&id))
@@ -3950,6 +3979,102 @@ pub fn render_svg_with_evidence_state_options_and_links(
     render_svg_impl(doc, options, Some(&evidence), state_fields, links)
 }
 
+struct AcceptanceBox {
+    width: f64,
+    height: f64,
+    svg: String,
+}
+
+fn render_acceptance_box(
+    doc: &Document,
+    evidence: Option<&EvidenceView>,
+    links: Option<&LinkIndex>,
+    findings: &FindingCtx,
+) -> Option<AcceptanceBox> {
+    let declarations = super::declared_acceptance_results(doc, links);
+    if declarations.is_empty() {
+        return None;
+    }
+
+    let title_text = "Acceptance · finite production-path examples";
+    let mut rows = Vec::new();
+    let mut width = text_w(title_text, NAME_CHAR_W) + PAD * 2.0;
+    for declaration in declarations {
+        let stable_id = super::stable_element_id("acceptance", &declaration.id);
+        let element = evidence.and_then(|view| view.elements.get(&stable_id));
+        let verdict = element
+            .map(|element| element.evidence.verdict.as_str())
+            .unwrap_or("declared");
+        let state = element
+            .map(|element| element.evidence.state.as_str())
+            .unwrap_or("declared");
+        let mark_class = match state {
+            "earned" => "acceptance-mark-earned",
+            "violation" => "acceptance-mark-violation",
+            "gap" => "acceptance-mark-gap",
+            _ => "acceptance-mark-declared",
+        };
+        let name = declaration
+            .id
+            .rsplit_once("::")
+            .map(|(_, id)| id)
+            .unwrap_or(&declaration.id);
+        let row_findings = if declaration.id.starts_with("ply.yaml::") {
+            findings.acceptance_findings(name)
+        } else {
+            Vec::new()
+        };
+        let required = if declaration.required {
+            " · required"
+        } else {
+            ""
+        };
+        let label = format!("{name} — {verdict}{required}");
+        width = width.max(text_w(&label, SUB_CHAR_W) + PAD * 2.0 + 14.0);
+        let mut tooltip_lines = finding_tooltip_lines(&row_findings);
+        tooltip_lines.push(format!(
+            "{}\ncomponent: {}\nproduction entry: {}\nexact test: {} --test {} :: {}\ninputs: {}\nexpected results: {}\nThis is finite acceptance evidence. It does not upgrade any function proof.",
+            declaration.requirement,
+            declaration.component,
+            declaration.entry,
+            declaration.test.package,
+            declaration.test.target,
+            declaration.test.name,
+            declaration.inputs.join(", "),
+            declaration.expected.join(", "),
+        ));
+        let mark_class = if row_findings.is_empty() {
+            mark_class
+        } else {
+            "acceptance-mark-violation"
+        };
+        rows.push((label, tooltip_lines.join("\n"), mark_class, element));
+    }
+
+    let header_y = PAD + 12.0;
+    let first_row_y = header_y + LINE_H + 5.0;
+    let height = first_row_y + rows.len() as f64 * LINE_H + PAD;
+    let mut svg = format!(
+        "<g class=\"acceptance\"><rect class=\"acceptance-box\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{height:.1}\" rx=\"6\" /><text class=\"acceptance-title\" x=\"{PAD:.1}\" y=\"{header_y:.1}\">{}</text>",
+        esc(title_text)
+    );
+    for (index, (label, tooltip, mark_class, element)) in rows.into_iter().enumerate() {
+        let y = first_row_y + index as f64 * LINE_H;
+        let id_attr = element_id_attr(element);
+        svg.push_str(&format!(
+            "<g class=\"acceptance-row\"{id_attr}>{}<circle class=\"{mark_class}\" cx=\"{:.1}\" cy=\"{:.1}\" r=\"4\" /><text class=\"acceptance-text\" x=\"{:.1}\" y=\"{:.1}\">{}</text></g>",
+            title(&tooltip),
+            PAD + 4.0,
+            y - 3.5,
+            PAD + 14.0,
+            y,
+            esc(&label),
+        ));
+    }
+    svg.push_str("</g>");
+    Some(AcceptanceBox { width, height, svg })
+}
+
 /// The real render walk, shared by every public entry point above. `evidence`
 /// is threaded through `WalkCtx` to every component and fn chip the walk
 /// draws (`render_component`, `render_collapsed_component`, `render_fn_chip`)
@@ -4750,7 +4875,7 @@ fn render_svg_impl(
         .fold((0.0_f64, 0.0_f64), |(mx, my), &(x, y)| {
             (mx.max(x), my.max(y))
         });
-    let frame_content_w = frame_w
+    let base_frame_content_w = frame_w
         .max(title_min_w)
         .max(strip_min_w)
         .max(drawn_lines_max_x + FRAME_PAD);
@@ -4765,7 +4890,20 @@ fn render_svg_impl(
         .fold(f64::MIN, |a, &y| a.max(y))
         + ANY_R
         + FRAME_PAD;
-    let frame_content_h = frame_h.max(deny_bottom).max(drawn_lines_max_y + FRAME_PAD);
+    let base_frame_content_h = frame_h.max(deny_bottom).max(drawn_lines_max_y + FRAME_PAD);
+    let acceptance_box = render_acceptance_box(doc, evidence, links, &ctx);
+    let acceptance_style_used = acceptance_box.is_some();
+    let (frame_content_w, frame_content_h, acceptance_svg) = if let Some(box_) = acceptance_box {
+        let x = FRAME_PAD;
+        let y = base_frame_content_h + GAP;
+        (
+            base_frame_content_w.max(box_.width + FRAME_PAD * 2.0),
+            y + box_.height + FRAME_PAD,
+            wrap_translate(&box_.svg, x, y),
+        )
+    } else {
+        (base_frame_content_w, base_frame_content_h, String::new())
+    };
 
     // ---- externals: band outside the frame, and their edges -------------
     // docs/plans/external-elements.md: externals stack left to right, in
@@ -5027,23 +5165,30 @@ fn render_svg_impl(
         }
         any_row(&doc.components, "", state_fields)
     };
-    let style: std::borrow::Cow<str> =
-        match (findings.is_empty(), evidence_style_used, state_style_used) {
-            (true, false, false) => std::borrow::Cow::Borrowed(STYLE),
-            _ => {
-                let mut out = String::from(STYLE);
-                if !findings.is_empty() {
-                    out.push_str(FINDING_STYLE);
-                }
-                if evidence_style_used {
-                    out.push_str(EVIDENCE_STYLE);
-                }
-                if state_style_used {
-                    out.push_str(STATE_STYLE);
-                }
-                std::borrow::Cow::Owned(out)
+    let style: std::borrow::Cow<str> = match (
+        findings.is_empty(),
+        evidence_style_used,
+        state_style_used,
+        acceptance_style_used,
+    ) {
+        (true, false, false, false) => std::borrow::Cow::Borrowed(STYLE),
+        _ => {
+            let mut out = String::from(STYLE);
+            if !findings.is_empty() {
+                out.push_str(FINDING_STYLE);
             }
-        };
+            if evidence_style_used {
+                out.push_str(EVIDENCE_STYLE);
+            }
+            if state_style_used {
+                out.push_str(STATE_STYLE);
+            }
+            if acceptance_style_used {
+                out.push_str(ACCEPTANCE_STYLE);
+            }
+            std::borrow::Cow::Owned(out)
+        }
+    };
 
     // §7.1 / newbie bar: the frame is the first thing anyone sees, so its
     // tooltip explains the whole picture rather than assuming the reader
@@ -5110,7 +5255,7 @@ been checked for is what `cargo ply verify` reports, not this drawing.\n{version
          <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text></g>\
          <g class=\"verdict-strip\">{strip_tip}<text class=\"verdict-strip-text\" x=\"{strip_x:.1}\" y=\"20\">{strip_text}</text></g>\
          {title_extra}\
-         {deny_svg}{registry_svg}{body}{edges_svg}{external_edges_svg}{external_svg}\
+         {deny_svg}{registry_svg}{body}{edges_svg}{acceptance_svg}{external_edges_svg}{external_svg}\
          </svg>",
         glyph_hatch = glyph_hatch,
         frame_inner_w = frame_content_w - 2.0,

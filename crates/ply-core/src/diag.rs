@@ -247,6 +247,42 @@ pub struct Coverage {
     pub not_checked: Vec<Tier>,
 }
 
+/// One finite application requirement observed through an exact repository
+/// integration test. It is deliberately beside the §7 contract tree: a
+/// passing example cannot upgrade a function proof, and a proof cannot erase
+/// a failing production-path example.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AcceptanceResult {
+    /// Source-document-qualified claim identity.
+    pub id: String,
+    pub requirement: String,
+    pub component: String,
+    pub entry: String,
+    pub test: AcceptanceTestIdentity,
+    pub inputs: Vec<String>,
+    pub expected: Vec<String>,
+    pub required: bool,
+    pub outcome: AcceptanceOutcome,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AcceptanceTestIdentity {
+    pub package: String,
+    pub target: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptanceOutcome {
+    Passed,
+    Failed,
+    Timeout,
+    ToolError,
+    NotRun,
+}
+
 /// One entry on `cargo ply audit`'s trust surface (§6): something a
 /// verdict in this codebase rests on that Ply itself never checked.
 ///
@@ -307,6 +343,10 @@ pub struct Envelope {
     pub ply_version: String,
     pub root: Node,
     pub diagnostics: Vec<Diagnostic>,
+    /// Independent application observations. Empty means this command did
+    /// not admit an acceptance claim; it says nothing about contract nodes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance: Vec<AcceptanceResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<Coverage>,
     /// §6's `audit`. Absent on every other command — an empty array means
@@ -356,6 +396,31 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acceptance_result_serializes_beside_the_contract_tree() {
+        let result = AcceptanceResult {
+            id: "ply.yaml::decimal_response_maps".into(),
+            requirement: "decimal strings map to exact records".into(),
+            component: "mapping".into(),
+            entry: "app::mapping::map_response".into(),
+            test: AcceptanceTestIdentity {
+                package: "app".into(),
+                target: "venue_response".into(),
+                name: "decimal_strings_map_to_expected_records".into(),
+            },
+            inputs: vec!["tests/fixtures/response.json".into()],
+            expected: vec!["tests/fixtures/response.expected.json".into()],
+            required: true,
+            outcome: AcceptanceOutcome::Failed,
+            detail: "the exact test failed".into(),
+        };
+
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["outcome"], "failed");
+        assert_eq!(value["id"], "ply.yaml::decimal_response_maps");
+        assert_eq!(value["test"]["target"], "venue_response");
+    }
 
     #[test]
     fn counterexample_field_is_kani_witness_not_kani_playback() {

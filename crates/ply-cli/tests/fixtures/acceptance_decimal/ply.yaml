@@ -1,0 +1,18 @@
+ply: 1
+components:
+  mapping:
+    anchor: acceptance_decimal
+acceptance:
+  decimal_response_maps:
+    requirement: A successful venue response with decimal-string values maps to the exact required records
+    component: mapping
+    entry: acceptance_decimal::map_response
+    test:
+      package: acceptance-decimal
+      target: venue_response
+      name: decimal_strings_map_to_expected_records
+    inputs:
+      - tests/fixtures/venue-response.json
+    expected:
+      - tests/fixtures/venue-response.expected.json
+    required: true

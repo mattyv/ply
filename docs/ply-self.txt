@@ -109,7 +109,7 @@ components:
           !same_expression("x + 1", "x + 2")
     component model — maps to Rust module ply_core::model
       note: The document as data: what a ply.yaml means once it has been read.
-      state Document — the structure this component holds. 4 of 8 of its fields shown
+      state Document — the structure this component holds. 4 of 9 of its fields shown
         components is a lookup table, written `IndexMap<String, Component>` — Ply has no way to make one of these, which is usually why the functions around it come back unchecked
         edges is a list, written `Vec<String>`
         deny is a list, written `Vec<String>`
@@ -661,6 +661,8 @@ components:
   component check — maps to Rust module ply_check
     note: The standalone spec validator, which predates the installed `cargo ply check` command and overlaps it. Retiring one of the two is recorded work, not a decision taken here.
     hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
+
+acceptance — finite production-path examples: none declared
 
 externals — systems and people outside this codebase: none declared
 

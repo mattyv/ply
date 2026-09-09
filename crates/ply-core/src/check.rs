@@ -19,6 +19,7 @@ use crate::model::{
     effective_checks, parse_check, parse_deny, parse_edge,
 };
 use std::collections::{HashMap, HashSet};
+use std::path::{Component as PathComponent, Path};
 
 /// Where a diagnostic attaches for drawing (The-Ply-Spec.md §7.1 "finding" row).
 /// `ply-render` consumes this to know what to mark red; `ply-check`'s own
@@ -42,6 +43,8 @@ pub enum Target {
     EdgeIndex(usize),
     /// An entry in `doc.deny`, by position.
     DenyIndex(usize),
+    /// One top-level named acceptance claim.
+    Acceptance(String),
     /// An unresolved marker, by its declared id — may attach to more than
     /// one drawn pin if that id is a duplicate (that's the finding).
     UnresolvedId(u64),
@@ -632,6 +635,37 @@ pub fn run_checks_with_links(
     // dotted edge endpoint literally (§5.1a rule 6's dotted form) without
     // re-deriving it from layout.
     let all_qualified: HashSet<String> = leaf_index.values().flatten().cloned().collect();
+
+    for (name, acceptance) in &doc.acceptance {
+        let target = Target::Acceptance(name.clone());
+        if !all_qualified.contains(&acceptance.component) {
+            out.push(diag(
+                "E0212",
+                format!(
+                    "acceptance claim `{name}` names component `{}`, but this document declares no component with that qualified name",
+                    acceptance.component
+                ),
+                target.clone(),
+            ));
+        }
+        for path in acceptance.inputs.iter().chain(&acceptance.expected) {
+            let path_value = Path::new(path);
+            if path.contains('\\')
+                || path_value.is_absolute()
+                || path_value
+                    .components()
+                    .any(|part| !matches!(part, PathComponent::Normal(_)))
+            {
+                out.push(diag(
+                    "E0212",
+                    format!(
+                        "acceptance claim `{name}` path `{path}` is not a portable package-relative path: use ordinary path segments with no `.`, `..`, or backslash"
+                    ),
+                    target.clone(),
+                ));
+            }
+        }
+    }
 
     for (i, e) in doc.edges.iter().enumerate() {
         let target = Target::EdgeIndex(i);

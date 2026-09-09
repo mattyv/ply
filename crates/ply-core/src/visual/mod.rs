@@ -429,7 +429,19 @@ pub fn outcome_of(envelope: &Envelope) -> RunOutcome {
         }
     }
     let mut flags = [false; 4];
-    visit(&envelope.root, &mut flags);
+    if !envelope.root.children.is_empty() || envelope.acceptance.is_empty() {
+        visit(&envelope.root, &mut flags);
+    }
+    for result in envelope.acceptance.iter().filter(|result| result.required) {
+        match result.outcome {
+            crate::diag::AcceptanceOutcome::Passed => {}
+            crate::diag::AcceptanceOutcome::Failed => flags[0] = true,
+            crate::diag::AcceptanceOutcome::Timeout => flags[1] = true,
+            crate::diag::AcceptanceOutcome::ToolError | crate::diag::AcceptanceOutcome::NotRun => {
+                flags[2] = true
+            }
+        }
+    }
     if flags[0] {
         RunOutcome::Violation
     } else if flags[1] {
@@ -521,6 +533,10 @@ fn declared_findings(
                 } => Some(stable_element_id(
                     "fn",
                     &format!("{component_path}::{fn_name}"),
+                )),
+                crate::check::Target::Acceptance(name) => Some(stable_element_id(
+                    "acceptance",
+                    &format!("ply.yaml::{name}"),
                 )),
                 _ => None,
             }
@@ -622,6 +638,7 @@ pub fn build_declared_visual_envelope_with_links(
             ..Node::default()
         },
         diagnostics: vec![],
+        acceptance: declared_acceptance_results(document, links),
         coverage: None,
         trust_surface: None,
         open_items: None,
@@ -768,6 +785,7 @@ fn build_visual_envelope_resolved(
     // carries `unclaimed` and no engine, seed or case count, because that is
     // what is true of a function this run never checked.
     add_elements_for_drawn_but_unchecked(document, links, &mut elements, &mut semantic_ids);
+    add_acceptance_elements(result, &mut elements, &mut semantic_ids)?;
 
     let diagnostics = result
         .diagnostics
@@ -775,6 +793,16 @@ fn build_visual_envelope_resolved(
         .enumerate()
         .map(|(index, diagnostic)| visual_diagnostic(index, diagnostic, &semantic_ids))
         .collect::<Vec<_>>();
+    for diagnostic in &diagnostics {
+        let Some(element_id) = diagnostic.element_id.as_deref() else {
+            continue;
+        };
+        if let Some(element) = elements.get_mut(element_id)
+            && !element.diagnostic_ids.contains(&diagnostic.id)
+        {
+            element.diagnostic_ids.push(diagnostic.id.clone());
+        }
+    }
     let svg = svg::render_svg_with_evidence_state_options_and_links(
         document,
         &elements,
@@ -801,6 +829,143 @@ fn build_visual_envelope_resolved(
     };
     envelope.validate()?;
     Ok(envelope)
+}
+
+pub(super) fn declared_acceptance_results(
+    document: &Document,
+    links: Option<&crate::config::LinkIndex>,
+) -> Vec<crate::diag::AcceptanceResult> {
+    fn result(
+        source: &str,
+        id: &str,
+        component: &str,
+        claim: &crate::model::AcceptanceClaim,
+    ) -> crate::diag::AcceptanceResult {
+        crate::diag::AcceptanceResult {
+            id: format!("{source}::{id}"),
+            requirement: claim.requirement.clone(),
+            component: component.into(),
+            entry: claim.entry.clone(),
+            test: crate::diag::AcceptanceTestIdentity {
+                package: claim.test.package.clone(),
+                target: claim.test.target.clone(),
+                name: claim.test.name.clone(),
+            },
+            inputs: claim.inputs.clone(),
+            expected: claim.expected.clone(),
+            required: claim.required,
+            outcome: crate::diag::AcceptanceOutcome::NotRun,
+            detail: "declared; no acceptance test was run".into(),
+        }
+    }
+
+    let mut out = document
+        .acceptance
+        .iter()
+        .map(|(id, claim)| result("ply.yaml", id, &claim.component, claim))
+        .collect::<Vec<_>>();
+    if let Some(links) = links {
+        for (outer, link) in links {
+            for (id, claim) in &link.document.acceptance {
+                let component = if claim.component == link.target_name {
+                    outer.clone()
+                } else if let Some(suffix) = claim
+                    .component
+                    .strip_prefix(&format!("{}.", link.target_name))
+                {
+                    format!("{outer}.{suffix}")
+                } else {
+                    continue;
+                };
+                out.push(result(&link.target_path, id, &component, claim));
+            }
+        }
+    }
+    out.sort_by(|left, right| left.id.cmp(&right.id));
+    out
+}
+
+fn add_acceptance_elements(
+    result: &Envelope,
+    elements: &mut BTreeMap<String, VisualElement>,
+    semantic_ids: &mut BTreeMap<String, String>,
+) -> Result<(), VisualEnvelopeError> {
+    for acceptance in &result.acceptance {
+        let id = stable_element_id("acceptance", &acceptance.id);
+        let component_id = stable_element_id("component", &acceptance.component);
+        // Invalid declarations still need a drawable row for their E0212.
+        // Parent those to the workspace instead of turning a reportable
+        // document finding into a second, envelope-destroying error.
+        let parent_id = if elements.contains_key(&component_id) {
+            component_id
+        } else {
+            stable_element_id("workspace", "workspace")
+        };
+        let (verdict, state, engine) = if result.command == "render" {
+            ("declared", "declared", None)
+        } else {
+            match acceptance.outcome {
+                crate::diag::AcceptanceOutcome::Passed => {
+                    ("passed", "earned", Some("cargo-test".into()))
+                }
+                crate::diag::AcceptanceOutcome::Failed => {
+                    ("failed", "violation", Some("cargo-test".into()))
+                }
+                crate::diag::AcceptanceOutcome::Timeout => {
+                    ("timeout", "gap", Some("cargo-test".into()))
+                }
+                crate::diag::AcceptanceOutcome::ToolError => {
+                    ("tool_error", "gap", Some("cargo-test".into()))
+                }
+                crate::diag::AcceptanceOutcome::NotRun => ("not_run", "gap", None),
+            }
+        };
+        let label = acceptance
+            .id
+            .rsplit_once("::")
+            .map(|(_, id)| id)
+            .unwrap_or(&acceptance.id)
+            .to_string();
+        if semantic_ids
+            .insert(acceptance.id.clone(), id.clone())
+            .is_some()
+        {
+            return Err(VisualEnvelopeError::Invalid(format!(
+                "duplicate acceptance semantic identity {:?}",
+                acceptance.id
+            )));
+        }
+        if elements
+            .insert(
+                id.clone(),
+                VisualElement {
+                    id,
+                    kind: "acceptance".into(),
+                    label,
+                    parent_id: Some(parent_id),
+                    declaration: Some(acceptance.requirement.clone()),
+                    evidence: ElementEvidence {
+                        verdict: verdict.into(),
+                        statuses: Vec::new(),
+                        reused: false,
+                        engine,
+                        seed: None,
+                        cases: None,
+                        state: state.into(),
+                    },
+                    source: None,
+                    diagnostic_ids: Vec::new(),
+                },
+            )
+            .is_some()
+        {
+            return Err(VisualEnvelopeError::Invalid(format!(
+                "duplicate acceptance element id for {:?}",
+                acceptance.id
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Draw the document again at every level that can still fold visible detail.
@@ -1738,6 +1903,7 @@ mod tests {
                 ..Default::default()
             },
             diagnostics: Vec::new(),
+            acceptance: Vec::new(),
             coverage: None,
             trust_surface: None,
             open_items: None,
@@ -1842,6 +2008,7 @@ mod tests {
                 ..Default::default()
             },
             diagnostics: Vec::new(),
+            acceptance: Vec::new(),
             coverage: None,
             trust_surface: None,
             open_items: None,

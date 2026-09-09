@@ -10,6 +10,7 @@
 //! binary itself. `src/main.rs` is now the shell: it parses nothing and
 //! decides nothing, it calls [`run`].
 
+pub mod acceptance;
 pub mod audit;
 pub mod check;
 pub mod explain;
@@ -954,9 +955,36 @@ fn claims_sharing(items: &[ply_core::diag::NotCarriedForward], why: &str) -> (St
     (join_plainly(&names), names.len() > 1)
 }
 
+fn human_report(envelope: &ply_core::diag::Envelope) -> String {
+    let diagnostics = diagnostics_report(&envelope.diagnostics);
+    if envelope.acceptance.is_empty() {
+        return format!("{}{diagnostics}", tree_report(envelope));
+    }
+
+    let mut out = format!("Local contracts:\n{}\nAcceptance:\n", tree_report(envelope));
+    for result in &envelope.acceptance {
+        let outcome = match result.outcome {
+            ply_core::diag::AcceptanceOutcome::Passed => "passed",
+            ply_core::diag::AcceptanceOutcome::Failed => "failed",
+            ply_core::diag::AcceptanceOutcome::Timeout => "timeout",
+            ply_core::diag::AcceptanceOutcome::ToolError => "tool error",
+            ply_core::diag::AcceptanceOutcome::NotRun => "not run",
+        };
+        let requirement = if result.required { " (required)" } else { "" };
+        out.push_str(&format!(
+            "  {} — {outcome}{requirement}\n    {}\n    {}\n",
+            result.id, result.requirement, result.detail
+        ));
+    }
+    if !diagnostics.is_empty() {
+        out.push('\n');
+        out.push_str(&diagnostics);
+    }
+    out
+}
+
 fn print_human(envelope: &ply_core::diag::Envelope) {
-    print!("{}", tree_report(envelope));
-    print!("{}", diagnostics_report(&envelope.diagnostics));
+    print!("{}", human_report(envelope));
 }
 
 /// The terminal-readable half of `--json`'s `diagnostics` array. A
@@ -1054,10 +1082,24 @@ fn exit_code_for(envelope: &ply_core::diag::Envelope, fail_on: FailOn) -> i32 {
         .any(|d| d.severity == "warning" || d.severity == "error");
 
     let mut absences: Vec<String> = Vec::new();
-    walk_absences(&envelope.root, &mut |v| {
-        if is_absence(v) {
-            absences.push(v.to_string());
-        }
+    // An acceptance-only invocation requested no contract evidence. Its
+    // structurally empty root remains `unclaimed` so acceptance cannot
+    // paint a function green, but that sentinel is not an owed check. With
+    // neither contract children nor acceptance, the historical "checked
+    // nothing" failure remains unchanged.
+    if !envelope.root.children.is_empty() || envelope.acceptance.is_empty() {
+        walk_absences(&envelope.root, &mut |v| {
+            if is_absence(v) {
+                absences.push(v.to_string());
+            }
+        });
+    }
+
+    let required_acceptance_failed = envelope.acceptance.iter().any(|result| {
+        result.required && result.outcome != ply_core::diag::AcceptanceOutcome::Passed
+    });
+    let acceptance_tool_error = envelope.acceptance.iter().any(|result| {
+        result.required && result.outcome == ply_core::diag::AcceptanceOutcome::ToolError
     });
 
     let fails = match fail_on {
@@ -1065,13 +1107,13 @@ fn exit_code_for(envelope: &ply_core::diag::Envelope, fail_on: FailOn) -> i32 {
         FailOn::Evidence => has_error || !absences.is_empty(),
         FailOn::Warn => has_warning || !absences.is_empty(),
     };
-    if !fails {
+    if !fails && !required_acceptance_failed {
         return 0;
     }
     if absences.iter().any(|v| v == "engine-missing") {
         return 3;
     }
-    if absences.iter().any(|v| v.starts_with("tool_error")) {
+    if acceptance_tool_error || absences.iter().any(|v| v.starts_with("tool_error")) {
         return 2;
     }
     1
@@ -1719,6 +1761,7 @@ mod tests {
                 ..Default::default()
             },
             diagnostics: vec![],
+            acceptance: vec![],
             coverage: None,
             trust_surface: None,
             open_items: None,
@@ -1739,6 +1782,78 @@ mod tests {
         assert_eq!(
             exit_code_for(&envelope(&["bounded(2)", "fuzzed(256)"]), FailOn::Evidence),
             0
+        );
+    }
+
+    #[test]
+    fn acceptance_has_an_independent_required_gate() {
+        use ply_core::diag::{AcceptanceOutcome, AcceptanceResult, AcceptanceTestIdentity};
+
+        let result = |required, outcome| AcceptanceResult {
+            id: "ply.yaml::maps_response".into(),
+            requirement: "maps a decimal response".into(),
+            component: "mapping".into(),
+            entry: "app::mapping::map_response".into(),
+            test: AcceptanceTestIdentity {
+                package: "app".into(),
+                target: "venue_response".into(),
+                name: "decimal_strings_map".into(),
+            },
+            inputs: vec!["tests/fixtures/response.json".into()],
+            expected: vec!["tests/fixtures/response.expected.json".into()],
+            required,
+            outcome,
+            detail: String::new(),
+        };
+
+        let mut acceptance_only = envelope(&[]);
+        acceptance_only.acceptance = vec![result(true, AcceptanceOutcome::Passed)];
+        assert_eq!(
+            exit_code_for(&acceptance_only, FailOn::Evidence),
+            0,
+            "a requested acceptance-only run does not owe an unrequested contract check"
+        );
+
+        for fail_on in [FailOn::Error, FailOn::Evidence, FailOn::Warn] {
+            let mut failed = envelope(&["bounded(2)"]);
+            failed.acceptance = vec![result(true, AcceptanceOutcome::Failed)];
+            assert_eq!(exit_code_for(&failed, fail_on), 1);
+
+            let mut tool_error = envelope(&["bounded(2)"]);
+            tool_error.acceptance = vec![result(true, AcceptanceOutcome::ToolError)];
+            assert_eq!(exit_code_for(&tool_error, fail_on), 2);
+        }
+
+        let mut optional = envelope(&[]);
+        optional.acceptance = vec![result(false, AcceptanceOutcome::Failed)];
+        assert_eq!(exit_code_for(&optional, FailOn::Evidence), 0);
+    }
+
+    #[test]
+    fn human_report_keeps_local_contracts_and_acceptance_visibly_separate() {
+        use ply_core::diag::{AcceptanceOutcome, AcceptanceResult, AcceptanceTestIdentity};
+
+        let mut report = envelope(&["bounded(2)"]);
+        report.acceptance.push(AcceptanceResult {
+            id: "ply.yaml::maps_response".into(),
+            requirement: "decimal response maps to exact records".into(),
+            component: "mapping".into(),
+            entry: "app::mapping::map_response".into(),
+            test: AcceptanceTestIdentity {
+                package: "app".into(),
+                target: "venue_response".into(),
+                name: "decimal_strings_map".into(),
+            },
+            inputs: vec!["tests/fixtures/response.json".into()],
+            expected: vec!["tests/fixtures/response.expected.json".into()],
+            required: true,
+            outcome: AcceptanceOutcome::Failed,
+            detail: "exact integration test failed".into(),
+        });
+
+        assert_eq!(
+            human_report(&report),
+            "Local contracts:\nworkspace — bounded(2)\n  f — bounded(2)\n\nAcceptance:\n  ply.yaml::maps_response — failed (required)\n    decimal response maps to exact records\n    exact integration test failed\n"
         );
     }
 

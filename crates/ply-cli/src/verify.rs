@@ -450,6 +450,53 @@ fn link_finding_diag(finding: &config::LinkFinding) -> Diagnostic {
     }
 }
 
+fn linked_acceptance_scope_diag(
+    outer_name: &str,
+    child_path: &str,
+    claim_id: &str,
+    component: &str,
+) -> Diagnostic {
+    Diagnostic {
+        code: "W0543".into(),
+        severity: "warning".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "acceptance".into(),
+        node_id: outer_name.into(),
+        title: format!(
+            "acceptance claim `{claim_id}` in `{child_path}` belongs to unselected component `{component}`; it was outside this composed invocation and was not run (W0543, §5.4e)"
+        ),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
+fn acceptance_document_diag(finding: &ply_core::check::Diagnostic) -> Diagnostic {
+    let node_id = match &finding.target {
+        ply_core::check::Target::Acceptance(name) => format!("ply.yaml::{name}"),
+        _ => "ply.yaml".into(),
+    };
+    Diagnostic {
+        code: finding.code.into(),
+        severity: "error".into(),
+        phase: "verify".into(),
+        engine: "ply".into(),
+        check: "acceptance".into(),
+        node_id,
+        title: finding.message.clone(),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
 /// Verifies one config snapshot and returns that same parsed document for
 /// publication. This is the integration API for visual publication.
 pub fn verify_crate_result(crate_dir: &Path, opts: &VerifyOptions) -> Result<VerificationResult> {
@@ -519,6 +566,24 @@ pub fn verify_crate_result(crate_dir: &Path, opts: &VerifyOptions) -> Result<Ver
         selected_document
             .components
             .insert(link.target_name.clone(), effective_component);
+        selected_document.acceptance.retain(|claim_id, claim| {
+            let selected = claim.component == link.target_name
+                || claim
+                    .component
+                    .starts_with(&format!("{}.", link.target_name));
+            if !selected {
+                result
+                    .envelope
+                    .diagnostics
+                    .push(linked_acceptance_scope_diag(
+                        outer_name,
+                        &link.target_path,
+                        claim_id,
+                        &claim.component,
+                    ));
+            }
+            selected
+        });
         let child = verify_loaded_crate(child_dir, opts, selected_document)?;
         let before_graft = result.clone();
         if let Err(error) = graft_linked_result(
@@ -627,7 +692,19 @@ fn rebase_relative_path(path: &str, child_prefix: &Path) -> String {
     if path.is_absolute() || child_prefix.as_os_str().is_empty() {
         return path.to_string_lossy().into_owned();
     }
-    child_prefix.join(path).to_string_lossy().into_owned()
+    let mut normalized = PathBuf::new();
+    for component in child_prefix.join(path).components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push("..");
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized.to_string_lossy().into_owned()
 }
 
 fn rebase_edit_span(span: &str, child_prefix: &Path) -> String {
@@ -680,7 +757,12 @@ fn graft_linked_result(
     }
 
     for mut diagnostic in child.envelope.diagnostics {
-        if let Some(mapped) = mapped_claim_id(&diagnostic.node_id, child_name, outer_name) {
+        if let Some(claim_id) = diagnostic.node_id.strip_prefix("ply.yaml::") {
+            diagnostic.node_id = format!(
+                "{}::{claim_id}",
+                rebase_relative_path("ply.yaml", child_prefix)
+            );
+        } else if let Some(mapped) = mapped_claim_id(&diagnostic.node_id, child_name, outer_name) {
             diagnostic.node_id = mapped;
         } else if diagnostic.node_id == "workspace" {
             diagnostic.node_id = outer_name.to_string();
@@ -733,6 +815,48 @@ fn graft_linked_result(
         item.node_id = mapped;
         root.envelope.not_carried_forward.push(item);
     }
+
+    for mut acceptance in child.envelope.acceptance {
+        let Some(mapped) = mapped_prefix(&acceptance.component, child_name, outer_name, ".") else {
+            anyhow::bail!(
+                "acceptance result `{}` from linked component `{child_name}` names component `{}` outside the selected subtree",
+                acceptance.id,
+                acceptance.component
+            );
+        };
+        acceptance.component = mapped;
+        let child_document = child_prefix.join("ply.yaml").to_string_lossy().into_owned();
+        let Some((_, claim_id)) = acceptance.id.split_once("::") else {
+            anyhow::bail!(
+                "acceptance result `{}` from linked component `{child_name}` has no source-document identity",
+                acceptance.id
+            );
+        };
+        acceptance.id = format!("{child_document}::{claim_id}");
+        acceptance.inputs = acceptance
+            .inputs
+            .iter()
+            .map(|path| rebase_relative_path(path, child_prefix))
+            .collect();
+        acceptance.expected = acceptance
+            .expected
+            .iter()
+            .map(|path| rebase_relative_path(path, child_prefix))
+            .collect();
+        if root
+            .envelope
+            .acceptance
+            .iter()
+            .any(|existing| existing.id == acceptance.id)
+        {
+            anyhow::bail!(
+                "linked acceptance id `{}` collides with an existing result; no last-writer-wins mapping is allowed",
+                acceptance.id
+            );
+        }
+        root.envelope.acceptance.push(acceptance);
+    }
+    root.envelope.acceptance.sort_by(|a, b| a.id.cmp(&b.id));
 
     root.envelope.root.verdict = worst_of(&root.envelope.root.children);
     root.envelope.root.statuses = union_statuses(&root.envelope.root.children);
@@ -2332,6 +2456,25 @@ fn verify_loaded_crate(
             .push(node);
     }
 
+    // Application observations run after every contract engine has stopped,
+    // but before the contract record is published. A cancellation here
+    // therefore leaves the old record intact, and ordinary acceptance
+    // outcomes never enter `ply.lock`.
+    let acceptance_findings = ply_core::check::run_checks(&file)
+        .into_iter()
+        .filter(|finding| matches!(finding.target, ply_core::check::Target::Acceptance(_)))
+        .collect::<Vec<_>>();
+    let acceptance = if acceptance_findings.is_empty() {
+        crate::acceptance::run(crate_dir, &file, opts.engine_timeout_secs)?
+    } else {
+        let results = crate::acceptance::not_run(
+            &file,
+            "acceptance configuration is invalid; no acceptance test was run",
+        );
+        diagnostics.extend(acceptance_findings.iter().map(acceptance_document_diag));
+        results
+    };
+
     if ply_core::engines::cancellation_requested() {
         anyhow::bail!("verification was interrupted; the existing record was preserved");
     }
@@ -2381,6 +2524,7 @@ fn verify_loaded_crate(
         ply_version: PLY_VERSION.into(),
         root,
         diagnostics,
+        acceptance,
         coverage: None,
         trust_surface: None,
         open_items: None,

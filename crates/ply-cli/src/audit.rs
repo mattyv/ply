@@ -197,6 +197,7 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
                     ply_version: PLY_VERSION.into(),
                     root: empty_workspace(),
                     diagnostics: violations,
+                    acceptance: Vec::new(),
                     coverage: Some(unread_coverage()),
                     // Absent, not empty: this run did not read a trust
                     // surface, which is a different fact from reading one
@@ -340,6 +341,7 @@ pub fn audit_crate(crate_dir: &Path) -> Result<AuditReport> {
             ply_version: PLY_VERSION.into(),
             root: workspace_node(&doc),
             diagnostics: vec![],
+            acceptance: Vec::new(),
             coverage: Some(coverage),
             trust_surface: Some(items),
             open_items: None,
