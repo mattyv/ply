@@ -470,7 +470,7 @@ refusal shipped the day before.
       corrected to what rule 9 now says, and the suite is now a CI step. A
       test nothing runs is not a test.
 
-- [x] **CLOSED: the spec reference now names the command that prints it.**
+- [x] **CLOSED (`ad52299`, merged `b658831`): the spec reference now names the command that prints it.**
       Asked whether `cargo ply skills` should also write out
       `The-Ply-Spec.md`. It should not: the spec is already embedded, and
       `cargo ply explain 5.4b` already prints any section on request; none
@@ -485,6 +485,303 @@ refusal shipped the day before.
       that is how a reference is written and not what `explain` takes as an
       argument. Pinned by a test that runs the command each message names
       and requires it to print the section.
+
+## Component-property proof: composing function proofs — 2026-09-09
+
+Brief: consume valid function-level proofs as premises and establish a named
+property of a component. Not re-proving function bodies; not a general
+Rust-to-Verus translator.
+
+- [x] **M1 DONE: the theorem is stated and the backend is proved capable of
+      the shape we actually need.** "Every state reachable from a covered
+      constructor by finitely many permitted, normally-returning operations
+      satisfies I", with the calling discipline and the exclusions
+      (concurrency, re-entrancy, panicking transitions) written down rather
+      than assumed. Design addendum in `docs/component-proof-design.md`,
+      which also retracts three stale claims -- chiefly "`&mut self` methods
+      cannot be claimed", untrue since transition promises shipped.
+
+      **RETRACTED, same day: the measurement written here was wrong.** It
+      claimed 12.1s for the bodies against 1.8s for the contracts, "seven
+      times faster". That compared a cold first invocation of Verus against
+      a warm one. Warm, three runs each: bodies 783/740/742 ms, contracts
+      816/731/706 ms -- **1:1**, with nearly all of it `vstd` import and no
+      measurable solver work either side. The obligation counts were
+      inflated too (the empty `fn main()` was being counted), and the
+      trusted-wrapper cost belongs to the cache shadow, not the bucket.
+      Composing from contracts is still right, but for reasons that survive
+      measurement, not for speed.
+
+      **Worse, and found by the same review: the arithmetic encoding was
+      unsound.** Contracts are Rust expressions, so `old(available) - tokens`
+      is machine subtraction; transcribing it into the prover's `int` makes
+      it unbounded. Bounding the *observers* by their declared range does
+      nothing about the *operators*. Reproduced end to end: an
+      implementation using `wrapping_sub` satisfies the promise -- checked by
+      compiling and running it -- while the invariant is false, `available =
+      4294967295` against `capacity = 5`. The model verifies anyway. Every
+      arithmetic operation in a translated contract now owes its own
+      non-overflow obligation, and a clause that cannot discharge it is
+      named and refused rather than reinterpreted.
+
+      Non-vacuity was checked in one direction only: two weakenings, each
+      correctly failing. That does not establish the premise set is
+      satisfiable, and a contradictory one verifies everything.
+
+      Verus 0.2026.08.23.fbbbbcf installed to the session scratchpad by the
+      four steps `tests/spike/verus/FINDINGS.md` records; all four still work
+      verbatim, archive byte-for-byte the recorded 301,751,770. Control
+      re-run before anything new: the existing bucket proof, 6 verified,
+      0 errors.
+
+- [x] **M2 DONE (`11fa9c5`), then hardened after review found seven ways it
+      reported complete coverage when it should not.** All closed, each with
+      the test that constructs it: a second premise for one item (the verdict
+      changed with iteration order -- same inputs, two answers); a premise
+      whose source, contract text or build configuration is not what is there
+      now; a premise standing in for a role it is not; a frame fact citing
+      the contract as its justification where the contract does not state it
+      (the omitted-frame hole re-admitted through a side door); a premise for
+      an item the scan never found, which is evidence the inventory is
+      incomplete and was being discarded silently; an empty inventory reading
+      as full coverage; and a reading named in the invariant but never
+      declared as an observer, which left the frame check nothing to look
+      for.
+
+      Two obligations added rather than assumed: **arithmetic safety** per
+      operation, from the unsoundness above, and **reachability**, because
+      satisfiability is not decidable here and a contradictory premise set
+      discharges everything.
+
+      Reading a contract now asks whether it constrains the observer's
+      *post-state*, not whether it mentions it: `old(capacity)`, a comment
+      and a string literal each silenced the frame blocker before.
+
+      **The check caught its own fixture.** The baseline test asserted a
+      capacity frame fact its contract never stated -- exactly the defect --
+      so the fixture was made faithful to `proof/bucket.rs` instead.
+
+- [x] Original M2 entry: the pure obligation planner. Init, preservation, domain
+      compatibility, coverage, boundary and assumptions, generated from
+      premises. No processes, no file writes, no rendering. Explicit
+      before/after state; an omitted post-state fact is unconstrained, never
+      implicitly unchanged.
+- [x] **Two review leftovers closed.** The probes behind every number in the
+      composition addendum now live in `tests/spike/verus-component/compose/`
+      with a runner, instead of a session scratchpad -- a doc claiming
+      "measured" about files nobody can run is the same defect as a green
+      test nothing executes. And `usize`/`isize` were hardcoded to 64-bit;
+      they now follow the **target's** width and refuse to guess when it is
+      unknown, because assuming 64 on a 32-bit target errs in the dangerous
+      direction: it hands the solver a wider range than the program has, so
+      an overflow the program really suffers is proved impossible.
+
+- [x] **M3 DONE: the operation boundary, scanned from source and failing
+      closed.** A separate scan from the sampled pool, with the opposite
+      bias: the pool exists to *run* things so it omits what it cannot build
+      arguments for and drops generic impls with no record, while this one
+      puts anything it cannot classify into a list that blocks the property.
+
+      Found and named: every construction path rather than the first;
+      mutators, including through a trait implementation; a public field; a
+      free function in the same module taking `&mut` (private fields are not
+      a boundary against the same module); a method handing out a mutable
+      reference; a method consuming the value; a generic impl -- **the exact
+      hole the sampled pool has**; and macro-expanded items, which a source
+      scan cannot see. Source that will not parse yields a blocker, never an
+      empty inventory, because empty reads as "nothing can change this type".
+
+      Eleven tests, all written before the scanner. One runs against the real
+      `tests/fixtures/tokenbucket` rather than a snippet, since a
+      hand-written test source agrees with whatever the scanner happens to
+      do.
+
+      **RETRACTED 2026-09-09, twice over.** This said the scanner was
+      "broken five ways afterwards to confirm each one bites". Those
+      breakages were run in the session and left nothing behind, so no
+      reader can check them -- a claim about a check nobody can run is the
+      same defect as a green test nothing executes, which this file objects
+      to two entries down. And the substance was wrong regardless: those
+      eleven tests missed fifteen of sixteen real ways to build or write the
+      value, so whatever they confirmed, it was not that the boundary was
+      closed. The seventeen-route table that replaced them is checked in and
+      runs on every build.
+
+- [ ] **M3 original entry: close the operation boundary.** **The sampled pool cannot serve
+      as the certificate** -- confirmed against the source, not assumed:
+      `harness.rs:3266` drops generic impls with *no record at all*, and
+      `ImplMatch::NotThisType` likewise. `ReceiverPlan` does retain
+      `excluded_operations` as structured data (call path + reason), which
+      is the honest half to build on.
+- [x] **M4 DONE: the obligations are generated and discharged on the real
+      solver.** The bucket's four contracts go in and **four obligations come
+      back verified, no errors**; the satisfiability probes come back with an
+      error for every one, which is the outcome they are supposed to have.
+
+      **RETRACTED, same day: this said "five", and five is the solver's own
+      count including the empty `fn main`.** An empty file reports "1
+      verified". There are four obligations. This is the same miscount the
+      design doc retracted for the M1 figures two entries up, made again by
+      the same route -- reading the solver's total instead of counting what
+      was asked.
+      Everything is re-runnable: `tests/spike/verus-component/compose/run.sh`
+      steps 6 to 9, over files the adapter emits rather than files anyone
+      wrote by hand.
+
+      **The range obligation bites, and the premise deliberately withheld
+      from it is load-bearing -- both measured, not argued.** Drop the guard
+      that makes `try_take`'s subtraction safe -- the exact contract the
+      wrapping program in step 5 satisfies -- and the range obligation fails,
+      naming it (step 8). Put back the one premise the generator withholds
+      (that the state *after* is in range) and the same broken contract
+      passes clean, five verified, no errors (step 9). A wrapped value is
+      perfectly in range, so assuming it makes the premises contradictory and
+      every question answers yes. That omission is now the difference between
+      catching the unsoundness and not.
+
+      **The two files are separate on purpose.** The satisfiability probe
+      asks the solver to derive a falsehood from one contract alone, so its
+      *success* is the failure. Mixed in with the rest, a reader counting
+      errors would have to know which lines invert -- so they do not share a
+      file, and a test fails if an obligation appears in both.
+
+      **A defect the new tests found in the work already written.** `==>` was
+      being swapped for `|` before parsing. `|` binds tighter than `==` and
+      groups leftwards, so `ok ==> available == old(available) - tokens` came
+      apart into the wrong shape with a stray name in it -- and nothing
+      caught it, because every test on that path checked only that
+      translation *succeeded*. It is read as `=` now: assignment is the one
+      Rust operator with implication's precedence and associativity.
+
+      Also closed, each with the test that constructs it: a parameter with no
+      declared width was a free variable the solver could choose anything
+      for; a name appearing in a contract and declared nowhere was the same
+      hole without even a type to point at; two operand widths in one
+      operation had no single range to check against; arithmetic on values
+      with no declared width was checked against a guess; and two item paths
+      that flatten to the same identifier would have had one set of
+      obligations answering for both.
+
+      `saturating_add` translates and owes **no** range obligation, because
+      unlike `+` it is total -- there is no input on which it misbehaves.
+      That is why the real `refill` is written with it, and the fixture now
+      says so; written with a plain `+` the same contract is not
+      overflow-free and the obligation correctly refuses it.
+
+      **THREE WAYS TO GET A FALSE PROOF OUT OF THIS, found by review the same
+      day, each reproduced end to end. All open.** Until they are closed no
+      composition result should be reported to a user as established.
+
+      1. **An argument that shares a reading's name is silently read as the
+         reading.** The real fixture's constructor is `new(capacity: u32)`
+         promising `result.capacity() == capacity` -- exactly this shape. The
+         promise "capacity equals the argument" becomes "capacity equals
+         capacity", the argument goes unused, nothing blocks, and the solver
+         agrees. A constructor taking `available` and promising
+         `available == 100, capacity == available` verifies, while the real
+         Rust it describes leaves available at 100 and capacity at 5. The
+         committed fixture named the argument `cap` and so never met it.
+      2. **Saturating addition on a signed type is clamped only at the
+         top.** It is translated as "the sum, or the maximum" with no floor,
+         and owes no range obligation because it is total in Rust. For a
+         signed type a sum below the minimum comes out as a value outside the
+         type, which contradicts the declared range and makes exactly those
+         inputs vanish from the obligation. Reproduced: two readings with
+         `lo < hi`, both shifted down by a saturating add, verifies clean --
+         and the real Rust ends with `lo == hi`.
+      3. **A clause restating what the declared type already guarantees hands
+         back the withheld premise.** The arithmetic obligation assumes the
+         whole postcondition, so a clause like `available >= 0` on a `u32` --
+         true for free, and the sort of thing a function proof discharges
+         from the field's type -- supplies exactly the premise that is
+         deliberately left out. Measured: the unguarded contract that step 8
+         catches passes clean with that one clause added. So the load-bearing
+         omission holds only while no clause implies it, which nothing
+         currently checks.
+
+      **FIXED. The three routes above are closed, each with the input that
+      opened it, and the runner's step 10 is the third one as a standing
+      regression.** An argument sharing a reading's name now blocks -- the
+      two are genuinely indistinguishable once flattened to bare names, so
+      the ambiguity is refused rather than resolved by a rule that could be
+      the wrong way round. Saturating addition clamps at both ends. And the
+      range obligation is handed only the clauses that say nothing about the
+      state after, so neither the withheld premise nor a clause implying it
+      can reach it. The four obligations still verify with no errors, the
+      probes still fail as they must, and steps 8, 9 and 10 all report the
+      one error they should.
+
+      **The boundary scan was fail-open, not fail-closed.** Fourteen of
+      sixteen real compiling Rust snippets that construct or mutate the type
+      come back as a complete inventory with nothing blocked: a
+      crate-visible field, an impl in an inline module or inside a function
+      body, a method on another type in the same module taking `&mut`,
+      interior mutability through `&self`, a free function that *constructs*
+      the type, public enum variant fields, `&mut [T]` and `Option<&mut T>`
+      arguments, a type alias hiding both the function and the impl, a
+      wrapper struct with a public field, a by-value method returning the
+      type, a raw pointer, a `static mut`, and a trait implemented for
+      `&mut T`. A method handing out `Option<&mut u32>` is classified as a
+      mutator rather than an escape, so a proved contract on it says nothing
+      about writes through the reference it returns. The M3 entry's "fails
+      closed" is therefore too strong: it fails closed on the shapes it
+      recognises and silently ignores the rest.
+
+      **FIXED, and the cause was structural.** The walk recognised four
+      kinds of item and ignored everything else, and ignoring is the one
+      thing this scan must never do. The default is now to block, and only
+      items that provably cannot reach a value -- an import, a name, an
+      immutable constant, a trait declaration -- are passed over. Modules
+      written out here and items inside function bodies are walked;
+      anything but a fully private field is an escape, `pub(crate)`
+      included; an enum is an escape outright, since a variant can be
+      written by name; a field that can be changed through a shared
+      reference is an escape, because then `&self` is no boundary and the
+      readers the property rests on stop being readers; a mutable reference
+      handed out at any depth is an escape, not a mutator; a free function
+      returning the type is a construction path and is listed as one; and a
+      receiver written out in full is read by its type rather than being
+      blocked with a reason that was untrue.
+
+      Two rules carry most of the weight and both over-report on purpose,
+      because over-reporting blocks: a write to any of the type's own field
+      names, anywhere in the module, is an escape wherever it lives --
+      private fields are not a boundary inside the module that declares
+      them, and a function need not mention the type to reach one; and any
+      argument mentioning the type in a shape the scan cannot judge blocks
+      rather than being assumed harmless.
+
+      Seventeen routes, sixteen of them the ones review demonstrated, now
+      run as one table: each must be accounted for, either by the operation
+      appearing under its own name or by the route blocking. Two of them
+      the scan now classifies outright rather than blocking, which is the
+      better outcome and is recorded as such. The seventeenth is a
+      compound assignment -- `b.available -= n` is a write and is not an
+      assignment node, so reading only assignment nodes missed every
+      compound operator. The table alone did not catch that (the signature
+      rule blocked the route anyway), which is why the write detector has
+      its own direct test.
+
+      **Two more, less severe, both FIXED.** Precondition arithmetic was
+      range-checked against the state *after* the operation, directly
+      contradicting the comment next to it, which failed contracts whose own
+      precondition made them safe; it is bounded against the state before
+      now. And a frame fact justified by effect analysis never reached the
+      encoding, so the planner accepted the justification and the solver then
+      failed preservation for want of the very fact it justified; it is
+      carried as a premise now.
+
+      KNOWN GAPS, open on purpose: the accepted clause subset does not cover
+      the syntax people actually write -- `self.available()`, `*result`, `as
+      u64` -- so something has to normalise real contracts into this form,
+      and that does not exist. `min` and `max` inline both branches, so a
+      nesting of them grows exponentially in the emitted text. And the
+      satisfiability probe is one-sided: it detects a contract that
+      contradicts itself, it does not certify that one does not.
+- [ ] **M5: report exact evidence** on the state node -- `NodeKind::Container`
+      has no evidence payload by construction and this design does not fight
+      that.
+- [ ] **M6: fingerprint and invalidate**, reusing the existing scheduling.
 
 ## A/B round 4: the tool's best result, and three new gaps — 2026-09-07
 
@@ -605,10 +902,14 @@ value Ply built after 1 of the type's own operations had run on it").
       the cache (round 2) and the bucket (round 3), Ply caught one of six
       pre-registered bugs, and **four of the five misses were correctly
       outside what could be declared at all**. The cause is structural, not a
-      defect: `&mut self` methods cannot be claimed (`ply-checkable-code`
-      rule 9 says so plainly), so for a type that changes, the only
-      expressible promise is a standing rule over the whole value -- and the
-      bugs live in the transitions. Two agents, working independently and
+      defect: `&mut self` methods could not be claimed at the time
+      (`ply-checkable-code` rule 9 said so plainly), so for a type that
+      changes, the only expressible promise was a standing rule over the
+      whole value -- and the bugs live in the transitions. **That limit is
+      gone as of 2026-09-08:** transition promises shipped and rule 9 was
+      rewritten. The sentence is left standing in the past tense rather than
+      edited away, because the 1-of-6 measurement below was taken under it
+      and does not describe today's tool. Two agents, working independently and
       without seeing each other, reached that same conclusion from the guide
       and fell back on ordinary tests for the mutating methods. The guide is
       honest and the tool matches it; what is now measured is how much that

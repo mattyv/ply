@@ -1,6 +1,7 @@
 pub mod arch;
 pub mod callgraph;
 pub mod check;
+pub mod compose;
 pub mod config;
 pub mod contract_rt;
 pub mod diag;

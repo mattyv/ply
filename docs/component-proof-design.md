@@ -1,7 +1,10 @@
 # Component-level proof: a short design
 
-**Status: design only. Nothing here is built. The recommendation is one
-measurement first, not an implementation.**
+**Status: superseded in part. Read the addendum at the bottom first — it
+retracts three claims in the sections below, including "`&mut self` methods
+cannot be claimed", which stopped being true when transition promises
+shipped. The original text is kept because how it was wrong is the useful
+part.**
 
 ## The gap, as measured rather than argued
 
@@ -145,3 +148,205 @@ mutated in place, which is a different proposition for a deductive verifier.
 Not to be built before that answer: the adapter, result semantics, reuse and
 fingerprinting, the drawing, and the boundary/coverage analysis. All of them
 are downstream of whether obligations 1 and 2 can be discharged at all.
+
+---
+
+# Addendum: composition, not implementation — 2026-09-09
+
+**Status: this section supersedes the stale claims above and sets the shape
+of the implementation. It also carries its own retractions — the timing
+comparison below was wrong, and the arithmetic rule it first stated was
+unsound. Both are corrected in place, with the measurements that corrected
+them.**
+
+**Every number below is re-runnable.** `tests/spike/verus-component/compose/`
+holds the entailment probe, both breakage variants, the vacuity probe and
+the arithmetic counterexample, with `run.sh` to drive them. They lived only
+in a session scratchpad for the first few hours of this work, which meant
+the doc said "measured" about files nobody else could run -- the same defect
+as a green test nothing executes.
+
+## Retractions
+
+Three statements above are no longer true and are withdrawn.
+
+1. **"`&mut self` methods cannot be claimed" is false.** It was true when
+   this document was written; transition promises shipped and `old(...)`
+   reads the before-state (`ply-checkable-code` rule 9, rewritten). Every
+   sentence above resting on rule 9's old form — including "the transitions
+   are unclaimable" in the opening section — is withdrawn.
+2. **"What to do first: one measurement, before any adapter work" is
+   discharged.** The measurement was taken (`FINDINGS.md`) and the answer was
+   yes. That instruction no longer gates anything.
+3. **"Nothing here is built"** is withdrawn as of this addendum.
+
+## The theorem, stated exactly
+
+For an invariant `I` over state type `T`:
+
+> **Every state reachable from a covered constructor by finitely many
+> permitted, normally-returning operations satisfies `I`.**
+
+Every word in that sentence is load-bearing, and three of them bound the
+claim rather than extend it:
+
+- **permitted** — operations are invoked only where their preconditions
+  hold. This proves `I` holds *under that calling discipline*. It does not
+  prove any external caller obeys it. A caller who violates a precondition
+  is outside the theorem, and the report must say so rather than let a
+  reader infer the stronger claim.
+- **normally-returning** — a transition that panics or unwinds partway is
+  excluded. The state it leaves behind is not covered.
+- **covered** — constructors Ply enumerated and accounted for. An
+  unaccounted construction path voids the theorem, it does not weaken it.
+
+Also excluded from this first theorem, each because it needs its own model
+and its own obligations: concurrency, re-entrancy, and any observation of
+the state from another thread.
+
+## The central decision: prove the composition, not the bodies
+
+The existing spike (`proof/bucket.rs`) proves the token bucket's
+*implementation* — the real method bodies, against their contracts. That is
+not what this work needs. Function proofs are taken as sound premises; the
+open question is whether their contracts **entail** the component property.
+
+That is a pure logical entailment over abstract state and contract
+predicates. It needs no function bodies at all. Measured today, both halves
+on the same machine and the same Verus (0.2026.08.23.fbbbbcf):
+
+**RETRACTED the same day it was written.** This first claimed "12.1s vs
+1.8s, seven times faster". That was a cold first invocation of Verus
+compared against a warm one. Re-measured warm, three runs each, same binary
+and same files:
+
+| what is proved | obligations | wall clock, warm |
+|---|---|---|
+| the bucket's bodies (`proof/bucket.rs`) | 3 (+ empty `main`) | 783 / 740 / 742 ms |
+| the bucket's contracts entail the invariant | 3 (+ empty `main`) | 816 / 731 / 706 ms |
+
+**The ratio is 1:1.** Neither does measurable solver work; nearly all the
+wall clock is `vstd` import. Two further corrections: the original
+"6 verified"/"4 verified" counted the empty `fn main()`, so the honest
+counts are 3 and 3; and the "vstd wrappers, `no_unwind`" cost belongs to
+`proof/cache.rs`, not to the bucket, which is two `u32` fields and plain
+arithmetic and never paid it.
+
+**Composing from contracts is still the right shape, but not for speed.**
+What survives measurement: it needs no function bodies, so it does not
+inherit the "invariant re-checked after every field-mutating call"
+strictness that rejects a private helper breaking and restoring the
+invariant; and it is the only thing that answers the actual question, which
+is whether the contracts *entail* the property, not whether the bodies
+satisfy the contracts.
+
+**Non-vacuity, checked rather than assumed.** Two deliberate breakages, each
+run:
+
+- Weakening `refill`'s contract to `post.available >= pre.available` (it may
+  now exceed capacity): **3 verified, 1 error**, "postcondition not
+  satisfied".
+- Omitting `try_take`'s capacity frame fact: **3 verified, 1 error**. The
+  solver is free to vary capacity, exactly as it should be — an omitted
+  post-state fact is *unconstrained*, never implicitly unchanged.
+
+## What a premise is
+
+A function proof is not usable as "this function is proved". Composition
+needs the contract it was proved against, the domain it was proved over, and
+enough identity to tell whether it still describes today's source. A premise
+therefore carries:
+
+- **Identity** — canonical item path and contract identity.
+- **Fingerprints** — source and contract, plus the active compilation
+  configuration. A premise whose source moved is stale, not weaker.
+- **Domain** — what the proof covered, and any bound. A premise proved over
+  a restricted domain cannot license an unrestricted conclusion.
+- **The contract itself** — preconditions, relational postconditions, the
+  observers those mention and what they mean, and the frame facts.
+- **Assumptions** — anything the proof rested on and did not discharge.
+- **Provenance** — which engine produced it, or that it is declared trusted.
+
+Frame facts get their own line because they are the quiet failure. An
+omitted post-state fact is unconstrained. A frame fact must come from a
+proved contract or from a justified effect analysis — never from the absence
+of a mention, and never from `&self`, which is not proof of purity: interior
+mutability and shared aliases can mutate through a shared reference.
+
+## The proof-provider boundary
+
+Tests may supply known-good premises directly. Production may not. It
+consumes validated existing evidence, or a premise the author has explicitly
+declared trusted — and where trust is involved, the result is visibly
+conditional on it.
+
+**A missing provider, or a proof-result fixture, can never render an
+unconditional "proved".** The current `prove` check reports the adapter as
+absent and earns `engine-missing`; that is the right floor and this work
+must not lower it.
+
+## Where the result attaches
+
+The state node. `NodeKind::Container` has no `Evidence` payload *by
+construction* — a component cannot claim its own verdict, and this design
+does not fight that. `state_node` already exists, already carries
+`evidence: None`, and already folds worst-of into its component.
+
+## Arithmetic: the first encoding was unsound, and the rule that replaces it
+
+This section first claimed "machine arithmetic is never silently replaced by
+unbounded arithmetic; the width is a premise". **The width premise does not
+do that**, and review produced the counterexample the same day.
+
+Bounding the *observers* by their declared range says nothing about the
+*operators inside the contract*. A Ply contract is a Rust expression, so
+`old(available) - tokens` is machine subtraction; transcribed into the
+prover's `int` it becomes unbounded subtraction, and those differ exactly
+where it matters. Reproduced end to end:
+
+- Contract, as an author would write it: on success `available ==
+  old(available) - tokens`, with capacity framed.
+- Implementation: `self.available = self.available.wrapping_sub(tokens)`.
+- The model **verifies**. The program, compiled and run, has the promise
+  evaluate **true** while `available <= capacity` is **false** —
+  `available = 4294967295, capacity = 5`, from `available = 3, tokens = 4`.
+
+A premise the program genuinely satisfies composed into a "proved" invariant
+the program violates. That is the outcome this whole tool exists to prevent,
+and it was in the encoding this document recommended.
+
+**The rule.** Observers still enter with the range facts of their declared
+types, but that is necessary and never sufficient. Every arithmetic
+operation in a translated contract carries its own obligation: *within the
+declared ranges, this operation does not overflow*. Where that cannot be
+discharged the property is **not established** and the offending clause is
+named — never quietly reinterpreted under wider arithmetic. A contract
+written to be overflow-safe discharges it; `tests/fixtures/tokenbucket`
+widens to `u64` for exactly this reason. One that is not gets refused, which
+is the right answer rather than a limitation.
+
+**Satisfiability is the sibling hole**, disclosed here rather than
+discovered later: a contradictory premise set verifies everything. Give
+`refill` both `post.available == pre.available + 1` and `post.available ==
+pre.available` and the obligations discharge, meaning nothing. Vacuity must
+be checked. The non-vacuity checks recorded above tested sensitivity to two
+weakenings, which is a different property and does not cover this.
+
+## The outcomes, kept distinct
+
+- obligations closed with adequate premises → **property proved, within the
+  stated scope**
+- closed only under trusted premises → **conditional**
+- insufficient contracts, or the solver could not close → **not
+  established**, naming the open obligation. Never `violation`.
+- boundary not closed → **incomplete coverage**; no complete property proof
+- timeout or tool failure → that reason, retained
+- an executable counterexample → violation
+
+A model refuting a contract implication is a **composition countermodel**:
+behaviour a weak contract permits, which the implementation may well never
+produce. It is not a program bug until replay or stronger reasoning makes it
+one, and it must not be labelled as one.
+
+Sampled evidence is preserved alongside an unsuccessful proof. A claim must
+never end a proof attempt with less evidence than it had before.
