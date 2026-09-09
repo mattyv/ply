@@ -31,14 +31,8 @@ fn an_array_parameter_earns_a_real_bounded_verdict_with_no_unwind_annotation() {
         run.json
     );
 
-    let generated = std::fs::read_to_string(fixture.path().join("src/ply_generated.rs")).unwrap();
     assert!(
-        generated.contains("let card_bps: [u32; 4] = kani::any();"),
-        "the alias `Bps` must resolve to `u32` in the generated harness:\n{generated}"
-    );
-    assert!(
-        !generated.contains("kani::unwind"),
-        "§5.4b: an array is cheap *because* its bound is a compile-time constant -- emitting an \
-         unwind annotation for one would be cargo-culting the `Vec` rule:\n{generated}"
+        !fixture.path().join("src/ply_generated.rs").exists(),
+        "the proof ran, but its scratch module survived in the user's crate"
     );
 }

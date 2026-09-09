@@ -92,12 +92,10 @@ fn a_declared_contract_for_an_unclaimed_callee_earns_a_conditional_verdict() {
         "nothing has checked `legacy_rate` -- saying so is what keeps the assumption honest: {diag}"
     );
 
-    // The generated harness must stand in for the callee, never call it.
-    let generated = std::fs::read_to_string(fixture.path().join("src/ply_generated.rs")).unwrap();
-    assert!(
-        generated.contains("#[kani::stub(legacy_rate, ply_stub_legacy_rate)]"),
-        "generated harness:\n{generated}"
-    );
+    // A clean proof establishes that the generated harness compiled and ran,
+    // while its conditional result establishes that the callee was stood in
+    // for. The scratch module must not survive that run in the user's crate.
+    assert!(!fixture.path().join("src/ply_generated.rs").exists());
 }
 
 /// The terminal is the surface most people read, and it showed none of
