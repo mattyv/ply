@@ -22,6 +22,9 @@
       metadata tests cannot transiently lose Cargo during a parallel baseline.
 - [x] Isolate the scratch-capture counter too, so concurrent engine commands
       in other test modules cannot be mistaken for files this test leaked.
+- [x] Restore a temporarily registered shared harness before refreshing the
+      original Cargo lock. Otherwise the first run records a generated member
+      and makes its own lock stale as soon as the manifest guard restores it.
 
 ## Landed: bounded concurrency for `cargo ply verify` — `8302e95` — 2026-09-08
 

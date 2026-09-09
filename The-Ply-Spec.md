@@ -2248,13 +2248,15 @@ callee stubs are merged. Cargo's resolved local dependency closure must be fully
 covered by the first-party source walk; an unrecognised manifest spelling, including
 `workspace = true`, remains serial and uncached. A virtual Cargo workspace root has no
 root package closure; linked member documents resolve their own closures. After a serial
-run that began with no current lock, the coordinator may let ordinary `cargo metadata`
-materialise or refresh the original workspace lock. It stores the new evidence only if a
-second, locked probe confirms that resolution is current and the source walk covers its
-complete local closure. When a sampling harness owns a separate workspace and lock, the
-target package's resolved external dependency identity in that lock must also equal the
-identity in the original lock; harness-only dependencies are excluded. A mismatch leaves
-the evidence visible in the current report but unrecorded. That refresh never enables
+run that began with no current lock, the coordinator releases any temporary shared-harness
+workspace registration, then lets ordinary `cargo metadata` materialise or refresh the
+original workspace lock. Refreshing before that release would pin the generated member and
+make the lock stale as soon as the user's manifest was restored. It stores the new evidence
+only if a second, locked probe confirms that resolution is current and the source walk
+covers its complete local closure. When a sampling harness owns a separate workspace and
+lock, the target package's resolved external dependency identity in that lock must also
+equal the identity in the original lock; harness-only dependencies are excluded. A mismatch
+leaves the evidence visible in the current report but unrecorded. That refresh never enables
 workers in the run already in progress.
 Worker source shadows, target directories, and
 witness directories are private; build outputs are never copied into a shadow. Each worker

@@ -1448,7 +1448,7 @@ fn verify_loaded_crate(
     // Lives until `verify_crate` returns, so the harness stays a member for
     // every engine invocation below and the user's `Cargo.toml` goes back to
     // what they wrote the moment the run ends -- on the error paths too.
-    let _manifest_registration: Option<harness_crate::ManifestRegistration>;
+    let mut manifest_registration: Option<harness_crate::ManifestRegistration> = None;
     if needs_harness {
         let cargo_toml_path = crate_dir.join("Cargo.toml");
         let cargo_toml_text = std::fs::read_to_string(&cargo_toml_path)
@@ -1463,7 +1463,7 @@ fn verify_loaded_crate(
         // every such crate ineligible for mutation testing.
         let workspace = harness_crate::harness_workspace_plan(crate_dir, &harness_dir)?;
         let standalone = workspace.standalone;
-        _manifest_registration = if standalone {
+        manifest_registration = if standalone {
             None
         } else {
             Some(harness_crate::ManifestRegistration::register(
@@ -2191,6 +2191,14 @@ fn verify_loaded_crate(
     if ply_core::engines::cancellation_requested() {
         anyhow::bail!("verification was interrupted; no partial result was published");
     }
+
+    // Every engine that needs the shared harness has stopped. Restore the
+    // user's workspace manifest before refreshing Cargo.lock: resolving
+    // while the temporary harness is still registered would record that
+    // generated package in the lock, then make the lock stale the moment
+    // the registration guard restores the manifest on return. A second run
+    // would consequently refuse every result the first run just stored.
+    drop(manifest_registration);
 
     // A serial first run may have created Cargo.lock. Re-read the resolved
     // graph once, after every engine has stopped but before publishing the
