@@ -32,7 +32,7 @@ pub open spec fn TokenBucket_new_post(post: S, cap: int) -> bool {
 /// The contract of `TokenBucket::refill`, exactly as it was proved.
 pub open spec fn TokenBucket_refill_post(pre: S, post: S, tokens: int) -> bool {
     true
-    && (post.available == (if (if pre.available + tokens <= 4294967295 { pre.available + tokens } else { 4294967295 }) <= pre.capacity { (if pre.available + tokens <= 4294967295 { pre.available + tokens } else { 4294967295 }) } else { pre.capacity }))
+    && (post.available == (if (if pre.available + tokens < 0 { 0 } else if pre.available + tokens > 4294967295 { 4294967295 } else { pre.available + tokens }) <= pre.capacity { (if pre.available + tokens < 0 { 0 } else if pre.available + tokens > 4294967295 { 4294967295 } else { pre.available + tokens }) } else { pre.capacity }))
     && (post.capacity == pre.capacity)
 }
 
@@ -43,6 +43,15 @@ pub open spec fn TokenBucket_try_take_post(pre: S, post: S, tokens: int, ok: boo
     && ((ok) ==> (post.available == pre.available - tokens))
     && ((!ok) ==> (post.available == pre.available))
     && (post.capacity == pre.capacity)
+}
+
+/// The part of `TokenBucket::try_take`'s contract that says nothing about the state after.
+/// The range obligation may assume this and nothing else: a clause about the
+/// state after can restate what the declared type already guarantees, which
+/// hands back the premise that obligation exists to withhold.
+pub open spec fn TokenBucket_try_take_before(pre: S, tokens: int, ok: bool) -> bool {
+    true
+    && (ok == (pre.available >= tokens))
 }
 
 /// Every state this construction path can produce satisfies the property.
@@ -57,8 +66,8 @@ proof fn ob_init_TokenBucket_new(post: S, cap: int)
 { }
 
 /// The induction step: the property held before, and the contract carries
-/// it across. `typed(post)` is a premise here and NOT in the range
-/// obligation below -- there it would be the hole itself.
+/// it across. This one may assume the state after is in range; the range
+/// obligation may not, and that is what licenses it here.
 proof fn ob_preserve_TokenBucket_try_take(pre: S, post: S, tokens: int, ok: bool)
     requires
         inv(pre),
@@ -72,22 +81,24 @@ proof fn ob_preserve_TokenBucket_try_take(pre: S, post: S, tokens: int, ok: bool
 /// Rust arithmetic, not the solver's. The contract is a Rust expression,
 /// so each operation in it has to stay inside the declared type -- an
 /// implementation that wraps satisfies the promise and breaks the property.
-/// `typed(post)` is deliberately NOT assumed: a wrapped value is perfectly
-/// in range, so assuming it makes these premises contradictory and every
-/// question answers yes.
+/// NOTHING about the state after is assumed -- not its declared range, and
+/// not the contract's own clauses about it. A wrapped value is perfectly in
+/// range, so any premise implying that makes these contradictory and every
+/// question answers yes; a clause restating what the type already guarantees
+/// is enough to do it.
 proof fn ob_arith_TokenBucket_try_take(pre: S, post: S, tokens: int, ok: bool)
     requires
         inv(pre),
         typed(pre),
         0 <= tokens <= 4294967295,
-        TokenBucket_try_take_post(pre, post, tokens, ok),
+        TokenBucket_try_take_before(pre, tokens, ok),
     ensures
         (ok) ==> (pre.available - tokens >= 0)
 { }
 
 /// The induction step: the property held before, and the contract carries
-/// it across. `typed(post)` is a premise here and NOT in the range
-/// obligation below -- there it would be the hole itself.
+/// it across. This one may assume the state after is in range; the range
+/// obligation may not, and that is what licenses it here.
 proof fn ob_preserve_TokenBucket_refill(pre: S, post: S, tokens: int)
     requires
         inv(pre),

@@ -32,7 +32,9 @@
 
 use std::collections::BTreeMap;
 
-use super::{ObligationKind, Parameter, Plan, Premise, PremiseRole, Property, RangeFacts};
+use super::{
+    FrameJustification, ObligationKind, Parameter, Plan, Premise, PremiseRole, Property, RangeFacts,
+};
 
 /// A clause this adapter will not translate, and why. Refusing by name is
 /// the point: silently dropping a clause would make the remaining proof
@@ -308,17 +310,24 @@ fn render(
                 // Its ceiling comes from the operands' declared type, so
                 // it is only translatable where that type is known.
                 ("saturating_add", 2) => {
-                    let Some((_, _, max)) = width_of(e, env, clause)? else {
+                    let Some((_, min, max)) = width_of(e, env, clause)? else {
                         return Err(refuse(
                             "a saturating addition of values with no declared width, so there \
-                             is no ceiling to saturate at",
+                             is no range to saturate within",
                         ));
                     };
                     let (mut a, mut b) = (String::new(), String::new());
                     render(&c.args[0], property, env, clause, bare, &mut a)?;
                     render(&c.args[1], property, env, clause, bare, &mut b)?;
+                    // BOTH ends. Clamping only at the top was a false proof:
+                    // on a signed type a sum below the minimum came out
+                    // below the declared range, contradicted it, and took
+                    // exactly those inputs out of the question (found by
+                    // review 2026-09-09).
                     out.push_str(&format!(
-                        "(if {a} + {b} <= {max} {{ {a} + {b} }} else {{ {max} }})"
+                        "(if {a} + {b} < {min} {{ {min} }} \
+                          else if {a} + {b} > {max} {{ {max} }} \
+                          else {{ {a} + {b} }})"
                     ));
                     Ok(())
                 }
@@ -388,17 +397,44 @@ pub fn range_checks(
     property: &Property,
     parameters: &[Parameter],
 ) -> Result<Vec<RangeCheck>, Untranslatable> {
+    range_checks_over(clause, property, parameters, Bare::Post)
+}
+
+/// The same, saying which state a bare reading is in.
+///
+/// A precondition talks about the state *before*, and bounding its
+/// arithmetic against the state after failed contracts whose own
+/// precondition made them safe (found by review 2026-09-09).
+fn range_checks_over(
+    clause: &str,
+    property: &Property,
+    parameters: &[Parameter],
+    bare: Bare,
+) -> Result<Vec<RangeCheck>, Untranslatable> {
     let expr = parse(clause)?;
     let env = environment(property, parameters);
     let mut out = Vec::new();
-    walk_arith(&expr, property, &env, clause, &mut Vec::new(), &mut out)?;
+    walk_arith(
+        &expr,
+        property,
+        &env,
+        clause,
+        bare,
+        &mut Vec::new(),
+        &mut out,
+    )?;
     Ok(out)
 }
 
 /// The one translation helper the arithmetic walk needs, already holding a
 /// type environment.
-fn render_text(text: &str, property: &Property, env: &Env) -> Result<String, Untranslatable> {
-    translate(text, property, env, Bare::Post)
+fn render_text(
+    text: &str,
+    property: &Property,
+    env: &Env,
+    bare: Bare,
+) -> Result<String, Untranslatable> {
+    translate(text, property, env, bare)
 }
 
 /// The declared width of every name a clause may mention.
@@ -472,6 +508,7 @@ fn walk_arith(
     property: &Property,
     env: &BTreeMap<String, RangeFacts>,
     clause: &str,
+    bare: Bare,
     guards: &mut Vec<String>,
     out: &mut Vec<RangeCheck>,
 ) -> Result<(), Untranslatable> {
@@ -491,8 +528,8 @@ fn walk_arith(
                             .into(),
                     });
                 };
-                let l = render_text(&expr_text(&b.left), property, env)?;
-                let r = render_text(&expr_text(&b.right), property, env)?;
+                let l = render_text(&expr_text(&b.left), property, env, bare)?;
+                let r = render_text(&expr_text(&b.right), property, env, bare)?;
                 let sym = match b.op {
                     syn::BinOp::Add(_) => "+",
                     syn::BinOp::Sub(_) => "-",
@@ -522,38 +559,38 @@ fn walk_arith(
             // only reached under a condition, so anything on it owes its
             // range only there.
             let guard = match b.op {
-                syn::BinOp::And(_) => Some(render_text(&expr_text(&b.left), property, env)?),
+                syn::BinOp::And(_) => Some(render_text(&expr_text(&b.left), property, env, bare)?),
                 syn::BinOp::Or(_) => Some(format!(
                     "!({})",
-                    render_text(&expr_text(&b.left), property, env)?
+                    render_text(&expr_text(&b.left), property, env, bare)?
                 )),
                 _ => None,
             };
-            walk_arith(&b.left, property, env, clause, guards, out)?;
+            walk_arith(&b.left, property, env, clause, bare, guards, out)?;
             match guard {
                 Some(g) => {
                     guards.push(g);
-                    let r = walk_arith(&b.right, property, env, clause, guards, out);
+                    let r = walk_arith(&b.right, property, env, clause, bare, guards, out);
                     guards.pop();
                     r
                 }
-                None => walk_arith(&b.right, property, env, clause, guards, out),
+                None => walk_arith(&b.right, property, env, clause, bare, guards, out),
             }
         }
         // An implication asserts its consequent only under its antecedent,
         // so arithmetic on the right owes its range only there.
         syn::Expr::Assign(a) => {
-            walk_arith(&a.left, property, env, clause, guards, out)?;
-            guards.push(render_text(&expr_text(&a.left), property, env)?);
-            let r = walk_arith(&a.right, property, env, clause, guards, out);
+            walk_arith(&a.left, property, env, clause, bare, guards, out)?;
+            guards.push(render_text(&expr_text(&a.left), property, env, bare)?);
+            let r = walk_arith(&a.right, property, env, clause, bare, guards, out);
             guards.pop();
             r
         }
-        syn::Expr::Paren(p) => walk_arith(&p.expr, property, env, clause, guards, out),
-        syn::Expr::Unary(u) => walk_arith(&u.expr, property, env, clause, guards, out),
+        syn::Expr::Paren(p) => walk_arith(&p.expr, property, env, clause, bare, guards, out),
+        syn::Expr::Unary(u) => walk_arith(&u.expr, property, env, clause, bare, guards, out),
         syn::Expr::Call(c) => {
             for a in &c.args {
-                walk_arith(a, property, env, clause, guards, out)?;
+                walk_arith(a, property, env, clause, bare, guards, out)?;
             }
             Ok(())
         }
@@ -748,8 +785,8 @@ pub fn encode(plan: &Plan, premises: &[Premise]) -> Encoded {
             ObligationKind::Preservation { .. } => {
                 s.push_str(&format!(
                     "/// The induction step: the property held before, and the contract carries\n\
-                     /// it across. `typed(post)` is a premise here and NOT in the range\n\
-                     /// obligation below -- there it would be the hole itself.\n\
+                     /// it across. This one may assume the state after is in range; the range\n\
+                     /// obligation may not, and that is what licenses it here.\n\
                      proof fn {name}({args})\n    requires\n{req}    ensures inv(post)\n{{ }}\n\n",
                     args = c.signature(true),
                     req = c.requires(Assume::Preserve),
@@ -790,9 +827,11 @@ pub fn encode(plan: &Plan, premises: &[Premise]) -> Encoded {
                     "/// Rust arithmetic, not the solver's. The contract is a Rust expression,\n\
                      /// so each operation in it has to stay inside the declared type -- an\n\
                      /// implementation that wraps satisfies the promise and breaks the property.\n\
-                     /// `typed(post)` is deliberately NOT assumed: a wrapped value is perfectly\n\
-                     /// in range, so assuming it makes these premises contradictory and every\n\
-                     /// question answers yes.\n\
+                     /// NOTHING about the state after is assumed -- not its declared range, and\n\
+                     /// not the contract's own clauses about it. A wrapped value is perfectly in\n\
+                     /// range, so any premise implying that makes these contradictory and every\n\
+                     /// question answers yes; a clause restating what the type already guarantees\n\
+                     /// is enough to do it.\n\
                      proof fn {name}({args})\n    requires\n{req}    ensures\n{ens}\n{{ }}\n\n",
                     args = c.signature(c.two_state),
                     req = c.requires(Assume::Arith),
@@ -836,6 +875,9 @@ struct Contract {
     params: Vec<Parameter>,
     pre_call: Option<String>,
     post_call: String,
+    /// The clauses that say nothing about the state after -- the only ones
+    /// the range obligation may assume. See `Assume::Arith`.
+    before_only_call: Option<String>,
     range: Vec<RangeCheck>,
 }
 
@@ -862,8 +904,11 @@ impl Contract {
                 lines.push("typed(pre)".into());
                 lines.push("typed(post)".into());
             }
-            // No `typed(post)`. See the doc comment on the emitted
-            // obligation -- this omission is the fix.
+            // Nothing about the state after -- not `typed(post)`, and not
+            // the contract's own clauses about it. Assuming any of it was a
+            // false proof: a clause restating what the declared type already
+            // guarantees hands `typed(post)` straight back, and the wrapping
+            // contract then passes (found by review 2026-09-09).
             Assume::Arith => {
                 if self.two_state {
                     lines.push("inv(pre)".into());
@@ -881,7 +926,14 @@ impl Contract {
         if let Some(pre) = &self.pre_call {
             lines.push(pre.clone());
         }
-        lines.push(self.post_call.clone());
+        match assume {
+            Assume::Arith => {
+                if let Some(before) = &self.before_only_call {
+                    lines.push(before.clone());
+                }
+            }
+            _ => lines.push(self.post_call.clone()),
+        }
         lines
             .iter()
             .map(|l| format!("        {l},\n"))
@@ -911,9 +963,25 @@ fn contract_of(p: &Premise, property: &Property) -> Result<Contract, Untranslata
         .collect::<String>();
 
     let mut range = Vec::new();
-    let mut post_clauses = Vec::new();
+    let mut post_clauses: Vec<String> = Vec::new();
+    // Split as we go: a clause that says nothing about the state after is
+    // the only kind the range obligation may lean on.
+    let mut before_only = Vec::new();
+    // A frame fact established outside the contract is a premise the solver
+    // has no other way to learn. It reached nothing before, so the planner
+    // accepted the justification and the solver then failed preservation for
+    // want of the very fact it justified (found by review 2026-09-09).
+    for f in &p.frame {
+        if two_state && matches!(f.justification, FrameJustification::EffectAnalysis { .. }) {
+            post_clauses.push(format!("post.{} == pre.{}", f.observer, f.observer));
+        }
+    }
     for clause in &p.ensures {
-        post_clauses.push(translate_clause(clause, property, &params)?);
+        let translated = translate_clause(clause, property, &params)?;
+        if !translated.contains("post.") {
+            before_only.push(translated.clone());
+        }
+        post_clauses.push(translated);
         range.extend(range_checks(clause, property, &params)?);
     }
     let mut pre_clauses = Vec::new();
@@ -924,10 +992,10 @@ fn contract_of(p: &Premise, property: &Property) -> Result<Contract, Untranslata
             &environment(property, &params),
             Bare::Pre,
         )?);
-        // A precondition's arithmetic is the caller's to keep in range, and
-        // the caller is outside this theorem. Recorded as untranslated
-        // rather than silently checked or silently skipped.
-        range.extend(range_checks(clause, property, &params)?);
+        // Bounded against the state it talks about, which is the state
+        // before. Bounding it against the state after is what the comment
+        // that used to sit here denied was happening at all.
+        range.extend(range_checks_over(clause, property, &params, Bare::Pre)?);
     }
 
     let state_decl = if two_state {
@@ -962,12 +1030,31 @@ fn contract_of(p: &Premise, property: &Property) -> Result<Contract, Untranslata
         Some(format!("{name}_pre(pre{call_params})"))
     };
 
+    let before_only_call = if before_only.is_empty() || !two_state {
+        None
+    } else {
+        declarations.push_str(&format!(
+            "/// The part of `{}`'s contract that says nothing about the state after.\n\
+             /// The range obligation may assume this and nothing else: a clause about the\n\
+             /// state after can restate what the declared type already guarantees, which\n\
+             /// hands back the premise that obligation exists to withhold.\n\
+             pub open spec fn {name}_before(pre: S{decl_params}) -> bool {{\n    true\n",
+            p.item
+        ));
+        for c in &before_only {
+            declarations.push_str(&format!("    && ({c})\n"));
+        }
+        declarations.push_str("}\n\n");
+        Some(format!("{name}_before(pre{call_params})"))
+    };
+
     Ok(Contract {
         declarations,
         two_state,
         params,
         pre_call,
         post_call: format!("{name}_post({state_call}{call_params})"),
+        before_only_call,
         range,
     })
 }
@@ -975,7 +1062,9 @@ fn contract_of(p: &Premise, property: &Property) -> Result<Contract, Untranslata
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose::{Domain, Inventory, Observer, Premise, Provenance, plan};
+    use crate::compose::{
+        Domain, FrameFact, FrameJustification, Inventory, Observer, Premise, Provenance, plan,
+    };
 
     fn obs(name: &str) -> Observer {
         Observer {
@@ -1408,6 +1497,207 @@ mod tests {
             body.contains("(ok) ==> (pre.available - tokens >= 0)"),
             "the subtraction's lower bound, conditioned on the guard that makes it safe, is \
              missing: {body}"
+        );
+    }
+
+    /// **A false proof, found by review 2026-09-09.** An argument that
+    /// happens to share a reading's name was read as the reading, so the
+    /// argument went unused and a promise about it became a promise about
+    /// nothing. The real constructor is `new(capacity: u32)` promising the
+    /// capacity reading equals it -- exactly this shape; the fixture named
+    /// the argument `cap` and so never met it.
+    ///
+    /// In this normalised form the two are genuinely indistinguishable, so
+    /// the ambiguity is refused rather than resolved by a rule that could
+    /// be the wrong way round.
+    #[test]
+    fn an_argument_sharing_a_readings_name_blocks_rather_than_being_read_as_the_reading() {
+        let premises = vec![premise(
+            "TokenBucket::with",
+            PremiseRole::Constructor,
+            vec![u32_param("available")],
+            &["available == 100", "capacity == available"],
+        )];
+        let inventory = Inventory {
+            constructors: vec!["TokenBucket::with".into()],
+            mutators: vec![],
+            escapes: vec![],
+            unclassified: vec![],
+        };
+        let p = plan(
+            &property(),
+            &inventory,
+            &premises,
+            &std::collections::BTreeMap::new(),
+        );
+        assert!(
+            !p.coverage_is_complete(),
+            "an argument named after a reading makes the contract ambiguous and must block: \
+             {:?}",
+            p.blockers
+        );
+    }
+
+    /// **A false proof, found by review 2026-09-09.** Saturating addition
+    /// was translated with a ceiling and no floor. On a signed type a sum
+    /// below the minimum then lands outside the declared range, contradicts
+    /// it, and takes exactly those inputs out of the question.
+    #[test]
+    fn saturating_addition_on_a_signed_type_clamps_at_both_ends() {
+        let signed = Property {
+            name: "in order".into(),
+            invariant: "lo <= hi".into(),
+            state_type: "Window".into(),
+            observers: vec![
+                Observer {
+                    name: "lo".into(),
+                    facts: RangeFacts::of_rust_type("i32", Some(64)),
+                    reads_are_pure: true,
+                },
+                Observer {
+                    name: "hi".into(),
+                    facts: RangeFacts::of_rust_type("i32", Some(64)),
+                    reads_are_pure: true,
+                },
+            ],
+        };
+        let params = vec![Parameter {
+            name: "d".into(),
+            facts: RangeFacts::of_rust_type("i32", Some(64)),
+        }];
+        let out = translate_clause("lo == saturating_add(old(lo), d)", &signed, &params).unwrap();
+        assert!(
+            out.contains("-2147483648"),
+            "a signed saturating add must clamp at the bottom too: {out}"
+        );
+    }
+
+    /// **A false proof, found by review 2026-09-09.** The range obligation
+    /// assumed the whole postcondition, so any clause restating what the
+    /// declared type already guarantees -- `available >= 0` on a `u32`,
+    /// which a function proof discharges from the field's type -- handed
+    /// back the one premise the obligation deliberately withholds, and the
+    /// wrapping contract passed.
+    ///
+    /// Nothing the operation says about the state *after* may reach it.
+    #[test]
+    fn the_range_obligation_assumes_nothing_about_the_state_after() {
+        let mut premises = bucket_premises();
+        premises
+            .iter_mut()
+            .find(|p| p.item.ends_with("try_take"))
+            .unwrap()
+            .ensures
+            .push("available >= 0".into());
+        let p = plan(
+            &property(),
+            &bucket_inventory(),
+            &premises,
+            &std::collections::BTreeMap::new(),
+        );
+        let source = encode(&p, &premises).source;
+        let body = obligation_text(&source, "ob_arith_TokenBucket_try_take");
+        let requires = body.split("ensures").next().unwrap_or("");
+        assert!(
+            !requires.contains("post."),
+            "no premise of the range obligation may mention the state after: {requires}"
+        );
+        // The premise it is given is a named set of clauses, so follow it.
+        let carried = source
+            .split("pub open spec fn TokenBucket_try_take_before")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("the range obligation's premise set is declared");
+        assert!(
+            !carried.contains("post."),
+            "and neither may the set it is handed: {carried}"
+        );
+        assert!(
+            carried.contains("pre.available >= tokens"),
+            "the guard that makes the subtraction safe still has to reach it: {carried}"
+        );
+        assert!(
+            !carried.contains(">= 0"),
+            "the clause restating what a u32 already guarantees is exactly what must not \
+             reach it: {carried}"
+        );
+    }
+
+    /// **Found by review 2026-09-09.** A precondition talks about the state
+    /// *before*, and its arithmetic was being bounded against the state
+    /// after -- so a contract whose own precondition makes its subtraction
+    /// safe failed. Wrong state, and the comment beside the code said it
+    /// was not being checked at all.
+    #[test]
+    fn a_preconditions_arithmetic_is_bounded_against_the_state_it_talks_about() {
+        let mut premises = bucket_premises();
+        let take = premises
+            .iter_mut()
+            .find(|p| p.item.ends_with("try_take"))
+            .unwrap();
+        take.requires.push("available - tokens >= 1".into());
+        let p = plan(
+            &property(),
+            &bucket_inventory(),
+            &premises,
+            &std::collections::BTreeMap::new(),
+        );
+        let body = obligation_text(
+            &encode(&p, &premises).source,
+            "ob_arith_TokenBucket_try_take",
+        );
+        let ensures = body.split("ensures").nth(1).unwrap_or("");
+        assert!(
+            !ensures.contains("post.available - tokens"),
+            "a precondition's arithmetic must not be bounded against the state after: {ensures}"
+        );
+        assert!(
+            ensures.contains("pre.available - tokens >= 0"),
+            "and it must still be bounded, against the state before: {ensures}"
+        );
+    }
+
+    /// **Found by review 2026-09-09.** A frame fact established by effect
+    /// analysis never reached the solver, so the planner passed it and the
+    /// solver then failed preservation for want of the very fact that had
+    /// been established. The justification was doing nothing.
+    #[test]
+    fn a_frame_fact_established_outside_the_contract_still_reaches_the_solver() {
+        let mut premises = bucket_premises();
+        let take = premises
+            .iter_mut()
+            .find(|p| p.item.ends_with("try_take"))
+            .unwrap();
+        take.ensures.retain(|e| !e.contains("capacity"));
+        take.frame.push(FrameFact {
+            observer: "capacity".into(),
+            justification: FrameJustification::EffectAnalysis {
+                reason: "it never writes the field".into(),
+            },
+        });
+        let p = plan(
+            &property(),
+            &bucket_inventory(),
+            &premises,
+            &std::collections::BTreeMap::new(),
+        );
+        assert!(
+            p.coverage_is_complete(),
+            "the frame fact covers the observer, so nothing should block: {:?}",
+            p.blockers
+        );
+        let source = encode(&p, &premises).source;
+        // Inside *this* operation's contract. Looking at the whole file
+        // found the same words in `refill`'s and passed for nothing.
+        let contract = source
+            .split("pub open spec fn TokenBucket_try_take_post")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("try_take's contract is declared");
+        assert!(
+            contract.contains("post.capacity == pre.capacity"),
+            "the established fact has to be carried to the solver, or it does nothing:\n\
+             {contract}"
         );
     }
 

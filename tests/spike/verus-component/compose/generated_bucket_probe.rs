@@ -35,7 +35,7 @@ pub open spec fn TokenBucket_new_post(post: S, cap: int) -> bool {
 /// The contract of `TokenBucket::refill`, exactly as it was proved.
 pub open spec fn TokenBucket_refill_post(pre: S, post: S, tokens: int) -> bool {
     true
-    && (post.available == (if (if pre.available + tokens <= 4294967295 { pre.available + tokens } else { 4294967295 }) <= pre.capacity { (if pre.available + tokens <= 4294967295 { pre.available + tokens } else { 4294967295 }) } else { pre.capacity }))
+    && (post.available == (if (if pre.available + tokens < 0 { 0 } else if pre.available + tokens > 4294967295 { 4294967295 } else { pre.available + tokens }) <= pre.capacity { (if pre.available + tokens < 0 { 0 } else if pre.available + tokens > 4294967295 { 4294967295 } else { pre.available + tokens }) } else { pre.capacity }))
     && (post.capacity == pre.capacity)
 }
 
@@ -46,6 +46,15 @@ pub open spec fn TokenBucket_try_take_post(pre: S, post: S, tokens: int, ok: boo
     && ((ok) ==> (post.available == pre.available - tokens))
     && ((!ok) ==> (post.available == pre.available))
     && (post.capacity == pre.capacity)
+}
+
+/// The part of `TokenBucket::try_take`'s contract that says nothing about the state after.
+/// The range obligation may assume this and nothing else: a clause about the
+/// state after can restate what the declared type already guarantees, which
+/// hands back the premise that obligation exists to withhold.
+pub open spec fn TokenBucket_try_take_before(pre: S, tokens: int, ok: bool) -> bool {
+    true
+    && (ok == (pre.available >= tokens))
 }
 
 /// VERIFYING THIS IS THE FAILURE. A contract that contradicts itself

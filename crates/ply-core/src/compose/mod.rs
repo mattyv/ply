@@ -332,6 +332,12 @@ pub enum Blocker {
     /// A name a contract uses that is neither a declared reading nor a
     /// declared parameter, so nothing in the model bounds it.
     UndeclaredName { item: String, name: String },
+    /// A parameter with the same name as a reading. In a contract written
+    /// as `self.capacity() == capacity` the two are distinct; flattened to
+    /// bare names they are not, and reading it either way silently states
+    /// something the author did not. The real `new(capacity: u32)` is
+    /// exactly this shape.
+    ShadowedReading { item: String, name: String },
 }
 
 /// The plan: what must be discharged, what is assumed, and what stops the
@@ -674,6 +680,12 @@ fn identifiers(expr: &str) -> Vec<String> {
 /// unconstrained.
 fn check_names(p: &Premise, property: &Property, blockers: &mut Vec<Blocker>) {
     for param in &p.parameters {
+        if property.observers.iter().any(|o| o.name == param.name) {
+            blockers.push(Blocker::ShadowedReading {
+                item: p.item.clone(),
+                name: param.name.clone(),
+            });
+        }
         if let RangeFacts::Unsupported { rust_type } = &param.facts {
             blockers.push(Blocker::UnsupportedParameter {
                 item: p.item.clone(),
