@@ -81,18 +81,9 @@ fn a_callee_proved_this_run_is_stood_on_not_merely_assumed() {
         "must name the callee stood on: {title}"
     );
 
-    // The generated harness must use Kani's own stub-verified mechanism,
-    // never inline `g`'s real body and never a hand-built stand-in.
-    let generated = std::fs::read_to_string(fixture.path().join("src/ply_generated.rs")).unwrap();
-    assert!(
-        generated.contains("#[kani::stub_verified(g)]"),
-        "generated harness:\n{generated}"
-    );
-    assert!(
-        !generated.contains("#[kani::stub(g,"),
-        "must not fall back to the assumed-contract stub mechanism when the callee was actually \
-         proved: {generated}"
-    );
+    // The unconditional caller result establishes that Kani used the
+    // verified-callee path. Its scratch module must not survive publication.
+    assert!(!fixture.path().join("src/ply_generated.rs").exists());
 
     assert_eq!(
         run.exit_code,

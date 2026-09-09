@@ -23,7 +23,9 @@ a same-crate callee's newly earned clean bound. Its final fingerprint and cache
 lookup therefore wait until every prerequisite has resolved. Cycles and
 dependencies on cycles retain the existing conservative assumed-contract path.
 
-Bounded checks currently share `src/ply_generated.rs`; violations share
+Serial bounded checks temporarily use `src/ply_generated.rs`, guarded so the original
+crate root is restored byte-for-byte and the scratch file is removed after each proof;
+recognized leftovers from older runs are pruned before planning. Violations share
 `target/ply/witness`; all claims publish counterexample tests through
 `src/ply_generated_cex.rs`; and every claim ultimately contributes to one
 `ply.lock`. Fuzz, test, mutate, and state-history checks additionally share a
