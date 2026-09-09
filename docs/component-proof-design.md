@@ -159,11 +159,12 @@ comparison below was wrong, and the arithmetic rule it first stated was
 unsound. Both are corrected in place, with the measurements that corrected
 them.**
 
-**The probes are not yet in the repository.** The entailment probe and its
-breakage variants were run from a session scratchpad; only `bucket.rs` and
-`cache.rs` are committed. Until those land under
-`tests/spike/verus-component/`, the numbers here are reported rather than
-reproducible, and saying which is the point of this note.
+**Every number below is re-runnable.** `tests/spike/verus-component/compose/`
+holds the entailment probe, both breakage variants, the vacuity probe and
+the arithmetic counterexample, with `run.sh` to drive them. They lived only
+in a session scratchpad for the first few hours of this work, which meant
+the doc said "measured" about files nobody else could run -- the same defect
+as a green test nothing executes.
 
 ## Retractions
 

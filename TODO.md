@@ -566,6 +566,16 @@ Rust-to-Verus translator.
       premises. No processes, no file writes, no rendering. Explicit
       before/after state; an omitted post-state fact is unconstrained, never
       implicitly unchanged.
+- [x] **Two review leftovers closed.** The probes behind every number in the
+      composition addendum now live in `tests/spike/verus-component/compose/`
+      with a runner, instead of a session scratchpad -- a doc claiming
+      "measured" about files nobody can run is the same defect as a green
+      test nothing executes. And `usize`/`isize` were hardcoded to 64-bit;
+      they now follow the **target's** width and refuse to guess when it is
+      unknown, because assuming 64 on a 32-bit target errs in the dangerous
+      direction: it hands the solver a wider range than the program has, so
+      an overflow the program really suffers is proved impossible.
+
 - [ ] **M3: close the operation boundary.** **The sampled pool cannot serve
       as the certificate** -- confirmed against the source, not assumed:
       `harness.rs:3266` drops generic impls with *no record at all*, and

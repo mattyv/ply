@@ -46,29 +46,49 @@ pub enum RangeFacts {
 
 impl RangeFacts {
     /// The bounds of a declared integer type, or `Unsupported`.
-    pub fn of_rust_type(name: &str) -> Self {
-        let (min, max): (i128, i128) = match name {
-            "u8" => (0, u8::MAX as i128),
-            "u16" => (0, u16::MAX as i128),
-            "u32" => (0, u32::MAX as i128),
-            "u64" => (0, u64::MAX as i128),
-            "usize" => (0, u64::MAX as i128),
-            "i8" => (i8::MIN as i128, i8::MAX as i128),
-            "i16" => (i16::MIN as i128, i16::MAX as i128),
-            "i32" => (i32::MIN as i128, i32::MAX as i128),
-            "i64" => (i64::MIN as i128, i64::MAX as i128),
-            "isize" => (i64::MIN as i128, i64::MAX as i128),
-            "bool" => return RangeFacts::Bool,
-            _ => {
-                return RangeFacts::Unsupported {
-                    rust_type: name.to_string(),
-                };
+    ///
+    /// `pointer_width_bits` is the **target's** width, not the host's, and
+    /// it is an `Option` on purpose: `usize` and `isize` have no fixed
+    /// range, and guessing 64 is wrong on a 32-bit target in the direction
+    /// that matters -- it hands the solver a wider range than the program
+    /// has, so an overflow the program really suffers looks impossible.
+    /// Unknown width means `Unsupported`, which blocks. (Hardcoded to 64
+    /// until 2026-09-09; found by review.)
+    pub fn of_rust_type(name: &str, pointer_width_bits: Option<u32>) -> Self {
+        let ptr = |signed: bool| -> Option<(i128, i128)> {
+            match (pointer_width_bits?, signed) {
+                (16, false) => Some((0, u16::MAX as i128)),
+                (32, false) => Some((0, u32::MAX as i128)),
+                (64, false) => Some((0, u64::MAX as i128)),
+                (16, true) => Some((i16::MIN as i128, i16::MAX as i128)),
+                (32, true) => Some((i32::MIN as i128, i32::MAX as i128)),
+                (64, true) => Some((i64::MIN as i128, i64::MAX as i128)),
+                _ => None,
             }
         };
-        RangeFacts::Integer {
-            rust_type: name.to_string(),
-            min,
-            max,
+        let bounds: Option<(i128, i128)> = match name {
+            "u8" => Some((0, u8::MAX as i128)),
+            "u16" => Some((0, u16::MAX as i128)),
+            "u32" => Some((0, u32::MAX as i128)),
+            "u64" => Some((0, u64::MAX as i128)),
+            "usize" => ptr(false),
+            "i8" => Some((i8::MIN as i128, i8::MAX as i128)),
+            "i16" => Some((i16::MIN as i128, i16::MAX as i128)),
+            "i32" => Some((i32::MIN as i128, i32::MAX as i128)),
+            "i64" => Some((i64::MIN as i128, i64::MAX as i128)),
+            "isize" => ptr(true),
+            "bool" => return RangeFacts::Bool,
+            _ => None,
+        };
+        match bounds {
+            Some((min, max)) => RangeFacts::Integer {
+                rust_type: name.to_string(),
+                min,
+                max,
+            },
+            None => RangeFacts::Unsupported {
+                rust_type: name.to_string(),
+            },
         }
     }
 }
@@ -678,7 +698,7 @@ mod tests {
     fn u32_observer(name: &str) -> Observer {
         Observer {
             name: name.to_string(),
-            facts: RangeFacts::of_rust_type("u32"),
+            facts: RangeFacts::of_rust_type("u32", Some(64)),
             reads_are_pure: true,
         }
     }
@@ -973,7 +993,7 @@ mod tests {
         let mut prop = bucket_property();
         prop.observers.push(Observer {
             name: "label".into(),
-            facts: RangeFacts::of_rust_type("String"),
+            facts: RangeFacts::of_rust_type("String", Some(64)),
             reads_are_pure: true,
         });
         let p = plan(
@@ -993,7 +1013,7 @@ mod tests {
     #[test]
     fn declared_widths_become_explicit_bounds_not_unbounded_integers() {
         assert_eq!(
-            RangeFacts::of_rust_type("u32"),
+            RangeFacts::of_rust_type("u32", Some(64)),
             RangeFacts::Integer {
                 rust_type: "u32".into(),
                 min: 0,
@@ -1001,13 +1021,51 @@ mod tests {
             }
         );
         assert_eq!(
-            RangeFacts::of_rust_type("i8"),
+            RangeFacts::of_rust_type("i8", Some(64)),
             RangeFacts::Integer {
                 rust_type: "i8".into(),
                 min: -128,
                 max: 127
             }
         );
+    }
+
+    /// A pointer-sized type follows the **target's** width, and an unknown
+    /// width blocks rather than defaulting.
+    ///
+    /// Guessing 64 on a 32-bit target errs in the dangerous direction: it
+    /// gives the solver a wider range than the program has, so an overflow
+    /// the program really suffers is proved impossible.
+    #[test]
+    fn a_pointer_sized_type_follows_the_target_and_refuses_to_guess() {
+        assert_eq!(
+            RangeFacts::of_rust_type("usize", Some(32)),
+            RangeFacts::Integer {
+                rust_type: "usize".into(),
+                min: 0,
+                max: 4_294_967_295
+            }
+        );
+        assert_eq!(
+            RangeFacts::of_rust_type("isize", Some(32)),
+            RangeFacts::Integer {
+                rust_type: "isize".into(),
+                min: -2_147_483_648,
+                max: 2_147_483_647
+            }
+        );
+        assert_eq!(
+            RangeFacts::of_rust_type("usize", None),
+            RangeFacts::Unsupported {
+                rust_type: "usize".into()
+            },
+            "an unknown target width must block, never default to 64"
+        );
+        // A fixed-width type is unaffected by not knowing the target.
+        assert!(matches!(
+            RangeFacts::of_rust_type("u16", None),
+            RangeFacts::Integer { .. }
+        ));
     }
 
     /// Undischarged assumptions travel with the property, attributed to the
