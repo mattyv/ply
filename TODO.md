@@ -576,7 +576,28 @@ Rust-to-Verus translator.
       direction: it hands the solver a wider range than the program has, so
       an overflow the program really suffers is proved impossible.
 
-- [ ] **M3: close the operation boundary.** **The sampled pool cannot serve
+- [x] **M3 DONE: the operation boundary, scanned from source and failing
+      closed.** A separate scan from the sampled pool, with the opposite
+      bias: the pool exists to *run* things so it omits what it cannot build
+      arguments for and drops generic impls with no record, while this one
+      puts anything it cannot classify into a list that blocks the property.
+
+      Found and named: every construction path rather than the first;
+      mutators, including through a trait implementation; a public field; a
+      free function in the same module taking `&mut` (private fields are not
+      a boundary against the same module); a method handing out a mutable
+      reference; a method consuming the value; a generic impl -- **the exact
+      hole the sampled pool has**; and macro-expanded items, which a source
+      scan cannot see. Source that will not parse yields a blocker, never an
+      empty inventory, because empty reads as "nothing can change this type".
+
+      Eleven tests, all written before the scanner, and the scanner broken
+      five ways afterwards to confirm each one bites. One runs against the
+      real `tests/fixtures/tokenbucket` rather than a snippet, since a
+      hand-written test source agrees with whatever the scanner happens to
+      do.
+
+- [ ] **M3 original entry: close the operation boundary.** **The sampled pool cannot serve
       as the certificate** -- confirmed against the source, not assumed:
       `harness.rs:3266` drops generic impls with *no record at all*, and
       `ImplMatch::NotThisType` likewise. `ReceiverPlan` does retain

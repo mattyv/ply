@@ -20,6 +20,8 @@
 //!
 //! Concurrency and re-entrancy are outside this theorem entirely.
 
+pub mod inventory;
+
 use std::collections::BTreeSet;
 
 /// What a value's declared Rust type licenses us to assume about it.
