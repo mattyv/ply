@@ -689,7 +689,19 @@ Rust-to-Verus translator.
          omission holds only while no clause implies it, which nothing
          currently checks.
 
-      **And the boundary scan is fail-open, not fail-closed.** Fourteen of
+      **FIXED. The three routes above are closed, each with the input that
+      opened it, and the runner's step 10 is the third one as a standing
+      regression.** An argument sharing a reading's name now blocks -- the
+      two are genuinely indistinguishable once flattened to bare names, so
+      the ambiguity is refused rather than resolved by a rule that could be
+      the wrong way round. Saturating addition clamps at both ends. And the
+      range obligation is handed only the clauses that say nothing about the
+      state after, so neither the withheld premise nor a clause implying it
+      can reach it. The four obligations still verify with no errors, the
+      probes still fail as they must, and steps 8, 9 and 10 all report the
+      one error they should.
+
+      **The boundary scan was fail-open, not fail-closed.** Fourteen of
       sixteen real compiling Rust snippets that construct or mutate the type
       come back as a complete inventory with nothing blocked: a
       crate-visible field, an impl in an inline module or inside a function
@@ -705,13 +717,49 @@ Rust-to-Verus translator.
       closed" is therefore too strong: it fails closed on the shapes it
       recognises and silently ignores the rest.
 
-      **Two more, less severe.** Precondition arithmetic is range-checked
-      against the state *after* the operation, directly contradicting the
-      comment next to it, which produces a spurious failure on a contract
-      whose own precondition makes it safe. And a frame fact justified by
-      effect analysis never reaches the encoding at all, so the
-      justification is hollow -- the planner passes and the solver then
-      fails preservation.
+      **FIXED, and the cause was structural.** The walk recognised four
+      kinds of item and ignored everything else, and ignoring is the one
+      thing this scan must never do. The default is now to block, and only
+      items that provably cannot reach a value -- an import, a name, an
+      immutable constant, a trait declaration -- are passed over. Modules
+      written out here and items inside function bodies are walked;
+      anything but a fully private field is an escape, `pub(crate)`
+      included; an enum is an escape outright, since a variant can be
+      written by name; a field that can be changed through a shared
+      reference is an escape, because then `&self` is no boundary and the
+      readers the property rests on stop being readers; a mutable reference
+      handed out at any depth is an escape, not a mutator; a free function
+      returning the type is a construction path and is listed as one; and a
+      receiver written out in full is read by its type rather than being
+      blocked with a reason that was untrue.
+
+      Two rules carry most of the weight and both over-report on purpose,
+      because over-reporting blocks: a write to any of the type's own field
+      names, anywhere in the module, is an escape wherever it lives --
+      private fields are not a boundary inside the module that declares
+      them, and a function need not mention the type to reach one; and any
+      argument mentioning the type in a shape the scan cannot judge blocks
+      rather than being assumed harmless.
+
+      Seventeen routes, sixteen of them the ones review demonstrated, now
+      run as one table: each must be accounted for, either by the operation
+      appearing under its own name or by the route blocking. Two of them
+      the scan now classifies outright rather than blocking, which is the
+      better outcome and is recorded as such. The seventeenth is a
+      compound assignment -- `b.available -= n` is a write and is not an
+      assignment node, so reading only assignment nodes missed every
+      compound operator. The table alone did not catch that (the signature
+      rule blocked the route anyway), which is why the write detector has
+      its own direct test.
+
+      **Two more, less severe, both FIXED.** Precondition arithmetic was
+      range-checked against the state *after* the operation, directly
+      contradicting the comment next to it, which failed contracts whose own
+      precondition made them safe; it is bounded against the state before
+      now. And a frame fact justified by effect analysis never reached the
+      encoding, so the planner accepted the justification and the solver then
+      failed preservation for want of the very fact it justified; it is
+      carried as a premise now.
 
       KNOWN GAPS, open on purpose: the accepted clause subset does not cover
       the syntax people actually write -- `self.available()`, `*result`, `as
