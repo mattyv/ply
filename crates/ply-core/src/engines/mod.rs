@@ -537,15 +537,16 @@ mod run_with_timeout_tests {
 
     const CANCELLATION_CHILD_ENV: &str = "PLY_TEST_CANCELLATION_CHILD";
     const CANCELLATION_TEST_NAME: &str = "engines::run_with_timeout_tests::cancellation_kills_an_active_process_tree_and_is_reported_separately";
+    const EMPTY_PATH_CHILD_ENV: &str = "PLY_TEST_EMPTY_PATH_CHILD";
+    const EMPTY_PATH_TEST_NAME: &str = "engines::run_with_timeout_tests::enforces_the_budget_with_no_timeout_binary_reachable_on_path";
+    const SCRATCH_COUNT_CHILD_ENV: &str = "PLY_TEST_SCRATCH_COUNT_CHILD";
+    const SCRATCH_COUNT_TEST_NAME: &str =
+        "engines::run_with_timeout_tests::no_scratch_file_survives_a_normal_run_or_a_timed_out_one";
 
-    /// Serializes every test in this module against state that is shared
-    /// process-wide rather than per-test: the temp-file namespace
-    /// `scratch_path` writes into (every test transiently populates it,
-    /// and one test below counts entries in it) and the `PATH` environment
-    /// variable (mutated by another test below). `cargo test` runs these on
-    /// separate threads by default, so without this lock they can observe
-    /// each other's scratch files or PATH -- exactly the kind of cross-talk
-    /// that would make either test pass or fail for the wrong reason.
+    /// Serializes tests in this module against the process-wide temp-file
+    /// namespace `scratch_path` writes into. The tests that mutate broader
+    /// process state (cancellation and PATH) additionally run in dedicated
+    /// child test processes so tests in other modules cannot observe it.
     fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -758,6 +759,19 @@ mod run_with_timeout_tests {
     /// trusting the `Drop` guard blindly.
     #[test]
     fn no_scratch_file_survives_a_normal_run_or_a_timed_out_one() {
+        // Every engine capture in this test binary shares the process ID in
+        // its filename. Count in a dedicated process so commands run by
+        // tests in other modules cannot transiently appear as leftovers.
+        if std::env::var_os(SCRATCH_COUNT_CHILD_ENV).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", SCRATCH_COUNT_TEST_NAME, "--nocapture"])
+                .env(SCRATCH_COUNT_CHILD_ENV, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated scratch cleanup test failed");
+            return;
+        }
+
         let _guard = test_lock();
         let prefix = format!("ply-engine-{}-", std::process::id());
         let leftover_count = || -> usize {
@@ -801,6 +815,19 @@ mod run_with_timeout_tests {
     /// keeps working with an absolute path to the real program.
     #[test]
     fn enforces_the_budget_with_no_timeout_binary_reachable_on_path() {
+        // PATH is process-wide. Run the mutation in a dedicated test process
+        // so concurrently executing tests that invoke Cargo cannot observe an
+        // empty PATH and fail for an unrelated reason.
+        if std::env::var_os(EMPTY_PATH_CHILD_ENV).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", EMPTY_PATH_TEST_NAME, "--nocapture"])
+                .env(EMPTY_PATH_CHILD_ENV, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated empty-PATH test failed");
+            return;
+        }
+
         let _guard = test_lock();
         let old_path = std::env::var_os("PATH");
         unsafe {

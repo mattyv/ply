@@ -18,6 +18,10 @@
 - [x] Run the process-global cancellation regression in an isolated test
       process so its synthetic interrupt cannot cancel unrelated unit tests
       running concurrently under libtest or cargo-mutants.
+- [x] Likewise isolate the regression that empties process-global `PATH`, so
+      metadata tests cannot transiently lose Cargo during a parallel baseline.
+- [x] Isolate the scratch-capture counter too, so concurrent engine commands
+      in other test modules cannot be mistaken for files this test leaked.
 
 ## Landed: bounded concurrency for `cargo ply verify` — `8302e95` — 2026-09-08
 
