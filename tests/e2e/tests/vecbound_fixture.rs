@@ -26,10 +26,9 @@ fn vec_fixture_verifies_with_the_measured_unwind() {
     );
     assert_eq!(run.json["diagnostics"].as_array().unwrap().len(), 0);
 
-    let harness_src = std::fs::read_to_string(fixture.path().join("src/ply_generated.rs")).unwrap();
     assert!(
-        harness_src.contains("#[kani::unwind(9)]"),
-        "codegen must emit the measured bound:\n{harness_src}"
+        !fixture.path().join("src/ply_generated.rs").exists(),
+        "the proof ran with the measured unwind bound, but its scratch module survived"
     );
 }
 

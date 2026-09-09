@@ -828,6 +828,14 @@ make this codebase provable.
 
 ## General review of Ply agent skills
 
+## Generated proof modules must not survive verification
+
+- [ ] Restore `src/lib.rs` byte-for-byte and remove `src/ply_generated.rs` after every
+      serial bounded check, including error and early-return paths. Prune recognized
+      leftovers from older Ply runs even when the current document no longer declares a
+      bounded check. Keep rendered counterexample tests persistent: they are user-facing
+      reproductions, not proof scratch.
+
 - [x] Implemented in `20c3cd9`: corrected static audit/evidence confusion, conditionality claims, engine and nesting limits, declaration/render scope, snapshot navigation, and redundant approval stops across all five skills. All 30 skill contract tests, five skill validators, and Terra's three-scenario follow-up review pass.
 
 ## Incremental verification in agent skills

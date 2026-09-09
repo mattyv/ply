@@ -466,6 +466,12 @@ pub fn verify_crate_result(crate_dir: &Path, opts: &VerifyOptions) -> Result<Ver
         planning_diagnostics.push(diagnostic);
     }
 
+    // Clean every admitted document before any engine runs. The root may
+    // depend on a linked child, and Kani compiles that child under cfg(kani)
+    // while proving the root; waiting until the child's own turn would let
+    // an obsolete proof module break the earlier, unrelated proof.
+    prune_linked_proof_modules(crate_dir, &link_set.links)?;
+
     let mut result = verify_loaded_crate(crate_dir, opts, file)?;
     planning_diagnostics.append(&mut result.envelope.diagnostics);
     result.envelope.diagnostics = planning_diagnostics;
@@ -533,6 +539,17 @@ pub fn verify_crate_result(crate_dir: &Path, opts: &VerifyOptions) -> Result<Ver
     }
     result.links = admitted_links;
     Ok(result)
+}
+
+fn prune_linked_proof_modules(crate_dir: &Path, links: &config::LinkIndex) -> Result<()> {
+    for link in links.values() {
+        let child_yaml = crate_dir.join(&link.target_path);
+        let Some(child_dir) = child_yaml.parent() else {
+            continue;
+        };
+        harness::prune_stale_proof_module(&child_dir.join("src"), &child_dir.join("src/lib.rs"))?;
+    }
+    Ok(())
 }
 
 fn component_has_claims(component: &Component) -> bool {
@@ -729,6 +746,11 @@ fn verify_loaded_crate(
 ) -> Result<VerificationResult> {
     let src_dir = crate_dir.join("src");
     let lib_path = src_dir.join("lib.rs");
+
+    // A serial proof used to leave its cfg(kani) module in the user's source
+    // tree forever. Clean recognized leftovers before planning so dropping
+    // `bounded` from the document also drops the obsolete Rust module.
+    harness::prune_stale_proof_module(&src_dir, &lib_path)?;
 
     // Pass 1: discover every fn, resolve its effective checks list
     // (explicit, or the shape-aware default -- the routing decision M4
@@ -6303,297 +6325,323 @@ fn run_bounded_check(
         .map(|(_, k)| *k)
         .fold(bound_k, u32::min);
 
-    let generated_here;
-    let generated = if let Some(worker) = worker {
-        &worker.generated
+    let generated_here = if worker.is_none() {
+        Some(harness::generate_proof_module(
+            cf,
+            bound_k,
+            &boundary.stubs,
+        )?)
     } else {
-        generated_here = harness::generate_proof_module(cf, bound_k, &boundary.stubs)?;
-        harness::write_generated_module(src_dir, lib_path, &generated_here.module_source)?;
-        &generated_here
+        None
     };
-
-    let engine_timeout_secs = opts.engine_timeout_secs.unwrap_or_else(|| {
-        default_engine_timeout_secs(cf.has_vec_param(), bound_k, !generated.stubbed.is_empty())
-    });
-
-    let run_cfg_here;
-    let run_cfg = if let Some(worker) = worker {
-        &worker.run_cfg
+    let temporary_proof_module = if let Some(generated) = &generated_here {
+        Some(harness::install_temporary_proof_module(
+            src_dir,
+            lib_path,
+            &generated.module_source,
+        )?)
     } else {
-        run_cfg_here = KaniRunConfig {
-            crate_dir: crate_dir.to_path_buf(),
-            harness_path: generated.proof_fn_path.clone(),
-            engine_timeout_secs,
-            enable_stubbing: !generated.stubbed.is_empty(),
-            target_dir: None,
-            manifest_path: None,
-            source_roots: vec![],
-        };
-        &run_cfg_here
+        None
     };
+    let generated = worker
+        .map(|worker| &worker.generated)
+        .or(generated_here.as_ref())
+        .expect("a bounded check always has generated proof source");
 
-    // §5.5's promise-content gate, before the proof rather than after it: a
-    // proof that rests on a promise nothing can satisfy holds vacuously, so
-    // running it would produce a green verdict that means nothing. The
-    // probes carry no function body and solve in well under a second each
-    // (measured 2026-08-25), and they ride in the same generated module, so
-    // the crate is compiled once for the whole set.
-    let execution_here;
-    let execution = if let Some(worker) = worker {
-        worker
-            .execution
-            .as_ref()
-            .expect("a bounded worker is interpreted only after it finishes")
-    } else {
-        execution_here = execute_bounded(&generated.promise, run_cfg)?;
-        &execution_here
-    };
-    let promise_findings = &execution.promise_findings;
-    promise_out.append(&mut promise_diagnostics(
-        node_id,
-        fn_name,
-        &check_label,
-        promise_findings,
-    ));
-    if promise_findings
-        .iter()
-        .any(|f| f.verdict == ClauseVerdict::Unsatisfiable)
-    {
-        return Ok(("unclaimed".into(), vec![], vec![]));
-    }
-
-    let outcome = execution
-        .outcome
-        .as_ref()
-        .expect("a satisfiable bounded promise always runs its proof");
-
-    // §9's cex validity oracle demands the SAME rendered test transitions
-    // FAIL -> PASS once a fix lands (see docs/m3-slice-findings.md finding
-    // 6): persist any witness found, and re-render its regression test
-    // against the CURRENT contract text on every run.
-    let witness_path = worker
-        .map(|worker| worker.witness_path.clone())
-        .unwrap_or_else(|| {
-            crate_dir
-                .join("target/ply/witness")
-                .join(format!("{fn_name}.json"))
+    let result = (|| -> Result<(String, Vec<String>, Vec<Diagnostic>)> {
+        let engine_timeout_secs = opts.engine_timeout_secs.unwrap_or_else(|| {
+            default_engine_timeout_secs(cf.has_vec_param(), bound_k, !generated.stubbed.is_empty())
         });
-    if let KaniOutcome::Violation { witness_bytes, .. } = &outcome {
-        if let Some(parent) = witness_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&witness_path, serde_json::to_string(witness_bytes)?)?;
-    }
-    if witness_path.exists() {
-        let stored: Vec<Vec<u8>> = serde_json::from_str(&std::fs::read_to_string(&witness_path)?)?;
-        // A parameter shape with no witness decoder yet (`char`,
-        // `Option`, `Result`, `[T; N]` -- all reachable by the engines
-        // since 2026-08-25, none of them spellable as a `WitnessValue`)
-        // leaves nothing to re-render. That is a missing renderer, never a
-        // reason to fail the whole run.
-        if let Ok(values) = kani::decode_witness(&stored, &cf.params, bound_k) {
-            let rendered = contract_rt::render_cex_test(cf, &values, &check_label, "K0502", 1)?;
-            push_cex_test(
-                cex_tests_out,
-                RenderedTest {
-                    test_name: rendered.test_name,
-                    source: rendered.source,
-                },
-            );
-        }
-    }
 
-    // Only D5's second branch (`Assumed`) costs a symbolic value in place of
-    // the real callee and owes evidence -- `Verified` (branch one) is real
-    // evidence the caller does not owe anything for, so it must not be
-    // named as the cost of a timeout, or counted toward `conditional`.
-    let assumed: Vec<StubSpec> = generated
-        .stubbed
-        .iter()
-        .filter(|s| s.is_assumed())
-        .cloned()
-        .collect();
+        let run_cfg_here;
+        let run_cfg = if let Some(worker) = worker {
+            &worker.run_cfg
+        } else {
+            run_cfg_here = KaniRunConfig {
+                crate_dir: crate_dir.to_path_buf(),
+                harness_path: generated.proof_fn_path.clone(),
+                engine_timeout_secs,
+                enable_stubbing: !generated.stubbed.is_empty(),
+                target_dir: None,
+                manifest_path: None,
+                source_roots: vec![],
+            };
+            &run_cfg_here
+        };
 
-    match outcome {
-        KaniOutcome::Verified => {
-            let composed_label = format!("bounded({composed_k})");
-            let mut ds = Vec::new();
-            // D5's first branch: real evidence, and the caller is not
-            // conditional for it -- but a clean verdict is not a standalone
-            // one, so the dependency still has to appear somewhere a reader
-            // can see it (§5.5).
-            if !boundary.verified.is_empty() {
-                ds.push(verified_dependency_diag(
-                    node_id,
-                    fn_name,
-                    &composed_label,
-                    &boundary.verified,
-                ));
+        // §5.5's promise-content gate, before the proof rather than after it: a
+        // proof that rests on a promise nothing can satisfy holds vacuously, so
+        // running it would produce a green verdict that means nothing. The
+        // probes carry no function body and solve in well under a second each
+        // (measured 2026-08-25), and they ride in the same generated module, so
+        // the crate is compiled once for the whole set.
+        let execution_here;
+        let execution = if let Some(worker) = worker {
+            worker
+                .execution
+                .as_ref()
+                .expect("a bounded worker is interpreted only after it finishes")
+        } else {
+            execution_here = execute_bounded(&generated.promise, run_cfg)?;
+            &execution_here
+        };
+        let promise_findings = &execution.promise_findings;
+        promise_out.append(&mut promise_diagnostics(
+            node_id,
+            fn_name,
+            &check_label,
+            promise_findings,
+        ));
+        if promise_findings
+            .iter()
+            .any(|f| f.verdict == ClauseVerdict::Unsatisfiable)
+        {
+            return Ok(("unclaimed".into(), vec![], vec![]));
+        }
+
+        let outcome = execution
+            .outcome
+            .as_ref()
+            .expect("a satisfiable bounded promise always runs its proof");
+
+        // §9's cex validity oracle demands the SAME rendered test transitions
+        // FAIL -> PASS once a fix lands (see docs/m3-slice-findings.md finding
+        // 6): persist any witness found, and re-render its regression test
+        // against the CURRENT contract text on every run.
+        let witness_path = worker
+            .map(|worker| worker.witness_path.clone())
+            .unwrap_or_else(|| {
+                crate_dir
+                    .join("target/ply/witness")
+                    .join(format!("{fn_name}.json"))
+            });
+        if let KaniOutcome::Violation { witness_bytes, .. } = &outcome {
+            if let Some(parent) = witness_path.parent() {
+                std::fs::create_dir_all(parent)?;
             }
-            if assumed.is_empty() {
-                Ok((composed_label, vec![], ds))
-            } else {
-                // §5.5's second branch: real evidence, resting on a
-                // declared assumption. `conditional` is a status (D6), not
-                // a weaker rung -- the verdict stays `bounded(k)` and the
-                // assumption travels beside it.
-                ds.push(conditional_verdict_diag(
-                    node_id,
-                    fn_name,
-                    &composed_label,
-                    &assumed,
-                    promise_findings,
-                ));
-                Ok((
-                    composed_label,
-                    vec!["conditional".into(), "owed-evidence".into()],
-                    ds,
-                ))
+            std::fs::write(&witness_path, serde_json::to_string(witness_bytes)?)?;
+        }
+        if witness_path.exists() {
+            let stored: Vec<Vec<u8>> =
+                serde_json::from_str(&std::fs::read_to_string(&witness_path)?)?;
+            // A parameter shape with no witness decoder yet (`char`,
+            // `Option`, `Result`, `[T; N]` -- all reachable by the engines
+            // since 2026-08-25, none of them spellable as a `WitnessValue`)
+            // leaves nothing to re-render. That is a missing renderer, never a
+            // reason to fail the whole run.
+            if let Ok(values) = kani::decode_witness(&stored, &cf.params, bound_k) {
+                let rendered = contract_rt::render_cex_test(cf, &values, &check_label, "K0502", 1)?;
+                push_cex_test(
+                    cex_tests_out,
+                    RenderedTest {
+                        test_name: rendered.test_name,
+                        source: rendered.source,
+                    },
+                );
             }
         }
-        KaniOutcome::Timeout { raw_output } => {
-            let _ = raw_output;
-            let d = Diagnostic {
-                code: "K0601".into(),
-                severity: "warning".into(),
-                phase: "verify".into(),
-                engine: "kani".into(),
-                check: check_label,
-                node_id: node_id.into(),
-                title: kani_timeout_title(fn_name, engine_timeout_secs, &assumed),
-                pointer: None,
-                primary_span: None,
-                counterexample: None,
-                fixes: kani_timeout_fixes(fn_name, engine_timeout_secs, bound_k, generated.unwind),
-                assumptions: vec![],
-                open_item: Some("timeout".into()),
-            };
-            Ok(("timeout".into(), vec![], vec![d]))
-        }
-        KaniOutcome::ToolError { reason, raw_output } => {
-            let d = Diagnostic {
-                code: "X0901".into(),
-                severity: "error".into(),
-                phase: "verify".into(),
-                engine: "kani".into(),
-                check: check_label,
-                node_id: node_id.into(),
-                title: kani_tool_error_title(reason, raw_output),
-                pointer: None,
-                primary_span: None,
-                counterexample: None,
-                fixes: vec![],
-                assumptions: vec![],
-                open_item: Some("tool_error".into()),
-            };
-            Ok(("tool_error".into(), vec![], vec![d]))
-        }
-        KaniOutcome::Violation {
-            witness_bytes,
-            raw_output,
-        } => {
-            let _ = raw_output;
-            let values = match kani::decode_witness(witness_bytes, &cf.params, bound_k) {
-                Ok(values) => values,
-                Err(e) => {
-                    // §5.4c's MUST: never a `violation` Ply cannot show the
-                    // input for. Kani really did falsify the claim, but the
-                    // witness is in a shape this decoder cannot read yet, so
-                    // the honest report is a tool error naming the shape.
-                    let unreadable: Vec<String> = cf
-                        .params
-                        .iter()
-                        .filter(|p| p.ty.scalar_byte_width().is_none())
-                        // `display_name`, never `rust_name`: the latter is
-                        // `None` for exactly the shapes that reach this
-                        // branch, and `unwrap_or_default` printed "`xs: `" --
-                        // a message that names a parameter and then omits the
-                        // type the reader needs (same defect class as D4 of
-                        // the 2026-08-25 review, one diagnostic over).
-                        .map(|p| format!("`{}: {}`", p.name, p.ty.display_name()))
-                        .collect();
-                    let d = Diagnostic {
-                        code: "X0901".into(),
-                        severity: "error".into(),
-                        phase: "verify".into(),
-                        engine: "kani".into(),
-                        check: check_label,
-                        node_id: node_id.into(),
-                        title: format!(
-                            "Kani found an input for which `{fn_name}` breaks its contract, but Ply \
+
+        // Only D5's second branch (`Assumed`) costs a symbolic value in place of
+        // the real callee and owes evidence -- `Verified` (branch one) is real
+        // evidence the caller does not owe anything for, so it must not be
+        // named as the cost of a timeout, or counted toward `conditional`.
+        let assumed: Vec<StubSpec> = generated
+            .stubbed
+            .iter()
+            .filter(|s| s.is_assumed())
+            .cloned()
+            .collect();
+
+        match outcome {
+            KaniOutcome::Verified => {
+                let composed_label = format!("bounded({composed_k})");
+                let mut ds = Vec::new();
+                // D5's first branch: real evidence, and the caller is not
+                // conditional for it -- but a clean verdict is not a standalone
+                // one, so the dependency still has to appear somewhere a reader
+                // can see it (§5.5).
+                if !boundary.verified.is_empty() {
+                    ds.push(verified_dependency_diag(
+                        node_id,
+                        fn_name,
+                        &composed_label,
+                        &boundary.verified,
+                    ));
+                }
+                if assumed.is_empty() {
+                    Ok((composed_label, vec![], ds))
+                } else {
+                    // §5.5's second branch: real evidence, resting on a
+                    // declared assumption. `conditional` is a status (D6), not
+                    // a weaker rung -- the verdict stays `bounded(k)` and the
+                    // assumption travels beside it.
+                    ds.push(conditional_verdict_diag(
+                        node_id,
+                        fn_name,
+                        &composed_label,
+                        &assumed,
+                        promise_findings,
+                    ));
+                    Ok((
+                        composed_label,
+                        vec!["conditional".into(), "owed-evidence".into()],
+                        ds,
+                    ))
+                }
+            }
+            KaniOutcome::Timeout { raw_output } => {
+                let _ = raw_output;
+                let d = Diagnostic {
+                    code: "K0601".into(),
+                    severity: "warning".into(),
+                    phase: "verify".into(),
+                    engine: "kani".into(),
+                    check: check_label,
+                    node_id: node_id.into(),
+                    title: kani_timeout_title(fn_name, engine_timeout_secs, &assumed),
+                    pointer: None,
+                    primary_span: None,
+                    counterexample: None,
+                    fixes: kani_timeout_fixes(
+                        fn_name,
+                        engine_timeout_secs,
+                        bound_k,
+                        generated.unwind,
+                    ),
+                    assumptions: vec![],
+                    open_item: Some("timeout".into()),
+                };
+                Ok(("timeout".into(), vec![], vec![d]))
+            }
+            KaniOutcome::ToolError { reason, raw_output } => {
+                let d = Diagnostic {
+                    code: "X0901".into(),
+                    severity: "error".into(),
+                    phase: "verify".into(),
+                    engine: "kani".into(),
+                    check: check_label,
+                    node_id: node_id.into(),
+                    title: kani_tool_error_title(reason, raw_output),
+                    pointer: None,
+                    primary_span: None,
+                    counterexample: None,
+                    fixes: vec![],
+                    assumptions: vec![],
+                    open_item: Some("tool_error".into()),
+                };
+                Ok(("tool_error".into(), vec![], vec![d]))
+            }
+            KaniOutcome::Violation {
+                witness_bytes,
+                raw_output,
+            } => {
+                let _ = raw_output;
+                let values = match kani::decode_witness(witness_bytes, &cf.params, bound_k) {
+                    Ok(values) => values,
+                    Err(e) => {
+                        // §5.4c's MUST: never a `violation` Ply cannot show the
+                        // input for. Kani really did falsify the claim, but the
+                        // witness is in a shape this decoder cannot read yet, so
+                        // the honest report is a tool error naming the shape.
+                        let unreadable: Vec<String> = cf
+                            .params
+                            .iter()
+                            .filter(|p| p.ty.scalar_byte_width().is_none())
+                            // `display_name`, never `rust_name`: the latter is
+                            // `None` for exactly the shapes that reach this
+                            // branch, and `unwrap_or_default` printed "`xs: `" --
+                            // a message that names a parameter and then omits the
+                            // type the reader needs (same defect class as D4 of
+                            // the 2026-08-25 review, one diagnostic over).
+                            .map(|p| format!("`{}: {}`", p.name, p.ty.display_name()))
+                            .collect();
+                        let d = Diagnostic {
+                            code: "X0901".into(),
+                            severity: "error".into(),
+                            phase: "verify".into(),
+                            engine: "kani".into(),
+                            check: check_label,
+                            node_id: node_id.into(),
+                            title: format!(
+                                "Kani found an input for which `{fn_name}` breaks its contract, but Ply \
                              cannot yet read that input back for parameter(s) {list}: it has no \
                              decoder for how Kani encodes those types. So there is a real failure \
                              here and no counterexample to show you, which is reported as a tool \
                              error rather than as a violation Ply cannot evidence ({e}). (X0901)",
-                            list = unreadable.join(", ")
-                        ),
-                        pointer: None,
-                        primary_span: None,
-                        counterexample: None,
-                        fixes: vec![Fix {
-                            title: format!(
-                                "re-run `{fn_name}` under `fuzz(256)` -- the fuzz tier prints its own \
-                                 failing input, so it can show you the case Kani found"
+                                list = unreadable.join(", ")
                             ),
-                            edits: vec![],
-                        }],
-                        assumptions: vec![],
-                        open_item: Some("tool_error".into()),
-                    };
-                    return Ok(("tool_error".into(), vec![], vec![d]));
+                            pointer: None,
+                            primary_span: None,
+                            counterexample: None,
+                            fixes: vec![Fix {
+                                title: format!(
+                                    "re-run `{fn_name}` under `fuzz(256)` -- the fuzz tier prints its own \
+                                 failing input, so it can show you the case Kani found"
+                                ),
+                                edits: vec![],
+                            }],
+                            assumptions: vec![],
+                            open_item: Some("tool_error".into()),
+                        };
+                        return Ok(("tool_error".into(), vec![], vec![d]));
+                    }
+                };
+                let rendered = contract_rt::render_cex_test(cf, &values, &check_label, "K0502", 1)?;
+                let test_file_display = cex_test_display_path(src_dir);
+                push_cex_test(
+                    cex_tests_out,
+                    RenderedTest {
+                        test_name: rendered.test_name.clone(),
+                        source: rendered.source.clone(),
+                    },
+                );
+                let mut inputs = BTreeMap::new();
+                for (p, v) in cf.params.iter().zip(values.iter()) {
+                    inputs.insert(p.name.clone(), format_value(v));
                 }
-            };
-            let rendered = contract_rt::render_cex_test(cf, &values, &check_label, "K0502", 1)?;
-            let test_file_display = cex_test_display_path(src_dir);
-            push_cex_test(
-                cex_tests_out,
-                RenderedTest {
-                    test_name: rendered.test_name.clone(),
-                    source: rendered.source.clone(),
-                },
-            );
-            let mut inputs = BTreeMap::new();
-            for (p, v) in cf.params.iter().zip(values.iter()) {
-                inputs.insert(p.name.clone(), format_value(v));
-            }
-            let contract_text = cf
-                .ensures
-                .as_ref()
-                .map(|(_, t)| t.clone())
-                .unwrap_or_default();
-            let d = Diagnostic {
-                code: "K0502".into(),
-                severity: "error".into(),
-                phase: "verify".into(),
-                engine: "kani".into(),
-                check: check_label,
-                node_id: node_id.into(),
-                title: format!(
-                    "`{fn_name}` breaks its own postcondition `{contract_text}` for at least one input \
+                let contract_text = cf
+                    .ensures
+                    .as_ref()
+                    .map(|(_, t)| t.clone())
+                    .unwrap_or_default();
+                let d = Diagnostic {
+                    code: "K0502".into(),
+                    severity: "error".into(),
+                    phase: "verify".into(),
+                    engine: "kani".into(),
+                    check: check_label,
+                    node_id: node_id.into(),
+                    title: format!(
+                        "`{fn_name}` breaks its own postcondition `{contract_text}` for at least one input \
                      -- a postcondition is the guarantee a function makes about its return value, and \
                      Kani found a case where that guarantee does not hold. (K0502)"
-                ),
-                pointer: None,
-                primary_span: None,
-                counterexample: Some(Counterexample {
-                    inputs,
-                    kani_witness: Some(format!(
-                        "captured from `cargo kani --concrete-playback print` on harness `{}`",
-                        generated.proof_fn_path
-                    )),
-                    cargo_test: Some(test_file_display),
-                    // The exhaustive tier refuses any receiver (§5.4b), so
-                    // a counterexample from it never has a value-history to
-                    // report.
-                    receiver_history: None,
-                }),
-                fixes: vec![],
-                assumptions: vec![],
-                open_item: None,
-            };
-            Ok(("violation".into(), vec![], vec![d]))
+                    ),
+                    pointer: None,
+                    primary_span: None,
+                    counterexample: Some(Counterexample {
+                        inputs,
+                        kani_witness: Some(format!(
+                            "captured from `cargo kani --concrete-playback print` on harness `{}`",
+                            generated.proof_fn_path
+                        )),
+                        cargo_test: Some(test_file_display),
+                        // The exhaustive tier refuses any receiver (§5.4b), so
+                        // a counterexample from it never has a value-history to
+                        // report.
+                        receiver_history: None,
+                    }),
+                    fixes: vec![],
+                    assumptions: vec![],
+                    open_item: None,
+                };
+                Ok(("violation".into(), vec![], vec![d]))
+            }
         }
+    })();
+    if let Some(module) = temporary_proof_module {
+        module.restore()?;
     }
+    result
 }
 
 /// What one invocation of the generated harness crate established. The two
@@ -11849,6 +11897,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             !note.contains("takes an argument Ply cannot build"),
             "a no-argument private method must never be described as having an unbuildable argument: {note}"
         );
+    }
+
+    #[test]
+    fn linked_proof_leftovers_are_pruned_in_one_preflight() {
+        let root = tempfile::tempdir().unwrap();
+        let child = root.path().join("child");
+        std::fs::create_dir_all(child.join("src")).unwrap();
+        std::fs::write(
+            child.join("src/lib.rs"),
+            "pub fn f() {}\n\n// Ply-generated module declaration -- do not edit this line.\nmod ply_generated;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            child.join("src/ply_generated.rs"),
+            "//! Generated by Ply -- do not edit. Kani proof harness for `old`\n",
+        )
+        .unwrap();
+        std::fs::write(
+            child.join("ply.yaml"),
+            "ply: 1\ncomponents:\n  child:\n    anchor: child\n",
+        )
+        .unwrap();
+        let document = config::load(&child.join("ply.yaml")).unwrap();
+        let target = document.components["child"].clone();
+        let mut links = config::LinkIndex::new();
+        links.insert(
+            "outer".into(),
+            config::ResolvedLink {
+                target_path: "child/ply.yaml".into(),
+                target_name: "child".into(),
+                document,
+                target,
+            },
+        );
+
+        prune_linked_proof_modules(root.path(), &links).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(child.join("src/lib.rs")).unwrap(),
+            "pub fn f() {}\n"
+        );
+        assert!(!child.join("src/ply_generated.rs").exists());
     }
 
     /// A `bounded` refusal on a receiver method must blame the receiver,

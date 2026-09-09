@@ -202,6 +202,7 @@ fn a_registered_shared_harness_keeps_bounded_work_on_the_serial_path() {
     let cargo_ply = build_cargo_ply();
     let fixture = copy_fixture("parallelmixed");
     let original_manifest = std::fs::read(fixture.path().join("Cargo.toml")).unwrap();
+    let original_lib = std::fs::read(fixture.path().join("src/lib.rs")).unwrap();
 
     let result = run(&cargo_ply, fixture.path(), 2);
     assert_eq!(
@@ -218,6 +219,15 @@ fn a_registered_shared_harness_keeps_bounded_work_on_the_serial_path() {
         std::fs::read(fixture.path().join("Cargo.toml")).unwrap(),
         original_manifest,
         "temporary harness membership was not restored"
+    );
+    assert_eq!(
+        std::fs::read(fixture.path().join("src/lib.rs")).unwrap(),
+        original_lib,
+        "the serial bounded fallback did not restore the crate root"
+    );
+    assert!(
+        !fixture.path().join("src/ply_generated.rs").exists(),
+        "the serial bounded fallback left generated proof source in the user's crate"
     );
 }
 
@@ -472,6 +482,72 @@ fn one_worker_timeout_keeps_the_other_results_attributed_and_cleans_up() {
             .file_name()
             .to_string_lossy()
             .starts_with("ply_generated_worker_")));
+}
+
+#[test]
+fn a_serial_proof_timeout_restores_the_original_source_tree() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("parallelbounded");
+    let original_lib = std::fs::read(fixture.path().join("src/lib.rs")).unwrap();
+    let fake_bin = tempfile::tempdir().unwrap();
+    let real_cargo = Command::new("/usr/bin/which")
+        .arg("cargo")
+        .output()
+        .unwrap();
+    let real_cargo = String::from_utf8(real_cargo.stdout).unwrap();
+    let fake_cargo = fake_bin.path().join("cargo");
+    std::fs::write(
+        &fake_cargo,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"kani\" ]; then\n  case \" $* \" in\n    *\" --version \"*) echo 'cargo-kani 0.67.0'; exit 0 ;;\n  esac\n  printf 'VERIFICATION:- FAILED\\nCBMC timed out.\\n'\n  exit 1\nfi\nexec {cargo} \"$@\"\n",
+            cargo = real_cargo.trim(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new(&cargo_ply)
+        .args([
+            "verify",
+            fixture.path().to_str().unwrap(),
+            "--json",
+            "--jobs",
+            "1",
+        ])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.path().display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "verify did not return JSON: {error}\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+    assert!(
+        result["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "K0601"),
+        "the fake engine must reach an actual timeout: {result}"
+    );
+    assert_eq!(
+        std::fs::read(fixture.path().join("src/lib.rs")).unwrap(),
+        original_lib
+    );
+    assert!(!fixture.path().join("src/ply_generated.rs").exists());
 }
 
 #[test]

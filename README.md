@@ -105,10 +105,15 @@ $ cargo install --locked kani-verifier && cargo kani setup   # for bounded(k)
 $ cargo install --locked cargo-mutants                       # for mutate
 ```
 
-**What artefacts are created by Ply.** Generated harnesses live under `target/ply/`, which is
-already ignored by every Rust `.gitignore`. Nothing else in your project is modified: on
-a crate that declares its own workspace Ply borrows your `Cargo.toml` for the length of
-the run and writes it back byte-for-byte when the run ends.
+**What artefacts are created by Ply.** Persistent generated harnesses live under
+`target/ply/`, which is already ignored by every Rust `.gitignore`. A serial bounded proof
+temporarily installs `src/ply_generated.rs` and one marked module declaration so the proof
+can see private crate items; both disappear when that proof ends, including on failure or
+interruption. Ply also removes recognized leftovers from older runs. On a crate that
+declares its own workspace Ply similarly borrows your `Cargo.toml` for the length of the
+run and writes it back byte-for-byte when the run ends. Rendered counterexample tests are
+the deliberate exception: when Ply finds a reproducible failure, it publishes the ordinary
+Rust test described below so you can run and commit it.
 
 **Parallel verification.** `cargo ply verify -j N` (or `--jobs N`) allows at most `N`
 Ply verification tasks to run at once; it defaults to `1`. Compilers and engines can
