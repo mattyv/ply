@@ -33,7 +33,7 @@ rustc -O -C overflow-checks=off -o /tmp/ply_wrap_cex wrap_counterexample.rs
 /tmp/ply_wrap_cex
 
 echo
-echo "== 6. the adapter's own output, end to end (expect: verified, 0 errors) =="
+echo "== 6. the adapter's own output, end to end (expect: 4 obligations, 0 errors) =="
 echo "   Emitted by crates/ply-core/src/compose/verus.rs; re-bless with"
 echo "   PLY_BLESS=1 cargo test -p ply-core --lib compose::verus::golden"
 "$V" generated_bucket.rs

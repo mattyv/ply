@@ -604,9 +604,16 @@ Rust-to-Verus translator.
       `excluded_operations` as structured data (call path + reason), which
       is the honest half to build on.
 - [x] **M4 DONE: the obligations are generated and discharged on the real
-      solver.** The bucket's four contracts go in and **five obligations come
+      solver.** The bucket's four contracts go in and **four obligations come
       back verified, no errors**; the satisfiability probes come back with an
       error for every one, which is the outcome they are supposed to have.
+
+      **RETRACTED, same day: this said "five", and five is the solver's own
+      count including the empty `fn main`.** An empty file reports "1
+      verified". There are four obligations. This is the same miscount the
+      design doc retracted for the M1 figures two entries up, made again by
+      the same route -- reading the solver's total instead of counting what
+      was asked.
       Everything is re-runnable: `tests/spike/verus-component/compose/run.sh`
       steps 6 to 9, over files the adapter emits rather than files anyone
       wrote by hand.
@@ -650,6 +657,61 @@ Rust-to-Verus translator.
       That is why the real `refill` is written with it, and the fixture now
       says so; written with a plain `+` the same contract is not
       overflow-free and the obligation correctly refuses it.
+
+      **THREE WAYS TO GET A FALSE PROOF OUT OF THIS, found by review the same
+      day, each reproduced end to end. All open.** Until they are closed no
+      composition result should be reported to a user as established.
+
+      1. **An argument that shares a reading's name is silently read as the
+         reading.** The real fixture's constructor is `new(capacity: u32)`
+         promising `result.capacity() == capacity` -- exactly this shape. The
+         promise "capacity equals the argument" becomes "capacity equals
+         capacity", the argument goes unused, nothing blocks, and the solver
+         agrees. A constructor taking `available` and promising
+         `available == 100, capacity == available` verifies, while the real
+         Rust it describes leaves available at 100 and capacity at 5. The
+         committed fixture named the argument `cap` and so never met it.
+      2. **Saturating addition on a signed type is clamped only at the
+         top.** It is translated as "the sum, or the maximum" with no floor,
+         and owes no range obligation because it is total in Rust. For a
+         signed type a sum below the minimum comes out as a value outside the
+         type, which contradicts the declared range and makes exactly those
+         inputs vanish from the obligation. Reproduced: two readings with
+         `lo < hi`, both shifted down by a saturating add, verifies clean --
+         and the real Rust ends with `lo == hi`.
+      3. **A clause restating what the declared type already guarantees hands
+         back the withheld premise.** The arithmetic obligation assumes the
+         whole postcondition, so a clause like `available >= 0` on a `u32` --
+         true for free, and the sort of thing a function proof discharges
+         from the field's type -- supplies exactly the premise that is
+         deliberately left out. Measured: the unguarded contract that step 8
+         catches passes clean with that one clause added. So the load-bearing
+         omission holds only while no clause implies it, which nothing
+         currently checks.
+
+      **And the boundary scan is fail-open, not fail-closed.** Fourteen of
+      sixteen real compiling Rust snippets that construct or mutate the type
+      come back as a complete inventory with nothing blocked: a
+      crate-visible field, an impl in an inline module or inside a function
+      body, a method on another type in the same module taking `&mut`,
+      interior mutability through `&self`, a free function that *constructs*
+      the type, public enum variant fields, `&mut [T]` and `Option<&mut T>`
+      arguments, a type alias hiding both the function and the impl, a
+      wrapper struct with a public field, a by-value method returning the
+      type, a raw pointer, a `static mut`, and a trait implemented for
+      `&mut T`. A method handing out `Option<&mut u32>` is classified as a
+      mutator rather than an escape, so a proved contract on it says nothing
+      about writes through the reference it returns. The M3 entry's "fails
+      closed" is therefore too strong: it fails closed on the shapes it
+      recognises and silently ignores the rest.
+
+      **Two more, less severe.** Precondition arithmetic is range-checked
+      against the state *after* the operation, directly contradicting the
+      comment next to it, which produces a spurious failure on a contract
+      whose own precondition makes it safe. And a frame fact justified by
+      effect analysis never reaches the encoding at all, so the
+      justification is hollow -- the planner passes and the solver then
+      fails preservation.
 
       KNOWN GAPS, open on purpose: the accepted clause subset does not cover
       the syntax people actually write -- `self.available()`, `*result`, `as
