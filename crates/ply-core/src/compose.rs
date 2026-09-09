@@ -88,6 +88,15 @@ pub struct Observer {
     pub reads_are_pure: bool,
 }
 
+/// What the source says *today*, for one item. A premise proved against
+/// different bytes is stale, not weaker.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SourceIdentity {
+    pub source_fingerprint: String,
+    pub contract_fingerprint: String,
+    pub config: String,
+}
+
 /// Why a post-state fact about an observer is believed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameJustification {
@@ -204,6 +213,16 @@ pub enum ObligationKind {
     Initialization { constructor: String },
     /// `I(s)` and the operation's contract imply `I(s')`.
     Preservation { operation: String },
+    /// The operation's premises are satisfiable at all. A contradictory
+    /// premise set discharges everything and means nothing, and this is not
+    /// decidable here -- so it is asked of the backend rather than assumed.
+    Reachable { operation: String },
+    /// Every arithmetic operation in the translated contract stays within
+    /// the declared ranges. A contract is a Rust expression, and the
+    /// prover's integers are not Rust's: without this, an implementation
+    /// using wrapping arithmetic satisfies its promise while breaking the
+    /// invariant, and the model verifies anyway (measured 2026-09-09).
+    ArithmeticSafety { item: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +257,32 @@ pub enum Blocker {
     RestrictedDomain { item: String, description: String },
     /// A reader that has not been shown to leave the state alone.
     UnprovenReaderPurity { observer: String },
+    /// Two premises for the same item. Which one wins would otherwise
+    /// depend on iteration order, so the same inputs could give two
+    /// verdicts.
+    DuplicatePremise { item: String },
+    /// A premise proved against source, contract text or configuration
+    /// that is not what is there now.
+    StalePremise { item: String, field: String },
+    /// A premise standing in for something it is not: a reader's contract
+    /// is not a two-state contract.
+    WrongRole {
+        item: String,
+        expected: String,
+        found: String,
+    },
+    /// A frame fact citing the operation's contract as its justification,
+    /// where the contract does not in fact state it.
+    UnsupportedFrameClaim { operation: String, observer: String },
+    /// A premise for an item the boundary scan never found -- direct
+    /// evidence the inventory is incomplete.
+    PremiseOutsideInventory { item: String },
+    /// No construction path at all. A type with no constructors has no
+    /// reachable states; a scan that returned nothing is likelier.
+    NoConstructors,
+    /// The invariant names a reading that was never declared as an
+    /// observer, so the frame check has nothing to look for.
+    UndeclaredObserver { observer: String },
 }
 
 /// The plan: what must be discharged, what is assumed, and what stops the
@@ -272,14 +317,79 @@ impl Plan {
 /// Pure. Generates what must be discharged and, separately, every reason
 /// the property cannot be claimed complete regardless of what a solver
 /// returns about the obligations.
-pub fn plan(property: &Property, inventory: &Inventory, premises: &[Premise]) -> Plan {
+pub fn plan(
+    property: &Property,
+    inventory: &Inventory,
+    premises: &[Premise],
+    current: &std::collections::BTreeMap<String, SourceIdentity>,
+) -> Plan {
     let mut obligations = Vec::new();
     let mut blockers = Vec::new();
     let mut trusted = Vec::new();
     let mut assumptions = Vec::new();
 
-    let by_item: std::collections::BTreeMap<&str, &Premise> =
-        premises.iter().map(|p| (p.item.as_str(), p)).collect();
+    // Built by hand rather than `collect()`: a duplicate must block, not
+    // silently overwrite, or the same premise set yields two verdicts
+    // depending on order.
+    let mut by_item: std::collections::BTreeMap<&str, &Premise> = std::collections::BTreeMap::new();
+    for p in premises {
+        if by_item.insert(p.item.as_str(), p).is_some() {
+            blockers.push(Blocker::DuplicatePremise {
+                item: p.item.clone(),
+            });
+        }
+    }
+
+    // A premise for something the scan never found is evidence the
+    // inventory is incomplete, not a spare part to discard.
+    let known: BTreeSet<&str> = inventory
+        .constructors
+        .iter()
+        .chain(inventory.mutators.iter())
+        .map(|s| s.as_str())
+        .collect();
+    for p in premises {
+        if !known.contains(p.item.as_str()) {
+            blockers.push(Blocker::PremiseOutsideInventory {
+                item: p.item.clone(),
+            });
+        }
+    }
+
+    // Staleness: a premise proved against different bytes describes a
+    // different program.
+    for p in premises {
+        if let Some(now) = current.get(&p.item) {
+            for (field, was, is) in [
+                ("source", &p.source_fingerprint, &now.source_fingerprint),
+                (
+                    "contract",
+                    &p.contract_fingerprint,
+                    &now.contract_fingerprint,
+                ),
+                ("config", &p.config, &now.config),
+            ] {
+                if was != is {
+                    blockers.push(Blocker::StalePremise {
+                        item: p.item.clone(),
+                        field: field.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if inventory.constructors.is_empty() {
+        blockers.push(Blocker::NoConstructors);
+    }
+
+    // Every reading the invariant names has to be declared, or the frame
+    // check below has nothing to look for.
+    for name in identifiers(&property.invariant) {
+        if !property.observers.iter().any(|o| o.name == name) {
+            blockers.push(Blocker::UndeclaredObserver { observer: name });
+        }
+    }
 
     // An observer whose range we cannot state is not admitted with no
     // constraints -- that would let the solver assume anything about it.
@@ -311,10 +421,15 @@ pub fn plan(property: &Property, inventory: &Inventory, premises: &[Premise]) ->
         match by_item.get(ctor.as_str()) {
             Some(p) => {
                 note_premise(p, &mut trusted, &mut assumptions, &mut blockers);
+                require_role(p, PremiseRole::Constructor, &mut blockers);
                 obligations.push(Obligation {
                     kind: ObligationKind::Initialization {
                         constructor: ctor.clone(),
                     },
+                    premises: vec![ctor.clone()],
+                });
+                obligations.push(Obligation {
+                    kind: ObligationKind::ArithmeticSafety { item: ctor.clone() },
                     premises: vec![ctor.clone()],
                 });
             }
@@ -330,27 +445,53 @@ pub fn plan(property: &Property, inventory: &Inventory, premises: &[Premise]) ->
             continue;
         };
         note_premise(p, &mut trusted, &mut assumptions, &mut blockers);
+        require_role(p, PremiseRole::Transition, &mut blockers);
 
         // Every observer the invariant needs must be either constrained by
         // this operation's postcondition or justified as unchanged. Saying
         // nothing leaves it unconstrained -- never implicitly the same.
         for obs in &needed {
-            let constrained = p.ensures.iter().any(|e| mentions(e, obs));
-            let framed = p.frame.iter().any(|f| f.observer == *obs);
-            if !constrained && !framed {
-                blockers.push(Blocker::UnjustifiedFrame {
-                    operation: op.clone(),
-                    observer: (*obs).to_string(),
-                });
+            let constrained = p.ensures.iter().any(|e| constrains_post_state(e, obs));
+            let frame = p.frame.iter().find(|f| f.observer == *obs);
+            match frame {
+                // A frame fact citing the contract is a claim about the
+                // contract, and gets checked against it rather than taken
+                // on faith -- otherwise it re-admits the omitted-frame hole
+                // through a side door.
+                Some(f) if f.justification == FrameJustification::ProvedContract => {
+                    if !constrained {
+                        blockers.push(Blocker::UnsupportedFrameClaim {
+                            operation: op.clone(),
+                            observer: (*obs).to_string(),
+                        });
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    if !constrained {
+                        blockers.push(Blocker::UnjustifiedFrame {
+                            operation: op.clone(),
+                            observer: (*obs).to_string(),
+                        });
+                    }
+                }
             }
         }
 
-        obligations.push(Obligation {
-            kind: ObligationKind::Preservation {
+        for kind in [
+            ObligationKind::Preservation {
                 operation: op.clone(),
             },
-            premises: vec![op.clone()],
-        });
+            ObligationKind::Reachable {
+                operation: op.clone(),
+            },
+            ObligationKind::ArithmeticSafety { item: op.clone() },
+        ] {
+            obligations.push(Obligation {
+                kind,
+                premises: vec![op.clone()],
+            });
+        }
     }
 
     trusted.sort();
@@ -364,6 +505,123 @@ pub fn plan(property: &Property, inventory: &Inventory, premises: &[Premise]) ->
         blockers,
         trusted,
         assumptions,
+    }
+}
+
+/// Whether a contract expression constrains this observer's **post-state**
+/// value.
+///
+/// Mentioning it is not enough. `available == old(available) + old(capacity)`
+/// mentions `capacity` and says nothing about what it will be; so does a
+/// comment, and so does a string. Each of those silenced the frame blocker
+/// before 2026-09-09.
+pub fn constrains_post_state(expr: &str, observer: &str) -> bool {
+    mentions(&strip_old(&strip_noise(expr)), observer)
+}
+
+/// Remove line and block comments and string literals -- text that cannot
+/// constrain anything.
+fn strip_noise(expr: &str) -> String {
+    let b: Vec<char> = expr.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == '/' && i + 1 < b.len() && b[i + 1] == '/' {
+            break;
+        }
+        if b[i] == '/' && i + 1 < b.len() && b[i + 1] == '*' {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
+                i += 1;
+            }
+            i = (i + 2).min(b.len());
+            continue;
+        }
+        if b[i] == '"' {
+            i += 1;
+            while i < b.len() && b[i] != '"' {
+                if b[i] == '\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Remove every `old( .. )` span. What it holds is the *before* value, and
+/// a before value constrains nothing about after.
+fn strip_old(expr: &str) -> String {
+    let mut out = String::new();
+    let b: Vec<char> = expr.chars().collect();
+    let mut i = 0;
+    while i < b.len() {
+        let is_old = b[i] == 'o'
+            && b[i..].starts_with(&['o', 'l', 'd', '('])
+            && (i == 0 || !is_ident_byte(b[i - 1] as u8));
+        if is_old {
+            let mut depth = 0;
+            let mut j = i + 3;
+            while j < b.len() {
+                if b[j] == '(' {
+                    depth += 1;
+                } else if b[j] == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            i = j + 1;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Every bare identifier in an expression, skipping function names (an
+/// identifier immediately followed by `(`) and numeric literals.
+fn identifiers(expr: &str) -> Vec<String> {
+    let clean = strip_noise(expr);
+    let b: Vec<char> = clean.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_alphabetic() || b[i] == '_' {
+            let start = i;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == '_') {
+                i += 1;
+            }
+            let name: String = b[start..i].iter().collect();
+            let called = b.get(i) == Some(&'(');
+            if !called && !matches!(name.as_str(), "true" | "false" | "old" | "self") {
+                out.push(name);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// A premise standing in for something it is not.
+fn require_role(p: &Premise, expected: PremiseRole, blockers: &mut Vec<Blocker>) {
+    if p.role != expected {
+        blockers.push(Blocker::WrongRole {
+            item: p.item.clone(),
+            expected: format!("{expected:?}"),
+            found: format!("{:?}", p.role),
+        });
     }
 }
 
@@ -468,17 +726,30 @@ mod tests {
                 &["available == capacity", "capacity == cap"],
                 &[],
             ),
+            // Faithful to `tests/spike/verus-component/proof/bucket.rs`:
+            // both branches, and the capacity clause stated in the contract
+            // rather than asserted as a frame fact the contract does not
+            // support. The first version of this fixture did the latter,
+            // and the frame-claim check caught it (2026-09-09).
             proved(
                 "TokenBucket::try_take",
                 PremiseRole::Transition,
-                &["ok ==> available == old(available) - tokens"],
-                &["capacity"],
+                &[
+                    "ok == (old(available) >= tokens)",
+                    "ok ==> available == old(available) - tokens",
+                    "!ok ==> available == old(available)",
+                    "capacity == old(capacity)",
+                ],
+                &[],
             ),
             proved(
                 "TokenBucket::refill",
                 PremiseRole::Transition,
-                &["available == min(old(available) + tokens, old(capacity))"],
-                &["capacity"],
+                &[
+                    "available == min(old(available) + tokens, old(capacity))",
+                    "capacity == old(capacity)",
+                ],
+                &[],
             ),
         ]
     }
@@ -497,14 +768,25 @@ mod tests {
     /// blocks it.
     #[test]
     fn a_covered_bucket_plans_init_and_preservation_and_nothing_blocks() {
-        let p = plan(&bucket_property(), &bucket_inventory(), &bucket_premises());
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &bucket_premises(),
+            &current_facts(),
+        );
         assert!(
             p.coverage_is_complete(),
             "nothing should block a fully covered type: {:?}",
             p.blockers
         );
         assert!(!p.is_conditional(), "no premise here is trusted");
-        assert_eq!(p.obligations.len(), 3, "one init, two preservation");
+        // One constructor: initialization + arithmetic safety.
+        // Two mutators: preservation + reachability + arithmetic safety each.
+        assert_eq!(
+            p.obligations.len(),
+            8,
+            "2 for the constructor, 3 per mutator"
+        );
         assert!(p.obligations.iter().any(|o| o.kind
             == ObligationKind::Initialization {
                 constructor: "TokenBucket::new".into()
@@ -528,7 +810,12 @@ mod tests {
     fn an_uncontracted_mutator_withholds_the_proof_and_names_it() {
         let mut inv = bucket_inventory();
         inv.mutators.push("TokenBucket::force_set".into());
-        let p = plan(&bucket_property(), &inv, &bucket_premises());
+        let p = plan(
+            &bucket_property(),
+            &inv,
+            &bucket_premises(),
+            &current_facts(),
+        );
         assert!(!p.coverage_is_complete());
         assert!(
             p.blockers.contains(&Blocker::UncoveredMutator {
@@ -544,7 +831,12 @@ mod tests {
     fn an_alternative_constructor_without_a_premise_withholds_the_proof() {
         let mut inv = bucket_inventory();
         inv.constructors.push("TokenBucket::empty".into());
-        let p = plan(&bucket_property(), &inv, &bucket_premises());
+        let p = plan(
+            &bucket_property(),
+            &inv,
+            &bucket_premises(),
+            &current_facts(),
+        );
         assert!(p.blockers.contains(&Blocker::UncoveredConstructor {
             item: "TokenBucket::empty".into()
         }));
@@ -557,7 +849,15 @@ mod tests {
     fn an_operation_silent_about_an_observer_blocks_rather_than_assuming_it_unchanged() {
         let mut premises = bucket_premises();
         premises[1].frame.clear();
-        let p = plan(&bucket_property(), &bucket_inventory(), &premises);
+        // Remove the clause that constrains capacity, leaving the contract
+        // genuinely silent about it.
+        premises[1].ensures.retain(|e| !e.starts_with("capacity"));
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
         assert!(
             p.blockers.contains(&Blocker::UnjustifiedFrame {
                 operation: "TokenBucket::try_take".into(),
@@ -576,7 +876,12 @@ mod tests {
         premises[2].domain = Domain::Restricted {
             description: "tokens <= 16".into(),
         };
-        let p = plan(&bucket_property(), &bucket_inventory(), &premises);
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
         assert!(
             p.blockers.contains(&Blocker::RestrictedDomain {
                 item: "TokenBucket::refill".into(),
@@ -594,7 +899,12 @@ mod tests {
         premises[1].provenance = Provenance::Trusted {
             declared_by: "maintainer".into(),
         };
-        let p = plan(&bucket_property(), &bucket_inventory(), &premises);
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
         assert!(p.is_conditional());
         assert_eq!(p.trusted, vec!["TokenBucket::try_take".to_string()]);
     }
@@ -606,7 +916,12 @@ mod tests {
     fn a_mutation_escape_opens_the_boundary_regardless_of_the_operations() {
         let mut inv = bucket_inventory();
         inv.escapes.push("TokenBucket::available is pub".into());
-        let p = plan(&bucket_property(), &inv, &bucket_premises());
+        let p = plan(
+            &bucket_property(),
+            &inv,
+            &bucket_premises(),
+            &current_facts(),
+        );
         assert!(p.blockers.contains(&Blocker::OpenBoundary {
             path: "TokenBucket::available is pub".into()
         }));
@@ -619,7 +934,12 @@ mod tests {
         let mut inv = bucket_inventory();
         inv.unclassified
             .push("impl<T> TokenBucket<T> (generic, not scanned)".into());
-        let p = plan(&bucket_property(), &inv, &bucket_premises());
+        let p = plan(
+            &bucket_property(),
+            &inv,
+            &bucket_premises(),
+            &current_facts(),
+        );
         assert!(!p.coverage_is_complete());
         assert!(
             p.blockers
@@ -635,7 +955,12 @@ mod tests {
     fn a_reader_not_shown_pure_blocks_because_shared_does_not_mean_immutable() {
         let mut prop = bucket_property();
         prop.observers[0].reads_are_pure = false;
-        let p = plan(&prop, &bucket_inventory(), &bucket_premises());
+        let p = plan(
+            &prop,
+            &bucket_inventory(),
+            &bucket_premises(),
+            &current_facts(),
+        );
         assert!(p.blockers.contains(&Blocker::UnprovenReaderPurity {
             observer: "available".into()
         }));
@@ -651,7 +976,12 @@ mod tests {
             facts: RangeFacts::of_rust_type("String"),
             reads_are_pure: true,
         });
-        let p = plan(&prop, &bucket_inventory(), &bucket_premises());
+        let p = plan(
+            &prop,
+            &bucket_inventory(),
+            &bucket_premises(),
+            &current_facts(),
+        );
         assert!(p.blockers.contains(&Blocker::UnsupportedObserver {
             observer: "label".into(),
             rust_type: "String".into()
@@ -688,7 +1018,12 @@ mod tests {
         premises[2]
             .assumptions
             .push("the clock is monotonic".into());
-        let p = plan(&bucket_property(), &bucket_inventory(), &premises);
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
         assert_eq!(
             p.assumptions,
             vec!["TokenBucket::refill: the clock is monotonic".to_string()]
@@ -703,5 +1038,283 @@ mod tests {
         assert!(mentions("available <= capacity", "capacity"));
         assert!(!mentions("spare_capacity > 0", "capacity"));
         assert!(!mentions("capacity_hint == 3", "capacity"));
+    }
+
+    // ---- The gaps adversarial review constructed, 2026-09-09. Each of
+    // these produced `coverage_is_complete() == true` when it should not.
+
+    fn current_facts() -> std::collections::BTreeMap<String, SourceIdentity> {
+        [
+            "TokenBucket::new",
+            "TokenBucket::try_take",
+            "TokenBucket::refill",
+        ]
+        .iter()
+        .map(|i| {
+            (
+                i.to_string(),
+                SourceIdentity {
+                    source_fingerprint: "src1".into(),
+                    contract_fingerprint: "con1".into(),
+                    config: "cfg1".into(),
+                },
+            )
+        })
+        .collect()
+    }
+
+    /// **The order-dependent verdict.** Two premises for one item gave two
+    /// different answers depending which came last; the map silently kept
+    /// one. Same inputs must not produce two verdicts.
+    #[test]
+    fn two_premises_for_one_item_block_rather_than_one_silently_winning() {
+        let mut premises = bucket_premises();
+        let mut dup = premises[2].clone();
+        dup.domain = Domain::Restricted {
+            description: "tokens <= 16".into(),
+        };
+        premises.push(dup);
+        let forward = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
+        premises.swap(2, 3);
+        let reversed = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
+        assert!(
+            forward.blockers.contains(&Blocker::DuplicatePremise {
+                item: "TokenBucket::refill".into()
+            }),
+            "a second premise for the same item must block: {:?}",
+            forward.blockers
+        );
+        assert_eq!(
+            forward.coverage_is_complete(),
+            reversed.coverage_is_complete(),
+            "the verdict must not depend on premise order"
+        );
+    }
+
+    /// A premise whose source moved is stale, not weaker. Nothing was
+    /// comparing fingerprints at all.
+    #[test]
+    fn a_premise_whose_source_moved_is_stale_and_blocks() {
+        let mut premises = bucket_premises();
+        premises[1].source_fingerprint = "moved".into();
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
+        assert!(
+            p.blockers.contains(&Blocker::StalePremise {
+                item: "TokenBucket::try_take".into(),
+                field: "source".into()
+            }),
+            "{:?}",
+            p.blockers
+        );
+    }
+
+    /// The compilation configuration is part of identity too.
+    #[test]
+    fn a_premise_taken_under_a_different_configuration_blocks() {
+        let mut premises = bucket_premises();
+        premises[2].config = "cfg-other".into();
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
+        assert!(p.blockers.contains(&Blocker::StalePremise {
+            item: "TokenBucket::refill".into(),
+            field: "config".into()
+        }));
+    }
+
+    /// A reader's contract is not a two-state contract. The role was never
+    /// read.
+    #[test]
+    fn a_premise_with_the_wrong_role_blocks_rather_than_standing_in() {
+        let mut premises = bucket_premises();
+        premises[1].role = PremiseRole::Reader;
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
+        assert!(
+            p.blockers.contains(&Blocker::WrongRole {
+                item: "TokenBucket::try_take".into(),
+                expected: "Transition".into(),
+                found: "Reader".into()
+            }),
+            "{:?}",
+            p.blockers
+        );
+    }
+
+    /// A frame fact asserting the contract states it, when the contract does
+    /// not, re-admits the omitted-frame hole through a side door.
+    #[test]
+    fn a_frame_fact_claiming_contract_support_must_actually_have_it() {
+        let mut premises = bucket_premises();
+        premises[1].ensures.clear();
+        premises[1].frame = vec![
+            FrameFact {
+                observer: "available".into(),
+                justification: FrameJustification::ProvedContract,
+            },
+            FrameFact {
+                observer: "capacity".into(),
+                justification: FrameJustification::ProvedContract,
+            },
+        ];
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
+        assert!(
+            p.blockers.iter().any(|b| matches!(
+                b,
+                Blocker::UnsupportedFrameClaim { operation, observer }
+                    if operation == "TokenBucket::try_take" && observer == "available"
+            )),
+            "a frame fact citing the contract must be checked against it: {:?}",
+            p.blockers
+        );
+    }
+
+    /// A premise for an operation the boundary scan never found is direct
+    /// evidence the inventory is incomplete. It was dropped without trace.
+    #[test]
+    fn a_premise_for_an_item_outside_the_inventory_blocks() {
+        let mut premises = bucket_premises();
+        let mut extra = premises[2].clone();
+        extra.item = "TokenBucket::force_set".into();
+        premises.push(extra);
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
+        assert!(
+            p.blockers.contains(&Blocker::PremiseOutsideInventory {
+                item: "TokenBucket::force_set".into()
+            }),
+            "{:?}",
+            p.blockers
+        );
+    }
+
+    /// A type with no constructors has no reachable states. A scan that
+    /// returned nothing is far likelier, and must not read as covered.
+    #[test]
+    fn an_empty_inventory_is_not_full_coverage() {
+        let p = plan(
+            &bucket_property(),
+            &Inventory::default(),
+            &[],
+            &Default::default(),
+        );
+        assert!(
+            !p.coverage_is_complete(),
+            "an empty inventory means the scan found nothing, not that nothing exists"
+        );
+        assert!(p.blockers.contains(&Blocker::NoConstructors));
+    }
+
+    /// Every observer the invariant names must be declared, or the frame
+    /// check silently has nothing to look for.
+    #[test]
+    fn an_observer_named_in_the_invariant_but_undeclared_blocks() {
+        let mut prop = bucket_property();
+        prop.observers.retain(|o| o.name != "capacity");
+        let p = plan(
+            &prop,
+            &bucket_inventory(),
+            &bucket_premises(),
+            &current_facts(),
+        );
+        assert!(
+            p.blockers.contains(&Blocker::UndeclaredObserver {
+                observer: "capacity".into()
+            }),
+            "{:?}",
+            p.blockers
+        );
+    }
+
+    /// Satisfiability is not decidable here, so every operation carries an
+    /// obligation for the backend to check it. A contradictory premise set
+    /// verifies everything, and that must be asked rather than assumed.
+    #[test]
+    fn every_operation_carries_a_reachability_obligation_for_the_backend() {
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &bucket_premises(),
+            &current_facts(),
+        );
+        for op in ["TokenBucket::try_take", "TokenBucket::refill"] {
+            assert!(
+                p.obligations.iter().any(|o| o.kind
+                    == ObligationKind::Reachable {
+                        operation: op.into()
+                    }),
+                "no vacuity check planned for {op}"
+            );
+        }
+    }
+
+    /// The retracted arithmetic hole: every operation owes a non-overflow
+    /// obligation, because a contract is a Rust expression and the prover's
+    /// integers are not Rust's.
+    #[test]
+    fn every_operation_carries_an_arithmetic_safety_obligation() {
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &bucket_premises(),
+            &current_facts(),
+        );
+        assert!(p.obligations.iter().any(|o| o.kind
+            == ObligationKind::ArithmeticSafety {
+                item: "TokenBucket::refill".into()
+            }));
+    }
+
+    /// `mentions` must not count a *pre*-state reading as constraining the
+    /// post-state, nor find an observer inside a comment or a string.
+    #[test]
+    fn a_pre_state_mention_does_not_count_as_constraining_the_post_state() {
+        assert!(!constrains_post_state(
+            "available == old(available) + old(capacity)",
+            "capacity"
+        ));
+        assert!(!constrains_post_state(
+            "available == old(available) - tokens /* capacity unchanged */",
+            "capacity"
+        ));
+        assert!(!constrains_post_state(
+            "available == \"capacity\".len()",
+            "capacity"
+        ));
+        assert!(constrains_post_state(
+            "capacity == old(capacity)",
+            "capacity"
+        ));
     }
 }

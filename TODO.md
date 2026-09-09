@@ -534,7 +534,34 @@ Rust-to-Verus translator.
       re-run before anything new: the existing bucket proof, 6 verified,
       0 errors.
 
-- [x] **M2 DONE (`11fa9c5`): the pure obligation planner.** Init, preservation, domain
+- [x] **M2 DONE (`11fa9c5`), then hardened after review found seven ways it
+      reported complete coverage when it should not.** All closed, each with
+      the test that constructs it: a second premise for one item (the verdict
+      changed with iteration order -- same inputs, two answers); a premise
+      whose source, contract text or build configuration is not what is there
+      now; a premise standing in for a role it is not; a frame fact citing
+      the contract as its justification where the contract does not state it
+      (the omitted-frame hole re-admitted through a side door); a premise for
+      an item the scan never found, which is evidence the inventory is
+      incomplete and was being discarded silently; an empty inventory reading
+      as full coverage; and a reading named in the invariant but never
+      declared as an observer, which left the frame check nothing to look
+      for.
+
+      Two obligations added rather than assumed: **arithmetic safety** per
+      operation, from the unsoundness above, and **reachability**, because
+      satisfiability is not decidable here and a contradictory premise set
+      discharges everything.
+
+      Reading a contract now asks whether it constrains the observer's
+      *post-state*, not whether it mentions it: `old(capacity)`, a comment
+      and a string literal each silenced the frame blocker before.
+
+      **The check caught its own fixture.** The baseline test asserted a
+      capacity frame fact its contract never stated -- exactly the defect --
+      so the fixture was made faithful to `proof/bucket.rs` instead.
+
+- [x] Original M2 entry: the pure obligation planner. Init, preservation, domain
       compatibility, coverage, boundary and assumptions, generated from
       premises. No processes, no file writes, no rendering. Explicit
       before/after state; an omitted post-state fact is unconstrained, never
