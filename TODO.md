@@ -407,7 +407,7 @@ refusal shipped the day before.
       corrected to what rule 9 now says, and the suite is now a CI step. A
       test nothing runs is not a test.
 
-- [x] **CLOSED: the spec reference now names the command that prints it.**
+- [x] **CLOSED (`ad52299`, merged `b658831`): the spec reference now names the command that prints it.**
       Asked whether `cargo ply skills` should also write out
       `The-Ply-Spec.md`. It should not: the spec is already embedded, and
       `cargo ply explain 5.4b` already prints any section on request; none
