@@ -21,6 +21,7 @@
 //! Concurrency and re-entrancy are outside this theorem entirely.
 
 pub mod inventory;
+pub mod verus;
 
 use std::collections::BTreeSet;
 
@@ -170,6 +171,18 @@ pub enum PremiseRole {
     Reader,
 }
 
+/// A value an operation takes in, or hands back, that its contract talks
+/// about.
+///
+/// It needs a declared range for the same reason a reading does: in the
+/// model it is a variable the solver chooses, and an unbounded choice is a
+/// wider program than the one that was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parameter {
+    pub name: String,
+    pub facts: RangeFacts,
+}
+
 /// One function proof, in the form composition can actually use.
 ///
 /// "This function is proved" is not usable. Composition needs the contract
@@ -187,6 +200,10 @@ pub struct Premise {
     /// The compilation configuration the proof was taken under.
     pub config: String,
     pub domain: Domain,
+    /// Every name the contract uses that is not a reading: the arguments,
+    /// and the returned value where the contract mentions it. Each carries
+    /// its declared range.
+    pub parameters: Vec<Parameter>,
     /// Preconditions, as written.
     pub requires: Vec<String>,
     /// Relational postconditions, as written, over `old(..)` and the
@@ -305,6 +322,16 @@ pub enum Blocker {
     /// The invariant names a reading that was never declared as an
     /// observer, so the frame check has nothing to look for.
     UndeclaredObserver { observer: String },
+    /// A parameter whose declared type has no stated value range. Left in,
+    /// the solver ranges over values the program cannot produce.
+    UnsupportedParameter {
+        item: String,
+        parameter: String,
+        rust_type: String,
+    },
+    /// A name a contract uses that is neither a declared reading nor a
+    /// declared parameter, so nothing in the model bounds it.
+    UndeclaredName { item: String, name: String },
 }
 
 /// The plan: what must be discharged, what is assumed, and what stops the
@@ -444,6 +471,7 @@ pub fn plan(
             Some(p) => {
                 note_premise(p, &mut trusted, &mut assumptions, &mut blockers);
                 require_role(p, PremiseRole::Constructor, &mut blockers);
+                check_names(p, property, &mut blockers);
                 obligations.push(Obligation {
                     kind: ObligationKind::Initialization {
                         constructor: ctor.clone(),
@@ -468,6 +496,7 @@ pub fn plan(
         };
         note_premise(p, &mut trusted, &mut assumptions, &mut blockers);
         require_role(p, PremiseRole::Transition, &mut blockers);
+        check_names(p, property, &mut blockers);
 
         // Every observer the invariant needs must be either constrained by
         // this operation's postcondition or justified as unchanged. Saying
@@ -636,6 +665,38 @@ fn identifiers(expr: &str) -> Vec<String> {
     out
 }
 
+/// Every name a contract uses has to be bounded by something.
+///
+/// Two ways it is not: a parameter declared with a type this module will
+/// not put a range on, and a name declared nowhere at all. Both leave the
+/// solver a variable it may choose freely, which is a larger program than
+/// the one that was written -- so both block rather than being admitted
+/// unconstrained.
+fn check_names(p: &Premise, property: &Property, blockers: &mut Vec<Blocker>) {
+    for param in &p.parameters {
+        if let RangeFacts::Unsupported { rust_type } = &param.facts {
+            blockers.push(Blocker::UnsupportedParameter {
+                item: p.item.clone(),
+                parameter: param.name.clone(),
+                rust_type: rust_type.clone(),
+            });
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for clause in p.requires.iter().chain(p.ensures.iter()) {
+        for name in identifiers(clause) {
+            let declared = property.observers.iter().any(|o| o.name == name)
+                || p.parameters.iter().any(|q| q.name == name);
+            if !declared && seen.insert(name.clone()) {
+                blockers.push(Blocker::UndeclaredName {
+                    item: p.item.clone(),
+                    name,
+                });
+            }
+        }
+    }
+}
+
 /// A premise standing in for something it is not.
 fn require_role(p: &Premise, expected: PremiseRole, blockers: &mut Vec<Blocker>) {
     if p.role != expected {
@@ -714,10 +775,31 @@ mod tests {
         }
     }
 
-    fn proved(item: &str, role: PremiseRole, ensures: &[&str], frame: &[&str]) -> Premise {
+    fn u32_param(name: &str) -> Parameter {
+        Parameter {
+            name: name.to_string(),
+            facts: RangeFacts::of_rust_type("u32", Some(64)),
+        }
+    }
+
+    fn bool_param(name: &str) -> Parameter {
+        Parameter {
+            name: name.to_string(),
+            facts: RangeFacts::Bool,
+        }
+    }
+
+    fn proved(
+        item: &str,
+        role: PremiseRole,
+        params: Vec<Parameter>,
+        ensures: &[&str],
+        frame: &[&str],
+    ) -> Premise {
         Premise {
             item: item.into(),
             role,
+            parameters: params,
             source_fingerprint: "src1".into(),
             contract_fingerprint: "con1".into(),
             config: "cfg1".into(),
@@ -745,6 +827,7 @@ mod tests {
             proved(
                 "TokenBucket::new",
                 PremiseRole::Constructor,
+                vec![u32_param("cap")],
                 &["available == capacity", "capacity == cap"],
                 &[],
             ),
@@ -756,6 +839,7 @@ mod tests {
             proved(
                 "TokenBucket::try_take",
                 PremiseRole::Transition,
+                vec![u32_param("tokens"), bool_param("ok")],
                 &[
                     "ok == (old(available) >= tokens)",
                     "ok ==> available == old(available) - tokens",
@@ -767,6 +851,7 @@ mod tests {
             proved(
                 "TokenBucket::refill",
                 PremiseRole::Transition,
+                vec![u32_param("tokens")],
                 &[
                     "available == min(old(available) + tokens, old(capacity))",
                     "capacity == old(capacity)",
@@ -783,6 +868,71 @@ mod tests {
             escapes: vec![],
             unclassified: vec![],
         }
+    }
+
+    /// A parameter with no declared range is a free variable in the model:
+    /// the solver may pick any value for it, including values the program
+    /// cannot produce. That is the same hole as an observer with no range,
+    /// one level along, and it blocks the same way.
+    #[test]
+    fn a_parameter_whose_range_is_unknown_blocks() {
+        let mut premises = bucket_premises();
+        let take = premises
+            .iter_mut()
+            .find(|p| p.item.ends_with("try_take"))
+            .unwrap();
+        take.parameters = vec![
+            Parameter {
+                name: "tokens".into(),
+                facts: RangeFacts::of_rust_type("Duration", None),
+            },
+            Parameter {
+                name: "ok".into(),
+                facts: RangeFacts::Bool,
+            },
+        ];
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
+        assert!(
+            p.blockers.contains(&Blocker::UnsupportedParameter {
+                item: "TokenBucket::try_take".into(),
+                parameter: "tokens".into(),
+                rust_type: "Duration".into(),
+            }),
+            "a parameter of unknown width must block: {:?}",
+            p.blockers
+        );
+    }
+
+    /// A name in a contract that is neither a reading nor a declared
+    /// parameter is bounded by nothing at all. Left alone it becomes a
+    /// free variable the solver ranges over however it likes.
+    #[test]
+    fn a_name_in_a_contract_that_is_neither_a_reading_nor_a_parameter_blocks() {
+        let mut premises = bucket_premises();
+        let take = premises
+            .iter_mut()
+            .find(|p| p.item.ends_with("try_take"))
+            .unwrap();
+        take.ensures.push("available <= budget".into());
+        let p = plan(
+            &bucket_property(),
+            &bucket_inventory(),
+            &premises,
+            &current_facts(),
+        );
+        assert!(
+            p.blockers.contains(&Blocker::UndeclaredName {
+                item: "TokenBucket::try_take".into(),
+                name: "budget".into(),
+            }),
+            "`budget` is declared nowhere and must block: {:?}",
+            p.blockers
+        );
     }
 
     /// The baseline: a complete inventory with a premise for every path

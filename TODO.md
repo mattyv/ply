@@ -603,9 +603,61 @@ Rust-to-Verus translator.
       `ImplMatch::NotThisType` likewise. `ReceiverPlan` does retain
       `excluded_operations` as structured data (call path + reason), which
       is the honest half to build on.
-- [ ] **M4: discharge on the real backend**, behind a small adapter, with
-      Rust arithmetic semantics preserved as explicit range premises rather
-      than unbounded integers.
+- [x] **M4 DONE: the obligations are generated and discharged on the real
+      solver.** The bucket's four contracts go in and **five obligations come
+      back verified, no errors**; the satisfiability probes come back with an
+      error for every one, which is the outcome they are supposed to have.
+      Everything is re-runnable: `tests/spike/verus-component/compose/run.sh`
+      steps 6 to 9, over files the adapter emits rather than files anyone
+      wrote by hand.
+
+      **The range obligation bites, and the premise deliberately withheld
+      from it is load-bearing -- both measured, not argued.** Drop the guard
+      that makes `try_take`'s subtraction safe -- the exact contract the
+      wrapping program in step 5 satisfies -- and the range obligation fails,
+      naming it (step 8). Put back the one premise the generator withholds
+      (that the state *after* is in range) and the same broken contract
+      passes clean, five verified, no errors (step 9). A wrapped value is
+      perfectly in range, so assuming it makes the premises contradictory and
+      every question answers yes. That omission is now the difference between
+      catching the unsoundness and not.
+
+      **The two files are separate on purpose.** The satisfiability probe
+      asks the solver to derive a falsehood from one contract alone, so its
+      *success* is the failure. Mixed in with the rest, a reader counting
+      errors would have to know which lines invert -- so they do not share a
+      file, and a test fails if an obligation appears in both.
+
+      **A defect the new tests found in the work already written.** `==>` was
+      being swapped for `|` before parsing. `|` binds tighter than `==` and
+      groups leftwards, so `ok ==> available == old(available) - tokens` came
+      apart into the wrong shape with a stray name in it -- and nothing
+      caught it, because every test on that path checked only that
+      translation *succeeded*. It is read as `=` now: assignment is the one
+      Rust operator with implication's precedence and associativity.
+
+      Also closed, each with the test that constructs it: a parameter with no
+      declared width was a free variable the solver could choose anything
+      for; a name appearing in a contract and declared nowhere was the same
+      hole without even a type to point at; two operand widths in one
+      operation had no single range to check against; arithmetic on values
+      with no declared width was checked against a guess; and two item paths
+      that flatten to the same identifier would have had one set of
+      obligations answering for both.
+
+      `saturating_add` translates and owes **no** range obligation, because
+      unlike `+` it is total -- there is no input on which it misbehaves.
+      That is why the real `refill` is written with it, and the fixture now
+      says so; written with a plain `+` the same contract is not
+      overflow-free and the obligation correctly refuses it.
+
+      KNOWN GAPS, open on purpose: the accepted clause subset does not cover
+      the syntax people actually write -- `self.available()`, `*result`, `as
+      u64` -- so something has to normalise real contracts into this form,
+      and that does not exist. `min` and `max` inline both branches, so a
+      nesting of them grows exponentially in the emitted text. And the
+      satisfiability probe is one-sided: it detects a contract that
+      contradicts itself, it does not certify that one does not.
 - [ ] **M5: report exact evidence** on the state node -- `NodeKind::Container`
       has no evidence payload by construction and this design does not fight
       that.
