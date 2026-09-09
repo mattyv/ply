@@ -154,8 +154,16 @@ are downstream of whether obligations 1 and 2 can be discharged at all.
 # Addendum: composition, not implementation — 2026-09-09
 
 **Status: this section supersedes the stale claims above and sets the shape
-of the implementation. Measured on this machine, this session, with the
-numbers below reproducible from `tests/spike/verus-component/`.**
+of the implementation. It also carries its own retractions — the timing
+comparison below was wrong, and the arithmetic rule it first stated was
+unsound. Both are corrected in place, with the measurements that corrected
+them.**
+
+**The probes are not yet in the repository.** The entailment probe and its
+breakage variants were run from a session scratchpad; only `bucket.rs` and
+`cache.rs` are committed. Until those land under
+`tests/spike/verus-component/`, the numbers here are reported rather than
+reproducible, and saying which is the point of this note.
 
 ## Retractions
 
@@ -206,18 +214,30 @@ That is a pure logical entailment over abstract state and contract
 predicates. It needs no function bodies at all. Measured today, both halves
 on the same machine and the same Verus (0.2026.08.23.fbbbbcf):
 
-| what is proved | obligations | wall clock | trust surface |
-|---|---|---|---|
-| the bucket's bodies (`proof/bucket.rs`) | 6 verified, 0 errors | 12.1s | vstd wrappers, `no_unwind` assertions |
-| the bucket's **contracts entail `available <= capacity`** | 4 verified, 0 errors | **1.8s** | **none** |
+**RETRACTED the same day it was written.** This first claimed "12.1s vs
+1.8s, seven times faster". That was a cold first invocation of Verus
+compared against a warm one. Re-measured warm, three runs each, same binary
+and same files:
 
-The second row is the shape to build. It is seven times faster, and it
-avoids the entire trusted-wrapper surface `FINDINGS.md` recorded as a real
-cost: no `vstd::Vec` calls to mark `no_unwind`, because no bodies are
-translated. It also sidesteps the "invariant is checked after every
-field-mutating call" strictness, which rejects a private helper that breaks
-and restores the invariant — that restriction is a property of proving
-bodies, and it does not apply here.
+| what is proved | obligations | wall clock, warm |
+|---|---|---|
+| the bucket's bodies (`proof/bucket.rs`) | 3 (+ empty `main`) | 783 / 740 / 742 ms |
+| the bucket's contracts entail the invariant | 3 (+ empty `main`) | 816 / 731 / 706 ms |
+
+**The ratio is 1:1.** Neither does measurable solver work; nearly all the
+wall clock is `vstd` import. Two further corrections: the original
+"6 verified"/"4 verified" counted the empty `fn main()`, so the honest
+counts are 3 and 3; and the "vstd wrappers, `no_unwind`" cost belongs to
+`proof/cache.rs`, not to the bucket, which is two `u32` fields and plain
+arithmetic and never paid it.
+
+**Composing from contracts is still the right shape, but not for speed.**
+What survives measurement: it needs no function bodies, so it does not
+inherit the "invariant re-checked after every field-mutating call"
+strictness that rejects a private helper breaking and restoring the
+invariant; and it is the only thing that answers the actual question, which
+is whether the contracts *entail* the property, not whether the bodies
+satisfy the contracts.
 
 **Non-vacuity, checked rather than assumed.** Two deliberate breakages, each
 run:
@@ -271,13 +291,45 @@ construction* — a component cannot claim its own verdict, and this design
 does not fight that. `state_node` already exists, already carries
 `evidence: None`, and already folds worst-of into its component.
 
-## Arithmetic
+## Arithmetic: the first encoding was unsound, and the rule that replaces it
 
-Observers are modelled as mathematical integers **with the range facts of
-their declared Rust types carried as explicit premises** — a `u32` observer
-enters as `0 <= x <= 4294967295`. Machine arithmetic is never silently
-replaced by unbounded arithmetic; the width is a premise, written down,
-and the probe above carries it.
+This section first claimed "machine arithmetic is never silently replaced by
+unbounded arithmetic; the width is a premise". **The width premise does not
+do that**, and review produced the counterexample the same day.
+
+Bounding the *observers* by their declared range says nothing about the
+*operators inside the contract*. A Ply contract is a Rust expression, so
+`old(available) - tokens` is machine subtraction; transcribed into the
+prover's `int` it becomes unbounded subtraction, and those differ exactly
+where it matters. Reproduced end to end:
+
+- Contract, as an author would write it: on success `available ==
+  old(available) - tokens`, with capacity framed.
+- Implementation: `self.available = self.available.wrapping_sub(tokens)`.
+- The model **verifies**. The program, compiled and run, has the promise
+  evaluate **true** while `available <= capacity` is **false** —
+  `available = 4294967295, capacity = 5`, from `available = 3, tokens = 4`.
+
+A premise the program genuinely satisfies composed into a "proved" invariant
+the program violates. That is the outcome this whole tool exists to prevent,
+and it was in the encoding this document recommended.
+
+**The rule.** Observers still enter with the range facts of their declared
+types, but that is necessary and never sufficient. Every arithmetic
+operation in a translated contract carries its own obligation: *within the
+declared ranges, this operation does not overflow*. Where that cannot be
+discharged the property is **not established** and the offending clause is
+named — never quietly reinterpreted under wider arithmetic. A contract
+written to be overflow-safe discharges it; `tests/fixtures/tokenbucket`
+widens to `u64` for exactly this reason. One that is not gets refused, which
+is the right answer rather than a limitation.
+
+**Satisfiability is the sibling hole**, disclosed here rather than
+discovered later: a contradictory premise set verifies everything. Give
+`refill` both `post.available == pre.available + 1` and `post.available ==
+pre.available` and the obligations discharge, meaning nothing. Vacuity must
+be checked. The non-vacuity checks recorded above tested sensitivity to two
+weakenings, which is a different property and does not cover this.
 
 ## The outcomes, kept distinct
 

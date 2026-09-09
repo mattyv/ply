@@ -501,14 +501,32 @@ Rust-to-Verus translator.
       which also retracts three stale claims -- chiefly "`&mut self` methods
       cannot be claimed", untrue since transition promises shipped.
 
-      **The measurement that shapes everything below.** The existing spike
-      proves the bucket's *bodies*: 6 verified, 12.1s, and a trusted-wrapper
-      surface for every `vstd` call that can unwind. Proving instead that its
-      *contracts entail* the invariant -- which is what composition actually
-      needs -- is **4 verified, 0 errors, 1.8s, and no trust surface at all**,
-      because no bodies are translated. Non-vacuity checked both ways: a
-      weakened `refill` contract and an omitted capacity frame fact each
-      fail with "postcondition not satisfied".
+      **RETRACTED, same day: the measurement written here was wrong.** It
+      claimed 12.1s for the bodies against 1.8s for the contracts, "seven
+      times faster". That compared a cold first invocation of Verus against
+      a warm one. Warm, three runs each: bodies 783/740/742 ms, contracts
+      816/731/706 ms -- **1:1**, with nearly all of it `vstd` import and no
+      measurable solver work either side. The obligation counts were
+      inflated too (the empty `fn main()` was being counted), and the
+      trusted-wrapper cost belongs to the cache shadow, not the bucket.
+      Composing from contracts is still right, but for reasons that survive
+      measurement, not for speed.
+
+      **Worse, and found by the same review: the arithmetic encoding was
+      unsound.** Contracts are Rust expressions, so `old(available) - tokens`
+      is machine subtraction; transcribing it into the prover's `int` makes
+      it unbounded. Bounding the *observers* by their declared range does
+      nothing about the *operators*. Reproduced end to end: an
+      implementation using `wrapping_sub` satisfies the promise -- checked by
+      compiling and running it -- while the invariant is false, `available =
+      4294967295` against `capacity = 5`. The model verifies anyway. Every
+      arithmetic operation in a translated contract now owes its own
+      non-overflow obligation, and a clause that cannot discharge it is
+      named and refused rather than reinterpreted.
+
+      Non-vacuity was checked in one direction only: two weakenings, each
+      correctly failing. That does not establish the premise set is
+      satisfiable, and a contradictory one verifies everything.
 
       Verus 0.2026.08.23.fbbbbcf installed to the session scratchpad by the
       four steps `tests/spike/verus/FINDINGS.md` records; all four still work
@@ -516,7 +534,7 @@ Rust-to-Verus translator.
       re-run before anything new: the existing bucket proof, 6 verified,
       0 errors.
 
-- [ ] **M2: the pure obligation planner.** Init, preservation, domain
+- [x] **M2 DONE (`11fa9c5`): the pure obligation planner.** Init, preservation, domain
       compatibility, coverage, boundary and assumptions, generated from
       premises. No processes, no file writes, no rendering. Explicit
       before/after state; an omitted post-state fact is unconstrained, never
@@ -654,10 +672,14 @@ value Ply built after 1 of the type's own operations had run on it").
       the cache (round 2) and the bucket (round 3), Ply caught one of six
       pre-registered bugs, and **four of the five misses were correctly
       outside what could be declared at all**. The cause is structural, not a
-      defect: `&mut self` methods cannot be claimed (`ply-checkable-code`
-      rule 9 says so plainly), so for a type that changes, the only
-      expressible promise is a standing rule over the whole value -- and the
-      bugs live in the transitions. Two agents, working independently and
+      defect: `&mut self` methods could not be claimed at the time
+      (`ply-checkable-code` rule 9 said so plainly), so for a type that
+      changes, the only expressible promise was a standing rule over the
+      whole value -- and the bugs live in the transitions. **That limit is
+      gone as of 2026-09-08:** transition promises shipped and rule 9 was
+      rewritten. The sentence is left standing in the past tense rather than
+      edited away, because the 1-of-6 measurement below was taken under it
+      and does not describe today's tool. Two agents, working independently and
       without seeing each other, reached that same conclusion from the guide
       and fell back on ordinary tests for the mutating methods. The guide is
       honest and the tool matches it; what is now measured is how much that
