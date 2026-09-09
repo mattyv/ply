@@ -90,6 +90,7 @@ components:
 ```console
 $ cargo ply check .          # grammar and anchors, no engines, fast
 $ cargo ply verify .         # runs the checks and reports what they earned
+$ cargo ply verify . -j 2    # overlaps independent bounded checks
 workspace — fuzzed(64)
   mycrate — fuzzed(64)
     add — fuzzed(64)
@@ -108,6 +109,21 @@ $ cargo install --locked cargo-mutants                       # for mutate
 already ignored by every Rust `.gitignore`. Nothing else in your project is modified: on
 a crate that declares its own workspace Ply borrows your `Cargo.toml` for the length of
 the run and writes it back byte-for-byte when the run ends.
+
+**Parallel verification.** `cargo ply verify -j N` (or `--jobs N`) allows at most `N`
+Ply verification tasks to run at once; it defaults to `1`. Compilers and engines can
+create extra threads and processes, so this is not a machine-wide process limit. The
+first release overlaps only independent, dependency-ready claims whose sole check is
+`bounded(k)`. Fuzzing, worked examples, mutation testing, state-history checks,
+linked-document runs, build-script closures, and mixed check lists remain serial. Each
+active proof gets a private source shadow and Cargo target. Reports, counterexamples, and
+`ply.lock` stay deterministic and are published by one coordinator after worker results
+are collected. A run also stays serial when its Cargo lock is absent or stale, when a
+shared harness is temporarily registered, or when compile-time path macros make source
+relocation observable. Ply compares its first-party walk with Cargo's resolved local
+dependency graph and library entry points; an unrecognised local-dependency spelling,
+including a workspace-inherited path dependency or custom library path, also stays serial
+and uncached.
 
 ## The development loop
 
@@ -784,7 +800,7 @@ Six commands exist:
 | --- | --- |
 | `cargo ply render <dir>` | Draw `ply.yaml` as SVG before code or a Cargo project exists. `--text` writes prose; `--json` writes a navigable declaration-only visual. |
 | `cargo ply check <dir>` | Validate `ply.yaml`, resolve claims, and run the available architecture checks without starting verification engines. |
-| `cargo ply verify <dir>` | Run declared checks and report the evidence each function earned. |
+| `cargo ply verify <dir>` | Run declared checks and report the evidence each function earned. `-j N` overlaps eligible independent bounded checks. |
 | `cargo ply audit <dir>` | List the trust surface: assumptions and declarations Ply does not verify. |
 | `cargo ply worklist <dir>` | List unresolved decisions and evidence still owed. |
 | `cargo ply explain <CODE>` | Say what one diagnostic code means, who reports it, and whether a run carrying it passed. Also reads out a spec section by number (`8`, `5.4b`) -- no `§` needed. No argument lists every code this build can produce. |

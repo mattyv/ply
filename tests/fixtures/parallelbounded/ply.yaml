@@ -1,0 +1,10 @@
+ply: 1
+
+components:
+  proofs:
+    anchor: ply_fixture_parallelbounded
+    fns:
+      good: { checks: [bounded(2)] }
+      good_two: { checks: [bounded(2)] }
+      bad:  { checks: [bounded(2)] }
+      bad_two: { checks: [bounded(2)] }

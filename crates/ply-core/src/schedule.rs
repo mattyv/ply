@@ -43,6 +43,79 @@
 //! the one condition that matters, and both a genuine cycle and a
 //! domain-external dependency produce it.
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// Runs independent item indices with at most `jobs` active calls to `run`.
+/// Results are returned in the same order as `items`, regardless of which
+/// worker finishes first. A panic belongs to the item that caused it and does
+/// not discard results from other workers.
+///
+/// `cancelled` is checked before a worker takes another item. Once set, no
+/// unassigned work starts. The caller remains responsible for making an
+/// already-running `run` observe the same token when prompt process cleanup
+/// is required.
+pub fn run_jobs<T, F>(
+    items: &[usize],
+    jobs: usize,
+    cancelled: &AtomicBool,
+    run: F,
+) -> Vec<(usize, std::result::Result<T, String>)>
+where
+    T: Send,
+    F: Fn(usize) -> T + Sync,
+{
+    if items.is_empty() || cancelled.load(Ordering::SeqCst) {
+        return Vec::new();
+    }
+    let worker_count = jobs.max(1).min(items.len());
+    let next = AtomicUsize::new(0);
+    let (sender, receiver) = std::sync::mpsc::channel();
+
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let sender = sender.clone();
+            let run = &run;
+            let next = &next;
+            scope.spawn(move || {
+                loop {
+                    if cancelled.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let position = next.fetch_add(1, Ordering::SeqCst);
+                    let Some(&item) = items.get(position) else {
+                        break;
+                    };
+                    if cancelled.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(item)))
+                            .map_err(panic_message);
+                    if sender.send((position, item, result)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(sender);
+    });
+
+    let completed: BTreeMap<usize, (usize, std::result::Result<T, String>)> = receiver
+        .into_iter()
+        .map(|(position, item, result)| (position, (item, result)))
+        .collect();
+    completed.into_values().collect()
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "worker panicked without a message".to_string()
+    }
+}
 
 /// The result of [`order`]: which of `domain`'s nodes could be placed in a
 /// callees-before-callers sequence, and which could not.
@@ -136,9 +209,38 @@ pub fn order(
     (order, tainted)
 }
 
+/// Groups an already topologically ordered set into dependency-ready waves.
+/// Every node in a wave depends only on nodes in earlier waves, so members of
+/// one wave may overlap without letting a caller observe an unfinished
+/// callee. Relative order inside each wave follows `ordered`.
+pub fn waves(ordered: &[usize], edges: &BTreeMap<usize, BTreeSet<usize>>) -> Vec<Vec<usize>> {
+    let ordered_set: BTreeSet<usize> = ordered.iter().copied().collect();
+    let mut levels: BTreeMap<usize, usize> = ordered.iter().map(|&item| (item, 0)).collect();
+    for &item in ordered {
+        let next_level = levels.get(&item).copied().unwrap_or(0) + 1;
+        if let Some(callers) = edges.get(&item) {
+            for &caller in callers {
+                if ordered_set.contains(&caller) {
+                    levels
+                        .entry(caller)
+                        .and_modify(|level| *level = (*level).max(next_level));
+                }
+            }
+        }
+    }
+    let wave_count = levels.values().copied().max().map_or(0, |level| level + 1);
+    let mut result = vec![Vec::new(); wave_count];
+    for &item in ordered {
+        result[levels.get(&item).copied().unwrap_or(0)].push(item);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
 
     /// Ids that deliberately do **not** sort in index order -- `n0..nN`
     /// would make a tie-break on index look identical to one on id, and
@@ -275,5 +377,86 @@ mod tests {
         let a = order(&domain, &ids(3), &edges);
         let b = order(&domain, &ids(3), &edges);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn two_workers_really_overlap_and_one_worker_does_not() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let rendezvous = Arc::new(Barrier::new(2));
+        let cancelled = AtomicBool::new(false);
+        let results = run_jobs(&[0, 1], 2, &cancelled, {
+            let active = Arc::clone(&active);
+            let peak = Arc::clone(&peak);
+            let rendezvous = Arc::clone(&rendezvous);
+            move |item| {
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                rendezvous.wait();
+                active.fetch_sub(1, Ordering::SeqCst);
+                item
+            }
+        });
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+        assert_eq!(results.len(), 2);
+
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let results = run_jobs(&[0, 1], 1, &cancelled, |item| {
+            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            active.fetch_sub(1, Ordering::SeqCst);
+            item
+        });
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn worker_completion_order_never_changes_result_order() {
+        let cancelled = AtomicBool::new(false);
+        let results = run_jobs(&[3, 1, 2], 3, &cancelled, |item| {
+            std::thread::sleep(std::time::Duration::from_millis((4 - item) as u64 * 5));
+            item * 10
+        });
+        assert_eq!(
+            results
+                .into_iter()
+                .map(|(item, result)| (item, result.expect("worker completed")))
+                .collect::<Vec<_>>(),
+            vec![(3, 30), (1, 10), (2, 20)]
+        );
+    }
+
+    #[test]
+    fn one_worker_panicking_is_attached_to_its_item_and_does_not_drop_others() {
+        let cancelled = AtomicBool::new(false);
+        let results = run_jobs(&[0, 1, 2], 2, &cancelled, |item| {
+            assert_ne!(item, 1, "controlled worker crash");
+            item
+        });
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].1.as_ref().unwrap(), &0);
+        assert!(results[1].1.is_err());
+        assert_eq!(results[2].1.as_ref().unwrap(), &2);
+    }
+
+    #[test]
+    fn cancellation_stops_assigning_new_work() {
+        let cancelled = AtomicBool::new(false);
+        let results = run_jobs(&[0, 1, 2], 1, &cancelled, |item| {
+            cancelled.store(true, Ordering::SeqCst);
+            item
+        });
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 0);
+    }
+
+    #[test]
+    fn dependency_waves_release_callers_only_after_all_callees() {
+        // 0 and 1 are independent callees; 2 waits for both; 3 is unrelated.
+        let order = vec![0, 1, 2, 3];
+        let edges = BTreeMap::from([(0, BTreeSet::from([2])), (1, BTreeSet::from([2]))]);
+        assert_eq!(waves(&order, &edges), vec![vec![0, 1, 3], vec![2]]);
     }
 }

@@ -327,6 +327,7 @@ dependencies = [
  "blake3",
  "clap",
  "indexmap",
+ "libc",
  "ply-core",
  "serde_json",
  "tempfile",
@@ -354,6 +355,7 @@ dependencies = [
 name = "ply-e2e"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "ply-core",
  "quote",
  "serde_json",

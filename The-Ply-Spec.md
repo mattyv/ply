@@ -142,6 +142,7 @@ proof search has gone off-spec — stop.
 | D12 | A function declares a **checks list**, e.g. `checks: [bounded(3), fuzz(256), mutate]`. `mutate` requires a `test` or `fuzz` entry in the same list (else `E0504`) and uses only those as its mutant-kill signal, scoped per function with cargo-mutants' `--re`. | One base check could not express "bounded plus a fuzz-backed mutation tier". Running Kani once per mutant costs minutes per mutant per function; proof-backed mutation needs an opt-in budget, which is out of scope. |
 | D13 | **Spike before build** (milestone M0): every engine-facing detail in this spec is provisional until a hands-on spike, with the pinned Kani version, records in ADR-0003 what actually works — attribute emission, in-crate harness modules, `stub_verified`, playback, input construction. The spec is then amended to match reality. | The engine surface is the highest-risk part of the design; paper decisions there are guesses. |
 | D14 | `ply.lock` (committed) records, per claim, a **fingerprint** beside the result that fingerprint earned: item token-stream hash, merged contract text, **the first-party bodies the check runs or descends into** — or, where a syntactic walk cannot bound that set, the whole of the crate's source (§5.2a) — the worked examples a `test` check asserts, the contracts assumed for the callees it crosses into, the same-crate callees it stands on rather than assumes and the bound each earned (D5's first branch, §5.5), the checks that ran, engine name + version + flags, active features, target triple, compiler version, Cargo configuration, the resolved versions of packages outside the workspace, **and Ply's own version**. `verify` recomputes the fingerprint from today's inputs *before* it uses or shows a recorded result — matches, the result is reused and the run says so on the node; differs, the check runs again and the record is rewritten. **There is no `stale` state and nothing for a human to re-bless**: the hash is the confirmation, and it is checked at every single use. Only a result that earned evidence is recorded, so no failure, timeout or absence is ever carried forward. A crate whose first-party closure contains a build script always re-earns its claims and stores none: a build script can read files, environment, time, or external state that no finite source fingerprint can discover. | Committing the record is what stops CI and the next colleague re-proving what is already proven, and lets a reviewer see in a diff that a claim was checked. Re-hashing at every use is what makes storing verdicts safe at all: a stored verdict a human re-blesses can drift from the code between blessings, and every warning that accumulates faster than it is cleared ends up meaning nothing. **Ply's own version is in the hash because a fix to Ply changes what a result means.** The four defects fixed on 2026-08-25 — a harness that failed to compile earning a confident pass, an ordinary `use` import letting an unvouched-for body into a proof, an unsatisfiable declared promise passing vacuously, a claim inside a nested component skipped in silence — would every one of them have hash-matched perfectly against a record written the day before, because the source had not changed: Ply had. |
+| D15 | `cargo ply verify -j N` permits at most `N` active Ply verification tasks; the default is one. Scheduling changes elapsed time only: prerequisite evidence and deferred cache decisions are resolved before a dependent task starts, results retain the same deterministic order as a serial run, and workers never write the final report or `ply.lock`. The first release overlaps only independent, dependency-ready claims whose sole check is `bounded(k)`. Sampling, examples, mutation, state-history, linked-document, build-script, mixed-check, relocation-sensitive, and unresolved-lock work remains serial. | A Cargo or verification engine process can create threads and children of its own, so `N` cannot honestly promise a machine-wide process limit. Starting with the one engine path whose writable files and dependency resolution can be isolated keeps evidence attribution and workspace restoration reviewable before concurrency widens. |
 
 ## 3. Toolchain
 
@@ -563,10 +564,13 @@ fingerprint of what it was checked against" into a diff a reviewer reads.
    changes what is compiled while the source, the compiler, the target and the features
    are all identical;
 10. the resolved versions of every package outside this workspace that the crate depends
-    on, as the lockfile pins them. A `bounded` proof descends into registry code and every
-    `fuzz`/`test` run executes it, so `cargo update` changes what was checked. Where there
-    is no lockfile, Ply records that fact instead of a version list, and a result recorded
-    with one never matches a run without one;
+    on, as the lockfile pins them. Identity includes package name and version, and for Git
+    or alternative-registry packages the source too; a Git source retains its precise
+    `#revision` even though Cargo omits that suffix from source-qualified dependency edges.
+    A `bounded` proof descends into registry code and every `fuzz`/`test` run executes it,
+    so `cargo update` changes what was checked. Where there is no lockfile, Ply records
+    that fact instead of a version list, and a result recorded with one never matches a
+    run without one;
 11. **Ply's own version.**
 
 **Input 3 is the one that has to be stated carefully, because it cannot always be
@@ -2120,6 +2124,7 @@ cargo ply check              # schema + anchors + architecture. Fast, no engines
 cargo ply verify [path|fn]   # run checks via engines, callees first; write cex artifacts
                              # (reuses a recorded result whose fingerprint still matches,
                              #  D14/§5.2a; a mismatch re-runs the check)
+                             # -j/--jobs N allows N independent bounded tasks (default 1)
 cargo ply tree               # verdict tree, worst-of aggregation, assumption chains
 cargo ply worklist           # unresolved markers + weak specs (W0502)
                              # IMPLEMENTED: markers + owed evidence, no engines (see below).
@@ -2226,7 +2231,46 @@ Inspection and verification flags: `--json` (schema §8, the agent surface),
 `--engine-timeout=<s>` (shape-aware default, not a flat number — see below),
 `--only-changed` (scope to the git diff), `--fail-on=warn|evidence|error` (default
 `evidence`, see the exit codes below), `--seed=<hex>` (replay a recorded `fuzz(n)` run —
-§5.4c).
+§5.4c), and `-j N`/`--jobs N` (a positive integer, default `1`). A job is one
+active Ply verification task. Cargo, rustc, Kani, and other engines may each create
+additional threads or child processes.
+
+In the first concurrent release, only independent, dependency-ready claims whose sole
+check is `bounded(k)` can overlap. A bounded caller waits until each same-crate callee's
+proof or reuse decision is complete, then computes its own effective assumptions,
+fingerprint, and cache decision from that real outcome. Sampling, examples, mutation,
+state-history, linked-document verification, build-script closures, and claims mixing
+bounded with another check remain serial. So do runs with an absent or stale Cargo lock,
+with a shared harness temporarily registered in the workspace, or with source that uses
+compile-time environment/path/inclusion macros or external `#[path]` modules. The same
+relocation gate is applied to the complete generated proof after YAML contracts and
+callee stubs are merged. Cargo's resolved local dependency closure must be fully
+covered by the first-party source walk; an unrecognised manifest spelling, including
+`workspace = true`, remains serial and uncached. A virtual Cargo workspace root has no
+root package closure; linked member documents resolve their own closures. After a serial
+run that began with no current lock, the coordinator releases any temporary shared-harness
+workspace registration, then lets ordinary `cargo metadata` materialise or refresh the
+original workspace lock. Refreshing before that release would pin the generated member and
+make the lock stale as soon as the user's manifest was restored. It stores the new evidence
+only if a second, locked probe confirms that resolution is current and the source walk
+covers its complete local closure. When a sampling harness owns a separate workspace and
+lock, the target package's resolved external dependency identity in that lock must also
+equal the identity in the original lock; harness-only dependencies are excluded. A mismatch
+leaves the evidence visible in the current report but unrecorded. That refresh never enables
+workers in the run already in progress.
+Worker source shadows, target directories, and
+witness directories are private; build outputs are never copied into a shadow. Each worker
+compiles only its own generated proof through the shadow manifest while starting from the
+original crate directory, preserving ancestor Cargo configuration, rustup selection,
+features, and compiler flags. The coordinator first proves that the original Cargo lock is
+current; every shadow must accept that copied lock under `cargo metadata --locked`, and a
+worker whose engine changes it earns no evidence,
+and the coordinator alone publishes counterexamples, the report, and the single final
+`ply.lock` update. Results and diagnostics
+retain the serial run's deterministic order regardless of completion order. A violation or tool failure stays
+attached to its own claim and does not stop independent work; an interruption stops new
+work, terminates active planning and engine process groups, removes private worker state,
+and never publishes a partial run as complete.
 
 **The engine-timeout default is shape-aware, not a flat number (M4 correction).** A flat
 60s default (this section's own earlier text) does not fit every §5.4b-supported shape:

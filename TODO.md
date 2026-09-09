@@ -1,5 +1,57 @@
 # TODO
 
+## Landed: PR #88 CI regressions — `0535022` — 2026-09-08
+
+- [x] Treat a virtual Cargo workspace root as an empty local package closure;
+      linked member documents resolve and verify their own package closures.
+- [x] After a serial first run, let Cargo materialise or refresh the original
+      workspace lock, then accept evidence for reuse only after locked metadata
+      confirms that exact resolution and the first-party source walk covers it.
+- [x] For a standalone sampling harness, also require the target package's
+      resolved external dependency identity in the harness lock to match the
+      original lock before recording anything (`1f09f7c`). A pass against one
+      dependency version must never be reused under another.
+- [x] Resolve Cargo's source-qualified lock edges by name, version, and source
+      while retaining a Git package's precise `#revision` in the fingerprint
+      (`3e1f72d`). Registry and Git packages sharing a name/version must not
+      collapse into an empty or interchangeable dependency graph.
+- [x] Run the process-global cancellation regression in an isolated test
+      process so its synthetic interrupt cannot cancel unrelated unit tests
+      running concurrently under libtest or cargo-mutants.
+- [x] Likewise isolate the regression that empties process-global `PATH`, so
+      metadata tests cannot transiently lose Cargo during a parallel baseline.
+- [x] Isolate the scratch-capture counter too, so concurrent engine commands
+      in other test modules cannot be mistaken for files this test leaked.
+- [x] Restore a temporarily registered shared harness before refreshing the
+      original Cargo lock. Otherwise the first run records a generated member
+      and makes its own lock stale as soon as the manifest guard restores it.
+
+## Landed: bounded concurrency for `cargo ply verify` — `8302e95` — 2026-09-08
+
+- [x] Accept `-j N` and `--jobs N`, reject zero before verification starts,
+      and keep one active verification task as the default.
+- [x] Split bounded verification into coordinator-owned planning/publication
+      and worker-owned engine execution.
+- [x] Run only independent, dependency-ready `bounded(k)` claims concurrently
+      in the first release. Keep shared-harness, state-history, sampling, and
+      mutation work serial.
+- [x] Give each active proof a private source shadow, Cargo target directory,
+      and witness directory. Preserve relative path-dependency layout, never
+      copy build outputs, and leave build-script closures serial.
+- [x] Fall back to serial when Cargo.lock is absent or stale, a shared harness
+      is registered, or compile-time path and inclusion constructs make source
+      relocation observable. Preserve external packages' owning workspace
+      configuration and exclude Cargo/Ply-marked nested output directories without
+      dropping a source directory that happens to be named `target`.
+- [x] Compare first-party package and source sets with Cargo's resolved local closure
+      and library entry points; keep any unrecognised dependency spelling or custom
+      library path serial and uncached.
+- [x] Preserve callee-before-caller evidence, deferred cache decisions,
+      deterministic report order, and one final `ply.lock` publication.
+- [x] Add controlled scheduler tests and real-Kani attribution/isolation
+      coverage, then measure `-j 1`, `-j 2`, and `-j 4` before recommending a
+      non-default value.
+
 ## Landed: conservative widening keeps mutation ownership — `4f0d414` — 2026-09-08
 
 - [x] Continue the positive reach walk after a crate-wide fingerprint gate is
