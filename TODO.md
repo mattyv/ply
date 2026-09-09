@@ -1,5 +1,16 @@
 # TODO
 
+## Landed: receiver struct arguments and honest exclusion reasons — `f4a42fa` — 2026-09-09
+
+- [x] Rebuild a by-value user-defined struct argument for every preparatory receiver
+      operation instead of consuming the final checked call's input, and evaluate the
+      repeat's precondition against that rebuilt argument.
+- [x] Preserve each operation's recorded exclusion reason in the partial-history
+      disclosure, including private visibility and unsupported arguments.
+- [x] Report moved-value harness failures as ownership errors without suggesting an
+      unrelated `examples` type or typo.
+- [x] Cover the combined behaviour with a real sampling-engine fixture.
+
 ## Landed: PR #88 CI regressions — `0535022` — 2026-09-08
 
 - [x] Treat a virtual Cargo workspace root as an empty local package closure;

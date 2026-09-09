@@ -3509,18 +3509,6 @@ fn scan_impls_for_receiver(
             (path, resolved, bad, req, ctor_return)
         })
         .collect();
-    // `target_params` (the checked method's own non-`self` arguments) is
-    // deliberately **not** run through `resolve_or_keep`: `receiver_preamble`'s
-    // codegen (`fuzz_gen.rs`) calls the checked method with its own params'
-    // *plain, already-bound* names, taken straight from the outer pattern --
-    // it has no preamble-building path yet for one of those being a
-    // struct/enum Ply itself constructs (only a constructor's own arguments,
-    // and an ordinary top-level parameter, are wired). Leaving it
-    // unresolved means such a param stays `Unsupported`, and the existing
-    // `is_fuzz_supported` gate refuses the whole method honestly (naming
-    // that parameter) rather than emitting a harness that cannot compile --
-    // narrower than it could be, not broken.
-
     let buildable = ctor_candidates
         .iter()
         .find(|(_, _, bad, _, _)| bad.is_none());
@@ -3854,6 +3842,21 @@ pub fn discover_method_with_receiver(
     // "type neither engine builds inputs for" message still names the
     // parameter and its type.
     let _ = enrich_contract_fn_user_types(&mut cf, crate_dir, routes);
+    // Operation zero is a preparatory repeat of the checked method. Keep
+    // its parameter plan identical to the final checked call after user
+    // types have been resolved. Before this assignment, the final call
+    // knew how to build a struct argument while the repeat still carried
+    // the unresolved bare type. The repeat therefore moved the final
+    // call's value instead of building its own, and the harness failed with
+    // E0382 before either check ran.
+    let checked_params = cf.params.clone();
+    if let Some(operation) = cf
+        .receiver
+        .as_mut()
+        .and_then(|plan| plan.operations.first_mut())
+    {
+        operation.params = checked_params;
+    }
     Ok(cf)
 }
 

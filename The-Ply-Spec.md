@@ -892,8 +892,9 @@ holds when a value is made and breaks three operations later is the whole reason
 a sequence rather than one call, and the diagnostic says how many operations in.
 Only plain `pub` operations enter that sequence: the generated harness is a separate
 crate, so private and `pub(crate)` methods cannot be called there. Ply names each such
-method in the existing partial-history disclosure instead of emitting code that cannot
-compile or silently pretending the method was exercised.
+method in the existing partial-history disclosure, preserving the recorded reason each
+operation was excluded (for example, visibility or an argument Ply cannot build), instead
+of emitting code that cannot compile or silently pretending the method was exercised.
 
 **The sequence bound is a reachability budget, and it is measured (MUST).** "Checked
 across the states this run could reach" is only worth anything if those states include the
@@ -1050,8 +1051,12 @@ because nothing is snapshotted except what a public reading reports. Measured on
 `tests/fixtures/tokenbucket`: of three bugs planted in that type, two leave the
 whole-value rule perfectly true and only a promise about the transition sees them
 (§5.3's `holds:` remains what is *always* true of the value; a method promise is what
-one operation *does*). An owned `self` is still refused, as a second codegen shape
-rather than a gap in what can be said, and `bounded` still refuses any receiver.
+one operation *does*). Every preparatory repeat receives separately generated arguments:
+a user-defined struct passed by value is reconstructed for that repeat and again for the
+final checked call, so one call cannot consume the other's input. The repeat's `requires`
+clause reads that reconstructed repeat argument, not the final call's separate value. An
+owned `self` is still refused, as a second codegen shape rather than a gap in what can be
+said, and `bounded` still refuses any receiver.
 Full two-state/model-based specs (sequence histories, FIFO ordering) remain out of
 scope — `old()` is the single two-state primitive.
 
@@ -1566,6 +1571,8 @@ is enough, and §5.4a exempts those entries from the contract subset, so nothing
 them earlier). Per §8, the adapter reports `X0901` carrying the compiler's own first
 error, for **every** check in that harness, and the node's verdict is `tool_error`: never
 a pass, because no evidence exists, and never a `violation`, because there is no witness.
+An ownership error (`E0382`) is reported as such and does not carry the unrelated hint to
+check `examples` entries for a type or typo.
 The same rule covers a failure whose witness cannot be recovered at all: `X0901`/
 `tool_error` is the honest report, never a witness-free `violation`. **What counts as
 "cannot be recovered" narrowed on 2026-08-25.** A body that panics before its

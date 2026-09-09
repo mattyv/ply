@@ -7695,7 +7695,11 @@ fn harness_did_not_run_diag(
         ),
         None => String::new(),
     };
-    let examples_hint = if has_examples {
+    // A moved-value error is about ownership. Pointing at an example's
+    // types or spelling cannot explain it and sends the reader away from
+    // the compiler's actual complaint.
+    let examples_may_explain = has_examples && !cause.is_some_and(|c| c.contains("E0382"));
+    let examples_hint = if examples_may_explain {
         format!(
             " `{fn_name}` declares `examples:` entries in ply.yaml, which compile exactly as \
              written -- they are ordinary Rust `==` expressions, never type-checked before \
@@ -7761,7 +7765,7 @@ fn harness_did_not_run_diag(
         ),
         edits: vec![],
     }];
-    if has_examples {
+    if examples_may_explain {
         fixes.insert(
             0,
             Fix {
@@ -9034,21 +9038,22 @@ fn holds_checked_count(output: &str) -> Option<u32> {
 fn holds_reach_note(plan: &ply_core::harness::ReceiverPlan) -> String {
     let mut parts = Vec::new();
     if !plan.excluded_operations.is_empty() {
-        let names: Vec<String> = plan
+        let exclusions: Vec<String> = plan
             .excluded_operations
             .iter()
-            .map(|op| format!("`{}`", ply_core::harness::last_two_segments(&op.call_path)))
+            .map(|op| {
+                format!(
+                    "`{}` ({})",
+                    ply_core::harness::last_two_segments(&op.call_path),
+                    op.reason
+                )
+            })
             .collect();
         parts.push(format!(
-            "this run never called {list}, because {why} -- so nothing here says what would \
+            "this run never called {list} -- so nothing here says what would \
              happen if {pronoun} had been",
-            list = names.join(", "),
-            why = if names.len() == 1 {
-                "it takes an argument Ply cannot build".to_string()
-            } else {
-                "each takes an argument Ply cannot build".to_string()
-            },
-            pronoun = if names.len() == 1 { "it" } else { "they" },
+            list = exclusions.join("; "),
+            pronoun = if exclusions.len() == 1 { "it" } else { "they" },
         ));
     }
     if !plan.other_constructors.is_empty() {
@@ -11826,6 +11831,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         );
     }
 
+    #[test]
+    fn state_reach_note_preserves_the_reason_an_operation_was_excluded() {
+        let mut plan = bare_receiver_plan("Window", "Window::new");
+        plan.excluded_operations = vec![harness::ExcludedOperation {
+            call_path: "Window::period_us".into(),
+            reason: "it is not `pub`, so Ply's generated harness outside this crate cannot call it"
+                .into(),
+        }];
+
+        let note = holds_reach_note(&plan);
+        assert!(
+            note.contains("not `pub`") && note.contains("outside this crate cannot call it"),
+            "the message must keep the recorded visibility reason: {note}"
+        );
+        assert!(
+            !note.contains("takes an argument Ply cannot build"),
+            "a no-argument private method must never be described as having an unbuildable argument: {note}"
+        );
+    }
+
     /// A `bounded` refusal on a receiver method must blame the receiver,
     /// never a param or return type that is perfectly fine (adversarial
     /// review, 2026-08-27, "a proof refused on a method blames the u32
@@ -12373,6 +12398,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             diag.title.contains("`bounded(k)`"),
             "the explanation must travel with the report: {}",
             diag.title
+        );
+    }
+
+    #[test]
+    fn a_moved_value_compile_error_does_not_blame_examples_for_a_type_or_typo() {
+        let diag = harness_did_not_run_diag(
+            "edge::Sink::ingest",
+            "Sink::ingest",
+            "edge_Sink_ingest_harness",
+            "fuzz(64)",
+            "ply-harness-edge",
+            Some("error[E0382]: use of moved value: `key`"),
+            true,
+            true,
+            true,
+        );
+
+        assert!(
+            !diag.title.contains("a wrong type or a typo"),
+            "E0382 is an ownership error, not evidence of a type or spelling mistake: {}",
+            diag.title
+        );
+        assert!(
+            diag.fixes
+                .iter()
+                .all(|fix| !fix.title.starts_with("check every `examples:` entry")),
+            "E0382 must not point first at otherwise-correct examples: {:?}",
+            diag.fixes
         );
     }
 
