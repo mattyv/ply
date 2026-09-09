@@ -1,6 +1,6 @@
 # TODO
 
-## Landed: receiver struct arguments and honest exclusion reasons — 2026-09-09
+## Landed: receiver struct arguments and honest exclusion reasons — `f4a42fa` — 2026-09-09
 
 - [x] Rebuild a by-value user-defined struct argument for every preparatory receiver
       operation instead of consuming the final checked call's input.
