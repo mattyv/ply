@@ -293,6 +293,47 @@ fn wide_acceptance_requirements_wrap_by_display_width() {
 }
 
 #[test]
+fn fallback_font_acceptance_requirements_do_not_escape_the_band() {
+    let requirement = "क".repeat(96);
+    let document = parse_document(&format!(
+        "ply: 1\ncomponents: {{ mapping: {{ anchor: app::mapping }} }}\nacceptance:\n  fallback:\n    requirement: {requirement}\n    component: mapping\n    entry: app::mapping::map_response\n    test: {{ package: app, target: acceptance, name: fallback }}\n    inputs: [tests/input.json]\n    expected: [tests/expected.json]\n    required: false\n"
+    ))
+    .unwrap();
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "fallback-font-acceptance".into(),
+            completed_at: "2026-09-10T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "test".into(),
+            },
+            outcome: RunOutcome::MissingEvidence,
+        },
+        &RenderOptions::default(),
+        None,
+    )
+    .unwrap();
+
+    // Chromium may use a proportional fallback font for a script absent
+    // from the requested monospace family. Unicode reports these scalars as
+    // one cell while Chromium paints them wider, so the SVG must enforce the
+    // same pixel width the acceptance band reserved.
+    assert_eq!(
+        visual
+            .svg
+            .matches("class=\"acceptance-requirement\"")
+            .count(),
+        2
+    );
+    assert!(visual.svg.contains(&format!(
+        "textLength=\"384.0\" lengthAdjust=\"spacingAndGlyphs\">{}</text>",
+        "क".repeat(48)
+    )));
+}
+
+#[test]
 fn evidence_frame_distinguishes_declared_deny_bars_from_failed_results() {
     let document = parse_document(
         "ply: 1\ncomponents:\n  app: { anchor: app }\n  store: { anchor: store }\ndeny: ['app -> store']\n",

@@ -18,7 +18,7 @@ use crate::model::{
 use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 
 // ---- layout constants -----------------------------------------------------
 
@@ -392,8 +392,24 @@ fn text_w(s: &str, char_w: f64) -> f64 {
     (s.chars().count() as f64) * char_w
 }
 
-fn display_text_w(s: &str, char_w: f64) -> f64 {
-    (UnicodeWidthStr::width(s) as f64) * char_w
+fn acceptance_char_cells(ch: char) -> usize {
+    match UnicodeWidthChar::width(ch).unwrap_or(0) {
+        1 if !ch.is_ascii() => 2,
+        width => width,
+    }
+}
+
+fn acceptance_cells(s: &str) -> usize {
+    s.chars().map(acceptance_char_cells).sum()
+}
+
+fn acceptance_text_w(s: &str, char_w: f64) -> f64 {
+    s.chars()
+        .map(|ch| match UnicodeWidthChar::width(ch).unwrap_or(0) {
+            1 if !ch.is_ascii() => 8.0,
+            width => width as f64 * char_w,
+        })
+        .sum()
 }
 
 /// Keep author-written acceptance prose useful at a glance without letting
@@ -403,10 +419,9 @@ fn compact_text_lines(text: &str, max_chars: usize, max_lines: usize) -> Vec<Str
     let mut lines = Vec::new();
     let mut current = String::new();
     for word in text.split_whitespace() {
-        let word_width = UnicodeWidthStr::width(word);
-        let joined_width = UnicodeWidthStr::width(current.as_str())
-            + usize::from(!current.is_empty())
-            + word_width;
+        let word_width = acceptance_cells(word);
+        let joined_width =
+            acceptance_cells(current.as_str()) + usize::from(!current.is_empty()) + word_width;
         if !current.is_empty() && joined_width > max_chars {
             lines.push(std::mem::take(&mut current));
         }
@@ -418,10 +433,8 @@ fn compact_text_lines(text: &str, max_chars: usize, max_lines: usize) -> Vec<Str
             continue;
         }
         for ch in word.chars() {
-            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if !current.is_empty()
-                && UnicodeWidthStr::width(current.as_str()) + ch_width > max_chars
-            {
+            let ch_width = acceptance_char_cells(ch);
+            if !current.is_empty() && acceptance_cells(current.as_str()) + ch_width > max_chars {
                 lines.push(std::mem::take(&mut current));
             }
             current.push(ch);
@@ -439,8 +452,8 @@ fn compact_text_lines(text: &str, max_chars: usize, max_lines: usize) -> Vec<Str
         let last = lines
             .last_mut()
             .expect("a non-empty requirement has one line");
-        let ellipsis_width = UnicodeWidthChar::width('…').unwrap_or(1);
-        while UnicodeWidthStr::width(last.as_str()) + ellipsis_width > max_chars {
+        let ellipsis_width = acceptance_cells("…");
+        while acceptance_cells(last.as_str()) + ellipsis_width > max_chars {
             last.pop();
         }
         if !last.ends_with('…') {
@@ -4258,7 +4271,7 @@ fn render_acceptance_box(
             REQUIREMENT_MAX_LINES,
         );
         for line in &requirement_lines {
-            width = width.max(display_text_w(line, SUB_CHAR_W) + PAD * 2.0 + 14.0);
+            width = width.max(acceptance_text_w(line, SUB_CHAR_W) + PAD * 2.0 + 14.0);
         }
         let mut tooltip_lines = finding_tooltip_lines(&row_findings);
         tooltip_lines.push(format!(
@@ -4313,8 +4326,13 @@ fn render_acceptance_box(
         ));
         for (index, line) in requirement.iter().enumerate() {
             let requirement_y = y + (index + 1) as f64 * LINE_H;
+            // A browser can fall back from `monospace` to a wider font for
+            // scripts the selected font lacks. `unicode-width` still gives
+            // deterministic wrapping, while textLength makes the rendered
+            // pixels obey the width this box reserved instead of clipping.
+            let rendered_length = acceptance_text_w(line, SUB_CHAR_W);
             svg.push_str(&format!(
-                "<text class=\"acceptance-requirement\" x=\"{:.1}\" y=\"{requirement_y:.1}\">{}</text>",
+                "<text class=\"acceptance-requirement\" x=\"{:.1}\" y=\"{requirement_y:.1}\" textLength=\"{rendered_length:.1}\" lengthAdjust=\"spacingAndGlyphs\">{}</text>",
                 PAD + 14.0,
                 esc(line),
             ));
