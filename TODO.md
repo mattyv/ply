@@ -16,11 +16,63 @@
       withhold overall success when a required acceptance claim fails.
 - [x] Add a production-path fixture whose raw decimal-string response reaches the real
       parser and mapper, with independent expected output and explicit provenance.
-- [ ] Build deterministic module ownership with most-specific descendant ownership,
-      residual crate-root ownership, errors for contradictory overlaps, and visible
-      unassigned first-party modules. Keep Cargo-tier ownership as a separate projection:
-      only exact crate-root anchors own package edges, while module-only package dependencies
-      remain visible and unattributed rather than becoming first-owner-wins.
+- [x] **Ownership and the comparison engine, as pure logic over an observed model.**
+      Most-specific descendant ownership with residual ancestor ownership, contradictory
+      overlaps and anchors naming no real module as configuration errors, unassigned
+      modules kept visible. Nothing here reads a file or runs a process: it takes a
+      described build and a document and returns findings, which is what makes an
+      overlapping anchor or a call out of unclaimed code testable without arranging a
+      repository that exhibits one.
+
+      Three decisions worth keeping in view. Containment follows module boundaries, not
+      shared text -- `parse::rhythm` is not inside `parse::r`, and a check written with
+      `starts_with` puts it there. A reference whose destination could not be followed
+      leaves the rule it might have broken **incompletely checked**, never clean; and a
+      definite violation still stands when other parts went unresolved, so
+      incompleteness cannot launder a counterexample. Code no component claims gets no
+      invented owner, because absorbing it into the nearest component would make adding
+      undeclared code improve the result.
+
+      Fifteen tests, written before the engine, and the engine then broken six ways to
+      confirm each bites: first-anchor-wins instead of most-specific, containment by text
+      prefix, a ban that stops beating a permission, an unresolved destination treated as
+      harmless, a crossing with an unowned end dropped, and a duplicate anchor quietly
+      taking the first claim. All six die.
+
+      **Then review found four ways it reported "satisfied" without having checked
+      anything, two of which laundered a forbidden call. All fixed, each with the input
+      that opened it.** A scan that observed nothing came back clean. A module the scan
+      itself recorded as unreadable came back clean, because the record of what could not
+      be read was written and then never consulted. And a contested or mistyped anchor
+      raised its error, had it discarded, dropped its module into an ancestor's residue,
+      and got the crossing judged against the ancestor's permissions -- so a call the
+      design forbids passed.
+
+      A fifth: anchors that nest while the document declares the components side by side
+      now block. The two statements contradict each other, and believing the source
+      silently grants the permission that containment carries between components nobody
+      nested. **This is a judgement call worth a second opinion** -- the design doc says
+      unrelated components may not own overlapping subtrees, and also that a crate-root
+      component owns the residue around narrower ones, which reads either way. Failing
+      closed was the choice; one shipped fixture had to start declaring the nesting it
+      always had.
+
+      **The tests were weaker than the first commit message claimed.** Review found seven
+      one-line breakages that survived all fifteen: the coverage counter twice, narrowed
+      destinations (never exercised at all), nested components (never declared in any
+      fixture, so the whole dotted-name path went untested), a ban that stops beating the
+      permission containment grants, references inside one component, and a dropped
+      finding for an unowned destination. Eleven more tests; all seven now die.
+
+      **This enforces nothing yet.** It is the comparison and its types; the scan that
+      produces a real observed model is the next entry, and until that lands the engine
+      has only hand-built inputs.
+
+      Cargo-tier ownership is untouched and stays a separate projection.
+
+- [ ] Keep Cargo-tier ownership as a separate projection when module anchors arrive:
+      only exact crate-root anchors own package edges, while module-only package
+      dependencies remain visible and unattributed rather than becoming first-owner-wins.
 - [ ] Extract resolved calls, function values, type references, imports, and re-exports
       for ordinary inline and file modules; record unresolved constructs and the active
       configuration without guessing.
