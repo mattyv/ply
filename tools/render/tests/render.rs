@@ -4364,6 +4364,9 @@ fn the_transcript_states_what_it_is_and_what_the_document_declares() {
         "no component may call risk",
         // an open decision
         "venue failover",
+        // the whole-scope architecture band, which must not disappear in
+        // the non-hover text form
+        "architecture — module boundaries inside crates:\n  5 module boundaries — declared but not checked in this declaration-only transcript",
     ] {
         assert!(
             text.contains(fact),

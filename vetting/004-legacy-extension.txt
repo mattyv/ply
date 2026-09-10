@@ -7,6 +7,8 @@ ply: 1 — the format version every rule below is read under; a version this bui
 2 components · 5 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
+architecture — module boundaries inside crates: none declared
+
 components:
 
   component ledger — maps to Rust module ledger

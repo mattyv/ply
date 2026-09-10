@@ -7,6 +7,9 @@ ply: 1 — the format version every rule below is read under; a version this bui
 4 components · 2 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
+architecture — module boundaries inside crates:
+  4 module boundaries — declared but not checked in this declaration-only transcript
+
 components:
 
   component intake — maps to Rust module settlement::intake
