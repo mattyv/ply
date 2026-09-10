@@ -747,10 +747,19 @@ fn every_evidence_painted_element_resolves_a_style_rule() {
     ]);
     let svg = render_svg_with_evidence(&doc, &elements, &[]).unwrap();
     let style = format!(
-        "{}{}{}",
+        "{}{}{}{}{}{}{}{}{}{}{}{}",
         ply_render::svg::STYLE,
         ply_render::svg::FINDING_STYLE,
-        ply_render::svg::EVIDENCE_STYLE
+        ply_render::svg::EVIDENCE_STYLE,
+        ply_render::svg::STATE_STYLE,
+        ply_render::svg::ARCHITECTURE_SCOPE_STYLE,
+        ply_render::svg::ARCHITECTURE_SCOPE_EARNED_STYLE,
+        ply_render::svg::ARCHITECTURE_SCOPE_VIOLATION_STYLE,
+        ply_render::svg::ARCHITECTURE_SCOPE_GAP_STYLE,
+        ply_render::svg::ACCEPTANCE_STYLE,
+        ply_render::svg::ACCEPTANCE_EARNED_STYLE,
+        ply_render::svg::ACCEPTANCE_VIOLATION_STYLE,
+        ply_render::svg::ACCEPTANCE_GAP_STYLE,
     );
     let matches_selector = |class: &str, tag: &str| {
         style.contains(&format!(".{class}{{"))

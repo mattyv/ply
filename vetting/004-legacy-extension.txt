@@ -7,6 +7,8 @@ ply: 1 — the format version every rule below is read under; a version this bui
 2 components · 5 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
+architecture — module boundaries inside crates: none declared
+
 components:
 
   component ledger — maps to Rust module ledger
@@ -31,7 +33,7 @@ components:
     fn withdraw
       bounded(2) — Kani symbolically checks supported inputs that satisfy requires against ensures; 2 is the maximum loop-unwind depth, not a numeric input limit; collection inputs may also be limited to length 2
 
-acceptance — finite production-path examples: none declared
+application acceptance — finite production-path examples: none declared
 
 externals — systems and people outside this codebase: none declared
 

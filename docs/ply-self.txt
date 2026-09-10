@@ -7,6 +7,9 @@ ply: 1 — the format version every rule below is read under; a version this bui
 31 components · 62 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
+architecture — module boundaries inside crates:
+  25 module boundaries — declared but not checked in this declaration-only transcript
+
 components:
 
   component e2e — maps to Rust module ply_e2e
@@ -662,7 +665,7 @@ components:
     note: The standalone spec validator, which predates the installed `cargo ply check` command and overlaps it. Retiring one of the two is recorded work, not a decision taken here.
     hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
-acceptance — finite production-path examples: none declared
+application acceptance — finite production-path examples: none declared
 
 externals — systems and people outside this codebase: none declared
 

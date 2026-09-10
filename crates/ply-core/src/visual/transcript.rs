@@ -164,6 +164,19 @@ pub fn render_transcript_with_state_and_links(
          purpose)\n\n",
     );
 
+    let module_boundaries = super::module_boundary_count(doc, links);
+    if module_boundaries == 0 {
+        out.push_str("architecture — module boundaries inside crates: none declared\n\n");
+    } else {
+        out.push_str("architecture — module boundaries inside crates:\n");
+        out.push_str(&format!(
+            "{}{} {} — declared but not checked in this declaration-only transcript\n\n",
+            pad(1),
+            module_boundaries,
+            plural(module_boundaries, "module boundary", "module boundaries"),
+        ));
+    }
+
     out.push_str("components:\n");
     for (name, comp) in &doc.components {
         out.push('\n');
@@ -188,9 +201,9 @@ pub fn render_transcript_with_state_and_links(
     out.push('\n');
     let acceptance = super::declared_acceptance_results(doc, links);
     if acceptance.is_empty() {
-        out.push_str("acceptance — finite production-path examples: none declared\n");
+        out.push_str("application acceptance — finite production-path examples: none declared\n");
     } else {
-        out.push_str("acceptance — finite production-path examples:\n");
+        out.push_str("application acceptance — finite production-path examples:\n");
         out.push_str(&format!(
             "{}These are named, finite application examples. They never upgrade a function proof, and this declaration-only transcript contains no result.\n",
             pad(1)

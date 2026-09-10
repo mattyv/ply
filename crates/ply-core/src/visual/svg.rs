@@ -320,18 +320,58 @@ pub const ACCEPTANCE_STYLE: &str = "\
 .acceptance-title{fill:#1f2430;font-weight:bold}\
 .acceptance-text{fill:#333a45;font-size:11px}\
 .acceptance-mark-declared{fill:#f6f7f9;stroke:#9aa2b1}\
-.acceptance-mark-earned{fill:#3f8a5c;stroke:#2f6b45}\
-.acceptance-mark-violation{fill:#c9534f;stroke:#8f2f2c}\
-.acceptance-mark-gap{fill:#eaf1fb;stroke:#4d6d99;stroke-dasharray:2 2}\
 @media (prefers-color-scheme: dark){\
 .acceptance-box{stroke:#6d7686}\
 .acceptance-title{fill:#e6e9ef}\
 .acceptance-text{fill:#aab3c4}\
 .acceptance-mark-declared{fill:#1c1f27;stroke:#6d7686}\
-.acceptance-mark-earned{fill:#4caf6f;stroke:#7fdba0}\
-.acceptance-mark-violation{fill:#e8524b;stroke:#ff8a84}\
-.acceptance-mark-gap{fill:#1c2836;stroke:#6f93c2;stroke-dasharray:2 2}\
 }\
+";
+
+pub const ACCEPTANCE_EARNED_STYLE: &str = "\
+.acceptance-mark-earned{fill:#3f8a5c;stroke:#2f6b45}\
+@media (prefers-color-scheme: dark){.acceptance-mark-earned{fill:#4caf6f;stroke:#7fdba0}}\
+";
+
+pub const ACCEPTANCE_VIOLATION_STYLE: &str = "\
+.acceptance-mark-violation{fill:#c9534f;stroke:#8f2f2c}\
+@media (prefers-color-scheme: dark){.acceptance-mark-violation{fill:#e8524b;stroke:#ff8a84}}\
+";
+
+pub const ACCEPTANCE_GAP_STYLE: &str = "\
+.acceptance-mark-gap{fill:#eaf1fb;stroke:#4d6d99;stroke-dasharray:2 2}\
+@media (prefers-color-scheme: dark){.acceptance-mark-gap{fill:#1c2836;stroke:#6f93c2;stroke-dasharray:2 2}}\
+";
+
+/// Module architecture is a separate question from function contracts and
+/// application acceptance. Its own band makes an unexecuted source walk
+/// visible instead of leaving nested boxes to imply coverage they do not have.
+pub const ARCHITECTURE_SCOPE_STYLE: &str = "\
+.architecture-scope-box{fill:none;stroke:#9aa2b1;stroke-width:1.5}\
+.architecture-scope-title{fill:#1f2430;font-weight:bold}\
+.architecture-scope-text{fill:#333a45;font-size:11px}\
+.architecture-scope-mark-declared{fill:#f6f7f9;stroke:#9aa2b1}\
+@media (prefers-color-scheme: dark){\
+.architecture-scope-box{stroke:#6d7686}\
+.architecture-scope-title{fill:#e6e9ef}\
+.architecture-scope-text{fill:#aab3c4}\
+.architecture-scope-mark-declared{fill:#1c1f27;stroke:#6d7686}\
+}\
+";
+
+pub const ARCHITECTURE_SCOPE_EARNED_STYLE: &str = "\
+.architecture-scope-mark-earned{fill:#3f8a5c;stroke:#2f6b45}\
+@media (prefers-color-scheme: dark){.architecture-scope-mark-earned{fill:#4caf6f;stroke:#7fdba0}}\
+";
+
+pub const ARCHITECTURE_SCOPE_VIOLATION_STYLE: &str = "\
+.architecture-scope-mark-violation{fill:#c9534f;stroke:#8f2f2c}\
+@media (prefers-color-scheme: dark){.architecture-scope-mark-violation{fill:#e8524b;stroke:#ff8a84}}\
+";
+
+pub const ARCHITECTURE_SCOPE_GAP_STYLE: &str = "\
+.architecture-scope-mark-gap{fill:#eaf1fb;stroke:#4d6d99;stroke-dasharray:2 2}\
+@media (prefers-color-scheme: dark){.architecture-scope-mark-gap{fill:#1c2836;stroke:#6f93c2;stroke-dasharray:2 2}}\
 ";
 
 /// Plain-language "A or B" / "A, B, or C" list, for naming every candidate
@@ -3985,6 +4025,76 @@ struct AcceptanceBox {
     svg: String,
 }
 
+struct ArchitectureScopeBox {
+    width: f64,
+    height: f64,
+    svg: String,
+}
+
+fn render_architecture_scope_box(
+    doc: &Document,
+    evidence: Option<&EvidenceView>,
+    links: Option<&LinkIndex>,
+) -> Option<ArchitectureScopeBox> {
+    let count = super::module_boundary_count(doc, links);
+    if count == 0 {
+        return None;
+    }
+
+    let title_text = "Architecture · module boundaries inside crates";
+    let stable_id = super::stable_element_id("architecture-scope", "modules");
+    let element = evidence.and_then(|view| view.elements.get(&stable_id));
+    let verdict = element
+        .map(|element| element.evidence.verdict.as_str())
+        .unwrap_or("declared");
+    let state = element
+        .map(|element| element.evidence.state.as_str())
+        .unwrap_or("declared");
+    let visible_verdict = verdict.replace('_', " ");
+    let boundary_noun = if count == 1 {
+        "module boundary"
+    } else {
+        "module boundaries"
+    };
+    let label = format!("{count} {boundary_noun} — {visible_verdict}",);
+    let mark_class = match state {
+        "earned" => "architecture-scope-mark-earned",
+        "violation" => "architecture-scope-mark-violation",
+        "gap" => "architecture-scope-mark-gap",
+        _ => "architecture-scope-mark-declared",
+    };
+    let tooltip = match state {
+        "earned" => format!(
+            "Ply inspected references across all {count} {boundary_noun} shown in this drawing. This result covers the source and build configuration named by the run; it is not a runtime call graph."
+        ),
+        "violation" => format!(
+            "Ply inspected references across the {count} {boundary_noun} shown here and found a forbidden crossing. Open the attached finding for the source and destination."
+        ),
+        "gap" => format!(
+            "This drawing contains {count} {boundary_noun} inside crates, but this run did not inspect source references across them. The boxes and arrows show declarations, not a clean architecture result."
+        ),
+        _ => format!(
+            "This document declares {count} {boundary_noun} inside crates. No check has run in this declaration view, so the boxes and arrows are promises, not results."
+        ),
+    };
+    let width = (text_w(title_text, NAME_CHAR_W) + PAD * 2.0)
+        .max(text_w(&label, SUB_CHAR_W) + PAD * 2.0 + 14.0);
+    let header_y = PAD + 12.0;
+    let row_y = header_y + LINE_H + 5.0;
+    let height = row_y + LINE_H + PAD;
+    let id_attr = element_id_attr(element);
+    let svg = format!(
+        "<g class=\"architecture-scope\">{tip}<rect class=\"architecture-scope-box\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{height:.1}\" rx=\"6\" /><text class=\"architecture-scope-title\" x=\"{PAD:.1}\" y=\"{header_y:.1}\">{title}</text><g class=\"architecture-scope-row\"{id_attr}><circle class=\"{mark_class}\" cx=\"{mark_x:.1}\" cy=\"{mark_y:.1}\" r=\"4\" /><text class=\"architecture-scope-text\" x=\"{text_x:.1}\" y=\"{row_y:.1}\">{label}</text></g></g>",
+        title = esc(title_text),
+        tip = title(&tooltip),
+        mark_x = PAD + 4.0,
+        mark_y = row_y - 3.5,
+        text_x = PAD + 14.0,
+        label = esc(&label),
+    );
+    Some(ArchitectureScopeBox { width, height, svg })
+}
+
 fn render_acceptance_box(
     doc: &Document,
     evidence: Option<&EvidenceView>,
@@ -3996,7 +4106,7 @@ fn render_acceptance_box(
         return None;
     }
 
-    let title_text = "Acceptance · finite production-path examples";
+    let title_text = "Application acceptance · finite production-path examples";
     let mut rows = Vec::new();
     let mut width = text_w(title_text, NAME_CHAR_W) + PAD * 2.0;
     for declaration in declarations {
@@ -4054,8 +4164,10 @@ fn render_acceptance_box(
     let header_y = PAD + 12.0;
     let first_row_y = header_y + LINE_H + 5.0;
     let height = first_row_y + rows.len() as f64 * LINE_H + PAD;
+    let scope_tooltip = "Application acceptance runs named production-path tests on finite inputs. It is separate from local contract evidence and never upgrades a function proof.";
     let mut svg = format!(
-        "<g class=\"acceptance\"><rect class=\"acceptance-box\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{height:.1}\" rx=\"6\" /><text class=\"acceptance-title\" x=\"{PAD:.1}\" y=\"{header_y:.1}\">{}</text>",
+        "<g class=\"acceptance\">{}<rect class=\"acceptance-box\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{height:.1}\" rx=\"6\" /><text class=\"acceptance-title\" x=\"{PAD:.1}\" y=\"{header_y:.1}\">{}</text>",
+        title(scope_tooltip),
         esc(title_text)
     );
     for (index, (label, tooltip, mark_class, element)) in rows.into_iter().enumerate() {
@@ -4249,8 +4361,41 @@ fn render_svg_impl(
         }
     }
 
+    // ---- whole-scope checks ---------------------------------------------
+    // These answer questions about more than one function, so they lead the
+    // component tree instead of trailing it. On a tall workspace, putting
+    // them after the last component makes the scope of the run invisible
+    // until the reader has scrolled through the entire implementation.
+    let architecture_scope_box = render_architecture_scope_box(doc, evidence, links);
+    let architecture_scope_style_used = architecture_scope_box.is_some();
+    let acceptance_box = render_acceptance_box(doc, evidence, links, &ctx);
+    let acceptance_style_used = acceptance_box.is_some();
+    let mut scope_y = FRAME_PAD + FRAME_TITLE_H;
+    let mut scope_min_w = 0.0_f64;
+    let mut architecture_scope_svg = String::new();
+    let mut acceptance_svg = String::new();
+    if let Some(box_) = architecture_scope_box {
+        scope_min_w = scope_min_w.max(box_.width + FRAME_PAD * 2.0);
+        architecture_scope_svg = wrap_translate(&box_.svg, FRAME_PAD, scope_y);
+        scope_y += box_.height + GAP;
+    }
+    if let Some(box_) = acceptance_box {
+        scope_min_w = scope_min_w.max(box_.width + FRAME_PAD * 2.0);
+        acceptance_svg = wrap_translate(&box_.svg, FRAME_PAD, scope_y);
+        scope_y += box_.height + GAP;
+    }
+    let architecture_scope_earned_style_used =
+        architecture_scope_svg.contains("architecture-scope-mark-earned");
+    let architecture_scope_violation_style_used =
+        architecture_scope_svg.contains("architecture-scope-mark-violation");
+    let architecture_scope_gap_style_used =
+        architecture_scope_svg.contains("architecture-scope-mark-gap");
+    let acceptance_earned_style_used = acceptance_svg.contains("acceptance-mark-earned");
+    let acceptance_violation_style_used = acceptance_svg.contains("acceptance-mark-violation");
+    let acceptance_gap_style_used = acceptance_svg.contains("acceptance-mark-gap");
+
     // ---- absolute placement ---------------------------------------------
-    let content_top = FRAME_PAD + FRAME_TITLE_H;
+    let content_top = scope_y;
     let content_left = FRAME_PAD + extra_left;
     let mut body = String::new();
     // Absolute canvas position of every named component, keyed by its fully
@@ -4395,7 +4540,7 @@ fn render_svg_impl(
         );
     }
 
-    let frame_w = content_left + layered.content_w + extra_right + FRAME_PAD;
+    let frame_w = (content_left + layered.content_w + extra_right + FRAME_PAD).max(scope_min_w);
     let frame_h = content_top + layered.content_h + FRAME_PAD;
     // Fixed positions inside the reserved deny margins (always on-canvas
     // and clear of every real box, by construction of `extra_left`/`extra_right`).
@@ -4891,19 +5036,8 @@ fn render_svg_impl(
         + ANY_R
         + FRAME_PAD;
     let base_frame_content_h = frame_h.max(deny_bottom).max(drawn_lines_max_y + FRAME_PAD);
-    let acceptance_box = render_acceptance_box(doc, evidence, links, &ctx);
-    let acceptance_style_used = acceptance_box.is_some();
-    let (frame_content_w, frame_content_h, acceptance_svg) = if let Some(box_) = acceptance_box {
-        let x = FRAME_PAD;
-        let y = base_frame_content_h + GAP;
-        (
-            base_frame_content_w.max(box_.width + FRAME_PAD * 2.0),
-            y + box_.height + FRAME_PAD,
-            wrap_translate(&box_.svg, x, y),
-        )
-    } else {
-        (base_frame_content_w, base_frame_content_h, String::new())
-    };
+    let frame_content_w = base_frame_content_w;
+    let frame_content_h = base_frame_content_h;
 
     // ---- externals: band outside the frame, and their edges -------------
     // docs/plans/external-elements.md: externals stack left to right, in
@@ -5165,29 +5299,49 @@ fn render_svg_impl(
         }
         any_row(&doc.components, "", state_fields)
     };
-    let style: std::borrow::Cow<str> = match (
-        findings.is_empty(),
-        evidence_style_used,
-        state_style_used,
-        acceptance_style_used,
-    ) {
-        (true, false, false, false) => std::borrow::Cow::Borrowed(STYLE),
-        _ => {
-            let mut out = String::from(STYLE);
-            if !findings.is_empty() {
-                out.push_str(FINDING_STYLE);
-            }
-            if evidence_style_used {
-                out.push_str(EVIDENCE_STYLE);
-            }
-            if state_style_used {
-                out.push_str(STATE_STYLE);
-            }
-            if acceptance_style_used {
-                out.push_str(ACCEPTANCE_STYLE);
-            }
-            std::borrow::Cow::Owned(out)
+    let no_extra_style = findings.is_empty()
+        && !evidence_style_used
+        && !state_style_used
+        && !architecture_scope_style_used
+        && !acceptance_style_used;
+    let style: std::borrow::Cow<str> = if no_extra_style {
+        std::borrow::Cow::Borrowed(STYLE)
+    } else {
+        let mut out = String::from(STYLE);
+        if !findings.is_empty() {
+            out.push_str(FINDING_STYLE);
         }
+        if evidence_style_used {
+            out.push_str(EVIDENCE_STYLE);
+        }
+        if state_style_used {
+            out.push_str(STATE_STYLE);
+        }
+        if architecture_scope_style_used {
+            out.push_str(ARCHITECTURE_SCOPE_STYLE);
+        }
+        if architecture_scope_earned_style_used {
+            out.push_str(ARCHITECTURE_SCOPE_EARNED_STYLE);
+        }
+        if architecture_scope_violation_style_used {
+            out.push_str(ARCHITECTURE_SCOPE_VIOLATION_STYLE);
+        }
+        if architecture_scope_gap_style_used {
+            out.push_str(ARCHITECTURE_SCOPE_GAP_STYLE);
+        }
+        if acceptance_style_used {
+            out.push_str(ACCEPTANCE_STYLE);
+        }
+        if acceptance_earned_style_used {
+            out.push_str(ACCEPTANCE_EARNED_STYLE);
+        }
+        if acceptance_violation_style_used {
+            out.push_str(ACCEPTANCE_VIOLATION_STYLE);
+        }
+        if acceptance_gap_style_used {
+            out.push_str(ACCEPTANCE_GAP_STYLE);
+        }
+        std::borrow::Cow::Owned(out)
     };
 
     // §7.1 / newbie bar: the frame is the first thing anyone sees, so its
@@ -5255,7 +5409,7 @@ been checked for is what `cargo ply verify` reports, not this drawing.\n{version
          <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text></g>\
          <g class=\"verdict-strip\">{strip_tip}<text class=\"verdict-strip-text\" x=\"{strip_x:.1}\" y=\"20\">{strip_text}</text></g>\
          {title_extra}\
-         {deny_svg}{registry_svg}{body}{edges_svg}{acceptance_svg}{external_edges_svg}{external_svg}\
+         {architecture_scope_svg}{acceptance_svg}{deny_svg}{registry_svg}{body}{edges_svg}{external_edges_svg}{external_svg}\
          </svg>",
         glyph_hatch = glyph_hatch,
         frame_inner_w = frame_content_w - 2.0,

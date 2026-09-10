@@ -319,7 +319,7 @@ fn a_declaration_only_visual_refuses_to_call_its_own_run_clean() {
     // A drawing made from declarations alone has checked nothing. If a caller
     // hands it an optimistic outcome, it must not pass that through: an editor
     // colouring a badge from `outcome` would show green for a document where
-    // every item is still unclaimed.
+    // every item is still unclaimed or merely declared.
     let document = parse_document(
         "ply: 1\ncomponents:\n  decoder:\n    anchor: app::decoder\n    fns:\n      decode:\n        ensures: [\"result.is_ok()\"]\n",
     )
@@ -345,8 +345,16 @@ fn a_declaration_only_visual_refuses_to_call_its_own_run_clean() {
         visual
             .elements
             .values()
-            .all(|element| element.evidence.verdict == "unclaimed"),
+            .all(|element| matches!(element.evidence.verdict.as_str(), "unclaimed" | "declared")),
         "the premise: a declared-only view carries no evidence at all"
+    );
+    assert!(
+        visual
+            .elements
+            .values()
+            .any(|element| element.kind == "architecture-scope"
+                && element.evidence.verdict == "declared"),
+        "the module boundary should be explicit without pretending it was checked"
     );
     assert_eq!(
         visual.run.outcome,

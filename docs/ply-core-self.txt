@@ -7,6 +7,9 @@ ply: 1 — the format version every rule below is read under; a version this bui
 23 components · 56 functions · 0 promise nothing
 ("promise nothing" counts functions that end up with nothing checked — whether nobody wrote any checks for them, or the document switched checking off for them on purpose)
 
+architecture — module boundaries inside crates:
+  22 module boundaries — declared but not checked in this declaration-only transcript
+
 components:
 
   component core — maps to Rust module ply_core
@@ -576,7 +579,7 @@ components:
           ensures: result.starts_with("ply-") (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
 
-acceptance — finite production-path examples: none declared
+application acceptance — finite production-path examples: none declared
 
 externals — systems and people outside this codebase: none declared
 

@@ -701,10 +701,18 @@ fn every_painted_element_resolves_a_style_rule() {
     // `declared_shapes.ply.yaml` below is the first fixture in this sweep
     // to do.
     let style = format!(
-        "{}{}{}",
+        "{}{}{}{}{}{}{}{}{}{}{}",
         ply_render::svg::STYLE,
         ply_render::svg::FINDING_STYLE,
-        ply_render::svg::STATE_STYLE
+        ply_render::svg::STATE_STYLE,
+        ply_render::svg::ARCHITECTURE_SCOPE_STYLE,
+        ply_render::svg::ARCHITECTURE_SCOPE_EARNED_STYLE,
+        ply_render::svg::ARCHITECTURE_SCOPE_VIOLATION_STYLE,
+        ply_render::svg::ARCHITECTURE_SCOPE_GAP_STYLE,
+        ply_render::svg::ACCEPTANCE_STYLE,
+        ply_render::svg::ACCEPTANCE_EARNED_STYLE,
+        ply_render::svg::ACCEPTANCE_VIOLATION_STYLE,
+        ply_render::svg::ACCEPTANCE_GAP_STYLE,
     );
     let matches_selector = |class: &str, tag: &str| {
         style.contains(&format!(".{class}{{"))
@@ -1577,9 +1585,8 @@ mod collapse {
     }
 
     /// The regression guard: with neither flag, output must stay exactly
-    /// what it always was. The committed vetting SVGs already are that
-    /// "always was" (verified byte-identical to the current renderer before
-    /// this feature existed) — read here, never written.
+    /// aligned with the reviewed, committed vetting SVGs. Intentional visual
+    /// grammar changes update those artifacts and this test pins the new form.
     #[test]
     fn default_output_is_unchanged_without_flags() {
         for (yaml_path, svg_path) in [
@@ -1840,9 +1847,18 @@ mod collapse {
     #[test]
     fn invariants_hold_at_depth_1() {
         let style = format!(
-            "{}{}",
+            "{}{}{}{}{}{}{}{}{}{}{}",
             ply_render::svg::STYLE,
-            ply_render::svg::FINDING_STYLE
+            ply_render::svg::FINDING_STYLE,
+            ply_render::svg::STATE_STYLE,
+            ply_render::svg::ARCHITECTURE_SCOPE_STYLE,
+            ply_render::svg::ARCHITECTURE_SCOPE_EARNED_STYLE,
+            ply_render::svg::ARCHITECTURE_SCOPE_VIOLATION_STYLE,
+            ply_render::svg::ARCHITECTURE_SCOPE_GAP_STYLE,
+            ply_render::svg::ACCEPTANCE_STYLE,
+            ply_render::svg::ACCEPTANCE_EARNED_STYLE,
+            ply_render::svg::ACCEPTANCE_VIOLATION_STYLE,
+            ply_render::svg::ACCEPTANCE_GAP_STYLE,
         );
         let matches_selector = |class: &str, tag: &str| {
             style.contains(&format!(".{class}{{"))
@@ -3679,10 +3695,10 @@ fn only_forbidden_or_wrong_things_are_drawn_in_red() {
     // The red family this renderer paints with: border/line, text, and fill.
     const REDS: [&str; 3] = ["#c9534f", "#8f2f2c", "#fdecec"];
 
-    // The two meanings allowed to use it. `deny-*` draws a rule the design
-    // forbids; `*-finding` draws something actually wrong.
+    // The meanings allowed to use it. `deny-*` draws a rule the design
+    // forbids; `*-finding` and `*-violation` draw something actually wrong.
     fn is_allowed(selector: &str) -> bool {
-        selector.contains("deny") || selector.contains("finding")
+        selector.contains("deny") || selector.contains("finding") || selector.contains("violation")
     }
 
     let svg = render_fixture("../../vetting/003-trading-system.ply.yaml");
@@ -4348,6 +4364,9 @@ fn the_transcript_states_what_it_is_and_what_the_document_declares() {
         "no component may call risk",
         // an open decision
         "venue failover",
+        // the whole-scope architecture band, which must not disappear in
+        // the non-hover text form
+        "architecture — module boundaries inside crates:\n  5 module boundaries — declared but not checked in this declaration-only transcript",
     ] {
         assert!(
             text.contains(fact),

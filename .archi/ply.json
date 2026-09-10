@@ -4584,6 +4584,12 @@
               "id": "n10",
               "text": "The picture `cargo ply render` produces: every component as a box, every call and data-flow edge as an arrow (crates/ply-core/src/visual/svg.rs). It needs only the declaration file to draw -- no compiler, no engines -- so it can draw a document `check` would refuse. Printed to stdout by default, or written to a file with -o (crates/ply-cli/src/main.rs, the final branch of `render_command_with_format`). vetting/003-trading-system.svg is a real rendered example.",
               "ts": 1788357723267
+            },
+            {
+              "id": "2ff5abd097929a57",
+              "text": "Whole-scope evidence leads the drawing: module-boundary analysis and application acceptance use separate bands; a verify run that did not inspect module references keeps that scope visibly not checked.",
+              "ts": 1789025538999,
+              "tag": "whole-scope-evidence"
             }
           ],
           "text": [

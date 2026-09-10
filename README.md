@@ -29,10 +29,12 @@ exercises, hints, and short assessments.
 
 Two things go in: the command, and one dependency in the crate you want checked.
 
-**The command.** Installs as a `cargo` subcommand:
+**The command.** Install Ply 0.2.0 as a `cargo` subcommand from this exact revision:
 
 ```console
-$ cargo install --git https://github.com/mattyv/ply ply-cli --locked
+$ cargo install --git https://github.com/mattyv/ply \
+    --rev 1ab348db957f4df905f3ff35f917f2e7cbee26a6 ply-cli --locked
+$ cargo ply --version
 $ cargo ply --help
 ```
 
@@ -58,13 +60,15 @@ nothing, so this costs you no runtime behaviour:
 
 ```toml
 [dependencies]
-ply = { package = "ply-attrs", git = "https://github.com/mattyv/ply" }
+ply = { package = "ply-attrs", git = "https://github.com/mattyv/ply", rev = "1ab348db957f4df905f3ff35f917f2e7cbee26a6" }
 
 # Ply's generated proof harnesses are `cfg(kani)`-gated. Without this line
 # `cargo build` still works, but warns about an unknown cfg.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 ```
+
+Keep the command and attribute dependency on the same revision when upgrading.
 
 Then write what a function promises, and a `ply.yaml` beside your `Cargo.toml` saying
 what evidence you want for it:
@@ -597,6 +601,13 @@ these you can read any Ply drawing without a key beside it.
 
 Nothing else is a line. **What a verdict rested on is not drawn** — assumption chains are
 text-only today, in `cargo ply tree` and the text form. A drawing has no dotted arrows.
+
+**Checks beyond one function**
+
+| | |
+|---|---|
+| **Architecture · module boundaries inside crates** | Counts module-anchored components. A grey dot means the boundaries are declared; a dashed blue dot means this completed run did not inspect references between them. Module reference checking is not implemented yet, so current verification drawings show this gap instead of implying a clean architecture result |
+| **Application acceptance · finite production-path examples** | Lists each named production-path test separately. Green means that exact test passed; red means the requirement failed; dashed blue means the test did not produce product evidence |
 
 **The strip along the top** counts what the document declares and how much of it promises
 nothing, so a page of confident-looking boxes cannot hide that half of it is empty.

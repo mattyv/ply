@@ -28,6 +28,9 @@
       same-crate module references, preserving the Cargo-metadata tier and its behavior.
 - [ ] Extend coverage, JSON, explanations, and drawings so package evidence, source
       references, acceptance results, and incomplete scope remain distinguishable.
+  - [x] Label module-boundary checks and application acceptance as separate bands, show
+        only scopes present in the current document, and mark module analysis as missing
+        when a completed run did not execute it (`c9ce5ed`).
 - [ ] Measure the single-crate fixture and, if available, an isolated copy of the trial
       application. Do not restructure the real application as part of this work.
 

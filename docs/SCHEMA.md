@@ -221,6 +221,12 @@ Results appear in a separate top-level `acceptance` array as `passed`, `failed`,
 A required non-pass fails `verify` under every `--fail-on` setting; optional results remain visible
 without changing the exit status. Acceptance always runs freshly and never enters `ply.lock`.
 
+Drawings keep the two larger scopes separate. Module-anchored components add an
+`Architecture · module boundaries inside crates` band; until source-reference analysis lands, a
+completed verification marks that band `not checked`. Acceptance claims appear in their own
+`Application acceptance · finite production-path examples` band, where each row reports only its
+exact test. Neither band changes a function's proof colour.
+
 When a root document selects one component from a linked child, only acceptance claims on that
 component or its descendants run. Their ids and components are rebased into the root report.
 `W0543` names a child claim excluded because it belongs to an unselected component; its required
