@@ -674,13 +674,14 @@ pub fn build_declared_visual_envelope_with_links(
             element.diagnostic_ids.push(diagnostic.id.clone());
         }
     }
-    visual.svg = svg::render_svg_with_evidence_state_options_and_links(
+    visual.svg = svg::render_svg_with_attached_state_options_and_links(
         document,
         &visual.elements,
         &[],
         options,
         state_fields,
         links,
+        svg::DrawingView::Declaration,
     )?;
     visual.folded = folded_drawings(
         document,
@@ -689,6 +690,7 @@ pub fn build_declared_visual_envelope_with_links(
         options,
         state_fields,
         links,
+        svg::DrawingView::Declaration,
     )?;
     visual.validate()?;
     Ok(visual)
@@ -809,13 +811,19 @@ fn build_visual_envelope_resolved(
             element.diagnostic_ids.push(diagnostic.id.clone());
         }
     }
-    let svg = svg::render_svg_with_evidence_state_options_and_links(
+    let view = if result.command == "render" {
+        svg::DrawingView::Declaration
+    } else {
+        svg::DrawingView::Evidence
+    };
+    let svg = svg::render_svg_with_attached_state_options_and_links(
         document,
         &elements,
         &diagnostics,
         &svg::RenderOptions::default(),
         state_fields,
         links,
+        view,
     )?;
     let folded = folded_drawings(
         document,
@@ -824,6 +832,7 @@ fn build_visual_envelope_resolved(
         &svg::RenderOptions::default(),
         state_fields,
         links,
+        view,
     )?;
     let envelope = VisualEnvelope {
         protocol_version: VISUAL_PROTOCOL_VERSION,
@@ -1074,19 +1083,21 @@ fn folded_drawings(
     base: &svg::RenderOptions,
     state_fields: Option<&crate::harness::StateFieldIndex>,
     links: Option<&crate::config::LinkIndex>,
+    view: svg::DrawingView,
 ) -> Result<Vec<FoldedDrawing>, VisualEnvelopeError> {
     // A reader who already narrowed the drawing by hand has made this choice
     // themselves; offering alternatives to a selection would silently undo it.
     if base.depth.is_some() || base.focus.is_some() || !base.collapse.is_empty() {
         return Ok(Vec::new());
     }
-    let full = svg::render_svg_with_evidence_state_options_and_links(
+    let full = svg::render_svg_with_attached_state_options_and_links(
         document,
         elements,
         diagnostics,
         base,
         state_fields,
         links,
+        view,
     )?;
     let mut folded = Vec::new();
     for depth in 1..=nesting_levels(document, links) {
@@ -1094,13 +1105,14 @@ fn folded_drawings(
             depth: Some(depth),
             ..base.clone()
         };
-        let svg = svg::render_svg_with_evidence_state_options_and_links(
+        let svg = svg::render_svg_with_attached_state_options_and_links(
             document,
             elements,
             diagnostics,
             &options,
             state_fields,
             links,
+            view,
         )?;
         if svg != full {
             folded.push(FoldedDrawing { depth, svg });

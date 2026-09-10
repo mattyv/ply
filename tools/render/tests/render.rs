@@ -906,12 +906,11 @@ fn workspace_frame_explains_the_whole_picture() {
          architecture and verification claims. Each box is a component; chips are \
          functions with their declared checks; arrows are permitted calls (solid) and \
          data flows (dashed); red bars are forbidden calls. A box's grey depth is how \
-         strongly it promises to be checked — white means something inside promises \
-         nothing, deeper grey means stronger checks promised, and the weakest \
-         function sets the whole box's shade. Nothing here is green: green is kept \
-         for evidence a run has actually earned, which this render never sees, so a \
-         picture full of promises should not look like a picture full of results. \
-         Hover anything for its meaning."
+        strongly it promises to be checked — white means something inside promises \
+        nothing, deeper grey means stronger checks promised, and the weakest \
+        function sets the whole box's shade. Hover anything for its meaning. This is a \
+        declaration view from `cargo ply render`: it contains no earned evidence, and \
+        green is reserved for results from verification."
     );
 }
 

@@ -151,6 +151,14 @@ acceptance:
     assert_eq!(declared.elements[&element_id].evidence.state, "declared");
     assert!(declared.svg.contains("acceptance-row"));
     assert!(declared.svg.contains("decimal_response_maps — declared"));
+    assert!(declared.svg.contains("class=\"acceptance-requirement\""));
+    assert!(
+        declared
+            .svg
+            .contains(">decimal response maps to exact records</text>")
+    );
+    assert!(declared.svg.contains("Declaration view ·"));
+    assert!(!declared.svg.contains("Evidence view ·"));
     let transcript = ply_core::visual::transcript::render_transcript(&document);
     assert!(transcript.contains("acceptance — finite production-path examples:"));
     assert!(transcript.contains("decimal_response_maps — required, declared but not run"));
@@ -195,6 +203,51 @@ acceptance:
     assert_eq!(verified.elements[&element_id].evidence.state, "violation");
     assert_eq!(verified.elements[&element_id].evidence.verdict, "failed");
     assert!(verified.svg.contains("decimal_response_maps — failed"));
+    assert!(verified.svg.contains("Evidence view ·"));
+    assert!(!verified.svg.contains("Declaration view ·"));
+}
+
+#[test]
+fn long_acceptance_requirements_stay_compact_and_complete_on_hover() {
+    let requirement = "A real multi-row clearinghouse reply folds every asset position into the exact per-fate counters, and the counted total equals the source row count rather than a plausible-looking subset";
+    let document = parse_document(&format!(
+        "ply: 1\ncomponents: {{ mapping: {{ anchor: app::mapping }} }}\nacceptance:\n  counters:\n    requirement: {requirement}\n    component: mapping\n    entry: app::mapping::map_response\n    test: {{ package: app, target: acceptance, name: counters }}\n    inputs: [tests/input.json]\n    expected: [tests/expected.json]\n    required: false\n"
+    ))
+    .unwrap();
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "long-acceptance".into(),
+            completed_at: "2026-09-10T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "test".into(),
+            },
+            outcome: RunOutcome::MissingEvidence,
+        },
+        &RenderOptions::default(),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        visual
+            .svg
+            .matches("class=\"acceptance-requirement\"")
+            .count(),
+        2
+    );
+    assert!(
+        visual
+            .svg
+            .contains("plausible-looking subset\ncomponent: mapping")
+    );
+    assert!(
+        visual
+            .svg
+            .contains("rather than a plausible-looking…</text>")
+    );
 }
 
 #[test]
