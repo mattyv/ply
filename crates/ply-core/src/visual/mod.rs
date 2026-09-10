@@ -785,6 +785,7 @@ fn build_visual_envelope_resolved(
     // carries `unclaimed` and no engine, seed or case count, because that is
     // what is true of a function this run never checked.
     add_elements_for_drawn_but_unchecked(document, links, &mut elements, &mut semantic_ids);
+    add_architecture_scope_element(document, result, links, &mut elements, &mut semantic_ids)?;
     add_acceptance_elements(result, &mut elements, &mut semantic_ids)?;
 
     let diagnostics = result
@@ -829,6 +830,97 @@ fn build_visual_envelope_resolved(
     };
     envelope.validate()?;
     Ok(envelope)
+}
+
+/// How many component boundaries in the drawing sit below a crate root.
+///
+/// This walks the same linked bodies the SVG walks. Counting only the root
+/// document would make a linked module boundary visible in the picture but
+/// absent from the scope row that explains whether it was checked.
+pub(super) fn module_boundary_count(
+    document: &Document,
+    links: Option<&crate::config::LinkIndex>,
+) -> usize {
+    fn walk(component: &crate::model::Component) -> usize {
+        usize::from(component.anchor.contains("::"))
+            + component.components.values().map(walk).sum::<usize>()
+    }
+
+    document
+        .components
+        .iter()
+        .map(|(name, component)| {
+            let merged = crate::config::linked_body(name, component, links);
+            walk(merged.as_ref().unwrap_or(component))
+        })
+        .sum()
+}
+
+fn add_architecture_scope_element(
+    document: &Document,
+    result: &Envelope,
+    links: Option<&crate::config::LinkIndex>,
+    elements: &mut BTreeMap<String, VisualElement>,
+    semantic_ids: &mut BTreeMap<String, String>,
+) -> Result<(), VisualEnvelopeError> {
+    let count = module_boundary_count(document, links);
+    if count == 0 {
+        return Ok(());
+    }
+
+    let id = stable_element_id("architecture-scope", "modules");
+    let (verdict, state) = if result.command == "render" {
+        ("declared", "declared")
+    } else {
+        // The current architecture pass resolves Cargo package edges, not
+        // source references between modules in one crate. Do not infer a
+        // green module result from package coverage. The source-reference
+        // increment must replace this gap with its own explicit outcome.
+        ("not_checked", "gap")
+    };
+    let declaration = format!(
+        "{count} module-anchored component{} declare{} boundaries inside crates.",
+        if count == 1 { "" } else { "s" },
+        if count == 1 { "s" } else { "" },
+    );
+
+    if semantic_ids
+        .insert("architecture::modules".into(), id.clone())
+        .is_some()
+    {
+        return Err(VisualEnvelopeError::Invalid(
+            "duplicate module architecture scope identity".into(),
+        ));
+    }
+    if elements
+        .insert(
+            id.clone(),
+            VisualElement {
+                id,
+                kind: "architecture-scope".into(),
+                label: "Module boundaries".into(),
+                parent_id: Some(stable_element_id("workspace", "workspace")),
+                declaration: Some(declaration),
+                evidence: ElementEvidence {
+                    verdict: verdict.into(),
+                    statuses: Vec::new(),
+                    reused: false,
+                    engine: None,
+                    seed: None,
+                    cases: None,
+                    state: state.into(),
+                },
+                source: None,
+                diagnostic_ids: Vec::new(),
+            },
+        )
+        .is_some()
+    {
+        return Err(VisualEnvelopeError::Invalid(
+            "duplicate module architecture scope element id".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn declared_acceptance_results(
@@ -1837,6 +1929,148 @@ mod tests {
             vec![1, 2],
             "depth 2 still folds the innermost box's function rows; omitting it makes a viewer \
              hide those rows in the full drawing and leave the box at its original empty height"
+        );
+    }
+
+    #[test]
+    fn module_boundaries_and_application_acceptance_have_separate_visual_scopes() {
+        let document = crate::model::parse_document(
+            "ply: 1\ncomponents:\n  app:\n    anchor: app\n    components:\n      parsing:\n        anchor: app::parsing\n      execution:\n        anchor: app::execution\nacceptance:\n  decimal_response_maps:\n    requirement: decimal strings become records\n    component: app.parsing\n    entry: app::parsing::map_response\n    test:\n      package: app\n      target: acceptance\n      name: decimal_response_maps\n    inputs: [tests/fixtures/response.json]\n    expected: [tests/fixtures/expected.json]\n    required: true\n",
+        )
+        .unwrap();
+        let visual = build_declared_visual_envelope(
+            &document,
+            RunMetadata {
+                id: "scope-test".into(),
+                completed_at: "1970-01-01T00:00:00Z".into(),
+                root: RootIdentity { path: ".".into() },
+                tool: ToolIdentity {
+                    name: "ply".into(),
+                    version: "test".into(),
+                },
+                outcome: RunOutcome::MissingEvidence,
+            },
+            &svg::RenderOptions::default(),
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            visual
+                .svg
+                .contains("Architecture · module boundaries inside crates"),
+            "the drawing must name the inside-crate check at a glance: {}",
+            visual.svg
+        );
+        assert!(
+            visual
+                .svg
+                .contains("Application acceptance · finite production-path examples"),
+            "the whole-application check must have its own named band: {}",
+            visual.svg
+        );
+        assert!(
+            visual
+                .svg
+                .contains("translate(24.0,54.0)\"><g class=\"architecture-scope\""),
+            "whole-scope checks must sit directly below the title, before a tall component tree: {}",
+            visual.svg
+        );
+        assert!(
+            visual
+                .elements
+                .values()
+                .any(|element| element.kind == "architecture-scope"
+                    && element.label == "Module boundaries"
+                    && element.evidence.state == "declared"),
+            "the architecture band must be selectable and classified independently"
+        );
+        assert!(
+            visual
+                .elements
+                .values()
+                .any(|element| element.kind == "acceptance"),
+            "the acceptance row must remain its own selectable evidence"
+        );
+    }
+
+    #[test]
+    fn a_completed_verify_marks_unexecuted_module_analysis_as_a_gap() {
+        let document = crate::model::parse_document(
+            "ply: 1\ncomponents:\n  app:\n    anchor: app\n    components:\n      parsing:\n        anchor: app::parsing\n",
+        )
+        .unwrap();
+        let result = crate::diag::Envelope {
+            command: "verify".into(),
+            ply_version: "test".into(),
+            root: crate::diag::Node {
+                id: "workspace".into(),
+                kind: "workspace".into(),
+                verdict: "unclaimed".into(),
+                ..Default::default()
+            },
+            diagnostics: Vec::new(),
+            acceptance: Vec::new(),
+            coverage: None,
+            trust_surface: None,
+            open_items: None,
+            not_carried_forward: Vec::new(),
+        };
+        let visual = build_visual_envelope(
+            &document,
+            &result,
+            RunMetadata {
+                id: "scope-gap".into(),
+                completed_at: "1970-01-01T00:00:00Z".into(),
+                root: RootIdentity { path: ".".into() },
+                tool: ToolIdentity {
+                    name: "ply".into(),
+                    version: "test".into(),
+                },
+                outcome: RunOutcome::MissingEvidence,
+            },
+        )
+        .unwrap();
+        let scope = visual
+            .elements
+            .values()
+            .find(|element| element.kind == "architecture-scope")
+            .expect("module architecture scope");
+
+        assert_eq!(scope.evidence.verdict, "not_checked");
+        assert_eq!(scope.evidence.state, "gap");
+        assert!(visual.svg.contains("module boundary — not checked"));
+    }
+
+    #[test]
+    fn a_crate_only_document_does_not_invent_a_module_boundary_band() {
+        let document = crate::model::parse_document(
+            "ply: 1\ncomponents:\n  api:\n    anchor: api\n  storage:\n    anchor: storage\n",
+        )
+        .unwrap();
+        let visual = build_declared_visual_envelope(
+            &document,
+            RunMetadata {
+                id: "scope-absent".into(),
+                completed_at: "1970-01-01T00:00:00Z".into(),
+                root: RootIdentity { path: ".".into() },
+                tool: ToolIdentity {
+                    name: "ply".into(),
+                    version: "test".into(),
+                },
+                outcome: RunOutcome::MissingEvidence,
+            },
+            &svg::RenderOptions::default(),
+            None,
+        )
+        .unwrap();
+
+        assert!(!visual.svg.contains("module boundaries inside crates"));
+        assert!(
+            visual
+                .elements
+                .values()
+                .all(|element| element.kind != "architecture-scope")
         );
     }
 

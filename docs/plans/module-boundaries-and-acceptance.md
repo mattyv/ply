@@ -99,9 +99,12 @@ an upstream error envelope, and partial record rejection.
 
 ### Visual form
 
-Declaration-only drawings list acceptance claims as declared and not run. Evidence-coloured
-drawings show their independent outcome. They do not colour function chips or raise the
-component's proof rung. Existing consumers see additive fields and retain their old view.
+Declaration-only drawings list acceptance claims in an `Application acceptance · finite
+production-path examples` band. Evidence-coloured drawings show their independent outcome. They
+do not colour function chips or raise the component's proof rung. A separate `Architecture ·
+module boundaries inside crates` band counts module anchors and marks source-reference analysis as
+missing until that increment actually runs. Existing consumers see additive elements and retain
+their old view.
 
 ## Increment 2: module-boundary enforcement
 

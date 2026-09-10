@@ -43,7 +43,7 @@ components:
       the document also asks to show cursor, which declares no shape of its own, so nothing more is said about it: a bare name carries no shape, and there is no code here to read one from
     hollow — promises nothing yet: no functions, no nested components. Saying what it holds is not a promise about how it behaves. A sketch waiting for claims.
 
-acceptance — finite production-path examples: none declared
+application acceptance — finite production-path examples: none declared
 
 externals — systems and people outside this codebase: none declared
 

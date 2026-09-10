@@ -602,6 +602,13 @@ these you can read any Ply drawing without a key beside it.
 Nothing else is a line. **What a verdict rested on is not drawn** — assumption chains are
 text-only today, in `cargo ply tree` and the text form. A drawing has no dotted arrows.
 
+**Checks beyond one function**
+
+| | |
+|---|---|
+| **Architecture · module boundaries inside crates** | Counts module-anchored components. A grey dot means the boundaries are declared; a dashed blue dot means this completed run did not inspect references between them. Module reference checking is not implemented yet, so current verification drawings show this gap instead of implying a clean architecture result |
+| **Application acceptance · finite production-path examples** | Lists each named production-path test separately. Green means that exact test passed; red means the requirement failed; dashed blue means the test did not produce product evidence |
+
 **The strip along the top** counts what the document declares and how much of it promises
 nothing, so a page of confident-looking boxes cannot hide that half of it is empty.
 

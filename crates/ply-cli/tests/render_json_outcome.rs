@@ -1,10 +1,9 @@
 //! A declaration-only render has checked nothing, so its envelope must not
-//! roll up to `clean`. Every item in it is `unclaimed`, which the verdict
-//! vocabulary already counts as an absence of evidence -- so the run's own
-//! outcome has to say the evidence is missing, not that the run came back
-//! clean. An editor client colouring a badge from `outcome` would otherwise
-//! show green for a document nothing has ever checked, which is the exact
-//! failure this project exists to refuse.
+//! roll up to `clean`. Function and component items are `unclaimed`;
+//! whole-scope bands are `declared`. Neither is evidence, so the run's own
+//! outcome has to say evidence is missing, not that the run came back clean.
+//! An editor client colouring a badge from `outcome` would otherwise show
+//! green for a document nothing has checked, which this project refuses.
 
 use std::process::Command;
 
@@ -49,9 +48,19 @@ fn a_declaration_only_render_does_not_report_its_run_as_clean() {
         })
         .collect::<Vec<_>>();
     assert!(
-        !verdicts.is_empty() && verdicts.iter().all(|verdict| *verdict == "unclaimed"),
-        "every item in a declaration-only render should still be unclaimed, but the \
-         verdicts were {verdicts:?}"
+        !verdicts.is_empty(),
+        "the fixture should draw evidence-bearing items"
+    );
+    assert!(
+        verdicts
+            .iter()
+            .all(|verdict| matches!(*verdict, "unclaimed" | "declared")),
+        "a declaration-only render must contain only unclaimed or declared items, \
+         but the verdicts were {verdicts:?}"
+    );
+    assert!(
+        verdicts.contains(&"declared"),
+        "the module-boundary scope should be visibly declared: {verdicts:?}"
     );
 
     let outcome = json["run"]["outcome"].as_str().unwrap_or("<missing>");
@@ -59,12 +68,12 @@ fn a_declaration_only_render_does_not_report_its_run_as_clean() {
         outcome,
         "clean",
         "nothing has been checked in a declaration-only render -- all {} items are \
-         `unclaimed` -- so the run must not report itself clean",
+         unclaimed or declared -- so the run must not report itself clean",
         verdicts.len()
     );
     assert_eq!(
         outcome, "missing_evidence",
-        "the run's outcome must say the evidence is missing, which is what a tree of \
-         `unclaimed` items means"
+        "the run's outcome must say the evidence is missing, which is what unclaimed \
+         and declared-only items mean"
     );
 }

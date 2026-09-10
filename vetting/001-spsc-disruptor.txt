@@ -38,7 +38,7 @@ components:
       fuzz(1024) — tries 1024 generated inputs that satisfy requires, then checks ensures
       generic — every check runs with T=u64; whatever they earn covers only that type
 
-acceptance — finite production-path examples: none declared
+application acceptance — finite production-path examples: none declared
 
 externals — systems and people outside this codebase: none declared
 

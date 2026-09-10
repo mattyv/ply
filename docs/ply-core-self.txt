@@ -576,7 +576,7 @@ components:
           ensures: result.starts_with("ply-") (what the function guarantees coming out)
           the checks above are what will test the function against exactly this promise when `cargo ply verify` runs
 
-acceptance — finite production-path examples: none declared
+application acceptance — finite production-path examples: none declared
 
 externals — systems and people outside this codebase: none declared
 

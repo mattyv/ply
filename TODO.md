@@ -28,6 +28,9 @@
       same-crate module references, preserving the Cargo-metadata tier and its behavior.
 - [ ] Extend coverage, JSON, explanations, and drawings so package evidence, source
       references, acceptance results, and incomplete scope remain distinguishable.
+      The first visual slice must label module-boundary checks and application acceptance
+      as separate bands, show only scopes present in the current document, and mark a
+      verification scope as missing evidence when that run did not execute it.
 - [ ] Measure the single-crate fixture and, if available, an isolated copy of the trial
       application. Do not restructure the real application as part of this work.
 
