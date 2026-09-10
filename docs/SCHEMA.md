@@ -226,8 +226,8 @@ Drawings keep the two larger scopes separate. Module-anchored components add an
 completed verification marks that band `not checked`. Acceptance claims appear in their own
 `Application acceptance · finite production-path examples` band, where each row reports only its
 exact test and draws the claim's requirement beneath the result. Requirements use at most two
-display-width-aware lines; the complete text and exact inputs remain on hover. Neither band changes
-a function's proof colour.
+display-width-aware lines, with a pixel-length bound that keeps fallback-font glyphs inside the band;
+the complete text and exact inputs remain on hover. Neither band changes a function's proof colour.
 The opening strip says `Declaration view` for `cargo ply render` and `Evidence view` for a completed
 `cargo ply verify --svg`, so saved drawings identify whether their colours are promises or results.
 

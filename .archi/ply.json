@@ -4587,7 +4587,7 @@
             },
             {
               "id": "2ff5abd097929a57",
-              "text": "Whole-scope evidence leads the drawing: module-boundary analysis and application acceptance use separate bands; a verify run that did not inspect module references keeps that scope visibly not checked. Each acceptance result draws its user-written requirement beneath it, capped by display width at two lines with the complete sentence on hover. The opening strip labels the SVG as a declaration view from render or an evidence view from verify; its tooltip keeps declared red deny bars distinct from red failed evidence.",
+              "text": "Whole-scope evidence leads the drawing: module-boundary analysis and application acceptance use separate bands; a verify run that did not inspect module references keeps that scope visibly not checked. Each acceptance result draws its user-written requirement beneath it, capped by display width at two lines and constrained to the reserved SVG pixel width when the browser substitutes a fallback font, with the complete sentence on hover. The opening strip labels the SVG as a declaration view from render or an evidence view from verify; its tooltip keeps declared red deny bars distinct from red failed evidence.",
               "ts": 1789025538999,
               "tag": "whole-scope-evidence"
             }
