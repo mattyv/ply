@@ -1190,8 +1190,7 @@ path = "src/lib.rs"
         // entry and must retain the user's array and its comment.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Cargo.toml");
-        let original =
-            "[workspace]\nmembers = [\n    \".\", # keep this comment\n]\n\n[package]\nname = \"x\"\n";
+        let original = "[workspace]\nmembers = [\n    \".\", # keep this comment\n]\n\n[package]\nname = \"x\"\n";
         let harness_rel = "target/ply/fuzz/x-ply-harness";
         let harness_dir = dir.path().join(harness_rel);
         std::fs::write(&path, original).unwrap();
