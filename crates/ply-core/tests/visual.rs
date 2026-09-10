@@ -251,6 +251,91 @@ fn long_acceptance_requirements_stay_compact_and_complete_on_hover() {
 }
 
 #[test]
+fn wide_acceptance_requirements_wrap_by_display_width() {
+    let requirement = "界".repeat(96);
+    let document = parse_document(&format!(
+        "ply: 1\ncomponents: {{ mapping: {{ anchor: app::mapping }} }}\nacceptance:\n  wide:\n    requirement: {requirement}\n    component: mapping\n    entry: app::mapping::map_response\n    test: {{ package: app, target: acceptance, name: wide }}\n    inputs: [tests/input.json]\n    expected: [tests/expected.json]\n    required: false\n"
+    ))
+    .unwrap();
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "wide-acceptance".into(),
+            completed_at: "2026-09-10T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "test".into(),
+            },
+            outcome: RunOutcome::MissingEvidence,
+        },
+        &RenderOptions::default(),
+        None,
+    )
+    .unwrap();
+
+    // Each CJK scalar occupies two monospace cells. Ninety-six of them must
+    // therefore wrap into two 48-cell lines instead of overflowing a band
+    // sized from a one-cell-per-scalar estimate.
+    assert_eq!(
+        visual
+            .svg
+            .matches("class=\"acceptance-requirement\"")
+            .count(),
+        2
+    );
+    assert!(visual.svg.contains(&format!(">{}</text>", "界".repeat(48))));
+    assert!(
+        visual
+            .svg
+            .contains(&format!("{}\ncomponent: mapping", requirement))
+    );
+}
+
+#[test]
+fn evidence_frame_distinguishes_declared_deny_bars_from_failed_results() {
+    let document = parse_document(
+        "ply: 1\ncomponents:\n  app: { anchor: app }\n  store: { anchor: store }\ndeny: ['app -> store']\n",
+    )
+    .unwrap();
+    let result = Envelope {
+        command: "verify".into(),
+        ply_version: "test".into(),
+        root: Node {
+            id: "workspace".into(),
+            kind: "workspace".into(),
+            verdict: "unclaimed".into(),
+            ..Node::default()
+        },
+        diagnostics: vec![],
+        acceptance: vec![],
+        coverage: None,
+        trust_surface: None,
+        open_items: None,
+        not_carried_forward: vec![],
+    };
+    let visual = build_visual_envelope_with_sources(
+        &document,
+        &result,
+        RunMetadata {
+            id: "deny-evidence".into(),
+            completed_at: "2026-09-10T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "test".into(),
+            },
+            outcome: RunOutcome::MissingEvidence,
+        },
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    assert!(visual.svg.contains("red bars are declared prohibitions"));
+    assert!(!visual.svg.contains("green and red marks are results"));
+}
+
+#[test]
 fn invalid_acceptance_component_remains_drawable_and_anchors_its_finding() {
     let document = parse_document(
         r#"

@@ -607,7 +607,7 @@ text-only today, in `cargo ply tree` and the text form. A drawing has no dotted 
 | | |
 |---|---|
 | **Architecture · module boundaries inside crates** | Counts module-anchored components. A grey dot means the boundaries are declared; a dashed blue dot means this completed run did not inspect references between them. Module reference checking is not implemented yet, so current verification drawings show this gap instead of implying a clean architecture result |
-| **Application acceptance · finite production-path examples** | Lists each named production-path test and draws its requirement beneath the result. Long requirements use at most two lines; hover the row for the complete text and its exact test inputs. Green means that exact test passed; red means the requirement failed; dashed blue means the test did not produce product evidence |
+| **Application acceptance · finite production-path examples** | Lists each named production-path test and draws its requirement beneath the result. Long requirements use at most two display-width-aware lines; hover the row for the complete text and its exact test inputs. Green means that exact test passed; red means the requirement failed; dashed blue means the test did not produce product evidence |
 
 **The strip along the top** begins with `Declaration view` for `cargo ply render` or
 `Evidence view` for a completed `cargo ply verify --svg` drawing. It then counts what the

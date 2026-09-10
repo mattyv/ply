@@ -23,6 +23,7 @@ blake3 = "1.8.7"
 # `engines::mod`'s `kill_descendants` -- which `std::process::Child::kill`
 # cannot do, since it only ever targets the one pid it wraps.
 libc = "0.2"
+unicode-width = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

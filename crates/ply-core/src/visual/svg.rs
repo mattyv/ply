@@ -18,6 +18,7 @@ use crate::model::{
 use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 // ---- layout constants -----------------------------------------------------
 
@@ -391,6 +392,10 @@ fn text_w(s: &str, char_w: f64) -> f64 {
     (s.chars().count() as f64) * char_w
 }
 
+fn display_text_w(s: &str, char_w: f64) -> f64 {
+    (UnicodeWidthStr::width(s) as f64) * char_w
+}
+
 /// Keep author-written acceptance prose useful at a glance without letting
 /// one paragraph set the width or height of an entire workspace drawing.
 /// The complete text remains in the row's tooltip.
@@ -398,15 +403,29 @@ fn compact_text_lines(text: &str, max_chars: usize, max_lines: usize) -> Vec<Str
     let mut lines = Vec::new();
     let mut current = String::new();
     for word in text.split_whitespace() {
-        let joined_len =
-            current.chars().count() + usize::from(!current.is_empty()) + word.chars().count();
-        if !current.is_empty() && joined_len > max_chars {
+        let word_width = UnicodeWidthStr::width(word);
+        let joined_width = UnicodeWidthStr::width(current.as_str())
+            + usize::from(!current.is_empty())
+            + word_width;
+        if !current.is_empty() && joined_width > max_chars {
             lines.push(std::mem::take(&mut current));
         }
         if !current.is_empty() {
             current.push(' ');
         }
-        current.push_str(word);
+        if word_width <= max_chars {
+            current.push_str(word);
+            continue;
+        }
+        for ch in word.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if !current.is_empty()
+                && UnicodeWidthStr::width(current.as_str()) + ch_width > max_chars
+            {
+                lines.push(std::mem::take(&mut current));
+            }
+            current.push(ch);
+        }
     }
     if !current.is_empty() {
         lines.push(current);
@@ -414,20 +433,14 @@ fn compact_text_lines(text: &str, max_chars: usize, max_lines: usize) -> Vec<Str
     if lines.is_empty() {
         return lines;
     }
-    let clipped =
-        lines.len() > max_lines || lines.iter().any(|line| line.chars().count() > max_chars);
+    let clipped = lines.len() > max_lines;
     lines.truncate(max_lines);
-    for line in &mut lines {
-        if line.chars().count() > max_chars {
-            *line = line.chars().take(max_chars.saturating_sub(1)).collect();
-            line.push('…');
-        }
-    }
     if clipped {
         let last = lines
             .last_mut()
             .expect("a non-empty requirement has one line");
-        while last.chars().count() >= max_chars {
+        let ellipsis_width = UnicodeWidthChar::width('…').unwrap_or(1);
+        while UnicodeWidthStr::width(last.as_str()) + ellipsis_width > max_chars {
             last.pop();
         }
         if !last.ends_with('…') {
@@ -4245,7 +4258,7 @@ fn render_acceptance_box(
             REQUIREMENT_MAX_LINES,
         );
         for line in &requirement_lines {
-            width = width.max(text_w(line, SUB_CHAR_W) + PAD * 2.0 + 14.0);
+            width = width.max(display_text_w(line, SUB_CHAR_W) + PAD * 2.0 + 14.0);
         }
         let mut tooltip_lines = finding_tooltip_lines(&row_findings);
         tooltip_lines.push(format!(
@@ -5496,8 +5509,9 @@ fn render_svg_impl(
              evidence, and green is reserved for results from verification.",
         ),
         DrawingView::Evidence => workspace_tip_text.push_str(
-            " This is an evidence view from `cargo ply verify`: green and red marks are \
-             results from that completed run; grey still describes declarations.",
+            " This is an evidence view from `cargo ply verify`: green marks and red \
+             evidence-state marks are results from that completed run; red bars are \
+             declared prohibitions, and grey still describes declarations.",
         ),
     }
     // Last, as everywhere else this attaches: a run's outcome is a
