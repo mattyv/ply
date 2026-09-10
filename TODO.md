@@ -525,7 +525,12 @@ Brief: consume valid function-level proofs as premises and establish a named
 property of a component. Not re-proving function bodies; not a general
 Rust-to-Verus translator.
 
-- [x] **M1 DONE: the theorem is stated and the backend is proved capable of
+**M1 to M4 landed on main as #93 (`245f106`), 2026-09-09.** M5 and M6 are open,
+and so is every gap named below -- chiefly that nothing appears on the report a
+user reads yet, and that the accepted contract syntax is not the syntax people
+write.
+
+- [x] **M1 DONE (`38d36cf`): the theorem is stated and the backend is proved capable of
       the shape we actually need.** "Every state reachable from a covered
       constructor by finitely many permitted, normally-returning operations
       satisfies I", with the calling discipline and the exclusions
@@ -609,7 +614,8 @@ Rust-to-Verus translator.
       direction: it hands the solver a wider range than the program has, so
       an overflow the program really suffers is proved impossible.
 
-- [x] **M3 DONE: the operation boundary, scanned from source and failing
+- [x] **M3 DONE (`586f1f2`, made genuinely fail-closed in `36d1088`): the
+      operation boundary, scanned from source and failing
       closed.** A separate scan from the sampled pool, with the opposite
       bias: the pool exists to *run* things so it omits what it cannot build
       arguments for and drops generic impls with no record, while this one
@@ -640,13 +646,15 @@ Rust-to-Verus translator.
       closed. The seventeen-route table that replaced them is checked in and
       runs on every build.
 
-- [ ] **M3 original entry: close the operation boundary.** **The sampled pool cannot serve
+- [x] **M3 original entry, done by the above.** **The sampled pool cannot serve
       as the certificate** -- confirmed against the source, not assumed:
       `harness.rs:3266` drops generic impls with *no record at all*, and
       `ImplMatch::NotThisType` likewise. `ReceiverPlan` does retain
       `excluded_operations` as structured data (call path + reason), which
       is the honest half to build on.
-- [x] **M4 DONE: the obligations are generated and discharged on the real
+- [x] **M4 DONE (`44bf6ab`; the count retracted in `c427ff3`, the three
+      false-proof routes closed in `62b39ff`, the overstated wording in
+      `22e24aa`): the obligations are generated and discharged on the real
       solver.** The bucket's four contracts go in and **four obligations come
       back verified, no errors**; the satisfiability probes come back with an
       error for every one, which is the outcome they are supposed to have.
