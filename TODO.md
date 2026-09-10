@@ -33,7 +33,8 @@
         when a completed run did not execute it (`c9ce5ed`).
   - [x] Draw each acceptance claim's requirement beneath its result without letting long
         prose dominate the canvas, retain the full requirement on hover, and label every
-        SVG as a declaration view or an evidence view (`dbb1967`).
+        SVG as a declaration view or an evidence view (`dbb1967`; wide-script and deny-bar
+        wording corrected in `b4a8b04`).
 - [ ] Measure the single-crate fixture and, if available, an isolated copy of the trial
       application. Do not restructure the real application as part of this work.
 
