@@ -885,7 +885,7 @@ impl Code {
                 status: Enforced,
                 severity: Error,
                 spec_anchor: "§5.4c",
-                gloss: "The generated check code for this function failed to compile, or otherwise could not even start running -- most often because a hand-written example entry doesn't type-check -- reported with the compiler's own first error attached, and never counted as a pass or a violation, because no evidence exists either way.",
+                gloss: "The generated check code for this function failed to compile, or its harness package could not be registered or started -- most often because a hand-written example entry doesn't type-check -- reported with Cargo's own first error attached, and never counted as a pass or a violation, because no evidence exists either way.",
             },
             W0414 => RuleEntry {
                 code: self,

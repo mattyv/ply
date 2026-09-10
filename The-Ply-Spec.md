@@ -1586,6 +1586,8 @@ error, for **every** check in that harness, and the node's verdict is `tool_erro
 a pass, because no evidence exists, and never a `violation`, because there is no witness.
 An ownership error (`E0382`) is reported as such and does not carry the unrelated hint to
 check `examples` entries for a type or typo.
+If Cargo cannot find the generated harness package, Ply reports a failed temporary workspace
+registration instead of claiming that user or generated code failed to compile.
 The same rule covers a failure whose witness cannot be recovered at all: `X0901`/
 `tool_error` is the honest report, never a witness-free `violation`. **What counts as
 "cannot be recovered" narrowed on 2026-08-25.** A body that panics before its

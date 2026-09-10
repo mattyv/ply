@@ -1,7 +1,7 @@
 //! N1 regression (docs/review-caveats.md): a crate that already declares
-//! its own `[workspace]` table still gets the harness registered as a
-//! member of that same workspace while the run needs it
-//! (`harness_crate::ensure_workspace_member`), rather than being routed
+//! its own `[workspace]` table, with a wrapped `members` array, still gets
+//! the harness registered as a member of that same workspace while the run
+//! needs it (`harness_crate::ensure_workspace_member`), rather than being routed
 //! onto the standalone-harness path used for crates that have no
 //! `[workspace]` of their own. Same seeded bug as `plain`/`wsmember`, so
 //! all three fixtures earn the identical verdict and only the mechanism
