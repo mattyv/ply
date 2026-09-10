@@ -653,7 +653,12 @@ pub fn build_declared_visual_envelope_with_links(
         outcome: outcome_of(&result),
         ..run
     };
-    let mut visual = build_visual_envelope(document, &result, run)?;
+    // Build the index from the same frozen links used by the drawings below.
+    // Building it from the root document alone makes linked module boundaries
+    // visible in the SVG but absent from the element map that addresses them.
+    let source_map = BTreeMap::new();
+    let mut visual =
+        build_visual_envelope_resolved(document, &result, run, &source_map, links, state_fields)?;
     // The drawing paints these; the envelope used to hardcode an empty list,
     // so a viewer reading only the envelope saw a red line it could not
     // select, count, filter, or ask about. Same checks the renderer runs, on
@@ -785,7 +790,7 @@ fn build_visual_envelope_resolved(
     // carries `unclaimed` and no engine, seed or case count, because that is
     // what is true of a function this run never checked.
     add_elements_for_drawn_but_unchecked(document, links, &mut elements, &mut semantic_ids);
-    add_architecture_scope_element(document, result, links, &mut elements, &mut semantic_ids)?;
+    add_architecture_scope_element(document, result, links, &mut elements)?;
     add_acceptance_elements(result, &mut elements, &mut semantic_ids)?;
 
     let diagnostics = result
@@ -861,7 +866,6 @@ fn add_architecture_scope_element(
     result: &Envelope,
     links: Option<&crate::config::LinkIndex>,
     elements: &mut BTreeMap<String, VisualElement>,
-    semantic_ids: &mut BTreeMap<String, String>,
 ) -> Result<(), VisualEnvelopeError> {
     let count = module_boundary_count(document, links);
     if count == 0 {
@@ -884,14 +888,6 @@ fn add_architecture_scope_element(
         if count == 1 { "s" } else { "" },
     );
 
-    if semantic_ids
-        .insert("architecture::modules".into(), id.clone())
-        .is_some()
-    {
-        return Err(VisualEnvelopeError::Invalid(
-            "duplicate module architecture scope identity".into(),
-        ));
-    }
     if elements
         .insert(
             id.clone(),
@@ -2072,6 +2068,104 @@ mod tests {
                 .values()
                 .all(|element| element.kind != "architecture-scope")
         );
+    }
+
+    #[test]
+    fn architecture_scope_identity_cannot_collide_with_a_user_function() {
+        let document = crate::model::parse_document(
+            "ply: 1\ncomponents:\n  architecture:\n    anchor: app::architecture\n    fns:\n      modules: {checks: []}\n",
+        )
+        .unwrap();
+        let visual = build_declared_visual_envelope(
+            &document,
+            RunMetadata {
+                id: "scope-name-collision".into(),
+                completed_at: "1970-01-01T00:00:00Z".into(),
+                root: RootIdentity { path: ".".into() },
+                tool: ToolIdentity {
+                    name: "ply".into(),
+                    version: "test".into(),
+                },
+                outcome: RunOutcome::MissingEvidence,
+            },
+            &svg::RenderOptions::default(),
+            None,
+        )
+        .expect("a legal user function name must not collide with a synthetic scope row");
+
+        assert!(
+            visual
+                .elements
+                .values()
+                .any(|element| element.kind == "fn" && element.label == "modules")
+        );
+        assert!(
+            visual
+                .elements
+                .values()
+                .any(|element| element.kind == "architecture-scope")
+        );
+    }
+
+    #[test]
+    fn linked_module_scope_is_indexed_in_declaration_and_folded_drawings() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("sub/src")).unwrap();
+        std::fs::write(
+            root.join("ply.yaml"),
+            "ply: 1\ncomponents:\n  sub:\n    anchor: ply_linked_sub\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sub/ply.yaml"),
+            "ply: 1\ncomponents:\n  sub:\n    anchor: ply_linked_sub\n    components:\n      inner:\n        anchor: ply_linked_sub::inner\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sub/Cargo.toml"),
+            "[package]\nname = \"ply-linked-sub\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[lib]\nname = \"ply_linked_sub\"\npath = \"src/lib.rs\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("sub/src/lib.rs"), "pub mod inner {}\n").unwrap();
+
+        let document = crate::config::load(&root.join("ply.yaml")).unwrap();
+        let resolved = crate::config::derive_links(&document, root);
+        assert!(resolved.findings.is_empty());
+        let visual = build_declared_visual_envelope_with_links(
+            &document,
+            RunMetadata {
+                id: "linked-scope".into(),
+                completed_at: "1970-01-01T00:00:00Z".into(),
+                root: RootIdentity { path: ".".into() },
+                tool: ToolIdentity {
+                    name: "ply".into(),
+                    version: "test".into(),
+                },
+                outcome: RunOutcome::MissingEvidence,
+            },
+            &svg::RenderOptions::default(),
+            None,
+            Some(&resolved.links),
+        )
+        .unwrap();
+        let scope = visual
+            .elements
+            .values()
+            .find(|element| element.kind == "architecture-scope")
+            .expect("the linked module boundary must have an indexed scope row");
+
+        for (name, drawing) in std::iter::once(("full".to_string(), &visual.svg)).chain(
+            visual
+                .folded
+                .iter()
+                .map(|drawing| (format!("folded depth {}", drawing.depth), &drawing.svg)),
+        ) {
+            assert!(
+                drawing.contains(&format!("data-element-id=\"{}\"", scope.id)),
+                "the {name} drawing shows the linked architecture band but does not index it"
+            );
+        }
     }
 
     /// Everything the drawing shows must be addressable in the envelope
