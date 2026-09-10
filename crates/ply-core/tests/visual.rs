@@ -151,6 +151,14 @@ acceptance:
     assert_eq!(declared.elements[&element_id].evidence.state, "declared");
     assert!(declared.svg.contains("acceptance-row"));
     assert!(declared.svg.contains("decimal_response_maps — declared"));
+    assert!(declared.svg.contains("class=\"acceptance-requirement\""));
+    assert!(
+        declared
+            .svg
+            .contains(">decimal response maps to exact records</text>")
+    );
+    assert!(declared.svg.contains("Declaration view ·"));
+    assert!(!declared.svg.contains("Evidence view ·"));
     let transcript = ply_core::visual::transcript::render_transcript(&document);
     assert!(transcript.contains("acceptance — finite production-path examples:"));
     assert!(transcript.contains("decimal_response_maps — required, declared but not run"));
@@ -195,6 +203,177 @@ acceptance:
     assert_eq!(verified.elements[&element_id].evidence.state, "violation");
     assert_eq!(verified.elements[&element_id].evidence.verdict, "failed");
     assert!(verified.svg.contains("decimal_response_maps — failed"));
+    assert!(verified.svg.contains("Evidence view ·"));
+    assert!(!verified.svg.contains("Declaration view ·"));
+}
+
+#[test]
+fn long_acceptance_requirements_stay_compact_and_complete_on_hover() {
+    let requirement = "A real multi-row clearinghouse reply folds every asset position into the exact per-fate counters, and the counted total equals the source row count rather than a plausible-looking subset";
+    let document = parse_document(&format!(
+        "ply: 1\ncomponents: {{ mapping: {{ anchor: app::mapping }} }}\nacceptance:\n  counters:\n    requirement: {requirement}\n    component: mapping\n    entry: app::mapping::map_response\n    test: {{ package: app, target: acceptance, name: counters }}\n    inputs: [tests/input.json]\n    expected: [tests/expected.json]\n    required: false\n"
+    ))
+    .unwrap();
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "long-acceptance".into(),
+            completed_at: "2026-09-10T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "test".into(),
+            },
+            outcome: RunOutcome::MissingEvidence,
+        },
+        &RenderOptions::default(),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        visual
+            .svg
+            .matches("class=\"acceptance-requirement\"")
+            .count(),
+        2
+    );
+    assert!(
+        visual
+            .svg
+            .contains("plausible-looking subset\ncomponent: mapping")
+    );
+    assert!(
+        visual
+            .svg
+            .contains("rather than a plausible-looking…</text>")
+    );
+}
+
+#[test]
+fn wide_acceptance_requirements_wrap_by_display_width() {
+    let requirement = "界".repeat(96);
+    let document = parse_document(&format!(
+        "ply: 1\ncomponents: {{ mapping: {{ anchor: app::mapping }} }}\nacceptance:\n  wide:\n    requirement: {requirement}\n    component: mapping\n    entry: app::mapping::map_response\n    test: {{ package: app, target: acceptance, name: wide }}\n    inputs: [tests/input.json]\n    expected: [tests/expected.json]\n    required: false\n"
+    ))
+    .unwrap();
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "wide-acceptance".into(),
+            completed_at: "2026-09-10T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "test".into(),
+            },
+            outcome: RunOutcome::MissingEvidence,
+        },
+        &RenderOptions::default(),
+        None,
+    )
+    .unwrap();
+
+    // Each CJK scalar occupies two monospace cells. Ninety-six of them must
+    // therefore wrap into two 48-cell lines instead of overflowing a band
+    // sized from a one-cell-per-scalar estimate.
+    assert_eq!(
+        visual
+            .svg
+            .matches("class=\"acceptance-requirement\"")
+            .count(),
+        2
+    );
+    assert!(visual.svg.contains(&format!(">{}</text>", "界".repeat(48))));
+    assert!(
+        visual
+            .svg
+            .contains(&format!("{}\ncomponent: mapping", requirement))
+    );
+}
+
+#[test]
+fn fallback_font_acceptance_requirements_do_not_escape_the_band() {
+    let requirement = "क".repeat(96);
+    let document = parse_document(&format!(
+        "ply: 1\ncomponents: {{ mapping: {{ anchor: app::mapping }} }}\nacceptance:\n  fallback:\n    requirement: {requirement}\n    component: mapping\n    entry: app::mapping::map_response\n    test: {{ package: app, target: acceptance, name: fallback }}\n    inputs: [tests/input.json]\n    expected: [tests/expected.json]\n    required: false\n"
+    ))
+    .unwrap();
+    let visual = build_declared_visual_envelope(
+        &document,
+        RunMetadata {
+            id: "fallback-font-acceptance".into(),
+            completed_at: "2026-09-10T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "test".into(),
+            },
+            outcome: RunOutcome::MissingEvidence,
+        },
+        &RenderOptions::default(),
+        None,
+    )
+    .unwrap();
+
+    // Chromium may use a proportional fallback font for a script absent
+    // from the requested monospace family. Unicode reports these scalars as
+    // one cell while Chromium paints them wider, so the SVG must enforce the
+    // same pixel width the acceptance band reserved.
+    assert_eq!(
+        visual
+            .svg
+            .matches("class=\"acceptance-requirement\"")
+            .count(),
+        2
+    );
+    assert!(visual.svg.contains(&format!(
+        "textLength=\"384.0\" lengthAdjust=\"spacingAndGlyphs\">{}</text>",
+        "क".repeat(48)
+    )));
+}
+
+#[test]
+fn evidence_frame_distinguishes_declared_deny_bars_from_failed_results() {
+    let document = parse_document(
+        "ply: 1\ncomponents:\n  app: { anchor: app }\n  store: { anchor: store }\ndeny: ['app -> store']\n",
+    )
+    .unwrap();
+    let result = Envelope {
+        command: "verify".into(),
+        ply_version: "test".into(),
+        root: Node {
+            id: "workspace".into(),
+            kind: "workspace".into(),
+            verdict: "unclaimed".into(),
+            ..Node::default()
+        },
+        diagnostics: vec![],
+        acceptance: vec![],
+        coverage: None,
+        trust_surface: None,
+        open_items: None,
+        not_carried_forward: vec![],
+    };
+    let visual = build_visual_envelope_with_sources(
+        &document,
+        &result,
+        RunMetadata {
+            id: "deny-evidence".into(),
+            completed_at: "2026-09-10T00:00:00Z".into(),
+            root: RootIdentity { path: ".".into() },
+            tool: ToolIdentity {
+                name: "cargo-ply".into(),
+                version: "test".into(),
+            },
+            outcome: RunOutcome::MissingEvidence,
+        },
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    assert!(visual.svg.contains("red bars are declared prohibitions"));
+    assert!(!visual.svg.contains("green and red marks are results"));
 }
 
 #[test]

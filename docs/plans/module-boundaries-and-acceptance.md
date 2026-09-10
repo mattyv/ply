@@ -100,7 +100,10 @@ an upstream error envelope, and partial record rejection.
 ### Visual form
 
 Declaration-only drawings list acceptance claims in an `Application acceptance · finite
-production-path examples` band. Evidence-coloured drawings show their independent outcome. They
+production-path examples` band. Each result draws the user-written requirement beneath it, capped
+at two lines with the complete sentence on hover. Evidence-coloured drawings show the claim's
+independent outcome. The opening strip names a declaration view from `render` or an evidence view
+from `verify`, so a saved SVG carries its provenance without relying on colour. Acceptance results
 do not colour function chips or raise the component's proof rung. A separate `Architecture ·
 module boundaries inside crates` band counts module anchors and marks source-reference analysis as
 missing until that increment actually runs. Existing consumers see additive elements and retain

@@ -341,12 +341,13 @@ fn unmatched_or_ambiguous_elements_are_not_attached_to_another_shape() {
 }
 
 #[test]
-fn no_evidence_preserves_the_static_renderer_byte_for_byte() {
+fn an_empty_completed_run_is_distinct_from_a_declaration_view() {
     let doc = parse_document("ply: 1\ncomponents: {}\n").unwrap();
-    assert_eq!(
-        render_svg_with_evidence(&doc, &BTreeMap::new(), &[]).unwrap(),
-        render_svg(&doc).unwrap()
-    );
+    let evidence = render_svg_with_evidence(&doc, &BTreeMap::new(), &[]).unwrap();
+    let declaration = render_svg(&doc).unwrap();
+    assert_ne!(evidence, declaration);
+    assert!(evidence.contains("Evidence view ·"));
+    assert!(declaration.contains("Declaration view ·"));
 }
 
 // ---- The five display states (The-Ply-Spec.md's state model) -------------
@@ -648,8 +649,8 @@ fn the_strip_states_no_results_when_evidence_settles_nothing() {
          results clause, got {strip:?}"
     );
     assert!(
-        svg.contains("this line never          reports results."),
-        "the strip's own tooltip must not claim results it never actually attached"
+        svg.contains("completed run attached no settled function results"),
+        "the strip must name the completed evidence gap rather than relabel it as a declaration"
     );
 }
 

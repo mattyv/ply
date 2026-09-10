@@ -18,6 +18,7 @@ use crate::model::{
 use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
+use unicode_width::UnicodeWidthChar;
 
 // ---- layout constants -----------------------------------------------------
 
@@ -319,11 +320,13 @@ pub const ACCEPTANCE_STYLE: &str = "\
 .acceptance-box{fill:none;stroke:#9aa2b1;stroke-width:1.5}\
 .acceptance-title{fill:#1f2430;font-weight:bold}\
 .acceptance-text{fill:#333a45;font-size:11px}\
+.acceptance-requirement{fill:#6b7280;font-size:10px}\
 .acceptance-mark-declared{fill:#f6f7f9;stroke:#9aa2b1}\
 @media (prefers-color-scheme: dark){\
 .acceptance-box{stroke:#6d7686}\
 .acceptance-title{fill:#e6e9ef}\
 .acceptance-text{fill:#aab3c4}\
+.acceptance-requirement{fill:#8b93a1}\
 .acceptance-mark-declared{fill:#1c1f27;stroke:#6d7686}\
 }\
 ";
@@ -387,6 +390,77 @@ fn join_or(items: &[String]) -> String {
 
 fn text_w(s: &str, char_w: f64) -> f64 {
     (s.chars().count() as f64) * char_w
+}
+
+fn acceptance_char_cells(ch: char) -> usize {
+    match UnicodeWidthChar::width(ch).unwrap_or(0) {
+        1 if !ch.is_ascii() => 2,
+        width => width,
+    }
+}
+
+fn acceptance_cells(s: &str) -> usize {
+    s.chars().map(acceptance_char_cells).sum()
+}
+
+fn acceptance_text_w(s: &str, char_w: f64) -> f64 {
+    s.chars()
+        .map(|ch| match UnicodeWidthChar::width(ch).unwrap_or(0) {
+            1 if !ch.is_ascii() => 8.0,
+            width => width as f64 * char_w,
+        })
+        .sum()
+}
+
+/// Keep author-written acceptance prose useful at a glance without letting
+/// one paragraph set the width or height of an entire workspace drawing.
+/// The complete text remains in the row's tooltip.
+fn compact_text_lines(text: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let word_width = acceptance_cells(word);
+        let joined_width =
+            acceptance_cells(current.as_str()) + usize::from(!current.is_empty()) + word_width;
+        if !current.is_empty() && joined_width > max_chars {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        if word_width <= max_chars {
+            current.push_str(word);
+            continue;
+        }
+        for ch in word.chars() {
+            let ch_width = acceptance_char_cells(ch);
+            if !current.is_empty() && acceptance_cells(current.as_str()) + ch_width > max_chars {
+                lines.push(std::mem::take(&mut current));
+            }
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        return lines;
+    }
+    let clipped = lines.len() > max_lines;
+    lines.truncate(max_lines);
+    if clipped {
+        let last = lines
+            .last_mut()
+            .expect("a non-empty requirement has one line");
+        let ellipsis_width = acceptance_cells("…");
+        while acceptance_cells(last.as_str()) + ellipsis_width > max_chars {
+            last.pop();
+        }
+        if !last.ends_with('…') {
+            last.push('…');
+        }
+    }
+    lines
 }
 
 fn esc(s: &str) -> String {
@@ -3580,6 +3654,12 @@ struct EvidenceView<'a> {
     diagnostics: &'a [super::VisualDiagnostic],
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DrawingView {
+    Declaration,
+    Evidence,
+}
+
 /// The five states a reader-facing chip can be drawn in, computed from what
 /// a run actually reported (`ElementEvidence`) rather than from what the
 /// document merely declares — the generative rule behind all five is that
@@ -3938,7 +4018,14 @@ pub fn render_svg_with_evidence_and_options(
         elements,
         diagnostics,
     };
-    render_svg_impl(doc, options, Some(&evidence), None, None)
+    render_svg_impl(
+        doc,
+        options,
+        Some(&evidence),
+        None,
+        None,
+        DrawingView::Evidence,
+    )
 }
 
 /// `render_svg`, plus The-Ply-Spec.md §7.1's `--depth`/`--focus`/`--collapse`
@@ -3949,7 +4036,7 @@ pub fn render_svg_with_options(
     doc: &Document,
     options: &RenderOptions,
 ) -> Result<String, RenderError> {
-    render_svg_impl(doc, options, None, None, None)
+    render_svg_impl(doc, options, None, None, None, DrawingView::Declaration)
 }
 
 /// `render_svg_with_options`, plus what each component's declared state
@@ -3965,7 +4052,14 @@ pub fn render_svg_with_state(
     options: &RenderOptions,
     state_fields: &StateFieldIndex,
 ) -> Result<String, RenderError> {
-    render_svg_impl(doc, options, None, Some(state_fields), None)
+    render_svg_impl(
+        doc,
+        options,
+        None,
+        Some(state_fields),
+        None,
+        DrawingView::Declaration,
+    )
 }
 
 /// `render_svg_with_state`, plus every derived cross-document link
@@ -3979,7 +4073,14 @@ pub fn render_svg_with_state_and_links(
     state_fields: &StateFieldIndex,
     links: &LinkIndex,
 ) -> Result<String, RenderError> {
-    render_svg_impl(doc, options, None, Some(state_fields), Some(links))
+    render_svg_impl(
+        doc,
+        options,
+        None,
+        Some(state_fields),
+        Some(links),
+        DrawingView::Declaration,
+    )
 }
 
 /// Every input at once: folding, a run's evidence, and the real state
@@ -4012,11 +4113,31 @@ pub fn render_svg_with_evidence_state_options_and_links(
     state_fields: Option<&StateFieldIndex>,
     links: Option<&LinkIndex>,
 ) -> Result<String, RenderError> {
+    render_svg_with_attached_state_options_and_links(
+        doc,
+        elements,
+        diagnostics,
+        options,
+        state_fields,
+        links,
+        DrawingView::Evidence,
+    )
+}
+
+pub(super) fn render_svg_with_attached_state_options_and_links(
+    doc: &Document,
+    elements: &BTreeMap<String, super::VisualElement>,
+    diagnostics: &[super::VisualDiagnostic],
+    options: &RenderOptions,
+    state_fields: Option<&StateFieldIndex>,
+    links: Option<&LinkIndex>,
+    view: DrawingView,
+) -> Result<String, RenderError> {
     let evidence = EvidenceView {
         elements,
         diagnostics,
     };
-    render_svg_impl(doc, options, Some(&evidence), state_fields, links)
+    render_svg_impl(doc, options, Some(&evidence), state_fields, links, view)
 }
 
 struct AcceptanceBox {
@@ -4101,6 +4222,9 @@ fn render_acceptance_box(
     links: Option<&LinkIndex>,
     findings: &FindingCtx,
 ) -> Option<AcceptanceBox> {
+    const REQUIREMENT_MAX_CHARS: usize = 96;
+    const REQUIREMENT_MAX_LINES: usize = 2;
+
     let declarations = super::declared_acceptance_results(doc, links);
     if declarations.is_empty() {
         return None;
@@ -4141,6 +4265,14 @@ fn render_acceptance_box(
         };
         let label = format!("{name} — {verdict}{required}");
         width = width.max(text_w(&label, SUB_CHAR_W) + PAD * 2.0 + 14.0);
+        let requirement_lines = compact_text_lines(
+            &declaration.requirement,
+            REQUIREMENT_MAX_CHARS,
+            REQUIREMENT_MAX_LINES,
+        );
+        for line in &requirement_lines {
+            width = width.max(acceptance_text_w(line, SUB_CHAR_W) + PAD * 2.0 + 14.0);
+        }
         let mut tooltip_lines = finding_tooltip_lines(&row_findings);
         tooltip_lines.push(format!(
             "{}\ncomponent: {}\nproduction entry: {}\nexact test: {} --test {} :: {}\ninputs: {}\nexpected results: {}\nThis is finite acceptance evidence. It does not upgrade any function proof.",
@@ -4158,23 +4290,33 @@ fn render_acceptance_box(
         } else {
             "acceptance-mark-violation"
         };
-        rows.push((label, tooltip_lines.join("\n"), mark_class, element));
+        rows.push((
+            label,
+            requirement_lines,
+            tooltip_lines.join("\n"),
+            mark_class,
+            element,
+        ));
     }
 
     let header_y = PAD + 12.0;
     let first_row_y = header_y + LINE_H + 5.0;
-    let height = first_row_y + rows.len() as f64 * LINE_H + PAD;
+    let rows_height = rows
+        .iter()
+        .map(|(_, requirement, _, _, _)| (1 + requirement.len()) as f64 * LINE_H)
+        .sum::<f64>();
+    let height = first_row_y + rows_height + PAD;
     let scope_tooltip = "Application acceptance runs named production-path tests on finite inputs. It is separate from local contract evidence and never upgrades a function proof.";
     let mut svg = format!(
         "<g class=\"acceptance\">{}<rect class=\"acceptance-box\" x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{height:.1}\" rx=\"6\" /><text class=\"acceptance-title\" x=\"{PAD:.1}\" y=\"{header_y:.1}\">{}</text>",
         title(scope_tooltip),
         esc(title_text)
     );
-    for (index, (label, tooltip, mark_class, element)) in rows.into_iter().enumerate() {
-        let y = first_row_y + index as f64 * LINE_H;
+    let mut y = first_row_y;
+    for (label, requirement, tooltip, mark_class, element) in rows {
         let id_attr = element_id_attr(element);
         svg.push_str(&format!(
-            "<g class=\"acceptance-row\"{id_attr}>{}<circle class=\"{mark_class}\" cx=\"{:.1}\" cy=\"{:.1}\" r=\"4\" /><text class=\"acceptance-text\" x=\"{:.1}\" y=\"{:.1}\">{}</text></g>",
+            "<g class=\"acceptance-row\"{id_attr}>{}<circle class=\"{mark_class}\" cx=\"{:.1}\" cy=\"{:.1}\" r=\"4\" /><text class=\"acceptance-text\" x=\"{:.1}\" y=\"{:.1}\">{}</text>",
             title(&tooltip),
             PAD + 4.0,
             y - 3.5,
@@ -4182,6 +4324,21 @@ fn render_acceptance_box(
             y,
             esc(&label),
         ));
+        for (index, line) in requirement.iter().enumerate() {
+            let requirement_y = y + (index + 1) as f64 * LINE_H;
+            // A browser can fall back from `monospace` to a wider font for
+            // scripts the selected font lacks. `unicode-width` still gives
+            // deterministic wrapping, while textLength makes the rendered
+            // pixels obey the width this box reserved instead of clipping.
+            let rendered_length = acceptance_text_w(line, SUB_CHAR_W);
+            svg.push_str(&format!(
+                "<text class=\"acceptance-requirement\" x=\"{:.1}\" y=\"{requirement_y:.1}\" textLength=\"{rendered_length:.1}\" lengthAdjust=\"spacingAndGlyphs\">{}</text>",
+                PAD + 14.0,
+                esc(line),
+            ));
+        }
+        svg.push_str("</g>");
+        y += (1 + requirement.len()) as f64 * LINE_H;
     }
     svg.push_str("</g>");
     Some(AcceptanceBox { width, height, svg })
@@ -4203,6 +4360,7 @@ fn render_svg_impl(
     evidence: Option<&EvidenceView>,
     state_fields: Option<&StateFieldIndex>,
     links: Option<&LinkIndex>,
+    view: DrawingView,
 ) -> Result<String, RenderError> {
     // §7.1 "finding (tool-computed, not declared)": run `ply-check`'s
     // document-local rules up front, then thread `ctx` through every render
@@ -4945,8 +5103,12 @@ fn render_svg_impl(
         .zip(evidence)
         .map(|((workspace, _), ev)| ev.fn_state_counts(&workspace.id))
         .filter(|counts| counts.total() > 0);
+    let view_label = match view {
+        DrawingView::Declaration => "Declaration view",
+        DrawingView::Evidence => "Evidence view",
+    };
     let strip_text = format!(
-        "{total_components} {} · {total_fns} {} · {unclaimed_fns} {} nothing{}",
+        "{view_label} · {total_components} {} · {total_fns} {} · {unclaimed_fns} {} nothing{}",
         plural(total_components, "component", "components"),
         plural(total_fns, "function", "functions"),
         plural(unclaimed_fns, "promises", "promise"),
@@ -4958,9 +5120,9 @@ fn render_svg_impl(
     // results follow it — the honesty rule this whole feature exists to
     // enforce applies to its own tooltip too. Everything up to that last
     // sentence is identical either way; only the final clause differs.
-    let strip_tip = title(&if let Some(counts) = result_counts {
-        format!(
-            "What this document declares. \"{unclaimed_fns} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose.          Running `cargo ply verify` is what turns promises into results, and its last run \
+    let strip_tip = title(&match (view, result_counts) {
+        (DrawingView::Evidence, Some(counts)) => format!(
+            "Evidence view from `cargo ply verify`. \"{unclaimed_fns} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose. The run \
              reported: {} the promise held, {} broken, {} a tool could not settle either way, \
              {} out of date since that run.",
             plural(unclaimed_fns, "function promises", "functions promise"),
@@ -4968,12 +5130,15 @@ fn render_svg_impl(
             counts.violated,
             counts.unanswered,
             counts.stale,
-        )
-    } else {
-        format!(
-            "What this document declares. \"{unclaimed_fns} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose.          Running `cargo ply verify` is what turns promises into results; this line never          reports results.",
+        ),
+        (DrawingView::Evidence, None) => format!(
+            "Evidence view from `cargo ply verify`. \"{unclaimed_fns} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose. This          completed run attached no settled function results; the view is evidence of that          gap, not a declaration-only drawing.",
             plural(unclaimed_fns, "function promises", "functions promise"),
-        )
+        ),
+        (DrawingView::Declaration, _) => format!(
+            "Declaration view from `cargo ply render`. \"{unclaimed_fns} {} nothing\"          counts functions that end up with nothing checked -- whether nobody wrote any          checks for them, or the document switched checking off for them on purpose.          Run `cargo ply verify` to turn these promises into results; this view reports          declarations only.",
+            plural(unclaimed_fns, "function promises", "functions promise"),
+        ),
     });
 
     let default_strip_x = FRAME_PAD + text_w("ply.yaml", NAME_CHAR_W) + 24.0;
@@ -5354,11 +5519,19 @@ fn render_svg_impl(
          data flows (dashed); red bars are forbidden calls. A box's grey depth is how \
          strongly it promises to be checked — white means something inside promises \
          nothing, deeper grey means stronger checks promised, and the weakest \
-         function sets the whole box's shade. Nothing here is green: green is kept \
-         for evidence a run has actually earned, which this render never sees, so a \
-         picture full of promises should not look like a picture full of results. \
-         Hover anything for its meaning.",
+         function sets the whole box's shade. Hover anything for its meaning.",
     );
+    match view {
+        DrawingView::Declaration => workspace_tip_text.push_str(
+            " This is a declaration view from `cargo ply render`: it contains no earned \
+             evidence, and green is reserved for results from verification.",
+        ),
+        DrawingView::Evidence => workspace_tip_text.push_str(
+            " This is an evidence view from `cargo ply verify`: green marks and red \
+             evidence-state marks are results from that completed run; red bars are \
+             declared prohibitions, and grey still describes declarations.",
+        ),
+    }
     // Last, as everywhere else this attaches: a run's outcome is a
     // postscript to what the document promised, not a replacement for it.
     if let Some((element, diagnostics)) = workspace_evidence {
@@ -5403,9 +5576,8 @@ fn render_svg_impl(
          <rect width=\"8\" height=\"8\" fill=\"#15171c\" />\
          <line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"#4a5262\" stroke-width=\"2\" /></pattern>{glyph_hatch}</defs>\
          <rect class=\"workspace-frame\" x=\"1\" y=\"1\" width=\"{frame_inner_w:.1}\" height=\"{frame_inner_h:.1}\" rx=\"8\"{workspace_id_attr}>{workspace_tip}</rect>\
-         <g><title>ply.yaml — the document this picture is drawn from. Everything you \
-see here was declared in it; nothing was inferred from code. What each box has actually \
-been checked for is what `cargo ply verify` reports, not this drawing.\n{version_line}</title>\
+         <g><title>ply.yaml — the document this picture is drawn from. This is a \
+{view_label_lower}; the verdict strip names whether it contains declarations or evidence.\n{version_line}</title>\
          <text class=\"workspace-title\" x=\"{FRAME_PAD:.1}\" y=\"20\">ply.yaml</text></g>\
          <g class=\"verdict-strip\">{strip_tip}<text class=\"verdict-strip-text\" x=\"{strip_x:.1}\" y=\"20\">{strip_text}</text></g>\
          {title_extra}\
@@ -5416,6 +5588,11 @@ been checked for is what `cargo ply verify` reports, not this drawing.\n{version
         frame_inner_h = frame_content_h - 2.0,
         strip_x = strip_x,
         strip_text = esc(&strip_text),
+        view_label_lower = if view == DrawingView::Declaration {
+            "declaration view from `cargo ply render`"
+        } else {
+            "completed evidence view from `cargo ply verify`"
+        },
     )))
 }
 
