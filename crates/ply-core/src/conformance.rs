@@ -54,6 +54,40 @@ pub enum OwnershipError {
     /// one that would otherwise leave a component owning nothing while
     /// looking fine.
     AnchorNotFound { component: String, anchor: String },
+    /// One component's anchor sits inside another's, but the document
+    /// declares them as unrelated. The two statements contradict each
+    /// other, and reading either one silently grants the permission that
+    /// containment carries between components nobody nested.
+    UndeclaredNesting {
+        outer: String,
+        inner: String,
+        outer_anchor: String,
+        inner_anchor: String,
+    },
+}
+
+impl OwnershipError {
+    /// The same sentence a reader of the report gets, written for someone
+    /// who has never seen this tool.
+    pub fn explain(&self) -> String {
+        match self {
+            OwnershipError::DuplicateAnchor { module, components } => format!(
+                "`{module}` is claimed by more than one part of the design ({}), so there is no                  single answer to which one owns the code there",
+                components.join(", ")
+            ),
+            OwnershipError::AnchorNotFound { component, anchor } => format!(
+                "`{component}` says it lives at `{anchor}`, and there is no such module in the                  code -- so it owns nothing and every rule about it goes unchecked"
+            ),
+            OwnershipError::UndeclaredNesting {
+                outer,
+                inner,
+                outer_anchor,
+                inner_anchor,
+            } => format!(
+                "`{inner}` lives at `{inner_anchor}`, inside `{outer}`'s `{outer_anchor}`, but                  the design lists them side by side rather than one inside the other"
+            ),
+        }
+    }
 }
 
 /// Which component owns each module.
@@ -138,6 +172,30 @@ pub fn resolve_ownership(doc: &Document, model: &SourceModel) -> (Ownership, Vec
     // comparing text lengths, which would order `a::bb` above `a::b::c`.
     anchors.sort_by(|a, b| b.0.depth().cmp(&a.0.depth()).then_with(|| a.0.cmp(&b.0)));
 
+    // Nesting in the source has to be nesting in the document. Where it is
+    // not, the two disagree, and taking the source's word for it hands the
+    // pair the permission that containment grants -- between components the
+    // author put side by side (found by review 2026-09-10).
+    for (outer_anchor, outer) in &anchors {
+        for (inner_anchor, inner) in &anchors {
+            if outer == inner
+                || !outer_anchor.contains(inner_anchor)
+                || outer_anchor == inner_anchor
+            {
+                continue;
+            }
+            let declared_nested = inner.starts_with(&format!("{outer}."));
+            if !declared_nested {
+                errors.push(OwnershipError::UndeclaredNesting {
+                    outer: outer.clone(),
+                    inner: inner.clone(),
+                    outer_anchor: outer_anchor.to_string(),
+                    inner_anchor: inner_anchor.to_string(),
+                });
+            }
+        }
+    }
+
     (
         Ownership {
             anchors,
@@ -165,6 +223,10 @@ pub struct Finding {
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     pub findings: Vec<Finding>,
+    /// Faults in the document itself, kept apart from findings about the
+    /// code: they say the comparison could not be set up, not that the
+    /// code did anything wrong.
+    pub configuration_errors: Vec<OwnershipError>,
     /// How many crossings were actually judged -- the denominator a reader
     /// needs to know how much the answer covers.
     pub crossings_checked: usize,
@@ -190,9 +252,64 @@ impl Report {
 
 /// Compare a document against an observed build.
 pub fn compare(doc: &Document, model: &SourceModel) -> Report {
-    let (ownership, _) = resolve_ownership(doc, model);
+    let (ownership, errors) = resolve_ownership(doc, model);
     let index = crate::arch::ComponentIndex::build(doc);
     let mut report = Report::default();
+
+    // A document that cannot be turned into ownership has not been
+    // compared against anything. These used to be raised and then thrown
+    // away here, which let a contested or mistyped anchor drop its module
+    // into an ancestor's residue and be judged by the ancestor's
+    // permissions -- a forbidden call coming back clean (found by review
+    // 2026-09-10).
+    for error in &errors {
+        report.findings.push(Finding {
+            outcome: Outcome::Incomplete,
+            from: None,
+            to: None,
+            reference: None,
+            detail: error.explain(),
+        });
+    }
+    report.configuration_errors = errors;
+
+    // Nothing observed is not the same as nothing wrong.
+    if model.modules.is_empty() {
+        report.findings.push(Finding {
+            outcome: Outcome::Incomplete,
+            from: None,
+            to: None,
+            reference: None,
+            detail: "no source was analyzed, so nothing here says whether the code follows the \
+                     design"
+                .to_string(),
+        });
+    }
+
+    // What the scan admits it could not read. Recorded and then never
+    // consulted, these left a module full of unseen code reporting clean.
+    for gap in &model.gaps {
+        let (owner, where_) = match &gap.scope {
+            crate::source_model::GapScope::Module(m) => {
+                (ownership.owner_of(m).map(str::to_string), format!("`{m}`"))
+            }
+            crate::source_model::GapScope::Site { origin, span } => (
+                ownership.owner_of(&origin.module).map(str::to_string),
+                format!("`{origin}` at {span}"),
+            ),
+        };
+        report.findings.push(Finding {
+            outcome: Outcome::Incomplete,
+            from: owner,
+            to: None,
+            reference: None,
+            detail: format!(
+                "{where_} was not fully read ({}), so any rule about what it may reach is not \
+                 fully checked",
+                gap.cause
+            ),
+        });
+    }
 
     for reference in &model.references {
         let from = ownership
@@ -233,6 +350,10 @@ pub fn compare(doc: &Document, model: &SourceModel) -> Report {
             continue;
         }
 
+        if from.is_some() && to.is_some() && from == to {
+            continue; // inside one component: not a crossing
+        }
+
         let (Some(from_name), Some(to_name)) = (from.clone(), to.clone()) else {
             // One end belongs to no component, so no rule speaks about it
             // -- and that is a gap in the design's coverage, not a pass.
@@ -247,10 +368,6 @@ pub fn compare(doc: &Document, model: &SourceModel) -> Report {
             });
             continue;
         };
-
-        if from_name == to_name {
-            continue; // inside one component: not a crossing
-        }
 
         report.crossings_checked += 1;
 
@@ -284,7 +401,8 @@ mod tests {
     use super::*;
     use crate::model::Document;
     use crate::source_model::{
-        BuildContext, ItemId, ItemKind, ItemRecord, ReferenceKind, Span, Visibility,
+        BuildContext, CoverageGap, GapScope, ItemId, ItemKind, ItemRecord, ReferenceKind, Span,
+        Visibility,
     };
 
     /// Built from real YAML rather than from structs, so these tests go
@@ -328,6 +446,251 @@ mod tests {
         }
     }
 
+    /// **A scan that read nothing is not a design that holds.** With no
+    /// modules observed there is no evidence either way, and reporting
+    /// that as satisfied is the failure this whole module is arranged
+    /// against (found by review 2026-09-10).
+    #[test]
+    fn a_scan_that_observed_nothing_is_incomplete_rather_than_satisfied() {
+        let d = doc(&[("parse", "app::parse")]);
+        let m = SourceModel::new(BuildContext::simple("app", "lib"));
+        let report = compare(&d, &m);
+        assert_eq!(
+            report.outcome(),
+            Outcome::Incomplete,
+            "{:?}",
+            report.findings
+        );
+    }
+
+    /// A module the scan admits it could not read leaves every rule about
+    /// that module unchecked. The gaps were recorded and then never
+    /// consulted, so a macro-shaped hole reported clean.
+    #[test]
+    fn a_module_the_scan_could_not_read_leaves_its_rules_incomplete() {
+        let d = doc(&[("parse", "app::parse"), ("exec", "app::exec")]);
+        let mut m = model(&["app", "app::parse", "app::exec"]);
+        m.gaps = vec![CoverageGap {
+            scope: GapScope::Module(ModuleId::parse("app::parse")),
+            cause: "a macro expands to items this scan cannot see".into(),
+            affects: vec![ReferenceKind::Call],
+        }];
+        let report = compare(&d, &m);
+        assert_eq!(
+            report.outcome(),
+            Outcome::Incomplete,
+            "{:?}",
+            report.findings
+        );
+        assert!(
+            report.findings.iter().any(|f| f.detail.contains("macro")),
+            "the reason has to reach the reader: {:?}",
+            report.findings
+        );
+    }
+
+    /// **A duplicate anchor laundered a forbidden call.** The error was
+    /// raised and then discarded, the contested module fell through to its
+    /// ancestor as residue, and the crossing was judged against the
+    /// ancestor's permissions instead.
+    #[test]
+    fn a_duplicate_anchor_cannot_hand_its_module_to_an_ancestor() {
+        let d = build(
+            &[
+                ("root", "app"),
+                ("a", "app::parse"),
+                ("b", "app::parse"),
+                ("exec", "app::exec"),
+            ],
+            &["root -> exec"],
+            &[],
+        );
+        let mut m = model(&["app", "app::parse", "app::exec"]);
+        m.references = vec![call("app::parse", "run", "app::exec", "go")];
+        let report = compare(&d, &m);
+        assert_ne!(
+            report.outcome(),
+            Outcome::Satisfied,
+            "a contested anchor must not resolve into a clean pass: {:?}",
+            report.findings
+        );
+    }
+
+    /// The same laundering through a typo: the mistyped anchor owns
+    /// nothing, its intended module becomes someone else's residue, and a
+    /// forbidden call is judged against the wrong component's permissions.
+    #[test]
+    fn an_anchor_typo_cannot_hand_its_module_to_an_ancestor() {
+        let d = build(
+            &[
+                ("root", "app"),
+                ("parse", "app::parse"),
+                ("exec", "app::exce"),
+            ],
+            &["parse -> root"],
+            &[],
+        );
+        let mut m = model(&["app", "app::parse", "app::exec"]);
+        m.references = vec![call("app::parse", "run", "app::exec", "go")];
+        let report = compare(&d, &m);
+        assert_ne!(
+            report.outcome(),
+            Outcome::Satisfied,
+            "an anchor naming nothing must not resolve into a clean pass: {:?}",
+            report.findings
+        );
+    }
+
+    /// Two components whose anchors nest, declared as siblings, is a
+    /// contradiction: the document says they are unrelated and the source
+    /// says one is inside the other. Permitting it silently grants the
+    /// containment permission between components nobody nested.
+    #[test]
+    fn anchors_that_nest_must_be_declared_nested() {
+        let d = doc(&[("outer", "app"), ("inner", "app::parse")]);
+        let m = model(&["app", "app::parse"]);
+        let (_, errors) = resolve_ownership(&d, &m);
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, OwnershipError::UndeclaredNesting { .. })),
+            "{errors:?}"
+        );
+    }
+
+    /// Declared nesting that matches the source is the supported shape,
+    /// and the containment permission applies to it.
+    #[test]
+    fn a_nested_component_owns_its_subtree_and_may_call_its_parent() {
+        let d = crate::model::parse_document(
+            "ply: 1\ncomponents:\n  app:\n    anchor: app\n    components:\n      \
+             parse:\n        anchor: app::parse\n",
+        )
+        .unwrap();
+        let mut m = model(&["app", "app::parse", "app::other"]);
+        m.references = vec![call("app::parse", "run", "app::other", "helper")];
+        let (own, errors) = resolve_ownership(&d, &m);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            own.owner_of(&ModuleId::parse("app::parse")),
+            Some("app.parse"),
+            "a nested component is identified by its dotted path, the same name edges use"
+        );
+        let report = compare(&d, &m);
+        assert!(
+            report.violations().next().is_none(),
+            "containment permits a child to reach its parent: {:?}",
+            report.findings
+        );
+    }
+
+    /// An explicit ban wins even over the permission containment grants
+    /// for free. This was a comment, not a checked property.
+    #[test]
+    fn an_explicit_ban_beats_the_permission_containment_grants() {
+        let d = crate::model::parse_document(
+            "ply: 1\ncomponents:\n  app:\n    anchor: app\n    components:\n      \
+             parse:\n        anchor: app::parse\ndeny:\n  - app.parse -> app\n",
+        )
+        .unwrap();
+        let mut m = model(&["app", "app::parse", "app::other"]);
+        m.references = vec![call("app::parse", "run", "app::other", "helper")];
+        let report = compare(&d, &m);
+        assert!(
+            report.violations().next().is_some(),
+            "the ban must beat containment: {:?}",
+            report.findings
+        );
+    }
+
+    /// The counter says how much the answer covers, so it must count
+    /// crossings and only crossings -- not references inside one
+    /// component, and not references nobody could resolve.
+    #[test]
+    fn the_coverage_count_counts_crossings_and_nothing_else() {
+        let d = build(
+            &[("parse", "app::parse"), ("exec", "app::exec")],
+            &["parse -> exec"],
+            &[],
+        );
+        let mut m = model(&["app", "app::parse", "app::exec"]);
+        m.references = vec![
+            call("app::parse", "run", "app::exec", "go"),
+            // inside one component
+            call("app::parse", "run", "app::parse", "helper"),
+            // nobody could resolve it
+            Reference {
+                origin: ItemId::new(ModuleId::parse("app::parse"), "run"),
+                destination: Destination::Unresolved {
+                    reason: "dynamic dispatch".into(),
+                },
+                kind: ReferenceKind::Call,
+                span: Span::at("src/parse.rs", 9),
+            },
+        ];
+        let report = compare(&d, &m);
+        assert_eq!(
+            report.crossings_checked, 1,
+            "only the one judged crossing counts: {:?}",
+            report.findings
+        );
+    }
+
+    /// A reference narrowed to several possible destinations is not a
+    /// violation and not a pass. It must be reported, not dropped.
+    #[test]
+    fn a_reference_narrowed_to_several_destinations_is_incomplete_not_dropped() {
+        let d = doc(&[("parse", "app::parse"), ("exec", "app::exec")]);
+        let mut m = model(&["app", "app::parse", "app::exec"]);
+        m.references = vec![Reference {
+            origin: ItemId::new(ModuleId::parse("app::parse"), "run"),
+            destination: Destination::Candidates(vec![
+                ItemId::new(ModuleId::parse("app::exec"), "go"),
+                ItemId::new(ModuleId::parse("app::parse"), "stay"),
+            ]),
+            kind: ReferenceKind::Call,
+            span: Span::at("src/parse.rs", 15),
+        }];
+        let report = compare(&d, &m);
+        assert!(report.violations().next().is_none());
+        assert_eq!(
+            report.outcome(),
+            Outcome::Incomplete,
+            "{:?}",
+            report.findings
+        );
+    }
+
+    /// A reference whose *destination* is unowned is the mirror of an
+    /// unowned origin, and was going unreported.
+    #[test]
+    fn a_crossing_into_unowned_code_is_reported_too() {
+        let d = doc(&[("parse", "app::parse")]);
+        let mut m = model(&["app", "app::parse", "app::stray"]);
+        m.references = vec![call("app::parse", "run", "app::stray", "helper")];
+        let report = compare(&d, &m);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.outcome == Outcome::Incomplete && f.to.is_none()),
+            "an unowned destination has to surface: {:?}",
+            report.findings
+        );
+    }
+
+    /// A reference from a component to itself is not a crossing and no
+    /// rule speaks about it.
+    #[test]
+    fn a_reference_inside_one_component_is_not_a_crossing() {
+        let d = doc(&[("parse", "app::parse")]);
+        let mut m = model(&["app::parse", "app::parse::inner"]);
+        m.references = vec![call("app::parse", "run", "app::parse::inner", "helper")];
+        let report = compare(&d, &m);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+        assert_eq!(report.crossings_checked, 0);
+    }
+
     /// Two components inside one crate is the case package dependencies
     /// cannot see at all, and it has to work before anything else does.
     #[test]
@@ -345,7 +708,13 @@ mod tests {
     /// text, both give the wrong answer somewhere.
     #[test]
     fn the_most_specific_anchor_owns_its_subtree_and_the_ancestor_keeps_the_rest() {
-        let d = doc(&[("app", "app"), ("inner", "app::parse::decimal")]);
+        // Declared nested, because the anchors nest -- the document and
+        // the source have to agree about that.
+        let d = crate::model::parse_document(
+            "ply: 1\ncomponents:\n  app:\n    anchor: app\n    components:\n      \
+             inner:\n        anchor: app::parse::decimal\n",
+        )
+        .unwrap();
         let m = model(&[
             "app",
             "app::parse",
@@ -357,7 +726,7 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(
             own.owner_of(&ModuleId::parse("app::parse::decimal::sign")),
-            Some("inner"),
+            Some("app.inner"),
             "a descendant of the specific anchor belongs to it"
         );
         assert_eq!(

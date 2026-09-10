@@ -39,6 +39,31 @@
       harmless, a crossing with an unowned end dropped, and a duplicate anchor quietly
       taking the first claim. All six die.
 
+      **Then review found four ways it reported "satisfied" without having checked
+      anything, two of which laundered a forbidden call. All fixed, each with the input
+      that opened it.** A scan that observed nothing came back clean. A module the scan
+      itself recorded as unreadable came back clean, because the record of what could not
+      be read was written and then never consulted. And a contested or mistyped anchor
+      raised its error, had it discarded, dropped its module into an ancestor's residue,
+      and got the crossing judged against the ancestor's permissions -- so a call the
+      design forbids passed.
+
+      A fifth: anchors that nest while the document declares the components side by side
+      now block. The two statements contradict each other, and believing the source
+      silently grants the permission that containment carries between components nobody
+      nested. **This is a judgement call worth a second opinion** -- the design doc says
+      unrelated components may not own overlapping subtrees, and also that a crate-root
+      component owns the residue around narrower ones, which reads either way. Failing
+      closed was the choice; one shipped fixture had to start declaring the nesting it
+      always had.
+
+      **The tests were weaker than the first commit message claimed.** Review found seven
+      one-line breakages that survived all fifteen: the coverage counter twice, narrowed
+      destinations (never exercised at all), nested components (never declared in any
+      fixture, so the whole dotted-name path went untested), a ban that stops beating the
+      permission containment grants, references inside one component, and a dropped
+      finding for an unowned destination. Eleven more tests; all seven now die.
+
       **This enforces nothing yet.** It is the comparison and its types; the scan that
       produces a real observed model is the next entry, and until that lands the engine
       has only hand-built inputs.
