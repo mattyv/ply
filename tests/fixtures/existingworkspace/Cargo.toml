@@ -1,6 +1,10 @@
 [workspace]
-# Empty table: this fixture is its own workspace root, per tests/fixtures'
-# convention -- it must never be swept into the product workspace. Also
+members = [
+    ".",
+]
+# This fixture is its own workspace root, per tests/fixtures' convention --
+# it must never be swept into the product workspace. Its wrapped `members`
+# array pins the ordinary hand-maintained workspace spelling. Also
 # the N1 regression fixture for the *other* half of docs/review-caveats.md:
 # a crate that already opts into `[workspace]` must see the harness
 # registered into it exactly as before (`harness_crate::ensure_workspace_member`),

@@ -8005,6 +8005,38 @@ fn harness_unattributed_diag(
     check_label: &str,
     cause: &str,
 ) -> Diagnostic {
+    let package_was_not_found =
+        cause.contains("package ID specification") && cause.contains("did not match any packages");
+    let (title, fix_title) = if package_was_not_found {
+        (
+            format!(
+                "`{fn_name}`'s `{check_label}` check ran zero cases: Cargo could not find Ply's \
+                 generated harness package, so its temporary workspace registration did not take \
+                 effect and no generated test could start. Ply reports every function waiting on \
+                 that harness as a tool error, never as a problem in the user's function. Cargo's \
+                 own error was: {cause}. (X0901)"
+            ),
+            "check Ply's temporary workspace registration at the Cargo workspace root -- the \
+             generated package named in Cargo's error must be a `[workspace].members` entry while \
+             `verify` runs"
+                .to_string(),
+        )
+    } else {
+        (
+            format!(
+                "`{fn_name}`'s `{check_label}` check ran zero cases: the generated test harness this \
+                 crate's checks share failed to compile, so nothing in it ran -- including \
+                 `{fn_name}`'s own tests, even though Ply could not tell whether `{fn_name}`'s own \
+                 generated code is what broke it. Rather than guess and blame a function that might \
+                 be completely fine, Ply reports every function still waiting on this harness as a \
+                 tool error. The compiler's own first error was: {cause}. (X0901)"
+            ),
+            "run `cargo build --tests` in the crate root to see the full compiler output, then fix \
+             whichever function it names -- every other claim in this crate will be checked again \
+             once the harness builds"
+                .to_string(),
+        )
+    };
     Diagnostic {
         code: "X0901".into(),
         severity: "error".into(),
@@ -8012,22 +8044,12 @@ fn harness_unattributed_diag(
         engine: "proptest".into(),
         check: check_label.into(),
         node_id: node_id.into(),
-        title: format!(
-            "`{fn_name}`'s `{check_label}` check ran zero cases: the generated test harness this \
-             crate's checks share failed to compile, so nothing in it ran -- including \
-             `{fn_name}`'s own tests, even though Ply could not tell whether `{fn_name}`'s own \
-             generated code is what broke it. Rather than guess and blame a function that might \
-             be completely fine, Ply reports every function still waiting on this harness as a \
-             tool error. The compiler's own first error was: {cause}. (X0901)"
-        ),
+        title,
         pointer: None,
         primary_span: None,
         counterexample: None,
         fixes: vec![Fix {
-            title: "run `cargo build --tests` in the crate root to see the full compiler output, \
-                    then fix whichever function it names -- every other claim in this crate will \
-                    be checked again once the harness builds"
-                .to_string(),
+            title: fix_title,
             edits: vec![],
         }],
         assumptions: vec![],
@@ -12660,6 +12682,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
                 .all(|fix| !fix.title.starts_with("check every `examples:` entry")),
             "E0382 must not point first at otherwise-correct examples: {:?}",
             diag.fixes
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_harness_package_is_reported_as_registration_not_compilation() {
+        let diag = harness_unattributed_diag(
+            "handlers::map",
+            "map",
+            "fuzz(64)",
+            "error: package ID specification `handlers-ply-harness` did not match any packages",
+        );
+
+        assert_eq!(
+            diag.title,
+            "`map`'s `fuzz(64)` check ran zero cases: Cargo could not find Ply's generated harness \
+             package, so its temporary workspace registration did not take effect and no generated \
+             test could start. Ply reports every function waiting on that harness as a tool error, \
+             never as a problem in the user's function. Cargo's own error was: error: package ID \
+             specification `handlers-ply-harness` did not match any packages. (X0901)"
+        );
+        assert_eq!(
+            diag.fixes[0].title,
+            "check Ply's temporary workspace registration at the Cargo workspace root -- the \
+             generated package named in Cargo's error must be a `[workspace].members` entry while \
+             `verify` runs"
         );
     }
 

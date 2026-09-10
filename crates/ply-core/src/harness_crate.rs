@@ -450,60 +450,75 @@ pub fn ensure_workspace_member(crate_cargo_toml: &Path, harness_rel: &str) -> Re
     let text = std::fs::read_to_string(crate_cargo_toml)
         .with_context(|| format!("reading {}", crate_cargo_toml.display()))?;
 
-    let Some(ws_line_idx) = text.lines().position(|l| l.trim() == "[workspace]") else {
-        bail!(
-            "{} has no `[workspace]` table to add the harness crate to",
+    let mut document = text.parse::<toml_edit::DocumentMut>().with_context(|| {
+        format!(
+            "parsing {} before adding Ply's generated harness",
             crate_cargo_toml.display()
-        );
-    };
+        )
+    })?;
+    let workspace = document
+        .get_mut("workspace")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} has no `[workspace]` table to add the harness crate to",
+                crate_cargo_toml.display()
+            )
+        })?;
 
-    // Does a `members = [...]` line already exist in the [workspace]
-    // section (before the next `[section]` header)?
-    let lines: Vec<&str> = text.lines().collect();
-    let mut members_line_idx = None;
-    for (i, line) in lines.iter().enumerate().skip(ws_line_idx + 1) {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            break;
+    if !workspace.contains_key("members") {
+        let mut members = toml_edit::Array::new();
+        members.push(".");
+        members.push(harness_rel);
+        workspace.insert("members", toml_edit::value(members));
+    } else {
+        let members = workspace
+            .get_mut("members")
+            .and_then(toml_edit::Item::as_array_mut)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} has a `[workspace].members` value that is not an array",
+                    crate_cargo_toml.display()
+                )
+            })?;
+        if members
+            .iter()
+            .any(|member| member.as_str() == Some(harness_rel))
+        {
+            return Ok(());
         }
-        if trimmed.starts_with("members") {
-            members_line_idx = Some(i);
-            break;
-        }
+        members.push(harness_rel);
     }
 
-    let quoted = format!("\"{harness_rel}\"");
-    let new_text = match members_line_idx {
-        Some(idx) => {
-            if lines[idx].contains(&quoted) {
-                return Ok(()); // already registered
-            }
-            let mut updated_lines = lines.clone();
-            let with_new_member = insert_before_closing_bracket(lines[idx], &quoted);
-            updated_lines[idx] = &with_new_member;
-            // updated_lines borrows `with_new_member`'s lifetime, so join now.
-            let mut out = updated_lines.join("\n");
-            if text.ends_with('\n') {
-                out.push('\n');
-            }
-            out
-        }
-        None => {
-            let mut out = String::new();
-            for (i, line) in lines.iter().enumerate() {
-                out.push_str(line);
-                out.push('\n');
-                if i == ws_line_idx {
-                    out.push_str(&format!("members = [\".\", {quoted}]\n"));
-                }
-            }
-            out
-        }
-    };
+    let new_text = document.to_string();
+    if !workspace_has_member(&new_text, harness_rel) {
+        bail!(
+            "Ply could not add `{harness_rel}` to `[workspace].members` in {}",
+            crate_cargo_toml.display()
+        );
+    }
 
     std::fs::write(crate_cargo_toml, new_text)
         .with_context(|| format!("writing {}", crate_cargo_toml.display()))?;
     Ok(())
+}
+
+fn workspace_has_member(text: &str, member_path: &str) -> bool {
+    text.parse::<toml_edit::DocumentMut>()
+        .ok()
+        .and_then(|document| {
+            document
+                .get("workspace")
+                .and_then(toml_edit::Item::as_table)
+                .and_then(|workspace| workspace.get("members"))
+                .and_then(toml_edit::Item::as_array)
+                .map(|members| {
+                    members
+                        .iter()
+                        .any(|member| member.as_str() == Some(member_path))
+                })
+        })
+        .unwrap_or(false)
 }
 
 /// The harness registration above, made temporary.
@@ -536,6 +551,7 @@ pub struct ManifestRegistration {
     /// Where the harness crate lives, so drop can leave it standing on its
     /// own once it stops being a member (see [`Self::register`]).
     harness_dir: PathBuf,
+    harness_member_path: String,
     harness_package: String,
     target_names: CrateNames,
 }
@@ -570,6 +586,7 @@ impl ManifestRegistration {
             written,
             restore_to: remove_workspace_member(&original, harness_rel),
             harness_dir: harness_dir.to_path_buf(),
+            harness_member_path: harness_rel.to_string(),
             harness_package: harness_package.to_string(),
             target_names: target_names.clone(),
         })
@@ -592,6 +609,13 @@ impl Drop for ManifestRegistration {
         if std::fs::write(&self.path, &self.restore_to).is_err() {
             return;
         }
+        let Ok(restored) = std::fs::read_to_string(&self.path) else {
+            return;
+        };
+        if restored != self.restore_to || workspace_has_member(&restored, &self.harness_member_path)
+        {
+            return;
+        }
         let _ = write_harness_cargo_toml(
             &self.harness_dir,
             &self.harness_package,
@@ -608,77 +632,33 @@ impl Drop for ManifestRegistration {
 /// workspace contains -- `members` absent means "discover them", which is
 /// not what was there before.
 pub fn remove_workspace_member(text: &str, harness_rel: &str) -> String {
-    let quoted = format!("\"{harness_rel}\"");
-    if !text.contains(&quoted) {
+    if !workspace_has_member(text, harness_rel) {
         return text.to_string();
     }
-    let lines: Vec<&str> = text.lines().collect();
-    let Some(ws_line_idx) = lines.iter().position(|l| l.trim() == "[workspace]") else {
+
+    let Ok(mut document) = text.parse::<toml_edit::DocumentMut>() else {
         return text.to_string();
     };
-    let mut out_lines: Vec<String> = Vec::with_capacity(lines.len());
-    // Was the `members` line one Ply itself inserted (`members = [".",
-    // "<harness>"]`, written by the `None` arm above)? Then the whole line
-    // goes; anything else keeps the line and loses one item.
-    let ply_inserted = format!("members = [\".\", {quoted}]");
-    let mut in_workspace = false;
-    let mut done = false;
-    for (i, line) in lines.iter().enumerate() {
-        if i == ws_line_idx {
-            in_workspace = true;
-            out_lines.push((*line).to_string());
-            continue;
-        }
-        if in_workspace && line.trim().starts_with('[') {
-            in_workspace = false;
-        }
-        if in_workspace && !done && line.trim().starts_with("members") && line.contains(&quoted) {
-            done = true;
-            if line.trim() == ply_inserted {
-                continue; // the line existed only to hold the harness
-            }
-            out_lines.push(strip_item(line, &quoted));
-            continue;
-        }
-        out_lines.push((*line).to_string());
-    }
-    let mut out = out_lines.join("\n");
-    if text.ends_with('\n') {
-        out.push('\n');
-    }
-    out
-}
-
-/// Removes `item` from a TOML inline array line, along with whichever
-/// comma joined it to its neighbours.
-fn strip_item(line: &str, item: &str) -> String {
-    let Some(pos) = line.find(item) else {
-        return line.to_string();
+    let Some(workspace) = document
+        .get_mut("workspace")
+        .and_then(toml_edit::Item::as_table_mut)
+    else {
+        return text.to_string();
     };
-    let before = &line[..pos];
-    let after = &line[pos + item.len()..];
-    // Prefer eating the comma that precedes us; fall back to the one after.
-    if let Some(comma) = before.rfind(',') {
-        format!("{}{}", &before[..comma], after)
-    } else {
-        let after = after.trim_start();
-        let after = after.strip_prefix(',').unwrap_or(after);
-        format!("{before}{}", after.trim_start())
-    }
-}
+    let Some(members) = workspace
+        .get_mut("members")
+        .and_then(toml_edit::Item::as_array_mut)
+    else {
+        return text.to_string();
+    };
 
-fn insert_before_closing_bracket(line: &str, new_item: &str) -> String {
-    match line.rfind(']') {
-        Some(pos) => {
-            let (before, after) = line.split_at(pos);
-            if before.trim_end().ends_with('[') {
-                format!("{before}{new_item}{after}")
-            } else {
-                format!("{before}, {new_item}{after}")
-            }
-        }
-        None => line.to_string(),
-    }
+    // A stale manifest cannot tell us whether Ply created the whole key or
+    // appended to the user's explicit `["."]`. Own only the generated
+    // entry. A normal, uninterrupted guard still restores the exact bytes
+    // captured before registration, including an absent `members` key.
+    members.retain(|member| member.as_str() != Some(harness_rel));
+
+    document.to_string()
 }
 
 /// Writes the harness crate's own `Cargo.toml` (idempotent -- always
@@ -1129,8 +1109,8 @@ path = "src/lib.rs"
     #[test]
     fn registration_clears_a_stale_entry_left_by_an_earlier_crashed_run() {
         // Nobody hand-writes a member under `target/ply/fuzz/`, so an entry
-        // already there when the guard starts is Ply's own litter and goes
-        // out with the rest.
+        // already there when the guard starts is Ply's own litter. The
+        // surrounding `members` key may still belong to the user.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Cargo.toml");
         std::fs::write(
@@ -1153,7 +1133,87 @@ path = "src/lib.rs"
         }
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "[workspace]\n\n[package]\nname = \"x\"\n"
+            "[workspace]\nmembers = [\".\"]\n\n[package]\nname = \"x\"\n"
+        );
+    }
+
+    #[test]
+    fn registration_retry_clears_a_stale_member_from_a_wrapped_array() {
+        // The first registration is the interrupted run: it writes the
+        // member, but its guard never gets a chance to restore the file.
+        // The next run must remove that stale generated entry before it
+        // turns the harness into a standalone workspace.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.toml");
+        let original = "[workspace]\nmembers = [\n    \".\",\n    \"crates/a\", # keep this comment\n]\nresolver = \"2\"\n\n[package]\nname = \"x\"\n";
+        let harness_rel = "target/ply/fuzz/x-ply-harness";
+        let harness_dir = dir.path().join(harness_rel);
+        std::fs::write(&path, original).unwrap();
+        ensure_workspace_member(&path, harness_rel).unwrap();
+
+        {
+            let _retry = ManifestRegistration::register(
+                &path,
+                harness_rel,
+                &harness_dir,
+                "x-ply-harness",
+                &CrateNames {
+                    package_name: "x".into(),
+                    lib_ident: "x".into(),
+                },
+            )
+            .unwrap();
+        }
+
+        let restored = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !workspace_has_member(&restored, harness_rel),
+            "the retry must clean the stale generated member:\n{restored}"
+        );
+        assert_eq!(
+            restored, original,
+            "recovery must preserve the user's wrapped array and comment byte-for-byte"
+        );
+        assert!(
+            crate_has_workspace_table(
+                &std::fs::read_to_string(harness_dir.join("Cargo.toml")).unwrap()
+            ),
+            "only a harness no longer registered in the root may become standalone"
+        );
+    }
+
+    #[test]
+    fn registration_retry_preserves_an_explicit_single_member_array() {
+        // After an interruption, `[".", harness]` does not prove Ply
+        // created the `members` key: it is also what appending to the
+        // user's explicit `["."]` produces. Recovery owns only the harness
+        // entry and must retain the user's array and its comment.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.toml");
+        let original = "[workspace]\nmembers = [\n    \".\", # keep this comment\n]\n\n[package]\nname = \"x\"\n";
+        let harness_rel = "target/ply/fuzz/x-ply-harness";
+        let harness_dir = dir.path().join(harness_rel);
+        std::fs::write(&path, original).unwrap();
+        ensure_workspace_member(&path, harness_rel).unwrap();
+
+        {
+            let _retry = ManifestRegistration::register(
+                &path,
+                harness_rel,
+                &harness_dir,
+                "x-ply-harness",
+                &CrateNames {
+                    package_name: "x".into(),
+                    lib_ident: "x".into(),
+                },
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "recovery must remove only Ply's entry from an ambiguous stale array"
         );
     }
 
@@ -1187,6 +1247,25 @@ path = "src/lib.rs"
             text.contains("members = [\".\", \"target/ply/fuzz/x-ply-harness\"]"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn ensure_workspace_member_appends_to_a_wrapped_members_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.toml");
+        let original = "[workspace]\nmembers = [\n    \".\",\n    \"crates/a\", # keep this comment\n]\nresolver = \"2\"\n\n[package]\nname = \"x\"\n";
+        std::fs::write(&path, original).unwrap();
+
+        ensure_workspace_member(&path, "target/ply/fuzz/x-ply-harness").unwrap();
+
+        let registered = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            registered.contains("\"target/ply/fuzz/x-ply-harness\""),
+            "the successful registration must actually add the harness to the wrapped array:\n{registered}"
+        );
+        assert!(registered.contains("\"crates/a\""), "{registered}");
+        assert!(registered.contains("# keep this comment"), "{registered}");
+        assert!(registered.contains("resolver = \"2\""), "{registered}");
     }
 
     /// The misattribution fix's whole foundation: a `ModuleSpan`'s line
