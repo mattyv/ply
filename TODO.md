@@ -1,12 +1,12 @@
 # TODO
 
-## In progress: wrapped workspace member registration — 2026-09-10
+## Landed: wrapped workspace member registration — `edd83b3` — 2026-09-10
 
-- [ ] Register Ply's temporary harness in a multi-line Cargo workspace `members` array,
+- [x] Register Ply's temporary harness in a multi-line Cargo workspace `members` array,
       and verify that Cargo can resolve it while the check runs.
-- [ ] Restore the user's manifest byte for byte after success or failure, including a
+- [x] Restore the user's manifest byte for byte after success or failure, including a
       retry after an interrupted registration in a multi-line array.
-- [ ] Report an unresolvable harness package as a registration failure, not a compiler
+- [x] Report an unresolvable harness package as a registration failure, not a compiler
       failure in the user's generated checks.
 
 ## Next: named acceptance evidence and module boundaries — 2026-09-09
