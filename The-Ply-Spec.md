@@ -742,7 +742,8 @@ into another component's descendant (`strategy -> ingest.book`).
 
 Item-tier rules (each `W`-severity by default, `A`-severity error under `strict`):
 1. A resolved source reference crosses two declared components with no `->` edge, or
-   matches an explicit `deny:` rule → `A0402`.
+   matches an explicit `deny:` rule → advisory `A0402` by default; error `A0420` when
+   the referring component declares `strict: true`.
 2. A `pure` component touches any capability → `A0403` (names the cap, spans the item).
 3. A component reaches a capability outside its `uses` set through its own code, rather
    than through a declared `->` edge into a component that has the cap → `A0404`.

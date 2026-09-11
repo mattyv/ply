@@ -55,24 +55,52 @@ fn run(fixture: &Path) -> (i32, String, String) {
 }
 
 /// **The acceptance case.** `parse` calls `exec::run` directly, and the
-/// document says it must not. The run has to fail, and the message has to
-/// name the function and the file -- "component parse touches component
-/// exec" sends the reader hunting.
+/// document says it must not. The approximate source finding is advisory
+/// by default, but the message still has to name the function and the file
+/// -- "component parse touches component exec" sends the reader hunting.
 #[test]
-fn a_forbidden_call_between_two_modules_of_one_crate_is_reported_and_fails() {
+fn a_forbidden_call_between_two_modules_is_advisory_by_default() {
     let fixture = copy_modtier();
     let (code, stdout, stderr) = run(fixture.path());
     let all = unwrapped(&format!("{stdout}\n{stderr}"));
 
-    assert_ne!(
-        code, 0,
-        "a call the document forbids must not exit 0:\n{stdout}\n{stderr}"
+    assert_eq!(code, 0, "an approximate finding is advisory:\n{all}");
+    assert!(
+        all.contains("A0402"),
+        "the advisory code must be stable:\n{all}"
     );
     assert!(
         all.contains("parse.rs"),
         "the report has to name the file the call is in:\n{all}"
     );
     assert!(all.contains("run"), "and the function it calls:\n{all}");
+}
+
+/// `strict: true` is the component's explicit choice to make the same
+/// approximate crossing fail the command. The strict form has its own
+/// registered code, so `cargo ply explain` never lies about whether the
+/// code in hand can fail a run.
+#[test]
+fn strict_turns_the_same_forbidden_call_into_an_error() {
+    let fixture = copy_modtier();
+    let yaml = fixture.path().join("ply.yaml");
+    let text = std::fs::read_to_string(&yaml).unwrap();
+    std::fs::write(
+        &yaml,
+        text.replace(
+            "  parse:\n    anchor: modtier::parse",
+            "  parse:\n    anchor: modtier::parse\n    strict: true",
+        ),
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = run(fixture.path());
+    let all = unwrapped(&format!("{stdout}\n{stderr}"));
+    assert_ne!(code, 0, "strict makes this finding fail the run:\n{all}");
+    assert!(
+        all.contains("A0420"),
+        "the strict code must be stable:\n{all}"
+    );
 }
 
 /// The permitted calls must not be reported. Both modules really do call

@@ -289,7 +289,7 @@ fn run_module_tier(
     let report = ply_core::conformance::compare(doc, &model);
 
     for f in &report.findings {
-        diagnostics.push(module_diag(f));
+        diagnostics.push(module_diag(doc, f));
     }
     ModuleOutcome::Ran {
         crossings: report.crossings_checked,
@@ -380,10 +380,11 @@ enum ModuleOutcome {
 }
 
 /// One finding from the module tier, in the words a reader needs.
-fn module_diag(f: &ply_core::conformance::Finding) -> Diagnostic {
+fn module_diag(doc: &Document, f: &ply_core::conformance::Finding) -> Diagnostic {
     use ply_core::conformance::Outcome;
     let (code, severity) = match f.outcome {
-        Outcome::Violated => ("A0402", "error"),
+        Outcome::Violated if component_is_strict(doc, f.from.as_deref()) => ("A0420", "error"),
+        Outcome::Violated => ("A0402", "warning"),
         _ => ("W0540", "warning"),
     };
     Diagnostic {
@@ -401,6 +402,28 @@ fn module_diag(f: &ply_core::conformance::Finding) -> Diagnostic {
         assumptions: vec![],
         open_item: None,
     }
+}
+
+/// Whether the component that owns the referring item chose to turn the
+/// approximate module check into a hard error.
+fn component_is_strict(doc: &Document, qualified: Option<&str>) -> bool {
+    let Some(qualified) = qualified else {
+        return false;
+    };
+    let mut names = qualified.split('.');
+    let Some(first) = names.next() else {
+        return false;
+    };
+    let Some(mut component) = doc.components.get(first) else {
+        return false;
+    };
+    for name in names {
+        let Some(child) = component.components.get(name) else {
+            return false;
+        };
+        component = child;
+    }
+    component.strict
 }
 
 fn run_architecture_tier(
