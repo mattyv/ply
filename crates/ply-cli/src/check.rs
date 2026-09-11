@@ -383,7 +383,7 @@ enum ModuleOutcome {
 fn module_diag(f: &ply_core::conformance::Finding) -> Diagnostic {
     use ply_core::conformance::Outcome;
     let (code, severity) = match f.outcome {
-        Outcome::Violated => ("A0420", "error"),
+        Outcome::Violated => ("A0402", "error"),
         _ => ("W0540", "warning"),
     };
     Diagnostic {

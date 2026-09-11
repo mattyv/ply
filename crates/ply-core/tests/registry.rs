@@ -6,15 +6,16 @@
 //! the same way) cannot hide here the way it hid before this table existed.
 //!
 //! **How an emitting site is found.** A diagnostic code only ever reaches a
-//! user by one of two syntactic routes in this codebase (verified by
+//! user by one of three syntactic routes in this codebase (verified by
 //! reading every call site while building the table): as the first string
 //! argument to a helper whose name ends in `diag`/`violation` -- the bare
 //! `diag(...)`/`violation(...)` of `ply-core/src/check.rs` and
 //! `ply-core/src/schema.rs`, and named variants such as
 //! `state_diag_warning(...)` that take the code as a parameter -- or as the
 //! value of a struct field literally named `code` (`Diagnostic { code:
-//! "...", .. }`, `ArchFinding { code: "...", .. }`). The scanner below
-//! looks for exactly those two shapes and nothing else.
+//! "...", .. }`, `ArchFinding { code: "...", .. }`), or as a
+//! `(code, severity)` pair selected before a shared diagnostic constructor.
+//! The scanner below looks for exactly those three shapes and nothing else.
 //!
 //! The helper-name half of that was widened on 2026-09-03, by this test
 //! going red rather than by review: `state:`'s three codes are emitted
@@ -26,7 +27,8 @@
 //!
 //! **What could fool it, honestly stated:**
 //! - A *new* emitting shape (a helper named nothing like `diag`, a field
-//!   renamed away from `code`) would not be found by this scanner, so a
+//!   renamed away from `code`, or a differently shaped code/severity pair)
+//!   would not be found by this scanner, so a
 //!   genuinely new diagnostic introduced that way would silently escape
 //!   test 1 rather than fail it. The two shapes above are the only ones in
 //!   the tree today; a reviewer adding a third route should extend the
@@ -159,6 +161,8 @@ fn emitted_codes() -> BTreeSet<String> {
     // `state_diag_warning`) whose code arrives as an argument rather than
     // in a `code:` field, and `_diag(` has no word boundary before `diag`.
     let call_re = Regex::new(r#"(?:diag|violation)\w*\(\s*"([A-Z][0-9]{4})""#).unwrap();
+    let code_severity_re =
+        Regex::new(r#"=>\s*\(\s*"([A-Z][0-9]{4})"\s*,\s*"(?:error|warning|info)"\s*\)"#).unwrap();
 
     let root = workspace_root();
     let mut out = BTreeSet::new();
@@ -167,7 +171,7 @@ fn emitted_codes() -> BTreeSet<String> {
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         let text = strip_cfg_test_modules(&text);
         let text = strip_line_comments(&text);
-        for re in [&field_re, &call_re] {
+        for re in [&field_re, &call_re, &code_severity_re] {
             for cap in re.captures_iter(&text) {
                 out.insert(cap[1].to_string());
             }

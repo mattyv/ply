@@ -84,7 +84,7 @@ fn the_calls_the_document_allows_are_not_reported() {
     let (_, stdout, stderr) = run(fixture.path());
     let all = unwrapped(&format!("{stdout}\n{stderr}"));
     // Precisely: no *violation* line may be about the permitted calls.
-    let violations: Vec<&str> = all.split("A0420").skip(1).collect();
+    let violations: Vec<&str> = all.split("A0402").skip(1).collect();
     for v in &violations {
         let line = v.split("A04").next().unwrap_or(v);
         assert!(

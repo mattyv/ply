@@ -1270,7 +1270,7 @@ would make deleting the note the cheapest fix.
 |---|---|---|
 | `edges:` between components in different **crates** | **Yes** — against the real dependency graph from `cargo metadata` | `A0401` (error) |
 | `deny:` at crate level | **Yes** — same graph | `A0405` (error) |
-| `edges:`/`deny:` between components in the **same** crate (an item-level call) | Declared only | none |
+| `edges:`/`deny:` between module-anchored components in the **same** crate | **Partly** — resolved source references are checked; unresolved source keeps the result incomplete | `A0402`, `W0540` |
 | `~>` data-flow declarations | Declared only, by design (never checked) | none |
 | `uses:` (capabilities) | Declared only | none |
 | `owns:` (ownership) | Declared only | none |
@@ -1771,6 +1771,8 @@ on something stable. These are the ones this build emits.
 | `E0209` | A function's `entry:` names something that is not a declared external. |
 | `W0409` | An edge between a component and its own descendant — already implied. |
 | `W0410` | An external is declared but nothing connects it. |
+| `A0402` | A resolved source reference crosses a module boundary without permission, or matches an explicit deny rule. |
+| `W0540` | Ply could not fully compare a module boundary because relevant source, ownership, or a reference path was unresolved. |
 
 **Finding the code**
 
