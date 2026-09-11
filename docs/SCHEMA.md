@@ -166,13 +166,13 @@ machine-readable envelope with a node per claim and a list of diagnostics.
 | `cargo ply render <dir>` | Draws `ply.yaml` before any code exists; `--text` writes it as prose instead. | No |
 | `cargo ply clean-views <dir>` | Removes older published visual runs, keeping the current one. | No |
 
-`check` covers the architecture rules at **crate** level: it compares your declared
-`edges:` and `deny:` against the real dependency graph from `cargo metadata`
-(`A0401`, `A0405`). It does **not** yet look inside functions — a call from one
-function into another component, use of a capability, or a change to a type another
-component owns can still cross a declared line with nothing noticing. `check` says
-exactly this at the bottom of its own output, and that paragraph is the authority if
-this one ever drifts from it again.
+`check` covers architecture at two levels. It compares crate boundaries against Cargo's
+exact dependency graph (`A0401`, `A0405`), then follows the source references it can
+resolve between module-anchored components (`A0402`, or `A0420` under `strict: true`).
+The module scan is partial: capability use and changes to an owned type remain unchecked,
+and `W0540` names source or references it could not follow. `check` says exactly this at
+the bottom of its own output, and that paragraph is the authority if this one ever drifts
+from it again.
 
 `verify`'s useful flags:
 
@@ -222,8 +222,9 @@ A required non-pass fails `verify` under every `--fail-on` setting; optional res
 without changing the exit status. Acceptance always runs freshly and never enters `ply.lock`.
 
 Drawings keep the two larger scopes separate. Module-anchored components add an
-`Architecture · module boundaries inside crates` band; until source-reference analysis lands, a
-completed verification marks that band `not checked`. Acceptance claims appear in their own
+`Architecture · module boundaries inside crates` band. Module analysis currently runs under
+`cargo ply check`, not `verify`, so a completed verification still marks that band `not checked`.
+Acceptance claims appear in their own
 `Application acceptance · finite production-path examples` band, where each row reports only its
 exact test and draws the claim's requirement beneath the result. Requirements use at most two
 display-width-aware lines, with a pixel-length bound that keeps fallback-font glyphs inside the band;
@@ -1277,14 +1278,13 @@ would make deleting the note the cheapest fix.
 | `state:` (the structure a component holds) | The type and every named field must resolve, or Ply says it could not check; a field's *declared shape*, once it resolves, is checked against the real one; that the component holds one is **declared only** | `A0414`, `A0415`, `A0416`, `W0413` |
 | `holds:` (what must always be true of that structure) | `check` reads each line and refuses one it cannot parse (`E0506`); `verify` **checks it against the real type**, by building a value through the type's own constructor and putting it through a generated sequence of its plain-`pub` operations, asserting every clause after each one; private and `pub(crate)` operations are named as excluded (`V0511`, `W0414`–`W0418`) | `E0506` here; the rest under `verify` |
 | `pure:` | Declared only | none |
-| `strict:` | Declared only — read by the renderers, nothing else | none |
+| `strict:` | **Yes for module-boundary references** — turns that component's advisory `A0402` findings into `A0420` errors; other planned item checks remain absent | `A0420` |
 
 `cargo ply check` validates that every construct in this section is well-formed, that
-every name resolves, and that references are unambiguous, whether or not the tier behind
-it runs today. For the two enforced rows, it goes further: it compares your declared `edges:`
-and `deny:` against what your crate's `Cargo.toml` actually depends on, and raises
-`A0401`/`A0405` on a mismatch. For every other row, write it if you want the intent
-recorded and validated — do not write it believing a violation will be caught today.
+every name resolves, and that references are unambiguous. It checks cross-crate
+`edges:`/`deny:` against Cargo's dependency graph and checks resolved source references
+between module components. The other rows record validated intent; their enforcement is
+described explicitly in the table rather than implied by their presence in the document.
 
 ### Edges
 
@@ -1332,22 +1332,21 @@ rule does not apply to.
 
 ### Two tiers, and `strict`
 
-The design calls for two tiers, and they differ in how much you'd be able to trust them:
+The two tiers differ in how much you can trust them:
 
 - **Crate tier** — derived from cargo's own dependency graph, which is exact. This is
   the tier that runs today: `edges:`/`deny:` between components in different crates,
   checked against `cargo metadata`. Findings here are errors (`A0401`, `A0405`).
-- **Item tier** — would be derived from parsing your source without type inference or
-  macro expansion, resolving calls, capability use, and mutation *approximately*: it
-  could miss a call it cannot place, and could misattribute one. Findings here would be
-  **warnings by default**. **This tier does not exist in this build** — see section 14.
-  It is validated for shape and then compared against nothing.
+- **Item tier** — derived from parsing your source without type inference or macro
+  expansion. Its first slice follows resolved source references between module-anchored
+  components and reports forbidden crossings as **warnings by default**. It names
+  unresolved source as incomplete instead of clean. Capability use, ownership mutation,
+  and several Rust resolution forms remain unimplemented; see section 14.
 
-`strict: true` on a component is meant to turn that component's item-tier findings into
-errors once that tier exists. Today it is read by nothing but the renderers. That is
-still meant to be an opt-in precisely because the underlying data would be approximate —
-turning advisory findings into build failures is a promise you make about your own code,
-not one the tool can make for you.
+`strict: true` turns that component's forbidden module crossings into errors. It remains
+an opt-in because the source scan is approximate: turning an advisory finding into a
+build failure is a promise you make about your own code, not one the tool can make for
+you. It does not activate capability or ownership checks that do not exist yet.
 
 ```yaml
 ply: 1
@@ -1868,10 +1867,10 @@ Collected in one place, so nothing here has to be discovered at minute eleven.
 
 **Not built at all**
 
-- The **item** tier of the architecture rules. `uses`, `pure`, `owns`, `profile` and
-  `strict` are validated and then compared against nothing; only `edges:` and `deny:`
-  are checked, and only at crate level (see section 2). `strict` in particular is read
-  by nothing but the renderers today.
+- The remaining item-level architecture checks for `uses`, `pure`, `owns`, and
+  `profile`. Module-level `edges:` and `deny:` are checked for the source references Ply
+  can resolve, and `strict` controls whether those approximate findings warn or fail;
+  neither feature implies that the other item-level checks exist.
 - `cargo ply tree`, `doctor`, `synth`, `skill`; `verify --only-changed`.
 - The `prove` check — no engine.
 - The attributes `#[ply::allow]`, `#[ply::pure]` and `#[ply::derived]`. They are read
