@@ -404,13 +404,13 @@ its contract is read for callers here and its `checks:` have to run where that c
 
 ### What a component buys you today
 
-Honestly: less than the file suggests. `anchor:` is load-bearing — it decides which
-claims belong to the crate you are checking and which describe code somewhere else. The
-architecture fields (`uses`, `pure`, `owns`, `profile`, `strict`, and the `edges:` and
-`deny:` lists) are validated for form and for reference resolution, and then **nothing
-compares them against your code**. That whole tier is planned, not built. Section 8
-says exactly what is and is not enforced, because a rule you believe is running and
-which is not is worse than no rule.
+`anchor:` is load-bearing: it decides which claims belong to the crate you are checking,
+which describe code elsewhere, and which module subtree a component owns. For
+module-anchored components, `check` compares resolved source references against `edges:`
+and `deny:`. Those findings are advisory by default; `strict: true` makes forbidden
+crossings errors. The scan is intentionally partial and reports unresolved source as
+`W0540`. Capability use (`uses`/`pure`) and ownership mutation (`owns`) are still
+declared only. Section 8 lists the exact coverage of each architecture field.
 
 ---
 
