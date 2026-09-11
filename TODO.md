@@ -590,6 +590,11 @@ refusal shipped the day before.
       construction shape that let both new codes escape, so another diagnostic
       introduced this way fails before release.
 
+      **Review closure (`00b1335`).** The schema guide still said module checking did
+      not exist and `strict` affected only drawings. It now distinguishes the live
+      module-reference slice from capability and ownership checks that remain absent,
+      and says why `verify` still marks the module band as not checked.
+
 - [x] **A rule between two modules of one crate is now enforced end to end.**
       `tests/fixtures/modtier` is one package whose document splits it into `parse`,
       `exec` and `shared` and forbids the first calling the second. `cargo ply check`
