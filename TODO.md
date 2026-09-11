@@ -580,6 +580,14 @@ refusal shipped the day before.
 
 ## Module boundaries: the scan, and the tier a user can actually run — 2026-09-11
 
+- [x] **The first outside run can look up every code it reports (`25a7c3b`).**
+      The module check emitted `A0420`, but the registry and `cargo ply explain` had no
+      such code. The rule was already specified as `A0402`, so the check now uses that
+      stable code instead of creating a duplicate. Its incomplete-analysis path also
+      emitted an unregistered `W0540`; both paths now have plain explanations. The
+      registry test learned the `(code, severity)` construction shape that let both
+      codes escape, so another diagnostic introduced this way fails before release.
+
 - [x] **A rule between two modules of one crate is now enforced end to end.**
       `tests/fixtures/modtier` is one package whose document splits it into `parse`,
       `exec` and `shared` and forbids the first calling the second. `cargo ply check`
