@@ -64,9 +64,9 @@
       permission containment grants, references inside one component, and a dropped
       finding for an unowned destination. Eleven more tests; all seven now die.
 
-      **This enforces nothing yet.** It is the comparison and its types; the scan that
-      produces a real observed model is the next entry, and until that lands the engine
-      has only hand-built inputs.
+      **This enforced nothing when it landed** -- it was the comparison and its types,
+      with hand-built inputs. The scan that feeds it real source is the entry below, and
+      with that in place the feature is reachable from `cargo ply check`.
 
       Cargo-tier ownership is untouched and stays a separate projection.
 
@@ -577,6 +577,52 @@ refusal shipped the day before.
       that is how a reference is written and not what `explain` takes as an
       argument. Pinned by a test that runs the command each message names
       and requires it to print the section.
+
+## Module boundaries: the scan, and the tier a user can actually run — 2026-09-11
+
+- [x] **A rule between two modules of one crate is now enforced end to end.**
+      `tests/fixtures/modtier` is one package whose document splits it into `parse`,
+      `exec` and `shared` and forbids the first calling the second. `cargo ply check`
+      reads the source, finds the call, names the function and the file and line, and
+      exits 1. Two end-to-end tests hold that: the violation is reported, and the two
+      calls the document permits are not.
+
+      **A bug the fixture exposed on its first run.** Module anchors made the *crate*
+      tier report "two components cannot own the same crate" -- three module components
+      in one package produced two such errors for a document that never claimed a crate
+      twice, because that tier read only an anchor's first segment. It now claims a
+      package only for an exact crate-root anchor: Cargo cannot attribute a package
+      dependency to a module inside the package, so a module anchor makes no statement
+      there. Two existing tests asserted the old reading and are marked superseded with
+      the reason.
+
+      **A second bug, found by an existing test.** In a workspace a module anchor names a
+      module inside a *member*, and the first version looked for `src/lib.rs` beside the
+      command. Most real repositories are workspaces, so this would have made the feature
+      useless outside a single-package toy. Packages are now looked up by name across the
+      tree, and one that cannot be found is reported as unread rather than as a failed
+      run.
+
+      **A third, in what the report said.** The coverage note still read "it does not yet
+      look inside your functions" after the tier had done exactly that, and a package
+      named only at module granularity was described as "not declared". Both now say what
+      is true. And a string continuation that `cargo fmt` had collapsed was leaking a run
+      of spaces into a sentence users read.
+
+      The scan's limits are stated rather than hidden: a module it cannot read, a path it
+      cannot place, a `#[path]` module, a missing file and a glob import each leave the
+      rules they touch **not fully checked**, never clean. Method calls are counted per
+      module rather than listed per site -- a finding for every `.len()` would bury the
+      report, and a report nobody reads protects nobody.
+
+      Seven one-line breakages of the scanner were run against its tests; four died and
+      three survived -- method-call counting, a bare call resolving to the wrong module,
+      and a glob import inventing a destination. Three more tests; all seven die now.
+
+      KNOWN GAPS, stated in the report itself: method calls, capability use and type
+      ownership are not checked, and the resolver handles `crate`/`self`/`super`, plain
+      imports and same-module names -- nothing wider. `strict:` severity still has no
+      representation in a finding.
 
 ## Component-property proof: composing function proofs — 2026-09-09
 

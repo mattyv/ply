@@ -219,6 +219,47 @@ pub struct Finding {
     pub detail: String,
 }
 
+impl Finding {
+    /// The whole sentence a reader gets, written for someone who has never
+    /// seen this tool: what happened, where, and why it matters -- and for
+    /// a violation, the actual function, because "component `parse` touches
+    /// component `exec`" sends them hunting through a directory.
+    pub fn explain(&self) -> String {
+        let where_ = self
+            .reference
+            .as_ref()
+            .map(|r| format!(" ({} line {})", r.span.file, r.span.line))
+            .unwrap_or_default();
+        match self.outcome {
+            Outcome::Violated => {
+                let what = self
+                    .reference
+                    .as_ref()
+                    .map(|r| match &r.destination {
+                        Destination::Definite(d) => {
+                            format!("`{}` calls `{}`", r.origin, d)
+                        }
+                        _ => format!("`{}` reaches across", r.origin),
+                    })
+                    .unwrap_or_else(|| "something here reaches across".into());
+                format!(
+                    "{what}{where_}, and your design says it must not: {} is not allowed to \
+                     depend on {}. Either change the code so it does not reach across, or -- if \
+                     the design is what moved -- say so in ply.yaml.",
+                    self.from.as_deref().unwrap_or("this part"),
+                    self.to.as_deref().unwrap_or("that part"),
+                )
+            }
+            Outcome::Incomplete => format!(
+                "{}{where_} — so this run cannot tell you the rule held. That is not the same \
+                 as it being broken, and it is not the same as it being fine.",
+                self.detail
+            ),
+            _ => self.detail.clone(),
+        }
+    }
+}
+
 /// The result of comparing one document against one observed build.
 #[derive(Debug, Clone, Default)]
 pub struct Report {

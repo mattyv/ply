@@ -67,6 +67,17 @@ const ITEM_TIER_GAP: &str = "NOT CHECKED. Ply now checks whether one crate depen
      the network, or a change to a type another component owns can still cross that same \
      boundary with nothing here noticing.";
 
+/// What remains unchecked *after* the module tier has read the source. It
+/// does now follow calls between the modules of one crate, so the old
+/// sentence ("it does not yet look inside your functions") would be false
+/// -- and a coverage note that overstates what was skipped is as wrong as
+/// one that understates it.
+const ITEM_TIER_GAP_AFTER_MODULES: &str = "PARTLY CHECKED. Ply followed the calls between the \
+     parts of this crate your document names, and reported any that cross a boundary you \
+     forbade. It still does not check use of a capability like the filesystem or the network, \
+     or a change to a type another part owns, and it does not work out which type a method call \
+     lands on -- each module's report says how many it could not follow.";
+
 /// The crate-tier architecture check did not run at all -- the document
 /// failed the schema before `check` ever got this far, and there was
 /// nothing well-formed to read dependencies for.
@@ -124,7 +135,7 @@ pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
                 envelope: envelope(
                     empty_workspace(),
                     violations,
-                    coverage(None, ArchOutcome::NotReached),
+                    coverage(None, ArchOutcome::NotReached, &ModuleOutcome::NotApplicable),
                 ),
                 document: yaml_path.display().to_string(),
             });
@@ -155,6 +166,7 @@ pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
     // crate dependency graph from `cargo metadata`, checked against
     // declared components and `edges:`/`deny:`.
     let arch_outcome = run_architecture_tier(crate_dir, &doc, &mut diagnostics);
+    let module_outcome = run_module_tier(crate_dir, &doc, &mut diagnostics);
 
     for f in &link_set.findings {
         diagnostics.push(link_diag(f));
@@ -162,7 +174,11 @@ pub fn check_crate(crate_dir: &Path) -> Result<CheckReport> {
 
     let root = workspace_node(&doc);
     Ok(CheckReport {
-        envelope: envelope(root, diagnostics, coverage(Some(anchors), arch_outcome)),
+        envelope: envelope(
+            root,
+            diagnostics,
+            coverage(Some(anchors), arch_outcome, &module_outcome),
+        ),
         document: yaml_path.display().to_string(),
     })
 }
@@ -199,6 +215,193 @@ pub enum ArchOutcome {
 /// `CheckReport::exit_code` return 1 for it, the same way any other
 /// error-severity finding does, with no separate exit-code special case
 /// needed.
+/// The module tier: rules between two parts of *one* crate, checked
+/// against the real source.
+///
+/// The crate tier cannot answer these. A document that splits one package
+/// into `parse` and `exec` and forbids one calling the other describes
+/// something Cargo has no opinion about -- there is a single package, its
+/// dependency list is empty, and the forbidden call sits inside it. Until
+/// this ran, such a document reported clean.
+///
+/// What it reports is deliberately three-valued. A call it resolved and
+/// the document forbids is a violation. A call it could not follow, or a
+/// module it could not read, leaves the rule that call might have broken
+/// **not fully checked** -- reported as such, never folded into the clean
+/// result. That distinction is the whole point: "I found no forbidden
+/// reference" and "there is no forbidden reference" are the same sentence
+/// only when the scan saw everything.
+fn run_module_tier(
+    crate_dir: &Path,
+    doc: &Document,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ModuleOutcome {
+    // Only documents that actually anchor a component at a module have
+    // anything for this tier to do. A crate-only document keeps exactly the
+    // behaviour it had.
+    let anchors_a_module = doc_anchors(doc).iter().any(|a| a.contains("::"));
+    if !anchors_a_module {
+        return ModuleOutcome::NotApplicable;
+    }
+
+    // A module anchor names a module inside a *package*, and in a workspace
+    // that package is not the directory the command was run in. Each named
+    // crate is looked up by name; one that cannot be found is reported as
+    // unread rather than as a failed run, because the rules about it going
+    // unchecked is a different thing from the command breaking.
+    let mut wanted: Vec<String> = doc_anchors(doc)
+        .iter()
+        .filter(|a| a.contains("::"))
+        .filter_map(|a| a.split("::").next().map(str::to_string))
+        .collect();
+    wanted.sort();
+    wanted.dedup();
+
+    let found = find_packages(crate_dir, &wanted);
+    let mut model =
+        ply_core::source_model::SourceModel::new(ply_core::source_model::BuildContext::simple(
+            wanted.first().map(String::as_str).unwrap_or_default(),
+            "lib",
+        ));
+    for krate in &wanted {
+        match found.get(krate) {
+            Some(root_file) => {
+                let scanned = ply_core::source_scan::scan_crate(root_file, krate, crate_dir);
+                model.modules.extend(scanned.modules);
+                model.items.extend(scanned.items);
+                model.references.extend(scanned.references);
+                model.gaps.extend(scanned.gaps);
+            }
+            None => model.gaps.push(ply_core::source_model::CoverageGap {
+                scope: ply_core::source_model::GapScope::Module(
+                    ply_core::source_model::ModuleId::root(krate),
+                ),
+                cause: format!("Ply could not find the source of the package `{krate}`, which your document names modules inside, so none of it was read"),
+                affects: vec![
+                    ply_core::source_model::ReferenceKind::Call,
+                    ply_core::source_model::ReferenceKind::Type,
+                    ply_core::source_model::ReferenceKind::Import,
+                ],
+            }),
+        }
+    }
+
+    let report = ply_core::conformance::compare(doc, &model);
+
+    for f in &report.findings {
+        diagnostics.push(module_diag(f));
+    }
+    ModuleOutcome::Ran {
+        crossings: report.crossings_checked,
+    }
+}
+
+/// Every anchor in the document, nested components included.
+fn doc_anchors(doc: &Document) -> Vec<String> {
+    fn walk(c: &ply_core::model::Component, out: &mut Vec<String>) {
+        out.push(c.anchor.clone());
+        for (_, child) in &c.components {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    for (_, c) in &doc.components {
+        walk(c, &mut out);
+    }
+    out
+}
+
+/// Find each named package's library root beneath `root`, by reading the
+/// `name` out of every `Cargo.toml` in the tree.
+///
+/// A filesystem walk rather than a second `cargo metadata`: a package it
+/// cannot find is reported as unread rather than guessed at, which is the
+/// answer that keeps the report honest either way.
+fn find_packages(
+    root: &Path,
+    wanted: &[String],
+) -> std::collections::BTreeMap<String, std::path::PathBuf> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            if path.is_dir() {
+                if name != "target" && name != ".git" {
+                    stack.push(path);
+                }
+            } else if name == "Cargo.toml" {
+                if let Some((pkg, lib)) = crate_root_file(&dir).filter(|(p, _)| wanted.contains(p))
+                {
+                    out.insert(pkg, lib);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// This package's library name and crate root file.
+fn crate_root_file(crate_dir: &Path) -> Option<(String, std::path::PathBuf)> {
+    let manifest = std::fs::read_to_string(crate_dir.join("Cargo.toml")).ok()?;
+    let name = manifest
+        .lines()
+        .find_map(|l| {
+            let l = l.trim();
+            l.strip_prefix("name")?
+                .trim_start()
+                .strip_prefix('=')?
+                .trim()
+                .trim_matches('"')
+                .to_string()
+                .into()
+        })
+        .unwrap_or_default();
+    if name.is_empty() {
+        return None;
+    }
+    let lib = crate_dir.join("src/lib.rs");
+    lib.exists().then(|| (name.replace('-', "_"), lib))
+}
+
+#[derive(Debug)]
+enum ModuleOutcome {
+    /// The document anchors nothing at a module, so this tier had nothing
+    /// to say and said nothing.
+    NotApplicable,
+    Ran {
+        crossings: usize,
+    },
+}
+
+/// One finding from the module tier, in the words a reader needs.
+fn module_diag(f: &ply_core::conformance::Finding) -> Diagnostic {
+    use ply_core::conformance::Outcome;
+    let (code, severity) = match f.outcome {
+        Outcome::Violated => ("A0420", "error"),
+        _ => ("W0540", "warning"),
+    };
+    Diagnostic {
+        code: code.into(),
+        severity: severity.into(),
+        phase: "check".into(),
+        engine: "ply".into(),
+        check: "architecture".into(),
+        node_id: f.from.clone().unwrap_or_else(|| "ply.yaml".into()),
+        title: f.explain(),
+        primary_span: None,
+        pointer: None,
+        counterexample: None,
+        fixes: vec![],
+        assumptions: vec![],
+        open_item: None,
+    }
+}
+
 fn run_architecture_tier(
     crate_dir: &Path,
     doc: &Document,
@@ -1058,7 +1261,7 @@ fn count_fn_claims(doc: &Document) -> usize {
     doc.components.values().map(walk).sum()
 }
 
-fn coverage(anchors: Option<AnchorTally>, arch: ArchOutcome) -> Coverage {
+fn coverage(anchors: Option<AnchorTally>, arch: ArchOutcome, modules: &ModuleOutcome) -> Coverage {
     let mut checked = vec![Tier {
         tier: "schema".into(),
         detail: "The document against schema/ply.schema.json, then every rule that can be \
@@ -1085,10 +1288,26 @@ fn coverage(anchors: Option<AnchorTally>, arch: ArchOutcome) -> Coverage {
                 tier: "architecture".into(),
                 detail: arch_detail(&tally),
             });
-            not_checked.push(Tier {
-                tier: "item-level".into(),
-                detail: ITEM_TIER_GAP.into(),
-            });
+            match modules {
+                ModuleOutcome::Ran { crossings } => {
+                    checked.push(Tier {
+                        tier: "modules".into(),
+                        detail: format!(
+                            "{crossings} call{} between the parts of this crate your document \
+                             names were followed and judged against it.",
+                            if *crossings == 1 { "" } else { "s" }
+                        ),
+                    });
+                    not_checked.push(Tier {
+                        tier: "item-level".into(),
+                        detail: ITEM_TIER_GAP_AFTER_MODULES.into(),
+                    });
+                }
+                _ => not_checked.push(Tier {
+                    tier: "item-level".into(),
+                    detail: ITEM_TIER_GAP.into(),
+                }),
+            }
         }
         ArchOutcome::Unavailable(reason) => {
             not_checked.push(Tier {
@@ -1321,7 +1540,10 @@ fn arch_detail(t: &ArchTally) -> String {
     ));
     if !t.undeclared_crates.is_empty() {
         s.push_str(&format!(
-            " Not declared, and so invisible even to a wildcard `deny:` rule: {}.",
+            " No component names {} as a whole crate, so this tier attributes none of its \
+             package dependencies to a part of your design. Where you have named its modules \
+             instead, those are checked by the module tier below; where you have named nothing, \
+             its dependencies are invisible even to a wildcard `deny:` rule.",
             t.undeclared_crates.join(", ")
         ));
     }
