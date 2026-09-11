@@ -1,0 +1,28 @@
+ply: 1
+
+# A rule between two modules of ONE crate. The crate tier cannot express
+# this: there is a single package here, so its dependency list is empty and
+# says nothing either way.
+
+components:
+  parse:
+    anchor: modtier::parse
+    note: >
+      Reads input. It may lean on shared helpers, and must never start
+      running things itself -- that is exec's job, and mixing the two is how
+      a parser ends up with side effects nobody expected.
+  exec:
+    anchor: modtier::exec
+    note: >
+      Runs things. It may lean on the same helpers, and must not reach back
+      into the parser.
+  shared:
+    anchor: modtier::shared
+    note: Helpers with no opinion about either side.
+
+edges:
+  - parse -> shared
+  - exec -> shared
+
+deny:
+  - parse -> exec

@@ -371,16 +371,21 @@ impl ComponentIndex {
                 .push(qualified.to_string());
             all_qualified.insert(qualified.to_string());
 
-            let crate_name = comp
-                .anchor
-                .split("::")
-                .next()
-                .unwrap_or(&comp.anchor)
-                .to_string();
-            component_crate_claims.push((qualified.to_string(), crate_name.clone()));
-            crate_owner
-                .entry(crate_name)
-                .or_insert_with(|| qualified.to_string());
+            // **Only an exact crate-root anchor claims a package.** This
+            // tier speaks about Cargo dependency edges, and Cargo cannot
+            // attribute a package dependency to a module inside the
+            // package -- so `modtier::parse` says nothing here, and two
+            // module anchors in one crate are not competing claims on it.
+            // Reading the first segment made them exactly that, and three
+            // module components in one crate produced two `A0411` errors
+            // for a document that never claimed a crate twice.
+            if !comp.anchor.contains("::") {
+                let crate_name = comp.anchor.clone();
+                component_crate_claims.push((qualified.to_string(), crate_name.clone()));
+                crate_owner
+                    .entry(crate_name)
+                    .or_insert_with(|| qualified.to_string());
+            }
 
             for (child_name, nested) in &comp.components {
                 let nested_qualified = format!("{qualified}.{child_name}");
@@ -853,6 +858,35 @@ mod tests {
     /// name, never its bin name -- `crate_identity_name` (and
     /// `lib_target_name` underneath it) must not pick whichever target
     /// happens to be found first, or the last one, but always the lib.
+    /// **A module anchor is not a claim on the whole crate.** Writing
+    /// `anchor: modtier::parse` and `anchor: modtier::exec` used to make
+    /// the crate tier read both as claims on the package `modtier`, so the
+    /// second and third got `A0411` -- "two components cannot own the same
+    /// crate" -- for a document that says nothing of the kind. The crate
+    /// tier speaks about package dependencies, and Cargo cannot attribute a
+    /// package dependency to a module, so a module anchor claims nothing
+    /// here and is left to the tier that can see modules.
+    #[test]
+    fn module_anchors_in_one_crate_do_not_collide_as_crate_claims() {
+        let document = crate::model::parse_document(
+            "ply: 1\ncomponents:\n  parse:\n    anchor: modtier::parse\n  \
+             exec:\n    anchor: modtier::exec\n  shared:\n    anchor: modtier::shared\n",
+        )
+        .unwrap();
+        let graph = WorkspaceGraph {
+            edges: Vec::new(),
+            dev_or_build_edges: Vec::new(),
+            all_crate_identities: ["modtier".to_string()].into_iter().collect(),
+            workspace_crate_identities: ["modtier".to_string()].into_iter().collect(),
+            ambiguous_identities: Default::default(),
+        };
+        let (findings, _) = check_architecture(&document, &graph);
+        assert!(
+            !findings.iter().any(|f| f.code == "A0411"),
+            "module anchors are not competing crate claims: {findings:?}"
+        );
+    }
+
     #[test]
     fn crate_identity_prefers_the_lib_target_over_a_bin_target() {
         let pkg = MetaPackage {
@@ -1539,14 +1573,21 @@ deny:
         );
     }
 
-    /// Finding 2c: a component anchored at a *module* inside a crate that
-    /// another component already claims whole. The crate tier only ever
-    /// reads an anchor's first `::`-segment, so `crate_a::ratemod` and
-    /// `crate_a` collide on the same crate identity exactly the way two
-    /// literal duplicates do (finding 2b) -- same code path, different
-    /// surface shape, so it gets its own fixture per §9.
+    /// **Superseded.** This used to assert that a component anchored at a
+    /// *module* collides with one anchored at the crate around it, because
+    /// the crate tier read only an anchor's first `::`-segment and the two
+    /// landed on the same identity.
+    ///
+    /// That reading is gone. This tier speaks about Cargo dependency
+    /// edges, and Cargo cannot attribute a package dependency to a module
+    /// inside the package, so a module anchor claims nothing here. A crate
+    /// component and a module component inside it are an ordinary pair,
+    /// not a duplicate claim -- and whether the *document* nests them
+    /// correctly is a question for the tier that can see modules, which
+    /// answers it with the anchors in hand rather than with their first
+    /// segments.
     #[test]
-    fn a_module_anchored_component_collides_with_a_crate_anchored_one() {
+    fn a_module_anchor_no_longer_collides_with_the_crate_around_it() {
         let document = doc(r#"
 ply: 1
 components:
@@ -1562,19 +1603,21 @@ components:
             ..graph
         };
         let (findings, _tally) = check_architecture(&document, &graph);
-        let f = findings
-            .iter()
-            .find(|f| f.code == "A0411")
-            .unwrap_or_else(|| panic!("{findings:?}"));
-        assert_eq!(f.node_id, "a_ratemod");
-        assert!(f.message.contains("`a`"), "{}", f.message);
+        assert!(
+            !findings.iter().any(|f| f.code == "A0411"),
+            "a module anchor is not a second claim on the crate: {findings:?}"
+        );
     }
 
-    /// Finding 7's mutation-table row 4: the crate name a component's
-    /// anchor claims is its *first* `::`-segment, never its last -- an
-    /// anchor of `outer::inner` claims crate `outer`, not `inner`.
+    /// **Superseded, same reason.** The rule used to be that an anchor of
+    /// `outer::inner` claims crate `outer` -- its first segment, never its
+    /// last. It now claims neither: a module anchor makes no statement
+    /// about package dependencies, so the crate stays unclaimed and its
+    /// dependencies are reported as facts nobody has attributed rather
+    /// than handed to whichever component's anchor happened to start with
+    /// the right word.
     #[test]
-    fn component_crate_claim_uses_the_first_anchor_segment_not_the_last() {
+    fn a_module_anchor_claims_no_crate_at_all() {
         let document = doc(r#"
 ply: 1
 components:
@@ -1582,9 +1625,15 @@ components:
     anchor: outer::inner::deepest
 "#);
         let index = ComponentIndex::build(&document);
-        assert_eq!(
-            index.component_crate_claims,
-            vec![("a".to_string(), "outer".to_string())]
+        assert!(
+            index.component_crate_claims.is_empty(),
+            "a module anchor claims no package: {:?}",
+            index.component_crate_claims
+        );
+        assert!(
+            index.crate_owner.is_empty(),
+            "and nothing is attributed to it: {:?}",
+            index.crate_owner
         );
     }
 

@@ -239,27 +239,37 @@ fn two_components_anchored_at_the_same_crate_is_a0411() {
     );
 }
 
-/// Finding 2c: a component anchored at a *module* inside a crate another
-/// component already claims whole. The crate tier only reads an anchor's
-/// first `::`-segment, so `archtier_a::ratemod` collides with plain
-/// `archtier_a` exactly the way a literal duplicate does -- same code
-/// path, different surface shape.
+/// **Superseded end to end.** A component anchored at a *module* inside a
+/// crate another component claims whole used to be reported as a duplicate
+/// claim, because the crate tier read only an anchor's first
+/// `::`-segment. It no longer does: that tier speaks about package
+/// dependencies, Cargo cannot attribute one to a module, so a module
+/// anchor makes no claim there and the pair is an ordinary one.
+///
+/// The module tier reads the source instead. `archtier_a::ratemod` does
+/// not exist in the fixture, so what the run must now say is that it could
+/// not find it -- which is the honest answer, and the one that keeps the
+/// rules written for it from reading as checked.
 #[test]
-fn a_module_anchored_component_collides_with_a_crate_anchored_one_is_a0411() {
+fn a_module_anchor_is_no_longer_a_duplicate_crate_claim() {
     let fixture = copy_archtier();
     write_yaml(
         fixture.path(),
         "ply: 1\n\ncomponents:\n  a:\n    anchor: archtier_a\n  a_ratemod:\n    anchor: archtier_a::ratemod\n  b:\n    anchor: archtier_b\nedges:\n  - \"b -> a\"\n",
     );
-    let (code, stdout, stderr) = run(fixture.path(), &["--json"]);
-    assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let (_, stdout, stderr) = run(fixture.path(), &["--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("{e}\nstdout: {stdout}\nstderr: {stderr}"));
     let diagnostics = json["diagnostics"].as_array().unwrap();
-    let d = diagnostics
+    assert!(
+        !diagnostics.iter().any(|d| d["code"] == "A0411"),
+        "a module anchor is not a second claim on the crate: {diagnostics:#?}"
+    );
+    let unread = diagnostics
         .iter()
-        .find(|d| d["code"] == "A0411")
-        .unwrap_or_else(|| panic!("{diagnostics:#?}"));
-    assert_eq!(d["node_id"], "a_ratemod");
+        .find(|d| d["title"].as_str().is_some_and(|t| t.contains("ratemod")))
+        .unwrap_or_else(|| panic!("the anchor naming nothing must be reported: {diagnostics:#?}"));
+    assert_eq!(unread["severity"], "warning");
 }
 
 /// Finding 2d: an edge naming a component that does not exist at all is

@@ -20,5 +20,6 @@ pub mod registry;
 pub mod schedule;
 pub mod schema;
 pub mod source_model;
+pub mod source_scan;
 pub mod surface;
 pub mod visual;
