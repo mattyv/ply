@@ -330,15 +330,16 @@ fn find_packages(
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name();
-            if path.is_dir() {
-                if name != "target" && name != ".git" {
-                    stack.push(path);
-                }
-            } else if name == "Cargo.toml" {
-                if let Some((pkg, lib)) = crate_root_file(&dir).filter(|(p, _)| wanted.contains(p))
-                {
-                    out.insert(pkg, lib);
-                }
+            let is_dir = path.is_dir();
+            if is_dir && name != "target" && name != ".git" {
+                stack.push(path);
+                continue;
+            }
+            if is_dir || name != "Cargo.toml" {
+                continue;
+            }
+            if let Some((pkg, lib)) = crate_root_file(&dir).filter(|(p, _)| wanted.contains(p)) {
+                out.insert(pkg, lib);
             }
         }
     }
