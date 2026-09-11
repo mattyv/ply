@@ -580,6 +580,21 @@ refusal shipped the day before.
 
 ## Module boundaries: the scan, and the tier a user can actually run — 2026-09-11
 
+- [x] **The first outside run can look up every code it reports (`25a7c3b`, `a6706fd`).**
+      The module check emitted `A0420`, but the registry and `cargo ply explain` had no
+      such code. The rule was already specified as advisory `A0402` by default and an
+      error only when the referring component opts into `strict: true`; the check now
+      preserves that distinction, using registered `A0420` for the strict form. Its
+      incomplete-analysis path also emitted an unregistered `W0540`; all three paths
+      now have plain explanations. The registry test learned the `(code, severity)`
+      construction shape that let both new codes escape, so another diagnostic
+      introduced this way fails before release.
+
+      **Review closure (`00b1335`).** The schema guide still said module checking did
+      not exist and `strict` affected only drawings. It now distinguishes the live
+      module-reference slice from capability and ownership checks that remain absent,
+      and says why `verify` still marks the module band as not checked.
+
 - [x] **A rule between two modules of one crate is now enforced end to end.**
       `tests/fixtures/modtier` is one package whose document splits it into `parse`,
       `exec` and `shared` and forbids the first calling the second. `cargo ply check`

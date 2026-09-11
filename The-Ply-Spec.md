@@ -741,13 +741,19 @@ drew as a diagonal slash through the parent's own content, which is what a drawi
 into another component's descendant (`strategy -> ingest.book`).
 
 Item-tier rules (each `W`-severity by default, `A`-severity error under `strict`):
-1. A call crosses two declared components with no `->` edge → `A0402`.
+1. A resolved source reference crosses two declared components with no `->` edge, or
+   matches an explicit `deny:` rule → advisory `A0402` by default; error `A0420` when
+   the referring component declares `strict: true`.
 2. A `pure` component touches any capability → `A0403` (names the cap, spans the item).
 3. A component reaches a capability outside its `uses` set through its own code, rather
    than through a declared `->` edge into a component that has the cap → `A0404`.
 4. `owns T`: an item outside the owning component mutates `T` → `A0406`.
 5. Profile bans (syntactic checks over the component's items — these are reliable and
    always errors) → `A0407`.
+
+If relevant source, ownership, or a reference path cannot be resolved, Ply reports
+`W0540` and leaves the affected boundary incomplete. It never turns an unread part of
+the program into a clean result.
 
 **`state:` — the structure a component's state lives in** (2026-09-03). `owns` answers
 "who may change this type"; `state` answers the question a reader asks first, which is
