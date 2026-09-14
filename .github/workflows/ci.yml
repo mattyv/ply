@@ -320,10 +320,23 @@ jobs:
       - name: Build cargo-ply
         run: cargo build -p ply-cli
 
+      # Two drawings from one run, deliberately. The full one is the record
+      # -- every function, every chip, what each check actually found. The
+      # overview is the front page: top-level boxes only, each summarised as
+      # `earned of promised`, which turns a 6000-pixel drawing nobody
+      # scrolls into one that answers "is this checked?" at a glance.
+      #
+      # Two runs would be the obvious way to get two drawings and the wrong
+      # one: they would check the same code twice, cost twice as long, and
+      # could disagree with each other. A completed run already holds a
+      # drawing for every level the document nests to, so both files here
+      # come from one verification and cannot tell different stories.
       - name: Ply verifies its root document and linked crates
         run: |
           ./target/debug/cargo-ply verify . \
-            --fail-on evidence --svg ply-root-verified.svg
+            --fail-on evidence \
+            --svg ply-root-verified.svg \
+            --svg-overview ply-root-overview.svg
 
       # `if: always()` so a drawing from a run that just failed is still
       # attached -- that is the one a reader most wants, since it shows
@@ -335,6 +348,7 @@ jobs:
           name: ply-self-check-drawings
           path: |
             ply-root-verified.svg
+            ply-root-overview.svg
           if-no-files-found: ignore
 
   # Publishes that drawing where a person can actually look at it,

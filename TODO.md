@@ -1,5 +1,46 @@
 # TODO
 
+## Landed: the README leads with the picture — 2026-09-14
+
+- [x] **The front page opens with a drawing instead of reaching one on line 663.**
+      The first 120 lines were install instructions and build-flag caveats; the project's
+      single strongest image -- Ply run on its own source, every part either solid with an
+      earned count or hatched because it promises nothing -- was a text link in paragraph
+      five. It is now the first thing under the pitch, with a three-mark legend beside it
+      and `Install` moved below the development loop.
+
+      **A drawing that fits on a page, from the run that earned it.** The verified drawing
+      of Ply is 1315x6183 -- the right artifact to keep and the wrong one to put in front
+      of someone. `cargo ply verify --svg-overview <path>` writes the same run folded to
+      top-level boxes (1367x425), each summarised as `earned of promised`. Nothing is
+      re-checked and nothing is re-rendered: a completed run already holds a folded
+      drawing for every level its document nests to, which is what §7.1's "expanded and
+      folded drawings summarize the same evidence" requires. Two verification runs would
+      have been the obvious way to get two files and the wrong one -- two seeds, two sets
+      of generated inputs, and a front page that could disagree with the full drawing
+      beside it.
+
+      **A caption that claimed colour the drawing does not have.** The legend was written
+      saying green ticks mark checked functions, which is true of the full drawing and not
+      of the folded one: folding puts the chips away, so at that zoom the evidence is
+      carried by the count, not the colour. Caught by rasterising the real drawing and
+      looking at it rather than trusting the wording. The legend now describes the three
+      marks actually present, and says where the green lives.
+
+      **Also found while looking.** A local self-check reported 0 of 56 functions earned
+      where CI reports 56 of 56; the cause was a full disk failing the generated harness's
+      compile, not anything about Ply. Worth knowing that the failure presents as a
+      credible-looking bad result rather than as a disk error.
+
+      The new overview drawing of the root document is committed and pinned like every
+      other committed drawing, so it cannot drift from the document it claims to draw --
+      verified by editing it and watching the pin fail.
+
+      KNOWN GAP, deliberate: the drawing at the top is served from the published evidence
+      page, so it does not render until the first build of `main` after this lands. That
+      is the cost of the rule that a green drawing of Ply is only ever written by a
+      passing run, and the rule is worth more than the gap.
+
 ## Landed: wrapped workspace member registration — `edd83b3` — 2026-09-10
 
 - [x] Register Ply's temporary harness in a multi-line Cargo workspace `members` array,
