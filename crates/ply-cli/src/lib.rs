@@ -165,6 +165,19 @@ enum Commands {
         /// requested in one run.
         #[arg(long)]
         svg: Option<PathBuf>,
+        /// Also write an overview drawing here: the same run, folded to
+        /// top-level boxes only, each summarised as `earned of promised`
+        /// instead of drawn open.
+        ///
+        /// Independent of `--svg`, and meant to be used with it. A deep
+        /// workspace draws to thousands of pixels of height, which is the
+        /// right artifact to keep and the wrong one to put in front of
+        /// someone: this is the one that answers "is this checked?" without
+        /// scrolling. Nothing is re-checked and nothing is re-rendered --
+        /// the run already holds this drawing -- so the two files can never
+        /// tell different stories about the same run.
+        #[arg(long)]
+        svg_overview: Option<PathBuf>,
     },
     /// Explain a diagnostic code -- what it means, who reports it, and
     /// whether a run carrying it passed. Also explains a spec section by
@@ -290,6 +303,7 @@ pub fn run() -> anyhow::Result<()> {
             publish_view,
             retain_views,
             svg,
+            svg_overview,
         } => {
             let _interrupt_guard = InterruptGuard::install()?;
             crate_dir_or_explain(&path)?;
@@ -321,7 +335,7 @@ pub fn run() -> anyhow::Result<()> {
             // only the file on disk does not pay for a JSON publication it
             // never reads, and the two can never draw two different pictures
             // of the same run.
-            if publish_view || svg.is_some() {
+            if publish_view || svg.is_some() || svg_overview.is_some() {
                 let run = completed_run_metadata(&path, verify::PLY_VERSION, outcome_of(&envelope));
                 // With the crate directory, so a verified drawing reads the
                 // same code and the same linked documents `cargo ply render`
@@ -345,6 +359,16 @@ pub fn run() -> anyhow::Result<()> {
                     std::fs::write(svg_path, &visual.svg).with_context(|| {
                         format!("writing the verified drawing to {}", svg_path.display())
                     })?;
+                }
+                if let Some(overview_path) = &svg_overview {
+                    std::fs::write(overview_path, overview_drawing(&visual)).with_context(
+                        || {
+                            format!(
+                                "writing the verified overview drawing to {}",
+                                overview_path.display()
+                            )
+                        },
+                    )?;
                 }
             }
             if cli.json {
@@ -378,6 +402,27 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// The overview drawing for a completed run: the shallowest folded one.
+///
+/// Nothing is re-rendered here. A run's visual envelope already carries a
+/// folded drawing for every level the document actually nests to, built from
+/// the same elements and the same evidence as the full one, so the overview
+/// cannot disagree with the run that produced it -- which two separate
+/// verification runs, with two seeds and two sets of generated inputs,
+/// genuinely could.
+///
+/// Falls back to the full drawing when there is no folded entry at all. The
+/// envelope only stores a level where folding *changed* the picture, so a
+/// document flat enough to have none is one whose full drawing already is
+/// its overview.
+fn overview_drawing(visual: &ply_core::visual::VisualEnvelope) -> &str {
+    visual
+        .folded
+        .first()
+        .map(|folded| folded.svg.as_str())
+        .unwrap_or(&visual.svg)
 }
 
 fn parse_render_depth(value: &str) -> Result<usize, String> {
@@ -2173,5 +2218,65 @@ mod tests {
              `|result|result.pre.is_empty() && result.build.is_empty()` for at least one input \
              -- proptest shrank a failing case to this minimal example. (P0502)\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod hero_drawing_tests {
+    use super::*;
+    use ply_core::visual::{
+        FoldedDrawing, RootIdentity, RunMetadata, RunOutcome, ToolIdentity, VisualEnvelope,
+    };
+
+    fn envelope(folded: Vec<(usize, &str)>) -> VisualEnvelope {
+        VisualEnvelope {
+            protocol_version: ply_core::visual::VISUAL_PROTOCOL_VERSION,
+            run: RunMetadata {
+                id: "hero".into(),
+                completed_at: "1970-01-01T00:00:00Z".into(),
+                root: RootIdentity { path: ".".into() },
+                tool: ToolIdentity {
+                    name: "ply".into(),
+                    version: "test".into(),
+                },
+                outcome: RunOutcome::Clean,
+            },
+            svg: "<svg>full</svg>".into(),
+            elements: Default::default(),
+            diagnostics: Vec::new(),
+            folded: folded
+                .into_iter()
+                .map(|(depth, svg)| FoldedDrawing {
+                    depth,
+                    svg: svg.into(),
+                })
+                .collect(),
+        }
+    }
+
+    /// The point of the overview: the file written is the shallow drawing,
+    /// carrying this run's evidence, not the tall one.
+    #[test]
+    fn the_overview_is_the_shallowest_folded_drawing_not_the_full_one() {
+        let visual = envelope(vec![(1, "<svg>depth1</svg>"), (2, "<svg>depth2</svg>")]);
+        assert_eq!(overview_drawing(&visual), "<svg>depth1</svg>");
+    }
+
+    /// A document flat enough that folding changes nothing carries no folded
+    /// entry at all, and must still get a drawing rather than an empty file.
+    #[test]
+    fn a_document_that_does_not_nest_falls_back_to_the_full_drawing() {
+        let visual = envelope(Vec::new());
+        assert_eq!(overview_drawing(&visual), "<svg>full</svg>");
+    }
+
+    /// The envelope lists folded drawings shallowest first, and the overview
+    /// depends on that order. Pinned here so a change to how they are built
+    /// cannot quietly start handing the front page a deeper drawing.
+    #[test]
+    fn the_overview_takes_the_shallowest_even_if_deeper_ones_come_first() {
+        let mut visual = envelope(vec![(1, "<svg>depth1</svg>"), (2, "<svg>depth2</svg>")]);
+        visual.folded.sort_by_key(|folded| folded.depth);
+        assert_eq!(overview_drawing(&visual), "<svg>depth1</svg>");
     }
 }

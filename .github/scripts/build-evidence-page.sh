@@ -13,18 +13,25 @@
 # into the output directory. GITHUB_SHA / RUN_URL / REPO_URL come from the
 # workflow; each falls back to something sensible so a local run works.
 #
-# One drawing, not two: the self-check verifies the root document and every
-# crate it links, and writes a single `ply-root-verified.svg`. This script
-# went on copying the two per-crate files that step stopped producing, so the
-# publishing job failed on every push to main with both files missing
-# (external review, 2026-09-07). Named once, here, so the next rename breaks
-# in one place.
+# Two drawings from one run: `ply-root-verified.svg` is the full record, and
+# `ply-root-overview.svg` the same run folded to top-level boxes. Both are
+# written by one `cargo ply verify`, so they cannot disagree.
+#
+# This script once went on copying two per-crate files the self-check had
+# stopped producing, so the publishing job failed on every push to main with
+# both missing (external review, 2026-09-07). Named once, here, so the next
+# rename breaks in one place.
+#
+# README.md embeds the overview by URL, so renaming it breaks the first
+# image on the project's front page. That is the one to be slow about.
 set -euo pipefail
 
 out=${1:?usage: build-evidence-page.sh OUT_DIR}
 mkdir -p "$out"
 drawing=ply-root-verified.svg
+overview=ply-root-overview.svg
 cp "$drawing" "$out/"
+cp "$overview" "$out/"
 
 sha=${GITHUB_SHA:-}
 repo_url=${REPO_URL:-https://github.com/mattyv/ply}
@@ -103,11 +110,23 @@ cat > "$out/index.html" <<HTML
   state that passed.
 </p>
 
-<h2>Ply itself</h2>
+<h2>Ply itself, at a glance</h2>
 <p class="sub">
-  Every part of the program the root document links: the library that reads
-  the promises and decides what counts as evidence, and the command-line tool
-  you actually run. <a href="$drawing">Open this drawing on its own</a>
+  One box per part of the program, each saying how many of its functions have
+  a real result behind them. <a href="$overview">Open this drawing on its own</a>
+</p>
+<figure>
+  <img src="$overview"
+       alt="Ply's parts drawn as boxes, each labelled with how many of its
+            functions earned a result, with the parts that promise nothing
+            drawn hatched.">
+</figure>
+
+<h2>Every function</h2>
+<p class="sub">
+  The same run with nothing folded away: every part the root document links,
+  down to the individual functions and what each check found.
+  <a href="$drawing">Open this drawing on its own</a>
 </p>
 <figure>
   <img src="$drawing"
