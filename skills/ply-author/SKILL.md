@@ -1,18 +1,50 @@
 ---
 name: ply-author
-description: Write or extend a ply.yaml — components, dependency rules, contracts, and structure promises — checking each addition against the real code before adding the next, and never declaring something the code does not support.
+description: Write or extend a ply.yaml for either a proposed design or existing Rust code, keeping design intent separate from resolved implementation and earned verification.
 ---
 
 # Ply Author
 
-The document is the input to everything else Ply does. A valid-looking but inaccurate
-declaration can produce a confident picture of a system that does not exist. For existing code, resolve each addition before treating it as
-implemented. For a design without code, label declarations as proposed intent; rendering
-them does not establish implementation or verification.
+The document is the input to everything else Ply does. First decide whether the user
+wants a proposed design or claims about existing code. A design can specify known
+behavior before functions exist; keep its missing anchors and unearned evidence visible.
+For existing code, resolve each addition before treating it as implemented.
 
-Use `cargo ply check` after every addition. It runs no engines and takes about a second.
+## Design authoring before code
 
-## Workflow
+1. **Map the requested system.** Trace the user's ordinary scenarios and failure paths.
+   Cover every known operational boundary: inputs, outputs, data shapes, invariants,
+   errors, state transitions, human actions and external assumptions. Describe
+   scoped optional capabilities as optional. Completeness is about the requested
+   behavior, not the number of components or functions.
+
+2. **Declare the known intent.** Use `externals:` for outside parties, components and
+   `~>` flows for responsibilities and data movement, `state:` shapes and `holds:` for
+   proposed state invariants, and function contracts for consequential decisions.
+   Give every component the required proposed crate/module `anchor:`; an anchor is a
+   resolution target, not evidence that code exists there. Use notes and `unresolved:`
+   for unknown tool fit, API details and decisions. Do not create empty code to make an
+   architecture check pass or withhold a known contract until its function exists.
+   A hollow workspace component is only a link to a child document; make the full
+   operational design visible in the root tree or linked documents before stopping.
+
+3. **State finite acceptance obligations.** Trace each scenario and failure path to
+   a declaration and an expected observable outcome. Use `acceptance:` when an exact
+   planned test, fixture paths and component can be named honestly; otherwise record
+   the obligation in the relevant component note and keep the missing test details
+   explicit. Human learning and approval need their own review, not synthetic tests.
+   Never invent fixture results, implementations, approval or proof.
+
+4. **Validate and read the design.** Run `cargo ply check` and `cargo ply render --text`
+   on the root and relevant crate-local documents. Fix schema and document-semantic
+   errors, then inspect the rendered coverage against the scenario map. Record missing
+   anchors, unchecked architecture tiers and absent tests as open implementation work;
+   a nonzero code-resolution check does not erase a valid design milestone. Neither
+   `check` nor `render` earns behavioral evidence.
+
+## Authoring against existing code
+
+Use `cargo ply check` after each coherent addition. It runs no verification engines.
 
 1. **Find the root.** A `ply.yaml` resolves function claims against one crate's
    `src/lib.rs` in this implementation. A virtual workspace root has no library, so use a
@@ -26,7 +58,7 @@ Use `cargo ply check` after every addition. It runs no engines and takes about a
    assuming. If the crate has only `src/main.rs` or a custom library path, report the
    resolver limitation before proposing a layout change.
 
-2. **Start with components and stop.** Name the parts, anchor each one, and check:
+2. **Start with components.** Name the parts, anchor each one, and check:
 
    ```bash
    cargo ply check path/to/crate
@@ -50,9 +82,7 @@ Use `cargo ply check` after every addition. It runs no engines and takes about a
    contract resolves and its implementation compiles, hand off to `$ply-verify`. Run the
    engines now; do not collect a feature's worth of unchecked claims first. Repeat for
    each coherent addition using its [incremental verification workflow](../ply-verify/SKILL.md#verify-while-building).
-   `check` validates the declaration; it does not establish the contract. A design-only
-   document without code can stop at declaration checking and rendering, with no claim
-   that behavioral evidence was earned.
+   `check` validates the declaration; it does not establish the contract.
 
 ## Write a promise a run can be wrong about
 
@@ -83,8 +113,12 @@ promise.
 | `mutate` | Beside `test` or `fuzz`, to find out whether they have teeth |
 | `prove` | Not built. Do not declare it and describe it as evidence |
 
-Start with `fuzz` for suitable new claims. Add `bounded` when the task needs that
-evidence, not merely because a signature resolves. A refusal can reflect an engine
+For implementation checks, start with `fuzz` for suitable new claims. If the user
+requests bounded proof, keep `bounded` in the design and record unresolved signature,
+input-shape and bound support until a real harness is investigated. Do not silently
+replace the request with fuzz-only intent or claim that an unsupported bound ran.
+Add `bounded` for other tasks when they need that evidence, not merely because a
+signature resolves. A refusal can reflect an engine
 limitation rather than a design defect; read its reason before changing an API. See
 [checkable code](../ply-checkable-code/SKILL.md) for input construction and side effects.
 
