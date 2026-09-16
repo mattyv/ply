@@ -9,136 +9,49 @@ routes those claims to existing checking tools, records the evidence they earn, 
 reports concrete counterexamples when a claim fails. The developer reviews the intent,
 the boundaries, and the uncovered risk instead of treating plausible code as proof.
 
+## What that looks like
+
+This is Ply's own source code, checked by Ply on the last commit to `main`:
+
+<p align="center">
+  <a href="https://mattyv.github.io/ply/">
+    <img src="https://mattyv.github.io/ply/ply-root-overview.svg"
+         alt="Six boxes, one per part of Ply. Two are solid, labelled 6 of 6 and 56 of 56 functions earned. Four are drawn with diagonal hatching and promise nothing. A red line crosses from one hatched box to another, flagged with a warning code. A panel above them says 25 module boundaries were not checked by this run.">
+  </a>
+</p>
+
+Three marks carry it:
+
+| Mark | What it means |
+|---|---|
+| **Solid box** | Code that makes promises about itself. The count is the result: `56 of 56 earned` means 56 functions have a real check behind them, not 56 intentions. |
+| **Hatched box** | Code that promises nothing, so nothing about it has been checked. Drawn loudly on purpose: absence as blank space reads as background, and the thing that should worry you would end up the quietest thing on the page. |
+| **Red line** | A call that crosses a boundary this design forbids. |
+
+The panel above the boxes is the same idea turned on the run itself: it names the rules
+this run did **not** cover, so a reader cannot mistake a quiet drawing for a complete one.
+
+This is the folded view — one box per part. Open it and every function appears as its own
+chip, filled green with a tick where a check ran and held. Green is never drawn from a
+promise: before anything is verified there is none.
+
+**What "green" is worth here, exactly.** Every green chip earned it by running the
+function on 256 generated inputs without finding one that broke its promise. That is real
+testing, and it is not a proof — a promise that fails on one value in a billion would sit
+there green. Ply can also prove a claim outright, over every input rather than a sample;
+nothing in Ply's own source has earned that yet, and saying so is the point. A tool about
+not overclaiming should not lead with its weakest evidence dressed as its strongest.
+
+That page is written by the build and only by a build that passed, so nothing on it is a
+claim made by hand. Click the drawing for
+[every function and what each check found](https://mattyv.github.io/ply/), or jump
+to [Install](#install).
+
 > **Project status: active early-alpha development.** The CLI, schema, checking pipeline,
 > result records, static SVG renderer, and interactive visual clients exist. Rust coverage remains narrow, and
 > adversarial testing continues to find and close gaps between what a result says and what
 > ran. Capabilities may change quickly; Ply is not ready to serve as production assurance.
 > See [Current status](#current-status).
-
-**Ply is pointed at its own source code, and the result is published:**
-[what Ply currently proves about Ply](https://mattyv.github.io/ply/). Every function
-carrying a promise is drawn as a chip, filled in green when the promise was checked on
-the latest commit to `main` and held. The page is written by the build and only by a
-build that passed, so nothing on it is a claim made by hand.
-
-## Install
-
-New to Ply? [The Ply Book](https://mattyv.github.io/ply-book/) teaches contracts,
-counterexamples, and evidence limits through a Rust job scheduler, with runnable
-exercises, hints, and short assessments.
-
-Two things go in: the command, and one dependency in the crate you want checked.
-
-**The command.** Install Ply 0.2.0 as a `cargo` subcommand from this exact revision:
-
-```console
-$ cargo install --git https://github.com/mattyv/ply \
-    --rev 1ab348db957f4df905f3ff35f917f2e7cbee26a6 ply-cli --locked
-$ cargo ply --version
-$ cargo ply --help
-```
-
-**The guides, if you work with an assistant.** `cargo install` copies one executable and
-nothing else, so the skills that explain how to write code Ply can check — and how to read
-what it reports — do not come with it. One command puts them where an assistant working in
-your project will find them:
-
-```console
-$ cargo ply skills          # writes .claude/skills/, or pass --dest
-```
-
-They are carried inside the binary, so this works offline and always writes the guidance
-that matches the Ply you are running. A file you have edited is left alone and named,
-rather than replaced.
-
-`cargo ply check` says so once if a project has not installed them, and then stops
-mentioning it.
-
-**The dependency.** The `#[ply::requires]` and `#[ply::ensures]` attributes come from a
-crate you add to whatever you are checking. Under a plain `cargo build` they compile to
-nothing, so this costs you no runtime behaviour:
-
-```toml
-[dependencies]
-ply = { package = "ply-attrs", git = "https://github.com/mattyv/ply", rev = "1ab348db957f4df905f3ff35f917f2e7cbee26a6" }
-
-# Ply's generated proof harnesses are `cfg(kani)`-gated. Without this line
-# `cargo build` still works, but warns about an unknown cfg.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
-```
-
-Keep the command and attribute dependency on the same revision when upgrading.
-
-Then write what a function promises, and a `ply.yaml` beside your `Cargo.toml` saying
-what evidence you want for it:
-
-```rust
-#[ply::ensures(|result| *result >= a)]
-pub fn add(a: u32, b: u32) -> u32 {
-    a.saturating_add(b)
-}
-```
-
-```yaml
-ply: 1
-
-components:
-  mycrate:
-    anchor: mycrate          # your crate's library name
-    fns:
-      add:
-        checks: [fuzz(64)]
-```
-
-```console
-$ cargo ply check .          # grammar and anchors, no engines, fast
-$ cargo ply verify .         # runs the checks and reports what they earned
-$ cargo ply verify . -j 2    # overlaps independent bounded checks
-workspace — fuzzed(64)
-  mycrate — fuzzed(64)
-    add — fuzzed(64)
-```
-
-**Engines.** `fuzz` and `test` need nothing beyond the above — proptest arrives with the
-generated harness. Two checks need a tool on your `PATH`, and Ply says so rather than
-skipping quietly if one is missing:
-
-```console
-$ cargo install --locked kani-verifier && cargo kani setup   # for bounded(k)
-$ cargo install --locked cargo-mutants                       # for mutate
-```
-
-**Application acceptance.** A top-level `acceptance:` claim can name one requirement,
-its production entry point, fixture and independently reviewed expected-result files, and
-an exact Cargo integration test. `verify` reports that finite result separately from local
-contract evidence; a required failure withholds overall success without weakening or
-upgrading any function verdict. See [the schema guide](docs/SCHEMA.md#named-acceptance-evidence).
-
-**What artefacts are created by Ply.** Persistent generated harnesses live under
-`target/ply/`, which is already ignored by every Rust `.gitignore`. A serial bounded proof
-temporarily installs `src/ply_generated.rs` and one marked module declaration so the proof
-can see private crate items; both disappear when that proof ends, including on failure or
-interruption. Ply also removes recognized leftovers from older runs. On a crate that
-declares its own workspace Ply similarly borrows your `Cargo.toml` for the length of the
-run and writes it back byte-for-byte when the run ends. Rendered counterexample tests are
-the deliberate exception: when Ply finds a reproducible failure, it publishes the ordinary
-Rust test described below so you can run and commit it.
-
-**Parallel verification.** `cargo ply verify -j N` (or `--jobs N`) allows at most `N`
-Ply verification tasks to run at once; it defaults to `1`. Compilers and engines can
-create extra threads and processes, so this is not a machine-wide process limit. The
-first release overlaps only independent, dependency-ready claims whose sole check is
-`bounded(k)`. Fuzzing, worked examples, mutation testing, state-history checks,
-linked-document runs, build-script closures, and mixed check lists remain serial. Each
-active proof gets a private source shadow and Cargo target. Reports, counterexamples, and
-`ply.lock` stay deterministic and are published by one coordinator after worker results
-are collected. A run also stays serial when its Cargo lock is absent or stale, when a
-shared harness is temporarily registered, or when compile-time path macros make source
-relocation observable. Ply compares its first-party walk with Cargo's resolved local
-dependency graph and library entry points; an unrecognised local-dependency spelling,
-including a workspace-inherited path dependency or custom library path, also stays serial
-and uncached.
 
 ## The development loop
 
@@ -158,7 +71,18 @@ what matters and inspect code where mechanical evidence stops.
 
 **What step 2 can and cannot do before the code exists.** The drawing is available
 immediately: `cargo ply render <dir> -o system.svg` reads `ply.yaml` alone, with no crate
-behind it. Add `--json` when a visual client needs the same navigable component and
+behind it. It is the same picture as the one at the top of this page, with the results
+taken out — the shape you are proposing, before there is anything to check it against:
+
+<p align="center">
+  <img src="docs/ply-self-overview.svg"
+       alt="The same six boxes as the drawing at the top of this page, in the same arrangement, but with no earned counts on them: the header reads Declaration view, and the boxes carry only what the document promises."
+       width="880">
+</p>
+
+The header says **Declaration view**, and there are no earned counts anywhere, because
+nothing has run. That is the honest difference between the two pictures, and it is the
+one the rest of this page is about. Add `--json` when a visual client needs the same navigable component and
 function hierarchy before code exists. `cargo ply check` is only half available: it validates the document's grammar with nothing else
 present, but its architecture half reads your real crate dependency graph from `cargo
 metadata`, so before there is a Cargo project to read there is nothing for it to check
@@ -474,6 +398,125 @@ exhaustive search passing, unbounded proof. Ply reports the whole tree at once, 
 box down to its weakest part, and marks anything resting on an unproven assumption rather
 than letting it pass as settled.
 
+## Install
+
+New to Ply? [The Ply Book](https://mattyv.github.io/ply-book/) teaches contracts,
+counterexamples, and evidence limits through a Rust job scheduler, with runnable
+exercises, hints, and short assessments.
+
+Two things go in: the command, and one dependency in the crate you want checked.
+
+**The command.** Install Ply 0.2.0 as a `cargo` subcommand from this exact revision:
+
+```console
+$ cargo install --git https://github.com/mattyv/ply \
+    --rev 1ab348db957f4df905f3ff35f917f2e7cbee26a6 ply-cli --locked
+$ cargo ply --version
+$ cargo ply --help
+```
+
+**The guides, if you work with an assistant.** `cargo install` copies one executable and
+nothing else, so the skills that explain how to write code Ply can check — and how to read
+what it reports — do not come with it. One command puts them where an assistant working in
+your project will find them:
+
+```console
+$ cargo ply skills          # writes .claude/skills/, or pass --dest
+```
+
+They are carried inside the binary, so this works offline and always writes the guidance
+that matches the Ply you are running. A file you have edited is left alone and named,
+rather than replaced.
+
+`cargo ply check` says so once if a project has not installed them, and then stops
+mentioning it.
+
+**The dependency.** The `#[ply::requires]` and `#[ply::ensures]` attributes come from a
+crate you add to whatever you are checking. Under a plain `cargo build` they compile to
+nothing, so this costs you no runtime behaviour:
+
+```toml
+[dependencies]
+ply = { package = "ply-attrs", git = "https://github.com/mattyv/ply", rev = "1ab348db957f4df905f3ff35f917f2e7cbee26a6" }
+
+# Ply's generated proof harnesses are `cfg(kani)`-gated. Without this line
+# `cargo build` still works, but warns about an unknown cfg.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+```
+
+Keep the command and attribute dependency on the same revision when upgrading.
+
+Then write what a function promises, and a `ply.yaml` beside your `Cargo.toml` saying
+what evidence you want for it:
+
+```rust
+#[ply::ensures(|result| *result >= a)]
+pub fn add(a: u32, b: u32) -> u32 {
+    a.saturating_add(b)
+}
+```
+
+```yaml
+ply: 1
+
+components:
+  mycrate:
+    anchor: mycrate          # your crate's library name
+    fns:
+      add:
+        checks: [fuzz(64)]
+```
+
+```console
+$ cargo ply check .          # grammar and anchors, no engines, fast
+$ cargo ply verify .         # runs the checks and reports what they earned
+$ cargo ply verify . -j 2    # overlaps independent bounded checks
+workspace — fuzzed(64)
+  mycrate — fuzzed(64)
+    add — fuzzed(64)
+```
+
+**Engines.** `fuzz` and `test` need nothing beyond the above — proptest arrives with the
+generated harness. Two checks need a tool on your `PATH`, and Ply says so rather than
+skipping quietly if one is missing:
+
+```console
+$ cargo install --locked kani-verifier && cargo kani setup   # for bounded(k)
+$ cargo install --locked cargo-mutants                       # for mutate
+```
+
+**Application acceptance.** A top-level `acceptance:` claim can name one requirement,
+its production entry point, fixture and independently reviewed expected-result files, and
+an exact Cargo integration test. `verify` reports that finite result separately from local
+contract evidence; a required failure withholds overall success without weakening or
+upgrading any function verdict. See [the schema guide](docs/SCHEMA.md#named-acceptance-evidence).
+
+**What artefacts are created by Ply.** Persistent generated harnesses live under
+`target/ply/`, which is already ignored by every Rust `.gitignore`. A serial bounded proof
+temporarily installs `src/ply_generated.rs` and one marked module declaration so the proof
+can see private crate items; both disappear when that proof ends, including on failure or
+interruption. Ply also removes recognized leftovers from older runs. On a crate that
+declares its own workspace Ply similarly borrows your `Cargo.toml` for the length of the
+run and writes it back byte-for-byte when the run ends. Rendered counterexample tests are
+the deliberate exception: when Ply finds a reproducible failure, it publishes the ordinary
+Rust test described below so you can run and commit it.
+
+**Parallel verification.** `cargo ply verify -j N` (or `--jobs N`) allows at most `N`
+Ply verification tasks to run at once; it defaults to `1`. Compilers and engines can
+create extra threads and processes, so this is not a machine-wide process limit. The
+first release overlaps only independent, dependency-ready claims whose sole check is
+`bounded(k)`. Fuzzing, worked examples, mutation testing, state-history checks,
+linked-document runs, build-script closures, and mixed check lists remain serial. Each
+active proof gets a private source shadow and Cargo target. Reports, counterexamples, and
+`ply.lock` stay deterministic and are published by one coordinator after worker results
+are collected. A run also stays serial when its Cargo lock is absent or stale, when a
+shared harness is temporarily registered, or when compile-time path macros make source
+relocation observable. Ply compares its first-party walk with Cargo's resolved local
+dependency graph and library entry points; an unrecognised local-dependency spelling,
+including a workspace-inherited path dependency or custom library path, also stays serial
+and uncached.
+
 ## A declarative grammar, and the line where it stops
 
 Ply gives you a **declarative grammar** for describing a system: components and how they
@@ -663,8 +706,9 @@ renders as:
   <img src="vetting/004-legacy-extension.svg" alt="A line at the top reads: 2 components, 5 functions, 0 promise nothing. The withdrawal component is a solid box listing its five functions, each badged with the checks it declares. An arrow crosses to the ledger it depends on, drawn as a dashed box filled with diagonal hatching to mark that nothing is promised about it." width="330">
 </p>
 
-The reading is meant to be immediate. A **solid** box is code that makes claims; the
-**hatched** box is code that does not, so nothing about it has been checked. The hatching
+Same three marks as the drawing at the top of this page, on a document small enough to
+read whole. A **solid** box is code that makes claims; the **hatched** box is code that
+does not, so nothing about it has been checked. The hatching
 is deliberate: absence drawn as blank space reads as background, and the one thing that
 should worry you would be the quietest thing on the page. Each function carries the checks
 it declares — `B2` for bounded to depth 2, `F256` for 256 sampled cases, `T` for worked

@@ -69,3 +69,71 @@ fn writes_the_real_evidence_coloured_drawing_not_the_declared_one() {
          if it does, this test cannot tell the two apart:\n{declared_svg}"
     );
 }
+
+/// `--svg-overview` exists so a deep workspace has a drawing that fits on a
+/// page, and CI can publish both from **one** verification.
+///
+/// One run is the whole point, and the reason this asks for both files in a
+/// single command rather than two. Two runs would generate two sets of
+/// inputs from two seeds, so one could find a counterexample the other
+/// missed -- and the project's front page would then show a summary that
+/// disagreed with the full drawing beside it.
+///
+/// What makes this a real test of the fold rather than of plumbing: the
+/// overview must carry `1 of 1 earned`, a count only a completed run can
+/// produce, on a box whose contents have been folded away. A fold that
+/// dropped the evidence, or an overview quietly rendered from the document
+/// instead of the run, fails here.
+#[test]
+fn one_run_writes_both_the_full_drawing_and_a_folded_overview() {
+    let cargo_ply = build_cargo_ply();
+    let fixture = copy_fixture("textseeded");
+    let full_path = fixture.path().join("verified.svg");
+    let overview_path = fixture.path().join("overview.svg");
+
+    Command::new(&cargo_ply)
+        .args([
+            "verify",
+            fixture.path().to_str().unwrap(),
+            "--engine-timeout",
+            "60",
+            "--svg",
+        ])
+        .arg(&full_path)
+        .arg("--svg-overview")
+        .arg(&overview_path)
+        .output()
+        .expect("spawning cargo-ply verify --svg --svg-overview");
+
+    let full = std::fs::read_to_string(&full_path).expect("the full drawing must be written");
+    let overview =
+        std::fs::read_to_string(&overview_path).expect("the overview must be written too");
+
+    assert!(
+        overview.starts_with("<svg"),
+        "the overview is not a drawing at all:\n{overview}"
+    );
+    assert!(
+        overview.contains("collapsed-stack"),
+        "the overview must actually be folded, or it is just a second copy of the full \
+         drawing:\n{overview}"
+    );
+    // The count only a completed run can compute, on the folded box itself.
+    // The declared drawing of this same document cannot produce it, so this
+    // is what separates a real overview from a re-rendered declaration.
+    assert!(
+        overview.contains("1 of 1 earned"),
+        "folding must not drop the run's results -- the box should still say what it \
+         earned:\n{overview}"
+    );
+    assert_ne!(
+        overview, full,
+        "this document has something to fold, so the two files must differ"
+    );
+    assert!(
+        overview.len() < full.len(),
+        "the overview is meant to be the smaller drawing: overview {} bytes, full {} bytes",
+        overview.len(),
+        full.len()
+    );
+}

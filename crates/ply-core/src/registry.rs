@@ -72,9 +72,8 @@ codes!(
     E0301, E0304, E0306, // --- Tier::Crate: architecture, exact and sound (§5.3). ---
     A0401, A0405, A0409, A0410, A0411, A0412, A0413, A0414, A0415, A0416, A0417, W0413, W0532,
     W0533, W0534, E0210, E0211,
-    // --- Tier::Item: architecture, approximate (§5.3) -- none of these
-    // are built yet; see each row's status. ---
-    A0402, A0403, A0404, A0406, A0407, A0408, W0411, W0412,
+    // --- Tier::Item: architecture, approximate (§5.3). ---
+    A0402, A0403, A0404, A0406, A0407, A0408, A0420, W0411, W0412, W0540,
     // --- Tier::Contract: verify-time, per-function proof-engine checks
     // (§5.4). ---
     E0501, E0502, E0503, E0505, W0502, W0503, W0511, W0512, W0513, W0514, W0515, W0516, W0517,
@@ -431,14 +430,14 @@ impl Code {
                 gloss: "An edge or deny rule names a component that isn't declared anywhere in this document, so the line can never match anything and is silently doing nothing -- check the spelling against the document's real component names.",
             },
 
-            // ---------------- Item (none built yet) ----------------
+            // ---------------- Item ----------------
             A0402 => RuleEntry {
                 code: self,
                 tier: Item,
-                status: DeclaredOnly,
+                status: Enforced,
                 severity: Warning,
                 spec_anchor: "§5.3",
-                gloss: "Planned: a function call would cross between two declared components with no edge permitting it, found from an approximate, syntax-based call graph rather than the exact crate graph -- not built yet.",
+                gloss: "A source reference crosses between two module-level components with no edge permitting it, or matches an explicit deny rule. This approximate finding is advisory because the referring component did not opt into strict architecture checks.",
             },
             A0403 => RuleEntry {
                 code: self,
@@ -495,6 +494,22 @@ impl Code {
                 severity: Warning,
                 spec_anchor: "§5.3 (D11)",
                 gloss: "Planned: a call site Ply's extractor could not resolve has a plausible textual match that would need an undeclared edge -- today an unresolved call site is only counted, not named this specifically, so this is not built yet.",
+            },
+            A0420 => RuleEntry {
+                code: self,
+                tier: Item,
+                status: Enforced,
+                severity: Error,
+                spec_anchor: "§5.3",
+                gloss: "A source reference crosses a module boundary that the design forbids, and the referring component has `strict: true`. That explicit opt-in turns the approximate architecture finding into an error that fails the run.",
+            },
+            W0540 => RuleEntry {
+                code: self,
+                tier: Item,
+                status: Enforced,
+                severity: Warning,
+                spec_anchor: "§5.3",
+                gloss: "Ply could not fully compare a module boundary because part of the relevant source, ownership, or reference path was unresolved. The run names what it could not follow and does not present the affected rule as clean.",
             },
 
             // ---------------- Contract ----------------

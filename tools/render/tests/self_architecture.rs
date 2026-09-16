@@ -38,6 +38,21 @@ fn render_committed(
     yaml_path: &str,
     doc: &ply_render::model::Document,
 ) -> String {
+    render_committed_with(root, yaml_path, doc, &RenderOptions::default())
+}
+
+/// `render_committed`, for a drawing the documentation deliberately folds.
+///
+/// A folded drawing is output like any other and goes stale like any other,
+/// so it is pinned the same way -- with the fold it was written at, or the
+/// test would compare a folded file against an unfolded render and fail
+/// forever on a correct file.
+fn render_committed_with(
+    root: &std::path::Path,
+    yaml_path: &str,
+    doc: &ply_render::model::Document,
+    options: &RenderOptions,
+) -> String {
     let source_root = root
         .join(yaml_path)
         .parent()
@@ -51,7 +66,7 @@ fn render_committed(
     // fine in the file it was checking.
     let state =
         ply_render::harness::resolve_state_fields_with_links(&source_root, doc, Some(&links.links));
-    render_svg_with_state_and_links(doc, &RenderOptions::default(), &state, &links.links)
+    render_svg_with_state_and_links(doc, options, &state, &links.links)
         .unwrap_or_else(|e| panic!("{yaml_path} must render: {e}"))
 }
 
@@ -145,6 +160,45 @@ fn the_architecture_diagrams_match_the_specs_they_claim_to_be_rendered_from() {
 /// this list: it is the reference the implementation was checked against,
 /// not a second copy of the implementation's output. Regenerating it would
 /// make the two agree by construction and so prove nothing.
+/// The overview drawing README.md opens with.
+///
+/// Pinned for the same reason as every drawing beside it, and more urgently:
+/// it is the first thing anyone sees of this project, so it is the drawing
+/// that can most expensively be wrong. Folded to top-level boxes, which is
+/// the whole point of it -- the unfolded drawing of this document is 6183
+/// pixels tall and answers no question a reader has in their first ten
+/// seconds.
+#[test]
+fn the_readme_overview_drawing_still_matches_what_the_root_document_renders_to() {
+    let root = repo_root();
+    let yaml_path = "ply.yaml";
+    let svg_path = "docs/ply-self-overview.svg";
+    let yaml = std::fs::read_to_string(root.join(yaml_path))
+        .unwrap_or_else(|e| panic!("reading {yaml_path}: {e}"));
+    let doc = parse_document(&yaml).unwrap_or_else(|e| panic!("{yaml_path} must parse: {e}"));
+    let options = RenderOptions {
+        depth: Some(1),
+        ..RenderOptions::default()
+    };
+    let fresh = render_committed_with(&root, yaml_path, &doc, &options);
+
+    let committed = std::fs::read_to_string(root.join(svg_path)).unwrap_or_else(|e| {
+        panic!(
+            "README.md opens with {svg_path} and it could not be read ({e}). Regenerate it \
+             from the tools workspace with:\n  cargo run --release -p ply-render -- \
+             ../{yaml_path} --depth 1 -o ../{svg_path}"
+        )
+    });
+
+    assert_eq!(
+        committed, fresh,
+        "{svg_path} no longer matches what {yaml_path} renders to, so the first drawing on \
+         this project's front page is showing a structure this repository no longer has. \
+         Regenerate it from the tools workspace, then look at the result before committing \
+         it:\n  cargo run --release -p ply-render -- ../{yaml_path} --depth 1 -o ../{svg_path}"
+    );
+}
+
 #[test]
 fn the_committed_drawings_still_match_what_the_documents_render_to() {
     let root = repo_root();
