@@ -24,9 +24,9 @@ pub use syn::ExprClosure as ParsedClause;
 /// more door to try before it is refused (§5.4b's generator hook).
 pub type RouteTable = IndexMap<String, String>;
 
-/// The type vocabulary Ply's codegen recognizes. `VecU8` is the only
-/// collection shape the *Kani* path (`bounded`) builds (with the mandatory
-/// unwind emission, §5.4b) -- `Vec(_)` and `BTreeSet(_)` exist only for the
+/// The type vocabulary Ply's codegen recognizes. Kani builds `VecU8` and
+/// the exact nested byte-slice domain with mandatory unwind bounds.
+/// General `Vec(_)` and `BTreeSet(_)` exist only for the
 /// *fuzz* path (M4): proptest can generate any of these without Kani's
 /// construction/unwind cost, which is exactly why `BTreeSet` -- one of
 /// §5.4b's own measured exclusions -- is fuzz-supported but never
@@ -303,12 +303,9 @@ pub enum RustType {
     /// [`RustType::VecU8`]'s own doc): an owned `Vec<T>` is constructed and
     /// lent at the call site as `&name`, relying on `Vec<T>`'s `Deref<Target
     /// = [T]>` to coerce the reference into the `&[T]` the real function
-    /// wants -- the exact same trick, no second mechanism. **Fuzz-only**,
-    /// like `Vec`/`BTreeSet`: Kani's harness codegen here has never built
-    /// anything but `VecU8`, so a slice earns no more than `Vec<T>` already
-    /// does on the proof engine -- never bounded-supported, and this is
-    /// unchanged from before this task (`&[T]` was `Unsupported`, hence
-    /// already not bounded-supported, on both engines).
+    /// wants. General slices are fuzz-only. The exact `&[&[u8]]` shape
+    /// additionally has a stack-backed bounded generator with explicit
+    /// outer and inner length bounds and disjoint row storage.
     Slice(Box<RustType>),
     /// `(A, B, ...)` -- a tuple of supported element types, added for the
     /// same task as [`RustType::Slice`]. Fuzz-only, built element by
@@ -508,6 +505,7 @@ impl RustType {
     pub fn is_bounded_supported(&self) -> bool {
         match self {
             RustType::VecU8 => true,
+            ty if ty.is_nested_byte_slices() => true,
             RustType::Vec(_) | RustType::BTreeSet(_) | RustType::Unsupported(_) => false,
             RustType::NonZero(inner) => inner.is_valid_nonzero_inner(),
             RustType::Duration => true,
@@ -540,6 +538,11 @@ impl RustType {
             RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => false,
             other => other.is_leaf() || other.is_composite_constructible(),
         }
+    }
+
+    /// The exact shared slice of shared byte slices, `&[&[u8]]`.
+    pub fn is_nested_byte_slices(&self) -> bool {
+        matches!(self, Self::Slice(inner) if matches!(inner.as_ref(), Self::Slice(byte) if byte.as_ref() == &Self::U8))
     }
 
     /// Whether a `bounded` proof over this type is a proof over its
@@ -874,6 +877,7 @@ impl RustType {
                 format!("std::num::NonZero{}", inner.nonzero_suffix()?)
             }
             RustType::String => "String".to_string(),
+            ty if ty.is_nested_byte_slices() => "[&[u8]]".to_string(),
             other => other.scalar_rust_name()?.to_string(),
         })
     }
@@ -908,6 +912,7 @@ impl RustType {
             RustType::Unit => "()".to_string(),
             RustType::UserTypeCtor(plan) => plan.type_name.clone(),
             RustType::UserTypeFields(plan) => plan.type_name.clone(),
+            ty if ty.is_nested_byte_slices() => "[&[u8]]".to_string(),
             RustType::Slice(inner) => format!("[{}]", inner.display_name()),
             RustType::Tuple(items) => format!(
                 "({})",
@@ -931,6 +936,7 @@ impl RustType {
     /// reports the engine's own rendering instead of inventing one.
     pub fn is_witness_renderable(&self) -> bool {
         match self {
+            ty if ty.is_nested_byte_slices() => true,
             RustType::VecU8 => true,
             RustType::Vec(inner) => inner.as_ref() == &RustType::U8,
             RustType::Duration => true,
@@ -1719,7 +1725,9 @@ impl ContractFn {
     }
 
     pub fn has_vec_param(&self) -> bool {
-        self.params.iter().any(|p| matches!(p.ty, RustType::VecU8))
+        self.params
+            .iter()
+            .any(|p| matches!(p.ty, RustType::VecU8) || p.ty.is_nested_byte_slices())
     }
 
     /// Whether any parameter or the return type is `f32`/`f64` -- what
@@ -5992,26 +6000,115 @@ pub struct GeneratedHarness {
     pub promise: crate::promise::PromisePlan,
 }
 
-/// Generates the `#[kani::proof_for_contract]` harness for `cf`, sized by
-/// `bound_k` (the declared `bounded(k)` -- also used as the Vec length bound
-/// when the function has a `Vec<u8>` parameter). Emits `#[kani::unwind(k+1)]`
-/// whenever a Vec parameter is present -- §5.4b's mandatory annotation,
-/// measured (not inferred) for exactly this manual-indexed-loop-consumption
-/// shape in docs/m3-slice-findings.md. Without it, Kani's default unwind
-/// inference times out at every length, including 1.
-/// If any effective clause came from `ply.yaml`, also emits a same-signature
-/// wrapper carrying the merged Kani attributes and targets that wrapper. Kani
-/// cannot see an in-memory YAML contract; the wrapper calls the real body and
-/// is the Rust item that makes the merged promise provable.
-/// Builds `kani::any()` (or `kani::vec::any_vec`) bindings for `params` at
-/// `bound_k`, plus the call-site arguments (`&x` for a by-ref param) --
-/// the one place this shape is built, shared between a claimed fn's own
-/// proof and D5's first branch (§5.5): the never-run "existence" harness
-/// that stands in for a `#[kani::stub_verified]` target's own
-/// `#[kani::proof_for_contract]` requirement (tests/spike's finding 1 --
-/// Kani's check is purely that such a harness is present in the same
-/// compiled crate, never that it ran or passed here).
+pub fn has_inline_byte_ensures(cf: &ContractFn) -> bool {
+    cf.params.iter().any(|p| p.ty.is_nested_byte_slices())
+        && syn::parse_str::<syn::ItemFn>(&cf.source).is_ok_and(|f| {
+            f.attrs.iter().any(|a| {
+                a.path()
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect::<Vec<_>>()
+                    == ["ply", "ensures"]
+            })
+        })
+}
+
+/// Lower only the checked item's inline postconditions in a private source
+/// shadow. Edits replace attribute bytes; application-body bytes stay exact.
+pub fn lower_inline_byte_ensures(cf: &ContractFn, k: u32, private_crate: &Path) -> Result<()> {
+    use syn::spanned::Spanned;
+    use syn::visit::Visit;
+    let span = cf
+        .source_span
+        .as_ref()
+        .context("inline byte proof needs a source span")?;
+    let path = private_crate.join(&span.file);
+    let original = std::fs::read_to_string(&path)?;
+    let file = syn::parse_file(&original)?;
+    struct Finder<'a> {
+        cf: &'a ContractFn,
+        start: [u32; 2],
+        found: Option<Vec<syn::Attribute>>,
+    }
+    impl<'ast> Visit<'ast> for Finder<'_> {
+        fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+            let start = f.span().start();
+            if f.sig.ident == self.cf.name
+                && [start.line.saturating_sub(1) as u32, start.column as u32] == self.start
+            {
+                self.found = Some(f.attrs.clone());
+            }
+            syn::visit::visit_item_fn(self, f);
+        }
+        fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+            let start = f.span().start();
+            if f.sig.ident == self.cf.name
+                && [start.line.saturating_sub(1) as u32, start.column as u32] == self.start
+            {
+                self.found = Some(f.attrs.clone());
+            }
+            syn::visit::visit_impl_item_fn(self, f);
+        }
+    }
+    let mut finder = Finder {
+        cf,
+        start: span.start,
+        found: None,
+    };
+    finder.visit_file(&file);
+    let f = finder
+        .found
+        .context("checked inline-contract item moved in source shadow")?;
+    let mut line_offsets = vec![0usize];
+    for (i, b) in original.bytes().enumerate() {
+        if b == b'\n' {
+            line_offsets.push(i + 1);
+        }
+    }
+    let mut edits = Vec::new();
+    for attr in f {
+        if attr
+            .path()
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            != ["ply", "ensures"]
+        {
+            continue;
+        }
+        let clause: syn::ExprClosure = attr.parse_args()?;
+        let lowered = crate::bounded_contract::lower_byte_ensures(&clause, &cf.params, k);
+        let start = attr.span().start();
+        let end = attr.span().end();
+        let start = line_offsets[start.line - 1] + start.column;
+        let end = line_offsets[end.line - 1] + end.column;
+        edits.push((
+            start,
+            end,
+            format!("#[ply::ensures({})]", lowered.to_token_stream()),
+        ));
+    }
+    let mut rewritten = original;
+    for (start, end, text) in edits.into_iter().rev() {
+        rewritten.replace_range(start..end, &text);
+    }
+    std::fs::write(path, rewritten)?;
+    Ok(())
+}
+
+pub(crate) fn fresh_helper(base: &str, used: &mut std::collections::BTreeSet<String>) -> String {
+    let mut name = format!("__ply_{base}");
+    while !used.insert(name.clone()) {
+        name.push('_');
+    }
+    name
+}
+
+/// Build bounded input values and their call-site expressions.
 fn render_kani_args(params: &[Param], bound_k: u32) -> (String, Vec<String>) {
+    let mut used = params.iter().map(|p| p.name.clone()).collect();
     let mut lets = String::new();
     let mut call_args = Vec::new();
     for p in params {
@@ -6022,6 +6119,32 @@ fn render_kani_args(params: &[Param], bound_k: u32) -> (String, Vec<String>) {
                     name = p.name,
                     n = bound_k
                 ));
+            }
+            ty if ty.is_nested_byte_slices() => {
+                let n = &p.name;
+                let data = fresh_helper(&format!("{n}_data"), &mut used);
+                let lengths = fresh_helper(&format!("{n}_lengths"), &mut used);
+                let count = fresh_helper(&format!("{n}_count"), &mut used);
+                let views_name = fresh_helper(&format!("{n}_views"), &mut used);
+                lets.push_str(&format!(
+                    "    let {data}: [[u8; {bound_k}]; {bound_k}] = kani::any();\n\
+                     \x20\x20\x20\x20let {lengths}: [usize; {bound_k}] = kani::any();\n\
+                     \x20\x20\x20\x20let {count}: usize = kani::any();\n\
+                     \x20\x20\x20\x20kani::assume({count} <= {bound_k});\n"
+                ));
+                for i in 0..bound_k {
+                    lets.push_str(&format!("    kani::assume({lengths}[{i}] <= {bound_k});\n"));
+                }
+                let views = (0..bound_k)
+                    .map(|i| format!("&{data}[{i}][..{lengths}[{i}]]"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lets.push_str(&format!(
+                    "    let {views_name}: [&[u8]; {bound_k}] = [{views}];\n\
+                     \x20\x20\x20\x20let {n}: &[&[u8]] = &{views_name}[..{count}];\n"
+                ));
+                call_args.push(n.clone());
+                continue;
             }
             // Never `kani::any::<NonZeroU32>()` directly: this codegen does
             // not rely on Kani's own `Arbitrary` impl for the type to
@@ -6084,6 +6207,27 @@ fn render_kani_args(params: &[Param], bound_k: u32) -> (String, Vec<String>) {
     (lets, call_args)
 }
 
+/// Generates the `#[kani::proof_for_contract]` harness for `cf`, sized by
+/// `bound_k` (the declared `bounded(k)` -- also used as the Vec length bound
+/// when the function has a `Vec<u8>` parameter). Emits `#[kani::unwind(k+1)]`
+/// whenever a Vec parameter is present -- §5.4b's mandatory annotation,
+/// measured (not inferred) for exactly this manual-indexed-loop-consumption
+/// shape in docs/m3-slice-findings.md. Without it, Kani's default unwind
+/// inference times out at every length, including 1.
+/// If any effective clause came from `ply.yaml`, also emits a same-signature
+/// wrapper carrying the merged Kani attributes and targets that wrapper. Kani
+/// cannot see an in-memory YAML contract; the wrapper calls the real body and
+/// is the Rust item that makes the merged promise provable.
+/// Builds `kani::any()` (or `kani::vec::any_vec`) bindings for `params` at
+/// `bound_k`, plus the call-site arguments (`&x` for a by-ref param) --
+/// the one place this shape is built, shared between a claimed fn's own
+/// proof and D5's first branch (§5.5): the never-run "existence" harness
+/// that stands in for a `#[kani::stub_verified]` target's own
+/// `#[kani::proof_for_contract]` requirement (tests/spike's finding 1 --
+/// Kani's check is purely that such a harness is present in the same
+/// compiled crate, never that it ran or passed here).
+/// Nested borrowed byte slices use an ordinary native Kani proof that
+/// assumes the merged requires and explicitly asserts the merged ensures.
 pub fn generate_proof_module(
     cf: &ContractFn,
     bound_k: u32,
@@ -6106,7 +6250,13 @@ pub fn generate_proof_module(
     let has_vec = cf.has_vec_param();
     let (lets, call_args) = render_kani_args(&cf.params, bound_k);
 
-    let unwind = if has_vec { Some(bound_k + 1) } else { None };
+    let unwind = if cf.params.iter().any(|p| p.ty.is_nested_byte_slices()) {
+        Some(bound_k + 2)
+    } else if has_vec {
+        Some(bound_k + 1)
+    } else {
+        None
+    };
     let unwind_attr = unwind
         .map(|n| format!("#[kani::unwind({n})]\n"))
         .unwrap_or_default();
@@ -6146,6 +6296,86 @@ pub fn generate_proof_module(
     }
 
     let proof_fn_name = format!("ply_proof_{}", cf.ident());
+
+    if cf.params.iter().any(|p| p.ty.is_nested_byte_slices()) {
+        // Nested references make Kani's contract frame instrumentation costly.
+        // Check the same merged contract explicitly around the real body call.
+        let reference_lets = cf
+            .params
+            .iter()
+            .filter(|p| p.by_ref && !p.ty.is_nested_byte_slices())
+            .map(|p| format!("    let {n} = &{n};\n", n = p.name))
+            .collect::<String>();
+        let native_args = cf.params.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        let requires = cf
+            .requires
+            .as_ref()
+            .map(|(_, text)| format!("    kani::assume({text});\n"))
+            .unwrap_or_default();
+        let mut used = cf.params.iter().map(|p| p.name.clone()).collect();
+        let actual = fresh_helper("actual_result", &mut used);
+        let mut entry_lets = String::new();
+        let assertion = if let Some((clause, text)) = &cf.ensures {
+            let mut lowered =
+                crate::bounded_contract::lower_byte_ensures(clause, &cf.params, bound_k);
+            let (body, entry_values) =
+                crate::contract_rt::lift_entry_values_avoiding(&lowered.body, &mut used);
+            *lowered.body = body;
+            entry_lets = crate::contract_rt::entry_value_lets(&entry_values, "    ");
+            if lowered.inputs.len() != 1 {
+                bail!("E0501: ensures must take exactly one result argument");
+            }
+            if !matches!(lowered.inputs[0], syn::Pat::Type(_)) {
+                let return_ty = cf
+                    .return_type
+                    .rust_name()
+                    .unwrap_or_else(|| cf.return_type.display_name());
+                let ty: syn::Type = syn::parse_str(&format!("&{return_ty}"))?;
+                lowered.inputs[0] = syn::Pat::Type(syn::PatType {
+                    attrs: Vec::new(),
+                    pat: Box::new(lowered.inputs[0].clone()),
+                    colon_token: Default::default(),
+                    ty: Box::new(ty),
+                });
+            }
+            let message = format!("Ply postcondition: {text}");
+            format!(
+                "    assert!(({})(&{actual}), {message:?});\n",
+                lowered.to_token_stream()
+            )
+        } else {
+            String::new()
+        };
+        let import_path = cf.import_path();
+        let imports = import_path
+            .rsplit_once("::")
+            .map(|(module, _)| module)
+            .unwrap_or("");
+        let scoped_import = if imports.is_empty() {
+            String::new()
+        } else {
+            format!("#[cfg(kani)]\nuse super::{imports}::*;\n")
+        };
+        let module_source = format!(
+            "//! Generated Ply native bounded({bound_k}) byte-slice proof.\n\
+             #[cfg(kani)]\nuse super::*;\n{scoped_import}\n\
+             {stub_defs}\n#[cfg(kani)]\n#[kani::proof]\n\
+             {stub_attrs}{unwind_attr}fn {proof_fn_name}() {{\n\
+             {lets}{reference_lets}{requires}{entry_lets}    let {actual} = {path}({args});\n\
+             {assertion}}}\n{promise_defs}",
+            path = cf.path,
+            args = native_args.join(", "),
+            promise_defs = promise.source()
+        );
+        return Ok(GeneratedHarness {
+            module_source,
+            proof_fn_path: format!("ply_generated::{proof_fn_name}"),
+            unwind,
+            stubbed: stubs.to_vec(),
+            promise,
+        });
+    }
+
     let contract_fn_name = format!("ply_contract_{}", cf.ident());
     let (proof_target, contract_wrapper) = if cf.has_declared_contract {
         let requires_attr = cf

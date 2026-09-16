@@ -1,0 +1,9 @@
+ply: 1
+components:
+  nestedbytes:
+    anchor: ply_fixture_nestedbytes
+    fns:
+      valid_key_bytes:
+        checks: [bounded(4), fuzz(256)]
+        ensures:
+          - '|result| *result == (!keys.is_empty() && keys.iter().all(|key| !key.is_empty()) && (0..keys.len()).all(|i| (0..i).all(|j| keys[i] != keys[j])))'

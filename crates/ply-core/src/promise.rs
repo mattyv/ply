@@ -248,7 +248,7 @@ fn params_binding(params: &[(String, String)]) -> Result<ParamBindings, String> 
     let mut domain = Vec::new();
     for (name, ty_src) in params {
         match crate::harness::rust_type_from_source(ty_src).and_then(|t| {
-            t.is_bounded_supported()
+            (t.is_bounded_supported() && !t.is_nested_byte_slices())
                 .then(|| t.rust_name())
                 .flatten()
                 .map(|n| (t, n))

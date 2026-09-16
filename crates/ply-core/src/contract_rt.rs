@@ -44,12 +44,28 @@ pub(crate) struct EntryValue {
 /// evaluation order. A clause with no `old()` comes back unchanged and with
 /// an empty list, so every caller can run this unconditionally.
 pub(crate) fn lift_entry_values(body: &Expr) -> (Expr, Vec<EntryValue>) {
-    use syn::visit_mut::VisitMut;
+    lift_entry_values_avoiding(body, &mut Default::default())
+}
 
-    struct Lifter {
-        found: Vec<EntryValue>,
+pub(crate) fn lift_entry_values_avoiding(
+    body: &Expr,
+    used: &mut std::collections::BTreeSet<String>,
+) -> (Expr, Vec<EntryValue>) {
+    use syn::visit::Visit;
+    use syn::visit_mut::VisitMut;
+    struct Identifiers<'a>(&'a mut std::collections::BTreeSet<String>);
+    impl<'ast> Visit<'ast> for Identifiers<'_> {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            self.0.insert(ident.to_string());
+        }
     }
-    impl VisitMut for Lifter {
+    Identifiers(used).visit_expr(body);
+
+    struct Lifter<'a> {
+        found: Vec<EntryValue>,
+        used: &'a mut std::collections::BTreeSet<String>,
+    }
+    impl VisitMut for Lifter<'_> {
         fn visit_expr_mut(&mut self, e: &mut Expr) {
             // Depth first, so the bindings come out in the order a reader
             // of the clause meets them, left to right.
@@ -61,7 +77,8 @@ pub(crate) fn lift_entry_values(body: &Expr) -> (Expr, Vec<EntryValue>) {
             if !path.path.is_ident("old") || call.args.len() != 1 {
                 return;
             }
-            let ident = format!("__ply_old_{}", self.found.len());
+            let ident =
+                crate::harness::fresh_helper(&format!("old_{}", self.found.len()), self.used);
             self.found.push(EntryValue {
                 ident: ident.clone(),
                 expr: call.args[0].to_token_stream().to_string(),
@@ -71,7 +88,10 @@ pub(crate) fn lift_entry_values(body: &Expr) -> (Expr, Vec<EntryValue>) {
     }
 
     let mut rewritten = body.clone();
-    let mut lifter = Lifter { found: Vec::new() };
+    let mut lifter = Lifter {
+        found: Vec::new(),
+        used,
+    };
     lifter.visit_expr_mut(&mut rewritten);
     (rewritten, lifter.found)
 }
@@ -527,6 +547,7 @@ fn scalar_literal(v: &WitnessValue, ty: &RustType) -> Result<String> {
         WitnessValue::UInt(u) => format!("{u}{ty_name}"),
         WitnessValue::Int(i) => format!("{i}{ty_name}"),
         WitnessValue::Bool(b) => format!("{b}"),
+        WitnessValue::ByteSlices(_) => bail!("scalar_literal called on nested byte slices"),
         WitnessValue::VecU8(_) => bail!("scalar_literal called on a Vec<u8> witness value"),
         WitnessValue::Duration(..) => {
             bail!(
@@ -590,10 +611,25 @@ pub fn render_cex_test(
         );
     }
 
+    let mut helper_names = cf.params.iter().map(|p| p.name.clone()).collect();
     let mut lets = String::new();
     let mut call_args = Vec::new();
     for (p, v) in cf.params.iter().zip(values.iter()) {
         match (&p.ty, v) {
+            (ty, WitnessValue::ByteSlices(rows)) if ty.is_nested_byte_slices() => {
+                let backing =
+                    crate::harness::fresh_helper(&format!("{}_backing", p.name), &mut helper_names);
+                let literals = rows
+                    .iter()
+                    .map(|row| vec_literal(row))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lets.push_str(&format!(
+                    "    let {backing}: Vec<Vec<u8>> = vec![{literals}];\n\
+                     \x20\x20\x20\x20let {n}: Vec<&[u8]> = {backing}.iter().map(Vec::as_slice).collect();\n",
+                    n = p.name,
+                ));
+            }
             (RustType::VecU8, WitnessValue::VecU8(bytes)) => {
                 lets.push_str(&format!(
                     "    let {name}: Vec<u8> = {lit};\n",
@@ -650,7 +686,7 @@ pub fn render_cex_test(
 
     // `old(expr)` is read into its own binding first: the value on entry is
     // only the value on entry if it is read before the call.
-    let (checked_body, entry_values) = lift_entry_values(&closure.body);
+    let (checked_body, entry_values) = lift_entry_values_avoiding(&closure.body, &mut helper_names);
     let entry_lets = entry_value_lets(&entry_values, "    ");
 
     let widened = widen(&checked_body, cf);

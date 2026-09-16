@@ -23,3 +23,5 @@ pub mod source_model;
 pub mod source_scan;
 pub mod surface;
 pub mod visual;
+
+mod bounded_contract;

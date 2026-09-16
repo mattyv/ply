@@ -2213,6 +2213,8 @@ fn verify_loaded_crate(
                             src_dir: &src_dir,
                             lib_path: &lib_path,
                             fn_name: plan.fn_name,
+                            inline_contract: harness::has_inline_byte_ensures(&plan.cf)
+                                .then_some((&plan.cf, *bound)),
                             engine_timeout_secs: opts.engine_timeout_secs.unwrap_or_else(|| {
                                 default_engine_timeout_secs(
                                     plan.cf.has_vec_param(),
@@ -4236,6 +4238,7 @@ struct BoundedWorkerSpec<'a> {
     lib_path: &'a Path,
     fn_name: &'a str,
     engine_timeout_secs: u32,
+    inline_contract: Option<(&'a ContractFn, u32)>,
 }
 
 impl BoundedWorkerContext {
@@ -4249,6 +4252,7 @@ impl BoundedWorkerContext {
             lib_path,
             fn_name,
             engine_timeout_secs,
+            inline_contract,
         } = spec;
         let root = tempfile::Builder::new()
             .prefix("ply-bounded-worker-")
@@ -4287,6 +4291,22 @@ impl BoundedWorkerContext {
             )
         })?;
         let private_crate = private_workspace.join(crate_relative);
+        if let Some((cf, bound)) = inline_contract {
+            // Mixed runs may temporarily register a fuzz member below target.
+            // Keep its sources so the copied workspace manifest remains valid.
+            let fuzz_root = crate_dir.join("target/ply/fuzz");
+            if fuzz_root.is_dir() {
+                for entry in std::fs::read_dir(&fuzz_root)? {
+                    let source = entry?.path();
+                    if source.join("Cargo.toml").is_file() {
+                        let destination = private_crate.join(source.strip_prefix(&crate_dir)?);
+                        copy_workspace_entry(&source, &destination, &mut vec![], &[], &[])?;
+                    }
+                }
+            }
+            harness::lower_inline_byte_ensures(cf, bound, &private_crate)?;
+        }
+
         harness::write_generated_module(
             &private_workspace.join(src_relative),
             &private_workspace.join(lib_relative),
@@ -6469,6 +6489,44 @@ fn run_bounded_check(
         .map(|(_, k)| *k)
         .fold(bound_k, u32::min);
 
+    let inline_worker = if worker.is_none() && harness::has_inline_byte_ensures(cf) {
+        harness_crate::refresh_cargo_local_dependency_closure(crate_dir)?;
+        let first_party = reach::scan_first_party(crate_dir);
+        if !first_party.source_relocation_is_sound() {
+            anyhow::bail!(
+                "the inline byte proof cannot safely relocate this source into a private shadow"
+            );
+        }
+        let workspace = harness_crate::cargo_workspace_root(crate_dir)?;
+        let mut context = BoundedWorkerContext::prepare(
+            BoundedWorkerSpec {
+                workspace_root: &workspace,
+                package_dirs: first_party.package_dirs(),
+                source_paths: first_party.source_paths(),
+                crate_dir,
+                src_dir,
+                lib_path,
+                fn_name,
+                engine_timeout_secs: opts.engine_timeout_secs.unwrap_or_else(|| {
+                    default_engine_timeout_secs(
+                        cf.has_vec_param(),
+                        bound_k,
+                        !boundary.stubs.is_empty(),
+                    )
+                }),
+                inline_contract: Some((cf, bound_k)),
+            },
+            harness::generate_proof_module(cf, bound_k, &boundary.stubs)?,
+        )?;
+        context.execution = Some(execute_bounded(
+            &context.generated.promise,
+            &context.run_cfg,
+        )?);
+        Some(context)
+    } else {
+        None
+    };
+    let worker = worker.or(inline_worker.as_ref());
     let generated_here = if worker.is_none() {
         Some(harness::generate_proof_module(
             cf,
@@ -6600,6 +6658,25 @@ fn run_bounded_check(
             KaniOutcome::Verified => {
                 let composed_label = format!("bounded({composed_k})");
                 let mut ds = Vec::new();
+                for param in cf.params.iter().filter(|p| p.ty.is_nested_byte_slices()) {
+                    ds.push(Diagnostic {
+                        code: "K0510".into(),
+                        severity: "info".into(),
+                        phase: "verify".into(),
+                        engine: "kani".into(),
+                        check: composed_label.clone(),
+                        node_id: node_id.into(),
+                        title: format!(
+                            "Byte-slice domain for {}: 0..={bound_k} rows, each 0..={bound_k} arbitrary bytes, with disjoint stack backing. Shared-storage aliasing and pointer identity are outside this domain. Recognized bounded all expressions use equivalent finite expansion.",
+                            param.name),
+                        pointer: None,
+                        primary_span: None,
+                        counterexample: None,
+                        fixes: vec![],
+                        assumptions: vec![],
+                        open_item: None,
+                    });
+                }
                 // D5's first branch: real evidence, and the caller is not
                 // conditional for it -- but a clean verdict is not a standalone
                 // one, so the dependency still has to appear somewhere a reader
@@ -6784,6 +6861,25 @@ fn run_bounded_check(
     })();
     if let Some(module) = temporary_proof_module {
         module.restore()?;
+    }
+    if inline_worker
+        .as_ref()
+        .is_some_and(|w| !w.lock_is_unchanged())
+    {
+        anyhow::bail!("the inline proof source shadow changed its dependency resolution");
+    }
+    if let Some(worker) = &inline_worker {
+        match std::fs::read(&worker.witness_path) {
+            Ok(bytes) => {
+                let destination = crate_dir
+                    .join("target/ply/witness")
+                    .join(format!("{fn_name}.json"));
+                std::fs::create_dir_all(destination.parent().expect("witness directory"))?;
+                std::fs::write(destination, bytes)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("reading the serial inline proof witness"),
+        }
     }
     result
 }
@@ -9124,6 +9220,7 @@ fn format_value(v: &kani::WitnessValue) -> String {
         kani::WitnessValue::Int(i) => i.to_string(),
         kani::WitnessValue::Bool(b) => b.to_string(),
         kani::WitnessValue::VecU8(bytes) => format!("{bytes:?}"),
+        kani::WitnessValue::ByteSlices(rows) => format!("{rows:?}"),
         kani::WitnessValue::Duration(secs, nanos) => format!("{secs}.{nanos:09}s"),
         // Quoted and escaped, so the reader can see leading spaces, a
         // trailing newline, or an empty string for what they are.

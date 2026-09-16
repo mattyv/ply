@@ -21,6 +21,8 @@ pub enum WitnessValue {
     /// -- decoded from Kani's length-prefixed `any_vec` encoding (measured,
     /// see docs/m3-slice-findings.md).
     VecU8(Vec<u8>),
+    /// Borrowed byte slices, decoded into owned rows for replay.
+    ByteSlices(Vec<Vec<u8>>),
     /// A `Duration` witness: (whole seconds, nanoseconds -- always under one
     /// billion, the type's own invariant). Its own variant rather than two
     /// `UInt`s because `render_cex_test` needs both parts together to
@@ -426,6 +428,52 @@ pub fn decode_witness(
     let mut out = Vec::new();
     for p in params {
         match &p.ty {
+            ty if ty.is_nested_byte_slices() => {
+                let k = vec_bound as usize;
+                let mut rows = Vec::with_capacity(k);
+                for _ in 0..k {
+                    let mut row = Vec::with_capacity(k);
+                    for _ in 0..k {
+                        let entry = witness_bytes
+                            .get(cursor)
+                            .context("missing nested byte entry")?;
+                        anyhow::ensure!(entry.len() == 1, "invalid nested byte entry width");
+                        row.push(entry[0]);
+                        cursor += 1;
+                    }
+                    rows.push(row);
+                }
+                let mut lengths = Vec::with_capacity(k);
+                for _ in 0..k {
+                    let entry = witness_bytes
+                        .get(cursor)
+                        .context("missing nested length entry")?;
+                    anyhow::ensure!(entry.len() == 8, "invalid nested length width");
+                    let value =
+                        decode_scalar_entry(entry, &crate::harness::RustType::Usize, &p.name)?;
+                    let WitnessValue::UInt(length) = value else {
+                        unreachable!()
+                    };
+                    anyhow::ensure!(length <= k as u128, "nested length exceeds bound");
+                    lengths.push(length as usize);
+                    cursor += 1;
+                }
+                let entry = witness_bytes
+                    .get(cursor)
+                    .context("missing nested count entry")?;
+                anyhow::ensure!(entry.len() == 8, "invalid nested count width");
+                let value = decode_scalar_entry(entry, &crate::harness::RustType::Usize, &p.name)?;
+                let WitnessValue::UInt(count) = value else {
+                    unreachable!()
+                };
+                anyhow::ensure!(count <= k as u128, "nested count exceeds bound");
+                cursor += 1;
+                for (row, length) in rows.iter_mut().zip(lengths) {
+                    row.truncate(length);
+                }
+                rows.truncate(count as usize);
+                out.push(WitnessValue::ByteSlices(rows));
+            }
             crate::harness::RustType::VecU8 => {
                 let len_bytes = witness_bytes
                     .get(cursor)
@@ -744,6 +792,47 @@ fn kani_concrete_playback_ply_proof_clamp_123() {
             KaniOutcome::ToolError { .. } => {}
             other => panic!("a failure with no witness must never become Violation, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn decodes_nested_bytes_and_preserves_the_following_parameter() {
+        let params = vec![
+            Param {
+                name: "keys".into(),
+                ty: RustType::Slice(Box::new(RustType::Slice(Box::new(RustType::U8)))),
+                by_ref: true,
+            },
+            Param {
+                name: "flag".into(),
+                ty: RustType::Bool,
+                by_ref: false,
+            },
+        ];
+        let mut entries = vec![vec![255], vec![0], vec![255], vec![0]];
+        entries.extend([2usize, 2, 2].into_iter().map(|n| n.to_le_bytes().to_vec()));
+        entries.push(vec![1]);
+        assert_eq!(
+            decode_witness(&entries, &params, 2).unwrap(),
+            vec![
+                WitnessValue::ByteSlices(vec![vec![255, 0], vec![255, 0]]),
+                WitnessValue::Bool(true)
+            ]
+        );
+        entries[4] = 0usize.to_le_bytes().to_vec();
+        assert_eq!(
+            decode_witness(&entries, &params, 2).unwrap()[0],
+            WitnessValue::ByteSlices(vec![vec![], vec![255, 0]])
+        );
+        entries[6] = 0usize.to_le_bytes().to_vec();
+        assert_eq!(
+            decode_witness(&entries, &params, 2).unwrap()[0],
+            WitnessValue::ByteSlices(vec![])
+        );
+        entries[6] = 3usize.to_le_bytes().to_vec();
+        assert!(decode_witness(&entries, &params, 2).is_err());
+        entries[6] = vec![0];
+        assert!(decode_witness(&entries, &params, 2).is_err());
+        assert!(decode_witness(&[], &params, 2).is_err());
     }
 
     #[test]

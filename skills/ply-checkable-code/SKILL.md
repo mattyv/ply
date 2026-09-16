@@ -42,9 +42,9 @@ to prove. Fuzzing does not substitute for requested bounded evidence.
 One measured case replaced owned `String` inputs with borrowed byte slices around the
 same production decision. Direct Kani then proved every list of zero to four keys, each
 zero to four arbitrary bytes, in 6.04 seconds with unwind checks enabled. The `String`
-adapter remained outside that proof, and Ply's nested-input generator still lacked support.
-Record this as bounded direct-Kani evidence for the decision and a tested conversion
-boundary, never as native Ply bounded success.
+adapter remained outside that proof. That original receipt remains direct-Kani evidence.
+Ply now supports the exact `&[&[u8]]` signature natively; retest with the installed build
+before replacing an earlier unresolved entry with native bounded evidence.
 
 Track coverage by substantive decision, not counts of trivial functions. Mark each one as
 bounded by Ply, bounded directly by Kani, or unresolved with its reason and exact bounds.
@@ -261,16 +261,18 @@ For `fuzz`, supported shapes include numbers, booleans, strings, `Vec`, slices (
 tuples, `BTreeSet`, `BTreeMap`, `Option`, and `Box`, subject to the nesting limits in
 rule 4. Your own structs and enums need a supported public constructor or public named
 fields with constructible types. These are not general guarantees for every engine: in
-this build, `bounded` supports `Vec<u8>` with generated length and unwind bounds, but
-refuses general `Vec<T>`, slices (including `&[&[u8]]`), `BTreeSet`, `BTreeMap`, and user
-types built through constructors or fields. Inspect the selected engine's report before
-promising coverage.
+this build, `bounded` supports `Vec<u8>` and the exact `&[&[u8]]` shape. For the latter,
+`bounded(k)` covers 0..=k rows, each with 0..=k arbitrary bytes and disjoint stack backing;
+`K0510` states that shared-storage aliasing and pointer identity are outside this domain.
+Recognized bounded `all` expressions use equivalent finite expansion in a native Kani
+proof that explicitly asserts the merged contract. General `Vec<T>`, other slices
+(including `&[String]`), `BTreeSet`, `BTreeMap`, and user types built through constructors
+or fields remain outside the bounded generator.
 
-Known defect (PLY-002, observed on build `3747dbae...`): the `fuzz` harness for
-`&[&[u8]]` fails to compile with `X0901`/E0308; zero cases run. Do not treat this
-signature as a working fuzz fallback merely because it appears in the supported
-composition list or a diagnostic recommends it. Retest the real signature after a
-tool fix before claiming coverage.
+PLY-002's `&[&[u8]]` fuzz compilation defect is fixed: generated owned rows now supply
+borrowed byte-slice views. The production regression executes 256 cases. Earlier builds
+such as `3747dbae...` failed with `X0901`/E0308 and ran zero cases; inspect the installed
+build's report before claiming coverage.
 
 Refused, and worth knowing before you write the signature:
 

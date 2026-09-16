@@ -1057,6 +1057,11 @@ struct ParamPlan {
 
 fn plan_for_param(p: &Param) -> Result<ParamPlan> {
     match &p.ty {
+        ty if ty.is_nested_byte_slices() => Ok(ParamPlan {
+            pattern: p.name.clone(),
+            strategy: strategy_expr(ty)?,
+            preamble: nested_byte_views(p, "            "),
+        }),
         RustType::UserTypeCtor(_) | RustType::UserTypeFields(_) => {
             let mut leaves = Vec::new();
             let mut preamble = String::new();
@@ -1186,6 +1191,13 @@ fn unwrap_composed_expr(ty: &RustType, var: &str) -> String {
 
 /// The preamble text every built parameter in `params` contributes, in
 /// order -- empty when none of them is a struct/enum Ply itself builds.
+fn nested_byte_views(p: &Param, indent: &str) -> String {
+    format!(
+        "{indent}let {n}: Vec<&[u8]> = {n}.iter().map(Vec::as_slice).collect();\n",
+        n = p.name
+    )
+}
+
 fn params_preamble(params: &[Param]) -> Result<String> {
     let plans: Vec<ParamPlan> = params.iter().map(plan_for_param).collect::<Result<_>>()?;
     Ok(plans.into_iter().map(|p| p.preamble).collect())
@@ -3456,6 +3468,9 @@ pub fn generate_direct_contract_cases(cf: &ContractFn, examples: &[String]) -> S
                 name = p.name,
                 ty = direct_binding_type(&p.ty)
             ));
+            if p.ty.is_nested_byte_slices() {
+                lets.push_str(&nested_byte_views(p, "        "));
+            }
         }
         let args = call_args(cf).join(", ");
         let guard = match &requires_cond {
@@ -3507,6 +3522,9 @@ pub fn generate_direct_contract_cases(cf: &ContractFn, examples: &[String]) -> S
                     name = p.name,
                     ty = direct_binding_type(&p.ty)
                 ));
+                if p.ty.is_nested_byte_slices() {
+                    lets.push_str(&nested_byte_views(p, "            "));
+                }
             }
             probes.push_str(&format!(
                 "        {{\n{lets}            if {cond} {{ __ply_accepted += 1; }}\n        }}\n"

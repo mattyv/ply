@@ -882,6 +882,9 @@ pub fn decode_marker_fields(
             }
             RustType::Usize => WitnessValue::UInt(raw.parse::<u128>().ok()?),
             RustType::Isize => WitnessValue::Int(raw.parse::<i128>().ok()?),
+            ty if ty.is_nested_byte_slices() => {
+                WitnessValue::ByteSlices(serde_json::from_str(raw).ok()?)
+            }
             RustType::VecU8 => WitnessValue::VecU8(parse_u8_list(raw)?),
             RustType::Vec(inner) if inner.as_ref() == &RustType::U8 => {
                 WitnessValue::VecU8(parse_u8_list(raw)?)
