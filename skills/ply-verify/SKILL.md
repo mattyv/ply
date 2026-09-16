@@ -48,7 +48,9 @@ Diagnose unsupported input generation, solver timeout and a counterexample separ
 Unsupported generation means the engine did not construct the requested domain; a timeout
 means the proof did not finish within its recorded budget; a counterexample is evidence
 that the real body violates the claim for a named input. Preserve the exact outcome and
-reason instead of flattening them into one failed status.
+reason instead of flattening them into one failed status. A generated harness that
+fails to compile is a tool error: no cases ran and no behavioral evidence was earned.
+Check suggested fallbacks on the real signature before calling them working routes.
 
 A red aggregate status does not erase evidence earned by individual functions. Report
 each passing function with its check kind and bounds, then name every unresolved or failed

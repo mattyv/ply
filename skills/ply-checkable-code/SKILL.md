@@ -266,6 +266,12 @@ refuses general `Vec<T>`, slices (including `&[&[u8]]`), `BTreeSet`, `BTreeMap`,
 types built through constructors or fields. Inspect the selected engine's report before
 promising coverage.
 
+Known defect (PLY-002, observed on build `3747dbae...`): the `fuzz` harness for
+`&[&[u8]]` fails to compile with `X0901`/E0308; zero cases run. Do not treat this
+signature as a working fuzz fallback merely because it appears in the supported
+composition list or a diagnostic recommends it. Retest the real signature after a
+tool fix before claiming coverage.
+
 Refused, and worth knowing before you write the signature:
 
 | Shape | What happens |
