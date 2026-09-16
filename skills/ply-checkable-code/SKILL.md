@@ -261,8 +261,10 @@ For `fuzz`, supported shapes include numbers, booleans, strings, `Vec`, slices (
 tuples, `BTreeSet`, `BTreeMap`, `Option`, and `Box`, subject to the nesting limits in
 rule 4. Your own structs and enums need a supported public constructor or public named
 fields with constructible types. These are not general guarantees for every engine: in
-this build, `bounded` refuses `Vec`, `BTreeSet`, `BTreeMap`, and user types built through
-constructors or fields. Inspect the selected engine's report before promising coverage.
+this build, `bounded` supports `Vec<u8>` with generated length and unwind bounds, but
+refuses general `Vec<T>`, slices (including `&[&[u8]]`), `BTreeSet`, `BTreeMap`, and user
+types built through constructors or fields. Inspect the selected engine's report before
+promising coverage.
 
 Refused, and worth knowing before you write the signature:
 
