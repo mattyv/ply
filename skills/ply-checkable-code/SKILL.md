@@ -18,6 +18,41 @@ claim without earned evidence may be reported as **unclaimed**, **unsupported**,
 specific outcome. Read that outcome and its reason; a refusal is not a counterexample
 showing that the code is wrong.
 
+## Design for requested bounded proof
+
+When bounded proof is requested, treat it as an input to API and data design. For each
+substantive custom decision, identify its behavior, inputs, production caller, supported
+bounded-check route and explicit proof bounds before settling the signature. Compile and
+run an early bounded check on the real decision before expanding its callers.
+
+Prefer representations that keep irrelevant work out of the proof when behavior permits:
+borrowed data, explicit state, supplied observations and simple bounded loops, with
+allocation and I/O outside the decision. Measure these choices; none guarantees that the
+engine can prove the function. Prove the same function production uses. If conversion is
+outside the proof, identify and test that boundary. Do not replace the logic with a simpler
+model, impose new application limits, or weaken a contract to fit proof bounds.
+
+If Ply rejects an input shape, first consider a behavior-preserving representation or
+implementation change and inspect the installed engine's actual support. Try a direct Kani
+harness when appropriate and retain the bounded requirement in Ply. Record direct Kani
+evidence separately; it is not a successful Ply bounded check. Treat a timeout as a reason
+to inspect representation and proof setup before calling the behavior intrinsically hard
+to prove. Fuzzing does not substitute for requested bounded evidence.
+
+One measured case replaced owned `String` inputs with borrowed byte slices around the
+same production decision. Direct Kani then proved every list of zero to four keys, each
+zero to four arbitrary bytes, in 6.04 seconds with unwind checks enabled. The `String`
+adapter remained outside that proof, and Ply's nested-input generator still lacked support.
+Record this as bounded direct-Kani evidence for the decision and a tested conversion
+boundary, never as native Ply bounded success.
+
+Track coverage by substantive decision, not counts of trivial functions. Mark each one as
+bounded by Ply, bounded directly by Kani, or unresolved with its reason and exact bounds.
+Acceptance must include meaningful broken implementations caught by the claims. When work
+is delegated, the brief must carry the bounded-proof objective, chosen representation,
+first proof command and result; do not delegate ordinary implementation followed by a
+proof retrofit.
+
 ## Verify the first useful piece
 
 Before changing existing claimed behavior, establish its baseline. For new code, write

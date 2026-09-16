@@ -45,6 +45,15 @@ For existing code, resolve each addition before treating it as implemented.
 ## Authoring against existing code
 
 Use `cargo ply check` after each coherent addition. It runs no verification engines.
+For each meaningful decision, state the intended behavior and select inputs that support
+the requested evidence before implementing it. Build the smallest useful compiling
+decision, run Ply and requested bounded checks immediately, and inspect the outcome before
+expanding dependent implementation. Keep unsupported inputs, timeouts and failures
+explicit while unrelated work continues. Then wire the caller and check its behavior and
+integration assumptions. Recheck affected claims when code or dependencies change and
+retain exact proof bounds. A helper proof composes with its caller only when the caller
+satisfies the helper's assumptions; it says nothing by itself about I/O, conversions
+outside the proof, larger inputs or the whole system.
 
 1. **Find the root.** A `ply.yaml` resolves function claims against one crate's
    `src/lib.rs` in this implementation. A virtual workspace root has no library, so use a

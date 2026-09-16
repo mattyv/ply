@@ -42,6 +42,20 @@ presence makes a check unnecessary. Reuse is limited to the inputs this Ply vers
 tracks. Start with `fuzz` for new suitable claims; retain existing evidence requirements,
 including bounded checks, when they are part of the task.
 
+## Interpret incomplete and mixed results
+
+Diagnose unsupported input generation, solver timeout and a counterexample separately.
+Unsupported generation means the engine did not construct the requested domain; a timeout
+means the proof did not finish within its recorded budget; a counterexample is evidence
+that the real body violates the claim for a named input. Preserve the exact outcome and
+reason instead of flattening them into one failed status.
+
+A red aggregate status does not erase evidence earned by individual functions. Report
+each passing function with its check kind and bounds, then name every unresolved or failed
+function separately. Partial evidence never implies full component or whole-document
+coverage. When direct Kani checks supplement Ply, label them separately and do not convert
+them into Ply results.
+
 ## Before running real code
 
 Fuzz checks and regression tests execute the implementation, including its callees.
