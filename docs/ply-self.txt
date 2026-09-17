@@ -374,7 +374,7 @@ components:
           path_dependency("[dependencies]\nfoo = { path = \"../foo\" }\n", "foo") == Some("../foo".to_string())
           path_dependency("[dependencies]\nfoo = \"1.0\"\n", "foo").is_none()
     component reach — maps to Rust module ply_core::reach
-      state FirstParty — the structure this component holds. 3 of 6 of its fields shown
+      state FirstParty — the structure this component holds. 3 of 7 of its fields shown
         units is a list, written `Vec<(String, String)>`
         gate is something that might not be there, written `Option<String>`
         type_decls is a list, written `Vec<(String, String)>`
