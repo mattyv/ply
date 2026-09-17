@@ -7,6 +7,38 @@ fn production_nested_borrowed_bytes_earn_bounded_and_fuzz_evidence() {
     let run = run_verify(&bin, fixture.path(), 150);
     assert_eq!(run.exit_code, Some(0), "{}", run.json);
     assert_eq!(run.json["root"]["verdict"], "bounded(4)", "{}", run.json);
+    fn leaf(node: &serde_json::Value) -> Option<&serde_json::Value> {
+        if node["id"] == "valid_key_bytes" {
+            return Some(node);
+        }
+        node["children"].as_array()?.iter().find_map(leaf)
+    }
+    let evidence = &leaf(&run.json["root"]).unwrap()["evidence"];
+    assert_eq!(evidence["engine"], "kani");
+    assert_eq!(evidence["check"], "bounded(4)");
+    assert_eq!(evidence["declared_bound"], 4);
+    assert!(evidence.get("seed").is_none());
+    assert!(evidence.get("cases").is_none());
+    let domain = &evidence["input_domains"][0];
+    assert_eq!(domain["shape"], "byte_slices");
+    assert_eq!(domain["parameter"], "keys");
+    assert_eq!(domain["max_rows"], 4);
+    assert_eq!(domain["max_row_bytes"], 4);
+    assert_eq!(domain["byte_max"], 255);
+    assert_eq!(domain["backing"], "disjoint_stack");
+    assert_eq!(domain["exclusions"].as_array().unwrap().len(), 2);
+    let fuzz = evidence["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["engine"] == "proptest")
+        .unwrap();
+    assert_eq!(fuzz["cases"], 256);
+    assert_eq!(fuzz["seed"].as_str().unwrap().len(), 64);
+    let reused = run_verify(&bin, fixture.path(), 150);
+    assert_eq!(leaf(&reused.json["root"]).unwrap()["evidence"], *evidence);
+    assert_eq!(leaf(&reused.json["root"]).unwrap()["reused"], true);
+
     assert!(
         run.json["diagnostics"]
             .as_array()

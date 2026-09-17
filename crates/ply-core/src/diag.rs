@@ -115,8 +115,20 @@ pub struct Diagnostic {
 /// a violation carries its witness: without it, a `fuzzed(256)` names no
 /// run anyone can repeat, and the run that missed a bug is indistinguishable
 /// from the run that could not have found one.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Evidence {
+    /// The check that actually produced this evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
+    /// Declared collection bound used to generate this native proof. The
+    /// verdict's composed bound may be smaller because of callees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_bound: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_domains: Vec<BoundedInputDomain>,
+    /// Independent runs, including the selected run, without nested lists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<Evidence>,
     pub engine: String,
     /// The proptest RNG seed, as 64 hex characters -- replay with
     /// `cargo ply verify <path> --seed <hex>`.
@@ -131,6 +143,27 @@ pub struct Evidence {
     /// compiled reported `cases: n` for a run of zero).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cases: Option<u32>,
+}
+
+/// Restrictions imposed by the generated Kani input construction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "shape", rename_all = "snake_case")]
+pub enum BoundedInputDomain {
+    ByteSlices {
+        parameter: String,
+        max_rows: u32,
+        max_row_bytes: u32,
+        byte_min: u8,
+        byte_max: u8,
+        backing: String,
+        exclusions: Vec<String>,
+    },
+    VecU8 {
+        parameter: String,
+        max_length: u32,
+        byte_min: u8,
+        byte_max: u8,
+    },
 }
 
 #[derive(Default, Debug, Clone, Serialize)]

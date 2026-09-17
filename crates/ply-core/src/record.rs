@@ -1109,6 +1109,7 @@ mod tests {
                     engine: "proptest".into(),
                     seed: Some("ab".repeat(32)),
                     cases: Some(256),
+                    ..Default::default()
                 }),
                 diagnostics: vec![],
                 inputs: BTreeMap::new(),

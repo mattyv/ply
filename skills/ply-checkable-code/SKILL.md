@@ -416,3 +416,14 @@ on, and belongs to the developer: propose it, name the function, and wait.
 
 And a promise is never weakened to turn a failing check green: that converts a real finding
 into a result nobody can trust, which is the one outcome this whole tool exists to prevent.
+
+
+### Reading mixed-check JSON evidence
+
+For a bounded verdict, the function's `evidence.engine` is `kani`.
+`declared_bound` and `input_domains` describe the generated collection domain;
+the verdict's composed bound may be smaller when callees limit it. Byte-slice
+domains disclose row and byte limits, disjoint backing, and aliasing exclusions.
+`evidence.checks` preserves independent runs, including the selected proof and
+the fuzz run's seed and reached case count. Mutation strength qualifies the
+verdict; it does not turn fuzz samples into bounded proof.

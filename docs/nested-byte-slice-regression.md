@@ -42,3 +42,18 @@ assertions stay enabled. Original application source bytes stay unchanged after 
   exact original-source preservation, and a contradictory extra YAML clause.
 
 The original cpp-sca source and issue log are read-only regression inputs.
+
+## Evidence attribution (PLY-003)
+
+The 2026-09-17 test-example receipt paired `bounded(4)·spec-strong` with
+`proptest` evidence. Function receipts now select the engine that earned the
+base verdict before mutation strength is appended. Bounded evidence names
+`kani` and carries `declared_bound` and typed `input_domains`. The declared
+bound describes generated inputs even when verified callees reduce the
+composed verdict's bound.
+
+`evidence.checks` retains independent runs, including the selected proof
+and the fuzz seed and reached case count. A refused or unfinished bounded
+check earns no Kani evidence. Cached reuse preserves the same evidence.
+The production acceptance test checks the domain and both fresh and reused
+receipts; unit tests cover check order, fallback to fuzz, and fuzz violations.

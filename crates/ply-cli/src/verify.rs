@@ -13,7 +13,9 @@ use anyhow::{Context, Result};
 use ply_core::callgraph::{CalleeStatus, Resolution, Resolver};
 use ply_core::config;
 use ply_core::contract_rt::{self, RenderedTest};
-use ply_core::diag::{Assumption, Counterexample, Diagnostic, Envelope, Evidence, Fix, Node, Span};
+use ply_core::diag::{
+    Assumption, BoundedInputDomain, Counterexample, Diagnostic, Envelope, Evidence, Fix, Node, Span,
+};
 use ply_core::engines::fuzz as fuzz_engine;
 use ply_core::engines::kani::ProbeOutcome;
 use ply_core::engines::kani::{self, KaniOutcome, KaniRunConfig};
@@ -4611,6 +4613,7 @@ fn run_fn_checks(
     let mut mutation_base_labels: Vec<String> = Vec::new();
     let mut statuses: Vec<String> = Vec::new();
     let mut fuzz_evidence: Option<Evidence> = None;
+    let mut check_evidence = Vec::new();
 
     for check in checks {
         match check {
@@ -4630,6 +4633,9 @@ fn run_fn_checks(
                     &mut promise_diags,
                     cex_tests_out,
                 )?;
+                if label.starts_with("bounded(") {
+                    check_evidence.push(bounded_run_evidence(cf, *k, &label));
+                }
                 labels.push(label);
                 statuses.append(&mut s);
                 diagnostics.append(&mut d);
@@ -4880,6 +4886,7 @@ fn run_fn_checks(
                     cex_tests_out,
                 )?;
                 diagnostics.append(&mut run.diagnostics);
+                let fuzz_result = run.fuzz_label.clone();
                 if let Some(l) = run.fuzz_label {
                     mutation_base_labels.push(l.clone());
                     labels.push(l);
@@ -4940,6 +4947,8 @@ fn run_fn_checks(
                         engine: "proptest".into(),
                         seed: Some(ply_core::fuzz_gen::seed_hex(seed)),
                         cases: run.fuzz_cases_reached,
+                        check: fuzz_result,
+                        ..Default::default()
                     });
                     // The NaN/infinity decision's own visibility
                     // requirement (task, 2026-08-27): only a run that
@@ -5081,6 +5090,17 @@ fn run_fn_checks(
     let all_base_checks_passed =
         mutation_base_checks_passed(&mutation_base_labels, expected_mutation_base_checks);
     let mut verdict = combine_fn_check_verdicts(&labels);
+    if let Some(evidence) = fuzz_evidence {
+        check_evidence.push(evidence);
+    }
+    if labels.iter().any(|label| label == "tested") {
+        check_evidence.push(Evidence {
+            engine: "cargo-test".into(),
+            check: Some("tested".into()),
+            ..Default::default()
+        });
+    }
+    let evidence = select_run_evidence(&verdict, check_evidence);
 
     // `mutate` runs last, and only against a genuinely passing base verdict
     // (D12/§5.4c): mutation-testing an already-failing check has no
@@ -5142,16 +5162,9 @@ fn run_fn_checks(
         }
     }
 
-    // The fuzz tier's verdict names the run that produced it (§1): the seed
-    // it used, and the number of cases it actually reached. Without it,
-    // `fuzzed(256)` describes a run nobody can repeat, and the run that
-    // missed a bug is indistinguishable from one that could not have found
-    // it. It was first written as `wants_fuzz.map(..)` -- attached whenever
-    // `fuzz(n)` was *declared* -- so a check that was refused as
-    // `unsupported`, abandoned by proptest, timed out, or died in a harness
-    // that never compiled still reported `cases: n` for a run of zero
-    // (adversarial review of the post-004 fixes, D5). `evidence` is built
-    // where the run happens, or not at all.
+    // Evidence is earned where each run happens. Its top-level source
+    // follows the selected base verdict; mutation qualifies that verdict
+    // without changing the proof engine. Independent runs remain available.
     Ok((
         Node {
             id: fn_name.to_string(),
@@ -5159,12 +5172,66 @@ fn run_fn_checks(
             verdict,
             statuses,
             reused: false,
-            evidence: fuzz_evidence,
+            evidence,
             children: vec![],
             ..Default::default()
         },
         diagnostics,
     ))
+}
+
+/// Attach the selected verdict's source while retaining independent runs.
+fn select_run_evidence(verdict: &str, checks: Vec<Evidence>) -> Option<Evidence> {
+    if checks.is_empty() {
+        return None;
+    }
+    let mut selected = checks
+        .iter()
+        .find(|e| e.check.as_deref() == Some(verdict))
+        .cloned()
+        .unwrap_or_else(|| Evidence {
+            engine: "ply".into(),
+            check: Some(verdict.into()),
+            ..Default::default()
+        });
+    selected.checks = checks;
+    Some(selected)
+}
+
+fn bounded_run_evidence(cf: &ContractFn, k: u32, label: &str) -> Evidence {
+    let input_domains = cf
+        .params
+        .iter()
+        .filter_map(|param| {
+            if param.ty.is_nested_byte_slices() {
+                Some(BoundedInputDomain::ByteSlices {
+                    parameter: param.name.clone(),
+                    max_rows: k,
+                    max_row_bytes: k,
+                    byte_min: 0,
+                    byte_max: 255,
+                    backing: "disjoint_stack".into(),
+                    exclusions: vec!["shared_storage_aliasing".into(), "pointer_identity".into()],
+                })
+            } else if matches!(param.ty, harness::RustType::VecU8) {
+                Some(BoundedInputDomain::VecU8 {
+                    parameter: param.name.clone(),
+                    max_length: k,
+                    byte_min: 0,
+                    byte_max: 255,
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    Evidence {
+        engine: "kani".into(),
+        check: Some(label.into()),
+        declared_bound: Some(k),
+        input_domains,
+        ..Default::default()
+    }
 }
 
 /// Runs every promise-content probe for this proof and reads the answers
@@ -9684,6 +9751,70 @@ fn unused(_p: &PathBuf) {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mixed_evidence_selects_verdict_source_and_keeps_independent_runs() {
+        use super::*;
+        let bounded = Evidence {
+            engine: "kani".into(),
+            check: Some("bounded(4)".into()),
+            declared_bound: Some(8),
+            ..Default::default()
+        };
+        let fuzz = Evidence {
+            engine: "proptest".into(),
+            check: Some("fuzzed(256)".into()),
+            seed: Some("ab".repeat(32)),
+            cases: Some(256),
+            ..Default::default()
+        };
+        for checks in [
+            vec![bounded.clone(), fuzz.clone()],
+            vec![fuzz.clone(), bounded.clone()],
+        ] {
+            let selected = select_run_evidence("bounded(4)", checks).unwrap();
+            assert_eq!(selected.engine, "kani");
+            assert_eq!(selected.declared_bound, Some(8));
+            assert!(selected.seed.is_none());
+            assert!(selected.cases.is_none());
+            assert_eq!(selected.checks.len(), 2);
+            assert!(selected.checks.iter().all(|e| e.checks.is_empty()));
+            assert_eq!(
+                selected
+                    .checks
+                    .iter()
+                    .find(|e| e.engine == "proptest")
+                    .unwrap()
+                    .cases,
+                Some(256)
+            );
+            let decoded: Evidence =
+                serde_json::from_str(&serde_json::to_string(&selected).unwrap()).unwrap();
+            assert_eq!(decoded.checks.len(), 2);
+            let mut decorated = "bounded(4)".to_string();
+            apply_mutate_outcome(&mut decorated, &mut vec![], MutateOutcome::SpecStrong);
+            assert_eq!(decorated, "bounded(4)·spec-strong");
+            assert_eq!(selected.engine, "kani");
+            assert_eq!(selected.check.as_deref(), Some("bounded(4)"));
+        }
+        let selected = select_run_evidence("fuzzed(256)", vec![fuzz.clone()]).unwrap();
+        assert_eq!(selected.engine, "proptest");
+        assert!(selected.declared_bound.is_none());
+        assert!(select_run_evidence("unsupported", vec![]).is_none());
+        let legacy: Evidence =
+            serde_json::from_str(r#"{"engine":"proptest","seed":"abc","cases":256}"#).unwrap();
+        assert!(legacy.check.is_none());
+        assert!(legacy.input_domains.is_empty());
+        assert!(legacy.checks.is_empty());
+
+        let mut failed = fuzz;
+        failed.check = Some("violation".into());
+        failed.cases = None;
+        let selected = select_run_evidence("violation", vec![bounded, failed]).unwrap();
+        assert_eq!(selected.engine, "proptest");
+        assert!(selected.seed.is_some());
+        assert!(selected.declared_bound.is_none());
+    }
+
     #[test]
     fn standalone_harness_evidence_requires_the_graph_it_actually_ran() {
         let harness = tempfile::tempdir().unwrap();
