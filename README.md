@@ -406,11 +406,11 @@ exercises, hints, and short assessments.
 
 Two things go in: the command, and one dependency in the crate you want checked.
 
-**The command.** Install Ply 0.2.0 as a `cargo` subcommand from this exact revision:
+**The command.** Install Ply 0.2.1 as a `cargo` subcommand from the release tag:
 
 ```console
 $ cargo install --git https://github.com/mattyv/ply \
-    --rev 1ab348db957f4df905f3ff35f917f2e7cbee26a6 ply-cli --locked
+    --tag v0.2.1 ply-cli --locked
 $ cargo ply --version
 $ cargo ply --help
 ```
