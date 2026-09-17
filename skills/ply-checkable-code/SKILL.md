@@ -437,3 +437,13 @@ imports retain `W0530` when the full mutation scope cannot be established.
 A passing bounded proof remains bounded evidence; a mutation-scope warning
 qualifies the planted-bug coverage separately. Inspect the warning before
 treating `spec-strong` as coverage of an entire helper chain.
+
+### Generated proof scope
+
+Bounded contract wrappers import the claimed function's containing module, including
+its local return enum, and preserve a private imported return alias. A crate-root
+re-export is unnecessary for these supported cases. If a generated harness cannot
+resolve a type or contract name, inspect the installed report as a tool error;
+do not change the production API or weaken the contract merely to compensate.
+The return value comes from the real call; enum output does not require generating
+arbitrary enum inputs. This does not widen the bounded parameter generator.

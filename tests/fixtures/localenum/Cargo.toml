@@ -1,0 +1,10 @@
+[workspace]
+[package]
+name = "ply-fixture-localenum"
+version = "0.0.0"
+edition = "2021"
+publish = false
+[dependencies]
+ply = { package = "ply-attrs", path = "../../../crates/ply-attrs" }
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

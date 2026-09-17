@@ -1,0 +1,16 @@
+ply: 1
+components:
+  gates:
+    anchor: ply_fixture_localenum::gates
+    fns:
+      decide:
+        checks: [bounded(2), fuzz(256), test]
+        ensures:
+          - '|result| matches!(result, ToggleState::Disabled) == !enabled'
+          - '|result| matches!(result, ToggleState::Blocked) == (enabled && blocked)'
+          - '|result| matches!(result, ToggleState::Active) == (enabled && !blocked)'
+        examples:
+          - 'decide(false, false) == ToggleState::Disabled'
+          - 'decide(false, true) == ToggleState::Disabled'
+          - 'decide(true, true) == ToggleState::Blocked'
+          - 'decide(true, false) == ToggleState::Active'
