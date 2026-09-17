@@ -1,0 +1,14 @@
+ply: 1
+components:
+  matchesreach:
+    anchor: ply_fixture_matchesreach
+    fns:
+      decision:
+        checks: [bounded(4), fuzz(256), test, mutate]
+        ensures:
+          - '|result| *result == matches!(Some(x), Some(v) if permitted(v))'
+        examples:
+          - 'decision(0) == true'
+          - 'decision(3) == true'
+          - 'decision(4) == false'
+          - 'decision(255) == false'

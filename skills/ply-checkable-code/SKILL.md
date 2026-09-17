@@ -427,3 +427,13 @@ domains disclose row and byte limits, disjoint backing, and aliasing exclusions.
 `evidence.checks` preserves independent runs, including the selected proof and
 the fuzz run's seed and reached case count. Mutation strength qualifies the
 verdict; it does not turn fuzz samples into bounded proof.
+
+### Mutation scope and macros
+
+The call walk follows helpers inside standard bare `matches!` scrutinees and
+guards when source imports and macro definitions cannot shadow the prelude
+macro. Unknown or qualified macros, malformed inputs, and potentially shadowing
+imports retain `W0530` when the full mutation scope cannot be established.
+A passing bounded proof remains bounded evidence; a mutation-scope warning
+qualifies the planted-bug coverage separately. Inspect the warning before
+treating `spec-strong` as coverage of an entire helper chain.

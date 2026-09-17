@@ -29,10 +29,11 @@
 //! those needs a type checker, which Ply is not. So the walk is trusted
 //! only under conditions that make all of them impossible: **every item in
 //! first-party source is a function, a module, an import, a type alias, or
-//! a plain data type**, no reached body invokes a macro, and no reached
+//! a plain data type**, no reached body invokes an unknown macro, and no reached
 //! function carries an attribute Ply does not recognise. No `impl` block
 //! anywhere means no method and no operator can land in first-party code;
-//! no macro in a reached body means no call is hidden from the walk; no
+//! standard, unshadowed matches! inputs are parsed completely; unknown macros
+//! widen the scope so no call is hidden from the walk; no
 //! `const`/`static` means no initializer runs code the walk never sees; no
 //! unfamiliar attribute means no body was rewritten into something else
 //! before it ran. When any of that fails, the walk is abandoned rather than
@@ -111,6 +112,8 @@ pub struct CodeScope {
 /// run: the crate's own `src/` tree and that of each path dependency,
 /// transitively.
 pub struct FirstParty {
+    /// Bare matches! is trusted only when no source can import or define a replacement.
+    standard_matches: bool,
     /// `(label, token text)` per file, ordered by label.
     units: Vec<(String, String)>,
     /// `Some(reason)` when first-party source contains something a
@@ -409,6 +412,7 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
     source_paths.sort();
     source_paths.dedup();
     let mut source_relocation_is_sound = true;
+    let mut matches_shadowing = MatchesShadowing(false);
     for (label, path) in files.files {
         let Ok(text) = std::fs::read_to_string(&path) else {
             gate.get_or_insert(format!("Ply could not read {label}"));
@@ -424,6 +428,7 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
         if source_uses_relocation_sensitive_rust(&file) {
             source_relocation_is_sound = false;
         }
+        matches_shadowing.visit_file(&file);
         let mut tokens = proc_macro2::TokenStream::new();
         for item in &file.items {
             if let syn::Item::Mod(m) = item
@@ -448,6 +453,7 @@ pub fn scan_first_party(crate_dir: &Path) -> FirstParty {
     units.sort();
     type_decls.sort();
     FirstParty {
+        standard_matches: !matches_shadowing.0,
         units,
         gate,
         type_decls,
@@ -623,6 +629,7 @@ pub fn code_scope(
             continue;
         };
         let mut collector = MentionCollector {
+            standard_matches: first_party.standard_matches,
             paths: Vec::new(),
             macro_invocation: None,
         };
@@ -709,7 +716,7 @@ pub fn code_scope(
             widened_because.get_or_insert(reason);
             continue;
         }
-        let mentions = mentioned_paths(&found.item);
+        let mentions = mentioned_paths(&found.item, first_party.standard_matches);
         if let Some(mac) = mentions.macro_invocation {
             // The expansion is unreadable, so what it calls is unknown and
             // the fingerprint widens. The paths written *outside* the macro
@@ -820,7 +827,79 @@ struct Mentions {
     macro_invocation: Option<String>,
 }
 
+/// The standard macro introduces only a match: all executable source is
+/// its scrutinee and optional guard. Parse the complete input, including
+/// alternative patterns and the optional trailing comma; never skip tokens.
+struct MatchesArgs {
+    value: syn::Expr,
+    pattern: syn::Pat,
+    guard: Option<syn::Expr>,
+}
+
+impl syn::parse::Parse for MatchesArgs {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let value = input.parse()?;
+        input.parse::<syn::Token![,]>()?;
+        let pattern = syn::Pat::parse_multi_with_leading_vert(input)?;
+        let guard = if input.peek(syn::Token![if]) {
+            input.parse::<syn::Token![if]>()?;
+            Some(input.parse()?)
+        } else {
+            None
+        };
+        if input.peek(syn::Token![,]) {
+            input.parse::<syn::Token![,]>()?;
+        }
+        if !input.is_empty() {
+            return Err(input.error("unexpected matches! tokens"));
+        }
+        Ok(Self {
+            value,
+            pattern,
+            guard,
+        })
+    }
+}
+
+/// Imports can shadow the prelude macro. Glob imports may do so without
+/// naming it. Check all first-party source, including function-local imports,
+/// rather than guessing which namespace Rust resolves.
+struct MatchesShadowing(bool);
+
+impl<'ast> Visit<'ast> for MatchesShadowing {
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        if is_cfg_test(item) {
+            return;
+        }
+        if let syn::Item::Mod(m) = item
+            && is_ply_generated(&m.ident.to_string())
+        {
+            return;
+        }
+        syn::visit::visit_item(self, item);
+    }
+
+    fn visit_use_tree(&mut self, tree: &'ast syn::UseTree) {
+        match tree {
+            syn::UseTree::Glob(_) => self.0 = true,
+            syn::UseTree::Path(p) if p.ident == "matches" => self.0 = true,
+            syn::UseTree::Name(n) if n.ident == "matches" => self.0 = true,
+            syn::UseTree::Rename(n) if n.rename == "matches" => self.0 = true,
+            _ => {}
+        }
+        syn::visit::visit_use_tree(self, tree);
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        if mac.path.is_ident("macro_rules") {
+            self.0 = true;
+        }
+        syn::visit::visit_macro(self, mac);
+    }
+}
+
 struct MentionCollector {
+    standard_matches: bool,
     paths: Vec<String>,
     macro_invocation: Option<String>,
 }
@@ -841,6 +920,17 @@ impl<'ast> Visit<'ast> for MentionCollector {
     }
 
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        if self.standard_matches
+            && node.path.is_ident("matches")
+            && let Ok(args) = syn::parse2::<MatchesArgs>(node.tokens.clone())
+        {
+            self.visit_expr(&args.value);
+            self.visit_pat(&args.pattern);
+            if let Some(guard) = &args.guard {
+                self.visit_expr(guard);
+            }
+            return;
+        }
         if self.macro_invocation.is_none() {
             self.macro_invocation = Some(node.path.to_token_stream().to_string());
         }
@@ -848,8 +938,9 @@ impl<'ast> Visit<'ast> for MentionCollector {
     }
 }
 
-fn mentioned_paths(f: &syn::ItemFn) -> Mentions {
+fn mentioned_paths(f: &syn::ItemFn, standard_matches: bool) -> Mentions {
     let mut c = MentionCollector {
+        standard_matches,
         paths: Vec::new(),
         macro_invocation: None,
     };
@@ -1464,6 +1555,80 @@ mod tests {
         scope.units.iter().map(|(l, _)| l.clone()).collect()
     }
 
+    #[test]
+    fn matches_scrutinee_guard_and_contract_helpers_are_reached() {
+        let dir = crate_with(&[(
+            "src/lib.rs",
+            r#"
+pub fn value(x: u32) -> Option<u32> { Some(x) }
+pub fn allowed(x: u32) -> bool { x < 4 }
+pub fn oracle(x: bool) -> Option<u32> { Some(if x { 1 } else { 0 }) }
+#[ply::ensures(|result| matches!(oracle(*result), Some(v) if allowed(v),))]
+pub fn decision(x: u32) -> bool {
+    matches!(value(x), | Some(0) | Some(1..=3))
+}
+"#,
+        )]);
+        let scope = scope_of_with_examples(
+            dir.path(),
+            "decision",
+            &["|result| matches!(oracle(*result), Some(v) if allowed(v))"],
+            &[],
+        );
+        assert_eq!(scope.scope, "reached", "{:?}", scope.widened_because);
+        for helper in ["value", "allowed", "oracle"] {
+            assert!(scope.reached_fns.iter().any(|f| f == helper), "{scope:?}");
+        }
+        let before = scope.units;
+        let path = dir.path().join("src/lib.rs");
+        let source = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(path, source.replace("x < 4", "x < 3")).unwrap();
+        let after = scope_of(dir.path(), "decision", &[]);
+        assert_ne!(
+            before, after.units,
+            "changing a matches! guard helper must invalidate reuse"
+        );
+    }
+
+    #[test]
+    fn matches_nested_unknown_macros_and_malformed_tokens_still_widen() {
+        for body in [
+            "matches!(opaque!(x), Some(_))",
+            "matches!(Some(x), Some(v) if opaque!(v))",
+            "matches!(Some(x), Some(_) unexpected)",
+            "matches!(Some(x), Some(_), trailing)",
+            "custom::matches!(Some(x), Some(_))",
+            "std::matches!(Some(x), Some(_))",
+        ] {
+            let source = format!("pub fn decision(x: u32) -> bool {{ {body} }}");
+            let dir = crate_with(&[("src/lib.rs", &source)]);
+            let scope = scope_of(dir.path(), "decision", &[]);
+            assert_eq!(scope.scope, "whole-crate", "{body}: {scope:?}");
+        }
+    }
+
+    #[test]
+    fn matches_import_shadowing_and_local_definitions_still_widen() {
+        for import in [
+            "use external::matches;",
+            "use external::other as matches;",
+            "use external::*;",
+            "use external::matches::{self};",
+            "macro_rules! matches { ($($t:tt)*) => { hidden() }; }",
+        ] {
+            let source = format!(
+                "{import}\npub fn decision(x: u32) -> bool {{ matches!(Some(x), Some(_)) }}"
+            );
+            let dir = crate_with(&[("src/lib.rs", &source)]);
+            let scope = scope_of(dir.path(), "decision", &[]);
+            assert_eq!(scope.scope, "whole-crate", "{import}: {scope:?}");
+        }
+        let dir = crate_with(&[(
+            "src/lib.rs",
+            "pub fn decision(x: u32) -> bool { use external::*; matches!(Some(x), Some(_)) }",
+        )]);
+        assert_eq!(scope_of(dir.path(), "decision", &[]).scope, "whole-crate");
+    }
     #[test]
     fn default_custom_and_path_dependency_build_scripts_disable_reuse() {
         let default = crate_with(&[
