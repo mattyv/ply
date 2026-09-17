@@ -7,6 +7,21 @@ description: Verify early and after meaningful implementation changes, interpret
 
 Use Ply's public CLI as the authority. Do not reproduce its verifier, verdict rules, record format, or artifact writer.
 
+## Establish scope and run ownership
+
+Before starting, establish the user's product verification root and visual client.
+Remember an existing preference rather than asking again. A narrow crate run may prove
+the first compiling slice early; finish verification and requested publication on the
+selected product root. If composition is unsupported, report the limitation instead of
+publishing another root or copying child evidence into a root artifact.
+
+Serialize verification jobs sharing a checkout, linked roots, or generated artifact
+directories. Check whether a run is already owned and active before starting another.
+A rendering or review worker must not probe `verify` while that run is active, or
+interrupt it to refresh a drawing. Recover a finished process's output before assuming
+its completion notification is still pending. This concerns separate CLI invocations;
+the verifier's own `--jobs` schedules work within one owned run.
+
 ## Verify while building
 
 Use verification to guide implementation, not only to approve the finished feature.
@@ -39,8 +54,9 @@ Use verification to guide implementation, not only to approve the finished featu
 Keep `ply.lock` and let the public verifier decide which recorded results it can reuse.
 Do not delete it routinely to force work, edit it to claim success, or decide that its
 presence makes a check unnecessary. Reuse is limited to the inputs this Ply version
-tracks. Start with `fuzz` for new suitable claims; retain existing evidence requirements,
-including bounded checks, when they are part of the task.
+tracks. Choose checks for the requested evidence. Use `fuzz` for suitable sampling
+claims; run requested bounded checks from the first meaningful slice and retain
+existing evidence requirements.
 
 ## Interpret incomplete and mixed results
 
@@ -74,7 +90,10 @@ separately; a supported signature does not make live side effects safe to exerci
 cargo ply check path/to/crate --json
 ```
 
-3. If the check passes, run verification with its default evidence threshold:
+3. Inspect the check diagnostics. Fix schema or document-semantic errors that prevent
+loading the intended root. Missing proposed anchors or an unsupported claim do not
+prevent verifying other resolved claims: run verification to earn partial evidence,
+keep those gaps visible, and retain the default evidence threshold:
 
 ```bash
 cargo ply verify path/to/crate --json
@@ -93,6 +112,31 @@ cargo ply verify path/to/crate --json --publish-view
 ```
 
 `--publish-view` records the completed outcome; it does not turn that outcome into success. Do not construct or edit `target/ply/view.json`, a `visual.json`, or `ply.lock` yourself.
+
+When a verified drawing is requested, read installed CLI help and add `--svg` and
+`--svg-overview` with explicit output paths to this same verification command.
+For an editor such as ply-vis, include `--publish-view`. `cargo ply render`
+shows declarations; it cannot refresh earned colours.
+
+Confirm each requested file exists. With `--publish-view`, read the selected root's
+`target/ply/view.json` and its indexed snapshot, checking run identity,
+`run.root.path` and linked results. For SVG-only exports, inspect the drawings
+against this invocation's JSON; an older or absent view index says nothing about them.
+Inspect JSON exit status, node verdicts, statuses, structured domains, and rendered
+nodes together. A bounded pass can coexist with another check's tool error.
+Count function claims by node kind; total document nodes are not engine-running functions.
+
+Inspect the requested SVG or viewer visually before reporting publication complete.
+Put the verified view first in a viewer you are authorized to update, label declaration
+views and saved-run freshness, and expose the raw result, bounds, and failed checks.
+If HTML is part of the requested client, check that its views open without script errors.
+Never manually recolour proof artifacts. If the viewer cannot be inspected or updated,
+report that limitation separately from the successfully published files.
+
+A completed snapshot may include tool errors and remain useful to review. Publish it
+only when requested, and label verification unresolved. An aborted command with no
+completed snapshot supplies nothing to publish; do not invent one.
+
 
 ## Repair a broken promise
 
@@ -149,7 +193,7 @@ check that ran.
 | missing_evidence | must-not-complete | restore evidence or explain the unresolved gap | only-by-explicit-flag |
 | narrowed_evidence | must-not-complete | remove the narrowing or explain the unresolved gap | only-by-explicit-flag |
 | timeout | must-not-complete | diagnose the check or rerun it with an explicit time budget | only-by-explicit-flag |
-| internal_tool_error | must-not-complete | report the tool failure and preserve its output | unavailable |
+| internal_tool_error | must-not-complete | report the tool failure and preserve its output | only-by-explicit-flag |
 
 For every `must-not-complete` result, say that verification remains unresolved. A published failure remains a useful review artifact, but it is not approval to finish.
 

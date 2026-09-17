@@ -38,7 +38,7 @@
     "scenario": "internal_tool_error",
     "exitCode": 1,
     "expectedCompletion": "must-not-complete",
-    "expectedPublication": "unavailable",
+    "expectedPublication": "only-by-explicit-flag",
     "expectedActionFragment": "report the tool failure"
   }
 ]

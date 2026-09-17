@@ -35,9 +35,57 @@ fn production_nested_borrowed_bytes_earn_bounded_and_fuzz_evidence() {
         .unwrap();
     assert_eq!(fuzz["cases"], 256);
     assert_eq!(fuzz["seed"].as_str().unwrap().len(), 64);
-    let reused = run_verify(&bin, fixture.path(), 150);
-    assert_eq!(leaf(&reused.json["root"]).unwrap()["evidence"], *evidence);
-    assert_eq!(leaf(&reused.json["root"]).unwrap()["reused"], true);
+    let full = fixture.path().join("verified.svg");
+    let overview = fixture.path().join("overview.svg");
+    let output = std::process::Command::new(&bin)
+        .arg("verify")
+        .arg(fixture.path())
+        .args(["--json", "--engine-timeout", "150", "--publish-view"])
+        .arg("--svg")
+        .arg(&full)
+        .arg("--svg-overview")
+        .arg(&overview)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reused: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(leaf(&reused["root"]).unwrap()["evidence"], *evidence);
+    assert_eq!(leaf(&reused["root"]).unwrap()["reused"], true);
+    let base = fixture.path().join("target/ply");
+    let index: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(base.join("view.json")).unwrap()).unwrap();
+    let id = index["currentRun"].as_str().unwrap();
+    let visual: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(base.join(format!("views/{id}/visual.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(visual["run"]["id"], id);
+    assert_eq!(visual["run"]["root"]["path"], ".");
+    let element = visual["elements"]
+        .as_object()
+        .unwrap()
+        .values()
+        .find(|e| e["label"] == "valid_key_bytes")
+        .unwrap();
+    assert_eq!(element["evidence"]["check"], evidence["check"]);
+    assert_eq!(
+        element["evidence"]["declaredBound"],
+        evidence["declared_bound"]
+    );
+    assert_eq!(
+        element["evidence"]["inputDomains"],
+        evidence["input_domains"]
+    );
+    assert_eq!(element["evidence"]["checks"], evidence["checks"]);
+    let svg = std::fs::read_to_string(full).unwrap();
+    assert_eq!(svg, visual["svg"].as_str().unwrap());
+    assert!(svg.contains("declared bound: 4"));
+    assert!(svg.contains("independent run:"));
+    assert!(std::fs::read_to_string(overview).unwrap().contains("<svg"));
 
     assert!(
         run.json["diagnostics"]

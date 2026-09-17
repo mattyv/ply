@@ -25,7 +25,10 @@ the drawing too; text alone cannot establish that the layout is readable.
 
 ## Select the run
 
-1. Identify the relevant directory containing `ply.yaml`.
+1. Use the established product verification root and visual client. A child crate's
+   completed run does not substitute for the root the user is viewing. If none was
+   established, identify the intended directory containing `ply.yaml` before selecting
+   a snapshot.
 2. Read `target/ply/view.json`. Require `protocolVersion` 1, then select the entry named by `currentRun` unless the user chose another indexed run.
 3. Require the selected entry's path to be exactly `views/<run-id>/visual.json`, relative to `target/ply`, with the same ID as the entry. Reject absolute paths, traversal, unknown protocol versions, and mismatched IDs.
 4. Read that `visual.json` without modifying it. Confirm its `run.id` matches the selected entry and report `run.completedAt`, `run.root.path`, `run.tool`, and `run.outcome` so the developer knows exactly what was reviewed.
@@ -36,7 +39,16 @@ A completed snapshot does not establish that the current source still matches it
 
 ## Review the evidence
 
-Use `svg` for the picture and `elements` for its semantics. For each relevant element, explain its label, kind, declared relationship, `evidence.verdict`, statuses, reuse state, engine, seed, and cases when present. Join `diagnosticIds` to the top-level `diagnostics` array by stable ID. Explain each diagnostic's message and source; do not invent assumptions or repairs that are absent from the artifact.
+Use `svg` for the picture and `elements` for its semantics. For each relevant
+element, explain its label, kind, declared relationship, `evidence.verdict`,
+statuses, reuse state, engine, check, declared bound, input domains, independent
+runs, seed, and cases when present. Visual fields use `declaredBound` and `inputDomains`; entries in `checks`
+retain the original CLI evidence schema. Old snapshots may omit these fields; do not
+invent their domains or infer that independent runs never happened. The selected engine
+belongs to the base verdict; mutation strength does not change the proof source.
+Join `diagnosticIds` to the top-level `diagnostics` array by stable ID. Explain each
+diagnostic's message and source; do not invent assumptions or repairs absent from
+the artifact.
 
 Distinguish a clean outcome from an incomplete one in the first sentence. A failure can still be a valid completed snapshot.
 

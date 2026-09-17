@@ -3961,6 +3961,24 @@ fn completed_evidence_tooltip(
     if let Some(cases) = element.evidence.cases {
         lines.push(format!("cases: {cases}"));
     }
+    if let Some(check) = &element.evidence.check {
+        lines.push(format!("check: {check}"));
+    }
+    if let Some(bound) = element.evidence.declared_bound {
+        lines.push(format!("declared bound: {bound}"));
+    }
+    for domain in &element.evidence.input_domains {
+        lines.push(format!(
+            "input domain: {}",
+            serde_json::to_string(domain).expect("typed input domains serialize")
+        ));
+    }
+    for check in &element.evidence.checks {
+        lines.push(format!(
+            "independent run: {}",
+            serde_json::to_string(check).expect("typed check evidence serializes")
+        ));
+    }
     if let Some(source) = &element.source {
         lines.push(format!(
             "source: {}:{}:{}-{}:{}",

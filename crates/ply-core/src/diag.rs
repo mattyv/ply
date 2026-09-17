@@ -115,7 +115,7 @@ pub struct Diagnostic {
 /// a violation carries its witness: without it, a `fuzzed(256)` names no
 /// run anyone can repeat, and the run that missed a bug is indistinguishable
 /// from the run that could not have found one.
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Evidence {
     /// The check that actually produced this evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,7 +146,7 @@ pub struct Evidence {
 }
 
 /// Restrictions imposed by the generated Kani input construction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "shape", rename_all = "snake_case")]
 pub enum BoundedInputDomain {
     ByteSlices {

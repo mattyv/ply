@@ -66,7 +66,7 @@ class PlyVerifySkillTests(unittest.TestCase):
                 self.assertEqual(policy[scenario][0], "must-not-complete")
                 self.assertEqual(policy[scenario][2], "only-by-explicit-flag")
         self.assertEqual(policy["internal_tool_error"][0], "must-not-complete")
-        self.assertEqual(policy["internal_tool_error"][2], "unavailable")
+        self.assertEqual(policy["internal_tool_error"][2], "only-by-explicit-flag")
 
     def test_change_authority_stops_before_weakening_intent(self):
         authority = table(skill_text("ply-verify"), "Change authority")

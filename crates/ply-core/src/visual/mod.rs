@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::diag::{Diagnostic, Envelope, Node, Span};
+use crate::diag::{BoundedInputDomain, Diagnostic, Envelope, Evidence, Node, Span};
 use crate::model::Document;
 
 pub const VISUAL_PROTOCOL_VERSION: u32 = 1;
@@ -184,6 +184,15 @@ pub struct ElementEvidence {
     pub seed: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cases: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_bound: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_domains: Vec<BoundedInputDomain>,
+    /// Original per-run evidence uses the CLI evidence schema.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<Evidence>,
     /// One of [`EVIDENCE_STATES`]: exactly what the viewer's Earned/Gap/
     /// Violation checkboxes filter on. See `svg::classify_evidence` for the
     /// one place this is computed.
@@ -913,6 +922,10 @@ fn add_architecture_scope_element(
                     engine: None,
                     seed: None,
                     cases: None,
+                    check: None,
+                    declared_bound: None,
+                    input_domains: Vec::new(),
+                    checks: Vec::new(),
                     state: state.into(),
                 },
                 source: None,
@@ -1048,6 +1061,10 @@ fn add_acceptance_elements(
                         engine,
                         seed: None,
                         cases: None,
+                        check: None,
+                        declared_bound: None,
+                        input_domains: Vec::new(),
+                        checks: Vec::new(),
                         state: state.into(),
                     },
                     source: None,
@@ -1257,6 +1274,10 @@ fn unchecked_element(
         engine: None,
         seed: None,
         cases: None,
+        check: None,
+        declared_bound: None,
+        input_domains: Vec::new(),
+        checks: Vec::new(),
         state: String::new(),
     };
     evidence.state = evidence_state(&evidence).to_string();
@@ -1337,6 +1358,24 @@ fn collect_elements(
             .as_ref()
             .and_then(|evidence| evidence.seed.clone()),
         cases: node.evidence.as_ref().and_then(|evidence| evidence.cases),
+        check: node
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.check.clone()),
+        declared_bound: node
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.declared_bound),
+        input_domains: node
+            .evidence
+            .as_ref()
+            .map(|evidence| evidence.input_domains.clone())
+            .unwrap_or_default(),
+        checks: node
+            .evidence
+            .as_ref()
+            .map(|evidence| evidence.checks.clone())
+            .unwrap_or_default(),
         // Placeholder: `evidence_state` below reuses `svg::classify_evidence`,
         // which reads verdict/statuses off this same struct, so the struct
         // has to exist before the state it publishes can be computed.
@@ -1900,6 +1939,130 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn completed_visual_preserves_domains_independent_runs_and_legacy_defaults() {
+        let domain = BoundedInputDomain::ByteSlices {
+            parameter: "keys".into(),
+            max_rows: 8,
+            max_row_bytes: 8,
+            byte_min: 0,
+            byte_max: 255,
+            backing: "disjoint_stack".into(),
+            exclusions: vec!["pointer_identity".into(), "shared_storage_aliasing".into()],
+        };
+        let proof = Evidence {
+            engine: "kani".into(),
+            check: Some("bounded(4)".into()),
+            declared_bound: Some(8),
+            input_domains: vec![domain.clone()],
+            ..Default::default()
+        };
+        let fuzz = Evidence {
+            engine: "proptest".into(),
+            check: Some("fuzzed(256)".into()),
+            seed: Some("ab".repeat(32)),
+            cases: Some(256),
+            ..Default::default()
+        };
+        let mut evidence = proof.clone();
+        evidence.checks = vec![proof, fuzz];
+        let document = crate::model::parse_document(
+            "ply: 1\ncomponents:\n  app:\n    anchor: app\n    fns:\n      choose: {checks: [bounded(8), fuzz(256)]}\n"
+        ).unwrap();
+        let result = Envelope {
+            command: "verify".into(),
+            ply_version: "test".into(),
+            root: Node {
+                id: "workspace".into(),
+                kind: "workspace".into(),
+                verdict: "bounded(4)·spec-strong".into(),
+                children: vec![Node {
+                    id: "app".into(),
+                    kind: "component".into(),
+                    verdict: "bounded(4)·spec-strong".into(),
+                    children: vec![Node {
+                        id: "choose".into(),
+                        kind: "fn".into(),
+                        verdict: "bounded(4)·spec-strong".into(),
+                        reused: true,
+                        statuses: vec!["tool_error".into()],
+                        evidence: Some(evidence.clone()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            diagnostics: vec![],
+            acceptance: vec![],
+            coverage: None,
+            trust_surface: None,
+            open_items: None,
+            not_carried_forward: vec![],
+        };
+        let visual = build_visual_envelope(
+            &document,
+            &result,
+            RunMetadata {
+                id: "mixed-proof".into(),
+                completed_at: "1970-01-01T00:00:00Z".into(),
+                root: RootIdentity { path: ".".into() },
+                tool: ToolIdentity {
+                    name: "cargo-ply".into(),
+                    version: "test".into(),
+                },
+                outcome: RunOutcome::MissingEvidence,
+            },
+        )
+        .unwrap();
+        let selected = visual
+            .elements
+            .values()
+            .find(|e| e.label == "choose")
+            .unwrap();
+        assert_eq!(selected.evidence.engine.as_deref(), Some("kani"));
+        assert_eq!(selected.evidence.check, evidence.check);
+        assert_eq!(selected.evidence.declared_bound, Some(8));
+        assert_eq!(selected.evidence.input_domains, vec![domain]);
+        assert_eq!(selected.evidence.checks, evidence.checks);
+        assert_eq!(selected.evidence.statuses, vec!["tool_error"]);
+        assert!(selected.evidence.reused);
+        assert!(selected.evidence.seed.is_none());
+        assert!(selected.evidence.cases.is_none());
+        assert!(visual.svg.contains("declared bound: 8"));
+        assert!(visual.svg.contains("independent run:"));
+        let json = visual.to_json_pretty();
+        assert!(json.contains("\"declaredBound\""));
+        assert!(json.contains("\"inputDomains\""));
+        assert_eq!(VisualEnvelope::from_json(&json).unwrap(), visual);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ply.yaml"),
+            "ply: 1\ncomponents:\n  app:\n    anchor: app\n    fns:\n      choose: {checks: [bounded(8), fuzz(256)]}\n").unwrap();
+        let publisher = VisualPublisher::new(dir.path());
+        publisher.publish(&visual, 20).unwrap();
+        let saved =
+            std::fs::read_to_string(dir.path().join("target/ply/views/mixed-proof/visual.json"))
+                .unwrap();
+        assert_eq!(VisualEnvelope::from_json(&saved).unwrap(), visual);
+        let mut legacy: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for element in legacy["elements"].as_object_mut().unwrap().values_mut() {
+            let e = element["evidence"].as_object_mut().unwrap();
+            for field in ["check", "declaredBound", "inputDomains", "checks"] {
+                e.remove(field);
+            }
+        }
+        let legacy = VisualEnvelope::from_json(&legacy.to_string()).unwrap();
+        let old = legacy
+            .elements
+            .values()
+            .find(|e| e.label == "choose")
+            .unwrap();
+        assert!(old.evidence.check.is_none());
+        assert!(old.evidence.declared_bound.is_none());
+        assert!(old.evidence.input_domains.is_empty());
+        assert!(old.evidence.checks.is_empty());
+        assert_eq!(old.evidence.engine.as_deref(), Some("kani"));
+    }
     #[test]
     fn epoch_formats_as_rfc3339() {
         assert_eq!(rfc3339_utc(UNIX_EPOCH), "1970-01-01T00:00:00Z");
